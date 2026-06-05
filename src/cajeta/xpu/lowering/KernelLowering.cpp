@@ -138,7 +138,16 @@ bool typeIsSigned(const CajetaTypePtr& t) {
 // identical. `type` is null when `t` is not a POD struct.
 struct DeviceStructInfo {
     llvm::StructType* type = nullptr;
-    struct Field { unsigned index; llvm::Type* type; bool isSigned; };
+    // `sub` is non-empty only for a nested @ValueType field (S5): it carries the
+    // field's own field map so a two-level read `param.vfield.subfield` resolves
+    // to a multi-index extractvalue. libstdc++ std::map supports the incomplete
+    // value type here (C++17).
+    struct Field {
+        unsigned index;
+        llvm::Type* type;
+        bool isSigned;
+        std::map<std::string, Field> sub;
+    };
     std::map<std::string, Field> fields;
 };
 
@@ -152,12 +161,29 @@ DeviceStructInfo deviceStructInfo(const CajetaTypePtr& t, llvm::LLVMContext& ctx
     unsigned idx = 0;
     for (auto& prop : cls->getPropertyList()) {
         if (!prop || prop->isStatic()) continue;
-        llvm::Type* fty = deviceScalarType(prop->getType(), ctx);
-        if (!fty) return DeviceStructInfo{};             // non-primitive field
-        info.fields[prop->getName()] =
-            {idx, fty, typeIsSigned(prop->getType())};
-        ftys.push_back(fty);
-        ++idx;
+        CajetaTypePtr pt = prop->getType();
+        llvm::Type* fty = deviceScalarType(pt, ctx);
+        if (fty) {
+            info.fields[prop->getName()] = {idx, fty, typeIsSigned(pt), {}};
+            ftys.push_back(fty);
+            ++idx;
+            continue;
+        }
+        // S5: a nested @ValueType field is itself a flat by-value POD — recurse
+        // into a nested device struct and remember its field map for two-level
+        // reads. A value-type-containing struct stays POD all the way down.
+        if (pt && (pt->getTypeFlags() & VALUE_TYPE_FLAG)) {
+            DeviceStructInfo nested = deviceStructInfo(pt, ctx);
+            if (nested.type) {
+                DeviceStructInfo::Field f{idx, nested.type, false, {}};
+                f.sub = nested.fields;
+                info.fields[prop->getName()] = std::move(f);
+                ftys.push_back(nested.type);
+                ++idx;
+                continue;
+            }
+        }
+        return DeviceStructInfo{};                        // non-POD field
     }
     if (ftys.empty()) return DeviceStructInfo{};
     info.type = llvm::StructType::get(ctx, ftys);
@@ -1180,20 +1206,48 @@ private:
     llvm::Value* structFieldRead(const ExpressionPtr& e) {
         auto dot = std::dynamic_pointer_cast<DotExpression>(e);
         if (!dot || dot->getChildren().empty()) return nullptr;
-        auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
-            std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]));
-        if (!baseId) return nullptr;
-        auto vit = structValues.find(baseId->getTextValue());
-        auto sit = structFields.find(baseId->getTextValue());
-        if (vit == structValues.end() || sit == structFields.end())
-            return nullptr;
-        auto fit = sit->second.fields.find(dot->getIdentifier());
-        if (fit == sit->second.fields.end())
-            unsupported("unknown field '" + dot->getIdentifier() +
-                        "' on struct param '" + baseId->getTextValue() + "'");
-        return builder.CreateExtractValue(
-            vit->second, {fit->second.index},
-            baseId->getTextValue() + "." + dot->getIdentifier());
+        auto baseExpr = std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
+        // Single level: `param.field` — extractvalue at the field index. (For a
+        // value-type field this returns the whole nested aggregate value.)
+        if (auto baseId =
+                std::dynamic_pointer_cast<IdentifierExpression>(baseExpr)) {
+            auto vit = structValues.find(baseId->getTextValue());
+            auto sit = structFields.find(baseId->getTextValue());
+            if (vit == structValues.end() || sit == structFields.end())
+                return nullptr;
+            auto fit = sit->second.fields.find(dot->getIdentifier());
+            if (fit == sit->second.fields.end())
+                unsupported("unknown field '" + dot->getIdentifier() +
+                            "' on struct param '" + baseId->getTextValue() + "'");
+            return builder.CreateExtractValue(
+                vit->second, {fit->second.index},
+                baseId->getTextValue() + "." + dot->getIdentifier());
+        }
+        // Two level (S5): `param.vfield.subfield` on a nested @ValueType field —
+        // a single multi-index extractvalue {vfield.index, subfield.index}.
+        if (auto baseDot = std::dynamic_pointer_cast<DotExpression>(baseExpr)) {
+            if (baseDot->getChildren().empty()) return nullptr;
+            auto rootId = std::dynamic_pointer_cast<IdentifierExpression>(
+                std::dynamic_pointer_cast<Expression>(baseDot->getChildren()[0]));
+            if (!rootId) return nullptr;
+            auto vit = structValues.find(rootId->getTextValue());
+            auto sit = structFields.find(rootId->getTextValue());
+            if (vit == structValues.end() || sit == structFields.end())
+                return nullptr;
+            auto vfit = sit->second.fields.find(baseDot->getIdentifier());
+            if (vfit == sit->second.fields.end() || vfit->second.sub.empty())
+                return nullptr;
+            auto subit = vfit->second.sub.find(dot->getIdentifier());
+            if (subit == vfit->second.sub.end())
+                unsupported("unknown field '" + dot->getIdentifier() +
+                            "' on value-type field '" + baseDot->getIdentifier() +
+                            "' of struct param '" + rootId->getTextValue() + "'");
+            return builder.CreateExtractValue(
+                vit->second, {vfit->second.index, subit->second.index},
+                rootId->getTextValue() + "." + baseDot->getIdentifier() +
+                    "." + dot->getIdentifier());
+        }
+        return nullptr;
     }
 
     // Address (and element type) of an l-value. Buffer/array indexing and scalar

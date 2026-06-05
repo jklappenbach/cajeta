@@ -79,10 +79,14 @@ bool implementsKernelArg(const std::shared_ptr<CajetaClass>& klass) {
 // A plain POD struct admissible by value (Item 7): a non-interface,
 // non-Buffer class with no inherited fields (so every instance field is
 // in its own propertyList) and at least one field, all of whose
-// non-static instance fields are primitives. Inheritance, non-primitive
-// fields, and nested structs are out of scope for v1 — they keep needing
-// an explicit `implements KernelArg`. The vtable word those classes carry
-// is stripped during marshalling, so it does not affect admissibility.
+// non-static instance fields are primitives (scalars / Vector — both carry
+// PRIMITIVE_FLAG) OR nested @ValueType PODs (S5, recursive). A @ValueType
+// class is itself such a struct: vtable-free, by-value, all-POD fields — so
+// it AND a struct that contains a value-type field marshal by value to a
+// field-reading kernel. Inheritance stays out of scope for v1. The vtable
+// word ordinary classes carry is stripped during marshalling, so it does
+// not affect admissibility (value types carry none — see CajetaClass
+// hasVtablePointerAtSlotZero).
 bool isPodStruct(const std::shared_ptr<CajetaClass>& klass) {
     if (!klass) return false;
     if (klass->isInterface()) return false;
@@ -93,7 +97,15 @@ bool isPodStruct(const std::shared_ptr<CajetaClass>& klass) {
         if (!prop || prop->isStatic()) continue;
         sawField = true;
         auto ft = prop->getType();
-        if (!ft || !(ft->getTypeFlags() & PRIMITIVE_FLAG)) return false;
+        if (!ft) return false;
+        // Scalar primitive or Vector (both PRIMITIVE_FLAG): admissible directly.
+        if (ft->getTypeFlags() & PRIMITIVE_FLAG) continue;
+        // Nested @ValueType field: recurse — a value-type-containing POD is
+        // still flat by-value POD all the way down.
+        if (ft->getTypeFlags() & VALUE_TYPE_FLAG) {
+            if (isPodStruct(std::dynamic_pointer_cast<CajetaClass>(ft))) continue;
+        }
+        return false;
     }
     return sawField;
 }
