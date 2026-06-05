@@ -77,6 +77,19 @@ const char* kVec2Eq =
     "    }\n"
     "}\n";
 
+// Vec2 with a pure @Device operator+ that RETURNS a Vec2 (an aggregate). The
+// operator constructs its result by value inside the kernel — the device
+// lowerer builds the {x,y} struct via insertvalue and returns it by value.
+const char* kVec2Add =
+    "@ValueType public final class Vec2 {\n"
+    "    public float32 x;\n"
+    "    public float32 y;\n"
+    "    public Vec2(float32 x, float32 y) { this.x = x; this.y = y; }\n"
+    "    @Device public static Vec2 operator+ (Vec2 a, Vec2 b) {\n"
+    "        return new Vec2(a.x + b.x, a.y + b.y);\n"
+    "    }\n"
+    "}\n";
+
 std::string lowerKernelIr(const std::string& src, const std::string& cls,
                           const std::string& kernel) {
     Compiler compiler;
@@ -148,4 +161,38 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceInequalityDerivesFromEquality) {
     // Derived: operator== is still the dispatched primitive, negated.
     EXPECT_NE(ir.find("operator=="), std::string::npos)
         << "a != b should derive from the @Device operator==\n" << ir;
+}
+
+// A value-type-RETURNING @Device operator dispatches inside a kernel: `a + b`
+// routes to Vec2's @Device operator+, which constructs a Vec2 result by value
+// (insertvalue chain into the device struct) and returns it. The kernel binds
+// that aggregate to a value-type local and reads its fields — proving device
+// aggregate construction, aggregate return, and value-type locals all lower.
+TEST(XpuValueTypeOperatorDeviceTests, deviceAggregateReturningOperatorDispatches) {
+    std::string src =
+        std::string("package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n")
+        + kVec2Add +
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void addk(Vec2 a, Vec2 b, Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vec2 c = a + b;\n"
+        "            out[i] = c.x + c.y + (float32) i;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    std::string ir = lowerKernelIr(src, "test.M", "addk");
+    ASSERT_FALSE(ir.empty());
+    // The @Device operator+ is emitted and dispatched.
+    EXPECT_NE(ir.find("operator+"), std::string::npos)
+        << "expected the @Device operator+ to be emitted/dispatched\n" << ir;
+    // Its body builds the Vec2 result by value (insertvalue) and the kernel
+    // reads the returned aggregate's fields (extractvalue).
+    EXPECT_NE(ir.find("insertvalue"), std::string::npos)
+        << "expected aggregate construction of the Vec2 result\n" << ir;
+    EXPECT_NE(ir.find("extractvalue"), std::string::npos)
+        << "expected the returned aggregate's fields to be read\n" << ir;
 }
