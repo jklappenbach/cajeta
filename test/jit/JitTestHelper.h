@@ -70,10 +70,11 @@ public:
         // Override the per-backend default device arch. May be a comma-separated
         // list ("gfx1100,gfx1151") to build a multi-arch bundle. Empty = default.
         std::string xpuArch;
-        // Capture the post-codegen host LLVM IR (pre-optimization, the same
-        // point CAJETA_DUMP_IR prints) into the returned CajetaJit, readable via
-        // getModuleIr(). Off by default so the normal test path pays nothing —
-        // the golden-IR baseline harness (value-type-overloading-plan S0) opts in.
+        // Capture the post-codegen, post-AlwaysInline (O0) host LLVM IR into the
+        // returned CajetaJit, readable via getModuleIr(). Captured after the O0
+        // optimizeModule pass so a test can see whether a @ValueType operator
+        // folded to its caller (S4) as well as the flat <N x T> Vector shape
+        // (S0). Off by default so the normal test path pays nothing.
         bool captureIr = false;
     };
 
