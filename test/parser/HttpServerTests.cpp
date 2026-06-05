@@ -271,8 +271,11 @@ TEST(HttpServerTests, handleRequestBytesProducesWireResponse) {
         "String s = heap String(#wire, wire.count());\n"
         // Status line first.
         "if (!s.startsWith(\"HTTP/1.1 200 OK\\r\\n\")) return -1;\n"
-        // The auto Content-Length for the 2-byte echo body.
-        "if (s.indexOf(\"Content-Length: 2\") < 0) return -2;\n"
+        // The auto Content-Length for the 2-byte echo body. HttpSerializer
+        // emits the auto-supplied framing header lowercased (RFC 7230 §3.2
+        // field names are case-insensitive; the golden wire vectors are
+        // all-lowercase — see HttpSerializer.writeLengthHead).
+        "if (s.indexOf(\"content-length: 2\") < 0) return -2;\n"
         // The body 'hi' is present after the head terminator.
         "if (s.indexOf(\"\\r\\n\\r\\nhi\") < 0) return -3;\n"
         "return 1;"), 1);

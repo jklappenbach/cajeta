@@ -245,7 +245,14 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
         for (auto& m : compiler->getModules()) {
             for (auto& method : m->getAllMethods()) {
-                method->generateCode();
+                try {
+                    method->generateCode();
+                } catch (cajeta::Exception& e) {
+                    std::cerr << "[CajetaException @ codegen] "
+                        << e.getErrorId() << ": " << e.getMessage()
+                        << "  (method=" << method->getName() << ")\n";
+                    throw;
+                }
             }
         }
         size_t after = 0;

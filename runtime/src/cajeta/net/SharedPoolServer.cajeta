@@ -233,8 +233,8 @@ public class SharedPoolServer extends Server {
         scope {
             int32 i = 0;
             while (i < this.poolSize) {
-                spawn SharedPoolServer.worker(this.handler, this.inflight,
-                                              this.queued, this.queue);
+                spawn worker(this.handler, this.inflight,
+                             this.queued, this.queue);
                 i = i + 1;
             }
             while (this.state.load() == ServerState.RUNNING) {
@@ -242,7 +242,7 @@ public class SharedPoolServer extends Server {
                 if (conn == null) {
                     break;   // listener closed by shutdown — stop accepting
                 }
-                this.dispatch(conn);
+                this.dispatch(#conn);
             }
             // Accept loop has exited (shutdown closed the listener). Close the
             // work queue so the parked workers drain it and return — the scope

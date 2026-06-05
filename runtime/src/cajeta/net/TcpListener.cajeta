@@ -149,6 +149,21 @@ public class TcpListener {
         return -1;
     }
 
+    /**
+     * The bound local endpoint as a materialized [`SocketAddress`](SocketAddress.cajeta).
+     *
+     * **Placeholder** pending the object-materializing `getsockname` lowering
+     * (the increment that resolves the kernel-assigned address/port into a
+     * fresh `SocketAddress`). Until then this returns the IPv4 wildcard
+     * `0.0.0.0:0` so the `Server` / `HttpServer` `localAddress()` accessors
+     * that read through to it stay constructible and type-stable. The
+     * lightweight port-only query the b1 loopback echo needs is
+     * [`boundPort`](#boundPort), which is intrinsic-lowered today.
+     */
+    public #SocketAddress localAddress() {
+        return heap SocketAddress();
+    }
+
     // ----- lifecycle -------------------------------------------------------
 
     /**
