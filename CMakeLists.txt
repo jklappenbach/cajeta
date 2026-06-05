@@ -79,6 +79,16 @@ include_directories(src)
 # directly. Must precede add_subdirectory(test).
 enable_testing()
 
+# cajetadoc — the documentation generator (plans/cajetadoc-tool.md). Reuses the
+# checked-in antlr-generated front end and links only the antlr4 runtime (no
+# LLVM). Added BEFORE src/ so `cajetadoc_core` exists when src/ conditionally
+# links it into cajeta_lib to expose the `cajeta doc` subcommand. Opt-out via
+# -DCAJETA_BUILD_CAJETADOC=OFF.
+option(CAJETA_BUILD_CAJETADOC "Build the cajetadoc documentation generator" ON)
+if(CAJETA_BUILD_CAJETADOC)
+    add_subdirectory(tools/cajetadoc)
+endif()
+
 add_subdirectory(src)
 add_subdirectory(test)
 

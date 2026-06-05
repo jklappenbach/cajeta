@@ -57,7 +57,7 @@ tool is what users normally invoke.
   files humans edit; strict JSON for machine-only.
 - **Repository-based dependency resolution.** Manifest declares
   ordered repository list; resolution walks repositories in
-  priority order until each `name@version` is found. Standard
+  priority order until each `name@Version` is found. Standard
   Maven / npm / Cargo pattern. Local file:// repos for dev
   overrides; corporate Nexus-style internal repos for inner-source;
   public registry as the bottom tier.
@@ -267,7 +267,7 @@ Field-level conventions:
 - **Repositories** are ordered by `priority` (descending). Ties
   broken by declaration order. The build tool walks the list
   per dependency, fetching from the first repository that has
-  the requested `name@version`.
+  the requested `name@Version`.
 
 ---
 
@@ -440,7 +440,7 @@ The build tool clones to `.cajeta/cache/git/<hash>/`, finds the
 
 Repositories declared in the manifest are tried in priority order
 (descending). The first repository that has the requested
-`name@version` wins. Filesystem repositories with high priority
+`name@Version` wins. Filesystem repositories with high priority
 let developers locally override published versions without
 modifying the manifest:
 
@@ -936,7 +936,7 @@ Deferred (separate efforts, post-v1):
   Cargo's model — fewer "everything must use the same version"
   conflicts — at the cost of larger lockfiles and binaries that
   carry multiple major versions of a dep.
-- **Deprecation lifecycle.** `@deprecated` in source is one
+- **Deprecation lifecycle.** `@Deprecated` in source is one
   signal; deprecating an entire repository version is another.
   Should `cajeta upgrade` skip deprecated versions by default?
   Lean: yes, warn loudly when locking against one.

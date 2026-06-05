@@ -25,7 +25,7 @@ import cajeta.lang.stream.ArrayStream;
  * `int64` at the API boundary for parity with the hash-based
  * collections.
  *
- * @see cajeta.collection.ArrayList
+ * @See cajeta.collection.ArrayList
  */
 public class ImmutableList<T> {
 
@@ -38,7 +38,7 @@ public class ImmutableList<T> {
      * `src` (in order) into a right-sized owned array; the source
      * `ArrayList` is left untouched and still owned by the caller.
      *
-     * @param src the list whose elements to snapshot.
+     * @Param src the list whose elements to snapshot.
      */
     public ImmutableList(ArrayList<T> src) {
         int32 n = src.count();

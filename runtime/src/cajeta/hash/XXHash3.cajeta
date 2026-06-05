@@ -31,9 +31,9 @@ import cajeta.lang.String;
  * int64 digest = h.finish();
  * ```
  *
- * @see cajeta.hash.Hasher
- * @see cajeta.hash.DefaultHasher
- * @see [stdlib/Hashing.md § XXHash3](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See cajeta.hash.Hasher
+ * @See cajeta.hash.DefaultHasher
+ * @See [stdlib/Hashing.md § XXHash3](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public final class XXHash3 implements Hasher {
 

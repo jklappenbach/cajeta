@@ -16,7 +16,7 @@ package cajeta.collection;
  * `LinkedListNode` precedent; the tree owns its nodes and rewrites
  * these public fields directly during split/route.
  *
- * @see cajeta.collection.BPlusTree
+ * @See cajeta.collection.BPlusTree
  */
 public class BPlusTreeNode<K, V> {
     public boolean leaf;

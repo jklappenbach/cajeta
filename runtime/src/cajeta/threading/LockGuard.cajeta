@@ -1,7 +1,7 @@
 package cajeta.threading;
 
 /**
- * RAII guard for {@link Lock}. Holds the raw lock handle; its destructor
+ * RAII guard for {@Link Lock}. Holds the raw lock handle; its destructor
  * releases the lock, so a `LockGuard` going out of scope (method exit,
  * early return, exception unwind — all driven by the drop chain)
  * unlocks automatically. "Forgot to unlock" is structurally

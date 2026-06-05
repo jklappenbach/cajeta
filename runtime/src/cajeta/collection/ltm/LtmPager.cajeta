@@ -36,9 +36,9 @@ import cajeta.io.file.OpenMode;
  * encodings round-trip. A node must serialize within one page; choose
  * `order` so `order + 1` max-size entries fit `pageSize`.
  *
- * @see cajeta.collection.ltm.BPlusTree
- * @see cajeta.collection.ltm.LtmBPlusTreeNode
- * @see cajeta.wire.Encoder
+ * @See cajeta.collection.ltm.BPlusTree
+ * @See cajeta.collection.ltm.LtmBPlusTreeNode
+ * @See cajeta.wire.Encoder
  */
 public class LtmPager<K, V> {
 

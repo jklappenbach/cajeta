@@ -240,6 +240,11 @@ set(BINARY ${CMAKE_PROJECT_NAME})
 # consistent.
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS LIST_DIRECTORIES false *.h *.cpp)
 list(FILTER SOURCES EXCLUDE REGEX ".*/main\\.cpp$")
+# DocCommand.cpp (the `cajeta doc` forwarder) is compiled into the cajeta
+# executable, NOT cajeta_lib, so wiring it to the cajetadoc engine doesn't add
+# include/define usage-requirements to cajeta_lib and force a full recompile of
+# the compiler. See the executable definition below.
+list(FILTER SOURCES EXCLUDE REGEX ".*/cli/DocCommand\\.cpp$")
 
 set(GENERATED_SOURCES
         ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
@@ -569,5 +574,17 @@ if(CAJETA_HAS_LLD)
     target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC ${CAJETA_LLD_INCLUDE_DIR})
 endif()
 
-add_executable(${CMAKE_PROJECT_NAME} main.cpp)
+# `cajeta doc` subcommand. DocCommand.cpp + the cajetadoc engine (the
+# cajetadoc_core OBJECT library) are compiled/linked into the executable only,
+# so cajeta_lib (the whole compiler) is untouched and not forced to recompile.
+# cajetadoc_core's objects carry the antlr parser refs they need; the executable
+# also links cajeta_lib, which defines those same parser symbols. When cajetadoc
+# is disabled (-DCAJETA_BUILD_CAJETADOC=OFF) the stub branch of DocCommand.cpp
+# compiles instead (no CAJETA_HAS_DOC, no cajetadoc include needed).
+add_executable(${CMAKE_PROJECT_NAME} main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/cli/DocCommand.cpp)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_PROJECT_NAME}_lib)
+if(TARGET cajetadoc_core)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE cajetadoc_core)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE CAJETA_HAS_DOC=1)
+endif()

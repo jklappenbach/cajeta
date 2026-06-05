@@ -20,8 +20,8 @@ import cajeta.lang.stream.ArrayStream;
  * identity semantics (override `hash()` + `==` for value semantics);
  * primitive T lowers `.hash()` to the `__cajeta_hash_X` intrinsic.
  *
- * @see cajeta.collection.HashSet
- * @see cajeta.collection.ArrayList
+ * @See cajeta.collection.HashSet
+ * @See cajeta.collection.ArrayList
  */
 public class ImmutableSet<T> {
 
@@ -46,7 +46,7 @@ public class ImmutableSet<T> {
      * occurrence of each `==`-equal value wins; later duplicates are
      * dropped. The source `ArrayList` is left untouched.
      *
-     * @param src the values to snapshot.
+     * @Param src the values to snapshot.
      */
     public ImmutableSet(ArrayList<T> src) {
         int32 n = src.count();

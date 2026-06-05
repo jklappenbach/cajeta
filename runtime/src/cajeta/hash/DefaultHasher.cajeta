@@ -25,9 +25,9 @@ import cajeta.lang.String;
  * compiler couples to `DefaultHasher`, not to `XXHash3` directly,
  * so the underlying algorithm can swap if a faster one ships).
  *
- * @see cajeta.hash.XXHash3
- * @see cajeta.hash.Hasher
- * @see [stdlib/Hashing.md § DefaultHasher](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See cajeta.hash.XXHash3
+ * @See cajeta.hash.Hasher
+ * @See [stdlib/Hashing.md § DefaultHasher](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public final class DefaultHasher implements Hasher {
 

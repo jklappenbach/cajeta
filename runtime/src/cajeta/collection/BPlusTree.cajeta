@@ -27,8 +27,8 @@ package cajeta.collection;
  * with the error model + a test harness). This is an insert/lookup
  * ordered map — the common index case — until then.
  *
- * @see cajeta.collection.BPlusTreeNode
- * @see cajeta.collection.RedBlackTree
+ * @See cajeta.collection.BPlusTreeNode
+ * @See cajeta.collection.RedBlackTree
  */
 public class BPlusTree<K, V> {
 
