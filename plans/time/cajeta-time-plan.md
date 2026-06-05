@@ -292,6 +292,30 @@ negatives).
       (value-poisons the class, breaks the stdlib JIT verify); `ofPattern` covers
       the same need. Parsing (text → temporal) also deferred.
 
+      > **Deferred — chained-decorator builder.** If you want the chained
+      > decorator specifically, it's a compiler fix, not a library one — the
+      > fluent-method this-by-value codegen needs to be made sound. I'm happy to
+      > dig into that in src/cajeta/ as a separate effort, or wire the builder up
+      > the moment that lands. Parsing (text → temporal) is also still open.
+      >
+      > **Compiler dependency:** make instance methods that `return this` (and,
+      > more generally, methods returning their own class type) pass and return
+      > the receiver **by reference** for heap/`#`-constructed instances, instead
+      > of by value. Today a self-returning method receives `this` by value, so
+      > (a) field mutations don't persist to the caller's variable, and (b)
+      > invoking such a method on a `heap`-built instance — or passing that class
+      > as a parameter — emits LLVM that fails the JIT verifier
+      > (`Call parameter type does not match function signature`,
+      > `SExt only operates on integer`), which takes down the whole embedded
+      > stdlib compile. Likely fix sites: the return-ABI / storage-class
+      > resolution in `src/cajeta/method/Method.cpp` (the same pass that decides
+      > value-vs-reference returns; see `Method.cpp:~849` `returnsStackValue`) and
+      > the value-return lowering in `src/cajeta/asn/Statement.cpp` (the
+      > `FRESH_RETURN_NEEDS_TRANSFER` / by-value struct-return path). Once
+      > self-returns are reference-stable, restore `DateTimeFormatBuilder`
+      > (a heap object with an `int8[]` pattern buffer and `return this` step
+      > methods) + `DateTimeFormatter.builder()`.
+
 Phases 1–5 are the committed v1 of this branch; 6–7 are scoped here but
 explicitly deferred (flagged so we don't silently drop them).
 
