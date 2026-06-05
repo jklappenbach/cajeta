@@ -9,6 +9,7 @@
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaVector.h"
 #include "cajeta/type/CajetaMatrix.h"
+#include "cajeta/type/CajetaQuaternion.h"
 #include "cajeta/type/CajetaConstantType.h"
 #include "cajeta/type/VectorOps.h"
 #include "cajeta/type/MatrixOps.h"
@@ -63,6 +64,14 @@ namespace cajeta {
                                                rv->getValue(), cv->getValue());
     }
 
+    // Built-in Quaternion<T>: resolve to the flat CajetaQuaternion value type.
+    static CajetaQuaternionPtr resolveQuaternionNew(
+            CajetaModulePtr module, const string& typeName,
+            const vector<CajetaTypePtr>& typeArguments) {
+        if (typeName != "Quaternion" || typeArguments.size() != 1) return nullptr;
+        return CajetaQuaternion::validateAndCreate(module, typeArguments[0]);
+    }
+
     void NewExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (typeName.empty()) return;
@@ -72,6 +81,10 @@ namespace cajeta {
         }
         if (auto mt = resolveMatrixNew(module, typeName, typeArguments)) {
             resolvedType = mt;
+            return;
+        }
+        if (auto qt = resolveQuaternionNew(module, typeName, typeArguments)) {
+            resolvedType = qt;
             return;
         }
         // boundElementType wins when set: it was captured at parse
@@ -188,6 +201,26 @@ namespace cajeta {
             }
             return matops::buildMatrix(*b, elemTy, matTy->getRows(),
                                        matTy->getCols(), elems);
+        }
+        // Built-in Quaternion<T> construction -> SSA `<4 x T>` (w, x, y, z). Four
+        // scalar arguments; `new`/`stack` is purely syntactic (a value type).
+        if (auto qTy = resolveQuaternionNew(module, typeName, typeArguments)) {
+            auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest);
+            if (!ccr || ccr->getParameters().size() != 4) {
+                throw Exception(
+                    "Quaternion<T> needs 4 arguments (w, x, y, z)",
+                    "CAJETA_ERROR_QUATERNION_CONSTRUCT");
+            }
+            llvm::Type* elemTy = qTy->getElementType()->getLlvmType();
+            llvm::IRBuilder<>* b = module->getBuilder();
+            std::vector<llvm::Value*> elems;
+            elems.reserve(4);
+            for (auto& p : ccr->getParameters()) {
+                llvm::Value* v = loadIfLValue(module,
+                    p.expression->generateCode(module), p.expression);
+                elems.push_back(vecops::coerceScalar(*b, v, elemTy));
+            }
+            return vecops::buildVector(*b, elemTy, 4, elems);
         }
         // Look up the target type by name. typeName names the class for `new Foo()`, or
         // the element type for `new T[...]`. Package is "" for primitives (e.g. int32).

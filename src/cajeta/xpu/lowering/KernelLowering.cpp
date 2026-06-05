@@ -11,9 +11,11 @@
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaVector.h"
 #include "../../type/CajetaMatrix.h"
+#include "../../type/CajetaQuaternion.h"
 #include "../../type/CajetaConstantType.h"
 #include "../../type/VectorOps.h"
 #include "../../type/MatrixOps.h"
+#include "../../type/QuaternionOps.h"
 #include "../core/XpuAttributes.h"
 #include "../core/KernelArgTrait.h"
 #include "../../error/Exception.h"
@@ -134,6 +136,18 @@ llvm::Type* deviceMatrixType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
             "XPU kernel lowering: Matrix<T,0,..> / <..,0> has no lanes",
             "XPU-N01");
     return llvm::FixedVectorType::get(elem, mat->getRows() * mat->getCols());
+}
+
+// Map a Quaternion<T> CajetaType to a device LLVM `<4 x T>` (w, x, y, z), or
+// nullptr when `t` isn't a CajetaQuaternion. The device walker tracks
+// quaternion-ness by name (a Quaternion shares the `<4 x T>` slot with a
+// Vector<T,4>) so `*` = Hamilton product / rotation and the methods are routed.
+llvm::Type* deviceQuaternionType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
+    auto q = std::dynamic_pointer_cast<CajetaQuaternion>(t);
+    if (!q) return nullptr;
+    llvm::Type* elem = deviceScalarType(q->getElementType(), ctx);
+    if (!elem) return nullptr;
+    return llvm::FixedVectorType::get(elem, 4);
 }
 
 bool isBufferType(const CajetaTypePtr& t) {
@@ -383,6 +397,10 @@ private:
     // (flat lane r*C+c) and `*` = matmul recover (R,C); a name absent here is
     // NOT a matrix, so all the matrix interceptions are no-ops for vectors.
     std::map<std::string, std::pair<unsigned, unsigned>> matrixShapes;
+    // Quaternion local/param names. A quaternion shares the `<4 x T>` slot with
+    // a Vector<T,4>; membership here routes `*` to the Hamilton product /
+    // rotation and the quaternion methods instead of the element-wise vector path.
+    std::set<std::string> quaternionLocals;
     std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
     DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
     // A dynamic shared array kept TYPED (Vulkan): name -> {array global, array
@@ -538,6 +556,14 @@ private:
                 if (auto matT = std::dynamic_pointer_cast<CajetaMatrix>(declType)) {
                     slotTy = deviceMatrixType(declType, ctx);
                     matrixShapes[nm] = {matT->getRows(), matT->getCols()};
+                }
+            }
+            // Quaternion<T> local: a `<4 x T>` slot, tracked by name so `*` and
+            // the methods route to the quaternion path.
+            if (!slotTy) {
+                if (std::dynamic_pointer_cast<CajetaQuaternion>(declType)) {
+                    slotTy = deviceQuaternionType(declType, ctx);
+                    quaternionLocals.insert(nm);
                 }
             }
             auto init = vd->getInitializer();
@@ -1032,6 +1058,8 @@ private:
             if (llvm::Value* vt = lowerNewValueType(ne)) return vt;
             // Built-in Matrix<T,R,C> construction -> SSA `<R*C x T>` (B1).
             if (llvm::Value* mt = lowerNewMatrix(ne)) return mt;
+            // Built-in Quaternion<T> construction -> SSA `<4 x T>` (w, x, y, z).
+            if (llvm::Value* qt = lowerNewQuaternion(ne)) return qt;
             // Built-in Vector<T,N> construction -> SSA `<N x T>` (no alloc).
             return lowerNewVector(ne);
         }
@@ -1204,6 +1232,24 @@ private:
             elems.push_back(vecops::coerceScalar(
                 builder, lowerExpr(p.expression), elemTy));
         return matops::buildMatrix(builder, elemTy, rows, cols, elems);
+    }
+
+    // Built-in Quaternion<T> construction -> `<4 x T>` (w, x, y, z).
+    llvm::Value* lowerNewQuaternion(const std::shared_ptr<NewExpression>& ne) {
+        const auto& targs = ne->getTypeArguments();
+        if (ne->getTypeName() != "Quaternion" || targs.size() != 1) return nullptr;
+        llvm::Type* elemTy = deviceScalarType(targs[0], ctx);
+        if (!elemTy) unsupported("invalid Quaternion<T> element type");
+        auto ccr = std::dynamic_pointer_cast<ClassCreatorRest>(
+            ne->getCreatorRest());
+        if (!ccr || ccr->getParameters().size() != 4)
+            unsupported("Quaternion<T> needs 4 arguments (w, x, y, z)");
+        std::vector<llvm::Value*> elems;
+        elems.reserve(4);
+        for (auto& p : ccr->getParameters())
+            elems.push_back(vecops::coerceScalar(
+                builder, lowerExpr(p.expression), elemTy));
+        return vecops::buildVector(builder, elemTy, 4, elems);
     }
 
     // m[r][c] read on a matrix local: the LHS is ArrayIndex(ArrayIndex(m, r), c)
@@ -1532,6 +1578,34 @@ private:
         unsupported("unknown Matrix method '" + name + "'");
     }
 
+    // Quaternion methods on a quaternion local `recv`: normalize/conjugate/
+    // length/dot/nlerp. (slerp is a device-transcendental follow-on.)
+    llvm::Value* lowerQuaternionMethod(
+            const std::string& recv, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        llvm::FixedVectorType* vt = vectorSlotType(recv);
+        llvm::Value* self = builder.CreateLoad(vt, values[recv], recv);
+        const auto& args = mc->getParameters();
+        if (name == "normalize") return vecops::normalize(builder, self);
+        if (name == "conjugate") return quatops::conjugate(builder, self);
+        if (name == "length")    return vecops::length(builder, self);
+        if (name == "dot") {
+            if (args.size() != 1) unsupported("Quaternion.dot expects one argument");
+            return vecops::dot(builder, self, lowerExpr(args[0].expression),
+                               /*isFloat=*/true);
+        }
+        if (name == "nlerp") {
+            if (args.size() != 2)
+                unsupported("Quaternion.nlerp expects two arguments (other, t)");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            llvm::Value* t = vecops::coerceScalar(
+                builder, lowerExpr(args[1].expression), vt->getElementType());
+            return quatops::nlerp(builder, self, other, t);
+        }
+        unsupported("unknown Quaternion method '" + name + "' (slerp is a "
+                    "follow-on; use nlerp)");
+    }
+
     // Decode `name.field` on a POD-struct kernel param to its field record, or
     // nullptr if `e` isn't that shape (a non-dot, a dot on a non-struct, or an
     // unknown field — the last surfaces as `unsupported` only at access time).
@@ -1748,6 +1822,11 @@ private:
         // a `<R*C x T>` vector type, so vectorSlotType(recv) is non-null for it.
         if (!recv.empty() && matrixShapes.count(recv)) {
             return lowerMatrixMethod(recv, name, mc);
+        }
+        // Quaternion methods: normalize/conjugate/length/dot/nlerp. Checked
+        // BEFORE the vector branch — a quaternion local's slot is `<4 x T>`.
+        if (!recv.empty() && quaternionLocals.count(recv)) {
+            return lowerQuaternionMethod(recv, name, mc);
         }
         // Vector<T,N> instance methods: a.dot(b), v.length(), v.normalize().
         // `recv` names a vector local.
@@ -2311,6 +2390,27 @@ private:
         return matops::scale(builder, l, r, isFloat);
     }
 
+    // `*` on a quaternion local: Quaternion*Quaternion -> Hamilton product;
+    // Quaternion*Vector<T,3> -> the rotated vector. Returns nullptr when the LHS
+    // isn't a quaternion local (caller falls through).
+    llvm::Value* lowerQuaternionMul(const ExpressionPtr& le,
+                                    const ExpressionPtr& re, BinaryOp op) {
+        if (op != BINARY_OP_MUL) return nullptr;
+        auto lid = std::dynamic_pointer_cast<IdentifierExpression>(le);
+        if (!lid || !quaternionLocals.count(lid->getTextValue())) return nullptr;
+        llvm::Value* l = lowerExpr(le);
+        if (auto rid = std::dynamic_pointer_cast<IdentifierExpression>(re)) {
+            if (quaternionLocals.count(rid->getTextValue()))
+                return quatops::multiply(builder, l, lowerExpr(re));
+        }
+        llvm::Value* r = lowerExpr(re);
+        if (!r->getType()->isVectorTy()
+                || llvm::cast<llvm::FixedVectorType>(r->getType())
+                       ->getNumElements() != 3)
+            unsupported("Quaternion `*` requires a Quaternion or a Vector<T,3>");
+        return quatops::rotate(builder, l, r);
+    }
+
     llvm::Value* lowerBinaryOp(const std::shared_ptr<BinaryOpExpression>& bin) {
         BinaryOp op = bin->getBinaryOp();
         // && / || evaluate lazily — control flow, not eager operands.
@@ -2323,6 +2423,10 @@ private:
         // needs interception.
         if (llvm::Value* mm = lowerMatrixMul(le, re, op))
             return mm;
+        // `*` on a quaternion local is the Hamilton product / vector rotation
+        // (NOT element-wise fmul); `+ -` element-wise lower through the flat path.
+        if (llvm::Value* qm = lowerQuaternionMul(le, re, op))
+            return qm;
         // S8: a @ValueType operand dispatches to the (pure) @Device operator on
         // its class — emitted as an alwaysinline call the backend inliner folds
         // to flat SSA. Falls through to the native scalar/vector path otherwise.

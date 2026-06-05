@@ -476,7 +476,7 @@ TEST(MatrixTests, unknownMethodRejected) {
         "public final class D {\n"
         "    public static float32 run() {\n"
         "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(1.0f,2.0f,3.0f,4.0f);\n"
-        "        return m.inverse();\n"
+        "        return m.bogus();\n"   // not a matrix method (inverse() is now real)
         "    }\n"
         "}\n";
     try {
