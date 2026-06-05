@@ -547,12 +547,16 @@ portable path.
       is proven — a spawned-server + `#`-stream + int8[]-arg loopback echo passes
       (`TlsLoopbackTest.spawnedServerLoopbackEchoNoTls`), and `TlsStream`
       CONSTRUCTION + its `#`-moves + drop pass in a fiber over a real socket
-      (`clientTlsStreamConstructNoHandshake`). The ONE remaining red is the live
-      TLS **handshake pump** itself: `DISABLED_tlsHandshakeAndEchoOverLoopback`
-      SIGSEGVs inside `TlsStream.handshake()` driving the @Native engine over
-      `readAsync`/`writeAllAsync` across reactor parks — isolated (engine,
-      surface, cert-validation, construction, harness all green) but not yet
-      root-caused.)_
+      (`clientTlsStreamConstructNoHandshake`). **The live TLS handshake + echo
+      over a loopback socket now PASSES** (`tlsHandshakeAndEchoOverLoopback`, 5/5
+      at default carriers). The crash that blocked it was NOT in TLS — it was a
+      fiber-scheduler bug: a started fiber work-stolen and resumed on the wrong
+      carrier corrupted its stack (only triggered with ≥4 carriers, i.e. more
+      carriers than fibers). Fixed by pinning a started fiber to its home carrier;
+      plus the Windows reactor now poll-parks instead of carrier-blocking
+      `select`, and fiber stacks went 64KB→1MB for native-lib call depth (commit
+      a22b53d). Cross-carrier guard test `crossCarrierFiberHolderDropRegression`
+      added.)_
 - [~] **NET-5.3** Certificate validation: hostname match (SAN +
       CN fallback, wildcard rules), chain verification against a
       trust store, expiry/not-before checks. `depends-on:` NET-5.2,
