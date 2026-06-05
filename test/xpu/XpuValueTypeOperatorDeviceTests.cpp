@@ -15,6 +15,8 @@
 
 #include "cajeta/xpu/cpu/CpuKernelLowering.h"
 #include "cajeta/xpu/cpu/CpuBackend.h"
+#include "cajeta/xpu/vulkan/SpirvBackend.h"
+#include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -23,6 +25,7 @@
 
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 
@@ -195,4 +198,73 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceAggregateReturningOperatorDispatches
         << "expected aggregate construction of the Vec2 result\n" << ir;
     EXPECT_NE(ir.find("extractvalue"), std::string::npos)
         << "expected the returned aggregate's fields to be read\n" << ir;
+}
+
+// The value-type operator path is SPIR-V-valid. A kernel that constructs Vec2s
+// from scalars, dispatches the @Device operator+ (aggregate construction +
+// return), binds the result to a value-type local, and reads its fields lowers
+// to a Vulkan module that spirv-val accepts. Value types stay register-resident
+// SSA aggregates (OpCompositeInsert/Extract), with NO pointer to an aggregate in
+// Function storage — the property that keeps them legal under logical addressing.
+// Built locally (not as struct params) so the kernel signature is a plain buffer
+// + scalar; struct-by-value descriptor marshalling on Vulkan is separate. Gated
+// on spirv-val like XpuWaveEmitTests — absent tool => skipped, not failed.
+TEST(XpuValueTypeOperatorDeviceTests, deviceOperatorKernelValidatesAsSpirv) {
+    std::string src =
+        std::string("package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n")
+        + kVec2Add +
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void addk(Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vec2 a = new Vec2((float32) i, 1.0f);\n"
+        "            Vec2 b = new Vec2(2.0f, (float32) i);\n"
+        "            Vec2 c = a + b;\n"
+        "            out[i] = c.x + c.y;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src);
+    auto k = findMethod(module->getStructures()["test.M"], "addk");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+
+    // IR pass: confirm the value-type operator path lowered (aggregate ops).
+    llvm::LLVMContext irCtx;
+    llvm::Module irMod("xpu_vtop_spirv_ir", irCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
+    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
+    std::string ir = printModule(irMod);
+    EXPECT_NE(ir.find("insertvalue"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("extractvalue"), std::string::npos) << ir;
+
+    // Emit pass (mutates the module) then spirv-val.
+    llvm::LLVMContext binCtx;
+    llvm::Module binMod("xpu_vtop_spirv_bin", binCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, binMod);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
+    static std::mt19937_64 rng(std::random_device{}());
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_vtop_" + std::to_string(rng()) + ".spv");
+    { std::ofstream o(path, std::ios::binary);
+      o.write(reinterpret_cast<const char*>(spirv.data()),
+              (std::streamsize) spirv.size()); }
+    std::string fileStr = path.string();
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
+    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    EXPECT_EQ(rc, 0) << "spirv-val rejected the value-type-operator module";
 }
