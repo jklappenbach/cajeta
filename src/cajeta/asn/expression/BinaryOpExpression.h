@@ -138,5 +138,16 @@ namespace cajeta {
         }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
+
+    private:
+        // B1: `*` on a matrix LHS — matrix multiply (Matrix*Matrix), matrix-
+        // vector (Matrix*Vector), or scalar scale (Matrix*scalar). Sets
+        // resolvedType to the result shape and returns the value, or nullptr if
+        // the op/operands aren't a handled matrix-multiply form (caller falls
+        // through). Defined in BinaryOpExpression.cpp.
+        llvm::Value* generateMatrixMul(CajetaModulePtr module, llvm::Value* lhs,
+                                       llvm::Value* rhs,
+                                       const ExpressionPtr& lhsAst,
+                                       const ExpressionPtr& rhsAst);
     };
 } // code

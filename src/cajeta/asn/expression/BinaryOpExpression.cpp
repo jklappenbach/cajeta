@@ -463,6 +463,72 @@ namespace cajeta {
      * @param module
      * @return
      */
+    // B1 S5: `*` on a matrix LHS. `*` is MATRIX MULTIPLY (not element-wise):
+    //   Matrix<T,R,K> * Matrix<T,K,C> -> Matrix<T,R,C>  (inner dim K checked)
+    //   Matrix<T,R,C> * Vector<T,C>   -> Vector<T,R>
+    //   Matrix<T,R,C> * scalar        -> Matrix<T,R,C>  (element-wise scale)
+    // The element-wise (Hadamard) product is the `hadamard()` method, not `*`.
+    // Returns nullptr for any non-`*` op or unhandled RHS so the caller falls
+    // through. This is the operator the current overloading mechanism cannot
+    // express as a single non-templated declaration (it is K/shape-generic) —
+    // the motivating case for the method-templated-operator follow-on; here it
+    // is a codegen interception, like Vector's intrinsics.
+    llvm::Value* BinaryOpExpression::generateMatrixMul(
+            CajetaModulePtr module, llvm::Value* lhs, llvm::Value* rhs,
+            const ExpressionPtr& lhsAst, const ExpressionPtr& rhsAst) {
+        if (binaryOp != BINARY_OP_MUL) return nullptr;
+        auto lhsM = dynamic_pointer_cast<CajetaMatrix>(lhsAst->getResolvedType());
+        if (!lhsM) return nullptr;
+        auto* builder = module->getBuilder();
+        bool isFloat =
+            lhsM->getElementType()->getLlvmType()->isFloatingPointTy();
+        llvm::Value* l = loadIfLValue(module, lhs, lhsAst);
+        CajetaTypePtr rhsType = rhsAst ? rhsAst->getResolvedType() : nullptr;
+
+        // Matrix * Matrix -> matmul (inner dim K = lhs.cols must equal rhs.rows).
+        if (auto rhsM = dynamic_pointer_cast<CajetaMatrix>(rhsType)) {
+            if (lhsM->getCols() != rhsM->getRows()) {
+                throw Exception(
+                    "Matrix multiply shape mismatch: " + lhsM->toCanonical()
+                    + " * " + rhsM->toCanonical() + " (inner dimensions "
+                    + std::to_string(lhsM->getCols()) + " and "
+                    + std::to_string(rhsM->getRows()) + " must match)",
+                    "CAJETA_ERROR_MATRIX_SHAPE");
+            }
+            llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+            resolvedType = CajetaMatrix::getOrCreate(
+                module, lhsM->getElementType(), lhsM->getRows(), rhsM->getCols());
+            return matops::matmul(*builder, l, lhsM->getRows(), lhsM->getCols(),
+                                  r, rhsM->getCols(), isFloat);
+        }
+        // Matrix * Vector -> matVec (vector length must equal lhs.cols).
+        if (auto rhsV = dynamic_pointer_cast<CajetaVector>(rhsType)) {
+            if (rhsV->getLanes() != lhsM->getCols()) {
+                throw Exception(
+                    "Matrix-vector shape mismatch: " + lhsM->toCanonical()
+                    + " * " + rhsV->toCanonical() + " (vector length "
+                    + std::to_string(rhsV->getLanes()) + " must equal column "
+                    "count " + std::to_string(lhsM->getCols()) + ")",
+                    "CAJETA_ERROR_MATRIX_SHAPE");
+            }
+            llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+            resolvedType = CajetaVector::getOrCreate(
+                module, lhsM->getElementType(), lhsM->getRows());
+            return matops::matVec(*builder, l, lhsM->getRows(), lhsM->getCols(),
+                                  r, isFloat);
+        }
+        // Matrix * scalar -> element-wise scale.
+        if (rhsType && (rhsType->getTypeFlags() & PRIMITIVE_FLAG)
+                && (rhsType->getTypeFlags() & NUMBER_FLAG)) {
+            llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+            r = vecops::coerceScalar(*builder, r,
+                                     lhsM->getElementType()->getLlvmType());
+            resolvedType = lhsM;
+            return matops::scale(*builder, l, r, isFloat);
+        }
+        return nullptr;
+    }
+
     llvm::Value* BinaryOpExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (std::getenv("CAJETA_TRACE_BINOP") || std::getenv("CAJETA_DEBUG_ICMP")) {
@@ -629,6 +695,74 @@ namespace cajeta {
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);
         ExpressionPtr rhsAst = dynamic_pointer_cast<Expression>(children[1]);
+
+        // B1: Matrix binary ops, intercepted before the built-in/vector path.
+        // `+ - /` are element-wise over same-shape matrices -> Matrix<T,R,C>;
+        // `== !=` are element-wise equality reduced to a boolean. `*` (matmul /
+        // matVec / scalar scale) is intercepted in generateMatrixMul (S5). The
+        // matrix value lives in a `<R*C x T>` register, so the ops are flat
+        // vector arithmetic; only the result SHAPE/type bookkeeping is special.
+        if (lhsAst) {
+            if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+            if (auto lhsM = dynamic_pointer_cast<CajetaMatrix>(
+                    lhsAst->getResolvedType())) {
+                if (rhsAst && !rhsAst->getResolvedType())
+                    rhsAst->resolveTypes(module);
+                auto rhsM = rhsAst ? dynamic_pointer_cast<CajetaMatrix>(
+                    rhsAst->getResolvedType()) : nullptr;
+                bool isFloat = lhsM->getElementType()->getLlvmType()
+                    ->isFloatingPointTy();
+                bool isSigned =
+                    (lhsM->getElementType()->getTypeFlags() & SIGNED_FLAG) != 0;
+                bool elementwise = binaryOp == BINARY_OP_ADD
+                    || binaryOp == BINARY_OP_SUB || binaryOp == BINARY_OP_DIV
+                    || binaryOp == BINARY_OP_EQ || binaryOp == BINARY_OP_NE;
+                if (elementwise && rhsM) {
+                    if (rhsM->getRows() != lhsM->getRows()
+                            || rhsM->getCols() != lhsM->getCols()) {
+                        throw Exception(
+                            "Matrix element-wise op requires operands of the "
+                            "same shape (got " + lhsM->toCanonical() + " and "
+                            + rhsM->toCanonical() + ")",
+                            "CAJETA_ERROR_MATRIX_SHAPE");
+                    }
+                    llvm::Value* l = loadIfLValue(module, lhs, lhsAst);
+                    llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+                    switch (binaryOp) {
+                        case BINARY_OP_ADD:
+                            resolvedType = lhsM;
+                            return isFloat ? builder->CreateFAdd(l, r, "mat.add")
+                                           : builder->CreateAdd(l, r, "mat.add");
+                        case BINARY_OP_SUB:
+                            resolvedType = lhsM;
+                            return isFloat ? builder->CreateFSub(l, r, "mat.sub")
+                                           : builder->CreateSub(l, r, "mat.sub");
+                        case BINARY_OP_DIV:
+                            resolvedType = lhsM;
+                            return isFloat
+                                ? builder->CreateFDiv(l, r, "mat.div")
+                                : (isSigned
+                                    ? builder->CreateSDiv(l, r, "mat.div")
+                                    : builder->CreateUDiv(l, r, "mat.div"));
+                        case BINARY_OP_EQ:
+                        case BINARY_OP_NE: {
+                            llvm::Value* cmp = isFloat
+                                ? builder->CreateFCmpOEQ(l, r, "mat.cmp")
+                                : builder->CreateICmpEQ(l, r, "mat.cmp");
+                            llvm::Value* all =
+                                builder->CreateAndReduce(cmp);  // all lanes equal
+                            resolvedType = CajetaType::of("boolean");
+                            return binaryOp == BINARY_OP_NE
+                                ? builder->CreateNot(all, "mat.ne") : all;
+                        }
+                        default: break;
+                    }
+                }
+                if (llvm::Value* mv = generateMatrixMul(
+                        module, lhs, rhs, lhsAst, rhsAst))
+                    return mv;
+            }
+        }
 
         // Operator overloading: if LHS resolves to a class type with an
         // `operator<sym>` method (e.g. `operator+`, `operator==`), dispatch

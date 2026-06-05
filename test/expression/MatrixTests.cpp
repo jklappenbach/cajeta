@@ -184,3 +184,175 @@ TEST(MatrixTests, constructWrongArgCountRejected) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_CONSTRUCT");
     }
 }
+
+// ---- S4: element-wise + - /, scalar scale, == --------------------------------
+
+// Element-wise add of two same-shape matrices.
+TEST(MatrixTests, elementwiseAdd) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Matrix<float32,2,2> b = stack Matrix<float32,2,2>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+        "        Matrix<float32,2,2> c = a + b;\n"
+        "        return c[0][0] + c[1][1];\n"   // 11 + 44 = 55
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 55.0f);
+}
+
+// Element-wise subtract and divide.
+TEST(MatrixTests, elementwiseSubDiv) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+        "        Matrix<float32,2,2> b = stack Matrix<float32,2,2>(2.0f, 4.0f, 5.0f, 8.0f);\n"
+        "        Matrix<float32,2,2> d = a - b;\n"   // [8 16 25 32]
+        "        Matrix<float32,2,2> q = a / b;\n"   // [5 5 6 5]
+        "        return d[0][1] + q[1][0];\n"        // 16 + 6 = 22
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 22.0f);
+}
+
+// Scalar scale via `m * s`.
+TEST(MatrixTests, scalarScale) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Matrix<float32,2,2> s = a * 3.0f;\n"
+        "        return s[0][0] + s[1][1];\n"   // 3 + 12 = 15
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 15.0f);
+}
+
+// Element-wise equality reduces to a boolean (all lanes equal).
+TEST(MatrixTests, equalsAllLanes) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Matrix<float32,2,2> b = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Matrix<float32,2,2> c = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 9.0f);\n"
+        "        int32 eq = (a == b) ? 1 : 0;\n"
+        "        int32 ne = (a == c) ? 1 : 0;\n"
+        "        return eq * 10 + ne;\n"   // 10 + 0 = 10
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 10);
+}
+
+// ---- S5: * = matrix multiply + matrix-vector ---------------------------------
+
+// 2x3 * 3x2 -> 2x2 matrix multiply.
+TEST(MatrixTests, matrixMultiply) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        // A = [1 2 3; 4 5 6]  B = [7 8; 9 10; 11 12]
+        // AB = [58 64; 139 154]
+        "        Matrix<float32,2,3> a = stack Matrix<float32,2,3>(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
+        "        Matrix<float32,3,2> b = stack Matrix<float32,3,2>(7.0f,8.0f,9.0f,10.0f,11.0f,12.0f);\n"
+        "        Matrix<float32,2,2> c = a * b;\n"
+        "        return c[0][0] + c[0][1] * 1000.0f + c[1][0] + c[1][1] * 1000.0f;\n"
+        // 58 + 64000 + 139 + 154000 = 218197
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 218197.0f);
+}
+
+// Matrix * Vector -> Vector. A(2x3) * v(3) -> (2).
+TEST(MatrixTests, matrixVectorMultiply) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        // A = [1 2 3; 4 5 6]  v = [1 2 3]  Av = [14 32]
+        "        Matrix<float32,2,3> a = stack Matrix<float32,2,3>(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
+        "        Vector<float32,3> v = stack Vector<float32,3>(1.0f,2.0f,3.0f);\n"
+        "        Vector<float32,2> r = a * v;\n"
+        "        return r[0] + r[1] * 1000.0f;\n"   // 14 + 32000 = 32014
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 32014.0f);
+}
+
+// Matmul shape mismatch (inner dims differ) is a clean diagnostic.
+TEST(MatrixTests, matmulShapeMismatchRejected) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,3> a = stack Matrix<float32,2,3>(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
+        "        Matrix<float32,2,2> b = stack Matrix<float32,2,2>(1.0f,2.0f,3.0f,4.0f);\n"
+        "        Matrix<float32,2,2> c = a * b;\n"   // 3 != 2
+        "        return c[0][0];\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_MATRIX_SHAPE";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_SHAPE");
+    }
+}
+
+// ---- S4: methods transpose / identity / row / col / hadamard -----------------
+
+// transpose() of a 2x3 -> 3x2: element (i,j) becomes (j,i).
+TEST(MatrixTests, transpose) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        // A = [1 2 3; 4 5 6]  A^T = [1 4; 2 5; 3 6]
+        "        Matrix<float32,2,3> a = stack Matrix<float32,2,3>(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
+        "        Matrix<float32,3,2> t = a.transpose();\n"
+        "        return t[0][1] + t[2][0] * 100.0f;\n"   // 4 + 3*100 = 304
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 304.0f);
+}
+
+// identity() of a square matrix is 1 on the diagonal, 0 elsewhere.
+TEST(MatrixTests, identity) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,3,3> a = stack Matrix<float32,3,3>(\n"
+        "            9.0f,9.0f,9.0f,9.0f,9.0f,9.0f,9.0f,9.0f,9.0f);\n"
+        "        Matrix<float32,3,3> i = a.identity();\n"
+        "        return i[0][0] + i[1][1] + i[2][2] + i[0][1] + i[2][0];\n"  // 3 + 0 = 3
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 3.0f);
+}
+
+// row(r) and col(c) extract a Vector view.
+TEST(MatrixTests, rowAndCol) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        // A = [1 2 3; 4 5 6]
+        "        Matrix<float32,2,3> a = stack Matrix<float32,2,3>(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
+        "        Vector<float32,3> r1 = a.row(1);\n"   // [4 5 6]
+        "        Vector<float32,2> c2 = a.col(2);\n"   // [3 6]
+        "        return r1[0] + c2[1] * 100.0f;\n"     // 4 + 6*100 = 604
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 604.0f);
+}
+
+// hadamard(b) is the element-wise product (since * is matmul).
+TEST(MatrixTests, hadamard) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f,2.0f,3.0f,4.0f);\n"
+        "        Matrix<float32,2,2> b = stack Matrix<float32,2,2>(10.0f,20.0f,30.0f,40.0f);\n"
+        "        Matrix<float32,2,2> h = a.hadamard(b);\n"
+        "        return h[0][0] + h[1][1];\n"   // 10 + 160 = 170
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 170.0f);
+}
