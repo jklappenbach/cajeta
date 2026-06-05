@@ -10,8 +10,10 @@
 #include "../../type/CajetaType.h"
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaVector.h"
+#include "../../type/CajetaMatrix.h"
 #include "../../type/CajetaConstantType.h"
 #include "../../type/VectorOps.h"
+#include "../../type/MatrixOps.h"
 #include "../core/XpuAttributes.h"
 #include "../core/KernelArgTrait.h"
 #include "../../error/Exception.h"
@@ -115,6 +117,23 @@ llvm::Type* deviceVectorType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
             "XPU kernel lowering: Vector<T, 0> has no lanes — N must be > 0",
             "XPU-N01");
     return llvm::FixedVectorType::get(elem, vec->getLanes());
+}
+
+// Map a Matrix<T,R,C> CajetaType to a device LLVM `<R*C x T>` (flat row-major),
+// built fresh in the device context. Returns nullptr when `t` isn't a
+// CajetaMatrix. Same flat representation the host uses (B1); the device walker
+// tracks (R,C) by name since the LLVM type alone can't tell a Matrix<2,3> from
+// a Vector<6>.
+llvm::Type* deviceMatrixType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
+    auto mat = std::dynamic_pointer_cast<CajetaMatrix>(t);
+    if (!mat) return nullptr;
+    llvm::Type* elem = deviceScalarType(mat->getElementType(), ctx);
+    if (!elem) return nullptr;
+    if (mat->getRows() == 0 || mat->getCols() == 0)
+        throw cajeta::Exception(
+            "XPU kernel lowering: Matrix<T,0,..> / <..,0> has no lanes",
+            "XPU-N01");
+    return llvm::FixedVectorType::get(elem, mat->getRows() * mat->getCols());
 }
 
 bool isBufferType(const CajetaTypePtr& t) {
@@ -352,6 +371,12 @@ private:
     // class's layout by the source-written name. Populated from the operand
     // value types and the declaring class.
     std::map<std::string, std::shared_ptr<CajetaClass>> valueTypeCtors;
+    // Matrix<T,R,C> locals (B1): name -> (rows, cols). A matrix lives in a
+    // `<R*C x T>` slot — identical LLVM type to a Vector<R*C> — so the device
+    // walker can't recover the shape from the slot type. This map is how m[r][c]
+    // (flat lane r*C+c) and `*` = matmul recover (R,C); a name absent here is
+    // NOT a matrix, so all the matrix interceptions are no-ops for vectors.
+    std::map<std::string, std::pair<unsigned, unsigned>> matrixShapes;
     std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
     DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
     // A dynamic shared array kept TYPED (Vulkan): name -> {array global, array
@@ -501,6 +526,14 @@ private:
             }
             llvm::Type* slotTy = deviceScalarType(declType, ctx);
             if (!slotTy) slotTy = deviceVectorType(declType, ctx);  // Vector<T,N>
+            // Matrix<T,R,C> local (B1): a `<R*C x T>` slot, plus its (R,C) shape
+            // recorded by name so m[r][c] and `*`=matmul can recover it.
+            if (!slotTy) {
+                if (auto matT = std::dynamic_pointer_cast<CajetaMatrix>(declType)) {
+                    slotTy = deviceMatrixType(declType, ctx);
+                    matrixShapes[nm] = {matT->getRows(), matT->getCols()};
+                }
+            }
             auto init = vd->getInitializer();
             if (!init || init->getChildren().empty()) {
                 // No initializer — reserve the slot; a later assignment fills it.
@@ -864,6 +897,7 @@ private:
         // A lane of a vector local (`v.x = …` / `v[i] = …`) isn't addressable —
         // it's load-insertelement-store, not a GEP. Handled here before the
         // l-value-address path (which only knows scalars and buffers).
+        if (tryMatrixElementAssign(bin, lhs, rhs)) return;  // m[r][c] = … (B1)
         if (tryVectorElementAssign(bin, lhs, rhs)) return;
         auto [addr, elemTy] = lowerLValueAddr(lhs);
         llvm::Value* rv = lowerExpr(rhs);
@@ -990,6 +1024,8 @@ private:
             // (S8): `new/stack Vec2(...)` -> SSA aggregate. Tried before Vector so
             // a user value type can't be mistaken for the builtin.
             if (llvm::Value* vt = lowerNewValueType(ne)) return vt;
+            // Built-in Matrix<T,R,C> construction -> SSA `<R*C x T>` (B1).
+            if (llvm::Value* mt = lowerNewMatrix(ne)) return mt;
             // Built-in Vector<T,N> construction -> SSA `<N x T>` (no alloc).
             return lowerNewVector(ne);
         }
@@ -997,6 +1033,9 @@ private:
             return lowerBuiltinCall(mc);
         }
         if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(expr)) {
+            // Matrix local `m[r][c]` reads element flat lane r*C+c (B1) — tried
+            // before the vector path since m[r] is a row, not a flat lane.
+            if (llvm::Value* me = matrixIndexRead(ai)) return me;
             // Vector local `v[i]` reads a lane (extractelement), not memory.
             if (llvm::Value* ve = vectorIndexRead(ai)) return ve;
             auto [addr, elemTy] = lowerLValueAddr(ai);
@@ -1129,6 +1168,98 @@ private:
             agg = builder.CreateInsertValue(agg, fv, {i});
         }
         return agg;
+    }
+
+    // `new Matrix<T,R,C>(e00, e01, ...)` -> SSA `<R*C x T>` row-major (B1).
+    // Returns nullptr when the `new` isn't a Matrix so the caller falls through
+    // to Vector. R*C scalar arguments fill the matrix row by row.
+    llvm::Value* lowerNewMatrix(const std::shared_ptr<NewExpression>& ne) {
+        const auto& targs = ne->getTypeArguments();
+        if (ne->getTypeName() != "Matrix" || targs.size() != 3) return nullptr;
+        llvm::Type* elemTy = deviceScalarType(targs[0], ctx);
+        auto cR = std::dynamic_pointer_cast<CajetaConstantType>(targs[1]);
+        auto cC = std::dynamic_pointer_cast<CajetaConstantType>(targs[2]);
+        if (!elemTy || !cR || !cC)
+            unsupported("invalid Matrix<T,R,C> type arguments");
+        unsigned rows = (unsigned) cR->getValue();
+        unsigned cols = (unsigned) cC->getValue();
+        auto ccr = std::dynamic_pointer_cast<ClassCreatorRest>(
+            ne->getCreatorRest());
+        if (!ccr) unsupported("Matrix construction requires an argument list");
+        const auto& params = ccr->getParameters();
+        if (params.size() != rows * cols)
+            unsupported("Matrix<...," + std::to_string(rows) + "," +
+                        std::to_string(cols) + "> needs " +
+                        std::to_string(rows * cols) + " arguments (got " +
+                        std::to_string(params.size()) + ")");
+        std::vector<llvm::Value*> elems;
+        elems.reserve(rows * cols);
+        for (auto& p : params)
+            elems.push_back(vecops::coerceScalar(
+                builder, lowerExpr(p.expression), elemTy));
+        return matops::buildMatrix(builder, elemTy, rows, cols, elems);
+    }
+
+    // m[r][c] read on a matrix local: the LHS is ArrayIndex(ArrayIndex(m, r), c)
+    // with m in matrixShapes. Loads the slot and extractelement at flat lane
+    // r*C+c. Returns nullptr when `ai` isn't that nested matrix shape (so the
+    // vector/buffer path runs). Must be tried before vectorIndexRead — m[r] is
+    // a row, not a flat lane.
+    llvm::Value* matrixIndexRead(const std::shared_ptr<ArrayIndexExpression>& ai) {
+        auto inner = std::dynamic_pointer_cast<ArrayIndexExpression>(
+            exprChild(ai, 0));
+        if (!inner) return nullptr;
+        auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+            exprChild(inner, 0));
+        if (!baseId) return nullptr;
+        auto sh = matrixShapes.find(baseId->getTextValue());
+        if (sh == matrixShapes.end()) return nullptr;
+        unsigned cols = sh->second.second;
+        llvm::Type* slotTy = slotTypes[baseId->getTextValue()];
+        llvm::Value* m = builder.CreateLoad(
+            slotTy, values[baseId->getTextValue()], baseId->getTextValue());
+        llvm::Value* r = toI32(lowerExpr(exprChild(inner, 1)));
+        llvm::Value* c = toI32(lowerExpr(exprChild(ai, 1)));
+        return matops::getElement(builder, m, sh->second.first, cols, r, c);
+    }
+
+    // m[r][c] = v on a matrix local: load slot, insertelement at flat lane
+    // r*C+c, store back. Returns false when `lhs` isn't a nested matrix index.
+    bool tryMatrixElementAssign(const std::shared_ptr<BinaryOpExpression>& bin,
+                                const ExpressionPtr& lhs,
+                                const ExpressionPtr& rhs) {
+        auto outer = std::dynamic_pointer_cast<ArrayIndexExpression>(lhs);
+        if (!outer) return false;
+        auto inner = std::dynamic_pointer_cast<ArrayIndexExpression>(
+            exprChild(outer, 0));
+        if (!inner) return false;
+        auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+            exprChild(inner, 0));
+        if (!baseId) return false;
+        auto sh = matrixShapes.find(baseId->getTextValue());
+        if (sh == matrixShapes.end()) return false;
+        if (bin->getBinaryOp() != BINARY_OP_ASSIGN)
+            unsupported("compound assignment to a matrix element");
+        unsigned cols = sh->second.second;
+        const std::string& nm = baseId->getTextValue();
+        llvm::Type* slotTy = slotTypes[nm];
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(slotTy);
+        llvm::Value* slot = values[nm];
+        llvm::Value* cur = builder.CreateLoad(slotTy, slot, nm);
+        llvm::Value* r = toI32(lowerExpr(exprChild(inner, 1)));
+        llvm::Value* c = toI32(lowerExpr(exprChild(outer, 1)));
+        llvm::Value* rv = coerceTo(lowerExpr(rhs), vecTy->getElementType());
+        builder.CreateStore(
+            matops::setElement(builder, cur, sh->second.first, cols, r, c, rv),
+            slot);
+        return true;
+    }
+
+    // Widen/narrow an integer index to i32 for matrix lane arithmetic.
+    llvm::Value* toI32(llvm::Value* v) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        if (v->getType() == i32) return v;
+        return builder.CreateIntCast(v, i32, /*isSigned=*/false, "mat.idx");
     }
 
     // `new Vector<T,N>(a, b, ...)` -> SSA `<N x T>`. Rejects any other `new`.
@@ -1991,12 +2122,57 @@ private:
                     "derives from)");
     }
 
+    // B1: `*` on a matrix local. `a * b` -> matmul (Matrix*Matrix, K checked),
+    // matVec (Matrix*Vector), or scale (Matrix*scalar). Returns nullptr when the
+    // op isn't `*` or the LHS isn't a matrix local (caller falls through). Shapes
+    // come from matrixShapes (matmul) / vectorSlotType (matVec).
+    llvm::Value* lowerMatrixMul(const ExpressionPtr& le, const ExpressionPtr& re,
+                                BinaryOp op) {
+        if (op != BINARY_OP_MUL) return nullptr;
+        auto lid = std::dynamic_pointer_cast<IdentifierExpression>(le);
+        if (!lid) return nullptr;
+        auto lsh = matrixShapes.find(lid->getTextValue());
+        if (lsh == matrixShapes.end()) return nullptr;
+        unsigned R = lsh->second.first, K = lsh->second.second;
+        llvm::Value* l = lowerExpr(le);
+        bool isFloat = llvm::cast<llvm::FixedVectorType>(l->getType())
+                           ->getElementType()->isFloatingPointTy();
+        if (auto rid = std::dynamic_pointer_cast<IdentifierExpression>(re)) {
+            auto rsh = matrixShapes.find(rid->getTextValue());
+            if (rsh != matrixShapes.end()) {
+                if (K != rsh->second.first)
+                    unsupported("matrix multiply shape mismatch in kernel");
+                llvm::Value* r = lowerExpr(re);
+                return matops::matmul(builder, l, R, K, r, rsh->second.second,
+                                      isFloat);
+            }
+            if (llvm::FixedVectorType* vt = vectorSlotType(rid->getTextValue())) {
+                if (vt->getNumElements() != K)
+                    unsupported("matrix-vector shape mismatch in kernel");
+                llvm::Value* r = lowerExpr(re);
+                return matops::matVec(builder, l, R, K, r, isFloat);
+            }
+        }
+        // RHS scalar -> scale (a vector RHS that isn't a known matrix/vector
+        // local would be ambiguous; require a scalar).
+        llvm::Value* r = lowerExpr(re);
+        if (r->getType()->isVectorTy())
+            unsupported("matrix `*` RHS must be a matrix, vector, or scalar");
+        return matops::scale(builder, l, r, isFloat);
+    }
+
     llvm::Value* lowerBinaryOp(const std::shared_ptr<BinaryOpExpression>& bin) {
         BinaryOp op = bin->getBinaryOp();
         // && / || evaluate lazily — control flow, not eager operands.
         if (op == BINARY_OP_LOGAND || op == BINARY_OP_LOGOR)
             return lowerLogical(bin);
         ExpressionPtr le = exprChild(bin, 0), re = exprChild(bin, 1);
+        // B1: `*` on a matrix local is matrix multiply / matrix-vector / scalar
+        // scale (NOT element-wise). + - / are element-wise and lower correctly
+        // through the flat-vector path below (same `<R*C x T>` op), so only `*`
+        // needs interception.
+        if (llvm::Value* mm = lowerMatrixMul(le, re, op))
+            return mm;
         // S8: a @ValueType operand dispatches to the (pure) @Device operator on
         // its class — emitted as an alwaysinline call the backend inliner folds
         // to flat SSA. Falls through to the native scalar/vector path otherwise.
