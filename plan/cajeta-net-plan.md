@@ -86,7 +86,9 @@ get it right.
       with the fiber scheduler.
 - [ ] **NET-4.x** Server accept stacks — fiber-per-connection
       AND event-driven shared-pool.
-- [ ] **NET-5.x** TLS 1.2/1.3 — client first, server after.
+- [x] **NET-5.x** TLS 1.2/1.3 — client first, server after. **DONE (b6.1–6.7):**
+      engine, client + server surface, live loopback handshake, cert validation +
+      OS trust store, SNI + ALPN (incl server-select), TlsListener, exceptions.
 - [ ] **NET-6.x** URI/URL parsing (RFC 3986).
 - [ ] **NET-7.x** HTTP/1.1 message model + incremental parser.
 - [ ] **NET-8.x** HTTP client — pooling, redirects, timeouts,
@@ -521,7 +523,7 @@ portable path.
       handshake completes purely over the two BIO pairs (no socket), then
       plaintext round-trips both ways, against an in-test ephemeral self-signed
       EC cert. `depends-on:` NET-11.1 (SHA — already built)
-- [~] **NET-5.2** `TlsClient` wrapping a `TcpStream`/async stream:
+- [x] **NET-5.2** `TlsClient` wrapping a `TcpStream`/async stream:
       drive the handshake (feed/pull loop parking on the reactor),
       then expose `read`/`write` of plaintext. SNI set from the
       target host. `depends-on:` NET-5.1, NET-3.5
@@ -557,7 +559,7 @@ portable path.
       `select`, and fiber stacks went 64KB→1MB for native-lib call depth (commit
       a22b53d). Cross-carrier guard test `crossCarrierFiberHolderDropRegression`
       added.)_
-- [~] **NET-5.3** Certificate validation: hostname match (SAN +
+- [x] **NET-5.3** Certificate validation: hostname match (SAN +
       CN fallback, wildcard rules), chain verification against a
       trust store, expiry/not-before checks. `depends-on:` NET-5.2,
       NET-11.1
@@ -570,29 +572,50 @@ portable path.
       `TlsEngineTests.{expiredCertRejected, hostnameMismatchRejected,
       untrustedRootRejectedThenAcceptedWithAnchor}` and through the Cajeta
       JIT surface `TlsConnectionTests.verifyingClientRejectsUntrustedAccepts-
-      Trusted`. STILL TODO: loading the **OS default trust store**
-      (`/etc/ssl/certs`, Windows cert store, macOS keychain) so a real public
-      cert validates without an explicit anchor — currently anchors are
-      caller-supplied PEM.)_
-- [ ] **NET-5.4** SNI + ALPN surface: client sends SNI from the
+      Trusted`. **OS default trust store DONE (b6.7):**
+      `__cajeta_tls_ctx_use_system_trust` → POSIX `SSL_CTX_set_default_verify_paths`
+      (native) / Windows `CertOpenSystemStore("ROOT")` (shim, links crypt32);
+      `TlsConnection.useSystemTrust()`. Tests `systemTrustLoadsWithoutError` +
+      `systemTrustStillRejectsSelfSigned` (proves the store is actually used).)_
+- [x] **NET-5.4** SNI + ALPN surface: client sends SNI from the
       connect host; ALPN offers a caller-supplied protocol list
       (`["http/1.1"]` for HTTPS, `["http/1.1"]` for WSS handshake)
       and reports the negotiated protocol. `depends-on:` NET-5.2
-- [ ] **NET-5.5** `TlsListener`/server-side TLS: load a cert +
+      _(DONE. SNI in b6.2/6.4. **ALPN b6.5/6.6:** client offer
+      (`__cajeta_tls_set_alpn` / `TlsStream.offerAlpn`), negotiated readback
+      (`get_alpn` / `negotiatedAlpn`), and the **server-select callback**
+      (`__cajeta_tls_ctx_set_alpn_select` → `SSL_CTX_set_alpn_select_cb` +
+      `SSL_select_next_proto`, ex_data-backed, CVE-2024-5535-safe;
+      `TlsConnection.setServerAlpn` / `TlsStream.supportAlpn` /
+      `TlsListener.supportAlpn`). Verified in-memory (`alpnServerSelectsOverlap`,
+      `alpnNoOverlapNegotiatesNothing`) and **end-to-end over loopback**
+      (`tlsListenerAcceptWithAlpnOverLoopback`: client offers h2+http/1.1, server
+      supports http/1.1, both negotiate http/1.1).)_
+- [x] **NET-5.5** `TlsListener`/server-side TLS: load a cert +
       private key (PEM), terminate TLS on accepted connections,
       ALPN selection callback. Ships after client (cvm doesn't
       need it). `depends-on:` NET-5.2, NET-4.1
-- [ ] **NET-5.6** TLS error hierarchy under `NetException`:
+      _(DONE b6.6. `cajeta.net.tls.TlsListener` wraps `TcpListener`:
+      `bind(addr,cert,key)` + optional `supportAlpn`; `accept()` terminates TLS
+      (accept + server handshake) and returns a ready `TlsStream`. Verified by
+      `tlsListenerAcceptWithAlpnOverLoopback` (server-side TLS echo over loopback,
+      ALPN negotiated). Server-side TLS handshake itself was already proven in
+      b6.4's `tlsHandshakeAndEchoOverLoopback`.)_
+- [x] **NET-5.6** TLS error hierarchy under `NetException`:
       `TlsHandshakeFailed`, `CertificateInvalid` (with reason:
       expired / hostname-mismatch / untrusted-root /
       self-signed), `TlsProtocolError`. `depends-on:` NET-1.8,
       NET-5.2
+      _(DONE b6.4. `TlsException` (a `NetException`) +
+      `CertificateInvalidException` (carries the `CERT_*` reason), thrown by
+      `TlsStream.handshake` on a failed handshake / invalid cert.)_
 
 ### Acceptance
 
-- [ ] TLS 1.3 handshake completes against a loopback test server
+- [x] TLS 1.3 handshake completes against a loopback test server
       presenting a test cert; plaintext round-trips.
-      → `TlsTests.tls13HandshakeRoundTripsLoopback`.
+      → `TlsLoopbackTest.tlsHandshakeAndEchoOverLoopback` +
+      `tlsListenerAcceptWithAlpnOverLoopback` (b6.4/6.6).
 - [x] An expired cert is rejected (reason=expired).
       → `TlsEngineTests.expiredCertRejected` (b6.3).
 - [x] A hostname mismatch is rejected (cert for `good.test`,
@@ -602,8 +625,10 @@ portable path.
       caller opts into the trust anchor.
       → `TlsEngineTests.untrustedRootRejectedThenAcceptedWithAnchor`
       + `TlsConnectionTests.verifyingClientRejectsUntrustedAcceptsTrusted` (b6.3).
-- [ ] ALPN negotiates `http/1.1` and the client reads back the
-      negotiated protocol. → `TlsTests.alpnNegotiatesHttp11`.
+- [x] ALPN negotiates `http/1.1` and the client reads back the
+      negotiated protocol.
+      → `TlsEngineTests.alpnServerSelectsOverlap` +
+      `TlsLoopbackTest.tlsListenerAcceptWithAlpnOverLoopback` (b6.5/6.6).
 - [ ] SNI is sent and a multi-host test server routes on it.
       → `TlsTests.sniRoutesToCorrectVirtualHost`.
 - [ ] The handshake parks on the reactor (carrier not blocked
@@ -1136,12 +1161,12 @@ below the table.
 | NET-4.3 | Model B — event-driven shared-pool | NET-4.1 NET-3.5 | done |
 | NET-4.4 | Backpressure + connection limits | NET-4.2 NET-4.3 | done |
 | NET-4.5 | Model-selection API + tradeoff doc | NET-4.2 NET-4.3 | done |
-| NET-5.1 | Vendor BoringSSL + memory-BIO intrinsics | NET-11.1 | deferred |
-| NET-5.2 | TlsClient (handshake on reactor) | NET-5.1 NET-3.5 | deferred |
-| NET-5.3 | Certificate validation (SHA-256) | NET-5.2 NET-11.1 | deferred |
-| NET-5.4 | SNI + ALPN surface | NET-5.2 | deferred |
-| NET-5.5 | TlsListener (server-side TLS) | NET-5.2 NET-4.1 | deferred |
-| NET-5.6 | TLS error hierarchy | NET-1.8 NET-5.2 | deferred |
+| NET-5.1 | Memory-BIO intrinsics over OpenSSL (BoringSSL-compatible) | NET-11.1 | done |
+| NET-5.2 | TlsClient/TlsStream (handshake on reactor) | NET-5.1 NET-3.5 | done |
+| NET-5.3 | Certificate validation + OS trust store | NET-5.2 NET-11.1 | done |
+| NET-5.4 | SNI + ALPN surface (incl server-select) | NET-5.2 | done |
+| NET-5.5 | TlsListener (server-side TLS) | NET-5.2 NET-4.1 | done |
+| NET-5.6 | TLS error hierarchy | NET-1.8 NET-5.2 | done |
 | NET-6.1 | Uri parse (RFC 3986) | — | done |
 | NET-6.2 | Percent-encoding | NET-6.1 | done |
 | NET-6.3 | Query-param multi-map | NET-6.2 | done |
