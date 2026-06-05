@@ -12,6 +12,8 @@
 #include "../../type/CajetaArray.h"
 #include "../../type/CajetaVector.h"
 #include "../../type/VectorOps.h"
+#include "../../type/CajetaMatrix.h"
+#include "../../type/MatrixOps.h"
 #include "../../util/MemoryManager.h"
 #include "Expression.h"
 #include "DotExpression.h"
@@ -728,6 +730,54 @@ namespace cajeta {
         // target address and only rhs needs r-value coercion.
         switch (binaryOp) {
             case BINARY_OP_ASSIGN: {
+                // Matrix element assignment: `m[r][c] = e` (B1). The LHS is
+                // ArrayIndex(ArrayIndex(m, r), c) with m a CajetaMatrix. Writing
+                // through the row temporary (the vector path below) would drop the
+                // store — the row m[r] is a fresh value, not an l-value into m —
+                // so write directly into m's slot at flat lane r*C+c. Must run
+                // BEFORE the vector path, which would otherwise match the
+                // Vector<T,C>-typed outer base m[r].
+                if (auto outer = dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
+                    auto& oc = outer->getChildren();
+                    if (oc.size() >= 2) {
+                        auto inner = dynamic_pointer_cast<ArrayIndexExpression>(
+                            dynamic_pointer_cast<Expression>(oc[0]));
+                        if (inner && inner->getChildren().size() >= 2) {
+                            auto& ic = inner->getChildren();
+                            auto mBase = dynamic_pointer_cast<Expression>(ic[0]);
+                            if (mBase && !mBase->getResolvedType())
+                                mBase->resolveTypes(module);
+                            if (auto matT = dynamic_pointer_cast<CajetaMatrix>(
+                                    mBase ? mBase->getResolvedType() : nullptr)) {
+                                llvm::Type* i32Ty = llvm::Type::getInt32Ty(
+                                    *module->getLlvmContext());
+                                auto toI32 = [&](llvm::Value* v) {
+                                    return v->getType() == i32Ty ? v
+                                        : builder->CreateIntCast(v, i32Ty, false,
+                                                                 "mat.idx");
+                                };
+                                llvm::Value* slot = mBase->generateCode(module);
+                                llvm::Value* rIdx = toI32(loadIfLValue(module,
+                                    ic[1]->generateCode(module),
+                                    dynamic_pointer_cast<Expression>(ic[1])));
+                                llvm::Value* cIdx = toI32(loadIfLValue(module,
+                                    oc[1]->generateCode(module),
+                                    dynamic_pointer_cast<Expression>(oc[1])));
+                                llvm::Type* matLlvm = matT->getLlvmType();
+                                llvm::Value* cur = builder->CreateLoad(
+                                    matLlvm, slot, "mat.cur");
+                                llvm::Value* rv = vecops::coerceScalar(*builder,
+                                    loadR(rhs),
+                                    matT->getElementType()->getLlvmType());
+                                llvm::Value* nv = matops::setElement(*builder, cur,
+                                    matT->getRows(), matT->getCols(), rIdx, cIdx, rv);
+                                builder->CreateStore(nv, slot);
+                                result = nv;
+                                break;
+                            }
+                        }
+                    }
+                }
                 // Vector component/index assignment: `v.x = e` / `v[i] = e`.
                 // The vector lives in a slot reached via the base sub-expression
                 // (an l-value: a local alloca or a field GEP). Load the `<N x T>`,

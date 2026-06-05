@@ -8,8 +8,10 @@
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaVector.h"
+#include "cajeta/type/CajetaMatrix.h"
 #include "cajeta/type/CajetaConstantType.h"
 #include "cajeta/type/VectorOps.h"
+#include "cajeta/type/MatrixOps.h"
 #include "cajeta/error/Exception.h"
 
 namespace cajeta {
@@ -43,11 +45,33 @@ namespace cajeta {
                                                cv->getValue());
     }
 
+    // Built-in Matrix<T,R,C>: resolve to the flat CajetaMatrix value type (B1).
+    // Mirrors resolveVectorNew; typeArguments were captured at parse time (the
+    // element CajetaType + two CajetaConstantType dimensions).
+    static CajetaMatrixPtr resolveMatrixNew(
+            CajetaModulePtr module, const string& typeName,
+            const vector<CajetaTypePtr>& typeArguments) {
+        if (typeName != "Matrix" || typeArguments.size() != 3) return nullptr;
+        auto rv = dynamic_pointer_cast<CajetaConstantType>(typeArguments[1]);
+        auto cv = dynamic_pointer_cast<CajetaConstantType>(typeArguments[2]);
+        if (!rv || !cv) {
+            throw Exception(
+                "Matrix dimensions R and C must be positive integer constants",
+                "CAJETA_ERROR_MATRIX_DIMENSIONS");
+        }
+        return CajetaMatrix::validateAndCreate(module, typeArguments[0],
+                                               rv->getValue(), cv->getValue());
+    }
+
     void NewExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (typeName.empty()) return;
         if (auto vt = resolveVectorNew(module, typeName, typeArguments)) {
             resolvedType = vt;
+            return;
+        }
+        if (auto mt = resolveMatrixNew(module, typeName, typeArguments)) {
+            resolvedType = mt;
             return;
         }
         // boundElementType wins when set: it was captured at parse
@@ -132,6 +156,38 @@ namespace cajeta {
                 elems.push_back(vecops::coerceScalar(*b, v, elemTy));
             }
             return vecops::buildVector(*b, elemTy, lanes, elems);
+        }
+        // Built-in Matrix<T,R,C> construction -> SSA `<R*C x T>` (row-major), no
+        // alloc/heap. Like Vector, `new`/`stack` is purely syntactic; R*C scalar
+        // arguments fill the matrix row by row.
+        if (auto matTy = resolveMatrixNew(module, typeName, typeArguments)) {
+            auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest);
+            if (!ccr) {
+                throw Exception(
+                    "Matrix construction requires a (a, b, ...) argument list",
+                    "CAJETA_ERROR_MATRIX_CONSTRUCT");
+            }
+            unsigned lanes = matTy->getLanes();   // R*C
+            auto& params = ccr->getParameters();
+            if (params.size() != lanes) {
+                throw Exception(
+                    "Matrix<...," + std::to_string(matTy->getRows()) + ","
+                    + std::to_string(matTy->getCols()) + "> needs "
+                    + std::to_string(lanes) + " arguments (got "
+                    + std::to_string(params.size()) + ")",
+                    "CAJETA_ERROR_MATRIX_CONSTRUCT");
+            }
+            llvm::Type* elemTy = matTy->getElementType()->getLlvmType();
+            llvm::IRBuilder<>* b = module->getBuilder();
+            std::vector<llvm::Value*> elems;
+            elems.reserve(lanes);
+            for (auto& p : params) {
+                llvm::Value* v = p.expression->generateCode(module);
+                v = loadIfLValue(module, v, p.expression);
+                elems.push_back(vecops::coerceScalar(*b, v, elemTy));
+            }
+            return matops::buildMatrix(*b, elemTy, matTy->getRows(),
+                                       matTy->getCols(), elems);
         }
         // Look up the target type by name. typeName names the class for `new Foo()`, or
         // the element type for `new T[...]`. Package is "" for primitives (e.g. int32).

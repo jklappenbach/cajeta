@@ -15,6 +15,8 @@
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaVector.h"
 #include "cajeta/type/VectorOps.h"
+#include "cajeta/type/CajetaMatrix.h"
+#include "cajeta/type/MatrixOps.h"
 #include "cajeta/type/CajetaTask.h"
 #include "cajeta/error/ExplicitCastRequiredException.h"
 #include "cajeta/error/InvalidOperandException.h"
@@ -442,6 +444,11 @@ namespace cajeta {
                     resolvedType = arr->getElementType();
                 } else if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhsType)) {
                     resolvedType = vecT->getElementType();
+                } else if (auto matT = dynamic_pointer_cast<CajetaMatrix>(lhsType)) {
+                    // Matrix m[r] selects a row -> Vector<T, C> (B1). m[r][c] then
+                    // resolves via the CajetaVector branch above on this row type.
+                    resolvedType = CajetaVector::getOrCreate(
+                        module, matT->getElementType(), matT->getCols());
                 } else if (auto klass = dynamic_pointer_cast<CajetaClass>(lhsType)) {
                     // Try to find operator[] on the class. parameterList
                     // computation needs the index expression's resolved
@@ -506,6 +513,34 @@ namespace cajeta {
                 llvm::AllocaInst* slot = builder->CreateAlloca(
                     elt->getType(), nullptr, "vec.idx.slot");
                 builder->CreateStore(elt, slot);
+                return slot;
+            }
+        }
+
+        // Matrix single-index read: m[r] -> the row Vector<T,C> (flat lanes
+        // [r*C, r*C+C)). m[r][c] composes — the outer index sees this row's
+        // CajetaVector type and the vector branch above extracts lane c. The
+        // assignment form m[r][c] = x is handled in BinaryOpExpression's
+        // assignment path (it writes into the matrix's slot, not a row temp).
+        if (auto lhsMatExpr = dynamic_pointer_cast<Expression>(children[0])) {
+            if (!lhsMatExpr->getResolvedType()) lhsMatExpr->resolveTypes(module);
+            if (auto matT = dynamic_pointer_cast<CajetaMatrix>(
+                    lhsMatExpr->getResolvedType())) {
+                llvm::Value* matVal = loadIfLValue(
+                    module, children[0]->generateCode(module), lhsMatExpr);
+                llvm::Value* r = loadIfLValue(
+                    module, children[1]->generateCode(module),
+                    dynamic_pointer_cast<Expression>(children[1]));
+                if (r->getType() != i32Ty)
+                    r = builder->CreateIntCast(r, i32Ty, /*isSigned=*/false,
+                                               "mat.row.idx");
+                resolvedType = CajetaVector::getOrCreate(
+                    module, matT->getElementType(), matT->getCols());
+                llvm::Value* rowVal = matops::row(
+                    *builder, matVal, matT->getRows(), matT->getCols(), r);
+                llvm::AllocaInst* slot = builder->CreateAlloca(
+                    rowVal->getType(), nullptr, "mat.row.slot");
+                builder->CreateStore(rowVal, slot);
                 return slot;
             }
         }
