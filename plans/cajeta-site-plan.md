@@ -43,9 +43,9 @@ where the tech stack changes:
 
 - **`cajeta`** (this repo) — compiler + canonical `cajeta-docs/` + the wire
   **spec** (`cajeta-docs/specs/`) + **`./site`**. The site lives **in-repo**.
-- **`olla`** — the registry **service** (server, `/v2` API, web app), in its own
-  repo: **https://github.com/jklappenbach/olla** (infra plan there; see also the
-  §15 pointer below).
+- **`cajeta-olla`** — the registry **service** (server, `/v2` API, web app), in
+  its own repo: **https://github.com/jklappenbach/cajeta-olla** (infra plan
+  there; see also the §15 pointer below).
 
 **Why the site stays in-repo (and Olla does not).** Both have a non-C++ stack, so
 "different stack" is *not* the test. The test is **what each consumes**:
@@ -783,7 +783,7 @@ sidebar tree, TOC, breadcrumb, prev/next, and Orama search. A docs landing
 ## 15. Registry "Olla" — moved to its own repo
 
 The Olla registry **service + infrastructure** plan now lives in its **own repo**
-(per §1.1): **https://github.com/jklappenbach/olla** →
+(per §1.1): **https://github.com/jklappenbach/cajeta-olla** →
 `plans/olla-infrastructure-plan.md`. It covers name/boundaries, the
 `cajeta.dev` domain scheme, Cloudflare setup, R2 artifacts, the D1 catalog,
 Algolia search, and cost.
