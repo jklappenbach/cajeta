@@ -89,7 +89,13 @@ llvm::Type* deviceScalarType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
     if (!(f & PRIMITIVE_FLAG)) return nullptr;
     if (f & FLOAT_FLAG) {
         if (f & BIT_64_FLAG) return llvm::Type::getDoubleTy(ctx);
-        if (f & BIT_16_FLAG) return llvm::Type::getHalfTy(ctx);
+        if (f & BIT_16_FLAG) {
+            // float16 (binary16) -> half; bfloat16 -> bfloat. Distinguished by
+            // the type-ID byte (both are FLOAT|BIT_16).
+            constexpr unsigned long kIdMask = 0x000000FF00000000UL;
+            return (f & kIdMask) == BFLOAT16_ID
+                ? llvm::Type::getBFloatTy(ctx) : llvm::Type::getHalfTy(ctx);
+        }
         return llvm::Type::getFloatTy(ctx);            // BIT_32 default
     }
     if (f & INT_FLAG) {
@@ -2511,9 +2517,34 @@ private:
     }
 
     // Core binary op on two lowered values, after width/fp unification.
+    // bfloat16 is a STORAGE format — native bfloat arithmetic is a vendor
+    // extension (SPV_INTEL_bfloat16_arithmetic), absent on most GPUs. So compute
+    // bfloat in f32 (widen / op / narrow), the standard "bf16 storage, f32
+    // compute" model — portable across CPU/Vulkan/AMD. float16 needs no such
+    // treatment (native f16 arithmetic is portable). Comparisons (i1 result) are
+    // not narrowed.
     llvm::Value* applyBinOp(BinaryOp op, llvm::Value* l, llvm::Value* r,
-                            bool sign, bool /*fpHint*/) {
+                            bool sign, bool fpHint) {
         unifyOperands(l, r, sign);
+        if (l->getType()->getScalarType()->isBFloatTy()) {
+            llvm::Type* bfTy = l->getType();
+            llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+            llvm::Type* compTy = bfTy->isVectorTy()
+                ? (llvm::Type*) llvm::FixedVectorType::get(
+                      f32, llvm::cast<llvm::FixedVectorType>(bfTy)->getNumElements())
+                : f32;
+            llvm::Value* res = applyBinOpInner(
+                op, builder.CreateFPExt(l, compTy),
+                builder.CreateFPExt(r, compTy), sign, fpHint);
+            if (res->getType()->getScalarType()->isFloatTy())   // FP arith result
+                return builder.CreateFPTrunc(res, bfTy);        // narrow back to bfloat
+            return res;                                         // comparison mask
+        }
+        return applyBinOpInner(op, l, r, sign, fpHint);
+    }
+
+    llvm::Value* applyBinOpInner(BinaryOp op, llvm::Value* l, llvm::Value* r,
+                                 bool sign, bool /*fpHint*/) {
         // isFPOrFPVectorTy so element-wise `<N x float>` arithmetic routes to
         // CreateFAdd/… (a bare isFloatingPointTy is false for a vector type).
         bool fp = l->getType()->isFPOrFPVectorTy();

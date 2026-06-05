@@ -46,9 +46,13 @@ void enableSpirvExtensions() {
     // +SPV_KHR_vulkan_memory_model — the latter because a Shader module that
     // declares CooperativeMatrixKHR must also declare VulkanMemoryModel
     // (spirv-val), which the backend emits as OpMemoryModel Logical VulkanKHR.
+    // SPV_KHR_bfloat16 gives the bfloat *type* + conversions (portable KHR); we
+    // never emit native bfloat *arithmetic* (that is Intel-only) — the device
+    // lowerer computes bfloat in f32 (widen / op / narrow), the standard GPU
+    // "bf16 is a storage format" model.
     static const char* kExtensions =
         "+SPV_KHR_ray_query,+SPV_KHR_cooperative_matrix,"
-        "+SPV_KHR_vulkan_memory_model";
+        "+SPV_KHR_vulkan_memory_model,+SPV_KHR_bfloat16";
     auto& opts = llvm::cl::getRegisteredOptions();
     auto it = opts.find("spirv-ext");
     if (it != opts.end())
