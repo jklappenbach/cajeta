@@ -247,6 +247,66 @@ TEST(MatrixTests, equalsMaskAllAny) {
     EXPECT_EQ(runI32(src), 101);
 }
 
+// determinant: 2x2 [1 2; 3 4] = 1*4 - 2*3 = -2; 3x3 diagonal = 2*3*4 = 24.
+TEST(MatrixTests, determinant2x2And3x3) {
+    EXPECT_EQ(runI32(std::string("package test;\n") +
+        "public final class D {\n public static int32 run() {\n"
+        "  Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "  return (int32) a.determinant();\n }\n}\n"), -2);
+    EXPECT_EQ(runI32(std::string("package test;\n") +
+        "public final class D {\n public static int32 run() {\n"
+        "  Matrix<float32,3,3> b = stack Matrix<float32,3,3>(\n"
+        "      2.0f, 0.0f, 0.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 4.0f);\n"
+        "  return (int32) b.determinant();\n }\n}\n"), 24);
+}
+
+// 4x4 determinant of a diagonal matrix = product of the diagonal (2*1*3*5).
+TEST(MatrixTests, determinant4x4) {
+    EXPECT_EQ(runI32(std::string("package test;\n") +
+        "public final class D {\n public static int32 run() {\n"
+        "  Matrix<float32,4,4> m = stack Matrix<float32,4,4>(\n"
+        "      2.0f,0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f,0.0f,\n"
+        "      0.0f,0.0f,3.0f,0.0f, 0.0f,0.0f,0.0f,5.0f);\n"
+        "  return (int32) m.determinant();\n }\n}\n"), 30);
+}
+
+// inverse: A * A^-1 == identity. A = [4 7; 2 6], det = 10.
+TEST(MatrixTests, inverse2x2RoundTrip) {
+    EXPECT_EQ(runI32(std::string("package test;\n") +
+        "public final class D {\n public static int32 run() {\n"
+        "  Matrix<float32,2,2> a = stack Matrix<float32,2,2>(4.0f, 7.0f, 2.0f, 6.0f);\n"
+        "  Matrix<float32,2,2> inv = a.inverse();\n"
+        "  Matrix<float32,2,2> p = a * inv;\n"
+        "  return (int32)(p[0][0] * 10.0f + p[0][1] * 100.0f + p[1][1] * 1000.0f);\n }\n}\n"),
+        1010);   // p[0][0]=1 -> 10, p[0][1]=0 -> 0, p[1][1]=1 -> 1000
+}
+
+// 3x3 inverse round-trip: A * A^-1 == I, sum of the product's diagonal = 3.
+TEST(MatrixTests, inverse3x3RoundTrip) {
+    EXPECT_EQ(runI32(std::string("package test;\n") +
+        "public final class D {\n public static int32 run() {\n"
+        "  Matrix<float32,3,3> a = stack Matrix<float32,3,3>(\n"
+        "      1.0f, 2.0f, 3.0f, 0.0f, 1.0f, 4.0f, 5.0f, 6.0f, 0.0f);\n"
+        "  Matrix<float32,3,3> inv = a.inverse();\n"
+        "  Matrix<float32,3,3> p = a * inv;\n"
+        "  return (int32)(p[0][0] + p[1][1] + p[2][2] + 0.5f);\n }\n}\n"), 3);  // ~3.0
+}
+
+// inverse on a non-square matrix is rejected.
+TEST(MatrixTests, inverseNonSquareRejected) {
+    try {
+        runI32(std::string("package test;\n") +
+            "public final class D {\n public static int32 run() {\n"
+            "  Matrix<float32,2,3> a = stack Matrix<float32,2,3>(\n"
+            "      1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
+            "  Matrix<float32,2,3> inv = a.inverse();\n"
+            "  return 0;\n }\n}\n");
+        FAIL() << "expected CAJETA_ERROR_MATRIX_METHOD";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_METHOD");
+    }
+}
+
 // Ordering comparison with a broadcast scalar -> mask; select prunes small
 // weights. w > 1: (F,T,F,F) -> select(w, 0) keeps only the large weight = 2.
 TEST(MatrixTests, thresholdScalarMaskSelect) {
