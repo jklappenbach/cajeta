@@ -179,11 +179,14 @@ The review's required fixes are folded into the stages below.
 - **S6 — Shared dispatch/derivation helper.** Extract operator lookup + comparison derivation
   (`BinaryOpExpression.cpp:696-754`) into a representation-agnostic free function; re-point
   host at it; behavior unchanged. Prerequisite for device.
-- **S7 — Method-templated static operators (workstream; owner decision #4).** Support
-  templated static operators (`operator*<uint32 K>`) with non-type-param inference + per-shape
-  monomorphization, so `a * b` matmul works for arbitrary conforming shapes. Large; designed
-  by its own workflow + plan (`plans/method-templated-operators-plan.md`). Independent of
-  S0–S6.
+- **S7 — RETIRED (owner decision #4, 2026-06-04). NOT a workstream.** Method-templated operators
+  are rejected: operator overloads are concrete (a specific LHS type × a specific RHS type), so
+  there is nothing to templatize. `*` **is matrix multiply**, lowered as a **compiler intrinsic** —
+  the compiler-known value type lowers `M1 * M2` to matmul by reading `R/K/C` straight off the
+  (already concrete) operand types in codegen, exactly like `Vector`'s operators; it does NOT go
+  through the user overloading mechanism. No templates, inference, or monomorphization. Element-wise
+  multiply is the method `a.hadamard(b)`. See Decision #4 below and the retired sub-plan
+  `plans/method-templated-operators-plan.md` (kept only as the record of why this was rejected).
 - **S8 — Device path (RISK; REQUIRED FIX #4).** In `lowerBinaryOp` (`KernelLowering.cpp:1761`):
   on `VALUE_TYPE_FLAG` LHS, resolve via the S6 helper, lower the `@Device` (pure) operator
   body — **with new aggregate-param/return support in `lowerDeviceFn`** — and emit a call the
