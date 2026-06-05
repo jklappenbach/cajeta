@@ -1,32 +1,42 @@
-// NET-10.1 / NET-10.7 — the WebSocket client + server entry points.
+// NET-10.1 / NET-10.7 -- the WebSocket client + server entry points.
 //
 // The PURE handshake interop (clientHandshakeRoundTripsWithServer) runs the
 // NET-10.1 client opening handshake (WsClientHandshake) against the NET-10.2
-// server handshake (WsServerHandshake) with no socket — proving the request the
+// server handshake (WsServerHandshake) with no socket -- proving the request the
 // client builds is accepted and that the client validates the server's
 // Sec-WebSocket-Accept.
 //
 // The full live round-trip (DISABLED below) drives a real loopback socket
 // through WsUpgrade -> WebSocket via AsyncReader/AsyncWriter. It was previously
-// disabled blaming the forward-referenced-interface codegen bug (Bug 2); that
-// bug is now FIXED (the AsyncReader/AsyncWriter `ByteChannel stream` field lays
-// out fat and `this.stream.readAsync(...)` dispatch works — proven green by
-// NetAsyncEchoTest.bufferedReaderWriterRoundTrips and the HTTPS-server live row
-// HttpsServerTests.httpsRequestEndToEnd, which run the identical buffered
-// interface path over a live socket, the latter under spawn + TLS).
+// disabled blaming the forward-referenced-interface codegen bug (Bug 2, now
+// FIXED). With Bug 2 fixed this row was bisected (diagnostic probes + a minimal
+// ladder, since removed) and found to be NOT a framing/codec defect -- the
+// codec/WsProtocol/reassembler produce a correct 4-byte message INSIDE the
+// server fiber. The fault is OWNERSHIP TRANSFER across a FIBER PARK, a
+// compiler/runtime defect (NOT stdlib-fixable):
 //
-// This row STILL fails, but on a SEPARATE, WS-specific defect — NOT the
-// interface-layout bug. Diagnosed: the server's receive() returns a *0-length*
-// message (sret == 0) and, because the server echoes what it received, the
-// client likewise reads a 0-length echo (mlen == 0) — i.e. the client's 4-byte
-// BINARY frame is decoded by the server as an empty frame. The pure frame codec
-// (WsFrameEncoder/WsFrameDecoder), the protocol engine (WsProtocol), and the
-// reassembler are all golden-vector green, so the fault is in the live
-// handshake -> frame transport seam (WsUpgrade head-read / AsyncReader.stage
-// push-back / ring interaction), not the codec and not codegen. Tracked as a
-// follow-up WS bug; re-enable once the framing-over-transport misalignment is
-// found. The plaintext HTTP client path (no AsyncReader/AsyncWriter) is green in
-// HttpClientTests.
+//   WebSocket.receive() PARKS the fiber on the socket read, then builds a
+//   WsMessage (which owns an `int8[] payload`) and returns it. A fiber park
+//   TAINTS the parked frame's scope-exit drop chain so it OVER-DROPS the
+//   message's payload array even though it was moved/returned out -- the caller
+//   reads a freed (count()==0) payload. It is a use-after-free: it passes when
+//   the row runs ALONE (the freed array's memory still holds its old count) but
+//   fails when run after other tests churn the heap. Confirmed by a minimal
+//   ladder (a `#`-returned owned-array object through factory/holder/dispatch/
+//   receive, even across spawn+await, is correct WITHOUT a park -- all rungs
+//   pass; only the real socket park triggers it), and by field-handoff/borrow
+//   restructurings of receive() that pass alone but still fail under heap churn
+//   (the message must be built in, or returned up through, a frame that parked).
+//
+// Two genuinely-correct contributing fixes are KEPT in WebSocket.cajeta (they
+// reduce, but cannot eliminate, the failure): (1) READ_CHUNK static-final bound
+// to a local int32 (`new int8[WebSocket.READ_CHUNK]` / the read length both
+// mis-lower the static-final to the global's address -- the documented gap
+// AsyncReader/AsyncWriter work around); (2) WebSocket.dispatch `return #m;`
+// (was `return m;`, a missing ownership transfer from a `#WsMessage` method).
+// The proper fix is in the fiber park/resume + scope-exit drop-chain machinery;
+// re-enable this row once that lands. The plaintext HTTP client path (no live
+// WS) is green in HttpClientTests.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -98,9 +108,12 @@ TEST(WsEntryPointTests, handshakeKeyBindingIsChecked) {
     EXPECT_EQ(runI32(src), 1);
 }
 
-// FULL LIVE ROUND-TRIP (DISABLED — see file header): client + server WebSockets
-// over a loopback socket, echoing one binary message. Blocked by the
-// live-socket AsyncReader/AsyncWriter JIT codegen issue (via WsUpgrade).
+// FULL LIVE ROUND-TRIP (DISABLED -- see file header): client + server
+// WebSockets over a loopback socket, echoing one binary message. Blocked by a
+// fiber-park x scope-exit-drop compiler/runtime defect (receive() parks then
+// returns an owned-array WsMessage whose payload the parked frame over-drops) --
+// NOT framing/codec, NOT Bug 2. Passes ALONE, fails under heap churn (use-after-
+// free). Two correct contributing fixes kept (READ_CHUNK + dispatch `return #m`).
 TEST(WsEntryPointTests, DISABLED_clientServerEchoRoundTripOverLoopback) {
     std::string src =
         "package test;\n"
