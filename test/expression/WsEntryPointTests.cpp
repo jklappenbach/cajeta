@@ -5,10 +5,14 @@
 // server handshake (WsServerHandshake) with no socket — proving the request the
 // client builds is accepted and that the client validates the server's
 // Sec-WebSocket-Accept. The full live round-trip (DISABLED below) drives a real
-// loopback socket through WsUpgrade -> WebSocket; it is blocked by the same
-// pre-existing JIT codegen issue on the live-socket path (AsyncReader/AsyncWriter
-// buffered I/O) that gates the HttpClient acceptance rows — see HttpClientTests'
-// header + memory `cajeta-interface-arg-field-offset-bug`.
+// loopback socket through WsUpgrade -> WebSocket via AsyncReader/AsyncWriter,
+// whose `ByteChannel stream` field is a FORWARD-REFERENCED interface laid out as
+// a thin pointer — so `this.stream.readAsync(...)` dispatch is silently dropped
+// at codegen and the buffered I/O corrupts. Root-caused in detail in memory
+// `cajeta-interface-arg-field-offset-bug`; needs a structural type-resolution
+// fix (reconcile forward-referenced interface placeholders to the canonical
+// interface). The plaintext HTTP client path (no AsyncReader/AsyncWriter) is
+// green in HttpClientTests.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"

@@ -1,17 +1,28 @@
 // NET-8.1 — the HTTP/1.1 client over a loopback socket.
 //
-// STATUS: the client SURFACE (cajeta.net.http.HttpClient) is complete and
-// compiles; the transport primitives it composes are each validated live below
-// (spawn + connectAsync + acceptAsync echo; ByteChannel interface dispatch over
-// a socket; AsyncReader buffered drain). The full end-to-end acceptance rows
-// (`httpGetReturnsBody` / `httpsGetReturnsBody`) are DISABLED_: the *composed*
-// live-socket HTTP closure (runBlocking + spawn + the URI/DNS/parser/serializer
-// closure driving the socket) hangs under a pre-existing JIT codegen issue on
-// the live-socket networking path — the same class that left HttpServer's
-// live-loopback rows deferred (see the NET plan + memory
-// `cajeta-interface-arg-field-offset-bug`). Re-enable once that compiler path
-// is fixed. The protocol logic itself is covered by the pure-byte golden tests
-// (HttpParser/HttpSerializer/BodyReader/KeepAlive suites).
+// STATUS: `httpGetReturnsBody` (plaintext GET end-to-end) is GREEN. It was
+// previously DISABLED on a "hang" that the prior session mis-attributed to a
+// fragile live-socket codegen path; the real cause was a STDLIB defect in
+// HttpClient.connectAny: it rebuilt the resolved address with
+// `IpAddress.fromOctets(oct, oct.count())`, but `getOctets()` returns the raw
+// 16-byte backing buffer regardless of family, so a V4 address (127.0.0.1) was
+// re-interpreted as an IPv6 address and `connectAsync` parked forever on a
+// bogus endpoint. Fixed by deriving the octet length from the address family
+// (mirroring the DnsCache idiom). This row now exercises the resolve→connect→
+// serialize→parse path live and is a regression guard for that fix.
+//
+// The HTTPS-server (HttpsServerTests) and WebSocket (WsEntryPointTests) live
+// rows remain DISABLED on a SEPARATE, still-open compiler bug: a forward-
+// referenced interface (e.g. `ByteChannel` used by AsyncReader/AsyncWriter
+// before its declaration is visited) is laid out as a THIN class pointer
+// instead of a fat interface pointer, so interface-dispatch calls through that
+// field (`this.stream.readAsync(...)`) are silently dropped at codegen — the
+// buffered reader/writer reads/writes garbage over a live socket. Root-caused
+// in detail in memory `cajeta-interface-arg-field-offset-bug`; the complete fix
+// requires reconciling forward-referenced interface placeholders to the
+// canonical interface across field/param/local resolution (a structural type-
+// resolution change). The protocol logic itself is covered by the pure-byte
+// golden tests (HttpParser/HttpSerializer/BodyReader/KeepAlive suites).
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -170,10 +181,10 @@ std::string emitBytes(const std::string& name, const std::string& data) {
 }
 } // namespace
 
-// ACCEPTANCE (DISABLED — see file header): a plaintext GET to a loopback server
-// fiber returns 200 + "hello". Hangs under the live-socket HTTP-closure JIT
-// blocker; re-enable when that compiler path is fixed.
-TEST(HttpClientTests, DISABLED_httpGetReturnsBody) {
+// ACCEPTANCE: a plaintext GET to a loopback server fiber returns 200 + "hello".
+// Exercises resolve (Dns) -> connect (connectAny) -> serialize -> parse live.
+// Regression guard for the connectAny IPv4-octet-length fix (see file header).
+TEST(HttpClientTests, httpGetReturnsBody) {
     std::string src =
         "package test;\n"
         "import cajeta.net.IpAddress;\n"
