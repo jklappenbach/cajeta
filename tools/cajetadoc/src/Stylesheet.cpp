@@ -24,6 +24,12 @@ std::string defaultStylesheet() {
     --cajetadoc-radius:    var(--radius, 0.5rem);
     --cajetadoc-font:      var(--font-sans, ui-sans-serif, system-ui, sans-serif);
     --cajetadoc-mono:      var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    /* Layout rails: the left nav card width, the gap to the content, and the
+       derived inset that the right margin mirrors. Body text/tables/cards are
+       inset on the right by --cajetadoc-inset; heading rules span past it. */
+    --cajetadoc-rail:      15rem;
+    --cajetadoc-rail-gap:  2.5rem;
+    --cajetadoc-inset:     calc(var(--cajetadoc-rail) + var(--cajetadoc-rail-gap));
   }
   @media (prefers-color-scheme: dark) {
     .cajetadoc {
@@ -39,17 +45,35 @@ std::string defaultStylesheet() {
 }
 
 @layer cajetadoc.base {
+  /* Paint the whole page canvas (html/body) so short pages show no white gap
+     below the content, and there are no stark white side gutters. --cajetadoc-bg
+     is only defined ON .cajetadoc (custom properties inherit downward, not up),
+     so the canvas reads the host token / built-in default directly. :where()
+     keeps zero specificity so a host site still wins. */
+  :where(html):has(.cajetadoc), :where(body):has(.cajetadoc) {
+    background: var(--background, #fffaf3);
+  }
+  :where(body):has(.cajetadoc) { margin: 0; }
+  @media (prefers-color-scheme: dark) {
+    :where(html):has(.cajetadoc), :where(body):has(.cajetadoc) {
+      background: var(--background, #1c1611);
+    }
+  }
   :where(.cajetadoc) {
     color: var(--cajetadoc-fg);
     background: var(--cajetadoc-bg);
     font-family: var(--cajetadoc-font);
     line-height: 1.6;
-    max-inline-size: 56rem;
-    margin-inline: auto;
-    padding-inline: 1.25rem;
-    padding-block: 2rem;
+    inline-size: 100%;
+    min-block-size: 100vh; /* fill the viewport so short pages have no gap */
+    box-sizing: border-box;
+    /* relaxed, left-anchored layout: use the viewport width with responsive
+       gutters instead of a narrow centered column. */
+    padding-inline: clamp(1rem, 3vw, 2.75rem);
+    padding-block: 1.5rem 3rem;
     container-type: inline-size;
   }
+  :where(.cajetadoc *) { box-sizing: border-box; }
   :where(.cajetadoc a) { color: var(--cajetadoc-accent); text-decoration: none; }
   :where(.cajetadoc a:hover) { text-decoration: underline; }
   :where(.cajetadoc code) {
@@ -119,6 +143,80 @@ std::string defaultStylesheet() {
     margin-block-start: 2rem; padding-block-start: 1rem;
     border-block-start: 1px solid var(--cajetadoc-border);
     color: var(--cajetadoc-muted); font-size: 0.85em;
+  }
+  :where(.cajetadoc .muted) { color: var(--cajetadoc-muted); }
+  /* breadcrumbs */
+  :where(.cajetadoc .crumbs) {
+    font-size: 0.85em; color: var(--cajetadoc-muted); margin-block-end: 1rem;
+  }
+  :where(.cajetadoc .crumbs .sep) { margin-inline: 0.35em; opacity: 0.6; }
+  :where(.cajetadoc .crumbs .crumb-current) { color: var(--cajetadoc-fg); font-weight: 600; }
+  /* Symmetric, reactive layout.
+     Type pages: [left rail | content]. The content fills to the right page
+     edge, but its body elements are inset on the right by --cajetadoc-inset so
+     the right margin mirrors the left rail. Heading rules break out of that
+     inset to span the full width. The middle expands as the window grows; both
+     rails stay a fixed width. */
+  :where(.cajetadoc .page) {
+    display: grid;
+    grid-template-columns: var(--cajetadoc-rail) minmax(0, 1fr);
+    column-gap: var(--cajetadoc-rail-gap);
+    align-items: start;
+  }
+  :where(.cajetadoc .content) {
+    min-inline-size: 0;
+    /* inset body content on the right to mirror the left rail */
+    padding-inline-end: var(--cajetadoc-inset);
+  }
+  /* Pages with no sidebar (overview / package): mirror the rail offset on the
+     left too so their content aligns with the type pages. */
+  :where(.cajetadoc > .content) { margin-inline-start: var(--cajetadoc-inset); }
+  /* Heading rules + horizontal dividers span past the right inset to the margin. */
+  :where(.cajetadoc .content > .type-header,
+         .cajetadoc .content > h2,
+         .cajetadoc .content > hr,
+         .cajetadoc .content > .prevnext,
+         .cajetadoc .content > .cajetadoc-footer) {
+    margin-inline-end: calc(-1 * var(--cajetadoc-inset));
+  }
+  :where(.cajetadoc .sidebar) {
+    position: sticky; inset-block-start: 1rem;
+    max-block-size: calc(100vh - 2rem); overflow-y: auto;
+  }
+  /* section headings get an underline that runs to the right margin */
+  :where(.cajetadoc .content > h2) {
+    border-block-end: 1px solid var(--cajetadoc-border);
+    padding-block-end: 0.3rem;
+  }
+  :where(.cajetadoc .pkg-nav-title) {
+    font-size: 0.8em; color: var(--cajetadoc-muted); margin-block-end: 0.4rem;
+    text-transform: lowercase;
+  }
+  :where(.cajetadoc .pkg-nav ul) { list-style: none; margin: 0; padding: 0; }
+  :where(.cajetadoc .pkg-nav li) { margin-block: 0.1rem; font-size: 0.9em; }
+  :where(.cajetadoc .pkg-nav li.active > a) { font-weight: 700; color: var(--cajetadoc-fg); }
+  :where(.cajetadoc .pkg-nav .kind) { font-size: 0.7em; opacity: 0.7; }
+  /* prev/next */
+  :where(.cajetadoc .prevnext) {
+    display: flex; justify-content: space-between; gap: 1rem; margin-block-start: 2rem;
+    padding-block-start: 1rem; border-block-start: 1px solid var(--cajetadoc-border);
+  }
+  :where(.cajetadoc .prevnext .next) { margin-inline-start: auto; }
+  /* collapse the rails on narrow containers: stack the nav, drop the insets so
+     content uses the full width. */
+  @container (max-width: 56rem) {
+    :where(.cajetadoc .page) { display: block; }
+    :where(.cajetadoc .sidebar) {
+      position: static; max-block-size: none; margin-block-end: 1.5rem;
+      border-block-end: 1px solid var(--cajetadoc-border); padding-block-end: 1rem;
+    }
+    :where(.cajetadoc .content) { padding-inline-end: 0; }
+    :where(.cajetadoc > .content) { margin-inline-start: 0; }
+    :where(.cajetadoc .content > .type-header,
+           .cajetadoc .content > h2,
+           .cajetadoc .content > hr,
+           .cajetadoc .content > .prevnext,
+           .cajetadoc .content > .cajetadoc-footer) { margin-inline-end: 0; }
   }
   @container (max-width: 34rem) {
     :where(.cajetadoc .summary .msig, .cajetadoc .params .pname) { white-space: normal; }

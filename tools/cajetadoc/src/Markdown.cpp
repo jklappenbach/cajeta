@@ -95,12 +95,20 @@ std::string inlineRender(const std::string& src, const MarkdownOptions& opts) {
             i = j;
             continue;
         }
-        // inline code `...`
+        // inline code `...` — auto-linked when the span resolves to a known
+        // type/member (§5): `XXHash3`, `cajeta.lang.Object`, `Object.hash()`.
         if (c == '`') {
             size_t j = i + 1;
             while (j < src.size() && src[j] != '`') ++j;
             if (j < src.size()) {
-                out += "<code>" + htmlEscape(src.substr(i + 1, j - i - 1)) + "</code>";
+                std::string content = src.substr(i + 1, j - i - 1);
+                std::string code = "<code>" + htmlEscape(content) + "</code>";
+                std::string href;
+                if (opts.linkResolver) href = opts.linkResolver(content);
+                if (!href.empty())
+                    out += "<a href=\"" + htmlEscape(href) + "\">" + code + "</a>";
+                else
+                    out += code;
                 i = j + 1;
                 continue;
             }

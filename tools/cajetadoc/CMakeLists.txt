@@ -40,6 +40,7 @@ add_library(cajetadoc_core OBJECT
     src/Ingest.cpp
     src/Json.cpp
     src/Markdown.cpp
+    src/Resolve.cpp
     src/Render.cpp
     src/Stylesheet.cpp
     src/Cli.cpp)

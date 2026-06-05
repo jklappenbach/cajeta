@@ -160,6 +160,15 @@ public:
         if (cu->packageDeclaration() && cu->packageDeclaration()->qualifiedName())
             pkg = sourceText(cu->packageDeclaration()->qualifiedName());
         Package& package = out_.model.ensurePackage(pkg);
+        // A `/** */` immediately preceding the `package` declaration is the
+        // package-level doc (JavaDoc's package-info convention). Last one wins.
+        if (cu->packageDeclaration()) {
+            std::string pdoc = docFor(tokens_, cu->packageDeclaration());
+            if (!pdoc.empty()) {
+                package.rawDoc = pdoc;
+                package.doc = std::make_shared<DocComment>(parseDocComment(pdoc));
+            }
+        }
         for (auto* td : cu->typeDeclaration()) {
             Type t;
             if (buildType(td, pkg, t)) package.types.push_back(std::move(t));
