@@ -257,8 +257,16 @@ public class HttpClient {
         SocketAddress[] addrs = Dns.resolve(host, port, ResolveFamily.V4_ONLY);
         SocketAddress a0 = addrs[0];
         IpAddress ip = a0.getIp();
+        // `getOctets` returns the raw 16-byte backing buffer regardless of
+        // family (IPv4 lives in `octets[0..4)`), so the family-relevant length
+        // must come from the address family — NOT `oct.count()`, which is
+        // always 16 and would re-interpret a V4 address as V6 (`fromOctets`
+        // selects the family from `len`). Mirrors the DnsCache rebuild idiom.
         int8[] oct = ip.getOctets();
-        int32 olen = oct.count();
+        int32 olen = 16;
+        if (ip.isV4()) {
+            olen = 4;
+        }
         IpAddress ipCopy = IpAddress.fromOctets(oct, olen);
         SocketAddress connAddr = SocketAddress.of(#ipCopy, port);
         return TcpStream.connectAsync(#connAddr);

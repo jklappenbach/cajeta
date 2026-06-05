@@ -1179,7 +1179,7 @@ below the table.
 | NET-7.5 | HTTP serializer | NET-7.1 NET-7.2 | done |
 | NET-7.6 | Keep-alive semantics | NET-7.3 NET-7.5 | done |
 | NET-7.7 | HttpException hierarchy | NET-1.8 NET-7.3 | done |
-| NET-8.1 | HttpClient core (send/recv) | NET-3.5 NET-5.2 NET-6.1 NET-7.5 NET-7.4 NET-2.6 | surface (live blocked) |
+| NET-8.1 | HttpClient core (send/recv) | NET-3.5 NET-5.2 NET-6.1 NET-7.5 NET-7.4 NET-2.6 | DONE — plaintext live GREEN (fixed connectAny IPv4-octet bug) |
 | NET-8.2 | Connection pool + keep-alive reuse | NET-8.1 NET-7.6 | deferred |
 | NET-8.3 | Redirect following | NET-8.1 NET-6.4 | deferred |
 | NET-8.4 | Timeouts + cancellation | NET-8.1 NET-3.4 NET-11.4 | deferred |
@@ -1190,7 +1190,7 @@ below the table.
 | NET-9.2 | HttpServer on both accept models | NET-9.1 NET-4.2 NET-4.3 | done (live 500-client row awaits NET-4 harness) |
 | NET-9.3 | Minimal router (path params) | NET-9.1 | done |
 | NET-9.4 | Streaming responses + requests | NET-9.1 NET-7.4 | done |
-| NET-9.5 | HTTPS server (TLS termination) | NET-9.1 NET-5.5 | surface (live blocked) |
+| NET-9.5 | HTTPS server (TLS termination) | NET-9.1 NET-5.5 | surface (live blocked: fwd-ref interface thin-layout compiler bug) |
 | NET-9.6 | Limits + hardening (slowloris/100-continue) | NET-9.1 NET-9.4 | done |
 | NET-10.1 | WS handshake — client | NET-8.1 NET-11.2 NET-11.3 | done (pure) |
 | NET-10.2 | WS handshake — server | NET-9.1 NET-11.2 NET-11.3 | done |
@@ -1198,7 +1198,7 @@ below the table.
 | NET-10.4 | WS message fragmentation | NET-10.3 | done |
 | NET-10.5 | WS control frames (ping/pong/close) | NET-10.3 | done |
 | NET-10.6 | WebSocket API (concurrent read/write) | NET-10.4 NET-10.5 | partial |
-| NET-10.7 | WS client + server entry points | NET-10.1 NET-10.2 NET-10.6 NET-5.2 | surface (live blocked) |
+| NET-10.7 | WS client + server entry points | NET-10.1 NET-10.2 NET-10.6 NET-5.2 | surface (live blocked: fwd-ref interface thin-layout compiler bug) |
 | NET-10.8 | WS error hierarchy | NET-1.8 NET-10.3 | done |
 | NET-11.1 | SHA-256 (FIPS 180-4) | — | done |
 | NET-11.2 | SHA-1 (WS handshake only) | — | done |
