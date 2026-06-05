@@ -20,32 +20,53 @@
 
 #include <cstring>
 #include <string>
+#include <vector>
+#include <cstdint>
 
 // The engine's normalized return codes (see cajeta_tls.c).
 #define CAJETA_TLS_WANT_IO (-1)
 #define CAJETA_TLS_ZERO    (-2)
 #define CAJETA_TLS_ERROR   (-3)
 
+// The engine's buffer functions take int8[] arguments by their CajetaArray
+// HEADER ({ i64 count; data }) per the @Native ABI — they advance the pointer
+// past the 8-byte header. These tests call the engine directly (no JIT), so
+// each buffer is wrapped in that header layout (see Arr below).
 extern "C" {
 void* __cajeta_tls_ctx_new(int is_server);
-int   __cajeta_tls_ctx_use_cert_key_pem(void* ctx, const char* cert_pem, int cert_len,
-                                        const char* key_pem, int key_len);
+int   __cajeta_tls_ctx_use_cert_key_pem(void* ctx, const void* cert_hdr, int cert_len,
+                                        const void* key_hdr, int key_len);
 void  __cajeta_tls_ctx_free(void* ctx);
 void* __cajeta_tls_conn_new(void* ctx, int is_server);
-int   __cajeta_tls_set_sni(void* conn, const char* host);
-int   __cajeta_tls_set_alpn(void* conn, const char* protos, int len);
-int   __cajeta_tls_get_alpn(void* conn, char* out, int max);
-int   __cajeta_tls_feed_ciphertext(void* conn, const char* buf, int len);
-int   __cajeta_tls_pull_ciphertext(void* conn, char* out, int max);
+int   __cajeta_tls_set_sni(void* conn, const void* host_hdr, int host_len);
+int   __cajeta_tls_set_alpn(void* conn, const void* protos_hdr, int len);
+int   __cajeta_tls_get_alpn(void* conn, void* out_hdr, int max);
+int   __cajeta_tls_feed_ciphertext(void* conn, const void* buf_hdr, int len);
+int   __cajeta_tls_pull_ciphertext(void* conn, void* out_hdr, int max);
 int   __cajeta_tls_pending_ciphertext(void* conn);
 int   __cajeta_tls_handshake_step(void* conn);
-int   __cajeta_tls_write_plaintext(void* conn, const char* buf, int len);
-int   __cajeta_tls_read_plaintext(void* conn, char* out, int max);
+int   __cajeta_tls_write_plaintext(void* conn, const void* buf_hdr, int len);
+int   __cajeta_tls_read_plaintext(void* conn, void* out_hdr, int max);
 int   __cajeta_tls_shutdown(void* conn);
 void  __cajeta_tls_free(void* conn);
 }
 
 namespace {
+
+// A CajetaArray-header-layout buffer: { i64 count; data[cap] }. hdr() returns
+// the header pointer the engine expects; data() points at the element bytes.
+struct Arr {
+    std::vector<char> buf;
+    explicit Arr(int cap) : buf(8 + (cap > 0 ? cap : 0)) {
+        *reinterpret_cast<int64_t*>(buf.data()) = cap;
+    }
+    Arr(const void* src, int len) : buf(8 + len) {
+        *reinterpret_cast<int64_t*>(buf.data()) = len;
+        if (len > 0) std::memcpy(buf.data() + 8, src, (size_t) len);
+    }
+    void* hdr() { return buf.data(); }
+    char* data() { return buf.data() + 8; }
+};
 
 // Mint a throwaway self-signed P-256 cert for `cn`, returning PEM cert + key.
 bool makeSelfSigned(const char* cn, std::string& certPem, std::string& keyPem) {
@@ -84,10 +105,11 @@ bool makeSelfSigned(const char* cn, std::string& certPem, std::string& keyPem) {
 
 // Shuttle all queued ciphertext from `src` into `dst`. Returns bytes moved.
 int moveCiphertext(void* src, void* dst) {
-    char buf[16384];
+    Arr out(16384);
     int total = 0, n;
-    while ((n = __cajeta_tls_pull_ciphertext(src, buf, sizeof buf)) > 0) {
-        EXPECT_EQ(__cajeta_tls_feed_ciphertext(dst, buf, n), n);
+    while ((n = __cajeta_tls_pull_ciphertext(src, out.hdr(), 16384)) > 0) {
+        Arr in(out.data(), n);
+        EXPECT_EQ(__cajeta_tls_feed_ciphertext(dst, in.hdr(), n), n);
         total += n;
     }
     return total;
@@ -116,9 +138,11 @@ TEST(TlsEngineTests, memoryBioHandshakeAndPlaintextRoundTrip) {
 
     void* sctx = __cajeta_tls_ctx_new(/*is_server=*/1);
     ASSERT_NE(sctx, nullptr);
+    Arr certArr(cert.data(), (int) cert.size());
+    Arr keyArr(key.data(), (int) key.size());
     ASSERT_EQ(__cajeta_tls_ctx_use_cert_key_pem(
-                  sctx, cert.data(), (int) cert.size(),
-                  key.data(), (int) key.size()), 0);
+                  sctx, certArr.hdr(), (int) cert.size(),
+                  keyArr.hdr(), (int) key.size()), 0);
     void* cctx = __cajeta_tls_ctx_new(/*is_server=*/0);
     ASSERT_NE(cctx, nullptr);
 
@@ -126,28 +150,32 @@ TEST(TlsEngineTests, memoryBioHandshakeAndPlaintextRoundTrip) {
     void* client = __cajeta_tls_conn_new(cctx, /*is_server=*/0);
     ASSERT_NE(server, nullptr);
     ASSERT_NE(client, nullptr);
-    __cajeta_tls_set_sni(client, "localhost");
+    Arr sni("localhost", 9);
+    __cajeta_tls_set_sni(client, sni.hdr(), 9);
 
     ASSERT_TRUE(pumpHandshake(client, server)) << "handshake did not complete";
 
     // client -> server
     const char* req = "GET / HTTP/1.1\r\n\r\n";
-    int wn = __cajeta_tls_write_plaintext(client, req, (int) strlen(req));
+    Arr reqArr(req, (int) strlen(req));
+    int wn = __cajeta_tls_write_plaintext(client, reqArr.hdr(), (int) strlen(req));
     EXPECT_EQ(wn, (int) strlen(req));
     EXPECT_GT(moveCiphertext(client, server), 0);
-    char got[256];
-    int rn = __cajeta_tls_read_plaintext(server, got, sizeof got);
+    Arr got(256);
+    int rn = __cajeta_tls_read_plaintext(server, got.hdr(), 256);
     ASSERT_EQ(rn, (int) strlen(req));
-    EXPECT_EQ(std::string(got, (size_t) rn), std::string(req));
+    EXPECT_EQ(std::string(got.data(), (size_t) rn), std::string(req));
 
     // server -> client
     const char* resp = "HTTP/1.1 200 OK\r\n\r\nhi";
-    wn = __cajeta_tls_write_plaintext(server, resp, (int) strlen(resp));
+    Arr respArr(resp, (int) strlen(resp));
+    wn = __cajeta_tls_write_plaintext(server, respArr.hdr(), (int) strlen(resp));
     EXPECT_EQ(wn, (int) strlen(resp));
     EXPECT_GT(moveCiphertext(server, client), 0);
-    rn = __cajeta_tls_read_plaintext(client, got, sizeof got);
+    Arr got2(256);
+    rn = __cajeta_tls_read_plaintext(client, got2.hdr(), 256);
     ASSERT_EQ(rn, (int) strlen(resp));
-    EXPECT_EQ(std::string(got, (size_t) rn), std::string(resp));
+    EXPECT_EQ(std::string(got2.data(), (size_t) rn), std::string(resp));
 
     __cajeta_tls_free(client);
     __cajeta_tls_free(server);

@@ -435,6 +435,7 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/net
         ${CAJETA_STDLIB_ROOT}/cajeta/net/reactor  # async I/O reactor (NET-3.1 @Native bridges, b3)
         ${CAJETA_STDLIB_ROOT}/cajeta/net/dns      # DNS (NET-2, b4) — diagnostic un-gate
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/tls      # TLS engine surface (NET-5, b6)
         ${CAJETA_STDLIB_ROOT}/cajeta/net/uri      # RFC 3986 URI parse/build (NET-6)
         ${CAJETA_STDLIB_ROOT}/cajeta/net/http     # HTTP/1.1 message model (NET-7) — pure files; net/http/socket gated
         ${CAJETA_STDLIB_ROOT}/cajeta/net/ws       # WebSocket frame codec + protocol (NET-10) — pure files; net/ws/socket gated

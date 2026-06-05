@@ -521,10 +521,26 @@ portable path.
       handshake completes purely over the two BIO pairs (no socket), then
       plaintext round-trips both ways, against an in-test ephemeral self-signed
       EC cert. `depends-on:` NET-11.1 (SHA — already built)
-- [ ] **NET-5.2** `TlsClient` wrapping a `TcpStream`/async stream:
+- [~] **NET-5.2** `TlsClient` wrapping a `TcpStream`/async stream:
       drive the handshake (feed/pull loop parking on the reactor),
       then expose `read`/`write` of plaintext. SNI set from the
       target host. `depends-on:` NET-5.1, NET-3.5
+      _(PARTIAL, b6.2: the **engine surface + pump** — `cajeta.net.tls.
+      TlsConnection` — is DONE and JIT-verified. It binds all
+      `__cajeta_tls_*` intrinsics (`@Native`, int8[] header ABI) and
+      exposes the pump primitives — `client()`/`server(cert,key)`,
+      `handshakeStep`/`feed`/`pull`/`pending`/`write`/`read`/`shutdown`,
+      SNI/ALPN. `TlsConnectionTests.handshakeAndPlaintextThroughCajeta-
+      Surface`: a client+server TlsConnection complete a handshake purely
+      over int8[] buffers (no socket) + plaintext round-trips, against an
+      in-test self-signed cert. **JIT integration solved:** the native-only
+      `__cajeta_tls_*` symbols (kept out of the bitcode to keep OpenSSL out
+      of every JIT module) are bound into the JIT via explicit
+      absoluteSymbols in JitTestHelper, the same mechanism the MinGW CRT
+      symbols use. STILL TODO: the socket-facing `TlsClient` that runs this
+      pump over `AsyncReader`/`AsyncWriter` with reactor parking — its live
+      loopback row needs the same scheduler+loopback harness the NET-4/5
+      acceptance rows await.)_
 - [ ] **NET-5.3** Certificate validation: hostname match (SAN +
       CN fallback, wildcard rules), chain verification against a
       trust store, expiry/not-before checks. **Needs SHA-256**
