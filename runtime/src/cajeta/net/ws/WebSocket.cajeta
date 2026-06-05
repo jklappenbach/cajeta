@@ -138,7 +138,16 @@ public class WebSocket {
         this.writer = null;
         this.decoder = null;
         this.protocol = null;
-        this.readScratch = new int8[WebSocket.READ_CHUNK];
+        // Bind the static-final to a local before using it as an array
+        // dimension: a direct `new int8[WebSocket.READ_CHUNK]` mis-lowers the
+        // static-field read as the global's *address* (a `ptr`) rather than
+        // loading its value, so the scratch buffer is sized/typed wrong and
+        // `receive()` reads garbage (a decoded 0-length message over a live
+        // socket). Same compiler gap AsyncReader/AsyncWriter document for
+        // `new int8[AsyncReader.DEFAULT_BUFFER]`; the local int32 pins the
+        // value load.
+        int32 rc = WebSocket.READ_CHUNK;
+        this.readScratch = new int8[rc];
         this.writeLock = null;
         this.isClient = false;
         this.maskCounter = 0;
@@ -294,8 +303,26 @@ public class WebSocket {
             }
             // Decoder is empty: pull more bytes from the socket. A 0 read is
             // an orderly transport EOF — an abnormal close if no CLOSE was
-            // exchanged.
-            int32 got = this.reader.read(this.readScratch, 0, WebSocket.READ_CHUNK);
+            // exchanged. Bind READ_CHUNK to a local int32 before passing it as
+            // the read length — a direct `WebSocket.READ_CHUNK` arg mis-lowers
+            // the static-final read as the global's address (see the ctor
+            // note); the bad length made `read` return a wrong count and the
+            // decoder see an empty/garbled frame.
+            //
+            // KNOWN LIMITATION (live-socket only; tracked for a compiler fix):
+            // this method PARKS the fiber on the socket read, then builds a
+            // WsMessage (which owns an `int8[] payload`) and returns it. A fiber
+            // park taints the parked frame's scope-exit drop chain so it
+            // OVER-DROPS the message's payload array even though it was
+            // moved/returned out — the caller can read a freed (count()==0)
+            // payload (a use-after-free; passes in isolation, fails under heap
+            // churn). No stdlib restructuring avoids it (the message must be
+            // built in, or returned up through, a parked frame). The pure
+            // codec/protocol/assembler are correct; the proper fix is in the
+            // fiber park/resume + drop-chain machinery. See the WS live-echo
+            // investigation notes.
+            int32 rc = WebSocket.READ_CHUNK;
+            int32 got = this.reader.read(this.readScratch, 0, rc);
             if (got == 0) {
                 throw heap ConnectionClosedException(
                     "WebSocket transport closed without a close frame");
@@ -318,8 +345,12 @@ public class WebSocket {
 
         if (kind == WsReadAction.MESSAGE) {
             // Detach the engine-owned message and hand it out to the caller.
+            // `#m` TRANSFERS ownership out — without the marker this `#WsMessage`
+            // return treats `m` as a borrow, so the local's scope-exit drop
+            // array-drops `m.payload` and the caller reads a freed (count()==0)
+            // payload. That is the WS live-echo 0-length-message bug.
             WsMessage m = act.takeMessage();
-            return m;
+            return #m;
         }
 
         if (kind == WsReadAction.SEND_FRAME) {
