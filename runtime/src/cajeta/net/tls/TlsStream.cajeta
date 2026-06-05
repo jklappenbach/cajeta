@@ -2,6 +2,7 @@ package cajeta.net.tls;
 
 import cajeta.lang.String;
 import cajeta.net.TcpStream;
+import cajeta.net.ByteChannel;
 
 /**
  * A TLS connection over a live [`TcpStream`](../TcpStream.cajeta) (**NET-5.2**).
@@ -19,7 +20,7 @@ import cajeta.net.TcpStream;
  * Owns its stream + engine: dropping the `TlsStream` closes the socket and
  * frees the TLS handles.
  */
-public class TlsStream {
+public class TlsStream implements ByteChannel {
 
     TcpStream stream;
     TlsConnection tls;
@@ -41,6 +42,24 @@ public class TlsStream {
         TlsConnection tls = TlsConnection.verifyingClient();
         tls.setSni(host, hostLen);
         tls.addTrust(trustPem, trustLen);
+        tls.setVerifyHost(host, hostLen);
+        return heap TlsStream(#stream, #tls);
+    }
+
+    /**
+     * Wrap a freshly-connected `stream` as a **verifying** TLS client for
+     * `host` (SNI + hostname verification) trusting the **operating-system**
+     * CA store (NET-5.3) — the real-world `https://` client path: no
+     * caller-supplied anchor, the public PKI validates the peer. Call
+     * [`handshake`](#handshake) next. (Contrast
+     * [`client`](#client), which trusts an explicit `trustPem` anchor — the
+     * private-CA / self-signed-loopback path.)
+     */
+    public static #TlsStream clientSystemTrust(#TcpStream stream, int8[] host,
+                                               int32 hostLen) {
+        TlsConnection tls = TlsConnection.verifyingClient();
+        tls.setSni(host, hostLen);
+        tls.useSystemTrust();
         tls.setVerifyHost(host, hostLen);
         return heap TlsStream(#stream, #tls);
     }
@@ -158,5 +177,79 @@ public class TlsStream {
     public void closeNotify() {
         this.tls.shutdown();
         this.flush();
+    }
+
+    // --- ByteChannel adapter (NET-8.1 / NET-9.5) ----------------------------
+    //
+    // The plaintext socket surface ([`ByteChannel`](../ByteChannel.cajeta))
+    // mapped onto the TLS pump, so the buffered
+    // [`AsyncReader`](../AsyncReader.cajeta) / [`AsyncWriter`](../AsyncWriter.cajeta)
+    // — and the HTTP/WS codecs above them — drive an encrypted transport with
+    // no code change. The buffered reader/writer always pass `offset == 0`; a
+    // non-zero offset is honoured via a small scratch copy so the contract is
+    // general.
+
+    /**
+     * [`ByteChannel.readAsync`](../ByteChannel.cajeta#readAsync): decrypt up
+     * to `length` app-data bytes into `buf[offset .. offset+length)`. Returns
+     * the count (`>= 0`); `0` is a clean TLS close (peer `close_notify`) — the
+     * EOF the buffered reader terminates on.
+     */
+    public int64 readAsync(int8[] buf, int64 offset, int64 length) {
+        int32 off = (int32) offset;
+        int32 len = (int32) length;
+        if (off == 0) {
+            return (int64) this.read(buf, len);
+        }
+        int8[] tmp = new int8[len];
+        int32 r = this.read(tmp, len);
+        int32 i = 0;
+        while (i < r) {
+            buf[off + i] = tmp[i];
+            i = i + 1;
+        }
+        return (int64) r;
+    }
+
+    /**
+     * [`ByteChannel.writeAllAsync`](../ByteChannel.cajeta#writeAllAsync):
+     * encrypt + send all of `data[offset .. offset+length)`.
+     */
+    public void writeAllAsync(int8[] data, int64 offset, int64 length) {
+        int32 off = (int32) offset;
+        int32 len = (int32) length;
+        if (off == 0) {
+            this.write(data, len);
+            return;
+        }
+        int8[] tmp = new int8[len];
+        int32 i = 0;
+        while (i < len) {
+            tmp[i] = data[off + i];
+            i = i + 1;
+        }
+        this.write(tmp, len);
+    }
+
+    /**
+     * [`ByteChannel.readWithin`](../ByteChannel.cajeta#readWithin): v1 TLS has
+     * no record-level read deadline, so this delegates to the unbounded
+     * [`readAsync`](#readAsync) (the slowloris guard applies at the plaintext
+     * socket layer; a TLS-terminating server reads under the OS socket
+     * timeout). `timeoutMs` is advisory here.
+     */
+    public int64 readWithin(int8[] buf, int64 offset, int64 length, int32 timeoutMs) {
+        return this.readAsync(buf, offset, length);
+    }
+
+    /**
+     * [`ByteChannel.close`](../ByteChannel.cajeta#close): send a clean
+     * `close_notify`, then close the underlying socket. Idempotent
+     * (`closeNotify` + [`TcpStream.close`](../TcpStream.cajeta#close) are both
+     * safe to repeat).
+     */
+    public void close() {
+        this.closeNotify();
+        this.stream.close();
     }
 }

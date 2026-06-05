@@ -86,6 +86,26 @@ public class TlsListener {
         return #tls;
     }
 
+    /**
+     * The **fiber-parking** twin of [`accept`](#accept): accept the next
+     * connection via [`TcpListener.acceptAsync`](../TcpListener.cajeta#acceptAsync)
+     * (which parks the fiber on the listen socket's readiness rather than
+     * blocking the carrier), then drive the server TLS handshake. The form an
+     * `async` server loop uses so a fiber waiting for a connection yields its
+     * carrier (the no-carrier-blocks invariant) — required when the acceptor
+     * runs on the same scheduler as the peer that will connect.
+     */
+    public #TlsStream acceptAsync() {
+        TcpStream sock = this.listener.acceptAsync();
+        TlsStream tls = TlsStream.server(#sock, this.cert, this.certLen,
+                                         this.key, this.keyLen);
+        if (this.hasAlpn) {
+            tls.supportAlpn(this.alpn, this.alpnLen);
+        }
+        tls.handshake();
+        return #tls;
+    }
+
     /** Stop listening (closes the underlying socket). */
     public void close() {
         this.listener.close();

@@ -2,6 +2,7 @@ package cajeta.net;
 
 import cajeta.lang.String;
 import cajeta.net.TcpStream;
+import cajeta.net.ByteChannel;
 
 /**
  * Buffered **async byte-stream writer** over a [`TcpStream`](TcpStream.cajeta)
@@ -56,10 +57,12 @@ public class AsyncWriter {
     public static final int32 DEFAULT_BUFFER = 8192;
 
     /**
-     * The socket this writer flushes to. **Borrowed** — not owned, not
-     * closed here.
+     * The channel this writer flushes to — a plaintext
+     * [`TcpStream`](TcpStream.cajeta) or a [`TlsStream`](tls/TlsStream.cajeta),
+     * via the [`ByteChannel`](ByteChannel.cajeta) seam (NET-8.1 / NET-9.5).
+     * **Borrowed** — not owned, not closed here.
      */
-    TcpStream stream;
+    ByteChannel stream;
 
     /**
      * Coalescing buffer: bytes staged by `write`/`writeAll` but not yet
@@ -79,7 +82,14 @@ public class AsyncWriter {
      * coalescing buffer. The stream is **borrowed**; the caller still
      * owns and closes it.
      */
-    public AsyncWriter(TcpStream stream) {
+    public AsyncWriter(ByteChannel stream) {
+        // Bind the static-final to a local before using it as an array
+        // dimension: `new int8[AsyncWriter.DEFAULT_BUFFER]` mis-lowers the
+        // static-field read as the global's *address* (a `ptr`), which the
+        // array-size path then `sext`s to i64 — an invalid-IR verify failure
+        // ("SExt only operates on integer"). A named int32 local pins the
+        // value load. (Compiler-gap workaround; same class as the documented
+        // `new T[this.field]` mistype.)
         // Bind the static-final to a local before using it as an array
         // dimension: `new int8[AsyncWriter.DEFAULT_BUFFER]` mis-lowers the
         // static-field read as the global's *address* (a `ptr`), which the
@@ -99,7 +109,7 @@ public class AsyncWriter {
      * must be `> 0`; pick small for a latency-sensitive request/response
      * exchange, large to amortize syscalls on a bulk upload.
      */
-    public AsyncWriter(TcpStream stream, int32 capacity) {
+    public AsyncWriter(ByteChannel stream, int32 capacity) {
         int32 c = capacity;
         if (c < 1) {
             c = 1;
