@@ -109,13 +109,13 @@ graphics specs both depend on. Finishing Part B is the **definition of done** fo
 foundation.
 
 ### Stage B1 — Linear-algebra value types
-- [ ] `Matrix<T,R,C>` — lowers to `<R*C x T>` (or array-of-vectors); reuses the non-type-param substrate from A3/S1
-- [ ] Matrix construction, element/row/column access, `m[i][j]`; `matmul`, transpose, identity, elementwise ops
-- [ ] `Matrix × Vector` / `Matrix × Matrix`; determinant/inverse for 2/3/4-square (transform sizes)
+- [x] `Matrix<T,R,C>` — lowers to `<R*C x T>`; reuses the non-type-param substrate from A3/S1 (`matrix-value-type-plan.md` S1–S8: host + CPU/VK/AMD on-device, methods, by-value params)
+- [x] Matrix construction, element/row/column access, `m[i][j]`; `matmul`, transpose, identity, elementwise ops
+- [x] `Matrix × Vector` / `Matrix × Matrix` — **done**; determinant/inverse for 2/3/4-square — *still open*
 - [ ] `Quaternion` type + slerp/normalize/rotate
-- [ ] Swizzles `.xyz`/`.xy`/`.xxyy` (multi-component reads — deferred from Vector v1)
-- [ ] Vector comparisons (`==`/`<` → `<N x i1>` mask) + `any`/`all`/`select`
-- [ ] `cross`, `reflect`, `refract`, `distance`, `clamp`, `lerp`, `min`/`max` (HLSL/GLSL intrinsic set)
+- [ ] Swizzles `.xyz`/`.xy`/`.xxyy` (multi-component reads — deferred from Vector v1) — **next (C)**
+- [x] Vector/Matrix comparisons → `<N x i1>` mask + `any`/`all`/`select` (2026-06-05, host + CPU/VK). **Rule: comparison operators on value types yield per-lane masks; equality is NOT special — `(a==b).all()` for whole-object eq. This OVERTURNED the B1 S4 `Matrix ==`→boolean.** Masks are register-only (bool-element buffers/args stay ABI-rejected). `select` = the branchless primitive (ReLU/min). See the comparison-mask memo.
+- [x] `cross`, `reflect`, `refract`, `distance`, `clamp`, `lerp`, `min`/`max` (2026-06-05, host + CPU/VK; float-only — **integer min/max/clamp deferred** pending device element-signedness tracking)
 
 ### Stage B2 — Device math intrinsics
 - [x] **Increment 1 — native-lowering subset, in kernels (2026-06-02).** `Math.{sqrt,floor,ceil,trunc,round,abs,min,max,fma}` lower in the device `DeviceLowerer` (`KernelLowering.cpp::lowerMathCall`) to LLVM intrinsics that select natively on **all four backends** — no device math-library link. Operates in the argument's FP type (f32-native; not the host's forced f64). Transcendentals give a clean `XPU-N01` until increment 2. Tests: `XpuMathDeviceTests` (emit + CPU + clean-reject + Vulkan/RADV + AMD/gfx1151 on-device, 5/5 green).

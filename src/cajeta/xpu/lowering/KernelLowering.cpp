@@ -1414,6 +1414,51 @@ private:
                                       "floating-point element type");
             return vecops::normalize(builder, self);
         }
+        // B1 intrinsics A1 — element-wise min/max/clamp/lerp (float-only v1).
+        // Scalar args (clamp bounds, lerp t) are coerced to the element type.
+        llvm::Type* elemTy = vt->getElementType();
+        if (name == "min" || name == "max") {
+            if (!isFloat) unsupported("Vector." + name + " requires a "
+                                      "floating-point element type");
+            if (args.size() != 1) unsupported("Vector." + name + " expects one argument");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            return name == "min"
+                ? vecops::vmin(builder, self, other, isFloat, /*isSigned=*/true)
+                : vecops::vmax(builder, self, other, isFloat, /*isSigned=*/true);
+        }
+        if (name == "clamp") {
+            if (!isFloat) unsupported("Vector.clamp requires a "
+                                      "floating-point element type");
+            if (args.size() != 2) unsupported("Vector.clamp expects two arguments (lo, hi)");
+            llvm::Value* lo = vecops::coerceScalar(builder, lowerExpr(args[0].expression), elemTy);
+            llvm::Value* hi = vecops::coerceScalar(builder, lowerExpr(args[1].expression), elemTy);
+            return vecops::clamp(builder, self, lo, hi, isFloat, /*isSigned=*/true);
+        }
+        if (name == "lerp") {
+            if (!isFloat) unsupported("Vector.lerp requires a "
+                                      "floating-point element type");
+            if (args.size() != 2) unsupported("Vector.lerp expects two arguments (other, t)");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            llvm::Value* t = vecops::coerceScalar(builder, lowerExpr(args[1].expression), elemTy);
+            return vecops::lerp(builder, self, other, t);
+        }
+        // B1 intrinsics A2 — cross (3-D) / reflect / refract / distance, float-only.
+        if (name == "cross" || name == "reflect" || name == "refract"
+                || name == "distance") {
+            if (!isFloat) unsupported("Vector." + name + " requires a "
+                                      "floating-point element type");
+            if (name == "cross" && vt->getNumElements() != 3)
+                unsupported("Vector.cross requires 3-component vectors");
+            unsigned want = name == "refract" ? 2u : 1u;
+            if (args.size() != want)
+                unsupported("Vector." + name + " argument count");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            if (name == "cross")    return vecops::cross(builder, self, other);
+            if (name == "reflect")  return vecops::reflect(builder, self, other);
+            if (name == "distance") return vecops::distance(builder, self, other);
+            llvm::Value* eta = vecops::coerceScalar(builder, lowerExpr(args[1].expression), elemTy);
+            return vecops::refract(builder, self, other, eta);
+        }
         unsupported("unknown Vector method '" + name + "'");
     }
 
@@ -1598,6 +1643,29 @@ private:
             }
         }
         const std::string& name = mc->getMethodCallName();
+
+        // Inline comparison-mask methods: `(a OP b).all()/.any()/.select(x,y)`.
+        // The receiver is a non-identifier expression yielding a `<N x i1>` mask
+        // (vector/matrix comparisons lower to masks via applyBinOp). all/any
+        // reduce to a boolean; select blends two values per lane.
+        if (recv.empty() && (name == "all" || name == "any" || name == "select")
+                && !mc->getChildren().empty()) {
+            if (auto recvExpr = std::dynamic_pointer_cast<Expression>(
+                    mc->getChildren()[0])) {
+                llvm::Value* mask = lowerExpr(recvExpr);
+                if (mask && mask->getType()->isVectorTy()
+                        && mask->getType()->getScalarType()->isIntegerTy(1)) {
+                    if (name == "all") return builder.CreateAndReduce(mask);
+                    if (name == "any") return builder.CreateOrReduce(mask);
+                    const auto& sargs = mc->getParameters();
+                    if (sargs.size() != 2)
+                        unsupported("mask select expects (whenTrue, whenFalse)");
+                    llvm::Value* a = lowerExpr(sargs[0].expression);
+                    llvm::Value* b = lowerExpr(sargs[1].expression);
+                    return builder.CreateSelect(mask, a, b, "mask.select");
+                }
+            }
+        }
 
         if (recv == "Thread") {
             if (name == "x") return target.threadId(builder, mod, 0);

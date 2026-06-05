@@ -142,6 +142,139 @@ TEST(VectorTests, normalizeHelper) {
         "        return (int32)(n.y + 0.5f);\n"), 1);  // 1.0 + 0.5 -> 1
 }
 
+// B1 intrinsics A1 — element-wise min/max, scalar-bound clamp, and lerp.
+// min((1,5,3),(4,2,6)) = (1,2,3) -> sum 6.
+TEST(VectorTests, minHelper) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
+        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
+        "        Vector<float32,3> m = a.min(b);\n"
+        "        return (int32)(m.x + m.y + m.z);\n"), 6);  // 1+2+3
+}
+
+// max((1,5,3),(4,2,6)) = (4,5,6) -> sum 15.
+TEST(VectorTests, maxHelper) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
+        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
+        "        Vector<float32,3> m = a.max(b);\n"
+        "        return (int32)(m.x + m.y + m.z);\n"), 15);  // 4+5+6
+}
+
+// clamp((-2,5,20), 0, 10) = (0,5,10) -> sum 15.
+TEST(VectorTests, clampHelper) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,3> v = new Vector<float32,3>(-2.0f, 5.0f, 20.0f);\n"
+        "        Vector<float32,3> c = v.clamp(0.0f, 10.0f);\n"
+        "        return (int32)(c.x + c.y + c.z);\n"), 15);  // 0+5+10
+}
+
+// lerp((0,0),(10,20), 0.5) = (5,10) -> sum 15.
+TEST(VectorTests, lerpHelper) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,2> a = new Vector<float32,2>(0.0f, 0.0f);\n"
+        "        Vector<float32,2> b = new Vector<float32,2>(10.0f, 20.0f);\n"
+        "        Vector<float32,2> r = a.lerp(b, 0.5f);\n"
+        "        return (int32)(r.x + r.y);\n"), 15);  // 5+10
+}
+
+// B1 intrinsics A2 — geometry. cross((1,0,0),(0,1,0)) = (0,0,1) -> z lane 1.
+TEST(VectorTests, crossHelper) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 0.0f, 0.0f);\n"
+        "        Vector<float32,3> b = new Vector<float32,3>(0.0f, 1.0f, 0.0f);\n"
+        "        Vector<float32,3> c = a.cross(b);\n"
+        "        return (int32)(c.x + c.y + 2.0f * c.z);\n"), 2);  // (0,0,1): 2*1
+}
+
+// reflect((1,-1), (0,1)) = (1,-1) - 2*(-1)*(0,1) = (1,1) -> sum 2.
+TEST(VectorTests, reflectHelper) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,2> i = new Vector<float32,2>(1.0f, -1.0f);\n"
+        "        Vector<float32,2> n = new Vector<float32,2>(0.0f, 1.0f);\n"
+        "        Vector<float32,2> r = i.reflect(n);\n"
+        "        return (int32)(r.x + r.y);\n"), 2);  // (1,1)
+}
+
+// distance((0,0),(3,4)) = 5.
+TEST(VectorTests, distanceHelper) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,2> a = new Vector<float32,2>(0.0f, 0.0f);\n"
+        "        Vector<float32,2> b = new Vector<float32,2>(3.0f, 4.0f);\n"
+        "        return (int32) a.distance(b);\n"), 5);
+}
+
+// refract straight-down through eta=1 is the unchanged ray: i=(0,-1), n=(0,1),
+// dot(n,i)=-1, k=1, result = i - (… )*n = (0,-1) -> sum -1.
+TEST(VectorTests, refractHelper) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,2> i = new Vector<float32,2>(0.0f, -1.0f);\n"
+        "        Vector<float32,2> n = new Vector<float32,2>(0.0f, 1.0f);\n"
+        "        Vector<float32,2> r = i.refract(n, 1.0f);\n"
+        "        return (int32)(r.x + r.y);\n"), -1);  // (0,-1)
+}
+
+// cross requires 3-component vectors.
+TEST(VectorTests, crossNon3DRejected) {
+    try {
+        runI32(
+            "        Vector<float32,2> a = new Vector<float32,2>(1.0f, 0.0f);\n"
+            "        Vector<float32,2> b = new Vector<float32,2>(0.0f, 1.0f);\n"
+            "        Vector<float32,2> c = a.cross(b);\n"
+            "        return 0;\n");
+        FAIL() << "expected CAJETA_ERROR_VECTOR_METHOD";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VECTOR_METHOD");
+    }
+}
+
+// Integer min/max is a follow-on — rejected for now with a clean diagnostic.
+TEST(VectorTests, integerMinRejected) {
+    try {
+        runI32(
+            "        Vector<int32,2> a = new Vector<int32,2>(1, 5);\n"
+            "        Vector<int32,2> b = new Vector<int32,2>(4, 2);\n"
+            "        Vector<int32,2> m = a.min(b);\n"
+            "        return m.x;\n");
+        FAIL() << "expected CAJETA_ERROR_VECTOR_METHOD";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VECTOR_METHOD");
+    }
+}
+
+// B intrinsics — comparison masks + all/any/select. a=(1,5,3), b=(4,2,3):
+//   a < b   = (T,F,F)        -> .any()=true, .all()=false
+//   a == b  = (F,F,T)        -> .any()=true, .all()=false
+TEST(VectorTests, comparisonMaskAnyAll) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
+        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 2.0f, 3.0f);\n"
+        "        int32 ltAny = (a < b).any() ? 1 : 0;\n"     // 1
+        "        int32 ltAll = (a < b).all() ? 1 : 0;\n"     // 0
+        "        int32 eqAny = (a == b).any() ? 1 : 0;\n"    // 1
+        "        return ltAny * 100 + ltAll * 10 + eqAny;\n"), 101);
+}
+
+// select: pick a where (a < b), else b -> the element-wise min.
+//   a=(1,5,3) b=(4,2,6): (a<b)=(T,F,T) -> (1,2,3) -> sum 6.
+TEST(VectorTests, maskSelectIsMin) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
+        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
+        "        Vector<float32,3> m = (a < b).select(a, b);\n"
+        "        return (int32)(m.x + m.y + m.z);\n"), 6);  // 1+2+3
+}
+
+// A scalar RHS broadcasts: (x > 0) is a per-lane mask. x=(-1,2,-3):
+//   (x > 0) = (F,T,F) -> select(x, 0) = (0,2,0) (a ReLU) -> sum 2.
+TEST(VectorTests, maskScalarBroadcastRelu) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,3> x = new Vector<float32,3>(-1.0f, 2.0f, -3.0f);\n"
+        "        Vector<float32,3> z = new Vector<float32,3>(0.0f, 0.0f, 0.0f);\n"
+        "        Vector<float32,3> y = (x > 0.0f).select(x, z);\n"
+        "        return (int32)(y.x + y.y + y.z);\n"), 2);  // ReLU -> (0,2,0)
+}
+
 // A component beyond the lane count is rejected (.w on N=3).
 TEST(VectorTests, componentOutOfRangeRejected) {
     try {

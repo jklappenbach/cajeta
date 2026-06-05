@@ -31,10 +31,14 @@ code to a pure-intrinsic value type, like `Vector<T,N>`.
   → `Vector<T,C>` row (so `m[r][c]` reads via the vector index path); `m[r][c]=v`
   writes the matrix slot directly at flat lane `r*C+c` (`BinaryOpExpression`),
   not the row temporary. Dynamic indices supported.
-- **S4 (DONE).** `+ - /` element-wise (same shape → `Matrix<T,R,C>`), `== !=`
-  element-wise reduced to boolean (`AndReduce`), methods `transpose` / `identity`
-  (square) / `row` / `col` / `hadamard` intercepted on a `CajetaMatrix` receiver
-  in `MethodCallExpression`.
+- **S4 (DONE; `==`/`!=` SUPERSEDED 2026-06-05).** `+ - /` element-wise (same
+  shape → `Matrix<T,R,C>`), methods `transpose` / `identity` (square) / `row` /
+  `col` / `hadamard` intercepted on a `CajetaMatrix` receiver in
+  `MethodCallExpression`. ~~`== !=` reduced to boolean (`AndReduce`)~~ →
+  **overturned by the value-type comparison-mask rule**: `==`/`!=` now yield a
+  per-lane `<R*C x i1>` mask (`Matrix<boolean,R,C>`); whole-matrix equality is
+  `(a == b).all()`. Mask methods `all`/`any`/`select`. See the comparison-mask
+  memo + `cajeta-gpu-plan.md` B1.
 - **S5 (DONE).** `*` = matmul (`generateMatrixMul`): Matrix*Matrix (K checked) +
   Matrix*Vector + Matrix*scalar, `CAJETA_ERROR_MATRIX_SHAPE` on mismatch. This is
   the K/shape-generic operator the current overloading mechanism cannot express
