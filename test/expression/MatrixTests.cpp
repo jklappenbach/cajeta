@@ -356,3 +356,76 @@ TEST(MatrixTests, hadamard) {
         "}\n";
     EXPECT_FLOAT_EQ(runF32(src), 170.0f);
 }
+
+// ---- S7: diagnostics ---------------------------------------------------------
+
+// A zero dimension is rejected at construction.
+TEST(MatrixTests, zeroDimensionRejected) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,0,2> m = stack Matrix<float32,0,2>();\n"
+        "        return 0.0f;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_MATRIX_DIMENSIONS";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_DIMENSIONS");
+    }
+}
+
+// An unknown method on a matrix is a clean diagnostic.
+TEST(MatrixTests, unknownMethodRejected) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(1.0f,2.0f,3.0f,4.0f);\n"
+        "        return m.inverse();\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_MATRIX_METHOD";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_METHOD");
+    }
+}
+
+// identity() on a non-square matrix is rejected.
+TEST(MatrixTests, identityNonSquareRejected) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,3> m = stack Matrix<float32,2,3>(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
+        "        Matrix<float32,2,3> i = m.identity();\n"
+        "        return i[0][0];\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_MATRIX_METHOD";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_METHOD");
+    }
+}
+
+// Element-wise op on mismatched shapes is rejected.
+TEST(MatrixTests, elementwiseShapeMismatchRejected) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f,2.0f,3.0f,4.0f);\n"
+        "        Matrix<float32,2,3> b = stack Matrix<float32,2,3>(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
+        "        Matrix<float32,2,2> c = a + b;\n"
+        "        return c[0][0];\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_MATRIX_SHAPE";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_SHAPE");
+    }
+}
