@@ -141,5 +141,110 @@ namespace vecops {
         return b.CreateFDiv(v, s, "vec.norm");
     }
 
+    inline unsigned laneCount(llvm::Value* v) {
+        return llvm::cast<llvm::FixedVectorType>(v->getType())->getNumElements();
+    }
+
+    // Element-wise min / max. Float -> minnum/maxnum; integer -> the
+    // signedness-correct smin/umin / smax/umax. All three select natively as
+    // vector intrinsics on every backend.
+    inline llvm::Value* vmin(llvm::IRBuilderBase& b, llvm::Value* a,
+                             llvm::Value* c, bool isFloat, bool isSigned) {
+        llvm::Intrinsic::ID id = isFloat ? llvm::Intrinsic::minnum
+                                : (isSigned ? llvm::Intrinsic::smin
+                                            : llvm::Intrinsic::umin);
+        return b.CreateBinaryIntrinsic(id, a, c, nullptr, "vec.min");
+    }
+    inline llvm::Value* vmax(llvm::IRBuilderBase& b, llvm::Value* a,
+                             llvm::Value* c, bool isFloat, bool isSigned) {
+        llvm::Intrinsic::ID id = isFloat ? llvm::Intrinsic::maxnum
+                                : (isSigned ? llvm::Intrinsic::smax
+                                            : llvm::Intrinsic::umax);
+        return b.CreateBinaryIntrinsic(id, a, c, nullptr, "vec.max");
+    }
+
+    // clamp(v, lo, hi) -> max(min(v, hi), lo), with scalar bounds broadcast
+    // across the lanes. lo/hi are already the element type.
+    inline llvm::Value* clamp(llvm::IRBuilderBase& b, llvm::Value* v,
+                              llvm::Value* lo, llvm::Value* hi, bool isFloat,
+                              bool isSigned) {
+        unsigned n = laneCount(v);
+        llvm::Value* loV = splat(b, lo, n);
+        llvm::Value* hiV = splat(b, hi, n);
+        return vmax(b, vmin(b, v, hiV, isFloat, isSigned), loV, isFloat, isSigned);
+    }
+
+    // lerp(a, b, t) -> a + (b - a) * t, t a scalar broadcast across the lanes.
+    // Float element only (the only sensible interpolation domain).
+    inline llvm::Value* lerp(llvm::IRBuilderBase& b, llvm::Value* a,
+                             llvm::Value* c, llvm::Value* t) {
+        llvm::Value* tV = splat(b, t, laneCount(a));
+        llvm::Value* diff = b.CreateFSub(c, a, "vec.lerp.diff");
+        llvm::Value* scaled = b.CreateFMul(diff, tV, "vec.lerp.mul");
+        return b.CreateFAdd(a, scaled, "vec.lerp");
+    }
+
+    // cross(a, b) -> the 3-D cross product (`<3 x T>`, float element only):
+    //   (ay*bz - az*by, az*bx - ax*bz, ax*by - ay*bx).
+    inline llvm::Value* cross(llvm::IRBuilderBase& b, llvm::Value* a,
+                              llvm::Value* c) {
+        llvm::Value* ax = extractLane(b, a, 0u), * ay = extractLane(b, a, 1u),
+                   * az = extractLane(b, a, 2u);
+        llvm::Value* cx = extractLane(b, c, 0u), * cy = extractLane(b, c, 1u),
+                   * cz = extractLane(b, c, 2u);
+        llvm::Value* x = b.CreateFSub(b.CreateFMul(ay, cz), b.CreateFMul(az, cy),
+                                      "cross.x");
+        llvm::Value* y = b.CreateFSub(b.CreateFMul(az, cx), b.CreateFMul(ax, cz),
+                                      "cross.y");
+        llvm::Value* z = b.CreateFSub(b.CreateFMul(ax, cy), b.CreateFMul(ay, cx),
+                                      "cross.z");
+        llvm::Value* acc = llvm::UndefValue::get(a->getType());
+        acc = insertLane(b, acc, x, 0u);
+        acc = insertLane(b, acc, y, 1u);
+        return insertLane(b, acc, z, 2u);
+    }
+
+    // reflect(i, n) -> i - 2*dot(i,n)*n (n assumed unit length). Float element.
+    inline llvm::Value* reflect(llvm::IRBuilderBase& b, llvm::Value* i,
+                                llvm::Value* n) {
+        llvm::Value* d = dot(b, i, n, /*isFloat=*/true);
+        llvm::Value* two = llvm::ConstantFP::get(d->getType(), 2.0);
+        llvm::Value* s = splat(b, b.CreateFMul(two, d), laneCount(i));
+        return b.CreateFSub(i, b.CreateFMul(s, n), "vec.reflect");
+    }
+
+    // distance(a, b) -> length(a - b), a scalar. Float element only.
+    inline llvm::Value* distance(llvm::IRBuilderBase& b, llvm::Value* a,
+                                 llvm::Value* c) {
+        return length(b, b.CreateFSub(a, c, "vec.dist.diff"));
+    }
+
+    // refract(i, n, eta) -> the GLSL refraction (n, i assumed unit; eta the
+    // ratio of indices). k = 1 - eta^2*(1 - dot(n,i)^2); total internal
+    // reflection (k < 0) yields the zero vector. Float element only.
+    inline llvm::Value* refract(llvm::IRBuilderBase& b, llvm::Value* i,
+                                llvm::Value* n, llvm::Value* eta) {
+        llvm::Type* ft = eta->getType();
+        llvm::Value* one = llvm::ConstantFP::get(ft, 1.0);
+        llvm::Value* zero = llvm::ConstantFP::get(ft, 0.0);
+        llvm::Value* ni = dot(b, n, i, /*isFloat=*/true);
+        llvm::Value* eta2 = b.CreateFMul(eta, eta);
+        llvm::Value* k = b.CreateFSub(
+            one, b.CreateFMul(eta2, b.CreateFSub(one, b.CreateFMul(ni, ni))));
+        // sqrt(max(k,0)) keeps the math NaN-free; the select masks TIR to zero.
+        llvm::Value* sk = b.CreateUnaryIntrinsic(
+            llvm::Intrinsic::sqrt,
+            b.CreateBinaryIntrinsic(llvm::Intrinsic::maxnum, k, zero), nullptr);
+        llvm::Value* coef = b.CreateFAdd(b.CreateFMul(eta, ni), sk);
+        unsigned lanes = laneCount(i);
+        llvm::Value* res = b.CreateFSub(
+            b.CreateFMul(splat(b, eta, lanes), i),
+            b.CreateFMul(splat(b, coef, lanes), n), "vec.refract");
+        llvm::Value* tir = b.CreateVectorSplat(
+            lanes, b.CreateFCmpOLT(k, zero), "vec.refract.tir");
+        return b.CreateSelect(tir, llvm::Constant::getNullValue(i->getType()),
+                              res, "vec.refract.sel");
+    }
+
 } // namespace vecops
 } // namespace cajeta

@@ -1831,6 +1831,46 @@ namespace cajeta {
                 llvm::Value* self = loadIfLValue(module, receiver, exprChild);
                 bool isFloat = vecT->getElementType()->getLlvmType()
                                    ->isFloatingPointTy();
+                // A boolean-element vector is a comparison MASK (`<N x i1>`):
+                // reduce with all()/any(), blend with select(a, b). Masks have
+                // no arithmetic/geometry methods.
+                bool isMask = vecT->getElementType()->getLlvmType()
+                                  ->isIntegerTy(1);
+                if (isMask) {
+                    if (methodCallName == "all" || methodCallName == "any") {
+                        if (!parameters.empty()) {
+                            throw Exception(
+                                "Vector mask " + methodCallName
+                                + " takes no arguments",
+                                "CAJETA_ERROR_VECTOR_METHOD");
+                        }
+                        resolvedType = CajetaType::of("boolean");
+                        return methodCallName == "all"
+                            ? builder->CreateAndReduce(self)
+                            : builder->CreateOrReduce(self);
+                    }
+                    if (methodCallName == "select") {
+                        if (parameters.size() != 2) {
+                            throw Exception(
+                                "Vector mask select expects 2 arguments "
+                                "(whenTrue, whenFalse)",
+                                "CAJETA_ERROR_VECTOR_METHOD");
+                        }
+                        llvm::Value* a = loadIfLValue(module,
+                            parameters[0].expression->generateCode(module),
+                            parameters[0].expression);
+                        llvm::Value* b = loadIfLValue(module,
+                            parameters[1].expression->generateCode(module),
+                            parameters[1].expression);
+                        if (!parameters[0].expression->getResolvedType())
+                            parameters[0].expression->resolveTypes(module);
+                        resolvedType = parameters[0].expression->getResolvedType();
+                        return builder->CreateSelect(self, a, b, "vec.select");
+                    }
+                    throw Exception(
+                        "Vector mask has no method '" + methodCallName + "'",
+                        "CAJETA_ERROR_VECTOR_METHOD");
+                }
                 if (methodCallName == "dot") {
                     if (parameters.size() != 1) {
                         throw Exception("Vector.dot expects 1 argument",
@@ -1860,6 +1900,125 @@ namespace cajeta {
                     resolvedType = vecT;
                     return vecops::normalize(*builder, self);
                 }
+                // B1 intrinsics A1 — element-wise min/max/clamp/lerp. v1 is
+                // float-only (symmetric with the device path, which does not yet
+                // track per-vector element signedness for the integer smin/umin
+                // split); the vecops helpers are signedness-general for the
+                // integer follow-on.
+                llvm::Type* elemLlvm = vecT->getElementType()->getLlvmType();
+                bool isSigned =
+                    (vecT->getElementType()->getTypeFlags() & SIGNED_FLAG) != 0;
+                if (methodCallName == "min" || methodCallName == "max") {
+                    if (!isFloat) {
+                        throw Exception(
+                            "Vector." + methodCallName + " requires a "
+                            "floating-point element type (integer min/max is a "
+                            "follow-on)", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (parameters.size() != 1) {
+                        throw Exception(
+                            "Vector." + methodCallName + " expects 1 argument",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    resolvedType = vecT;
+                    return methodCallName == "min"
+                        ? vecops::vmin(*builder, self, other, isFloat, isSigned)
+                        : vecops::vmax(*builder, self, other, isFloat, isSigned);
+                }
+                if (methodCallName == "clamp") {
+                    if (!isFloat) {
+                        throw Exception(
+                            "Vector.clamp requires a floating-point element type "
+                            "(integer clamp is a follow-on)",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (parameters.size() != 2) {
+                        throw Exception(
+                            "Vector.clamp expects 2 arguments (lo, hi)",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* lo = vecops::coerceScalar(*builder,
+                        loadIfLValue(module,
+                            parameters[0].expression->generateCode(module),
+                            parameters[0].expression), elemLlvm);
+                    llvm::Value* hi = vecops::coerceScalar(*builder,
+                        loadIfLValue(module,
+                            parameters[1].expression->generateCode(module),
+                            parameters[1].expression), elemLlvm);
+                    resolvedType = vecT;
+                    return vecops::clamp(*builder, self, lo, hi, isFloat, isSigned);
+                }
+                if (methodCallName == "lerp") {
+                    if (!isFloat) {
+                        throw Exception(
+                            "Vector.lerp requires a floating-point element type",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (parameters.size() != 2) {
+                        throw Exception(
+                            "Vector.lerp expects 2 arguments (other, t)",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Value* t = vecops::coerceScalar(*builder,
+                        loadIfLValue(module,
+                            parameters[1].expression->generateCode(module),
+                            parameters[1].expression), elemLlvm);
+                    resolvedType = vecT;
+                    return vecops::lerp(*builder, self, other, t);
+                }
+                // B1 intrinsics A2 — geometry: cross (3-D)/reflect/refract
+                // (Vector results) and distance (scalar). All float-only.
+                if (methodCallName == "cross" || methodCallName == "reflect"
+                        || methodCallName == "refract"
+                        || methodCallName == "distance") {
+                    if (!isFloat) {
+                        throw Exception(
+                            "Vector." + methodCallName + " requires a "
+                            "floating-point element type",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (methodCallName == "cross" && vecT->getLanes() != 3) {
+                        throw Exception(
+                            "Vector.cross requires 3-component vectors (got "
+                            + vecT->toCanonical() + ")",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    size_t want = methodCallName == "refract" ? 2 : 1;
+                    if (parameters.size() != want) {
+                        throw Exception(
+                            "Vector." + methodCallName + " expects "
+                            + std::to_string(want) + " argument(s)",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    if (methodCallName == "cross") {
+                        resolvedType = vecT;
+                        return vecops::cross(*builder, self, other);
+                    }
+                    if (methodCallName == "reflect") {
+                        resolvedType = vecT;
+                        return vecops::reflect(*builder, self, other);
+                    }
+                    if (methodCallName == "distance") {
+                        resolvedType = vecT->getElementType();
+                        return vecops::distance(*builder, self, other);
+                    }
+                    // refract(n, eta)
+                    llvm::Value* eta = vecops::coerceScalar(*builder,
+                        loadIfLValue(module,
+                            parameters[1].expression->generateCode(module),
+                            parameters[1].expression), elemLlvm);
+                    resolvedType = vecT;
+                    return vecops::refract(*builder, self, other, eta);
+                }
                 throw Exception(
                     "Vector has no method '" + methodCallName + "'",
                     "CAJETA_ERROR_VECTOR_METHOD");
@@ -1874,6 +2033,43 @@ namespace cajeta {
                 bool isFloat = matT->getElementType()->getLlvmType()
                                    ->isFloatingPointTy();
                 unsigned R = matT->getRows(), C = matT->getCols();
+                // A boolean-element matrix is a comparison MASK (`<R*C x i1>`):
+                // reduce with all()/any() (whole-matrix `(a==b).all()`), blend
+                // with select(a, b).
+                if (matT->getElementType()->getLlvmType()->isIntegerTy(1)) {
+                    if (methodCallName == "all" || methodCallName == "any") {
+                        if (!parameters.empty()) {
+                            throw Exception(
+                                "Matrix mask " + methodCallName
+                                + " takes no arguments",
+                                "CAJETA_ERROR_MATRIX_METHOD");
+                        }
+                        resolvedType = CajetaType::of("boolean");
+                        return methodCallName == "all"
+                            ? builder->CreateAndReduce(self)
+                            : builder->CreateOrReduce(self);
+                    }
+                    if (methodCallName == "select") {
+                        if (parameters.size() != 2) {
+                            throw Exception(
+                                "Matrix mask select expects 2 arguments",
+                                "CAJETA_ERROR_MATRIX_METHOD");
+                        }
+                        llvm::Value* a = loadIfLValue(module,
+                            parameters[0].expression->generateCode(module),
+                            parameters[0].expression);
+                        llvm::Value* b = loadIfLValue(module,
+                            parameters[1].expression->generateCode(module),
+                            parameters[1].expression);
+                        if (!parameters[0].expression->getResolvedType())
+                            parameters[0].expression->resolveTypes(module);
+                        resolvedType = parameters[0].expression->getResolvedType();
+                        return builder->CreateSelect(self, a, b, "mat.select");
+                    }
+                    throw Exception(
+                        "Matrix mask has no method '" + methodCallName + "'",
+                        "CAJETA_ERROR_MATRIX_METHOD");
+                }
                 if (methodCallName == "transpose") {
                     resolvedType = CajetaMatrix::getOrCreate(
                         module, matT->getElementType(), C, R);

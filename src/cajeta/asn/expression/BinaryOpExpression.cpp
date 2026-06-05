@@ -746,14 +746,19 @@ namespace cajeta {
                                     : builder->CreateUDiv(l, r, "mat.div"));
                         case BINARY_OP_EQ:
                         case BINARY_OP_NE: {
-                            llvm::Value* cmp = isFloat
-                                ? builder->CreateFCmpOEQ(l, r, "mat.cmp")
-                                : builder->CreateICmpEQ(l, r, "mat.cmp");
-                            llvm::Value* all =
-                                builder->CreateAndReduce(cmp);  // all lanes equal
-                            resolvedType = CajetaType::of("boolean");
-                            return binaryOp == BINARY_OP_NE
-                                ? builder->CreateNot(all, "mat.ne") : all;
+                            // Per-lane mask (the value-type comparison rule): a
+                            // `<R*C x i1>` typed Matrix<boolean,R,C>. Whole-matrix
+                            // equality is `(a == b).all()`. (Overturned B1 S4's
+                            // reduce-to-boolean — see the comparison-mask memo.)
+                            llvm::Value* cmp = binaryOp == BINARY_OP_NE
+                                ? (isFloat ? builder->CreateFCmpONE(l, r, "mat.cmp")
+                                           : builder->CreateICmpNE(l, r, "mat.cmp"))
+                                : (isFloat ? builder->CreateFCmpOEQ(l, r, "mat.cmp")
+                                           : builder->CreateICmpEQ(l, r, "mat.cmp"));
+                            resolvedType = CajetaMatrix::getOrCreate(
+                                module, CajetaType::of("boolean"),
+                                lhsM->getRows(), lhsM->getCols());
+                            return cmp;
                         }
                         default: break;
                     }
@@ -761,6 +766,70 @@ namespace cajeta {
                 if (llvm::Value* mv = generateMatrixMul(
                         module, lhs, rhs, lhsAst, rhsAst))
                     return mv;
+            }
+        }
+
+        // Vector comparisons -> a per-lane `<N x i1>` mask, typed
+        // Vector<boolean,N> (the value-type comparison rule). `== != < <= > >=`
+        // all produce masks; reduce with `.all()` / `.any()`, blend with
+        // `.select(a, b)`. The generic scalar comparison path below mis-checks
+        // FP-ness on a vector (isFloatingPointTy() is false for `<N x T>`), so
+        // vectors are handled here first.
+        if (lhsAst) {
+            if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+            if (auto lhsV = dynamic_pointer_cast<CajetaVector>(
+                    lhsAst->getResolvedType())) {
+                bool isCmp = binaryOp == BINARY_OP_EQ || binaryOp == BINARY_OP_NE
+                    || binaryOp == BINARY_OP_LT || binaryOp == BINARY_OP_LE
+                    || binaryOp == BINARY_OP_GT || binaryOp == BINARY_OP_GE;
+                if (isCmp) {
+                    bool isFloat = lhsV->getElementType()->getLlvmType()
+                        ->isFloatingPointTy();
+                    bool isSigned =
+                        (lhsV->getElementType()->getTypeFlags() & SIGNED_FLAG) != 0;
+                    llvm::Value* l = loadIfLValue(module, lhs, lhsAst);
+                    llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+                    // A scalar RHS broadcasts to the lane count.
+                    if (!r->getType()->isVectorTy()) {
+                        auto* vt = llvm::cast<llvm::FixedVectorType>(l->getType());
+                        r = vecops::splat(*builder,
+                            vecops::coerceScalar(*builder, r, vt->getElementType()),
+                            vt->getNumElements());
+                    }
+                    llvm::Value* cmp = nullptr;
+                    switch (binaryOp) {
+                        case BINARY_OP_EQ: cmp = isFloat
+                            ? builder->CreateFCmpOEQ(l, r, "vec.cmp")
+                            : builder->CreateICmpEQ(l, r, "vec.cmp"); break;
+                        case BINARY_OP_NE: cmp = isFloat
+                            ? builder->CreateFCmpONE(l, r, "vec.cmp")
+                            : builder->CreateICmpNE(l, r, "vec.cmp"); break;
+                        case BINARY_OP_LT: cmp = isFloat
+                            ? builder->CreateFCmpOLT(l, r, "vec.cmp")
+                            : (isSigned ? builder->CreateICmpSLT(l, r, "vec.cmp")
+                                        : builder->CreateICmpULT(l, r, "vec.cmp"));
+                            break;
+                        case BINARY_OP_LE: cmp = isFloat
+                            ? builder->CreateFCmpOLE(l, r, "vec.cmp")
+                            : (isSigned ? builder->CreateICmpSLE(l, r, "vec.cmp")
+                                        : builder->CreateICmpULE(l, r, "vec.cmp"));
+                            break;
+                        case BINARY_OP_GT: cmp = isFloat
+                            ? builder->CreateFCmpOGT(l, r, "vec.cmp")
+                            : (isSigned ? builder->CreateICmpSGT(l, r, "vec.cmp")
+                                        : builder->CreateICmpUGT(l, r, "vec.cmp"));
+                            break;
+                        case BINARY_OP_GE: cmp = isFloat
+                            ? builder->CreateFCmpOGE(l, r, "vec.cmp")
+                            : (isSigned ? builder->CreateICmpSGE(l, r, "vec.cmp")
+                                        : builder->CreateICmpUGE(l, r, "vec.cmp"));
+                            break;
+                        default: break;
+                    }
+                    resolvedType = CajetaVector::getOrCreate(
+                        module, CajetaType::of("boolean"), lhsV->getLanes());
+                    return cmp;
+                }
             }
         }
 

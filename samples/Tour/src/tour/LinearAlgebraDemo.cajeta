@@ -11,8 +11,9 @@ package tour;
 //   * `*` is **matrix multiply** — `Matrix*Matrix` (inner dim checked),
 //     `Matrix*Vector` (matVec), `Matrix*scalar` (scale). Hadamard (element-wise
 //     product) is the `hadamard(b)` method, never `*`.
-//   * `+ - /` are element-wise (same shape); `==` is element-wise reduced to a
-//     boolean.
+//   * `+ - /` are element-wise (same shape); comparisons (`== != < <= > >=`)
+//     yield a per-lane mask — reduce with `.all()`/`.any()`, blend with
+//     `mask.select(a, b)`.
 //   * `m[r][c]` is 2-D element access; `m.transpose()`, `m.identity()`,
 //     `m.row(r)`, `m.col(c)` round out the methods.
 //   * `Vector` adds the geometry helpers `dot` / `length` / `normalize` plus
@@ -57,13 +58,14 @@ public class LinearAlgebraDemo extends DemoClass {
         System.stdout.println("  transpose([1 2 3;4 5 6])[1][0] = "
                             + (int32) mt[1][0] + "   (expect 2)");
 
-        // `==` is element-wise, reduced to a single boolean — usable directly as
-        // a branch condition.
+        // `==` yields a per-lane mask (the value-type comparison rule); reduce
+        // with .all() for whole-matrix equality, .any() for "any lane equal".
         String aa = "?";
         String ab = "?";
-        if (a == a) { aa = "true"; } else { aa = "false"; }
-        if (a == b) { ab = "true"; } else { ab = "false"; }
-        System.stdout.println("  (a == a) -> " + aa + " ;  (a == b) -> " + ab
+        if ((a == a).all()) { aa = "true"; } else { aa = "false"; }
+        if ((a == b).all()) { ab = "true"; } else { ab = "false"; }
+        System.stdout.println("  (a == a).all() -> " + aa
+                            + " ;  (a == b).all() -> " + ab
                             + "   (expect true, false)");
     }
 }

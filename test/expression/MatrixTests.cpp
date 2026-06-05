@@ -229,20 +229,39 @@ TEST(MatrixTests, scalarScale) {
     EXPECT_FLOAT_EQ(runF32(src), 15.0f);
 }
 
-// Element-wise equality reduces to a boolean (all lanes equal).
-TEST(MatrixTests, equalsAllLanes) {
+// `==` is a per-lane mask (value-type comparison rule); whole-matrix equality
+// is `(a == b).all()`. `any()` is the existence dual.
+TEST(MatrixTests, equalsMaskAllAny) {
     std::string src = std::string("package test;\n") +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
         "        Matrix<float32,2,2> b = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
         "        Matrix<float32,2,2> c = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 9.0f);\n"
-        "        int32 eq = (a == b) ? 1 : 0;\n"
-        "        int32 ne = (a == c) ? 1 : 0;\n"
-        "        return eq * 10 + ne;\n"   // 10 + 0 = 10
+        "        int32 eqAll = (a == b).all() ? 1 : 0;\n"   // all 4 lanes equal -> 1
+        "        int32 neAll = (a == c).all() ? 1 : 0;\n"   // lane (1,1) differs -> 0
+        "        int32 neAny = (a == c).any() ? 1 : 0;\n"   // 3 lanes equal -> 1
+        "        return eqAll * 100 + neAll * 10 + neAny;\n"   // 100 + 0 + 1 = 101
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 10);
+    EXPECT_EQ(runI32(src), 101);
+}
+
+// select on a matrix mask: pick element-wise between two matrices.
+//   mask = (a == b) (lanes: 1,1,1,0);  m = mask.select(a, c)
+//   -> a where equal, c where not = [1 2; 3 9] -> m[1][1] = 9.
+TEST(MatrixTests, maskSelect) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Matrix<float32,2,2> b = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Matrix<float32,2,2> c = stack Matrix<float32,2,2>(5.0f, 6.0f, 7.0f, 9.0f);\n"
+        "        Matrix<float32,2,2> m = (a == b).select(a, c);\n"
+        "        return (int32) m[1][1];\n"   // lane equal -> a's 4? no: a==b all equal -> a -> 4
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
 }
 
 // ---- S5: * = matrix multiply + matrix-vector ---------------------------------
