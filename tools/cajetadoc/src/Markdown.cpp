@@ -188,6 +188,18 @@ std::string inlineRender(const std::string& src, const MarkdownOptions& opts) {
     return out;
 }
 
+// A trimmed line that opens an ATX heading the renderer actually emits as a
+// <h*> (1–6 '#' followed by a space). A leading '#' without a space — e.g. a
+// wrapped doc line beginning `#Optional<R>` — is NOT a heading and must be
+// treated as paragraph text. The paragraph gatherer relies on this matching
+// the heading branch exactly; a broader test there breaks the loop on the
+// current line without advancing, spinning forever (see renderMarkdown).
+bool isAtxHeading(const std::string& t) {
+    int level = 0;
+    while (level < (int)t.size() && t[level] == '#') ++level;
+    return level >= 1 && level <= 6 && level < (int)t.size() && t[level] == ' ';
+}
+
 bool isTableSeparator(const std::string& line) {
     std::string t = trim(line);
     if (t.find('|') == std::string::npos && t.find('-') == std::string::npos) return false;
@@ -261,9 +273,9 @@ std::string renderMarkdown(const std::string& md, const MarkdownOptions& opts) {
 
         // ATX heading
         if (t[0] == '#') {
-            int level = 0;
-            while (level < (int)t.size() && t[level] == '#') ++level;
-            if (level <= 6 && level < (int)t.size() && t[level] == ' ') {
+            if (isAtxHeading(t)) {
+                int level = 0;
+                while (level < (int)t.size() && t[level] == '#') ++level;
                 int h = level + opts.headingOffset;
                 if (h > 6) h = 6;
                 std::string text = trim(t.substr(level));
@@ -363,18 +375,32 @@ std::string renderMarkdown(const std::string& md, const MarkdownOptions& opts) {
             }
         }
 
-        // paragraph: gather until blank line or a block starter
+        // paragraph: gather until blank line or a block starter. The break
+        // tests must mirror the block handlers above exactly — only stop on a
+        // line one of them would consume — otherwise the current line (which
+        // reached here because no handler claimed it) can satisfy a too-broad
+        // test, break on the first iteration, and leave i unchanged: the outer
+        // loop then spins forever appending empty <p></p> (unbounded memory).
+        size_t paraStart = i;
         std::ostringstream para;
         bool first = true;
         while (i < lines.size() && !isBlank(i)) {
             std::string lt = trim(lines[i]);
-            if (lt.compare(0, 3, "```") == 0 || lt[0] == '#' || lt[0] == '>' ||
+            if (lt.compare(0, 3, "```") == 0 || isAtxHeading(lt) || lt[0] == '>' ||
                 ((lt[0] == '-' || lt[0] == '*' || lt[0] == '+') && lt.size() > 1 && lt[1] == ' '))
                 break;
             if (!first) para << " ";
             para << lt;
             first = false;
             ++i;
+        }
+        // Safety net: a non-blank line that no handler consumed must always
+        // advance i, even if a future break test regresses. Emit it as its own
+        // paragraph and move on rather than risk an infinite allocation loop.
+        if (i == paraStart) {
+            out << "<p>" << inlineRender(trim(lines[i]), opts) << "</p>\n";
+            ++i;
+            continue;
         }
         out << "<p>" << inlineRender(para.str(), opts) << "</p>\n";
     }

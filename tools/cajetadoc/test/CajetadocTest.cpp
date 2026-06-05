@@ -214,6 +214,24 @@ TEST(Markdown, HeadingDemotion) {
     EXPECT_NE(html.find("<h4>Sub</h4>"), std::string::npos);
 }
 
+// Regression: a line whose first non-space char is '#' but with no following
+// space (e.g. a wrapped doc line `#Optional<R>`) is not an ATX heading. It must
+// render as paragraph text, NOT spin the paragraph gatherer forever appending
+// empty <p> (which previously ran cajetadoc out of memory on Tasks.cajeta).
+TEST(Markdown, HashWithoutSpaceIsNotHeadingNoHang) {
+    std::string html = renderMarkdown("intro line\n#Optional<R> tail\nmore\n");
+    EXPECT_EQ(html.find("<h1"), std::string::npos);
+    EXPECT_NE(html.find("#Optional&lt;R&gt;"), std::string::npos);
+}
+
+// Regression: 7+ '#' is past the heading ceiling and must also degrade to a
+// paragraph rather than fall through into the same infinite loop.
+TEST(Markdown, OverlongHashRunIsParagraphNoHang) {
+    std::string html = renderMarkdown("####### too deep\n");
+    EXPECT_EQ(html.find("<h"), std::string::npos);
+    EXPECT_NE(html.find("####### too deep"), std::string::npos);
+}
+
 TEST(Markdown, InlineCodeAndStrong) {
     std::string html = renderInline("use `x` and **bold**");
     EXPECT_NE(html.find("<code>x</code>"), std::string::npos);
@@ -375,10 +393,29 @@ TEST(Render, NavChromeBreadcrumbsAndSidebar) {
     const Type* h = findType(r.model, "cajeta.hash.Hash");
     ASSERT_NE(pkg, nullptr);
     ASSERT_NE(h, nullptr);
-    std::string html = renderTypePage(*h, "../../cajetadoc.css", &idx, pkg);
-    EXPECT_NE(html.find("class=\"crumbs\""), std::string::npos);  // breadcrumbs
-    EXPECT_NE(html.find("class=\"pkg-nav\""), std::string::npos); // sidebar nav
-    EXPECT_NE(html.find("XXHash3.html"), std::string::npos);      // sibling/next link
+    SiteMeta meta;
+    meta.version = "0.5.1";
+    meta.datePublished = "2026-06-05";
+    meta.license = "Apache-2.0";
+    std::string html = renderTypePage(*h, "../../cajetadoc.css", &idx, pkg, meta);
+    // Fixed header bar holds brand and breadcrumbs (no pager).
+    EXPECT_NE(html.find("class=\"topbar\""), std::string::npos);  // fixed header
+    EXPECT_NE(html.find("class=\"brand\""), std::string::npos);   // icon + title
+    EXPECT_NE(html.find("brand-title\">Cajeta"), std::string::npos);
+    EXPECT_NE(html.find("class=\"crumbs\""), std::string::npos);  // breadcrumbs in header
+    EXPECT_NE(html.find("v0.5.1"), std::string::npos);            // project meta
+    EXPECT_NE(html.find("Apache-2.0"), std::string::npos);
+    // Drill-down child navigation + pager live in the left side nav.
+    EXPECT_NE(html.find("class=\"sidebar\""), std::string::npos);
+    EXPECT_NE(html.find("class=\"pager\""), std::string::npos);
+    EXPECT_NE(html.find("class=\"pager-ico\""), std::string::npos); // icon-only arrows
+    EXPECT_NE(html.find("class=\"pkg-nav\""), std::string::npos);
+    EXPECT_NE(html.find("XXHash3.html"), std::string::npos);        // sibling link + next target
+    // Hash is the first type here, so the prev button renders but is disabled.
+    EXPECT_NE(html.find("pager-btn prev disabled"), std::string::npos);
+    EXPECT_NE(html.find("class=\"pager-btn next\""), std::string::npos);
+    // The sidebar marks the current type (selection highlight).
+    EXPECT_NE(html.find("class=\"active\""), std::string::npos);
 }
 
 TEST(Render, OverviewTypeCountFallback) {

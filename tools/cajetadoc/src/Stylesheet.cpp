@@ -30,6 +30,8 @@ std::string defaultStylesheet() {
     --cajetadoc-rail:      15rem;
     --cajetadoc-rail-gap:  2.5rem;
     --cajetadoc-inset:     calc(var(--cajetadoc-rail) + var(--cajetadoc-rail-gap));
+    /* Approx fixed-header height; the side nav sticks just below it. */
+    --cajetadoc-header-h:  5.25rem;
   }
   @media (prefers-color-scheme: dark) {
     .cajetadoc {
@@ -67,11 +69,13 @@ std::string defaultStylesheet() {
     inline-size: 100%;
     min-block-size: 100vh; /* fill the viewport so short pages have no gap */
     box-sizing: border-box;
-    /* relaxed, left-anchored layout: use the viewport width with responsive
-       gutters instead of a narrow centered column. */
+    container-type: inline-size;
+  }
+  /* Page body below the fixed header carries the responsive side gutters and the
+     vertical rhythm; the header spans edge-to-edge and pins to the top. */
+  :where(.cajetadoc .doc-body) {
     padding-inline: clamp(1rem, 3vw, 2.75rem);
     padding-block: 1.5rem 3rem;
-    container-type: inline-size;
   }
   :where(.cajetadoc *) { box-sizing: border-box; }
   :where(.cajetadoc a) { color: var(--cajetadoc-accent); text-decoration: none; }
@@ -145,78 +149,128 @@ std::string defaultStylesheet() {
     color: var(--cajetadoc-muted); font-size: 0.85em;
   }
   :where(.cajetadoc .muted) { color: var(--cajetadoc-muted); }
+
+  /* Fixed top header bar: always present, pinned to the viewport top, does not
+     scroll with the page. Two rows — brand/meta, then breadcrumbs + nav. */
+  :where(.cajetadoc .topbar) {
+    position: sticky; inset-block-start: 0; z-index: 20;
+    background: var(--cajetadoc-bg);
+    border-block-end: 1px solid var(--cajetadoc-border);
+    padding-inline: clamp(1rem, 3vw, 2.75rem);
+    padding-block: 0.55rem 0.5rem;
+  }
+  :where(.cajetadoc .topbar-brand-row) {
+    display: flex; align-items: center; gap: 1rem;
+  }
+  /* brand: icon (leftmost) + title, left-justified */
+  :where(.cajetadoc .brand) {
+    display: inline-flex; align-items: center; gap: 0.6rem;
+    color: var(--cajetadoc-fg); text-decoration: none; font-weight: 700;
+  }
+  :where(.cajetadoc .brand:hover) { text-decoration: none; }
+  :where(.cajetadoc .brand-icon) {
+    inline-size: 1.75rem; block-size: 1.75rem; border-radius: 0.45rem;
+    display: block; flex: none;
+  }
+  :where(.cajetadoc .brand-title) { font-size: 1.15rem; letter-spacing: 0.01em; }
+  /* project meta: version / date / license, right-justified */
+  :where(.cajetadoc .project-meta) {
+    margin-inline-start: auto;
+    display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+    justify-content: flex-end;
+    color: var(--cajetadoc-muted); font-size: 0.82rem;
+    font-family: var(--cajetadoc-mono);
+  }
+  :where(.cajetadoc .project-meta .meta-sep) { opacity: 0.5; }
+  :where(.cajetadoc .project-meta .meta-license) {
+    border: 1px solid var(--cajetadoc-border); border-radius: 999px;
+    padding-inline: 0.5em; padding-block: 0.05em;
+  }
+  /* Header second row: just the breadcrumbs. */
+  :where(.cajetadoc .topbar-nav-row) {
+    display: flex; align-items: center; margin-block-start: 0.4rem;
+  }
+
   /* breadcrumbs */
   :where(.cajetadoc .crumbs) {
-    font-size: 0.85em; color: var(--cajetadoc-muted); margin-block-end: 1rem;
+    font-size: 0.85em; color: var(--cajetadoc-muted); min-inline-size: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   :where(.cajetadoc .crumbs .sep) { margin-inline: 0.35em; opacity: 0.6; }
   :where(.cajetadoc .crumbs .crumb-current) { color: var(--cajetadoc-fg); font-weight: 600; }
-  /* Symmetric, reactive layout.
-     Type pages: [left rail | content]. The content fills to the right page
-     edge, but its body elements are inset on the right by --cajetadoc-inset so
-     the right margin mirrors the left rail. Heading rules break out of that
-     inset to span the full width. The middle expands as the window grows; both
-     rails stay a fixed width. */
+
+  /* Two-column page: left side nav (drill-down child navigation) + content.
+     The side nav sticks just below the fixed header. */
   :where(.cajetadoc .page) {
     display: grid;
     grid-template-columns: var(--cajetadoc-rail) minmax(0, 1fr);
     column-gap: var(--cajetadoc-rail-gap);
     align-items: start;
   }
-  :where(.cajetadoc .content) {
-    min-inline-size: 0;
-    /* inset body content on the right to mirror the left rail */
-    padding-inline-end: var(--cajetadoc-inset);
-  }
-  /* Pages with no sidebar (overview / package): mirror the rail offset on the
-     left too so their content aligns with the type pages. */
-  :where(.cajetadoc > .content) { margin-inline-start: var(--cajetadoc-inset); }
-  /* Heading rules + horizontal dividers span past the right inset to the margin. */
-  :where(.cajetadoc .content > .type-header,
-         .cajetadoc .content > h2,
-         .cajetadoc .content > hr,
-         .cajetadoc .content > .prevnext,
-         .cajetadoc .content > .cajetadoc-footer) {
-    margin-inline-end: calc(-1 * var(--cajetadoc-inset));
-  }
-  :where(.cajetadoc .sidebar) {
-    position: sticky; inset-block-start: 1rem;
-    max-block-size: calc(100vh - 2rem); overflow-y: auto;
-  }
-  /* section headings get an underline that runs to the right margin */
+  :where(.cajetadoc .content) { min-inline-size: 0; max-inline-size: 75rem; }
+  /* Pages with no side nav (overview / package) align with the content column. */
+  :where(.cajetadoc .doc-body > .content) { max-inline-size: 75rem; }
+  /* section headings get an underline */
   :where(.cajetadoc .content > h2) {
     border-block-end: 1px solid var(--cajetadoc-border);
     padding-block-end: 0.3rem;
   }
+  :where(.cajetadoc .sidebar) {
+    position: sticky; inset-block-start: calc(var(--cajetadoc-header-h) + 0.5rem);
+    max-block-size: calc(100vh - var(--cajetadoc-header-h) - 1rem); overflow-y: auto;
+  }
+  /* prev/next pager at the top of the side nav: two icon-only arrow buttons. */
+  :where(.cajetadoc .pager) {
+    display: flex; gap: 0.4rem; margin-block-end: 0.85rem;
+  }
+  :where(.cajetadoc .pager-btn) {
+    display: inline-flex; align-items: center; justify-content: center;
+    inline-size: 2rem; block-size: 2rem;
+    border: 1px solid var(--cajetadoc-border); border-radius: var(--cajetadoc-radius);
+    color: var(--cajetadoc-fg); background: var(--cajetadoc-bg);
+  }
+  :where(.cajetadoc a.pager-btn:hover) {
+    border-color: var(--cajetadoc-accent); color: var(--cajetadoc-accent);
+    background: var(--cajetadoc-code-bg); text-decoration: none;
+  }
+  :where(.cajetadoc .pager-btn.disabled) {
+    color: var(--cajetadoc-muted); opacity: 0.4; cursor: default;
+  }
+  :where(.cajetadoc .pager-ico) { inline-size: 1rem; block-size: 1rem; display: block; }
+  /* side nav (vertical drill-down type list) */
   :where(.cajetadoc .pkg-nav-title) {
     font-size: 0.8em; color: var(--cajetadoc-muted); margin-block-end: 0.4rem;
     text-transform: lowercase;
   }
   :where(.cajetadoc .pkg-nav ul) { list-style: none; margin: 0; padding: 0; }
-  :where(.cajetadoc .pkg-nav li) { margin-block: 0.1rem; font-size: 0.9em; }
-  :where(.cajetadoc .pkg-nav li.active > a) { font-weight: 700; color: var(--cajetadoc-fg); }
-  :where(.cajetadoc .pkg-nav .kind) { font-size: 0.7em; opacity: 0.7; }
-  /* prev/next */
-  :where(.cajetadoc .prevnext) {
-    display: flex; justify-content: space-between; gap: 1rem; margin-block-start: 2rem;
-    padding-block-start: 1rem; border-block-start: 1px solid var(--cajetadoc-border);
+  :where(.cajetadoc .pkg-nav li) { margin-block: 0.05rem; font-size: 0.9em; }
+  :where(.cajetadoc .pkg-nav li > a) {
+    display: block; padding: 0.15rem 0.5rem; border-radius: 0.3rem;
+    border-inline-start: 2px solid transparent;
   }
-  :where(.cajetadoc .prevnext .next) { margin-inline-start: auto; }
-  /* collapse the rails on narrow containers: stack the nav, drop the insets so
-     content uses the full width. */
+  :where(.cajetadoc .pkg-nav li > a:hover) { background: var(--cajetadoc-code-bg); text-decoration: none; }
+  /* selection highlight: where the user currently is */
+  :where(.cajetadoc .pkg-nav li.active > a) {
+    font-weight: 700; color: var(--cajetadoc-fg);
+    background: var(--cajetadoc-code-bg);
+    border-inline-start-color: var(--cajetadoc-accent);
+  }
+  :where(.cajetadoc .pkg-nav .kind) { font-size: 0.7em; opacity: 0.7; }
+
+  /* On narrow viewports let the project meta wrap under the brand. */
+  @container (max-width: 40rem) {
+    :where(.cajetadoc .project-meta) {
+      margin-inline-start: 0; inline-size: 100%; justify-content: flex-start;
+    }
+    :where(.cajetadoc .topbar-brand-row) { flex-wrap: wrap; }
+  }
+  /* Collapse the side nav above the content on narrow containers. */
   @container (max-width: 56rem) {
     :where(.cajetadoc .page) { display: block; }
     :where(.cajetadoc .sidebar) {
       position: static; max-block-size: none; margin-block-end: 1.5rem;
       border-block-end: 1px solid var(--cajetadoc-border); padding-block-end: 1rem;
     }
-    :where(.cajetadoc .content) { padding-inline-end: 0; }
-    :where(.cajetadoc > .content) { margin-inline-start: 0; }
-    :where(.cajetadoc .content > .type-header,
-           .cajetadoc .content > h2,
-           .cajetadoc .content > hr,
-           .cajetadoc .content > .prevnext,
-           .cajetadoc .content > .cajetadoc-footer) { margin-inline-end: 0; }
   }
   @container (max-width: 34rem) {
     :where(.cajetadoc .summary .msig, .cajetadoc .params .pname) { white-space: normal; }
