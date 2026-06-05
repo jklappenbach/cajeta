@@ -1,0 +1,151 @@
+//
+// S8 of the value-type operator-overloading mechanism
+// (plans/value-type-overloading-plan.md): a @ValueType's static @Device
+// operator dispatches INSIDE a kernel. `a == b` on value-type operands routes
+// through the SAME S6 dispatch/derivation policy the host uses
+// (opdispatch::dispatchBinaryOperator) — only the resolve+invoke/negate
+// callbacks are device-specific: resolve the operator, require @Device (pure),
+// lower it as an alwaysinline aggregate-param helper, emit the call. The derived
+// `a != b` (¬(a == b)) lowers too. v1 covers scalar-returning operators (==, <);
+// a value-type-RETURNING device operator (aggregate construction in a kernel) is
+// the next increment. Mirrors XpuVectorDeviceTests (CPU lowering, IR assertions).
+//
+
+#include "gtest/gtest.h"
+
+#include "cajeta/xpu/cpu/CpuKernelLowering.h"
+#include "cajeta/xpu/cpu/CpuBackend.h"
+
+#include "cajeta/compile/Compiler.h"
+#include "cajeta/compile/CajetaModule.h"
+#include "cajeta/type/CajetaClass.h"
+#include "cajeta/method/Method.h"
+
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
+
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <string>
+
+using cajeta::Compiler;
+using cajeta::CajetaModulePtr;
+
+namespace {
+
+CajetaModulePtr compileForInspection(Compiler& compiler,
+                                     const std::string& source) {
+    static std::mt19937_64 rng(std::random_device{}());
+    auto base = std::filesystem::temp_directory_path()
+              / ("cajeta_xpu_vtop_" + std::to_string(rng()));
+    std::filesystem::create_directories(base / "test");
+    std::ofstream(base / "test" / "M.cajeta") << source;
+    auto archive = std::filesystem::temp_directory_path()
+                 / ("cajeta_xpu_vtop_arch_" + std::to_string(rng()));
+    std::filesystem::create_directories(archive);
+    auto full = base / "test" / "M.cajeta";
+    auto m = compiler.createModule(full.string(), base.string(), archive.string());
+    compiler.compile(m);
+    return m;
+}
+
+cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
+                             const std::string& name) {
+    for (auto& [k, m] : klass->getMethods())
+        if (m && m->getName() == name) return m;
+    return nullptr;
+}
+
+std::string printModule(llvm::Module& m) {
+    std::string s;
+    llvm::raw_string_ostream os(s);
+    m.print(os, nullptr);
+    return os.str();
+}
+
+// Vec2 with a pure @Device operator== (scalar boolean return).
+const char* kVec2Eq =
+    "@ValueType public final class Vec2 {\n"
+    "    public float32 x;\n"
+    "    public float32 y;\n"
+    "    public Vec2(float32 x, float32 y) { this.x = x; this.y = y; }\n"
+    "    @Device public static boolean operator== (Vec2 a, Vec2 b) {\n"
+    "        return a.x == b.x && a.y == b.y;\n"
+    "    }\n"
+    "}\n";
+
+std::string lowerKernelIr(const std::string& src, const std::string& cls,
+                          const std::string& kernel) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src);
+    auto k = findMethod(module->getStructures()[cls], kernel);
+    EXPECT_NE(k, nullptr);
+    if (!k) return {};
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    EXPECT_NE(tm, nullptr) << "host target not registered";
+    llvm::LLVMContext ctx;
+    llvm::Module host("xpu_vtop", ctx);
+    cajeta::xpu::cpu::configureHostModule(host, *tm);
+    // A throw (unsupported) would fail the test — a clean lowering of a kernel
+    // that dispatches a @Device value-type operator IS the proof.
+    EXPECT_NE(cajeta::xpu::cpu::lowerKernel(k, host), nullptr);
+    return printModule(host);
+}
+
+} // namespace
+
+// `a == b` in a kernel dispatches to Vec2's @Device operator==: the device
+// operator function is emitted and called, and its body's field comparison
+// (fcmp) is present.
+TEST(XpuValueTypeOperatorDeviceTests, deviceEqualityOperatorDispatches) {
+    std::string src =
+        std::string("package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n")
+        + kVec2Eq +
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void eqk(Vec2 a, Vec2 b, Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            float32 r = 0.0f;\n"
+        "            if (a == b) { r = 1.0f; }\n"
+        "            out[i] = r + (float32) i;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    std::string ir = lowerKernelIr(src, "test.M", "eqk");
+    ASSERT_FALSE(ir.empty());
+    EXPECT_NE(ir.find("operator=="), std::string::npos)
+        << "expected the @Device operator== to be emitted/dispatched\n" << ir;
+    EXPECT_NE(ir.find("fcmp"), std::string::npos)
+        << "expected the operator body's field comparison\n" << ir;
+}
+
+// `a != b` derives from operator== via the shared S6 policy on device too.
+TEST(XpuValueTypeOperatorDeviceTests, deviceInequalityDerivesFromEquality) {
+    std::string src =
+        std::string("package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n")
+        + kVec2Eq +
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void nek(Vec2 a, Vec2 b, Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            float32 r = 0.0f;\n"
+        "            if (a != b) { r = 1.0f; }\n"
+        "            out[i] = r + (float32) i;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    std::string ir = lowerKernelIr(src, "test.M", "nek");
+    ASSERT_FALSE(ir.empty());
+    // Derived: operator== is still the dispatched primitive, negated.
+    EXPECT_NE(ir.find("operator=="), std::string::npos)
+        << "a != b should derive from the @Device operator==\n" << ir;
+}
