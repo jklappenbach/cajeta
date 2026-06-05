@@ -37,11 +37,35 @@ namespace vecops {
         }
     }
 
-    // Whole identifier -> lane index. v1 supports single-letter components only
-    // (no multi-component swizzles like `.xyz`); returns -1 otherwise.
+    // Whole identifier -> lane index, for the single-component case (`.x`).
+    // Returns -1 for a non-component name or a multi-letter swizzle (use
+    // swizzleLanes for those).
     inline int laneForComponentName(const std::string& name) {
         if (name.size() != 1) return -1;
         return laneForComponent(name[0]);
+    }
+
+    // Parse a swizzle identifier (`xyz`, `xxyy`, `wzyx`, `rgba`, …) into its
+    // lane indices. Returns an empty vector if `name` isn't 2-4 component
+    // letters (length 1 is the scalar `.x` path; >4 is not a swizzle). The
+    // caller must still bounds-check each lane against the source lane count.
+    inline std::vector<int> swizzleLanes(const std::string& name) {
+        if (name.size() < 2 || name.size() > 4) return {};
+        std::vector<int> lanes;
+        for (char c : name) {
+            int l = laneForComponent(c);
+            if (l < 0) return {};
+            lanes.push_back(l);
+        }
+        return lanes;
+    }
+
+    // Multi-component swizzle read: `<lanes.size() x T>` where result lane k =
+    // source lane `lanes[k]` (a shufflevector). Lanes must be < the source
+    // count (caller-validated).
+    inline llvm::Value* swizzle(llvm::IRBuilderBase& b, llvm::Value* vec,
+                                const std::vector<int>& lanes) {
+        return b.CreateShuffleVector(vec, lanes, "vec.swizzle");
     }
 
     // Coerce a scalar to a target scalar type (vector element). Handles the

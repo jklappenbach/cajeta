@@ -242,6 +242,41 @@ TEST(VectorTests, integerMinRejected) {
     }
 }
 
+// C — multi-component swizzle reads. v=(1,2,3,4):
+//   v.xy   = (1,2)      v.xyz = (1,2,3)      v.zyx = (3,2,1)
+//   v.xxyy = (1,1,2,2)  (repeats allowed)   .wz = (4,3)
+TEST(VectorTests, swizzleReads) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,4> v = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,2> xy = v.xy;\n"        // (1,2)
+        "        Vector<float32,3> zyx = v.zyx;\n"      // (3,2,1)
+        "        Vector<float32,4> xxyy = v.xxyy;\n"    // (1,1,2,2)
+        "        return (int32)(xy.x * 1.0f + xy.y * 10.0f\n"     // 1 + 20 = 21
+        "                     + zyx.x * 100.0f\n"                 // + 300 = 321
+        "                     + xxyy.x + xxyy.y + xxyy.z + xxyy.w);\n"), 327);  // +6
+}
+
+// Color aliases swizzle too: c=(10,20,30,40); c.rgb = (10,20,30).
+TEST(VectorTests, swizzleColorAlias) {
+    EXPECT_EQ(runI32(
+        "        Vector<float32,4> c = new Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+        "        Vector<float32,3> rgb = c.rgb;\n"
+        "        return (int32)(rgb.r + rgb.g + rgb.b);\n"), 60);  // 10+20+30
+}
+
+// A swizzle referencing a lane beyond the source is rejected (.xyz on N=2).
+TEST(VectorTests, swizzleOutOfRangeRejected) {
+    try {
+        runI32(
+            "        Vector<float32,2> v = new Vector<float32,2>(1.0f, 2.0f);\n"
+            "        Vector<float32,3> bad = v.xyz;\n"
+            "        return 0;\n");
+        FAIL() << "expected CAJETA_ERROR_VECTOR_COMPONENT";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VECTOR_COMPONENT");
+    }
+}
+
 // B intrinsics — comparison masks + all/any/select. a=(1,5,3), b=(4,2,3):
 //   a < b   = (T,F,F)        -> .any()=true, .all()=false
 //   a == b  = (F,F,T)        -> .any()=true, .all()=false

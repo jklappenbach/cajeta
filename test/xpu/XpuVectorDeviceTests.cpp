@@ -166,6 +166,30 @@ const char* kVecMaskSource =
 
 float maskExpectedAt(uint32_t i) { return 9.0f + (float) i; }
 
+// C — multi-component swizzle reads on the device. v=(1,2,3,4):
+//   zyx=(3,2,1) -> .x=3 ; xy=(1,2) -> .y=2 ; xxyy=(1,1,2,2) -> .z=2
+//   s = 3 + 2 + 2 = 7 ;  out[i] = 7 + i
+const char* kVecSwizSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class MS {\n"
+    "    @Kernel\n"
+    "    public static void vswiz(Buffer<float32> out, uint32 n) {\n"
+    "        uint32 idx = Thread.globalIdX();\n"
+    "        if (idx < n) {\n"
+    "            Vector<float32,4> v = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+    "            Vector<float32,3> zyx = v.zyx;\n"
+    "            Vector<float32,2> xy = v.xy;\n"
+    "            Vector<float32,4> xxyy = v.xxyy;\n"
+    "            float32 s = zyx.x + xy.y + xxyy.z;\n"
+    "            out[idx] = s + (float32) idx;\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+float swizExpectedAt(uint32_t i) { return 7.0f + (float) i; }
+
 // S6 interop probe: a Buffer whose element type is itself a vector. Exercises
 // buffer-of-vector marshalling (16-byte stride) and a whole-vector store
 // `out[i] = <4 x float>` — distinct from the scalar-element buffer above.
@@ -709,6 +733,95 @@ TEST(XpuVectorDeviceTests, masksRunOnVulkanDevice) {
             if (mismatches < 5)
                 ADD_FAILURE() << "i=" << i << " got " << result[i]
                               << " expected " << maskExpectedAt(i);
+            ++mismatches;
+        }
+    }
+    EXPECT_EQ(mismatches, 0u);
+}
+
+// C — swizzle reads on the CPU oracle. out[i] == 7 + i.
+TEST(XpuVectorDeviceTests, swizzleRunsOnCpu) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kVecSwizSource);
+    auto k = findMethod(module->getStructures()["test.MS"], "vswiz");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr) << "host target not registered";
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("xpu_vswiz_exec", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
+    auto jit = std::move(*jitOrErr);
+    auto err = jit->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    auto sym = jit->lookup("vswiz");
+    ASSERT_TRUE(static_cast<bool>(sym)) << llvm::toString(sym.takeError());
+    auto vswiz = sym->toPtr<VecFn>();
+
+    const int32_t B = 64, G = 4;
+    const uint32_t N = (uint32_t) (B * G);
+    std::vector<float> out(N, -1.0f);
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            vswiz(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+
+    for (uint32_t i = 0; i < N; ++i)
+        EXPECT_FLOAT_EQ(out[i], swizExpectedAt(i)) << "element " << i;
+}
+
+// C — swizzle reads on a real GPU via Vulkan. out[i] == 7 + i.
+TEST(XpuVectorDeviceTests, swizzleRunsOnVulkanDevice) {
+    using namespace cajeta::xpu::vulkan;
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kVecSwizSource);
+    auto k = findMethod(module->getStructures()["test.MS"], "vswiz");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_vswiz_vkdevice", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
+    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
+
+    const uint32_t n = 1u << 16;
+    std::vector<float> out(n, -1.0f);
+
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    const std::size_t bytes = std::size_t(n) * sizeof(float);
+    VulkanDriver::Buffer dOut = vk.alloc(bytes);
+    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    ASSERT_NE(dN, 0u);
+    ASSERT_TRUE(vk.upload(dOut, out.data(), bytes));
+    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
+
+    const unsigned block = kVulkanLocalSizeX;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "vswiz", {dOut, dN}, grid));
+
+    std::vector<float> result(n);
+    ASSERT_TRUE(vk.download(result.data(), dOut, bytes));
+    vk.free(dOut);
+    vk.free(dN);
+
+    size_t mismatches = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (result[i] != swizExpectedAt(i)) {
+            if (mismatches < 5)
+                ADD_FAILURE() << "i=" << i << " got " << result[i]
+                              << " expected " << swizExpectedAt(i);
             ++mismatches;
         }
     }

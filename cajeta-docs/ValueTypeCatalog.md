@@ -319,6 +319,8 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 | `operator[]` | instance-index-read | `public T operator[] (uint32 i)` | Instance form per OperatorOverloading.md 5; i must be <N |
 | `operator[]=` | instance-index-write | `public void operator[]= (uint32 i, T value)` | Requires mutable borrow at call site; v is mutable borrow receiver |
 
+**Component / swizzle reads:** `.x/.y/.z/.w` (and `.r/.g/.b/.a`) read one lane; a 2-4 letter **swizzle** `.xy`/`.xyz`/`.xxyy`/`.zyx` reads a `Vector<T,M>` (repeats allowed; lowers to `shufflevector`). Out-of-range letters → `CAJETA_ERROR_VECTOR_COMPONENT`. Swizzle *writes* (`v.xy = …`) deferred.
+
 **Methods:**
 - geometry/math: `dot(other)`, `length()`, `normalize()`; `cross(other)` (3-D), `reflect(n)`, `refract(n, eta)`, `distance(other)`; `min(b)`, `max(b)`, `clamp(lo, hi)`, `lerp(b, t)` — *float element, v1; integer min/max deferred*.
 - **mask** (on a `Vector<boolean,N>` from a comparison): `all()`/`any()` → `boolean`, `select(whenTrue, whenFalse)` → per-lane blend. **Masks are register-only** — `Buffer<Vector<boolean,N>>` / bool-vector kernel args stay ABI-rejected.

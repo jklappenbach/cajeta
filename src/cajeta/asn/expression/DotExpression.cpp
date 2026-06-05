@@ -72,7 +72,16 @@ namespace cajeta {
         if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhs->getResolvedType())) {
             int lane = vecops::laneForComponentName(identifier);
             if (lane >= 0 && (unsigned) lane < vecT->getLanes()) {
-                resolvedType = vecT->getElementType();
+                resolvedType = vecT->getElementType();      // single component
+            } else {
+                // Multi-component swizzle (`.xy`/`.xyz`/`.xxyy`) -> Vector<T,M>.
+                auto lanes = vecops::swizzleLanes(identifier);
+                bool ok = !lanes.empty();
+                for (int l : lanes)
+                    if ((unsigned) l >= vecT->getLanes()) ok = false;
+                if (ok)
+                    resolvedType = CajetaVector::getOrCreate(
+                        module, vecT->getElementType(), (uint32_t) lanes.size());
             }
             return;
         }
@@ -267,22 +276,39 @@ namespace cajeta {
         // Vector component read: v.x/.y/.z/.w (and .r/.g/.b/.a) -> extractelement.
         if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhs->getResolvedType())) {
             int lane = vecops::laneForComponentName(identifier);
-            if (lane < 0) {
-                throw Exception(
-                    "'" + identifier + "' is not a vector component (use "
-                    ".x/.y/.z/.w or .r/.g/.b/.a)",
-                    "CAJETA_ERROR_VECTOR_COMPONENT");
+            if (lane >= 0) {
+                // Single component `.x` -> the element (extractelement).
+                if ((unsigned) lane >= vecT->getLanes()) {
+                    throw Exception(
+                        "component '." + identifier + "' is out of range for "
+                        "Vector<...," + std::to_string(vecT->getLanes()) + ">",
+                        "CAJETA_ERROR_VECTOR_COMPONENT");
+                }
+                llvm::Value* vecVal = loadIfLValue(module, base, lhs);
+                resolvedType = vecT->getElementType();
+                return vecops::extractLane(*module->getBuilder(), vecVal,
+                                           (unsigned) lane);
             }
-            if ((unsigned) lane >= vecT->getLanes()) {
+            // Multi-component swizzle `.xy`/`.xyz`/`.xxyy` -> Vector<T,M>.
+            auto lanes = vecops::swizzleLanes(identifier);
+            if (lanes.empty()) {
                 throw Exception(
-                    "component '." + identifier + "' is out of range for "
-                    "Vector<...," + std::to_string(vecT->getLanes()) + ">",
-                    "CAJETA_ERROR_VECTOR_COMPONENT");
+                    "'" + identifier + "' is not a vector component or swizzle "
+                    "(use .x/.y/.z/.w, .r/.g/.b/.a, or a 2-4 letter swizzle "
+                    "like .xyz)", "CAJETA_ERROR_VECTOR_COMPONENT");
+            }
+            for (int l : lanes) {
+                if ((unsigned) l >= vecT->getLanes()) {
+                    throw Exception(
+                        "swizzle '." + identifier + "' references a lane out of "
+                        "range for Vector<...," + std::to_string(vecT->getLanes())
+                        + ">", "CAJETA_ERROR_VECTOR_COMPONENT");
+                }
             }
             llvm::Value* vecVal = loadIfLValue(module, base, lhs);
-            resolvedType = vecT->getElementType();
-            return vecops::extractLane(*module->getBuilder(), vecVal,
-                                       (unsigned) lane);
+            resolvedType = CajetaVector::getOrCreate(
+                module, vecT->getElementType(), (uint32_t) lanes.size());
+            return vecops::swizzle(*module->getBuilder(), vecVal, lanes);
         }
         auto klass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
         if (!klass) {
