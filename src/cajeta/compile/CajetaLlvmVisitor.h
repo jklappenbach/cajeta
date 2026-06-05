@@ -10,6 +10,7 @@
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaView.h"
 #include <any>
+#include <unordered_set>
 #include "cajeta/asn/Block.h"
 #include "cajeta/asn/Statement.h"
 #include "cajeta/asn/expression/Expression.h"
@@ -1200,6 +1201,44 @@ namespace cajeta {
                                 expected == 1 ? "" : "s");
                             throw Exception(buf,
                                 "CAJETA_ERROR_OPERATOR_NOT_INSTANCE");
+                        }
+                        // S3 (value-type-overloading-plan, Decision #3): a
+                        // @ValueType class may NOT declare an instance MUTATING
+                        // operator. Value types are by-value Copy — the receiver
+                        // is a fresh copy, so an in-place mutation through `this`
+                        // (operator++/--, operator[]=, compound-assign) would
+                        // write the copy and silently lose the result. Read-only
+                        // operator[] is exempt (returns a value, mutates nothing).
+                        // Forbidding the DECLARATION closes the hole at the source:
+                        // no value-type instance can then dispatch such an operator.
+                        static const std::unordered_set<std::string> kMutatingOps = {
+                            "operator++", "operator--", "operator[]=",
+                            "operator+=", "operator-=", "operator*=",
+                            "operator/=", "operator%=", "operator&=",
+                            "operator|=", "operator^=", "operator<<=",
+                            "operator>>=", "operator>>>=",
+                        };
+                        if (kMutatingOps.count(name)) {
+                            auto enclosing = m->getParent();
+                            if (enclosing && enclosing->findAnnotation("ValueType")) {
+                                char buf[512];
+                                snprintf(buf, sizeof(buf),
+                                    "@ValueType class '%s' cannot declare the "
+                                    "mutating operator '%s'. Value types are "
+                                    "by-value (Copy) — an in-place mutation "
+                                    "through the receiver writes a copy and is "
+                                    "lost. Fix: model the change as a static "
+                                    "operator returning a fresh value (e.g. "
+                                    "`%s` -> a static op or a method returning a "
+                                    "new instance). Read-only `operator[]` is "
+                                    "allowed. See cajeta-docs/"
+                                    "OperatorOverloading.md and "
+                                    "plans/value-type-overloading-plan.md.",
+                                    enclosing->toCanonical().c_str(),
+                                    name.c_str(), name.c_str());
+                                throw Exception(buf,
+                                    "CAJETA_ERROR_VALUE_TYPE_MUTATING_OPERATOR");
+                            }
                         }
                     }
                     if (m->isMethodTemplate()) {

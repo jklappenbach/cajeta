@@ -4050,7 +4050,14 @@ namespace cajeta {
         bool isFinalClass = this->getModifiers().find(FINAL) != this->getModifiers().end();
         bool useVtable = thisValue && !isStatic && !isConstructor && !isView
             && !forceDirectCall && !isMethodTemplateInst
-            && !(isNativeForwarder && isFinalClass);
+            && !(isNativeForwarder && isFinalClass)
+            // Vtable dispatch reads a vtable pointer from instance slot 0;
+            // @ValueType PODs (and other vtable-free layouts like CajetaTask)
+            // have NO slot-0 vtable — slot 0 is the first field, so a vtable
+            // load returns garbage and the indirect call segfaults. These types
+            // are final/monomorphic, so dispatch their instance methods
+            // DIRECTLY. Mirrors the isView treatment above.
+            && hasVtablePointerAtSlotZero();
         bool isInterfaceRecv = this->isInterface();
         // Interface formal whose resolved method lives on a CLASS
         // ancestor (e.g. `Splittable<T> extends Stream<T>` and we're
