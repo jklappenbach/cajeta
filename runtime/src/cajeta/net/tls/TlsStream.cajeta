@@ -1,0 +1,141 @@
+package cajeta.net.tls;
+
+import cajeta.lang.String;
+import cajeta.net.TcpStream;
+
+/**
+ * A TLS connection over a live [`TcpStream`](../TcpStream.cajeta) (**NET-5.2**).
+ * It runs the [`TlsConnection`](TlsConnection.cajeta) memory-BIO pump against
+ * the socket's **async** ops (`readAsync` / `writeAllAsync`), so the handshake
+ * and every read/write park the fiber on the reactor when the socket isn't
+ * ready — the engine never blocks, the carrier thread stays free.
+ *
+ * The shuttle is mechanical:
+ *   - **produce** → after a handshake step / `write`, [`flush`](#) drains the
+ *     engine's queued ciphertext to the socket;
+ *   - **consume** → on [`WANT_IO`](TlsConnection.cajeta#WANT_IO), [`fill`](#)
+ *     reads ciphertext from the socket and feeds it back into the engine.
+ *
+ * Owns its stream + engine: dropping the `TlsStream` closes the socket and
+ * frees the TLS handles.
+ */
+public class TlsStream {
+
+    TcpStream stream;
+    TlsConnection tls;
+    int8[] buf;
+
+    private TlsStream(#TcpStream stream, #TlsConnection tls) {
+        this.stream = #stream;
+        this.tls = #tls;
+        this.buf = new int8[16384];
+    }
+
+    /**
+     * Wrap a freshly-connected `stream` as a **verifying** TLS client for
+     * `host` (used for SNI *and* hostname verification), trusting `trustPem` as
+     * an anchor. Call [`handshake`](#handshake) next.
+     */
+    public static #TlsStream client(#TcpStream stream, int8[] host, int32 hostLen,
+                                    int8[] trustPem, int32 trustLen) {
+        TlsConnection tls = TlsConnection.verifyingClient();
+        tls.setSni(host, hostLen);
+        tls.addTrust(trustPem, trustLen);
+        tls.setVerifyHost(host, hostLen);
+        return heap TlsStream(#stream, #tls);
+    }
+
+    /** Wrap an accepted `stream` as a TLS server presenting `cert` + `key`. */
+    public static #TlsStream server(#TcpStream stream, int8[] cert, int32 certLen,
+                                    int8[] key, int32 keyLen) {
+        TlsConnection tls = TlsConnection.server(cert, certLen, key, keyLen);
+        return heap TlsStream(#stream, #tls);
+    }
+
+    // --- the socket pump ----------------------------------------------------
+
+    /** Drain queued ciphertext to the socket (parks on a non-writable socket). */
+    private void flush() {
+        int32 n = this.tls.pull(this.buf, 16384);
+        while (n > 0) {
+            this.stream.writeAllAsync(this.buf, (int64) 0, (int64) n);
+            n = this.tls.pull(this.buf, 16384);
+        }
+    }
+
+    /** Read ciphertext from the socket and feed the engine; bytes fed (0=EOF). */
+    private int32 fill() {
+        int64 n = this.stream.readAsync(this.buf, (int64) 0, (int64) 16384);
+        if (n <= (int64) 0) {
+            return 0;
+        }
+        this.tls.feed(this.buf, (int32) n);
+        return (int32) n;
+    }
+
+    /**
+     * Drive the TLS handshake to completion over the socket. Throws
+     * [`CertificateInvalidException`](CertificateInvalidException.cajeta) when
+     * verification fails (the `CERT_*` reason), or
+     * [`TlsException`](TlsException.cajeta) for a protocol error / a peer that
+     * closes mid-handshake.
+     */
+    public void handshake() {
+        boolean done = false;
+        while (!done) {
+            int32 step = this.tls.handshakeStep();
+            this.flush();
+            if (step == TlsConnection.OK) {
+                done = true;
+            } else {
+                if (step == TlsConnection.FAILED) {
+                    int32 reason = this.tls.verifyResult();
+                    if (reason != TlsConnection.CERT_OK) {
+                        throw heap CertificateInvalidException(
+                            "TLS certificate verification failed", reason);
+                    }
+                    throw heap TlsException("TLS handshake failed");
+                }
+                int32 got = this.fill();
+                if (got == 0) {
+                    throw heap TlsException("peer closed during TLS handshake");
+                }
+            }
+        }
+    }
+
+    /** Read decrypted application data into `out`; bytes read, or 0 at EOF. */
+    public int32 read(int8[] out, int32 max) {
+        boolean retry = true;
+        while (retry) {
+            int32 r = this.tls.read(out, max);
+            if (r >= 0) {
+                return r;
+            }
+            if (r == TlsConnection.CLOSED) {
+                return 0;
+            }
+            if (r == TlsConnection.WANT_IO) {
+                int32 got = this.fill();
+                if (got == 0) {
+                    return 0;
+                }
+            } else {
+                throw heap TlsException("TLS read error");
+            }
+        }
+        return 0;
+    }
+
+    /** Encrypt + send `len` plaintext bytes. */
+    public void write(int8[] data, int32 len) {
+        this.tls.write(data, len);
+        this.flush();
+    }
+
+    /** Queue a clean `close_notify` and flush it. */
+    public void closeNotify() {
+        this.tls.shutdown();
+        this.flush();
+    }
+}

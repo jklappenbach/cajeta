@@ -540,7 +540,19 @@ portable path.
       symbols use. STILL TODO: the socket-facing `TlsClient` that runs this
       pump over `AsyncReader`/`AsyncWriter` with reactor parking — its live
       loopback row needs the same scheduler+loopback harness the NET-4/5
-      acceptance rows await.)_
+      acceptance rows await.
+      **b6.4 update:** `cajeta.net.tls.TlsStream` (the socket wrapper) + the TLS
+      exception hierarchy (`TlsException`/`CertificateInvalidException`, NET-5.6)
+      are written + COMPILE in the stdlib (210 sources), and the loopback harness
+      is proven — a spawned-server + `#`-stream + int8[]-arg loopback echo passes
+      (`TlsLoopbackTest.spawnedServerLoopbackEchoNoTls`), and `TlsStream`
+      CONSTRUCTION + its `#`-moves + drop pass in a fiber over a real socket
+      (`clientTlsStreamConstructNoHandshake`). The ONE remaining red is the live
+      TLS **handshake pump** itself: `DISABLED_tlsHandshakeAndEchoOverLoopback`
+      SIGSEGVs inside `TlsStream.handshake()` driving the @Native engine over
+      `readAsync`/`writeAllAsync` across reactor parks — isolated (engine,
+      surface, cert-validation, construction, harness all green) but not yet
+      root-caused.)_
 - [~] **NET-5.3** Certificate validation: hostname match (SAN +
       CN fallback, wildcard rules), chain verification against a
       trust store, expiry/not-before checks. `depends-on:` NET-5.2,
