@@ -62,6 +62,12 @@ namespace cajeta {
     // by-value type (Matrix/Tensor) that does NOT borrow PRIMITIVE_FLAG sets this
     // bit alone. Born-correct on cross-file placeholders via markArchiveValueType.
     #define BY_VALUE_FLAG           0b100000000000000000000
+    // A fixed-shape numeric matrix `Matrix<T, R, C>` lowering to a flat
+    // row-major llvm `<R*C x T>` (element (r,c) = lane r*C+c). Like VECTOR_FLAG
+    // it rides PRIMITIVE_FLAG for by-value marshalling; the dedicated matrix
+    // codegen path (construction, m[r][c], element-wise, * = matmul) recognizes
+    // it. See CajetaMatrix and plans/fluttering-sparking-lantern.md (B1).
+    #define MATRIX_FLAG             0b1000000000000000000000
     #define BIT_SIZE_MASK           0b00001111111000000000
 
 

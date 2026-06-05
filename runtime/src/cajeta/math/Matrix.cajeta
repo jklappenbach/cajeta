@@ -1,0 +1,105 @@
+package cajeta.math;
+
+/**
+ * Matrix — a fixed-shape, register-resident numeric matrix `Matrix<T, R, C>`
+ * (R rows, C columns of element type T), the first linear-algebra value type
+ * in the standard library (B1).
+ *
+ * HYBRID value type. This declared class is the user-facing, Pythonic operator
+ * surface — `a + b`, `a * b` (matrix multiply!), `m[r][c]`, `m.transpose()` —
+ * declared per cajeta-docs/OperatorOverloading.md. But a concrete `Matrix<...>`
+ * type REFERENCE resolves to the compiler's flat row-major representation (a
+ * `<R*C x T>`, element (r,c) at lane r*C+c — CajetaMatrix), and the operators
+ * are lowered as register-native vector intrinsics in BOTH the host expression
+ * codegen and the device kernel lowerer. So the syntax is library-owned while
+ * the generated code is identical to a pure-intrinsic value type.
+ *
+ * The method/operator BODIES below are resolution placeholders — exactly like
+ * {@link cajeta.xpu.core.CooperativeMatrix} and {@link cajeta.xpu.core.RayQuery}.
+ * They are never emitted as real calls: each operator is intercepted at its use
+ * site and the result SHAPE is computed by the interceptor. (Deepening to real
+ * dispatch, and lifting the method-templated-operator restriction that a truly
+ * K-generic `matmul` needs, are scoped follow-ons — see the B1 plan.)
+ *
+ * Operator semantics (locked design):
+ *   - `a + b`, `a - b`, `a / b` : element-wise, same shape.
+ *   - `a * b` : MATRIX MULTIPLY. `Matrix<T,R,K> * Matrix<T,K,C>` -> `Matrix<T,R,C>`
+ *     (inner dim K checked); `Matrix<T,R,C> * Vector<T,C>` -> `Vector<T,R>`;
+ *     `Matrix * scalar` / `scalar * Matrix` -> element-wise scale. Hadamard
+ *     (element-wise product) is the `hadamard(b)` method, not `*`.
+ *   - `m[r]` -> `Vector<T,C>` row; `m[r][c]` -> element; `m[r][c] = v` -> assign.
+ *   - `a == b` : element-wise equality -> boolean.
+ *
+ * The matrix-multiply and matrix*vector forms are shape/K-generic and so are
+ * handled purely by codegen interception (they cannot be expressed as a single
+ * non-templated operator declaration); only the scalar-scale `*` is declared.
+ */
+public final class Matrix<T, uint32 R, uint32 C> {
+    // Placeholder field. A Matrix reference resolves to the flat CajetaMatrix
+    // representation, so the host front-end never lays this class out for real
+    // (and the declared body is intercepted) — but a zero-field class has no
+    // valid LLVM type, so one reserved word gives the declaration a layout.
+    T reserved;
+
+    /**
+     * Subscript: `m[r]` selects row r as a `Vector<T, C>` (the row's C elements,
+     * flat lanes [r*C, r*C+C)). `m[r][c]` then composes with the vector index
+     * path to read/assign the element at flat lane r*C+c. Intercepted.
+     */
+    public Vector<T, C> operator[] (uint32 r) {
+        return this.row(r);
+    }
+
+    /** Element-wise sum, same shape. Intercepted (flat-vector fadd/add). */
+    public static Matrix<T, R, C> operator+ (Matrix<T, R, C> a,
+                                             Matrix<T, R, C> b) {
+        return a;
+    }
+
+    /** Element-wise difference, same shape. Intercepted. */
+    public static Matrix<T, R, C> operator- (Matrix<T, R, C> a,
+                                             Matrix<T, R, C> b) {
+        return a;
+    }
+
+    /**
+     * Scalar scale: `m * s` multiplies every element by s. (Matrix*Matrix and
+     * Matrix*Vector are matrix multiply, handled by codegen interception — they
+     * are K-generic and cannot be one non-templated declaration.) Intercepted.
+     */
+    public static Matrix<T, R, C> operator* (Matrix<T, R, C> a, T s) {
+        return a;
+    }
+
+    /** Element-wise equality -> boolean. Intercepted. */
+    public static boolean operator== (Matrix<T, R, C> a, Matrix<T, R, C> b) {
+        return true;
+    }
+
+    /** Row r as a `Vector<T, C>` (flat lanes [r*C, r*C+C)). Intercepted. */
+    public Vector<T, C> row(uint32 r) {
+        Vector<T, C> result;
+        return result;
+    }
+
+    /** Column c as a `Vector<T, R>` (flat lanes c, c+C, c+2C, ...). Intercepted. */
+    public Vector<T, R> col(uint32 c) {
+        Vector<T, R> result;
+        return result;
+    }
+
+    /** Transpose -> `Matrix<T, C, R>` (element (i,j) becomes (j,i)). Intercepted. */
+    public Matrix<T, C, R> transpose() {
+        Matrix<T, C, R> result;
+        return result;
+    }
+
+    /**
+     * Hadamard (element-wise) product with a same-shape matrix. The `*` operator
+     * is matrix multiply, so the element-wise product is this named method.
+     * Intercepted.
+     */
+    public Matrix<T, R, C> hadamard(Matrix<T, R, C> b) {
+        return this;
+    }
+}
