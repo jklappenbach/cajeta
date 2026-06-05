@@ -306,6 +306,27 @@ void __cajeta_net_reactor_active_reset(void) {
 // is called out here so a reader is not misled. The Cajeta surface and the
 // NET-3.3 ops are written against this stable signature regardless.
 // ---------------------------------------------------------------------------
+// Does the native await block the CARRIER thread (rather than park the fiber)?
+// 1 on the platforms whose dedicated fiber-park engine hasn't landed yet
+// (Windows/macOS — the await below falls through to a blocking `select`), 0 on
+// Linux (the epoll engine parks the fiber and frees the carrier). The Cajeta
+// `Reactor.awaitReadable`/`awaitWritable` adapters read this to decide between
+// the native fiber-park (Linux) and a cooperative **poll-and-park** loop
+// (elsewhere): a non-blocking readiness probe interleaved with a timer-wheel
+// fiber sleep, which yields the carrier between probes so a fiber awaiting
+// socket I/O never holds its carrier hostage. Without that, two interdependent
+// fibers (e.g. both halves of a TLS handshake over loopback) starve each other
+// — one parks the only spare carrier in `select` while the peer it is waiting
+// on sits un-runnable on that carrier's deque. This predicate keeps the Linux
+// fast path while making the portable fallback correct under the fiber model.
+int32_t __cajeta_net_await_carrier_blocking(void) {
+#if defined(__linux__)
+    return 0;
+#else
+    return 1;
+#endif
+}
+
 int32_t __cajeta_net_await_readable(int32_t fd) {
 #if defined(__linux__)
     // Reuse the proven epoll fiber-park engine.
