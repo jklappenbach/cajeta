@@ -46,6 +46,7 @@ int   __cajeta_tls_verify_result(void* conn);
 int   __cajeta_tls_set_sni(void* conn, const void* host_hdr, int host_len);
 int   __cajeta_tls_set_alpn(void* conn, const void* protos_hdr, int len);
 int   __cajeta_tls_get_alpn(void* conn, void* out_hdr, int max);
+int   __cajeta_tls_ctx_set_alpn_select(void* ctx, const void* protos_hdr, int len);
 int   __cajeta_tls_feed_ciphertext(void* conn, const void* buf_hdr, int len);
 int   __cajeta_tls_pull_ciphertext(void* conn, void* out_hdr, int max);
 int   __cajeta_tls_pending_ciphertext(void* conn);
@@ -226,6 +227,78 @@ TEST(TlsEngineTests, memoryBioHandshakeAndPlaintextRoundTrip) {
     rn = __cajeta_tls_read_plaintext(client, got2.hdr(), 256);
     ASSERT_EQ(rn, (int) strlen(resp));
     EXPECT_EQ(std::string(got2.data(), (size_t) rn), std::string(resp));
+
+    __cajeta_tls_free(client);
+    __cajeta_tls_free(server);
+    __cajeta_tls_ctx_free(cctx);
+    __cajeta_tls_ctx_free(sctx);
+}
+
+// Encode an ALPN wire list: each protocol as a 1-byte length + its bytes.
+static std::string alpnWire(std::initializer_list<const char*> protos) {
+    std::string s;
+    for (const char* p : protos) {
+        s.push_back((char) std::strlen(p));
+        s += p;
+    }
+    return s;
+}
+
+// ALPN (NET-5.4): the client offers ["h2","http/1.1"], the server supports only
+// "http/1.1" — the server-select callback picks the overlap and both peers
+// report it negotiated.
+TEST(TlsEngineTests, alpnServerSelectsOverlap) {
+    std::string cert, key;
+    ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
+    void* sctx; void* server = makeServer(cert, key, &sctx);
+    std::string sp = alpnWire({"http/1.1"});
+    Arr spa(sp.data(), (int) sp.size());
+    ASSERT_EQ(__cajeta_tls_ctx_set_alpn_select(sctx, spa.hdr(), (int) sp.size()), 0);
+
+    void* cctx = __cajeta_tls_ctx_new(0);
+    void* client = __cajeta_tls_conn_new(cctx, 0);
+    std::string cp = alpnWire({"h2", "http/1.1"});
+    Arr cpa(cp.data(), (int) cp.size());
+    ASSERT_EQ(__cajeta_tls_set_alpn(client, cpa.hdr(), (int) cp.size()), 0);
+    Arr sni("localhost", 9);
+    __cajeta_tls_set_sni(client, sni.hdr(), 9);
+
+    ASSERT_TRUE(pumpHandshake(client, server)) << "handshake did not complete";
+
+    Arr cneg(64), sneg(64);
+    int cn = __cajeta_tls_get_alpn(client, cneg.hdr(), 64);
+    int sn = __cajeta_tls_get_alpn(server, sneg.hdr(), 64);
+    EXPECT_EQ(std::string(cneg.data(), (size_t) cn), "http/1.1");
+    EXPECT_EQ(std::string(sneg.data(), (size_t) sn), "http/1.1");
+
+    __cajeta_tls_free(client);
+    __cajeta_tls_free(server);
+    __cajeta_tls_ctx_free(cctx);
+    __cajeta_tls_ctx_free(sctx);
+}
+
+// ALPN no-overlap: client offers only "h2", server supports only "http/1.1".
+// The handshake still SUCCEEDS (NOACK, not fatal) but no protocol is negotiated.
+TEST(TlsEngineTests, alpnNoOverlapNegotiatesNothing) {
+    std::string cert, key;
+    ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
+    void* sctx; void* server = makeServer(cert, key, &sctx);
+    std::string sp = alpnWire({"http/1.1"});
+    Arr spa(sp.data(), (int) sp.size());
+    ASSERT_EQ(__cajeta_tls_ctx_set_alpn_select(sctx, spa.hdr(), (int) sp.size()), 0);
+
+    void* cctx = __cajeta_tls_ctx_new(0);
+    void* client = __cajeta_tls_conn_new(cctx, 0);
+    std::string cp = alpnWire({"h2"});
+    Arr cpa(cp.data(), (int) cp.size());
+    __cajeta_tls_set_alpn(client, cpa.hdr(), (int) cp.size());
+    Arr sni("localhost", 9);
+    __cajeta_tls_set_sni(client, sni.hdr(), 9);
+
+    ASSERT_TRUE(pumpHandshake(client, server)) << "no-overlap must not fail handshake";
+
+    Arr cneg(64);
+    EXPECT_EQ(__cajeta_tls_get_alpn(client, cneg.hdr(), 64), 0);
 
     __cajeta_tls_free(client);
     __cajeta_tls_free(server);

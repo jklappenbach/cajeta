@@ -58,6 +58,7 @@ extern "C" {
     int   __cajeta_tls_set_sni(void* conn, const void* host, int hostLen);
     int   __cajeta_tls_set_alpn(void* conn, const void* protos, int len);
     int   __cajeta_tls_get_alpn(void* conn, void* out, int max);
+    int   __cajeta_tls_ctx_set_alpn_select(void* ctx, const void* protos, int len);
     int   __cajeta_tls_feed_ciphertext(void* conn, const void* buf, int len);
     int   __cajeta_tls_pull_ciphertext(void* conn, void* out, int max);
     int   __cajeta_tls_pending_ciphertext(void* conn);
@@ -483,6 +484,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         bind("__cajeta_tls_set_sni", (void*) &__cajeta_tls_set_sni);
         bind("__cajeta_tls_set_alpn", (void*) &__cajeta_tls_set_alpn);
         bind("__cajeta_tls_get_alpn", (void*) &__cajeta_tls_get_alpn);
+        bind("__cajeta_tls_ctx_set_alpn_select", (void*) &__cajeta_tls_ctx_set_alpn_select);
         bind("__cajeta_tls_feed_ciphertext", (void*) &__cajeta_tls_feed_ciphertext);
         bind("__cajeta_tls_pull_ciphertext", (void*) &__cajeta_tls_pull_ciphertext);
         bind("__cajeta_tls_pending_ciphertext", (void*) &__cajeta_tls_pending_ciphertext);
