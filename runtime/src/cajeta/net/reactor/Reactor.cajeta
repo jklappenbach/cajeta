@@ -154,6 +154,21 @@ public final class Reactor {
     private static int32 awaitWritableNative(int32 fd);
 
     /**
+     * `1` iff the native await ([`awaitReadableNative`](#awaitReadableNative) /
+     * [`awaitWritableNative`](#awaitWritableNative)) **blocks the carrier
+     * thread** instead of parking the fiber — true on the platforms whose
+     * dedicated fiber-park engine (kqueue/IOCP) hasn't landed (Windows/macOS),
+     * false on Linux (epoll fiber-park). The [`awaitReadable`](#awaitReadable) /
+     * [`awaitWritable`](#awaitWritable) adapters branch on this: on Linux they
+     * call the native fiber-park; elsewhere they run a cooperative
+     * [`pollPark`](#pollPark) loop so a fiber awaiting socket I/O never holds
+     * its carrier hostage (the no-carrier-blocks invariant, kept portably until
+     * the dedicated engines land).
+     */
+    @Native("__cajeta_net_await_carrier_blocking")
+    private static int32 awaitCarrierBlockingNative();
+
+    /**
      * Portable single-fd readiness probe: block the calling thread until
      * `fd` is ready for any bit in `interest`, or `timeoutMs` elapses
      * (negative ⇒ block indefinitely). Returns [`READY`](#READY) /
@@ -226,11 +241,53 @@ public final class Reactor {
      * @return `true` when the fd became readable, `false` on a reactor
      *         error.
      */
+    /**
+     * Cooperative **poll-and-park** readiness wait — the portable fiber-park the
+     * non-Linux [`awaitReadable`](#awaitReadable) / [`awaitWritable`](#awaitWritable)
+     * use until the dedicated kqueue/IOCP engines land. Each spin runs a
+     * **non-blocking** [`pollFd`](#pollFd) probe (`timeoutMs = 0`); if the fd
+     * isn't ready it sleeps the **fiber** (not the carrier) via
+     * [`Cajeta.fiberSleepNanos`](../../lang/Cajeta.cajeta) — a timer-wheel park
+     * that yields the carrier so other fibers (crucially, the peer this fiber is
+     * waiting on) get to run — then retries with an exponential backoff capped
+     * at 2ms. This is the same poll+backoff shape
+     * [`Tasks.selectReceive`](../../threading/Tasks.cajeta) uses, and it is what
+     * lets two interdependent fibers (e.g. both halves of a TLS handshake over a
+     * loopback socket) make progress where a carrier-blocking `select` would
+     * starve them. Returns `true` on readiness, `false` on a probe error.
+     */
+    static boolean pollPark(int32 fd, int32 interest) {
+        int64 backoff = 50000;          // 50us first nap, doubles to a 2ms cap
+        boolean ready = false;
+        boolean done = false;
+        while (!done) {
+            int32 r = Reactor.pollFdNative(fd, interest, 0);
+            if (r == Reactor.READY) {
+                ready = true;
+                done = true;
+            } else {
+                if (r == Reactor.ERROR) {
+                    done = true;        // ready stays false
+                } else {
+                    Cajeta.fiberSleepNanos(backoff);
+                    if (backoff < 2000000) {
+                        backoff = backoff * 2;
+                    }
+                }
+            }
+        }
+        return ready;
+    }
+
     static boolean awaitReadable(int32 fd) {
         Reactor.register(fd, Reactor.READ);
         boolean ready = false;
         try {
-            ready = Reactor.awaitReadableNative(fd) == Reactor.READY;
+            if (Reactor.awaitCarrierBlockingNative() == 1) {
+                ready = Reactor.pollPark(fd, Reactor.READ);
+            } else {
+                ready = Reactor.awaitReadableNative(fd) == Reactor.READY;
+            }
         } finally {
             Reactor.deregister(fd);
         }
@@ -258,7 +315,11 @@ public final class Reactor {
         Reactor.register(fd, Reactor.WRITE);
         boolean ready = false;
         try {
-            ready = Reactor.awaitWritableNative(fd) == Reactor.READY;
+            if (Reactor.awaitCarrierBlockingNative() == 1) {
+                ready = Reactor.pollPark(fd, Reactor.WRITE);
+            } else {
+                ready = Reactor.awaitWritableNative(fd) == Reactor.READY;
+            }
         } finally {
             Reactor.deregister(fd);
         }

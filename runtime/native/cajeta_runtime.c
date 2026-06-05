@@ -872,7 +872,38 @@ static inline int __cajeta_swapcontext(ucontext_t* from, ucontext_t* to) {
 #  pragma clang diagnostic pop
 #endif
 
-#define CAJETA_FIBER_STACK_SIZE (64 * 1024)
+// Per-fiber stack size. A fiber runs arbitrary Cajeta code, which routinely
+// calls down into native C libraries (OpenSSL during a TLS handshake parses an
+// X.509 chain, runs ECDSA P-256, decodes ASN.1 — a call tree that alone wants
+// well over 64 KB of stack). The fiber stack is a plain `malloc` with NO guard
+// page, so an overflow does not fault cleanly — it silently scribbles over
+// adjacent heap and surfaces later as a SIGSEGV (full speed) or a wedged
+// scheduler (under a debugger, where the heap layout differs). 64 KB was enough
+// for the shallow channel/fan-out fibers the early tests exercised but far too
+// little for a fiber that drives a real native library; size it like a
+// conventional OS thread stack (1 MB) so any reasonable native call depth fits.
+// Overridable via $CAJETA_FIBER_STACK_KB for pathological depths or tight
+// memory budgets.
+#define CAJETA_FIBER_STACK_SIZE (1024 * 1024)
+
+// Resolve the per-fiber stack size once, honoring $CAJETA_FIBER_STACK_KB (a
+// size in KiB) when set to a sane positive value, else CAJETA_FIBER_STACK_SIZE.
+// Cached in a static so every fiber in the process gets the same size without
+// re-parsing the environment. A clamp floors the override at 64 KiB so a
+// mis-set tiny value can't reintroduce the overflow this default guards against.
+static size_t __cajeta_fiber_stack_size(void) {
+    static size_t cached = 0;
+    if (cached == 0) {
+        size_t sz = (size_t) CAJETA_FIBER_STACK_SIZE;
+        const char* env = getenv("CAJETA_FIBER_STACK_KB");
+        if (env && *env) {
+            long kb = atol(env);
+            if (kb >= 64) sz = (size_t) kb * 1024;
+        }
+        cached = sz;
+    }
+    return cached;
+}
 
 typedef void (*cajeta_task_trampoline_fn)(void* arg);
 
@@ -946,6 +977,15 @@ struct cajeta_fiber {
     // Same aliasing rationale as scope_top/drop_top; selected by
     // __cajeta_dbg_top_ptr based on fiber-vs-main context.
     struct cajeta_dbg_frame* dbg_top;
+    // Home carrier — the carrier that FIRST dispatched (started) this fiber.
+    // -1 until then. Once a fiber has started, its saved `ucontext` (stack +
+    // register state) is bound to that carrier; resuming it on a *different*
+    // carrier is the unsolved cross-carrier handoff (corrupts on a multi-
+    // carrier pool — see __cajeta_steal_one / __cajeta_publish_ready). So a
+    // started fiber is pinned here: only its home carrier ever resumes it.
+    // Fresh (not-yet-started) fibers have no saved context and may run on any
+    // carrier — that's where the pool's parallelism comes from.
+    int home_carrier;
 };
 
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -1250,9 +1290,18 @@ static void __cajeta_fiber_entry(void) {
 static void __cajeta_publish_ready(struct cajeta_fiber* f) {
     f->state = CAJETA_FIBER_READY;
     f->next = NULL;
-    struct cajeta_carrier* target = __cajeta_my_carrier
-        ? __cajeta_my_carrier
-        : &__cajeta_carriers[0];
+    // A fiber that has already started is pinned to its home carrier — its
+    // saved ucontext can only be resumed there. Route it home regardless of
+    // who is waking it. A fresh fiber (home_carrier < 0) has no saved context
+    // yet, so route it to the waker's own carrier for locality (it may still be
+    // stolen by an idle peer — safe, since it makecontext's on the stealer).
+    struct cajeta_carrier* target;
+    if (f->home_carrier >= 0) {
+        target = &__cajeta_carriers[f->home_carrier];
+    } else {
+        target = __cajeta_my_carrier ? __cajeta_my_carrier
+                                     : &__cajeta_carriers[0];
+    }
     pthread_mutex_lock(&target->deque_mutex);
     __cajeta_deque_push_bottom(&target->deque, f);
     pthread_mutex_unlock(&target->deque_mutex);
@@ -1298,7 +1347,25 @@ static struct cajeta_fiber* __cajeta_steal_one(struct cajeta_carrier* self) {
         int idx = (start + step) % n;
         if (&__cajeta_carriers[idx] == self) continue;
         struct cajeta_fiber* f = __cajeta_deque_steal(&__cajeta_carriers[idx].deque);
-        if (f) return f;
+        if (!f) continue;
+        // Only fresh fibers (no home yet) or fibers already homed to us may run
+        // here. A started fiber pinned to another carrier carries a live
+        // ucontext bound to that carrier — resuming it on `self` is the
+        // cross-carrier handoff that corrupts. Hand it back to its home deque
+        // (waking that carrier if it's parked) and keep scanning.
+        if (f->home_carrier >= 0 && f->home_carrier != self->carrier_id) {
+            struct cajeta_carrier* home = &__cajeta_carriers[f->home_carrier];
+            pthread_mutex_lock(&home->deque_mutex);
+            __cajeta_deque_push_bottom(&home->deque, f);
+            pthread_mutex_unlock(&home->deque_mutex);
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            if (__cajeta_sleeping_count > 0) {
+                pthread_cond_broadcast(&__cajeta_task_queue_cond);
+            }
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            continue;
+        }
+        return f;
     }
     return NULL;
 }
@@ -1376,14 +1443,19 @@ static void* __cajeta_carrier_loop(void* arg) {
             // arch-dependently into the synthesized frame). v1 punts:
             // stealing is disabled below until the cross-carrier
             // uc_link handoff is solved at a deeper layer.
-            f->stack = malloc(CAJETA_FIBER_STACK_SIZE);
+            size_t stack_size = __cajeta_fiber_stack_size();
+            f->stack = malloc(stack_size);
             if (!f->stack) {
                 fprintf(stderr, "cajeta: fiber stack malloc failed\n");
                 abort();
             }
+            // First dispatch: this carrier becomes the fiber's home. From here
+            // on the fiber's saved ucontext is bound to this carrier, so only
+            // this carrier may resume it (steal/publish honor home_carrier).
+            f->home_carrier = self->carrier_id;
             __cajeta_getcontext(&f->ctx);
             f->ctx.uc_stack.ss_sp = f->stack;
-            f->ctx.uc_stack.ss_size = CAJETA_FIBER_STACK_SIZE;
+            f->ctx.uc_stack.ss_size = stack_size;
             f->ctx.uc_link = &__cajeta_carrier_ctx;
             __cajeta_makecontext(&f->ctx, __cajeta_fiber_entry, 0);
         }
@@ -1509,6 +1581,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     f->exc_top = NULL;
     f->cancel_with = NULL;
     f->dbg_top = NULL;
+    f->home_carrier = -1;   // assigned on first dispatch (see carrier_loop)
     if (fiber_slot) *fiber_slot = f;
 
     pthread_mutex_lock(&__cajeta_task_mutex);

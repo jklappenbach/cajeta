@@ -171,20 +171,65 @@ TEST(TlsLoopbackTest, clientTlsStreamConstructNoHandshake) {
     EXPECT_EQ(runI32(src), 1);
 }
 
-// DISABLED — the live TLS handshake over loopback currently SIGSEGVs inside
-// TlsStream.handshake()'s pump (the socket-driven feed/pull loop in a fiber).
-// Isolated as follows (all the surrounding pieces are GREEN):
-//   - the TLS engine + Cajeta TlsConnection surface + cert validation pass
-//     in-memory (TlsEngineTests, TlsConnectionTests);
-//   - the spawn + loopback + #-stream + int8[]-arg harness passes
-//     (TlsLoopbackTest.spawnedServerLoopbackEchoNoTls);
-//   - #-moving a user-drop class into a field + dropping passes
-//     (MoveUserDropFieldProbe);
-//   - TlsStream CONSTRUCTION + its #-moves + drop pass in the fiber
-//     (TlsLoopbackTest.clientTlsStreamConstructNoHandshake).
-// So the fault is specifically the handshake pump driving the @Native engine
-// over TcpStream.readAsync/writeAllAsync across reactor parks — to be resumed.
-TEST(TlsLoopbackTest, DISABLED_tlsHandshakeAndEchoOverLoopback) {
+// Scheduler regression guard (cross-carrier fiber pinning). A spawned fiber
+// #-moves a TcpStream (whose ~TcpStream dtor runs on the fiber's stack) into a
+// heap holder, then drops it at scope exit — no socket I/O. Before the
+// home-carrier pinning fix this SIGSEGV'd deterministically on a >=4-carrier
+// pool: a started fiber could be work-stolen and resumed on a different carrier
+// than the one its ucontext was bound to, corrupting its stack mid-teardown.
+// (Only reproduces when the pool has more carriers than fibers, i.e. >=4 cores;
+// harmless but always-green elsewhere.)
+TEST(TlsLoopbackTest, crossCarrierFiberHolderDropRegression) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.net.IpAddress;\n"
+        "import cajeta.net.SocketAddress;\n"
+        "import cajeta.net.TcpStream;\n"
+        "import cajeta.net.TcpListener;\n"
+        "import cajeta.threading.Tasks;\n"
+        "public class Pipe {\n"
+        "    TcpStream stream;\n"
+        "    private Pipe(#TcpStream s) { this.stream = #s; }\n"
+        "    public static #Pipe wrap(#TcpStream s) { return heap Pipe(#s); }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static async int32 runServer(#TcpStream sock) {\n"
+        "        Pipe p = Pipe.wrap(#sock);\n"
+        "        return 1;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        () -> int32 body = () -> {\n"
+        "            IpAddress la = IpAddress.loopbackV4();\n"
+        "            SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
+        "            TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "            int32 port = listener.boundPort();\n"
+        "            IpAddress ca = IpAddress.loopbackV4();\n"
+        "            SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
+        "            TcpStream client = TcpStream.connect(#connAddr);\n"
+        "            TcpStream server = listener.accept();\n"
+        "            Task<int32> t = spawn runServer(#server);\n"
+        "            int32 sr = await t;\n"
+        "            listener.close();\n"
+        "            return sr;\n"
+        "        };\n"
+        "        return Tasks.runBlocking<int32>(body);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// A full TLS 1.3 handshake + plaintext echo over a loopback socket, with the
+// client and server each driving the memory-BIO pump on its own fiber.
+//
+// This originally SIGSEGV'd, and the root cause was NOT in the TLS layer: the
+// fiber stack was 64 KB, but a TLS handshake runs a deep OpenSSL call tree
+// (SSL_do_handshake → X.509 chain parse → ECDSA P-256 → ASN.1) that overflowed
+// it. Fiber stacks are malloc'd with no guard page, so the overflow corrupted
+// adjacent heap and surfaced as a crash (full speed) or a wedged scheduler
+// (under gdb). Fixed by sizing fiber stacks like an OS thread stack (1 MB,
+// $CAJETA_FIBER_STACK_KB-overridable) in cajeta_runtime.c. The in-memory TLS
+// tests passed throughout because they run on the main thread's large stack.
+TEST(TlsLoopbackTest, tlsHandshakeAndEchoOverLoopback) {
     std::string cert, key;
     ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
 
