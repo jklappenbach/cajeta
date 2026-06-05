@@ -339,6 +339,14 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     if (std::getenv("CAJETA_DUMP_IR")) {
         llvmModule->print(llvm::errs(), nullptr);
     }
+    // Golden-IR baseline capture (S0): stash the post-codegen, pre-optimization
+    // host IR string so a test can assert the Vector lowering shape. Opt-in via
+    // Options::captureIr so the normal JIT path pays nothing.
+    if (opts.captureIr) {
+        llvm::raw_string_ostream irStream(jitState->moduleIr);
+        llvmModule->print(irStream, nullptr);
+        irStream.flush();
+    }
     // Verify before handing to JIT — gives clearer errors when codegen produced
     // malformed IR.
     std::string verifyErr;

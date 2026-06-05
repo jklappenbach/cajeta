@@ -95,15 +95,17 @@ The review's required fixes are folded into the stages below.
 
 ## Stages (each builds `./build.sh` + tests independently; TDD)
 
-- **S0 — Golden-IR baseline (no source change).** Capture post-codegen LLVM IR + SPIR-V for a
-  representative `Vector` workload as the regression oracle for the retrofit.
-  **Status 2026-06-04: largely already covered.** The device side exists —
-  `XpuVectorDeviceTests.lowersToVectorIr` asserts `<4 x float>` / `fmul` / `extractelement` /
-  `insertelement` in the kernel IR, and `runsOnCpu`/`runsOn{Vulkan,Amd}Device` are the
-  behavioral oracle. The dedicated **host** golden-IR-diff harness is deferred — it needs a
-  host-IR-string accessor (the JIT helper only dumps to stderr via `CAJETA_DUMP_IR`), and its
-  consumer (the Vector retrofit, S9) is documentary-first and far off. Low priority; the
-  existing Vector device-emit + exec tests serve as the zero-regression oracle meanwhile.
+- **S0 — Golden-IR baseline (no source change). DONE 2026-06-04.** Regression oracle for the
+  Vector retrofit, both sides:
+  - **Device:** `XpuVectorDeviceTests.lowersToVectorIr` asserts `<4 x float>` / `fmul` /
+    `extractelement` / `insertelement` in the kernel IR; `runsOnCpu`/`runsOn{Vulkan,Amd}Device`
+    are the behavioral oracle.
+  - **Host:** added the host-IR-string accessor (`CajetaJit::Options::captureIr` →
+    `getModuleIr()`, capturing post-codegen pre-opt IR at the same point `CAJETA_DUMP_IR` prints)
+    and `VectorHostGoldenIrTests` — `lowersToFlatVectorIntrinsics` mirrors the device assertions
+    on the host JIT, and `vectorOperatorsAreNotDispatchedAsCalls` pins the defining invariant
+    (Vector `+`/`*` fold to flat `<N x T>` SSA via intrinsic interception, NO
+    `Vector<…>::operator` call). The S9 retrofit must keep both green.
 - **S1 — `VALUE_TYPE_FLAG` + `@ValueType` + POD validator.** Flag bit; visitor recognition;
   POD-validity check (reject base/interface/virtual/non-POD-field; **recurse into value-type
   fields**). Negative + positive tests. Files: `CajetaType.h`, `CajetaLlvmVisitor.h`,
