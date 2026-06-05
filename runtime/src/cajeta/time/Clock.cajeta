@@ -1,0 +1,33 @@
+package cajeta.time;
+
+/**
+ * The static "what time is it" surface. Modeled on the clock-access parts of
+ * `java.time.Clock` / `System`.
+ *
+ * `nanoTime()` is a monotonic counter (Linux `CLOCK_MONOTONIC`) suitable for
+ * measuring elapsed intervals; it is NOT wall-clock time and is not affected by
+ * NTP or leap-second adjustments. `millisTime()` is wall-clock milliseconds
+ * since the Unix epoch (`CLOCK_REALTIME`) and CAN jump if the system clock is
+ * adjusted. `now()` reads the wall clock and returns it as an [[Instant]].
+ */
+public final class Clock {
+    /** Monotonic nanosecond counter for interval measurement (CLOCK_MONOTONIC). */
+    @Native("__cajeta_currentTimeNanos")
+    public static int64 nanoTime();
+
+    /** Wall-clock milliseconds since the Unix epoch (CLOCK_REALTIME). */
+    @Native("__cajeta_currentTimeMillis")
+    public static int64 millisTime();
+
+    /** The current instant from the system wall clock (millisecond resolution). */
+    public static Instant now() {
+        int64 ms = Clock.millisTime();
+        int64 s = ms / 1000;
+        int32 n = (int32) ((ms % 1000) * 1000000);
+        if (n < 0) {
+            n = n + 1000000000;
+            s = s - 1;
+        }
+        return stack Instant(s, n);
+    }
+}

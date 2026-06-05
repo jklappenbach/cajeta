@@ -1,0 +1,21 @@
+package cajeta.time;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Thrown when a date/time operation fails on otherwise well-formed input —
+ * an out-of-range field (month 13, hour 24, day 30 in February), an
+ * unsupported combination, or an arithmetic result that escapes the
+ * representable range.
+ *
+ * On the **recoverable** branch (extends `cajeta.error.RecoverableException`):
+ * these signal bad data a caller can catch and recover from, not an invariant
+ * violation. The runtime's recoverable/unrecoverable chain-walk therefore lets
+ * user `catch` handlers see it rather than aborting.
+ */
+public class DateTimeException extends RecoverableException {
+    public DateTimeException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

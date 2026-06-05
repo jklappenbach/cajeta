@@ -1,0 +1,56 @@
+package cajeta.time;
+
+/**
+ * Internal byte-level formatting helpers for `cajeta.time` `toString()` / ISO
+ * output. The stdlib has no `StringBuilder` yet, so date/time types build an
+ * owned `int8[]` of ASCII bytes and wrap it in a `String` (the same idiom
+ * `String.substring` uses: `new int8[]` → `heap String(#bytes, len)`).
+ *
+ * Package-private: not part of the public `cajeta.time` surface.
+ */
+class Fmt {
+    /** Number of decimal digits in a non-negative value (>= 1, so 0 -> 1). */
+    static int32 width(int64 v) {
+        int32 n = 1;
+        int64 t = v;
+        while (t >= 10) {
+            t = t / 10;
+            n = n + 1;
+        }
+        return n;
+    }
+
+    /**
+     * Write the non-negative value `v` into `buf` starting at `pos`, zero-padded
+     * on the left to at least `minWidth` digits. Returns the position just past
+     * the last digit written. Digits are filled right-to-left, then any
+     * remaining width to the left is padded with '0'.
+     */
+    static int32 writeUint(int8[] buf, int32 pos, int64 v, int32 minWidth) {
+        int32 w = Fmt.width(v);
+        int32 total = w;
+        if (minWidth > w) {
+            total = minWidth;
+        }
+        int32 written = 0;
+        int32 i = pos + total - 1;
+        int64 t = v;
+        while (written < total) {
+            int32 digit = 0;
+            if (written < w) {
+                digit = (int32) (t % 10);
+                t = t / 10;
+            }
+            buf[i] = (int8) (48 + digit);
+            i = i - 1;
+            written = written + 1;
+        }
+        return pos + total;
+    }
+
+    /** Write a single ASCII char (low byte of `c`) at `pos`; returns pos + 1. */
+    static int32 writeChar(int8[] buf, int32 pos, int32 c) {
+        buf[pos] = (int8) c;
+        return pos + 1;
+    }
+}

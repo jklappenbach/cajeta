@@ -1,0 +1,19 @@
+package cajeta.time;
+
+/**
+ * Thrown when parsing a date/time string fails (malformed ISO-8601, a field
+ * that doesn't match the expected shape). `errorIndex` is the 0-based offset
+ * into the input at which the parser noticed the problem, or -1 if not known.
+ *
+ * Extends `DateTimeException`, so it sits on the **recoverable** branch and is
+ * catchable as either the specific type or as `DateTimeException`.
+ */
+public class DateTimeParseException extends DateTimeException {
+    public int64 errorIndex;
+
+    public DateTimeParseException(String message, int64 errorIndex) {
+        this.message = message;
+        this.cause = 0;
+        this.errorIndex = errorIndex;
+    }
+}

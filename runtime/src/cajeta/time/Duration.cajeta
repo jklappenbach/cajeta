@@ -1,20 +1,20 @@
 package cajeta.time;
 
+import cajeta.lang.Comparable;
+
 /**
- * An elapsed-time value in nanoseconds. Minimal v1: just enough to lower
- * `withTimeout(d, body)` from cajeta.threading (R9.3) and to compute
- * `Cajeta.currentTimeNanos() + d.toNanos()` deadlines for the timer
- * intrinsic (R9.1).
+ * An immutable, signed time-based amount, nanosecond precision. Modeled on
+ * `java.time.Duration` but backed by a single `int64` nanosecond count, so the
+ * representable range is approximately ±292 years.
  *
- * No arithmetic, no comparison, no formatting — those land when a
- * concrete consumer surfaces a need. Don't speculatively add them.
+ * Negative durations are valid (they arise from `between(later, earlier)` and
+ * `negated()`). All factories and arithmetic return fresh stack values; the
+ * type carries no heap state.
  *
- * `nanos` is signed int64, so the representable range is approximately
- * ±292 years. Negative durations parse and round-trip but have no
- * defined semantics at the timeout layer (the timer intrinsic treats a
- * deadline already in the past as an immediate timeout).
+ * Equality and ordering are by total nanoseconds. `compareTo` provides the
+ * total order (see [[Comparable]]); `operator==` is structural.
  */
-public class Duration {
+public class Duration implements Comparable<Duration> {
     int64 nanos;
 
     public Duration(int64 nanos) {
@@ -26,12 +26,12 @@ public class Duration {
         return stack Duration(nanos);
     }
 
-    /** Construct from milliseconds. 1 ms = 1_000_000 ns. */
+    /** Construct from milliseconds. 1 ms = 1000000 ns. */
     public static Duration ofMillis(int64 millis) {
         return stack Duration(millis * 1000000);
     }
 
-    /** Construct from seconds. 1 s = 1_000_000_000 ns. */
+    /** Construct from seconds. 1 s = 1000000000 ns. */
     public static Duration ofSeconds(int64 seconds) {
         return stack Duration(seconds * 1000000000);
     }
@@ -41,8 +41,125 @@ public class Duration {
         return stack Duration(minutes * 60000000000);
     }
 
+    /** Construct from hours. 1 h = 3600 s. */
+    public static Duration ofHours(int64 hours) {
+        return stack Duration(hours * 3600000000000);
+    }
+
+    /** Construct from days. 1 d = 86400 s (no calendar awareness). */
+    public static Duration ofDays(int64 days) {
+        return stack Duration(days * 86400000000000);
+    }
+
+    /** The zero duration. */
+    public static Duration zero() {
+        return stack Duration(0);
+    }
+
     /** Total nanoseconds. */
     public int64 toNanos() {
+        return this.nanos;
+    }
+
+    /** Total whole milliseconds (truncated toward zero). */
+    public int64 toMillis() {
+        return this.nanos / 1000000;
+    }
+
+    /** Total whole seconds (truncated toward zero). */
+    public int64 toSeconds() {
+        return this.nanos / 1000000000;
+    }
+
+    /** Total whole minutes (truncated toward zero). */
+    public int64 toMinutes() {
+        return this.nanos / 60000000000;
+    }
+
+    /** Total whole hours (truncated toward zero). */
+    public int64 toHours() {
+        return this.nanos / 3600000000000;
+    }
+
+    /** Total whole days (truncated toward zero). */
+    public int64 toDays() {
+        return this.nanos / 86400000000000;
+    }
+
+    /** The nanosecond-of-second part, -999999999..999999999 (sign follows the value). */
+    public int32 nanosPart() {
+        return (int32) (this.nanos % 1000000000);
+    }
+
+    /** Sum. */
+    public Duration plus(Duration other) {
+        return stack Duration(this.nanos + other.nanos);
+    }
+
+    /** Difference. */
+    public Duration minus(Duration other) {
+        return stack Duration(this.nanos - other.nanos);
+    }
+
+    /** Scale by an integer factor. */
+    public Duration multipliedBy(int64 scalar) {
+        return stack Duration(this.nanos * scalar);
+    }
+
+    /** Integer division by a factor (truncates toward zero). */
+    public Duration dividedBy(int64 divisor) {
+        return stack Duration(this.nanos / divisor);
+    }
+
+    /** The negation of this amount. */
+    public Duration negated() {
+        return stack Duration(-this.nanos);
+    }
+
+    /** The absolute value of this amount. */
+    public Duration abs() {
+        if (this.nanos < 0) {
+            return stack Duration(-this.nanos);
+        }
+        return stack Duration(this.nanos);
+    }
+
+    /** True iff this duration is exactly zero. */
+    public boolean isZero() {
+        return this.nanos == 0;
+    }
+
+    /** True iff this duration is negative. */
+    public boolean isNegative() {
+        return this.nanos < 0;
+    }
+
+    /**
+     * Total order by nanoseconds: negative if this is shorter than `other`,
+     * zero if equal, positive if longer.
+     */
+    public int32 compareTo(Duration other) {
+        if (this.nanos < other.nanos) {
+            return -1;
+        }
+        if (this.nanos > other.nanos) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /**
+     * Structural equality by total nanoseconds. (`operator==` returns a
+     * primitive, so it is exempt from the multi-parameter borrow-return rule
+     * that bars value-returning binary operators; use `plus`/`minus` for
+     * arithmetic.)
+     */
+    public static boolean operator== (Duration a, Duration b) {
+        return a.nanos == b.nanos;
+    }
+
+    /** Content hash (the nanosecond count). */
+    public int64 hash() {
         return this.nanos;
     }
 }
