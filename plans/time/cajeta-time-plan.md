@@ -281,7 +281,16 @@ negatives).
       → `ZoneOffset`, `ZoneId.resolve(instant)` → `ZonedDateTime`. UTC/GMT/Z
       fast-path works without the filesystem (static builds); unknown zones throw.
       Tests: `test/time/ZoneIdTests.cpp` (DST straddle, half-hour offset, throw).
-- [ ] **Phase 7 — `DateTimeFormatter` pattern engine.** (S-507, **deferred**.)
+- [x] **Phase 7 — `DateTimeFormatter`.** (S-507, partial.) **Done:** strftime
+      `ofPattern("%Y-%m-%d %H:%M:%S")` (codes Y/y/m/d/H/I/M/S/p/j/a/A/b/B/z/Z/f/L/%/n/t)
+      + `FormatStyle` standards (ISO_LOCAL_DATE[_TIME], ISO_OFFSET/INSTANT,
+      BASIC_ISO_DATE, RFC_1123, US/EURO_DATE, SQL_TIMESTAMP) over a `DateTimeFields`
+      render engine. Formatter is **immutable** (stores the pattern string, parses
+      at `format()`). Tests: `test/time/DateTimeFormatterBuilderTests.cpp` (11).
+      **Deferred:** the fluent step-builder decorator — cajeta's codegen for
+      self-returning fluent methods (`return this`) on a heap object is unsound
+      (value-poisons the class, breaks the stdlib JIT verify); `ofPattern` covers
+      the same need. Parsing (text → temporal) also deferred.
 
 Phases 1–5 are the committed v1 of this branch; 6–7 are scoped here but
 explicitly deferred (flagged so we don't silently drop them).

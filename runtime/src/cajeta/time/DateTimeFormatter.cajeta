@@ -1,0 +1,320 @@
+package cajeta.time;
+
+/**
+ * Formats temporal values to text, modeled on `java.time.format.DateTimeFormatter`,
+ * built so you never have to reverse-engineer a pattern letter:
+ *
+ *  1. **Standard formats** — `DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME)`,
+ *     `FormatStyle.RFC_1123_DATE_TIME`, etc. (see [[FormatStyle]]).
+ *  2. **printf/strftime-style patterns** —
+ *     `DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S")` — full control over the
+ *     exact format with a one-liner (the codes are listed below).
+ *
+ * (A fluent step-builder decorator was prototyped but is deferred: cajeta's
+ * codegen for self-returning fluent methods on a heap object isn't sound yet —
+ * see plans/time. `ofPattern` covers the same need concisely.)
+ *
+ * Render with `formatDate` / `formatTime` / `formatDateTime` / `formatZoned`, or
+ * `format(DateTimeFields)`. Output is an owned `#String`; text is English.
+ *
+ * The formatter is **immutable** — it holds only its strftime pattern string and
+ * parses it on each `format` call. (Cajeta's borrow/ABI rules make a mutable
+ * step-list builder object impractical, so the canonical internal form is the
+ * pattern string; the fluent builder simply assembles one.)
+ *
+ * **strftime codes**: `%Y` year, `%y` 2-digit year, `%m` month, `%d` day,
+ * `%H` hour24, `%I` hour12, `%M` minute, `%S` second, `%p` AM/PM, `%j` day-of-year,
+ * `%b`/`%h` short month, `%B` full month, `%a` short weekday, `%A` full weekday,
+ * `%z` offset `±HHMM`, `%Z` offset `Z`/`±HH:MM`, `%f` 9-digit fraction,
+ * `%L` 3-digit (milli) fraction, `%%` literal `%`, `%n` newline, `%t` tab.
+ */
+public final class DateTimeFormatter {
+    String pattern;
+
+    public DateTimeFormatter(String pattern) {
+        this.pattern = pattern;
+    }
+
+    /** A formatter for a strftime-style pattern (see class docs for codes). */
+    public static #DateTimeFormatter ofPattern(String pattern) {
+        return heap DateTimeFormatter(pattern);
+    }
+
+    /** A formatter for a standard [[FormatStyle]]. */
+    public static #DateTimeFormatter ofStandard(FormatStyle style) {
+        String p = "%Y-%m-%d";
+        if (style == FormatStyle.ISO_LOCAL_TIME) {
+            p = "%H:%M:%S";
+        } else if (style == FormatStyle.ISO_LOCAL_DATE_TIME) {
+            p = "%Y-%m-%dT%H:%M:%S";
+        } else if (style == FormatStyle.ISO_OFFSET_DATE_TIME) {
+            p = "%Y-%m-%dT%H:%M:%S%Z";
+        } else if (style == FormatStyle.ISO_INSTANT) {
+            p = "%Y-%m-%dT%H:%M:%S%Z";
+        } else if (style == FormatStyle.BASIC_ISO_DATE) {
+            p = "%Y%m%d";
+        } else if (style == FormatStyle.RFC_1123_DATE_TIME) {
+            p = "%a, %d %b %Y %H:%M:%S GMT";
+        } else if (style == FormatStyle.US_DATE) {
+            p = "%m/%d/%Y";
+        } else if (style == FormatStyle.EURO_DATE) {
+            p = "%d.%m.%Y";
+        } else if (style == FormatStyle.SQL_TIMESTAMP) {
+            p = "%Y-%m-%d %H:%M:%S";
+        }
+        return heap DateTimeFormatter(p);
+    }
+
+    /** The strftime pattern this formatter renders with. */
+    public String getPattern() {
+        return this.pattern;
+    }
+
+    /** Render `f` by parsing this formatter's pattern. Returns an owned String. */
+    public #String format(DateTimeFields f) {
+        int32 n = this.pattern.byteLength;
+        // Generous upper bound: each '%X' can expand to a name/year (<=16),
+        // each literal byte is itself. Oversized; the String length is exact.
+        int32 cap = n * 16 + 16;
+        int8[] buf = new int8[cap];
+        int32 p = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = ((int32) this.pattern.bytes[i]) & 0xff;
+            if (c == 37 && i + 1 < n) { // '%'
+                int32 code = ((int32) this.pattern.bytes[i + 1]) & 0xff;
+                p = DateTimeFormatter.emit(buf, p, code, f);
+                i = i + 2;
+            } else {
+                buf[p] = this.pattern.bytes[i];
+                p = p + 1;
+                i = i + 1;
+            }
+        }
+        return heap String(#buf, p);
+    }
+
+    /** Format a date. */
+    public #String formatDate(LocalDate d) {
+        DateTimeFields f = DateTimeFields.ofDate(d);
+        return this.format(f);
+    }
+
+    /** Format a time. */
+    public #String formatTime(LocalTime t) {
+        DateTimeFields f = DateTimeFields.ofTime(t);
+        return this.format(f);
+    }
+
+    /** Format a zone-naive date-time. */
+    public #String formatDateTime(LocalDateTime t) {
+        DateTimeFields f = DateTimeFields.ofDateTime(t);
+        return this.format(f);
+    }
+
+    /** Format a zoned date-time (offset fields available). */
+    public #String formatZoned(ZonedDateTime z) {
+        DateTimeFields f = DateTimeFields.ofZoned(z);
+        return this.format(f);
+    }
+
+    // Render one strftime code into buf at p; returns the new position.
+    static int32 emit(int8[] buf, int32 p, int32 code, DateTimeFields f) {
+        if (code == 89) { // Y
+            return DateTimeFormatter.writeYear(buf, p, f.year, 4);
+        }
+        if (code == 121) { // y
+            int32 yy = f.year % 100;
+            if (yy < 0) {
+                yy = yy + 100;
+            }
+            return Fmt.writeUint(buf, p, (int64) yy, 2);
+        }
+        if (code == 109) { // m
+            return Fmt.writeUint(buf, p, (int64) f.month, 2);
+        }
+        if (code == 100) { // d
+            return Fmt.writeUint(buf, p, (int64) f.day, 2);
+        }
+        if (code == 72) { // H
+            return Fmt.writeUint(buf, p, (int64) f.hour, 2);
+        }
+        if (code == 73) { // I
+            int32 h = f.hour % 12;
+            if (h == 0) {
+                h = 12;
+            }
+            return Fmt.writeUint(buf, p, (int64) h, 2);
+        }
+        if (code == 77) { // M
+            return Fmt.writeUint(buf, p, (int64) f.minute, 2);
+        }
+        if (code == 83) { // S
+            return Fmt.writeUint(buf, p, (int64) f.second, 2);
+        }
+        if (code == 112) { // p
+            int32 ap = 65; // 'A'
+            if (f.hour >= 12) {
+                ap = 80; // 'P'
+            }
+            int32 q = Fmt.writeChar(buf, p, ap);
+            return Fmt.writeChar(buf, q, 77); // 'M'
+        }
+        if (code == 106) { // j  day-of-year
+            int64 ed = LocalDate.daysFromCivil(f.year, f.month, f.day);
+            int64 jan1 = LocalDate.daysFromCivil(f.year, 1, 1);
+            int32 doy = (int32) (ed - jan1) + 1;
+            return Fmt.writeUint(buf, p, (int64) doy, 3);
+        }
+        if (code == 98 || code == 104) { // b / h short month
+            String mn = DateTimeFormatter.monthShort(f.month);
+            return Fmt.writeBytes(buf, p, mn.bytes, mn.byteLength);
+        }
+        if (code == 66) { // B full month
+            String mn = DateTimeFormatter.monthLong(f.month);
+            return Fmt.writeBytes(buf, p, mn.bytes, mn.byteLength);
+        }
+        if (code == 97) { // a short weekday
+            String dn = DateTimeFormatter.dowShort(f.dayOfWeek);
+            return Fmt.writeBytes(buf, p, dn.bytes, dn.byteLength);
+        }
+        if (code == 65) { // A full weekday
+            String dn = DateTimeFormatter.dowLong(f.dayOfWeek);
+            return Fmt.writeBytes(buf, p, dn.bytes, dn.byteLength);
+        }
+        if (code == 122) { // z  +HHMM
+            return DateTimeFormatter.writeOffset(buf, p, f.offsetSeconds, false);
+        }
+        if (code == 90) { // Z  Z / +HH:MM
+            return DateTimeFormatter.writeOffset(buf, p, f.offsetSeconds, true);
+        }
+        if (code == 102) { // f  9-digit fraction
+            return DateTimeFormatter.writeFraction(buf, p, f.nano, 9);
+        }
+        if (code == 76) { // L  3-digit fraction
+            return DateTimeFormatter.writeFraction(buf, p, f.nano, 3);
+        }
+        if (code == 110) { // n
+            return Fmt.writeChar(buf, p, 10);
+        }
+        if (code == 116) { // t
+            return Fmt.writeChar(buf, p, 9);
+        }
+        if (code == 37) { // %
+            return Fmt.writeChar(buf, p, 37);
+        }
+        // Unknown: emit a literal '%' so the input isn't silently dropped.
+        return Fmt.writeChar(buf, p, 37);
+    }
+
+    static int32 writeYear(int8[] buf, int32 p, int32 year, int32 width) {
+        int32 w = width;
+        if (w < 1) {
+            w = 1;
+        }
+        int32 q = p;
+        int32 ay = year;
+        if (year < 0) {
+            q = Fmt.writeChar(buf, q, 45);
+            ay = -year;
+        }
+        return Fmt.writeUint(buf, q, (int64) ay, w);
+    }
+
+    static int32 writeFraction(int8[] buf, int32 p, int32 nano, int32 digits) {
+        int32 d = digits;
+        if (d < 1) {
+            d = 1;
+        }
+        if (d > 9) {
+            d = 9;
+        }
+        int64 div = 1;
+        int32 k = 0;
+        while (k < 9 - d) {
+            div = div * 10;
+            k = k + 1;
+        }
+        return Fmt.writeUint(buf, p, (int64) nano / div, d);
+    }
+
+    static int32 writeOffset(int8[] buf, int32 p, int32 offsetSeconds, boolean withColon) {
+        if (offsetSeconds == 0) {
+            if (withColon) {
+                return Fmt.writeChar(buf, p, 90); // 'Z'
+            }
+            int32 r = Fmt.writeChar(buf, p, 43);
+            return Fmt.writeUint(buf, r, 0, 4);
+        }
+        int32 q = p;
+        int32 sign = 43;
+        int32 t = offsetSeconds;
+        if (t < 0) {
+            sign = 45;
+            t = -t;
+        }
+        int32 oh = t / 3600;
+        int32 om = (t % 3600) / 60;
+        q = Fmt.writeChar(buf, q, sign);
+        q = Fmt.writeUint(buf, q, (int64) oh, 2);
+        if (withColon) {
+            q = Fmt.writeChar(buf, q, 58);
+        }
+        q = Fmt.writeUint(buf, q, (int64) om, 2);
+        return q;
+    }
+
+    static String monthShort(int32 m) {
+        if (m == 1) { return "Jan"; }
+        if (m == 2) { return "Feb"; }
+        if (m == 3) { return "Mar"; }
+        if (m == 4) { return "Apr"; }
+        if (m == 5) { return "May"; }
+        if (m == 6) { return "Jun"; }
+        if (m == 7) { return "Jul"; }
+        if (m == 8) { return "Aug"; }
+        if (m == 9) { return "Sep"; }
+        if (m == 10) { return "Oct"; }
+        if (m == 11) { return "Nov"; }
+        if (m == 12) { return "Dec"; }
+        return "???";
+    }
+
+    static String monthLong(int32 m) {
+        if (m == 1) { return "January"; }
+        if (m == 2) { return "February"; }
+        if (m == 3) { return "March"; }
+        if (m == 4) { return "April"; }
+        if (m == 5) { return "May"; }
+        if (m == 6) { return "June"; }
+        if (m == 7) { return "July"; }
+        if (m == 8) { return "August"; }
+        if (m == 9) { return "September"; }
+        if (m == 10) { return "October"; }
+        if (m == 11) { return "November"; }
+        if (m == 12) { return "December"; }
+        return "???";
+    }
+
+    static String dowShort(int32 d) {
+        if (d == 1) { return "Mon"; }
+        if (d == 2) { return "Tue"; }
+        if (d == 3) { return "Wed"; }
+        if (d == 4) { return "Thu"; }
+        if (d == 5) { return "Fri"; }
+        if (d == 6) { return "Sat"; }
+        if (d == 7) { return "Sun"; }
+        return "???";
+    }
+
+    static String dowLong(int32 d) {
+        if (d == 1) { return "Monday"; }
+        if (d == 2) { return "Tuesday"; }
+        if (d == 3) { return "Wednesday"; }
+        if (d == 4) { return "Thursday"; }
+        if (d == 5) { return "Friday"; }
+        if (d == 6) { return "Saturday"; }
+        if (d == 7) { return "Sunday"; }
+        return "???";
+    }
+}

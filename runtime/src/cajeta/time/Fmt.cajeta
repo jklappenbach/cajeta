@@ -53,4 +53,16 @@ class Fmt {
         buf[pos] = (int8) c;
         return pos + 1;
     }
+
+    /** Copy `len` bytes of `src` into `buf` at `pos`; returns the new position. */
+    static int32 writeBytes(int8[] buf, int32 pos, int8[] src, int32 len) {
+        int32 p = pos;
+        int32 i = 0;
+        while (i < len) {
+            buf[p] = src[i];
+            p = p + 1;
+            i = i + 1;
+        }
+        return p;
+    }
 }
