@@ -107,6 +107,38 @@ int __cajeta_tls_ctx_use_cert_key_pem(void* ctxv,
     return SSL_CTX_check_private_key(ctx) == 1 ? 0 : CAJETA_TLS_ERROR;
 }
 
+// Enable/disable peer-certificate verification on a (client) context.
+// mode != 0 -> SSL_VERIFY_PEER (the handshake fails on an invalid chain);
+// mode == 0 -> SSL_VERIFY_NONE (the engine-only / cert-validation-is-NET-5.3
+// posture the b6.1 tests used). Returns 0.
+int __cajeta_tls_ctx_set_verify(void* ctxv, int mode) {
+    SSL_CTX* ctx = (SSL_CTX*) ctxv;
+    if (!ctx) return CAJETA_TLS_ERROR;
+    SSL_CTX_set_verify(ctx, mode ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, NULL);
+    return 0;
+}
+
+// Add a trust-anchor (CA / self-signed root) from PEM bytes to the context's
+// verification store. May contain a chain — every certificate found is added.
+// Returns 0 if at least one was added, CAJETA_TLS_ERROR otherwise.
+int __cajeta_tls_ctx_add_trust_pem(void* ctxv, const void* pem_hdr, int len) {
+    SSL_CTX* ctx = (SSL_CTX*) ctxv;
+    const char* pem = CAJETA_ARR_DATA(pem_hdr);
+    if (!ctx || !pem || len <= 0) return CAJETA_TLS_ERROR;
+    X509_STORE* store = SSL_CTX_get_cert_store(ctx);
+    if (!store) return CAJETA_TLS_ERROR;
+    BIO* bio = BIO_new_mem_buf(pem, len);
+    if (!bio) return CAJETA_TLS_ERROR;
+    int added = 0;
+    X509* cert;
+    while ((cert = PEM_read_bio_X509(bio, NULL, NULL, NULL)) != NULL) {
+        if (X509_STORE_add_cert(store, cert) == 1) added++;
+        X509_free(cert);
+    }
+    BIO_free(bio);
+    return added > 0 ? 0 : CAJETA_TLS_ERROR;
+}
+
 void __cajeta_tls_ctx_free(void* ctxv) {
     if (ctxv) SSL_CTX_free((SSL_CTX*) ctxv);
 }
@@ -150,6 +182,55 @@ int __cajeta_tls_set_sni(void* connv, const void* host_hdr, int host_len) {
     memcpy(name, host, (size_t) host_len);
     name[host_len] = '\0';
     return SSL_set_tlsext_host_name(c->ssl, name) == 1 ? 0 : CAJETA_TLS_ERROR;
+}
+
+// Enable hostname verification: the peer cert must match `host` (SAN, with the
+// CN fallback + wildcard rules X509_check_host implements). Set before the
+// handshake; a mismatch then fails the handshake with HOSTNAME below.
+// Returns 0 / CAJETA_TLS_ERROR.
+int __cajeta_tls_set_verify_host(void* connv, const void* host_hdr, int host_len) {
+    cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    const char* host = CAJETA_ARR_DATA(host_hdr);
+    if (!c || !host || host_len <= 0 || host_len > 255) return CAJETA_TLS_ERROR;
+    char name[256];
+    memcpy(name, host, (size_t) host_len);
+    name[host_len] = '\0';
+    return SSL_set1_host(c->ssl, name) == 1 ? 0 : CAJETA_TLS_ERROR;
+}
+
+// Normalized peer-verification verdict (post-handshake). Maps OpenSSL's
+// X509_V_* result to a stable ordinal the Cajeta layer turns into a
+// CertificateInvalid reason (NET-5.3 / 5.6):
+//   0 OK · 1 EXPIRED (or not-yet-valid) · 2 HOSTNAME · 3 UNTRUSTED
+//   (self-signed / unknown issuer) · 4 OTHER.
+#define CAJETA_TLS_CERT_OK        0
+#define CAJETA_TLS_CERT_EXPIRED   1
+#define CAJETA_TLS_CERT_HOSTNAME  2
+#define CAJETA_TLS_CERT_UNTRUSTED 3
+#define CAJETA_TLS_CERT_OTHER     4
+int __cajeta_tls_verify_result(void* connv) {
+    cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    if (!c) return CAJETA_TLS_CERT_OTHER;
+    long r = SSL_get_verify_result(c->ssl);
+    switch (r) {
+        case X509_V_OK:
+            return CAJETA_TLS_CERT_OK;
+        case X509_V_ERR_CERT_HAS_EXPIRED:
+        case X509_V_ERR_CERT_NOT_YET_VALID:
+        case X509_V_ERR_CRL_HAS_EXPIRED:
+            return CAJETA_TLS_CERT_EXPIRED;
+        case X509_V_ERR_HOSTNAME_MISMATCH:
+        case X509_V_ERR_IP_ADDRESS_MISMATCH:
+            return CAJETA_TLS_CERT_HOSTNAME;
+        case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
+        case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
+        case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT:
+        case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
+        case X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE:
+            return CAJETA_TLS_CERT_UNTRUSTED;
+        default:
+            return CAJETA_TLS_CERT_OTHER;
+    }
 }
 
 // Offer an ALPN protocol list (wire format: each entry is a 1-byte length

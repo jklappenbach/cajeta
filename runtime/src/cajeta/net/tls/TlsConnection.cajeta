@@ -37,6 +37,17 @@ public class TlsConnection {
     /** A fatal protocol/library error. */
     public static int32 FAILED = -3;
 
+    /** [`verifyResult`](#verifyResult): the peer chain verified cleanly. */
+    public static int32 CERT_OK = 0;
+    /** The peer cert is expired (or not yet valid). */
+    public static int32 CERT_EXPIRED = 1;
+    /** The peer cert does not match the expected hostname. */
+    public static int32 CERT_HOSTNAME = 2;
+    /** The peer chain does not lead to a trusted root (self-signed / unknown). */
+    public static int32 CERT_UNTRUSTED = 3;
+    /** Some other certificate fault. */
+    public static int32 CERT_OTHER = 4;
+
     /** Backend SSL_CTX handle (shared config). Owned iff `ownsCtx`. */
     pointer ctx;
     /** Backend SSL connection handle (per-handshake state + the two BIOs). */
@@ -56,8 +67,20 @@ public class TlsConnection {
     @Native("__cajeta_tls_ctx_free")
     private static void ctxFree(pointer ctx);
 
+    @Native("__cajeta_tls_ctx_set_verify")
+    private static int32 ctxSetVerify(pointer ctx, int32 mode);
+
+    @Native("__cajeta_tls_ctx_add_trust_pem")
+    private static int32 ctxAddTrust(pointer ctx, int8[] pem, int32 len);
+
     @Native("__cajeta_tls_conn_new")
     private static #pointer connNew(pointer ctx, int32 isServer);
+
+    @Native("__cajeta_tls_set_verify_host")
+    private static int32 setVerifyHostNative(pointer conn, int8[] host, int32 len);
+
+    @Native("__cajeta_tls_verify_result")
+    private static int32 verifyResultNative(pointer conn);
 
     @Native("__cajeta_tls_set_sni")
     private static int32 setSniNative(pointer conn, int8[] host, int32 hostLen);
@@ -111,6 +134,21 @@ public class TlsConnection {
     }
 
     /**
+     * A **verifying** client: the peer certificate chain is required and
+     * validated, so the handshake fails (and [`verifyResult`](#verifyResult)
+     * reports why) on an expired / untrusted / hostname-mismatched cert. Add
+     * trust anchors with [`addTrust`](#addTrust) and the expected name with
+     * [`setVerifyHost`](#setVerifyHost) before the first handshake step. The
+     * verify mode is fixed on the context here, before the connection is made.
+     */
+    public static #TlsConnection verifyingClient() {
+        pointer ctx = TlsConnection.ctxNew(0);
+        TlsConnection.ctxSetVerify(ctx, 1);
+        pointer conn = TlsConnection.connNew(ctx, 0);
+        return heap TlsConnection(ctx, conn, true);
+    }
+
+    /**
      * A fresh **server** connection presenting `certPem` (chain) + `keyPem`
      * (PEM bytes). Used by [`TlsListener`](TlsListener.cajeta) (NET-5.5).
      */
@@ -127,6 +165,21 @@ public class TlsConnection {
     /** Client SNI: the server name to request (`host` bytes, `len` of them). */
     public void setSni(int8[] host, int32 len) {
         TlsConnection.setSniNative(this.conn, host, len);
+    }
+
+    /** Add a trust-anchor (CA / root) from PEM bytes to this context's store. */
+    public int32 addTrust(int8[] pem, int32 len) {
+        return TlsConnection.ctxAddTrust(this.ctx, pem, len);
+    }
+
+    /** Require the peer cert to match `host` (SAN, CN fallback, wildcards). */
+    public void setVerifyHost(int8[] host, int32 len) {
+        TlsConnection.setVerifyHostNative(this.conn, host, len);
+    }
+
+    /** Post-handshake verification verdict — one of the `CERT_*` ordinals. */
+    public int32 verifyResult() {
+        return TlsConnection.verifyResultNative(this.conn);
     }
 
     /** Offer an ALPN protocol list (wire format: 1-byte length + bytes each). */

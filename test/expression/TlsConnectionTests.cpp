@@ -66,6 +66,42 @@ std::string emitBytes(const std::string& name, const std::string& data) {
     return s;
 }
 
+// Pump a verifying client against a server, returning client.verifyResult().
+// When `trust` is set the client adds the server cert as a trust anchor first.
+std::string verifyBody(const std::string& cert, const std::string& key, bool trust) {
+    std::string b =
+        emitBytes("cert", cert) +
+        emitBytes("key", key) +
+        "        int8[] host = new int8[9];\n"                       // "localhost"
+        "        host[0L]=(int8)108; host[1L]=(int8)111; host[2L]=(int8)99;\n"
+        "        host[3L]=(int8)97; host[4L]=(int8)108; host[5L]=(int8)104;\n"
+        "        host[6L]=(int8)111; host[7L]=(int8)115; host[8L]=(int8)116;\n"
+        "        TlsConnection client = TlsConnection.verifyingClient();\n";
+    if (trust) {
+        b += "        client.addTrust(cert, " + std::to_string(cert.size()) + ");\n";
+    }
+    b +=
+        "        client.setVerifyHost(host, 9);\n"
+        "        TlsConnection server = TlsConnection.server(cert, " + std::to_string(cert.size()) +
+        ", key, " + std::to_string(key.size()) + ");\n"
+        "        int8[] buf = new int8[16384];\n"
+        "        int32 round = 0;\n"
+        "        boolean stop = false;\n"
+        "        while (round < 64 && !stop) {\n"
+        "            int32 cs = client.handshakeStep();\n"
+        "            int32 n = client.pull(buf, 16384);\n"
+        "            while (n > 0) { server.feed(buf, n); n = client.pull(buf, 16384); }\n"
+        "            int32 ss = server.handshakeStep();\n"
+        "            n = server.pull(buf, 16384);\n"
+        "            while (n > 0) { client.feed(buf, n); n = server.pull(buf, 16384); }\n"
+        "            if (cs == TlsConnection.FAILED) { stop = true; }\n"
+        "            if (cs == 0 && ss == 0) { stop = true; }\n"
+        "            round = round + 1;\n"
+        "        }\n"
+        "        return client.verifyResult();\n";
+    return b;
+}
+
 int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
@@ -127,4 +163,14 @@ TEST(TlsConnectionTests, handshakeAndPlaintextThroughCajetaSurface) {
         "        return 1;\n";
 
     EXPECT_EQ(runI32(body), 1);
+}
+
+// Cert validation through the Cajeta surface: a verifying client rejects an
+// untrusted self-signed cert (CERT_UNTRUSTED) but accepts it once trusted
+// (CERT_OK).
+TEST(TlsConnectionTests, verifyingClientRejectsUntrustedAcceptsTrusted) {
+    std::string cert, key;
+    ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
+    EXPECT_EQ(runI32(verifyBody(cert, key, /*trust=*/false)), 3);  // CERT_UNTRUSTED
+    EXPECT_EQ(runI32(verifyBody(cert, key, /*trust=*/true)), 0);   // CERT_OK
 }
