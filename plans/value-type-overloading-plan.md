@@ -166,19 +166,30 @@ The review's required fixes are folded into the stages below.
     operator overload declared on an `@ValueType` class `alwaysinline`, so the O0 `AlwaysInlinerPass`
     folds a dispatched value-type operator to the same flat, register-resident IR an intrinsic would —
     host and device. (Size guard for an oversized operator body remains a future S4 refinement.)
-- **S3 — `operator[]` read gate + mutating-operator policy (REQUIRED FIX #2).** Open the read
-  gate (`Expression.cpp:532`). Decide+enforce instance mutating-operator policy: forbid on
-  value types, or by-address receiver. Tests for indexed read + the chosen write policy.
-- **S4 — Guaranteed inlining.** `AlwaysInline` on value-type operator prototypes
-  (`Method.cpp:678`) + size guard; IR-assert the call folds at O0 (depends on S1b) and that
-  an oversized operator keeps a real call.
+- **S3 — `operator[]` read gate + mutating-operator policy (DONE 2026-06-05).** Read-`operator[]`
+  already dispatched through the operator mechanism; locked Decision #3 enforced at DECLARATION
+  time — a `@ValueType` class declaring `operator++`/`--`/`[]=`/compound-assign is a compile error
+  (`CAJETA_ERROR_VALUE_TYPE_MUTATING_OPERATOR`, `CajetaLlvmVisitor.h`). Closing the read path on a
+  value-type receiver surfaced two vtable-free-POD fallouts the static operators never hit, both
+  fixed: the receiver passes by ADDRESS not loaded aggregate (`Expression.cpp`), and instance
+  methods on vtable-free types dispatch DIRECTLY (`useVtable` now requires
+  `hasVtablePointerAtSlotZero()`, `CajetaClass.cpp` — else a slot-0 vtable load reads a field and
+  segfaults); plus scalar-return-from-lvalue coercion (`Statement.cpp`). Tests:
+  `ValueTypeIndexOperatorTests` (read + two rejections). 133-test dispatch/inheritance regression green.
+- **S4 — Guaranteed inlining (DONE 2026-06-05).** `AlwaysInline` marking landed earlier;
+  `Method::generateCode` now drops it from an operator whose emitted body exceeds ~100 IR
+  instructions (size guard) so a large operator keeps a real call. `captureIr` snapshots
+  post-AlwaysInline IR so tests can see the fold. Tests `ValueTypeInlineSizeTests` (small folds,
+  large keeps a call).
 - **S5 — POD marshalling incl. nested (REQUIRED FIX #5).** Extend `isPodStruct`
   (`KernelArgTrait.cpp:86-99`) + `deviceStructInfo` (`KernelLowering.cpp:145-165`) to
   accept/recurse `VALUE_TYPE_FLAG` fields; marshal a value type (and a value-type-containing
   struct) by value to a field-reading kernel (no operators yet).
-- **S6 — Shared dispatch/derivation helper.** Extract operator lookup + comparison derivation
-  (`BinaryOpExpression.cpp:696-754`) into a representation-agnostic free function; re-point
-  host at it; behavior unchanged. Prerequisite for device.
+- **S6 — Shared dispatch/derivation helper (DONE 2026-06-05).** New
+  `src/cajeta/asn/expression/OperatorDispatch.h`: the op→symbol map, the `!=/>/>=/<=` derivation
+  table, and `dispatchBinaryOperator()` (tries the direct operator then its derivation via two
+  caller-supplied callbacks — resolve+invoke, negate). `BinaryOpExpression` re-pointed at it;
+  behavior unchanged (53 operator/comparison/value-type tests green). This is the seam S8 reuses.
 - **S7 — RETIRED (owner decision #4, 2026-06-04). NOT a workstream.** Method-templated operators
   are rejected: operator overloads are concrete (a specific LHS type × a specific RHS type), so
   there is nothing to templatize. `*` **is matrix multiply**, lowered as a **compiler intrinsic** —
@@ -193,9 +204,12 @@ The review's required fixes are folded into the stages below.
   backend `AlwaysInlinerPass` folds; else fall through to native IR. Purity check (no
   alloca/GEP/heap) so SPIR-V logical addressing validates. Re-run S0 golden tests (existing
   kernels byte-identical) + `spirv-val`.
-- **S9 — Vector signature surface + docs.** Land the `Vector` catalog entry + the
-  operator-signature conventions; optionally synthesize declared `Vector` operator signatures
-  backed by the intrinsic interception (gate still bypasses `CajetaVector`). Re-run S0 diff.
+- **S9 — Vector signature surface + docs (DONE 2026-06-05).** `ValueTypeCatalog.md` already
+  carried the Vector entry + operator-signature conventions; reconciled the Vector entry with the
+  implemented mechanism — its operators are compiler intrinsics (signatures documentary), Vector is
+  the register-residency reference pinned by the S0 oracle, its `operator[]`/`[]=` are exempt from
+  the S3 mutating ban (not a `@ValueType` CajetaClass), and declared-signature synthesis stays
+  deferred (documentary-first, Decision #5). S0 golden re-run green.
 
 ## Decisions (locked 2026-06-04)
 1. **Device operator policy:** **`@Device`-only, pure** — a kernel-usable value-type operator
