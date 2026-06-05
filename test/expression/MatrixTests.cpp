@@ -30,6 +30,12 @@ int32_t runI32(const std::string& src) {
     return fn();
 }
 
+float runF32(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<float (*)()>("run");
+    return fn();
+}
+
 const char* IMPORTS =
     "import cajeta.xpu.core.Buffer;\n";
 
@@ -108,5 +114,73 @@ TEST(MatrixTests, typeBooleanElementRejected) {
         FAIL() << "expected CAJETA_ERROR_MATRIX_ELEMENT_TYPE";
     } catch (cajeta::Exception& e) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_ELEMENT_TYPE");
+    }
+}
+
+// ---- S2/S3: construction + 2D element access (m[r][c] read/write) ----------
+
+// Construct a 2x3 matrix row-major and read elements back with m[r][c]. The
+// row-major lane mapping element (r,c) = lane r*C+c is the contract.
+TEST(MatrixTests, constructAndIndexReadRowMajor) {
+    // [ 1 2 3 ]
+    // [ 4 5 6 ]
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,3> m = stack Matrix<float32,2,3>(\n"
+        "            1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f);\n"
+        "        return m[0][0] + m[0][2] * 10.0f + m[1][1] * 100.0f;\n"
+        "    }\n"
+        "}\n";
+    // 1 + 3*10 + 5*100 = 531
+    EXPECT_FLOAT_EQ(runF32(src), 531.0f);
+}
+
+// m[r][c] write updates only the addressed element and persists in the slot.
+TEST(MatrixTests, indexWriteUpdatesElement) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,3> m = stack Matrix<float32,2,3>(\n"
+        "            1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f);\n"
+        "        m[1][2] = 60.0f;\n"
+        "        m[0][0] = 9.0f;\n"
+        "        return m[0][0] + m[1][2] + m[0][1];\n"
+        "    }\n"
+        "}\n";
+    // 9 + 60 + 2 = 71  (m[0][1] untouched = 2)
+    EXPECT_FLOAT_EQ(runF32(src), 71.0f);
+}
+
+// A row m[r] is a Vector<T,C>; indexing it once more reads the element, and the
+// dynamic-index form works (runtime r, c).
+TEST(MatrixTests, dynamicIndexRead) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,3,2> m = stack Matrix<float32,3,2>(\n"
+        "            1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f);\n"
+        "        int32 r = 2;\n"
+        "        int32 c = 1;\n"
+        "        return m[r][c];\n"   // element (2,1) = lane 2*2+1 = 5 -> 6.0
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 6.0f);
+}
+
+// Wrong constructor argument count is a clean diagnostic.
+TEST(MatrixTests, constructWrongArgCountRejected) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(1.0f, 2.0f);\n"
+        "        return m[0][0];\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_MATRIX_CONSTRUCT";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_CONSTRUCT");
     }
 }
