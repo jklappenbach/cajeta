@@ -14,6 +14,7 @@
 #include "CajetaTask.h"
 #include "CajetaConstantType.h"
 #include "CajetaVector.h"
+#include "CajetaMatrix.h"
 #include "CajetaFunctionType.h"
 #include "../error/InvalidOperandException.h"
 #include "../error/Exception.h"
@@ -728,6 +729,39 @@ namespace cajeta {
                     // Semantic checks (numeric/non-bool element, positive N)
                     // are shared with the construction path. See CajetaVector.
                     type = CajetaVector::validateAndCreate(module, elemT, n);
+                } else if (qName->getTypeName() == "Matrix"
+                        && targs->typeArgument().size() == 3) {
+                    // Built-in Matrix<T, R, C> (B1) — the HYBRID value type. The
+                    // declared cajeta.math.Matrix class supplies the operator/
+                    // method surface (and was already resolved into `type` by the
+                    // short-name fallback above), but a concrete `Matrix<...>`
+                    // REFERENCE resolves to the flat row-major CajetaMatrix
+                    // representation (`<R*C x T>`), which codegen intercepts —
+                    // identical generated code to a pure-intrinsic vector. arg0:
+                    // element type (a non-bool numeric primitive); arg1/arg2:
+                    // positive integer-constant row/col counts. See CajetaMatrix.
+                    auto* elemArg = targs->typeArgument()[0];
+                    auto* rowArg = targs->typeArgument()[1];
+                    auto* colArg = targs->typeArgument()[2];
+                    if (!elemArg->typeType()) {
+                        throw Exception(
+                            "Matrix element type must be a non-bool numeric "
+                            "primitive type",
+                            "CAJETA_ERROR_MATRIX_ELEMENT_TYPE");
+                    }
+                    CajetaTypePtr elemT = fromContext(elemArg->typeType(), module);
+                    if (rowArg->integerLiteral() == nullptr ||
+                            colArg->integerLiteral() == nullptr) {
+                        throw Exception(
+                            "Matrix dimensions R and C must be positive integer "
+                            "literal constants",
+                            "CAJETA_ERROR_MATRIX_DIMENSIONS");
+                    }
+                    int64_t r = CajetaConstantType::parseLiteral(
+                        rowArg->integerLiteral());
+                    int64_t c = CajetaConstantType::parseLiteral(
+                        colArg->integerLiteral());
+                    type = CajetaMatrix::validateAndCreate(module, elemT, r, c);
                 } else if (qName->getTypeName() == "Task"
                         && targs->typeArgument().size() == 1) {
                     auto* singleArg = targs->typeArgument()[0];
