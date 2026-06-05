@@ -1,5 +1,5 @@
 // Phase 13 — Git repositories + attestation. Pins the three
-// acceptance criteria from plan/build-tool-plan.md "Phase 13 — Git
+// acceptance criteria from plans/buildtool/build-tool-plan.md "Phase 13 — Git
 // repositories + attestation":
 //
 //   1. Git-pinned dep resolves and builds.

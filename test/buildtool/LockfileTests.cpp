@@ -1,6 +1,6 @@
 // Regression tests for the build-tool lockfile.
 // See src/cajeta/buildtool/Lockfile.h and
-// plan/build-tool-plan.md Phase 2.
+// plans/buildtool/build-tool-plan.md Phase 2.
 
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"

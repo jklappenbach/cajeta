@@ -257,7 +257,7 @@ namespace cajeta::buildtool {
             if (!action) {
                 return err(breadcrumb + " references unknown action '" +
                            inv.action +
-                           "'. See plan/build-tool-plan.md for the "
+                           "'. See plans/buildtool/build-tool-plan.md for the "
                            "action catalog rollout schedule.");
             }
 

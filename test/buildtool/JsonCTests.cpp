@@ -1,6 +1,6 @@
 // Regression tests for the JSONC preprocessor and parser used by the
 // cajeta build-tool manifest loader. See
-// src/cajeta/buildtool/JsonC.h and plan/build-tool-plan.md Phase 0.
+// src/cajeta/buildtool/JsonC.h and plans/buildtool/build-tool-plan.md Phase 0.
 
 #include "cajeta/buildtool/JsonC.h"
 

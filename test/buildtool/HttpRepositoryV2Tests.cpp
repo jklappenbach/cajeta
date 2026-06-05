@@ -1,6 +1,6 @@
 // Phase 6d — Repository protocol v2 acceptance tests.
 //
-// Each acceptance criterion in plan/build-tool-plan.md section
+// Each acceptance criterion in plans/buildtool/build-tool-plan.md section
 // "Phase 6d / Acceptance" gets one pinning test here. Tests run
 // against the in-process TestHttpServer (shared with the v1 driver
 // tests) so we can stub the full v2 endpoint surface without

@@ -1,6 +1,6 @@
 # Build tool implementation plan
 
-Companion to [`cajeta-docs/BuildTool.md`](../cajeta-docs/BuildTool.md).
+Companion to [`cajeta-docs/BuildTool.md`](../../cajeta-docs/BuildTool.md).
 That document is the **spec**; this is the **plan**.
 
 Every concrete unit of work is a checkbox `- [ ]`. Mark

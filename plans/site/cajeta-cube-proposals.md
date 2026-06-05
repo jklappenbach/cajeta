@@ -53,7 +53,7 @@ never HIP GPU. EEVEE still fine for quick look-dev.
 2. I'll refine it (highlight shape, exact gold), then **export favicon/OG sizes**
    (512², 180², 32², 1200×630) with transparency.
 3. Wire it into the site as the logo/favicon and swap the SVG placeholder
-   (`plans/assets/cajeta-cube.svg`) referenced in `cajeta-site-plan.md` §3.3 / §11.
+   (`plans/site/assets/cajeta-cube.svg`) referenced in `cajeta-site-plan.md` §3.3 / §11.
 
 ## To re-render yourself
 Open `assets/cajeta-cube.blend`, pick a scene from the Scene dropdown, F12 to render.

@@ -7,7 +7,7 @@
 > **plus** a themeable, React-adoptable HTML output.
 > Authoritative spec: **`cajeta-docs/Documentation.md`** (comment syntax, tag
 > catalog, processor goals, CLI, output layout). This plan is the **build plan**
-> for that spec. Site integration: **`plans/cajeta-site-plan.md` §18 / §21**.
+> for that spec. Site integration: **`plans/site/cajeta-site-plan.md` §18 / §21**.
 
 ---
 
@@ -555,7 +555,7 @@ standalone otherwise. Two output modes share one emitter:
   (light) + `cajeta-dark` themes with an OS-preference toggle (per
   `Documentation.md`).
 - **(B) Embeddable / parent-themed** — for cajeta.dev (Next.js 15 + Fumadocs +
-  Tailwind v4, `plans/cajeta-site-plan.md`). The emitter can also produce **MDX/
+  Tailwind v4, `plans/site/cajeta-site-plan.md`). The emitter can also produce **MDX/
   React components** consumed by the site's `content/docs/reference/**` pipeline
   (§18 of the site plan).
 
@@ -785,7 +785,7 @@ regression suite so the tool stays fast and stable as the stdlib grows.
 
 - **Spec:** `cajeta-docs/Documentation.md` (authoritative for syntax/tags/CLI/
   output). This plan implements it test-first.
-- **Site:** `plans/cajeta-site-plan.md` — §18 (cajetadoc → generated reference),
+- **Site:** `plans/site/cajeta-site-plan.md` — §18 (cajetadoc → generated reference),
   §21 (guides + Tour examples + generated reference compose `/docs`), §16 (doc
   editorial), §8.1 (Orama search), §3 (caramel palette / Tailwind v4 tokens).
 - **Prerequisite from the site plan:** run the **stdlib code review (§19)** and

@@ -14,7 +14,7 @@
 // project root alongside `cajeta.json`. Committed to VCS.
 //
 // See BuildTool.md "Lockfile — cajeta.lock" for the spec,
-// plan/build-tool-plan.md Phase 2 for context.
+// plans/buildtool/build-tool-plan.md Phase 2 for context.
 
 #pragma once
 

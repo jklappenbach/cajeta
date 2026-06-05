@@ -1,5 +1,5 @@
 // Phase 9 — Distribution: package + upload + publish. Pins the
-// 10 acceptance criteria from plan/build-tool-plan.md "Phase 9 —
+// 10 acceptance criteria from plans/buildtool/build-tool-plan.md "Phase 9 —
 // Distribution":
 //
 //   1. A `release` task pipelines build (executable) → sign → package

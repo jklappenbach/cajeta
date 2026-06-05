@@ -109,7 +109,7 @@ Per decision: **Next.js + Fumadocs**.
 
 ## 3. Design system
 
-> **Inspiration:** see `plans/cajeta-site-design-references.md` — a curated list of
+> **Inspiration:** see `plans/site/cajeta-site-design-references.md` — a curated list of
 > award-winning / critically-acclaimed brown·black·cream sites (Aesop, OXMAN,
 > Cartier W&W, Awwwards Brown + CSSDA Beige honorees) and the design patterns to
 > borrow.
@@ -174,7 +174,7 @@ Implementation notes:
 - A **gold/foil accent** (`gold-400`) for premium moments only — seals, the logo
   lockup, "release" badges.
 - **Sourcing:** curated CC0 / free-commercial assets per material in
-  `plans/cajeta-texture-board.md` (Poly Haven, ambientCG, TextureCan, Unsplash) +
+  `plans/site/cajeta-texture-board.md` (Poly Haven, ambientCG, TextureCan, Unsplash) +
   performance budget and the Blender "kitchen" hero plan.
 
 ### 3.2 Typography
@@ -200,7 +200,7 @@ A perfect cube of caramel, glistening, no wrapper. Delivered now as a
 favicon + header mark; swappable later for a photoreal Blender render or
 photograph (asset spec in §11).
 
-The logo is delivered as a standalone file — **`plans/assets/cajeta-cube.svg`** (the
+The logo is delivered as a standalone file — **`plans/site/assets/cajeta-cube.svg`** (the
 canonical source of truth; moves to **`site/public/cajeta-cube.svg`** when the
 site is scaffolded), referenced as the favicon + nav logo. It's an isometric
 cube: lightest glazed top face, mid-tone left face, darker right face, a white
@@ -620,11 +620,11 @@ SEO; provide static `out/` + optional `Dockerfile` instructions in `site/README.
 
 ## 11. Asset spec — caramel-cube logo
 
-- **Now:** `plans/assets/cajeta-cube.svg` (§3.3) — favicon + nav mark (placeholder).
+- **Now:** `plans/site/assets/cajeta-cube.svg` (§3.3) — favicon + nav mark (placeholder).
 - **In progress (Blender):** three photoreal render proposals matching the
-  caramel reference — `plans/assets/cajeta-cube-{1,2,3}.png` (1024², transparent),
-  scenes `P1_Studio`/`P2_Softbox`/`P3_Dramatic` in `plans/assets/cajeta-cube.blend`.
-  See `plans/cajeta-cube-proposals.md`. Pick one → export favicon/OG sizes and
+  caramel reference — `plans/site/assets/cajeta-cube-{1,2,3}.png` (1024², transparent),
+  scenes `P1_Studio`/`P2_Softbox`/`P3_Dramatic` in `plans/site/assets/cajeta-cube.blend`.
+  See `plans/site/cajeta-cube-proposals.md`. Pick one → export favicon/OG sizes and
   replace the SVG placeholder.
 - **Future hero idea:** an animated **rotating 3D caramel cube** in the landing
   hero that **reflects/refracts the page** — the web banner/background showing
@@ -644,7 +644,7 @@ SEO; provide static `out/` + optional `Dockerfile` instructions in `site/README.
 ## 12. Build phases (when scope expands beyond plan)
 
 1. **Scaffold** — `create-next-app` (TS, App Router, Tailwind) under `site/`;
-   add shadcn/ui, Fumadocs, fonts; commit baseline; drop in `plans/assets/cajeta-cube.svg`.
+   add shadcn/ui, Fumadocs, fonts; commit baseline; drop in `plans/site/assets/cajeta-cube.svg`.
 2. **Design system** — palette tokens, typography, theme provider, dark mode,
    header/footer, logo component. One styled placeholder page to lock the look.
 3. **Marketing pages** — `/` (What), `/why`, with real copy + feature grid + CTAs.

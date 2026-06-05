@@ -2,7 +2,7 @@
 //
 // The manifest has six top-level blocks: details, properties, settings,
 // actions (presets), plugins, tasks. See BuildTool.md "Manifest —
-// cajeta.json" for the spec. Phase 0 scope (plan/build-tool-plan.md):
+// cajeta.json" for the spec. Phase 0 scope (plans/buildtool/build-tool-plan.md):
 // load the document, validate top-level structure + the details block,
 // preserve unknown fields in other blocks for forward compatibility.
 // Subsequent phases extend Settings/Tasks/Actions/Plugins/Properties

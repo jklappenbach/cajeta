@@ -1202,7 +1202,7 @@ namespace cajeta::buildtool {
         // Reasons we refuse to record. Lowercase, exact-match; the
         // plugin author's own config parser may extend this list,
         // but the CLI catches the most common drift before it hits
-        // disk. See plan/coverage-exclude-and-cli.md "Generic-reason
+        // disk. See plans/buildtool/coverage-exclude-and-cli.md "Generic-reason
         // list" for the rationale.
         bool isGenericCoverageReason(std::string_view reason) {
             std::string lower;

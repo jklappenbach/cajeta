@@ -10,7 +10,7 @@
 // then handed to llvm::json::parse.
 //
 // See BuildTool.md "Manifest — cajeta.json" for the schema this
-// supports. See plan/build-tool-plan.md Phase 0 for context.
+// supports. See plans/buildtool/build-tool-plan.md Phase 0 for context.
 
 #pragma once
 

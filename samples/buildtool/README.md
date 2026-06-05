@@ -27,7 +27,7 @@ are skipped at embed time.
 
 These samples ship as **manifest + structure demonstrations**. The
 build-tool's `build` action (Phase 5a, see
-[`plan/build-tool-plan.md`](../../plan/build-tool-plan.md)) wraps
+[`plans/buildtool/build-tool-plan.md`](../../plans/buildtool/build-tool-plan.md)) wraps
 the cajeta compiler binary, but full source compilation against
 resolved dependencies + IR caching lands in Phases 5b / 6b. So:
 

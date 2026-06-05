@@ -1,5 +1,5 @@
 // Phase 8 — Build flavors. Pins the six acceptance criteria from
-// plan/build-tool-plan.md "Phase 8 — Build flavors":
+// plans/buildtool/build-tool-plan.md "Phase 8 — Build flavors":
 //
 //   1. `flavor: "release"` resolves to the built-in property bundle.
 //   2. `flavor: { "base": "release", "debug-info": "full" }`

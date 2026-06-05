@@ -2,7 +2,7 @@
 //
 // A task is a named, declarative sequence of action invocations
 // the user runs via `cajeta <task>`. See BuildTool.md "Tasks"
-// section for the spec, plan/build-tool-plan.md Phase 3 for
+// section for the spec, plans/buildtool/build-tool-plan.md Phase 3 for
 // context. Phase 3a (this file) models linear-execution tasks;
 // depends-on / parallel / run-task / when-skip-when composition
 // land in Phase 3b.

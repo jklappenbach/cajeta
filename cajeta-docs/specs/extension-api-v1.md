@@ -148,7 +148,7 @@ older plugins keep running under the toolchain's N±k compatibility window.
   under `build-tools/plugins/security-lint/src/main/cajeta/`.
 
 Both ship as part of the v1 first-party plugin set (see the open decision
-"First-party plugin list" in plan/build-tool-plan.md).
+"First-party plugin list" in plans/buildtool/build-tool-plan.md).
 
 ## Reference host implementation
 

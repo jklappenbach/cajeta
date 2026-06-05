@@ -88,7 +88,7 @@ description without changing what loaders accept.
 
 Adding a capability to `capabilities-v1.json` is a minor bump per the
 "Open decision: capability minor-version drift" item in
-`plan/build-tool-plan.md`. The lean is: yes, treat any capability addition
+`plans/buildtool/build-tool-plan.md`. The lean is: yes, treat any capability addition
 as a minor bump. The reasoning: existing `plugins-allowed-capabilities`
 allowlists keep working; the new capability simply isn't granted to old
 allowlists. New allowlists can opt in.

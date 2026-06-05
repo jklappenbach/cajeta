@@ -28,7 +28,7 @@ or **free-for-commercial** so it ships safely. Two tiers:
   registry section background and ceramic-look cards.
 
 ## Caramel — *glossy amber* (already built)
-- Not a tiled texture — it's the **Blender material/render** (`plans/assets/cajeta-cube*.png`,
+- Not a tiled texture — it's the **Blender material/render** (`plans/site/assets/cajeta-cube*.png`,
   `assets/cajeta-cube.blend`) + CSS "molten caramel" gradient for CTAs/highlights.
 
 ## Worn cast iron / kitchen — *comal, cookware*

@@ -6,7 +6,7 @@
 // in the same flat namespace. Override precedence (highest wins):
 // CLI -P > CAJETA_PROPERTY_* env > active profile > manifest properties.
 //
-// See BuildTool.md "Properties" for the spec, plan/build-tool-plan.md
+// See BuildTool.md "Properties" for the spec, plans/buildtool/build-tool-plan.md
 // Phase 1 for context.
 
 #pragma once
