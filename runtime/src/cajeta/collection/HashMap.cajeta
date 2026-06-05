@@ -70,8 +70,8 @@ package cajeta.collection;
  *   not in place yet.
  * - **Primitive K** — see "v1 constraint" above.
  *
- * @see cajeta.lang.Object
- * @see cajeta.hash.Hash
+ * @See cajeta.lang.Object
+ * @See cajeta.hash.Hash
  */
 public class HashMap<K, V> {
 
@@ -98,7 +98,7 @@ public class HashMap<K, V> {
     /**
      * Construct a new HashMap with the given initial capacity.
      *
-     * @param initialCapacity number of buckets to allocate; **must
+     * @Param initialCapacity number of buckets to allocate; **must
      *        be a power of 2** (the mask-based index doesn't work
      *        otherwise). v1 doesn't validate this. The table grows
      *        from here as entries are added.
@@ -115,8 +115,8 @@ public class HashMap<K, V> {
     /**
      * Insert or replace the value at `key`.
      *
-     * @param key the key. Hashed once via `key.hash()`.
-     * @param value the value to associate with `key`.
+     * @Param key the key. Hashed once via `key.hash()`.
+     * @Param value the value to associate with `key`.
      */
     public void put(K key, V value) {
         int64 h = key.hash();
@@ -231,7 +231,7 @@ public class HashMap<K, V> {
      * Use `containsKey` to distinguish "absent" from "present but
      * the stored value is null/0."
      *
-     * @param key the key to look up. Hashed once via `key.hash()`.
+     * @Param key the key to look up. Hashed once via `key.hash()`.
      * @returns the value associated with `key`, or null/0 if not present.
      */
     public V get(K key) {
@@ -265,7 +265,7 @@ public class HashMap<K, V> {
     /**
      * Test whether `key` is present in the map.
      *
-     * @param key the key to test.
+     * @Param key the key to test.
      * @returns true iff `key` was previously inserted via `put`
      *          and not subsequently removed.
      */
@@ -290,7 +290,7 @@ public class HashMap<K, V> {
      * traverse past it correctly. The tombstone is reusable by a
      * future `put` whose probe reaches it before an `EMPTY` slot.
      *
-     * @param key the key to remove. Hashed once via `key.hash()`.
+     * @Param key the key to remove. Hashed once via `key.hash()`.
      * @returns true iff `key` was present and removed; false if
      *          no such key was in the map.
      */
@@ -324,7 +324,7 @@ public class HashMap<K, V> {
      * to `get`. Returns null/0 on miss; use `containsKey` to
      * disambiguate "absent" from "present-and-null".
      *
-     * @param key the key. Hashed once via `key.hash()`.
+     * @Param key the key. Hashed once via `key.hash()`.
      * @returns the value associated with `key`, or null/0.
      */
     public V operator[] (K key) {
@@ -336,8 +336,8 @@ public class HashMap<K, V> {
      * Delegates to `put`. Replaces any existing value bound to a
      * `==`-equal key.
      *
-     * @param key the key. Hashed once via `key.hash()`.
-     * @param value the value to associate with `key`.
+     * @Param key the key. Hashed once via `key.hash()`.
+     * @Param value the value to associate with `key`.
      */
     public void operator[]= (K key, V value) {
         this.put(key, value);

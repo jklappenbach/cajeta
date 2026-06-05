@@ -39,8 +39,8 @@ import cajeta.wire.Encoder;
  * no pinning. Eviction "frees" a page by reassigning its frame slot —
  * Cajeta's drop-by-assignment, no `delete`/`free`.
  *
- * @see cajeta.collection.ltm.LtmPager
- * @see cajeta.collection.BPlusTree
+ * @See cajeta.collection.ltm.LtmPager
+ * @See cajeta.collection.BPlusTree
  */
 public class LtmBPlusTree<K, V> {
 

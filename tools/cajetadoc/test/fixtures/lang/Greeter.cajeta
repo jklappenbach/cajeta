@@ -1,0 +1,44 @@
+package cajeta.lang;
+
+/**
+ * A tiny greeter used by cajetadoc fixtures.
+ *
+ * Exercises **Markdown** in a type doc, a code fence, and a list:
+ *
+ * - summary extraction
+ * - block tags
+ * - cajeta-specific tags
+ *
+ * ```cajeta
+ * Greeter g = stack Greeter("hi");
+ * ```
+ *
+ * @See cajeta.lang.Object
+ * @Since 0.1.0
+ */
+public class Greeter extends Object {
+
+    /**
+     * The greeting prefix, e.g. `"Hello"`.
+     */
+    private String prefix;
+
+    /**
+     * Builds a greeter with the given prefix.
+     *
+     * @Param prefix the leading word of every greeting; must be non-empty.
+     */
+    public Greeter(String prefix);
+
+    /**
+     * Greets the named subject.
+     *
+     * Returns a freshly owned string transferred to the caller.
+     *
+     * @Param name who to greet; `null` greets the world.
+     * @Return the composed greeting.
+     * @Complexity O(n) in the length of `name`.
+     * @FiberSafe
+     */
+    public #String greet(String name);
+}

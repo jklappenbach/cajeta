@@ -51,8 +51,8 @@ import cajeta.lang.String;
  *   thread live-set, so one-shot and digest helpers pre-allocate
  *   the output on the cajeta side and the C helper fills it.
  *
- * @see cajeta.hash.Hasher
- * @see [stdlib/Hashing.md § MD5](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See cajeta.hash.Hasher
+ * @See [stdlib/Hashing.md § MD5](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public final class MD5 implements Hasher {
 

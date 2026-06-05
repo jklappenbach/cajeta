@@ -16,8 +16,8 @@ package cajeta.collection.ltm;
  * over-allocated by one slot so an insert can overflow in place
  * before the tree splits the node.
  *
- * @see cajeta.collection.ltm.LtmPager
- * @see cajeta.collection.ltm.BPlusTree
+ * @See cajeta.collection.ltm.LtmPager
+ * @See cajeta.collection.ltm.BPlusTree
  */
 public class LtmBPlusTreeNode<K, V> {
     public int64 pageId;

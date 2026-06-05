@@ -8,6 +8,7 @@
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/cli/ArchiveCommands.h"
+#include "cajeta/cli/DocCommand.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
 #include "cajeta/buildtool/BuildToolCommands.h"
@@ -173,6 +174,13 @@ int main(int argc, const char* argv[]) {
     if (argc >= 2 && std::string(argv[1]) == "dap") {
         cajeta::dap::DapServer server;
         return server.run(std::cin, std::cout);
+    }
+
+    // `cajeta doc <source-root> [...]` — documentation generator
+    // (cajeta-docs/Documentation.md). Forwards to the shared cajetadoc engine
+    // (tools/cajetadoc/), the same code as the standalone `cajetadoc` binary.
+    if (argc >= 2 && std::string(argv[1]) == "doc") {
+        return cajeta::doc::dispatchDoc(argc, argv);
     }
 
     // --version / -V short-circuit. Handled before Compiler construction

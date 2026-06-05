@@ -30,8 +30,8 @@ package cajeta.collection;
  * insert/lookup ordered map — already the common case for a sorted
  * index.
  *
- * @see cajeta.collection.RedBlackNode
- * @see cajeta.lang.Math
+ * @See cajeta.collection.RedBlackNode
+ * @See cajeta.lang.Math
  */
 public class RedBlackTree<K, V> {
 

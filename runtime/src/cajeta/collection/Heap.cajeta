@@ -25,8 +25,8 @@ package cajeta.collection;
  * miss-path convention) rather than throwing; an exception-throwing
  * variant lands with the error model.
  *
- * @see cajeta.lang.Math
- * @see cajeta.collection.ArrayList
+ * @See cajeta.lang.Math
+ * @See cajeta.collection.ArrayList
  */
 public class Heap<T> {
 

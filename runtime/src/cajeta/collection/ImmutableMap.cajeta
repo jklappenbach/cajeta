@@ -27,8 +27,8 @@ import cajeta.lang.Pair;
  * key equality. Class K defaults to identity (override `hash()` + `==`
  * for value keys); primitive K lowers `.hash()` to the intrinsic.
  *
- * @see cajeta.collection.HashMap
- * @see cajeta.lang.Pair
+ * @See cajeta.collection.HashMap
+ * @See cajeta.lang.Pair
  */
 public class ImmutableMap<K, V> {
 
@@ -50,7 +50,7 @@ public class ImmutableMap<K, V> {
      * a key already present has its value overwritten (last-wins),
      * otherwise a new entry is appended. The source list is untouched.
      *
-     * @param src entries to snapshot, as `Pair<key, value>`.
+     * @Param src entries to snapshot, as `Pair<key, value>`.
      */
     public ImmutableMap(ArrayList<Pair<K, V>> src) {
         int32 n = src.count();

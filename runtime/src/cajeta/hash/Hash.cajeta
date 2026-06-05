@@ -34,8 +34,8 @@ package cajeta.hash;
  * signature / KDF primitives live in the future `cajeta.crypto` peer
  * library — never inside `cajeta.hash`.
  *
- * @see cajeta.lang.Object
- * @see [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See cajeta.lang.Object
+ * @See [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public final class Hash {
 
@@ -54,11 +54,11 @@ public final class Hash {
      * still takes a raw `void*`; the ABI is identical — only the
      * cajeta-side type widens for static type checking.
      *
-     * @param obj the object to hash; `null` is a valid input and
+     * @Param obj the object to hash; `null` is a valid input and
      *            hashes to the seed-mixed bit pattern of the zero
      *            pointer.
      * @returns 64-bit identity hash of `obj`.
-     * @complexity O(1).
+     * @Complexity O(1).
      */
     @Native("__cajeta_hash_identity")
     public static int64 identity(Object obj);
@@ -78,11 +78,11 @@ public final class Hash {
      * synthesized bodies produce identical hashes for identical field
      * sets in identical order.
      *
-     * @param a first hash input.
-     * @param b second hash input.
+     * @Param a first hash input.
+     * @Param b second hash input.
      * @returns combined hash. **Order-sensitive**:
      *          `combine(a, b) != combine(b, a)` in general.
-     * @complexity O(1).
+     * @Complexity O(1).
      */
     @Native("__cajeta_hash_combine")
     public static int64 combine(int64 a, int64 b);
@@ -119,7 +119,7 @@ public final class Hash {
      *
      * @returns the process-wide seed; never zero (the OS entropy
      *          syscall is itself contractually non-zero).
-     * @complexity O(1).
+     * @Complexity O(1).
      */
     @Native("__cajeta_hash_seed")
     public static int64 processSeed();

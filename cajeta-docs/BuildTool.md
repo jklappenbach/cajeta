@@ -116,7 +116,7 @@ tool is what users normally invoke.
   tree.
 - **Repository-based dependency resolution.** Manifest declares
   ordered repository list; resolution walks repositories in
-  priority order until each `name@version` is found. Standard
+  priority order until each `name@Version` is found. Standard
   Maven / npm / Cargo pattern. Local file:// repos for dev
   overrides; corporate Nexus-style internal repos for inner-source;
   public registry as the bottom tier.
@@ -1320,7 +1320,7 @@ broadening.
     "details": { "name": "com.example.my-app", "version": "0.1.0" },
     "settings": {
         // Melt imports. Order matters: later melts override earlier
-        // on version-constraint conflicts. Each entry is name@version
+        // on version-constraint conflicts. Each entry is name@Version
         // (concrete pin; melts themselves are version-pinned for
         // reproducibility, not range-resolved).
         "melts": [
@@ -1540,7 +1540,7 @@ The build tool clones to `.cajeta/cache/git/<hash>/`, finds the
 
 Repositories declared in the manifest are tried in priority order
 (descending). The first repository that has the requested
-`name@version` wins. Filesystem repositories with high priority
+`name@Version` wins. Filesystem repositories with high priority
 let developers locally override published versions without
 modifying the manifest:
 
@@ -4562,7 +4562,7 @@ Deferred (separate efforts, post-v1):
   Cargo's model — fewer "everything must use the same version"
   conflicts — at the cost of larger lockfiles and binaries that
   carry multiple major versions of a dep.
-- **Deprecation lifecycle.** `@deprecated` in source is one
+- **Deprecation lifecycle.** `@Deprecated` in source is one
   signal; deprecating an entire repository version is another.
   Should `cajeta upgrade` skip deprecated versions by default?
   Lean: yes, warn loudly when locking against one.

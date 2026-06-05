@@ -33,8 +33,8 @@ import cajeta.lang.String;
  * int64 digest = h.finish();
  * ```
  *
- * @see cajeta.hash.Hasher
- * @see [stdlib/Hashing.md § SipHash](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See cajeta.hash.Hasher
+ * @See [stdlib/Hashing.md § SipHash](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public final class SipHash implements Hasher {
 

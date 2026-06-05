@@ -653,6 +653,10 @@ SEO; provide static `out/` + optional `Dockerfile` instructions in `site/README.
 5. **Docs migration** (§14) — Fumadocs wiring, `sync-docs.ts` sourcing
    canonical `cajeta-docs/`, `docs-manifest.ts` taxonomy, caramel recolor,
    search, grouped `/docs` index. Verify auto-reflect.
+   - **5a–5d. Doc editorial + Tour + stdlib review + `cajetadoc`** — see §21.1
+     (doc catalog/edit §16, Tour reorg §17, stdlib code §19 + comment §20 review,
+     `cajetadoc` generation §18). These produce the curated guides + injected Tour
+     examples + generated API reference that make up `/docs` (§21).
 6. **Repo** — protocol explainer, quickstart, driver matrix, search shell (§8).
 7. **Contact** — form + submission path (per hosting).
 8. **Polish** — SEO/OG, motion, a11y pass (keyboard/contrast), Lighthouse,
@@ -688,6 +692,11 @@ SEO; provide static `out/` + optional `Dockerfile` instructions in `site/README.
 7. **Contact channels** — beyond email/GitHub, any socials / Discord to list?
 8. **GitHub URL** — old site links `github.com/jklappenbach/cajeta`; the active
    repo is `cajeta-two`. Which is the public canonical repo for links?
+9. **`cajetadoc` build approach** (§18.2) — extend the compiler with `cajeta doc`
+   (canonical, recommended) vs. a standalone extractor over `runtime/src/cajeta/`?
+10. **Doc group taxonomy** (§16.3) — confirm the 13 published groups + the
+   repo-only `Internal / Contributor` exclusion list (§16.4). This is the
+   concrete answer to the old open question §13.6.
 
 ---
 
@@ -798,3 +807,533 @@ Algolia search, and cost.
 - **Spec/protocol follow-ups** the registry needs: index-on-publish + `GET
   /v2/search?q=` (§8.2 / §13), and the `repo.cajeta.org` → `olla.cajeta.dev`
   endpoint rename across `cajeta-docs/specs/*` and the build-tool default.
+
+---
+
+## 16. Documentation organization & editing
+
+The `cajeta-docs/` tree (≈60 markdown files, ~38k lines) grew organically over a
+long time. Symptoms: some docs are **too low-level** for a developer/user audience
+(cross-machine handoffs, bring-up logs, status trackers); some are **stale**; some
+are **far too verbose** (`BuildTool.md` is 4568 lines, `StreamParallelism.Examples.md`
+1452); some are **poorly written or fragmented** (file I/O is split across 10 tiny
+files). This section is the editorial pass that turns that corpus into the
+**styled docs portion of cajeta.dev** (§14 wires it; this section *curates* it).
+
+> **XPU docs are out of scope for this editorial pass.** A separate session with
+> deeper XPU context owns `cajeta-xpu.md`, `cajeta-cpu.md`, `cajeta-vulkan.md`,
+> `cajeta-amd.md`, `cajeta-xpu-matrix.md`, `CajetaXPU.md`, `CajetaXPU-Variance.md`,
+> and `ci-validation-targets.md`. The catalog (§16.2) lists them for completeness
+> with **provisional** verdicts, but **do not edit, split, merge, or re-group the
+> XPU docs here** — the XPU group (§16.3 #10) and its site-map slots (§16.5) are
+> placeholders to be reconciled with that session before publish.
+
+### 16.1 Editorial principles
+
+- **Audience = a developer evaluating or using Cajeta**, not a compiler
+  contributor. Anything written *to the next machine/session* (handoffs, bring-up
+  logs, variance registers, "implementation status", fix plans) is **internal** —
+  it stays in the repo but is **excluded from the published site** (a hidden
+  `Internal / Contributor` group, §16.3). The line is: *does a user need this to
+  write Cajeta?*
+- **One concept, one home.** Where two docs overlap (e.g. `MemoryModel.md` +
+  `OwnershipTransfer.md`, `FieldOwnership.md` + `FieldBorrowEscape.md`), merge or
+  make one a child of the other — no parallel half-truths.
+- **Examples live in Tour, not in prose.** Long worked-example docs
+  (`StreamParallelism.Examples.md`, much of the per-feature prose) are **replaced
+  by Tour snippets injected at build** (§5.3, §17, §21). Docs explain; Tour
+  demonstrates; the site stitches them.
+- **Reference is generated, not hand-written.** Per-symbol API reference (every
+  class/method in `runtime/src/cajeta/`) comes from `cajetadoc` (§18), not from
+  hand-maintained stdlib prose. The hand-written docs become *guides*; the
+  generated docs become the *reference* — siblings in the nav (§21).
+- **Split the giants.** Any doc over ~600 lines is split into an overview + child
+  pages (`BuildTool.md`, `Networking.md`, `Compilation.md`, `Reflection.md`,
+  `MultiClassing.md`).
+
+### 16.2 Document catalog — sub-item ①
+
+Every doc, its size, a verdict, notes, and its target group (§16.3). Verdict key:
+**KEEP** (publish ~as-is) · **EDIT** (publish after rewrite/trim) · **SPLIT**
+(too big → overview + children) · **MERGE→X** (fold into X) · **CHILD→X** (publish
+as a child page under X) · **INTERNAL** (keep in repo, exclude from site) ·
+**ROADMAP** (design for unbuilt feature — publish, badged "design / not yet
+implemented") · **CUT** (delete or archive).
+
+#### Top-level repo docs
+
+| Doc | Lines | Verdict | Notes | Group |
+|-----|------:|---------|-------|-------|
+| `README.md` | 513 | EDIT | Source for the landing pitch (§5.1); fix stale `0.1.0` (VERSION is law, §9); trim to an intro. | Start Here |
+| `Features.md` | 226 | KEEP | Feature-status matrix; publish as "Feature status" page, quote verbatim. | Start Here |
+| `RELEASING.md` | 262 | INTERNAL | Contributor/maintainer procedure; keep in repo, link from a "Contributing" page, not main nav. | Internal |
+| `cajeta-xpu.md` | 551 | DEFER (XPU session) | Cross-machine *handoff*; provisional: Internal. **Owned by the XPU session — do not edit here.** | XPU |
+| `cajeta-cpu.md` | 625 | DEFER (XPU session) | CPU backend bring-up log; provisional: Internal. **Owned by the XPU session.** | XPU |
+| `cajeta-vulkan.md` | 157 | DEFER (XPU session) | Vulkan bring-up log; provisional: Internal. **Owned by the XPU session.** | XPU |
+| `cajeta-amd.md` | 225 | DEFER (XPU session) | AMD bring-up plan; provisional: Internal. **Owned by the XPU session.** | XPU |
+| `cajeta-xpu-matrix.md` | 335 | DEFER (XPU session) | User-facing capability matrix; provisional: EDIT. **Owned by the XPU session.** | XPU |
+| `exception-fix-plan.md` | 143 | CUT | Open bug plan; archive when fixed, never publish. | — |
+
+#### `cajeta-docs/` (root)
+
+| Doc | Lines | Verdict | Notes | Group |
+|-----|------:|---------|-------|-------|
+| `BuildTool.md` | 4568 | SPLIT | **Far** too large. Overview + children: init · deps · build · test · doc · lint · publish · tasks. | Tooling |
+| `Compilation.md` | 1019 | SPLIT/EDIT | Split phases vs. output/archive vs. flags index; trim. | Tooling |
+| `CompilerModes.md` | 535 | KEEP | Debug vs. release envelopes; light edit. | Tooling |
+| `Debugging.md` | 999 | SPLIT/EDIT | DAP/LSP/Jupyter/time-travel — split per subsystem; trim. | Tooling |
+| `Documentation.md` | 630 | KEEP | The **spec for `cajetadoc`** (§18) — keep, and *implement it*. | Tooling |
+| `ArchiveManagement.md` | 594 | EDIT | `cajeta archive` CLI; verbose, trim to reference. | Tooling |
+| `LintRules.md` | 209 | KEEP | Lint catalog v1; light edit. | Tooling |
+| `Embedded.md` | 361 | ROADMAP | MCU roadmap; badge "roadmap". | Tooling |
+| `HarnessDesign.md` | 229 | INTERNAL | Stress-harness design; contributor-facing. | Internal |
+| `TestPlan.md` | 170 | INTERNAL | Test outline; contributor-facing. | Internal |
+| `CajetaXPU.md` | 1058 | DEFER (XPU session) | User-facing XPU **substrate** spec; provisional: SPLIT/EDIT. **Owned by the XPU session.** | XPU |
+| `CajetaXPU-Variance.md` | 136 | DEFER (XPU session) | Backend-divergence register; provisional: Internal. **Owned by the XPU session.** | XPU |
+| `ci-validation-targets.md` | 127 | DEFER (XPU session) | Hardware/CI matrix; provisional: Internal. **Owned by the XPU session.** | XPU |
+| `OperatorOverloading.md` | 699 | EDIT | Trim to reference; pull examples to Tour. | Language |
+| `TemplateWildcard.md` | 511 | EDIT | Reframe from "cost-benefit analysis" to reference. | Types & Generics |
+| `CaptureConversion.md` | 104 | CHILD→TemplateWildcard | `capture#N` design; fold in as a section/child. | Types & Generics |
+| `CajetaMath.md` | 1198 | ROADMAP | Design for unbuilt `cajeta.math`. | Roadmap |
+| `CajetaPrism.md` | 750 | ROADMAP | Design for unbuilt `cajeta.prism`. | Roadmap |
+| `CajetaRender.md` | 869 | ROADMAP | Design for unbuilt `cajeta.render`. | Roadmap |
+| `CajetaTorch.md` | 700 | ROADMAP | Design for unbuilt `cajeta.torch`. | Roadmap |
+
+#### `cajeta-docs/history/`
+
+| Doc | Lines | Verdict | Notes | Group |
+|-----|------:|---------|-------|-------|
+| `history/ImplementationStatus.md` | 93 | INTERNAL | Memory-model rollout tracker. | Internal |
+| `history/StructsViewsStatus.md` | 282 | INTERNAL | Structs/Views rollout tracker; salvage any design prose into `Views.md` before excluding (resolves the dangling old-site `Structs` category, §13.6). | Internal |
+
+#### `cajeta-docs/specs/`
+
+| Doc | Lines | Verdict | Notes | Group |
+|-----|------:|---------|-------|-------|
+| `specs/repository-protocol-v1.md` | 213 | KEEP | Registry wire spec; Olla front-door references it (§5.5). | Registry & Specs |
+| `specs/toolchain-registry-v1.md` | 197 | KEEP | Toolchain fetch protocol. | Registry & Specs |
+| `specs/extension-api-v1.md` | 162 | KEEP | Build-tool plugin contract. | Registry & Specs |
+| `specs/schema-versioning.md` | 128 | KEEP | Manifest/lockfile evolution policy. | Registry & Specs |
+| `specs/tour-build-your-first-package.md` | 179 | KEEP | Tutorial — also surface under **Start Here**. | Start Here |
+
+#### `cajeta-docs/stdlib/` (language & core)
+
+| Doc | Lines | Verdict | Notes | Group |
+|-----|------:|---------|-------|-------|
+| `stdlib/Lang.md` | 232 | KEEP | `cajeta.lang` overview; package landing. | Language |
+| `stdlib/UnifiedClasses.md` | 503 | KEEP | Flagship class model; light edit. | Language |
+| `stdlib/Primitives.md` | 127 | KEEP | Primitive catalog. | Language |
+| `stdlib/FloatingPointModel.md` | 279 | KEEP | IEEE-754 semantics. | Language |
+| `stdlib/ValueReturns.md` | 224 | MERGE→Language | Copy-elision/move; fold into a "values & returns" page. | Language |
+| `stdlib/lang/EncodingPrefixedLiterals.md` | 117 | MERGE→Language | Literal prefixes; fold into a "literals" section. | Language |
+| `stdlib/MemoryModel.md` | 347 | KEEP | Flagship memory model. | Memory & Ownership |
+| `stdlib/OwnershipTransfer.md` | 311 | MERGE→MemoryModel | `#`-transfer overlaps MemoryModel; consolidate, child or merge. | Memory & Ownership |
+| `stdlib/FieldOwnership.md` | 376 | KEEP | Field-as-owner + drop chain. | Memory & Ownership |
+| `stdlib/FieldBorrowEscape.md` | 315 | CHILD→FieldOwnership | Escape rules; child page. | Memory & Ownership |
+| `stdlib/BorrowSoundness.md` | 299 | KEEP | Advanced; soundness rules. | Memory & Ownership |
+| `stdlib/MethodLevelTemplate.md` | 687 | EDIT | Per-method type params; trim. | Types & Generics |
+| `stdlib/MultiClassing.md` | 917 | SPLIT/EDIT | Multiple inheritance + vtable; split. | Types & Generics |
+| `stdlib/NumericBoundedTemplates.md` | 136 | CHILD→Types | Numeric pseudo-bounds; child. | Types & Generics |
+
+#### `cajeta-docs/stdlib/` (collections, streams, library, concurrency)
+
+| Doc | Lines | Verdict | Notes | Group |
+|-----|------:|---------|-------|-------|
+| `stdlib/Collections.md` | 350 | KEEP | Collection hierarchy overview. | Collections & Streams |
+| `stdlib/Hashing.md` | 245 | KEEP | `hash()` contract, `@AutoHash`. | Collections & Streams |
+| `stdlib/Streams.md` | 261 | KEEP | Pull-protocol streams. | Collections & Streams |
+| `stdlib/StreamParallelism.md` | 359 | KEEP | Parallel streams; parent page. | Collections & Streams |
+| `stdlib/StreamParallelism.ErrorHandling.md` | 430 | CHILD→StreamParallelism | Error handling; child page. | Collections & Streams |
+| `stdlib/StreamParallelism.Examples.md` | 1452 | CUT→Tour | Replace 1452 lines of worked examples with **Tour-injected** snippets (§17/§21); keep only a short "see examples" pointer. | Collections & Streams |
+| `stdlib/lang/Object.md` | 308 | KEEP | Root `Object`. | Standard Library |
+| `stdlib/lang/String.md` | 697 | EDIT | Big String API; trim, push examples to Tour. | Standard Library |
+| `stdlib/lang/System.md` | 149 | KEEP | System utilities. | Standard Library |
+| `stdlib/lang/Locale.md` | 253 | KEEP | Locale-aware ops. | Standard Library |
+| `stdlib/Annotations.md` | 658 | EDIT | Annotation catalog; cross-link `@Data`/`@Value` (§20). | Standard Library |
+| `stdlib/AspectModel.md` | 564 | KEEP | AOP/DI spec. | Standard Library |
+| `stdlib/Reflection.md` | 871 | SPLIT/EDIT | RTTI; split + trim. | Standard Library |
+| `stdlib/Lambdas.md` | 522 | EDIT | Lambda/closure; trim. | Standard Library |
+| `stdlib/ErrorModel.md` | 382 | KEEP | Recoverable/Unrecoverable model. | Standard Library |
+| `stdlib/Views.md` | 626 | KEEP | Wire-format views; absorb any Structs prose (history salvage). | Serialization & Codecs |
+| `stdlib/Process.md` | 77 | MERGE→System | Tiny; fold into System or I/O. | Standard Library |
+| `stdlib/Time.md` | 76 | KEEP | Time/duration; small but standalone. | Standard Library |
+| `stdlib/Thread.md` | 537 | KEEP | Structured concurrency (async/await/scope/spawn). | Concurrency |
+| `stdlib/AsyncStatus.md` | 226 | INTERNAL | Async rollout tracker; salvage live design into `Thread.md`, then exclude. | Internal |
+
+#### `cajeta-docs/stdlib/codec/` · `io/`
+
+| Doc | Lines | Verdict | Notes | Group |
+|-----|------:|---------|-------|-------|
+| `stdlib/codec/Json.md` | 722 | EDIT | Three-tier JSON codec; trim, Tour-inject the codec demo. | Serialization & Codecs |
+| `stdlib/io/Io.md` | 64 | KEEP | I/O package landing. | I/O & Networking |
+| `stdlib/io/net/Networking.md` | 1032 | SPLIT | Split: sockets · TCP/UDP · TLS · HTTP · DNS. | I/O & Networking |
+| `stdlib/io/file/Readme.md` | 174 | EDIT→landing | Becomes the **File I/O** overview that the 9 fragments fold under. | I/O & Networking |
+| `stdlib/io/file/File.md` | 95 | MERGE→FileIO | | I/O & Networking |
+| `stdlib/io/file/FileReader.md` | 55 | MERGE→FileIO | | I/O & Networking |
+| `stdlib/io/file/FileWriter.md` | 52 | MERGE→FileIO | | I/O & Networking |
+| `stdlib/io/file/Path.md` | 88 | MERGE→FileIO | | I/O & Networking |
+| `stdlib/io/file/Directories.md` | 75 | MERGE→FileIO | | I/O & Networking |
+| `stdlib/io/file/Errors.md` | 85 | MERGE→FileIO | | I/O & Networking |
+| `stdlib/io/file/FileInfo.md` | 40 | MERGE→FileIO | | I/O & Networking |
+| `stdlib/io/file/OpenMode.md` | 42 | MERGE→FileIO | | I/O & Networking |
+| `stdlib/io/file/Watcher.md` | 64 | MERGE→FileIO | | I/O & Networking |
+
+> **File I/O consolidation:** the 10 `io/file/*` files (≈770 lines total, mostly
+> stubs) collapse into **one** "File I/O" guide with sections (one-shot · streaming
+> reader/writer · random-access · paths · directories · watcher · errors). The
+> per-class *reference* comes from `cajetadoc` (§18); the guide is prose only.
+
+### 16.3 Document groups & icons — sub-item ②
+
+Each published group is a top-level node in the docs sidebar and a card on the
+`/docs` landing. Icons are **lucide-react** (the chosen icon set, §2). The
+`Internal / Contributor` group is **not** rendered in the public site.
+
+| # | Group | Icon (lucide) | Covers |
+|---|-------|---------------|--------|
+| 1 | **Start Here** | `Rocket` | Intro/pitch, install, feature status, "build your first package" tutorial |
+| 2 | **Language** | `Braces` | Classes, primitives, literals, operators, floats, values/returns |
+| 3 | **Memory & Ownership** | `ShieldCheck` | Memory model, `#`-transfer, field ownership/escape, borrow soundness |
+| 4 | **Types & Generics** | `Boxes` | Templates, wildcards/capture, method-level templates, multiple inheritance, numeric bounds |
+| 5 | **Collections & Streams** | `Layers` | Collections, hashing, streams, parallel streams |
+| 6 | **Standard Library** | `Library` | Object/String/System/Locale, annotations, aspects, reflection, lambdas, errors, time |
+| 7 | **Concurrency** | `Workflow` | Structured concurrency, async/await, scopes, fibers |
+| 8 | **I/O & Networking** | `Network` | I/O overview, file I/O, sockets/TCP/UDP/TLS/HTTP/DNS |
+| 9 | **Serialization & Codecs** | `FileJson` | JSON codec, wire views/encoders |
+| 10 | **XPU / Accelerators** | `Cpu` | XPU substrate, capability matrix, `@Kernel` portability |
+| 11 | **Tooling & Build** | `Wrench` | Build tool, compilation, modes, lint, archive, debugging, `cajetadoc`, embedded |
+| 12 | **Registry & Specs** | `ScrollText` | Repository/toolchain protocols, manifest/lockfile schema, plugin API |
+| 13 | **Roadmap** | `Telescope` | Design docs for unbuilt libraries (math, prism, render, torch), embedded MCU |
+| — | **Internal / Contributor** | `FlaskConical` | Handoffs, bring-up logs, status trackers, variance registers, test/harness plans, release procedure — **repo-only, never published** |
+
+### 16.4 Per-document editing plan — sub-item ③
+
+Concrete line items, grouped by operation. (Verdicts come from §16.2.)
+
+**Split the giants** (overview page + child pages, sidebar nests them):
+- [ ] `BuildTool.md` (4568) → `tooling/build/` index + children: `init`, `dependencies`, `build`, `test`, `doc`, `lint`, `publish`, `tasks`.
+- [ ] `io/net/Networking.md` (1032) → `io/net/` index + children: `sockets`, `tcp-udp`, `tls`, `http`, `dns`.
+- [ ] `CajetaXPU.md` (1058) → `xpu/` index + children: `kernels`, `runtime-dispatch`, `backends`, `buffers-streams`.
+- [ ] `Compilation.md` (1019) → `compilation` overview + `phases`, `output-formats`, `flags-index`.
+- [ ] `Debugging.md` (999) → `debugging` overview + `dap`, `lsp`, `jupyter`, `time-travel`.
+- [ ] `MultiClassing.md` (917) → `multiclassing` overview + `vtable-layout`, `diamond-resolution`.
+- [ ] `Reflection.md` (871) → `reflection` overview + `descriptors`, `invocation`, `weaving`.
+
+**Merge / consolidate** (kill overlap and fragmentation):
+- [ ] Fold `OwnershipTransfer.md` into `MemoryModel.md` (or make it the single child "transfer & use-after-move"); remove the duplicated `#` explanation.
+- [ ] Make `FieldBorrowEscape.md` a child of `FieldOwnership.md`.
+- [ ] Make `CaptureConversion.md` a child/section of `TemplateWildcard.md`.
+- [ ] Make `NumericBoundedTemplates.md` a child of the Types & Generics index.
+- [ ] Merge `ValueReturns.md` + `EncodingPrefixedLiterals.md` into Language pages ("values & returns", "literals").
+- [ ] Merge `Process.md` into `System.md` (or the I/O index).
+- [ ] **Collapse the 10 `io/file/*` files into one "File I/O" guide** (§16.2 note).
+- [ ] Make `StreamParallelism.ErrorHandling.md` a child of `StreamParallelism.md`.
+
+**Replace prose-examples with Tour injection** (§17/§21):
+- [ ] `StreamParallelism.Examples.md` (1452) → delete the worked examples; keep a one-paragraph pointer; surface the real `ParallelStreamsDemo.cajeta` snippet inline.
+- [ ] Sweep `String.md`, `Json.md`, `Lambdas.md`, `OperatorOverloading.md`, `Collections.md`: strip inline toy examples, replace with the matching Tour demo injected by the loader (`lib/samples.ts`, §9), keyed by subject (§21).
+
+**Trim for verbosity / audience** (EDIT verdicts): `OperatorOverloading.md`,
+`Annotations.md`, `String.md`, `Reflection.md`, `MethodLevelTemplate.md`,
+`Json.md`, `Lambdas.md`, `ArchiveManagement.md`, `cajeta-xpu-matrix.md`,
+`TemplateWildcard.md`, `README.md` — cut to the developer-relevant core; move
+deep-internal rationale to `Internal` or footnotes.
+
+**Mark as roadmap** (badge "design / not yet implemented", group Roadmap):
+`CajetaMath.md`, `CajetaPrism.md`, `CajetaRender.md`, `CajetaTorch.md`,
+`Embedded.md`.
+
+**Exclude from publish (Internal group)** — add to the sync **exclude list**
+(`scripts/sync-docs.ts`, §14.2): `HarnessDesign.md`, `TestPlan.md`,
+`AsyncStatus.md`, `history/*`, `RELEASING.md` (link from Contributing only),
+`exception-fix-plan.md` (or CUT). *(XPU doc include/exclude decisions are
+deferred to the XPU session — §16 banner.)*
+
+**Salvage-before-exclude** (don't lose design content):
+- [ ] Pull live async-runtime design from `AsyncStatus.md` into `Thread.md`.
+- [ ] Pull any Structs design prose from `history/StructsViewsStatus.md` into `Views.md` (closes the dangling old-site `Structs` category, §13.6).
+
+**Parent/child decisions (which docs nest under which):**
+- Memory & Ownership: `MemoryModel` (parent) ▸ transfer, `FieldOwnership` (parent) ▸ `FieldBorrowEscape`, `BorrowSoundness`.
+- Types & Generics: index ▸ templates, `TemplateWildcard` ▸ `CaptureConversion`, `MethodLevelTemplate`, `MultiClassing`, numeric-bounds.
+- Collections & Streams: `StreamParallelism` (parent) ▸ error-handling.
+- I/O: `Io` (parent) ▸ File I/O, Networking (parent) ▸ its split children.
+- Tooling: `BuildTool` (parent) ▸ its split children; `Compilation`, `Debugging` likewise.
+
+### 16.5 Resulting documentation site map — sub-item ④
+
+How `/docs` looks after the edits above. Each leaf is a guide page; **(gen)** marks
+where a `cajetadoc`-generated API reference sits as a sibling tab (§18, §21);
+**(tour)** marks where a Tour snippet is injected (§17, §21).
+
+```
+/docs
+├── Start Here ······················ Rocket
+│   ├── What is Cajeta            (← README intro)
+│   ├── Feature status            (← Features.md)
+│   └── Build your first package  (← specs/tour-build-your-first-package.md) (tour)
+├── Language ························· Braces
+│   ├── Unified classes           (UnifiedClasses)
+│   ├── Primitives & literals     (Primitives + EncodingPrefixedLiterals)
+│   ├── Operators                 (OperatorOverloading) (tour)
+│   ├── Floating point            (FloatingPointModel)
+│   └── Values & returns          (ValueReturns)
+├── Memory & Ownership ·············· ShieldCheck
+│   ├── Memory model              (MemoryModel + OwnershipTransfer) (tour)
+│   ├── Field ownership           (FieldOwnership ▸ FieldBorrowEscape)
+│   └── Borrow soundness          (BorrowSoundness)
+├── Types & Generics ················ Boxes
+│   ├── Templates                 (TemplatesDemo) (tour)
+│   ├── Wildcards & capture       (TemplateWildcard ▸ CaptureConversion)
+│   ├── Method-level templates    (MethodLevelTemplate)
+│   ├── Multiple inheritance      (MultiClassing ▸ vtable, diamond)
+│   └── Numeric bounds            (NumericBoundedTemplates)
+├── Collections & Streams ··········· Layers
+│   ├── Collections               (Collections) (gen) (tour)
+│   ├── Hashing                   (Hashing)
+│   ├── Streams                   (Streams) (tour)
+│   └── Parallel streams          (StreamParallelism ▸ error-handling) (tour)
+├── Standard Library ················ Library
+│   ├── Object · String · System · Locale   (gen) (tour)
+│   ├── Annotations               (Annotations)
+│   ├── Aspects & DI              (AspectModel)
+│   ├── Reflection                (Reflection ▸ …)
+│   ├── Lambdas                   (Lambdas) (tour)
+│   ├── Errors                    (ErrorModel) (tour)
+│   └── Time                      (Time)
+├── Concurrency ····················· Workflow
+│   └── Structured concurrency    (Thread + async salvage) (tour)
+├── I/O & Networking ················ Network
+│   ├── Overview                  (Io)
+│   ├── File I/O                  (10 io/file/* → one guide) (gen) (tour)
+│   └── Networking                (Networking ▸ sockets/tcp-udp/tls/http/dns) (gen)
+├── Serialization & Codecs ·········· FileJson
+│   ├── JSON                      (codec/Json) (tour)
+│   └── Wire views                (Views) (gen)
+├── XPU / Accelerators ·············· Cpu   ── DEFERRED to the XPU session (placeholder)
+│   └── (structure TBD by the XPU session — not designed here)
+├── Tooling & Build ················· Wrench
+│   ├── Build tool                (BuildTool ▸ init/deps/build/test/doc/lint/publish)
+│   ├── Compilation               (Compilation ▸ phases/output/flags)
+│   ├── Compiler modes            (CompilerModes)
+│   ├── Lint rules                (LintRules)
+│   ├── Archive management        (ArchiveManagement)
+│   ├── Debugging                 (Debugging ▸ dap/lsp/jupyter/time-travel)
+│   └── Documentation (cajetadoc) (Documentation)
+├── Registry & Specs ················ ScrollText
+│   ├── Repository protocol v1    (specs/repository-protocol-v1)
+│   ├── Toolchain registry v1     (specs/toolchain-registry-v1)
+│   ├── Extension API v1          (specs/extension-api-v1)
+│   └── Schema versioning         (specs/schema-versioning)
+└── Roadmap ························· Telescope
+    ├── cajeta.math · prism · render · torch   (badged "design")
+    └── Embedded / MCU            (Embedded)
+```
+
+> **Cross-refs:** this map feeds `site/lib/docs-manifest.ts` (§14.2) — the manifest
+> is the single place that encodes group → file → order → title → icon. The
+> sync script emits Fumadocs `meta.json` from it. `(gen)`/`(tour)` slots are
+> realized by §18 and §17/§21 respectively.
+
+---
+
+## 17. Tour code review & package reorganization — sub-item ⑤
+
+`samples/Tour/src/tour/` is currently **flat** — 44 `.cajeta` files in one
+directory (entry point `Tour.cajeta`, base `DemoClass.cajeta`, plus support
+classes `Point`, `Shape`, `Square`, `Circle`, `Box`, `Counter`, `Book`,
+`Int32Encoder`). Two jobs: **reorganize into package-aligned directories** so the
+structure mirrors `runtime/src/cajeta/` and the doc groups (§16.3), and a **code
+review that strengthens weak/under-demonstrated examples**.
+
+### 17.1 Reorganize into package directories
+Group demos into subdirs matching the stdlib package they exercise (mirrors
+`runtime/src/cajeta/`), so the site can inject "all `net` examples" by directory
+(§21). Proposed layout:
+
+```
+samples/Tour/src/tour/
+├── Tour.cajeta · DemoClass.cajeta        (harness — stays at root)
+├── lang/        Primitives, Classes, ControlFlow, SwitchTernary, FormatString,
+│                Inheritance, OperatorOverload, Math, String, Shape/Square/Circle/Point
+├── memory/      Allocation, Ownership      (+ Point shared from lang/)
+├── generics/    Templates, NumericTemplates, Wildcards, Box, Lambdas
+├── collection/  ArrayList, LinkedList, HashMap, HashSet, Heap, BPlusTree,
+│                RedBlackTree, Immutable{List,Map,Set}, LtmBPlusTree, Int32Encoder
+├── stream/      Streams, ParallelStreams
+├── async/       Async
+├── io/          FileIo
+├── codec/       Json
+├── wire/        Views
+├── meta/        Annotations, AspectsDi
+└── error/       Errors
+```
+- [ ] Move files; update `package tour.<pkg>;` declarations and imports.
+- [ ] Update `Tour.cajeta`'s `ArrayList<DemoClass>` construction + `build-bin.sh`/`build-uber.sh` globs.
+- [ ] Keep `xpu/` subtree as-is (already separated).
+- [ ] Verify the whole Tour still compiles & runs (`build-bin.sh`) after the move.
+
+### 17.2 Strengthen weak / thin examples
+The review (a code-review pass over every demo) flags examples that are too thin
+to teach the feature and adds depth or companion demos. Initial targets:
+- [ ] **Networking — missing entirely.** `io/net/Networking.md` is 1032 lines but there is **no `net` Tour demo.** Add `net/` examples: TCP echo client/server, an HTTP GET, a UDP datagram. This is the biggest gap.
+- [ ] **Time — no demo.** Add a `Time`/`Duration` example (used by Async but never shown alone).
+- [ ] **Reflection — no demo.** 871-line doc, zero examples; add an RTTI/descriptor demo.
+- [ ] **Process — no demo.** Add a subprocess spawn + exit-code example.
+- [ ] **Locale — no demo.** Add a locale-aware formatting/collation example.
+- [ ] **Hashing — no standalone demo** (only implicit via HashMap); add `@AutoHash`/`hash()` contract demo.
+- [ ] **Async** — single `AsyncDemo`; add channel pipeline + cancellation/`scope` escalation examples (the doc covers far more than the demo shows).
+- [ ] **Views** — one demo; add a variable-size + nested-view example and a real wire round-trip.
+- [ ] **Json** — Tier-1 only; add Tier-2 (pull tokenizer) and Tier-3 (tree) examples.
+- [ ] **OperatorOverload** — broaden to show indexed access + mutating unary on a real container.
+- [ ] Audit every doc group (§16.3) for "doc exists, demo doesn't" and fill the gap so §21's injection has a snippet for each major subject.
+
+### 17.3 Tour README
+- [ ] Update `samples/Tour/README.md` to the new directory layout; keep it as the human index. Confirm each demo's "expected output" block (the site injects these per §5.3).
+
+---
+
+## 18. `cajetadoc` → generated API reference site — sub-item ⑥
+
+A JavaDoc-style tool that turns the `/** … */` doc comments in
+`runtime/src/cajeta/**` into a **browsable website hierarchy**, with Markdown
+markup support. **The spec already exists** — `cajeta-docs/Documentation.md`
+(630 lines) defines the comment syntax, the `@`-tag catalog, Markdown-in-comments,
+and a `cajeta doc` subcommand. **This item implements it** and wires the output
+into the site as the *reference* sibling to the hand-written *guides* (§21).
+
+### 18.1 Scope
+- Source: all 106 `.cajeta` files under `runtime/src/cajeta/` (14 packages:
+  `lang`, `lang/stream`, `collection`, `collection/ltm`, `codec/json`, `error`,
+  `hash`, `io`, `io/file`, `threading`, `time`, `wire`, `xpu`, `xpu/core`).
+- Output: a static site hierarchy **package → type → member**, mirroring the
+  source package tree — exactly the JavaDoc model the spec calls for.
+- **Markup support:** full Markdown inside `/** … */` bodies (the spec mandates
+  this — no XML/HTML tags), plus the `@`-tag set (`@Param`, `@Return`, `@Throws`,
+  `@See`, `@Since`, Cajeta-specific tags) and cross-reference links (`[Type]`,
+  `[method()]`) resolved across packages.
+
+### 18.2 Build approach (decision needed)
+- **(A) Extend the compiler** — `cajeta doc` is already specified as a subcommand;
+  the front end already parses these comments. Emit a structured JSON model
+  (packages/types/members/comments/tags), then render. *Canonical; most work.*
+- **(B) Standalone extractor** — a parser over `runtime/src/cajeta/**` that pulls
+  declaration signatures + their preceding `/** */` blocks into the same JSON
+  model. Faster to stand up; risks signature-parsing drift from the real grammar.
+- **Renderer (either path):** emit **MDX into `site/content/docs/reference/**`**
+  so the generated reference flows through the *same* Fumadocs pipeline, palette,
+  search (Orama indexes it too), and Cajeta-grammar highlighting (§6.4) as the
+  guides. The site treats `reference/` as a generated, git-ignored tree produced
+  by a `prebuild` step (alongside `sync-docs.ts`, §14.2).
+- **Markdown engine:** reuse the same MDX/Shiki stack so markup-in-comments
+  renders identically to hand-written docs.
+
+### 18.3 Line items
+- [ ] Decide build approach (A vs B) — recommend **(A)** to stay canonical with the spec.
+- [ ] Implement the doc-comment extractor → JSON model (package/type/member/tags/markdown-body).
+- [ ] Implement `@`-tag handling + cross-reference link resolution per `Documentation.md`.
+- [ ] Implement the MDX renderer → `site/content/docs/reference/<pkg>/<Type>.mdx`.
+- [ ] Add `prebuild` wiring + git-ignore for `reference/`; index it in Orama search.
+- [ ] Recolor the reference pages to the caramel palette (reuse Fumadocs theme).
+- [ ] Gate on §19/§20 (comments must be correct first) — generate **after** the stdlib comment review.
+
+### 18.4 Dependency on §19/§20
+`cajetadoc` is only as good as the comments it reads. **Run §20 (comment review)
+and §19 (code review) first**, or the generated reference will faithfully publish
+wrong/stale comments. Ordering: §19 → §20 → §18.
+
+---
+
+## 19. Stdlib code review — sub-item ⑦
+
+A code review of **all** stdlib Cajeta source: the 106 `.cajeta` files in
+`runtime/src/cajeta/**`. Goal: correctness, consistency, and idiom across the
+standard library before its comments (§20) and generated reference (§18) go
+public.
+
+### 19.1 Scope by package (file counts)
+`io/file` (18) · `collection` (17) · `lang/stream` (16) · `threading` (12) ·
+`lang` (8) · `codec/json` (8) · `hash` (6) · `error` (4) · `collection/ltm` (3) ·
+`wire` (1) · `time` (1).
+
+> **`xpu/core` (12) and `xpu` are excluded** — owned by the XPU session (§16
+> banner). Don't review or re-comment XPU source here; reconcile with that
+> session before `cajetadoc` (§18) generates XPU reference pages.
+
+### 19.2 Review checklist (per package)
+- [ ] **Correctness** — logic matches the spec doc for that package (§16 group); flag drift between code and doc.
+- [ ] **Memory/ownership idiom** — `#`-transfer vs. borrow used correctly; no avoidable copies; drop-chain correctness (cross-check `MemoryModel`/`FieldOwnership`).
+- [ ] **API consistency** — naming, method shapes, return-by-value/`#`-return conventions consistent across collections, streams, io.
+- [ ] **Annotation hygiene** — apply `@Data`/`@Value`/`@Builder`/`@AutoHash` where boilerplate exists (feeds §20).
+- [ ] **Dead/stub code** — flag unimplemented stubs (esp. `io/file` had several thin files) and TODOs.
+- [ ] **Error handling** — Recoverable vs. Unrecoverable used per `ErrorModel`.
+- [ ] **Test coverage** — note gaps against the existing test suite.
+- [ ] Run as a multi-pass review, one package at a time (largest first: `io/file`, `collection`, `lang/stream`), filing findings per file.
+
+---
+
+## 20. Stdlib comment review — sub-item ⑧
+
+A review of **all stdlib doc comments** so they truthfully reflect the code (§19)
+before `cajetadoc` (§18) publishes them.
+
+### 20.1 Principles
+- [ ] **Comments must match the code** — every `/** */` describes what the current
+  implementation does; fix stale/aspirational comments (or fix the code in §19 and
+  note it).
+- [ ] **No getter/setter comments** — drop trivial `/** Gets the foo. */` /
+  `/** Sets the foo. */` noise entirely.
+- [ ] **Prefer `@Data` / `@Value`** — where a class is a plain data/value holder
+  with mechanical accessors, annotate it (`@Data` for mutable, `@Value` for
+  immutable) instead of hand-writing fields + getters/setters + their comments.
+  This *removes* the very accessors whose comments we'd otherwise be deleting.
+  (Cross-ref `stdlib/Annotations.md`, §16.2.)
+- [ ] **Document the non-obvious** — invariants, ownership/borrow contracts,
+  complexity, thread-safety, error conditions — the things a user can't infer from
+  the signature. Use the `@`-tags `cajetadoc` understands (`@Param`, `@Return`,
+  `@Throws`, `@See`, `@Since`).
+- [ ] **Markdown is allowed** (and rendered, §18) — use it for clarity, not noise.
+
+### 20.2 Line items
+- [ ] Sweep all 106 files; for each public type/member: verify the comment matches code, delete trivial accessor comments, add missing contracts.
+- [ ] Convert eligible data/value classes to `@Data`/`@Value`; remove the now-redundant accessors + comments.
+- [ ] Ensure every **published** symbol (those `cajetadoc` will emit, §18) has a meaningful class/method comment; flag undocumented public API.
+- [ ] Run **after** §19 (so comments describe reviewed/corrected code) and **before** §18 (so the generated reference is correct).
+
+---
+
+## 21. How it composes — the cajeta.dev documentation experience
+
+The three workstreams above combine into the documentation portion of
+**cajeta.dev** (§4, `/docs`):
+
+1. **Curated guides** — the hand-written `cajeta-docs/**`, edited and grouped per
+   §16, converted to styled HTML through the Fumadocs pipeline (§14.2),
+   caramel-themed (§3).
+2. **Tour examples injected by subject** — real, compiling snippets from the
+   reorganized `samples/Tour/` (§17), pulled at build (`lib/samples.ts`, §9) and
+   embedded into the matching guide by **subject/package key** (e.g. the `net`
+   guide shows the `net/` demos; the streams guide shows `stream/` demos). The
+   `(tour)` slots in the §16.5 map.
+3. **Generated API reference** — `cajetadoc` (§18) renders the *reviewed* (§19)
+   and *correctly-commented* (§20) stdlib source into a per-package/type/member
+   reference, flowing through the same pipeline and search. The `(gen)` slots in
+   the §16.5 map, presented as a **sibling tab** to each guide ("Guide" /
+   "Reference").
+
+**Ordering across sections:** §19 (code review) → §20 (comment review) → §18
+(`cajetadoc`); in parallel, §16 (doc edit) and §17 (Tour reorg) feed the same
+`/docs` tree. All of it lands behind the §14 migration before
+`cajeta-docs-site/` is retired (§14.4).
+
+### 21.1 Build-phase additions (extends §12)
+Insert between §12.5 (Docs migration) and §12.6 (Repo):
+- **5a. Doc editorial pass (§16)** — execute the catalog verdicts: split, merge,
+  trim, mark roadmap, build `docs-manifest.ts` (groups/icons §16.3), set the
+  sync exclude list (Internal group), salvage-before-exclude.
+- **5b. Tour reorg + strengthening (§17)** — package directories, fill missing
+  demos (net/time/reflection/process/locale/hashing), update build scripts & README.
+- **5c. Stdlib review (§19) → comment review (§20)** — correctness + comment
+  truth + `@Data`/`@Value`; prerequisite for reference generation.
+- **5d. `cajetadoc` (§18)** — implement `cajeta doc`, render MDX `reference/`,
+  wire prebuild + search; inject Tour snippets by subject (§21).

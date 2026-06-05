@@ -34,8 +34,8 @@ import cajeta.lang.String;
  * with separate statements. Fluent chaining can be revisited once
  * class-to-interface upcast on return is exercised more broadly.
  *
- * @see cajeta.hash.Hash
- * @see [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See cajeta.hash.Hash
+ * @See [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public interface Hasher {
     public void writeBoolean(boolean v);

@@ -49,8 +49,8 @@ view, method, constructor, field, or annotation type.
  * [viewOf](#viewof) factory family for borrowed views over
  * existing byte buffers.
  *
- * @see [Encoding] for the supported encodings.
- * @since 1.0
+ * @See [Encoding] for the supported encodings.
+ * @Since 1.0
  */
 public final class String implements Collection<int32> {
     ...
@@ -147,29 +147,32 @@ as a link when one fits and as plain text when one doesn't.
 ## JavaDoc-style `@`-tags
 
 Cajeta supports the full JavaDoc tag set, with their familiar
-meanings:
+meanings. The tags are spelled in **CamelCase** (`@Param`, `@Return`,
+`@Throws`, `{@Link}`, …) for consistency with cajeta's annotations and
+its cajeta-specific doc tags — only the spelling differs from JavaDoc;
+the semantics are identical.
 
 | Tag           | Purpose                                                              |
 |---------------|----------------------------------------------------------------------|
-| `@param name` | Describe a parameter. One per parameter.                            |
-| `@return`     | Describe the return value. One per method.                          |
-| `@throws T`   | Document an exception this method may throw. Multiple allowed.      |
-| `@exception T`| Synonym for `@throws`. Either form accepted.                        |
-| `@see X`      | "See also" cross-reference. Multiple allowed.                       |
-| `@since X.Y`  | Version this declaration was introduced.                            |
-| `@deprecated` | Mark as deprecated. Body explains the replacement / removal plan.   |
-| `@version`    | Class / file version metadata.                                       |
-| `@author`     | Author attribution. Multiple allowed.                               |
-| `@serialData` | Documents the serialized form of a class.                            |
-| `@serial`     | Field serialization metadata.                                        |
-| `@serialField`| Documents a Serializable field's serialized form.                   |
-| `@hidden`     | Suppresses this declaration from generated docs.                    |
-| `@apiNote`    | Authoritative API usage notes.                                       |
-| `@implSpec`   | Implementation-required behavior (binding on subclasses).            |
-| `@implNote`   | Implementation-details note (non-binding, can change).               |
+| `@Param name` | Describe a parameter. One per parameter.                            |
+| `@Return`     | Describe the return value. One per method.                          |
+| `@Throws T`   | Document an exception this method may throw. Multiple allowed.      |
+| `@Exception T`| Synonym for `@Throws`. Either form accepted.                        |
+| `@See X`      | "See also" cross-reference. Multiple allowed.                       |
+| `@Since X.Y`  | Version this declaration was introduced.                            |
+| `@Deprecated` | Mark as deprecated. Body explains the replacement / removal plan.   |
+| `@Version`    | Class / file version metadata.                                       |
+| `@Author`     | Author attribution. Multiple allowed.                               |
+| `@SerialData` | Documents the serialized form of a class.                            |
+| `@Serial`     | Field serialization metadata.                                        |
+| `@SerialField`| Documents a Serializable field's serialized form.                   |
+| `@Hidden`     | Suppresses this declaration from generated docs.                    |
+| `@ApiNote`    | Authoritative API usage notes.                                       |
+| `@ImplSpec`   | Implementation-required behavior (binding on subclasses).            |
+| `@ImplNote`   | Implementation-details note (non-binding, can change).               |
 
 Tag bodies are Markdown — block elements (lists, code blocks,
-tables) inside a `@param` description work the same way as in the
+tables) inside a `@Param` description work the same way as in the
 body prose.
 
 Standard layout: doc body first (the prose summary + details), then
@@ -182,12 +185,12 @@ all `@` tags in a contiguous trailing block:
  * The output is lowercase by default; pass [HexCase.UPPER] to switch.
  * Length grows by 2× the input — every byte produces two hex digits.
  *
- * @param data    bytes to encode, may be empty
- * @param case    output letter case; defaults to [HexCase.LOWER]
- * @return        new String holding the hex representation
- * @throws OutOfMemoryException if the output String can't be allocated
- * @since 1.0
- * @see decode
+ * @Param data    bytes to encode, may be empty
+ * @Param case    output letter case; defaults to [HexCase.LOWER]
+ * @Return        new String holding the hex representation
+ * @Throws OutOfMemoryException if the output String can't be allocated
+ * @Since 1.0
+ * @See decode
  */
 public static String encodeHex(byte[] data, HexCase case = HexCase.LOWER);
 ```
@@ -203,21 +206,15 @@ the method header, a dedicated section in the parameter list).
 
 | Tag                        | Purpose                                                                       |
 |----------------------------|-------------------------------------------------------------------------------|
-| `@borrows name`            | The parameter is borrowed (the default). Documents the lifetime constraint.   |
-| `@moves name`              | The parameter is moved (the user wrote `#name`). Caller loses ownership.       |
-| `@owns name`               | The parameter is fully owned (heap pointer, not a borrow).                    |
-| `@drops self`              | Method may free / destruct the receiver. After this call, `this` is gone.     |
-| `@fiber-safe`              | Method is safe to call concurrently from multiple fibers.                     |
-| `@fiber-unsafe`            | Method is **not** safe to call concurrently. Default for mutating methods.    |
-| `@blocks`                  | Method may block the calling fiber (I/O, lock acquisition). Scheduler yields. |
-| `@nonblocking`             | Method completes without yielding. Suitable for hot critical sections.        |
-| `@complexity O(...)`       | Asymptotic time complexity. Multiple allowed (e.g. time + space).             |
-| `@allocates`               | Method allocates heap memory.                                                 |
-| `@no-alloc`                | Method does no heap allocation. Useful for hot-path / real-time API.          |
-| `@aspect-affects N`        | N is the count of aspect advice methods that wrap this method. Generated.     |
-| `@stability stable | experimental | internal | deprecated` | API stability commitment. Drives lint / deprecation warnings. |
-| `@platform <triple>`       | Only valid on the named target. Multiple allowed for restrictions.            |
-| `@panics`                  | Method may panic / abort the process under listed conditions.                 |
+| `@Borrows name`            | The parameter is borrowed (the default). Documents the lifetime constraint.   |
+| `@Moves name`              | The parameter is moved (the user wrote `#name`). Caller loses ownership.       |
+| `@Owns name`               | The parameter is fully owned (heap pointer, not a borrow).                    |
+| `@Drops self`              | Method may free / destruct the receiver. After this call, `this` is gone.     |
+| `@FiberSafe`               | Method is safe to call concurrently from multiple fibers.                     |
+| `@FiberUnsafe`             | Method is **not** safe to call concurrently. Default for mutating methods.    |
+| `@Blocks`                  | Method may block the calling fiber (I/O, lock acquisition). Scheduler yields. |
+| `@NonBlocking`             | Method completes without yielding. Suitable for hot critical sections.        |
+| `@Complexity O(...)`       | Asymptotic time complexity. Multiple allowed (e.g. time + space).             |
 
 ```cajeta
 /**
@@ -226,25 +223,22 @@ the method header, a dedicated section in the parameter list).
  * Heap-order invariant is maintained — root remains min (or max,
  * depending on the comparator).
  *
- * @param value          the element to insert
- * @owns value           value's ownership transfers to the heap; caller can't reuse
- * @return               nothing
- * @complexity O(log n)
- * @fiber-unsafe         calling from multiple fibers requires external locking
- * @allocates            may grow the backing array; one heap allocation amortized
- * @since 1.0
+ * @Param value          the element to insert
+ * @Owns value           value's ownership transfers to the heap; caller can't reuse
+ * @Return               nothing
+ * @Complexity O(log n)
+ * @FiberUnsafe          calling from multiple fibers requires external locking
+ * @Since 1.0
  */
 public void push(#T value);
 ```
 
 The structured tags drive doc-tool features beyond just rendering:
-- `@fiber-safe` declarations get aggregated into a "Fiber-safe API
+- `@FiberSafe` declarations get aggregated into a "Fiber-safe API
   index" page in the generated docs.
-- `@complexity` tags fuel a complexity-sortable view (find all
+- `@Complexity` tags fuel a complexity-sortable view (find all
   O(1) operations).
-- `@stability internal` declarations are stripped from the
-  default output (a `--include-internal` flag re-includes them).
-- `@deprecated` triggers a lint warning at every call site.
+- `@Deprecated` triggers a lint warning at every call site.
 
 ---
 
@@ -291,7 +285,7 @@ runtime/src/cajeta/hash/
  * int64 h = Hash.identity(someObject);
  * ```
  *
- * @since 1.0
+ * @Since 1.0
  */
 package cajeta.hash;
 ```
@@ -355,7 +349,7 @@ build/docs/
 ├── all.html                         Alphabetical index of every type
 ├── packages.html                    Package tree
 ├── stability.html                   API stability index (stable / experimental / internal)
-├── fiber-safe.html                  Generated index of @fiber-safe declarations
+├── fiber-safe.html                  Generated index of @FiberSafe declarations
 ├── search-index.json                Pre-computed search index (client-side)
 ├── style.css
 ├── script.js
@@ -385,7 +379,7 @@ build/docs/
 Each class page contains:
 
 - **Header.** Class name + signature + stability badge + fiber-
-  safety badge + `@since`.
+  safety badge + `@Since`.
 - **Overview prose** — the doc comment's body, Markdown-rendered.
 - **Type parameter list** (for generics).
 - **Implements / extends / annotations.**
@@ -419,8 +413,8 @@ Options:
   --custom-logo=<file>     Project logo (rendered top-left).
   --base-url=<url>         For absolute links in generated HTML.
   --include-private        Include private declarations (default: off).
-  --include-internal       Include @stability internal declarations (default: off).
-  --include-deprecated     Include @deprecated declarations (default: on, with badge).
+  --include-internal       Include internal declarations (default: off).
+  --include-deprecated     Include @Deprecated declarations (default: on, with badge).
   --include-tests          Include src/test docs (default: off).
   --member-order=alpha|source  Method order within a class. Default: alpha.
   --source-link=<url>      Each declaration links to this URL with
@@ -490,7 +484,7 @@ self-contained.
   serve docs alongside the artifact.
 - `cajeta test` runs an optional `--check-docs` flag that
   validates: every public declaration has a doc comment, all
-  `@param` tags match actual parameter names, no broken
+  `@Param` tags match actual parameter names, no broken
   cross-references. Useful as a CI gate.
 
 ### Performance targets
@@ -558,20 +552,20 @@ in the common case. Use explicit `[link]` syntax only for cross-
 references that fail to auto-resolve (overloaded methods,
 ambiguous short names).
 
-**One `@param` per parameter, in source order.** Don't skip
+**One `@Param` per parameter, in source order.** Don't skip
 parameters with "obvious" meanings — the table reads better when
 every column is filled.
 
-**`@return` is mandatory except for `void` methods.** Even if the
+**`@Return` is mandatory except for `void` methods.** Even if the
 return is obvious from the type, document the meaningful range or
 edge cases (null return, magic sentinel values, etc.).
 
-**`@throws` for every exception type the method may throw,
+**`@Throws` for every exception type the method may throw,
 including indirect ones from called methods if they propagate
 unchanged.**
 
-**Cajeta-specific tags first** (`@fiber-safe`, `@complexity`,
-`@owns`, `@drops self`), then the standard JavaDoc tags. Renders
+**Cajeta-specific tags first** (`@FiberSafe`, `@Complexity`,
+`@Owns`, `@Drops self`), then the standard JavaDoc tags. Renders
 in that order in the output.
 
 ---
@@ -608,7 +602,7 @@ side is invisible to it regardless.
   sites for projects that need them.
 - **Doc-comment validation strictness.** How aggressively should
   `cajeta test --check-docs` enforce? Required tags by visibility
-  (every public method needs `@param` + `@return` + `@throws`)?
+  (every public method needs `@Param` + `@Return` + `@Throws`)?
   Or just "every public declaration has *some* doc comment"?
   Lean: configurable per-project via `cajeta.toml [docs.lint]`,
   defaults to "every public declaration has a comment."

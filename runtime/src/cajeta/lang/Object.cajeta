@@ -46,8 +46,8 @@ package cajeta.lang;
  *   cycle, etc.) to the **annotated class + offending field name**
  *   so the user can fix it without sifting through generated code.
  *
- * @see cajeta.hash.Hash
- * @see cajeta.hash.DefaultHasher
+ * @See cajeta.hash.Hash
+ * @See cajeta.hash.DefaultHasher
  */
 public class Object {
 
@@ -71,7 +71,7 @@ public class Object {
      *
      * @returns 64-bit identity hash, well-distributed for use as a
      *          `HashMap<K, V>` / `HashSet<T>` bucket key.
-     * @complexity O(1).
+     * @Complexity O(1).
      */
     @Native("__cajeta_object_hash")
     public int64 hash();
@@ -174,7 +174,7 @@ public class Object {
      * `~T()` is the supported way to answer _"when was this instance
      * destructed?"_** — an ordinary source breakpoint, no special machinery.
      *
-     * @see cajeta-docs/stdlib/MemoryModel.md § Destructors
+     * @See cajeta-docs/stdlib/MemoryModel.md § Destructors
      */
     ~Object() {
     }
