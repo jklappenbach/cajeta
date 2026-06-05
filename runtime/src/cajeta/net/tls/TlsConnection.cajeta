@@ -91,6 +91,9 @@ public class TlsConnection {
     @Native("__cajeta_tls_get_alpn")
     private static int32 getAlpnNative(pointer conn, int8[] out, int32 max);
 
+    @Native("__cajeta_tls_ctx_set_alpn_select")
+    private static int32 setServerAlpnNative(pointer ctx, int8[] protos, int32 len);
+
     @Native("__cajeta_tls_feed_ciphertext")
     private static int32 feedNative(pointer conn, int8[] buf, int32 len);
 
@@ -190,6 +193,17 @@ public class TlsConnection {
     /** The negotiated ALPN protocol bytes into `out`; returns the length. */
     public int32 negotiatedAlpn(int8[] out, int32 max) {
         return TlsConnection.getAlpnNative(this.conn, out, max);
+    }
+
+    /**
+     * Server-side: install the ALPN-select callback offering `protos` (wire
+     * format: 1-byte length + bytes each) as the supported list. During the
+     * handshake the engine picks the first of these the client also offered
+     * (server preference); a client with no overlap simply negotiates no ALPN.
+     * Set on the context, so it takes effect for this connection's handshake.
+     */
+    public void setServerAlpn(int8[] protos, int32 len) {
+        TlsConnection.setServerAlpnNative(this.ctx, protos, len);
     }
 
     // --- the pump -----------------------------------------------------------

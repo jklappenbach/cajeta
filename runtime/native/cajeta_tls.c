@@ -43,6 +43,10 @@
 // authoritative byte count; the header's count field is not re-read here.
 #define CAJETA_ARR_DATA(hdr) ((hdr) ? ((char*) (hdr)) + 8 : (char*) 0)
 
+// Ex-data index the server ALPN list (NET-5.4) hangs off an SSL_CTX. Registered
+// once in ensure_init; declared here so that init can assign it.
+static int cajeta_tls_alpn_ex_idx = -1;
+
 // One-time library init. OpenSSL 3.x auto-inits on first use, but doing it
 // explicitly (and idempotently) keeps the engine self-contained and avoids
 // relying on lazy-init ordering under the JIT.
@@ -52,6 +56,9 @@ static void cajeta_tls_ensure_init(void) {
     done = 1;
     OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS
                      | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
+    // Register the ex-data slot the server ALPN list hangs off (NET-5.4).
+    cajeta_tls_alpn_ex_idx =
+        SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 }
 
 typedef struct {
@@ -60,6 +67,15 @@ typedef struct {
     BIO* wbio;   // app pulls ciphertext OUT here  (TLS -> network)
     int  is_server;
 } cajeta_tls_conn;
+
+// Server-side ALPN (NET-5.4): the supported protocol list (ALPN wire format —
+// each entry a 1-byte length + that many bytes) is copied per-context and
+// attached as SSL_CTX ex_data, so the select callback can read it and ctx_free
+// can release it. The ex-data index is registered once in ensure_init.
+typedef struct {
+    unsigned char* data;
+    unsigned int   len;
+} cajeta_tls_alpn_list;
 
 // ---- context (shared config: protocol versions, server cert/key) ----------
 
@@ -140,7 +156,16 @@ int __cajeta_tls_ctx_add_trust_pem(void* ctxv, const void* pem_hdr, int len) {
 }
 
 void __cajeta_tls_ctx_free(void* ctxv) {
-    if (ctxv) SSL_CTX_free((SSL_CTX*) ctxv);
+    if (!ctxv) return;
+    SSL_CTX* ctx = (SSL_CTX*) ctxv;
+    // Release the server ALPN list (NET-5.4) if one was attached.
+    if (cajeta_tls_alpn_ex_idx >= 0) {
+        cajeta_tls_alpn_list* L =
+            (cajeta_tls_alpn_list*) SSL_CTX_get_ex_data(ctx,
+                                                        cajeta_tls_alpn_ex_idx);
+        if (L) { free(L->data); free(L); }
+    }
+    SSL_CTX_free(ctx);
 }
 
 // ---- connection (per-handshake state + the two memory BIOs) ----------------
@@ -257,6 +282,58 @@ int __cajeta_tls_get_alpn(void* connv, void* out_hdr, int max) {
     int n = (int) plen < max ? (int) plen : max;
     memcpy(out, proto, (size_t) n);
     return n;
+}
+
+// Server ALPN-select callback (NET-5.4). Reads the server's supported protocol
+// list (attached to the SSL's context as ex_data) and picks the first one the
+// client (`in`) also offered, with SERVER preference. On no overlap it declines
+// ALPN (NOACK) rather than failing the handshake — and crucially never touches
+// `*out` in that case (SSL_select_next_proto's no-overlap fallback writes a
+// client value into *out, which must not be used; cf. CVE-2024-5535).
+static int cajeta_tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
+                                     unsigned char* outlen,
+                                     const unsigned char* in, unsigned int inlen,
+                                     void* arg) {
+    (void) arg;
+    if (cajeta_tls_alpn_ex_idx < 0) return SSL_TLSEXT_ERR_NOACK;
+    SSL_CTX* ctx = SSL_get_SSL_CTX(ssl);
+    cajeta_tls_alpn_list* L =
+        (cajeta_tls_alpn_list*) SSL_CTX_get_ex_data(ctx, cajeta_tls_alpn_ex_idx);
+    if (!L || !L->data || L->len == 0) return SSL_TLSEXT_ERR_NOACK;
+    if (SSL_select_next_proto((unsigned char**) out, outlen,
+                              L->data, L->len, in, inlen)
+            == OPENSSL_NPN_NEGOTIATED) {
+        return SSL_TLSEXT_ERR_OK;
+    }
+    return SSL_TLSEXT_ERR_NOACK;
+}
+
+// Server-side: install the ALPN-select callback with `protos` (ALPN wire
+// format) as the supported list. Set on the CONTEXT (consulted live during each
+// handshake via the SSL's ctx), so it may be called after conn creation. A
+// previous list on the same ctx is freed first. Returns 0 / CAJETA_TLS_ERROR.
+int __cajeta_tls_ctx_set_alpn_select(void* ctxv, const void* protos_hdr,
+                                     int len) {
+    SSL_CTX* ctx = (SSL_CTX*) ctxv;
+    const unsigned char* protos =
+        (const unsigned char*) CAJETA_ARR_DATA(protos_hdr);
+    if (!ctx || !protos || len <= 0 || cajeta_tls_alpn_ex_idx < 0) {
+        return CAJETA_TLS_ERROR;
+    }
+    cajeta_tls_alpn_list* L =
+        (cajeta_tls_alpn_list*) malloc(sizeof(cajeta_tls_alpn_list));
+    if (!L) return CAJETA_TLS_ERROR;
+    L->data = (unsigned char*) malloc((size_t) len);
+    if (!L->data) { free(L); return CAJETA_TLS_ERROR; }
+    memcpy(L->data, protos, (size_t) len);
+    L->len = (unsigned int) len;
+
+    cajeta_tls_alpn_list* old =
+        (cajeta_tls_alpn_list*) SSL_CTX_get_ex_data(ctx, cajeta_tls_alpn_ex_idx);
+    if (old) { free(old->data); free(old); }
+    SSL_CTX_set_ex_data(ctx, cajeta_tls_alpn_ex_idx, L);
+    SSL_CTX_set_alpn_select_cb(ctx, cajeta_tls_alpn_select_cb, NULL);
+    return 0;
 }
 
 // ---- the memory-BIO pump ---------------------------------------------------
