@@ -293,6 +293,12 @@ public:
             if (!p || p->getName() == "this") continue;
             DeviceStructInfo si = deviceStructInfo(p->getType(), ctx);
             if (si.type) structFields[p->getName()] = std::move(si);
+            // Matrix<T,R,C> param (B1 follow-on): the materialize loop gave it a
+            // flat <R*C x T> slot via the else branch; record its (R,C) shape so
+            // m[r][c], `*`=matmul, and the methods recognize it as a matrix
+            // (a Matrix<2,3> and a Vector<6> share the <6 x T> slot type).
+            if (auto mt = std::dynamic_pointer_cast<CajetaMatrix>(p->getType()))
+                matrixShapes[p->getName()] = {mt->getRows(), mt->getCols()};
             // S8: record value-type-typed param names so `a OP b` can recover
             // the operand's class for @Device operator resolution.
             if (p->getType() && p->getType()->isValueType())
@@ -1411,6 +1417,53 @@ private:
         unsupported("unknown Vector method '" + name + "'");
     }
 
+    // `m.transpose()`, `m.identity()`, `m.row(r)`, `m.col(c)`, `m.hadamard(b)`
+    // on a matrix local `recv` (B1). Mirrors the host MethodCallExpression
+    // interception via the shared `matops` helpers — the result's shape is
+    // carried by the assignment target's declared type (matrixShapes for a
+    // Matrix result, vectorSlotType for a row/col Vector), so this only has to
+    // produce the right flat `<R*C x T>` / `<C x T>` / `<R x T>` value. Must be
+    // dispatched BEFORE lowerVectorMethod: a matrix slot is itself a vector
+    // type, so vectorSlotType(recv) is non-null for a matrix local too.
+    llvm::Value* lowerMatrixMethod(
+            const std::string& recv, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        auto sh = matrixShapes.find(recv);
+        unsigned R = sh->second.first, C = sh->second.second;
+        llvm::FixedVectorType* mt = vectorSlotType(recv);
+        llvm::Type* elemTy = mt->getElementType();
+        bool isFloat = elemTy->isFloatingPointTy();
+        llvm::Value* self = builder.CreateLoad(mt, values[recv], recv);
+        const auto& args = mc->getParameters();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        if (name == "transpose") {
+            if (!args.empty())
+                unsupported("Matrix.transpose takes no arguments");
+            return matops::transpose(builder, self, R, C);
+        }
+        if (name == "identity") {
+            if (!args.empty())
+                unsupported("Matrix.identity takes no arguments");
+            if (R != C)
+                unsupported("Matrix.identity requires a square matrix");
+            return matops::identity(builder, elemTy, R);
+        }
+        if (name == "row" || name == "col") {
+            if (args.size() != 1)
+                unsupported("Matrix." + name + " expects one argument");
+            llvm::Value* idx = coerceTo(lowerExpr(args[0].expression), i32);
+            return name == "row" ? matops::row(builder, self, R, C, idx)
+                                 : matops::col(builder, self, R, C, idx);
+        }
+        if (name == "hadamard") {
+            if (args.size() != 1)
+                unsupported("Matrix.hadamard expects one argument");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            return matops::hadamard(builder, self, other, isFloat);
+        }
+        unsupported("unknown Matrix method '" + name + "'");
+    }
+
     // Decode `name.field` on a POD-struct kernel param to its field record, or
     // nullptr if `e` isn't that shape (a non-dot, a dot on a non-struct, or an
     // unknown field — the last surfaces as `unsupported` only at access time).
@@ -1598,6 +1651,12 @@ private:
             // Math.<fn>(...) inside a kernel — fully handled (returns a value or
             // a clean diagnostic). Mirrors the host Math lowering.
             return lowerMathCall(name, mc);
+        }
+        // Matrix<T,R,C> instance methods (B1): transpose/identity/row/col/
+        // hadamard. Checked BEFORE the vector branch — a matrix local's slot is
+        // a `<R*C x T>` vector type, so vectorSlotType(recv) is non-null for it.
+        if (!recv.empty() && matrixShapes.count(recv)) {
+            return lowerMatrixMethod(recv, name, mc);
         }
         // Vector<T,N> instance methods: a.dot(b), v.length(), v.normalize().
         // `recv` names a vector local.
@@ -2537,6 +2596,21 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         } else if (llvm::Type* st = deviceScalarType(t, ctx)) {
             params.push_back({p->getName(), /*isBuffer=*/false, st,
                               typeIsSigned(t)});
+        } else if (llvm::Type* mt = deviceMatrixType(t, ctx)) {
+            // Matrix<T,R,C> by value (B1 follow-on): a flat <R*C x T> aggregate
+            // kernel param. The host packs R*C contiguous elements (the scalar/
+            // else marshalling path), and the body recovers (R,C) from
+            // matrixShapes (set in lowerBody) so m[r][c]/matmul/methods work.
+            // Rides the non-buffer by-value path: createKernel emits it by value
+            // (NVPTX/AMDGPU/CPU), Vulkan binds a single-element SSBO.
+            params.push_back({p->getName(), /*isBuffer=*/false, mt,
+                              /*isSigned=*/false});
+        } else if (llvm::Type* vt = deviceVectorType(t, ctx)) {
+            // Vector<T,N> by value: same intrinsic-value-type by-value path as
+            // Matrix (the slot is the <N x T> vector; vectorSlotType recovers it
+            // for .x/[i]/dot/length). Closes the same gap for Vector.
+            params.push_back({p->getName(), /*isBuffer=*/false, vt,
+                              /*isSigned=*/false});
         } else if (DeviceStructInfo si = deviceStructInfo(t, ctx); si.type) {
             // POD struct by value (Item 7) — an aggregate kernel param. It rides
             // the non-buffer path: createKernel emits it by value, lowerBody
@@ -2573,7 +2647,10 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
             // argv (an empty DataLayout under-sizes e.g. {i32,i64} to 12 vs 16, so
             // the runtime memcpy'd too few bytes and the device read past the
             // SSBO). Scalars: their byte width.
-            bytes = p.type->isStructTy()
+            // Aggregate by-value params (POD struct, or a Matrix/Vector flat
+            // <N x T>) use the real alloc size; getScalarSizeInBits() on a
+            // vector returns the ELEMENT width, undersizing the marshalled arg.
+            bytes = (p.type->isStructTy() || p.type->isVectorTy())
                 ? (unsigned) dl.getTypeAllocSize(p.type)
                 : (p.type->getScalarSizeInBits() + 7u) / 8u;
         }

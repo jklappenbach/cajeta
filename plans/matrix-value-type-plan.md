@@ -62,13 +62,56 @@ code to a pure-intrinsic value type, like `Vector<T,N>`.
 - `test/expression/MatrixTests.cpp`, `test/xpu/XpuMatrixDeviceTests.cpp` (new);
   `test/compile/CompilerTests.cpp` (count 102).
 
-## Follow-ons (NOT v1)
-- **Device VK/AMD execution** of matrices (hardware-gated, like
-  `XpuVectorDeviceTests.runsOn{Vulkan,Amd}Device`) and matrix kernel **params**
-  (by-value marshalling) — S6 covers the CPU oracle + construction-as-locals.
-- **Device matrix methods** (transpose/identity/row/col/hadamard in the kernel
-  lowerer) — host has them; device v1 has construct + m[r][c] + arithmetic +
-  matmul + matVec.
+## Follow-ons
+
+### S8 (DONE 2026-06-05) — device on-device exec + methods + by-value params
+The three Matrix follow-ons below all landed; full `XpuMatrixDeviceTests` suite
+is 10/10 (CPU oracle + Vulkan/RADV + AMD/gfx1151 on-device).
+- **Device VK/AMD execution of matrices** — `runsOn{Vulkan,Amd}Device`. Zero
+  backend work: the matrix ops are pure flat-vector IR through the shared
+  `DeviceLowerer` (parametrized by `LoweringTarget`), so they ran bit-exact on
+  RADV + gfx1151 with only test coverage added (same situation Vector hit).
+- **Device matrix methods** (transpose/identity/row/col/hadamard) — new
+  `lowerMatrixMethod` in `KernelLowering.cpp`, dispatched **before**
+  `lowerVectorMethod` (a matrix slot is itself a `<R*C x T>` vector, so
+  `vectorSlotType(recv)` is non-null for a matrix local). Reuses the host
+  `matops` helpers. `methodsRunOn{Cpu,VulkanDevice}` green.
+- **Matrix (and Vector) by-value kernel params** — `collectParams` admits a
+  `CajetaMatrix`/`CajetaVector` param → flat `<R*C x T>`/`<N x T>`; `lowerBody`
+  records `matrixShapes[name]` so `m[r][c]`/`*`/methods recognize it. Host packs
+  R*C contiguous elements via the existing scalar/else launch-marshalling (no
+  `CallExpression` change). Fixed `collectKernelParamInfo` byte-size (was
+  `getScalarSizeInBits()` → element width for a vector; now `getTypeAllocSize`
+  for struct/vector). On Vulkan the param binds as a single-element read-only
+  SSBO (the scalar-param path). `matrixParam{Lowers,RunsOnCpu,RunsOnVulkanDevice}`
+  green (2x2 = vec4-conformant on device; larger shapes CPU/emit-covered).
+  - **Front-end fix:** `CajetaType::toGeneric()` derefed a lazily-null
+    `llvmType` for a `Matrix`/`Vector` *param* (matrix-as-local never reached
+    method-signature building). Now resolves via `getLlvmType()` and routes
+    `FixedVectorTyID`/`ScalableVectorTyID` to the canonical token.
+  - **Vulkan-conformance note (deferred):** a matrix param whose R*C ∉ {2,3,4}
+    binds an SSBO element of `<R*C x T>`, which is not a Vulkan-conformant vector
+    width; v1 device-tests 2x2 only. A scalar-array (`[R*C x T]`) SSBO + lane
+    gather would lift this for all shapes — defer until a non-vec4 matrix param
+    needs on-device.
+  - **E2E verified through the REAL dispatcher (not just the gtest driver):** a
+    `transform` kernel — `out = M·p + t` with `M:Matrix<f32,2,2>` a by-value
+    param, `Matrix*Vector` + `Vector+Vector` on device — runs **bit-exact on
+    CPU, Vulkan/RADV, and AMD/gfx1151** via `samples/Tour/xpu/run-xpu.sh` (full
+    `--emit=obj` → clang link → runtime dispatch + argv/SSBO marshalling). So the
+    full `.launch()(matrixArg, …)` path is confirmed, not only the harness.
+
+### Showcase — Tour examples (2026-06-05)
+- **XPU tour:** `samples/Tour/xpu/src/tourxpu/XpuTour.cajeta` gains a `transform`
+  kernel (the verified `out=M·p+t`); README + expected-output updated. One
+  portable source, dispatched CPU/Vulkan/AMD.
+- **Host tour:** `samples/Tour/src/tour/LinearAlgebraDemo.cajeta` (new DemoClass,
+  registered in `Tour.cajeta` after OperatorOverloadDemo) — `Vector`
+  dot/length, `Matrix` `*`=matmul, `Matrix*Vector`, `transpose`, `m[r][c]`, `==`.
+  Built+run via `build-bin.sh`, output matches expectations.
+- **Bug found while writing the host demo (not matrix-specific):** an inline
+  ternary as a string `+` operand renders empty (`"x" + (c ? "a" : "b")`);
+  worked around with `if/else`. Recorded in memory; triage for `bugfix-plan.md`.
 - **Real operator dispatch** (route the concrete `+ - == []` scalar `*` through
   `resolveMethod`/`invokeMethod` instead of interception) and
   **method-templated operators** (so K-generic `matmul` is a declared+dispatched
