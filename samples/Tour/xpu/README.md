@@ -47,6 +47,9 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
 -- mask/select: branchless per-lane conditionals --
   ReLU  (v>0).select(v,0):  sum[i=0]=3 sum[i=10]=11  (expect 3, 11)
   prune (w>1).select(w,0):  sum[i=0]=0 sum[i=10]=10  (expect 0, 10)
+-- transforms: quaternions + determinant/inverse --
+  quaternion (rotate+compose+conjugate+length) sum = 4   (expect 4)
+  matrix (det + g*g^-1 diag + solve x) sum = 15   (expect 15)
 -- waveReduce: sum across each wave, in[i]=1 --
   wave width (queried, not hardcoded) = 16        # 64 on an AMD GPU, 32 on NVIDIA
   every lane of a wave agrees: sums[0]=16 sums[1]=16
@@ -114,6 +117,13 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   `(w > 1).select(w, 0)`. `.all()`/`.any()` reduce a mask to a `boolean`. The
   per-element decision stays in flat `<N x T>` ops, so it never diverges the warp.
   Full walkthrough + the alternatives it replaces: `cajeta-docs/MaskSelect.md`.
+- `quatk` / `linalgk` — **3-D transform algebra on the device**. `quatk` runs a
+  `Quaternion<float32>` per thread: rotate a vector (`q * v`), compose rotations
+  (`q1 * q2` = Hamilton product), inverse-rotate (`conjugate()`), and `length()`.
+  `linalgk` runs a `Matrix<float32,2,2>` per thread: `determinant()`, `inverse()`,
+  and an inverse-based solve `g⁻¹ · rhs`. Both are bit-exact on CPU, Vulkan, and
+  AMD. Walkthroughs: `cajeta-docs/Quaternions.md`,
+  `cajeta-docs/MatrixDeterminantInverse.md`.
 - `waveReduce(sums, in, n)` — `sums[i] =` the sum of `in` across `i`'s **wave**
   (the warp/wavefront/subgroup on a GPU; the SIMD vector on the CPU — Inc 5C).
   Written **width-agnostically**: it queries the environment (`Wave.reduceSum`,
