@@ -70,6 +70,11 @@ public:
         // Override the per-backend default device arch. May be a comma-separated
         // list ("gfx1100,gfx1151") to build a multi-arch bundle. Empty = default.
         std::string xpuArch;
+        // Capture the post-codegen host LLVM IR (pre-optimization, the same
+        // point CAJETA_DUMP_IR prints) into the returned CajetaJit, readable via
+        // getModuleIr(). Off by default so the normal test path pays nothing —
+        // the golden-IR baseline harness (value-type-overloading-plan S0) opts in.
+        bool captureIr = false;
     };
 
     // Compile `source` (a Cajeta compilation unit) into a JIT instance. The class
@@ -115,12 +120,19 @@ public:
     // malloc'd char* without sniffing pointer bytes.
     void* lookupRawSymbol(const std::string& exactName);
 
+    // Post-codegen host LLVM IR captured when Options::captureIr is set
+    // (empty otherwise). The regression oracle for the Vector retrofit
+    // (value-type-overloading-plan S0): tests assert the flat `<N x T>` /
+    // intrinsic shape is unchanged across the operator-mechanism work.
+    const std::string& getModuleIr() const { return moduleIr; }
+
 private:
     CajetaJit();
 
     void* lookupAddress(const std::string& shortName);
 
     std::unique_ptr<llvm::orc::LLJIT> jit;
+    std::string moduleIr;
     // Mapping short method name -> full mangled name in the JIT'd module. Built
     // once at compile time so per-test lookups don't have to rescan.
     std::map<std::string, std::string> nameMap;
