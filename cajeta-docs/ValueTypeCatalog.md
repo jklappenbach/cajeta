@@ -287,6 +287,26 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 - **GPU notes:** Register residency: <N x T> flat SSA, no memory traffic. Native SIMD/GPU vector instructions. By-value kernel marshalling (PRIMITIVE_FLAG). Device lowering: KernelLowering.cpp intercepts known types, emits intrinsic IR. Guaranteed inlining. Live: CPU JIT, Vulkan, AMD, NVIDIA (emit-only).
 - **Depends on:** Numeric (element type), vecops (VectorOps.h helpers)
 
+> **Status (2026-06-05) — Vector operators are COMPILER INTRINSICS, not declared overloads.**
+> `Vector<T,N>` is a bare `CajetaVector` carrying `PRIMITIVE_FLAG | VECTOR_FLAG`, so it is
+> excluded from the operator-dispatch gate on both counts (`!CajetaClass` and `PRIMITIVE_FLAG`).
+> Its `+ - * / == []` are intercepted in `BinaryOpExpression`/`ArrayIndexExpression` (host) and
+> `KernelLowering` (device) and emitted as flat `<N x T>` SSA — **the signatures in the table
+> below are documentary** (the canonical surface a future declared form would expose), not source
+> the compiler reads. Consequences:
+> - Vector is the **register-residency reference** the `@ValueType` mechanism preserves: emitted
+>   IR is byte-identical to the pre-mechanism intrinsic path, pinned by the S0 golden oracle
+>   (`test/expression/VectorHostGoldenIrTests.cpp` host + `XpuVectorDeviceTests` device).
+> - Vector's `operator[]` read and `operator[]=` element-write are intrinsic mutable-vector ops
+>   and are **exempt from the S3 `@ValueType` mutating-operator ban** — that ban
+>   (`CAJETA_ERROR_VALUE_TYPE_MUTATING_OPERATOR`) forbids *declaring* a mutating operator on a
+>   by-value `@ValueType` **CajetaClass**; Vector is not one, and `v[i] = x` mutates the value's
+>   inline slot directly via `insertelement`.
+> - **Synthesizing declared Vector operator signatures** (making the surface above real source
+>   backed by the interception, gate still bypassing `CajetaVector`) is **deferred**
+>   (documentary-first, plan Decision #5). The intrinsic path is the implementation; a declared
+>   façade would be ergonomic sugar only.
+
 | Operator | Form | Signature | Notes |
 |---|---|---|---|
 | `operator+` | static-binary | `public static Vector<T,N> operator+ (Vector<T,N> a, Vector<T,N> b)` | Lowers to <N x T> fadd or add per element type (VectorOps.h) |
