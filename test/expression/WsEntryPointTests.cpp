@@ -4,15 +4,29 @@
 // NET-10.1 client opening handshake (WsClientHandshake) against the NET-10.2
 // server handshake (WsServerHandshake) with no socket — proving the request the
 // client builds is accepted and that the client validates the server's
-// Sec-WebSocket-Accept. The full live round-trip (DISABLED below) drives a real
-// loopback socket through WsUpgrade -> WebSocket via AsyncReader/AsyncWriter,
-// whose `ByteChannel stream` field is a FORWARD-REFERENCED interface laid out as
-// a thin pointer — so `this.stream.readAsync(...)` dispatch is silently dropped
-// at codegen and the buffered I/O corrupts. Root-caused in detail in memory
-// `cajeta-interface-arg-field-offset-bug`; needs a structural type-resolution
-// fix (reconcile forward-referenced interface placeholders to the canonical
-// interface). The plaintext HTTP client path (no AsyncReader/AsyncWriter) is
-// green in HttpClientTests.
+// Sec-WebSocket-Accept.
+//
+// The full live round-trip (DISABLED below) drives a real loopback socket
+// through WsUpgrade -> WebSocket via AsyncReader/AsyncWriter. It was previously
+// disabled blaming the forward-referenced-interface codegen bug (Bug 2); that
+// bug is now FIXED (the AsyncReader/AsyncWriter `ByteChannel stream` field lays
+// out fat and `this.stream.readAsync(...)` dispatch works — proven green by
+// NetAsyncEchoTest.bufferedReaderWriterRoundTrips and the HTTPS-server live row
+// HttpsServerTests.httpsRequestEndToEnd, which run the identical buffered
+// interface path over a live socket, the latter under spawn + TLS).
+//
+// This row STILL fails, but on a SEPARATE, WS-specific defect — NOT the
+// interface-layout bug. Diagnosed: the server's receive() returns a *0-length*
+// message (sret == 0) and, because the server echoes what it received, the
+// client likewise reads a 0-length echo (mlen == 0) — i.e. the client's 4-byte
+// BINARY frame is decoded by the server as an empty frame. The pure frame codec
+// (WsFrameEncoder/WsFrameDecoder), the protocol engine (WsProtocol), and the
+// reassembler are all golden-vector green, so the fault is in the live
+// handshake -> frame transport seam (WsUpgrade head-read / AsyncReader.stage
+// push-back / ring interaction), not the codec and not codegen. Tracked as a
+// follow-up WS bug; re-enable once the framing-over-transport misalignment is
+// found. The plaintext HTTP client path (no AsyncReader/AsyncWriter) is green in
+// HttpClientTests.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"

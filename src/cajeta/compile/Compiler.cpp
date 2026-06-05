@@ -131,7 +131,15 @@ namespace cajeta {
 
         std::any visitInterfaceDeclaration(
                 CajetaParser::InterfaceDeclarationContext* ctx) override {
-            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            // markInterface=true so fromContext's placeholder synthesis
+            // builds a FAT 24-byte interface pointer for a forward-
+            // referenced interface-typed field/param/local (e.g.
+            // `ByteChannel stream;` in AsyncReader, parsed before
+            // ByteChannel.cajeta). Without the mark the placeholder is a
+            // thin class pointer and interface dispatch through such a
+            // field is silently dropped at codegen.
+            registerAndRecurse(ctx->identifier()->getText(), ctx,
+                                /*markEnum=*/false, /*markInterface=*/true);
             captureTemplateMeta(ctx);
             return defaultResult();
         }
@@ -158,7 +166,8 @@ namespace cajeta {
     private:
         void registerAndRecurse(const std::string& shortName,
                                  antlr4::tree::ParseTree* tree,
-                                 bool markEnum = false) {
+                                 bool markEnum = false,
+                                 bool markInterface = false) {
             // Compose canonical from package + enclosing class
             // stack + this short name. Mirrors CajetaLlvmVisitor's
             // visitClassDeclaration package-adjustment for nested
@@ -173,6 +182,7 @@ namespace cajeta {
             canonical += shortName;
             CajetaType::registerArchive(canonical, shortName);
             if (markEnum) CajetaType::markArchiveEnum(canonical);
+            if (markInterface) CajetaType::markArchiveInterface(canonical);
             lastCanonical = canonical;
             enclosingStack.push_back(shortName);
             visitChildren(tree);

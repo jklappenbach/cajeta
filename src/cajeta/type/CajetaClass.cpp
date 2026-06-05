@@ -549,10 +549,16 @@ namespace cajeta {
             // drop-chain dispatch at scope exit.
             llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
             typeMap[TypeKey(llvmType)] = shared_from_this();
-            llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
-            llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
-            vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
-            ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
+            // The body may already be set if a forward reference synthesized
+            // this interface's fat placeholder (CajetaType::fromContext's
+            // born-fat interface branch) — setBody on a non-opaque struct
+            // asserts, so only populate it the first time.
+            if (((llvm::StructType*) llvmType)->isOpaque()) {
+                llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+                vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
+                ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
+            }
 
             canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
             canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());

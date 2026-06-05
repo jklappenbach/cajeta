@@ -81,21 +81,22 @@ int32_t runI32(const std::string& src) {
 // over TLS via serveTlsStream, NET-9.5). The handler echoes a fixed body; the
 // client gets 200 + "hello".
 //
-// DISABLED: the server loop reads/writes through AsyncReader/AsyncWriter, whose
-// `ByteChannel stream` field is a FORWARD-REFERENCED interface. The compiler
-// lays such a field out as a thin class pointer instead of a fat interface
-// pointer (the interface flag isn't set until the interface's own declaration
-// is visited, which is after AsyncReader's field layout), so the interface-
-// dispatch call `this.stream.readAsync(...)` is silently dropped at codegen and
-// the buffered I/O moves garbage over the live socket. Root-caused in detail in
-// memory `cajeta-interface-arg-field-offset-bug`; the complete fix is a
-// structural type-resolution change (reconcile forward-referenced interface
-// placeholders to the canonical interface across field/param/local sites). The
-// TLS-termination wiring (TlsListener.acceptAsync -> serveTlsStream over the
-// shared ByteChannel seam) is in place; re-enable when that fix lands. TLS
-// itself is covered live by TlsLoopbackTest; the plaintext HTTP CLIENT path
-// (which bypasses AsyncReader/AsyncWriter) is green in HttpClientTests.
-TEST(HttpsServerTests, DISABLED_httpsRequestEndToEnd) {
+// This was DISABLED on Bug 2: the server loop reads/writes through
+// AsyncReader/AsyncWriter, whose `ByteChannel stream` field is a FORWARD-
+// REFERENCED interface that the compiler had laid out as a thin class pointer
+// instead of a fat interface pointer (the interface flag wasn't set until the
+// interface's own declaration was visited, after AsyncReader's field layout),
+// so `this.stream.readAsync(...)` interface dispatch was silently dropped at
+// codegen. Bug 2 is now FIXED (prescan g_interfaceArchive marks interfaces ->
+// fromContext synthesizes a born-fat interface placeholder ->
+// visitInterfaceDeclaration reuses it so the method set lands on the captured
+// object; see memory `cajeta-interface-arg-field-offset-bug`). This HTTPS live
+// row — the full HttpServer keep-alive loop over a TLS-terminated ByteChannel,
+// under a spawned server fiber — is green: it is the end-to-end proof that the
+// forward-referenced interface field now dispatches correctly over a live
+// socket. TLS itself is also covered by TlsLoopbackTest; the plaintext HTTP
+// CLIENT path is green in HttpClientTests.
+TEST(HttpsServerTests, httpsRequestEndToEnd) {
     std::string cert, key;
     ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
     std::string src =
