@@ -1478,14 +1478,23 @@ out of `net/socket` back into `net` as they go green.
       pass (NetSockaddr, Optional, Pair, NetAddress, BinaryOp, FieldOwnershipAliasing,
       ClassDrop, Destructor, CallerSideTransfer, UseAfterMove, OwnedStringDrop).
       Completes NET-4.x + NET-9.1/9.2 + NET-10.1/10.2 pure surface.
-      **Two known follow-up gaps (tracked, not b5 blockers):** (1) bare-param lambda
-      inference doesn't fire for an arg of a *fluent-chained* call
-      (`.model(...).handler((req)->...)`) — annotate the param as a workaround;
-      (2) storing a closure in a builder field then dropping the builder
-      (`builderModelThreadsSharedPool` with `.handler`) trips a SEPARATE codegen
-      defect (closure-typed field on a dropped heap object), distinct from the
-      double-load — that test pins the model-threading contract without the
-      incidental handler.
+      **Both follow-up gaps FIXED (2026-06-04) — ONE root cause.** They were not
+      two bugs: a class with both a function-typed FIELD and a same-named METHOD
+      (the builder idiom — a `handler` closure field + a `handler(fn)` setter) had
+      `b.handler(fn)` greedily matched to the field-closure-invocation path in
+      `MethodCallExpression.cpp` (it searched for a same-named function-typed
+      property with no check for a shadowing method). That single defect produced
+      both symptoms: (1) the bare-param lambda arg was evaluated eagerly on that
+      path — before the method's expectedType propagator ran — → TYPE_INFERENCE;
+      and (2) with an annotated param it invoked the **null** field-closure slot at
+      runtime → SIGSEGV (the `0xab..` use-after-free-looking crash was actually a
+      null-closure call). Fix: the field-invocation path only fires when no
+      same-named method shadows the field. `builderModelThreadsSharedPool` restored
+      to its full `.handler((req) -> ...)` bare-param form (passes). Regression: 87
+      tests green (ServerModel/HttpServer/LambdaL1-4 + the field/method-collision
+      regression suite `BuilderHandlerCollisionTests`). My minimal reproductions all
+      passed for a long time precisely because they named the field `fn`, not
+      `handler` — no collision.
 - [ ] **b6 — TLS (NET-5).** Bundle BoringSSL; the largest separate effort.
 - [~] **(parallel) Compiler-gap fixes** surfaced by the slices, independent of
       sockets. DONE (2026-06-04, commit `0001ab0`): (a) **field-read as an array

@@ -2690,7 +2690,34 @@ namespace cajeta {
         // wrong-answer bug rather than a hard error.
         if (receiver && receiverType) {
             auto recvClass = dynamic_pointer_cast<CajetaClass>(receiverType);
+            // A real METHOD named `methodCallName` takes precedence over a
+            // same-named function-typed FIELD. The builder idiom declares both
+            // — a `handler` closure field AND a `handler(fn)` setter — and
+            // `b.handler(fn)` must call the SETTER, not try to invoke the
+            // (often null) field-closure. Without this guard the field path
+            // below greedily wins: it evaluates the arg eagerly (a bare-param
+            // lambda then fails inference before the method's expectedType
+            // propagator runs) and, at runtime, calls through the null field
+            // slot. Only fall into field-invocation when no method shadows it.
+            bool sameNamedMethod = false;
             if (recvClass) {
+                std::function<bool(const CajetaClassPtr&)> hasMethod =
+                    [&](const CajetaClassPtr& cls) -> bool {
+                        for (auto& mEntry : cls->getMethods()) {
+                            if (mEntry.second
+                                    && mEntry.second->getName() == methodCallName
+                                    && !mEntry.second->isConstructor()) {
+                                return true;
+                            }
+                        }
+                        for (auto& parent : cls->getSuperClasses()) {
+                            if (hasMethod(parent)) return true;
+                        }
+                        return false;
+                    };
+                sameNamedMethod = hasMethod(recvClass);
+            }
+            if (recvClass && !sameNamedMethod) {
                 StructurePropertyPtr fnField;
                 CajetaClassPtr fieldOwner;
                 std::function<bool(const CajetaClassPtr&)> findFnField =

@@ -116,14 +116,10 @@ TEST(ServerModelTests, kindOrdinalsAreDistinct) {
 // chosen model so the selection is testable socket-free.
 TEST(ServerModelTests, builderModelThreadsSharedPool) {
     EXPECT_EQ(runI32(
-        // NOTE: this pins the NET-9.2 selection contract — `.model()` threads
-        // through to `selectedModel()`. The `.handler(lambda)` arm is omitted
-        // here: storing a closure in the builder field and dropping the builder
-        // trips a separate, tracked codegen defect (closure-typed field on a
-        // dropped heap object), independent of the model-selection logic.
         "HttpServerBuilder b = HttpServer.builder()\n"
         "    .bind(\"0.0.0.0:8080\")\n"
-        "    .model(ServerModel.sharedPool(16));\n"
+        "    .model(ServerModel.sharedPool(16))\n"
+        "    .handler((req) -> HttpResponse.of(200));\n"
         "ServerModel m = b.selectedModel();\n"
         "if (!m.isSharedPool()) return -1;\n"
         "if (m.getPoolSize() != 16) return -2;\n"
