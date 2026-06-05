@@ -48,6 +48,11 @@ namespace cajeta {
     #define CONSTANT_FLAG           0b00100000000000000000
     // A fixed-width numeric vector lowering to llvm `<N x T>`. See CajetaVector.
     #define VECTOR_FLAG             0b01000000000000000000
+    // A by-value POD CajetaClass declared @ValueType: eligible for operator-overload
+    // dispatch (the !PRIMITIVE_FLAG gate is relaxed for it) while still marshalling by
+    // value. Additive — NOT PRIMITIVE_FLAG (which is exclusive to scalar/vector/array/
+    // pointer and is wired into width/marshalling math). See plans/value-type-overloading-plan.md.
+    #define VALUE_TYPE_FLAG         0b10000000000000000000
     #define BIT_SIZE_MASK           0b00001111111000000000
 
 
@@ -191,6 +196,13 @@ class CajetaType : public Modifiable, public Annotatable,
 
         virtual CajetaTypeFlags getTypeFlags() {
             return typeFlags;
+        }
+
+        // OR additional bits into the flag word. Used to retro-tag an already
+        // built type — e.g. a class declared `@ValueType` gains VALUE_TYPE_FLAG
+        // after its structure is known. See plans/value-type-overloading-plan.md.
+        void addTypeFlags(CajetaTypeFlags bits) {
+            typeFlags |= bits;
         }
 
         QualifiedNamePtr getQName() const {
