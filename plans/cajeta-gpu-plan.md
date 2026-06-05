@@ -113,7 +113,7 @@ foundation.
 - [x] Matrix construction, element/row/column access, `m[i][j]`; `matmul`, transpose, identity, elementwise ops
 - [x] `Matrix × Vector` / `Matrix × Matrix` — **done**; determinant/inverse for 2/3/4-square — *still open*
 - [ ] `Quaternion` type + slerp/normalize/rotate
-- [ ] Swizzles `.xyz`/`.xy`/`.xxyy` (multi-component reads — deferred from Vector v1) — **next (C)**
+- [x] Swizzles `.xyz`/`.xy`/`.xxyy` multi-component **reads** (2026-06-05, host + CPU/VK): `DotExpression` (host) + `vectorComponentRead` (device) emit a `shufflevector` via `vecops::swizzle`; xyzw + rgba letters, repeats allowed, out-of-range → `CAJETA_ERROR_VECTOR_COMPONENT`. **Swizzle writes (`v.xy = …`) deferred.**
 - [x] Vector/Matrix comparisons → `<N x i1>` mask + `any`/`all`/`select` (2026-06-05, host + CPU/VK/AMD). **Rule: comparison operators on value types yield per-lane masks; equality is NOT special — `(a==b).all()` for whole-object eq. This OVERTURNED the B1 S4 `Matrix ==`→boolean.** Vector + Matrix get full `== != < <= > >=` with scalar-RHS broadcast. Masks are register-only (bool-element buffers/args stay ABI-rejected). `select` = the branchless primitive (ReLU/min/prune). **Docs: `cajeta-docs/MaskSelect.md` (walkthrough + alternatives) + `samples/Tour/xpu` `mask/select` demos (ReLU + weight-prune, bit-exact CPU/VK/AMD).** See the comparison-mask memo.
 - [x] `cross`, `reflect`, `refract`, `distance`, `clamp`, `lerp`, `min`/`max` (2026-06-05, host + CPU/VK; float-only — **integer min/max/clamp deferred** pending device element-signedness tracking)
 

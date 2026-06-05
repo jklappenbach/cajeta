@@ -1318,13 +1318,24 @@ private:
         llvm::FixedVectorType* vt = vectorSlotType(baseId->getTextValue());
         if (!vt) return nullptr;
         int lane = vecops::laneForComponentName(dot->getIdentifier());
-        if (lane < 0 || (unsigned) lane >= vt->getNumElements()) {
-            unsupported("vector component '." + dot->getIdentifier() +
-                        "' is out of range");
-        }
         llvm::Value* vec = builder.CreateLoad(
             vt, values[baseId->getTextValue()], baseId->getTextValue());
-        return vecops::extractLane(builder, vec, (unsigned) lane);
+        if (lane >= 0) {
+            if ((unsigned) lane >= vt->getNumElements())
+                unsupported("vector component '." + dot->getIdentifier() +
+                            "' is out of range");
+            return vecops::extractLane(builder, vec, (unsigned) lane);
+        }
+        // Multi-component swizzle read `.xy`/`.xyz`/`.xxyy` -> `<M x T>`.
+        auto lanes = vecops::swizzleLanes(dot->getIdentifier());
+        if (lanes.empty())
+            unsupported("vector component/swizzle '." + dot->getIdentifier() +
+                        "' is not valid");
+        for (int l : lanes)
+            if ((unsigned) l >= vt->getNumElements())
+                unsupported("swizzle '." + dot->getIdentifier() +
+                            "' references a lane out of range");
+        return vecops::swizzle(builder, vec, lanes);
     }
 
     // `v[i]` -> extractelement, or nullptr when the base isn't a vector local.
