@@ -3708,15 +3708,36 @@ namespace cajeta {
             innerResult = targetClass->invokeMethod(
                 methodNameCopy, entries, /*isConstructor=*/false,
                 /*thisValue=*/nullptr);
-            if (innerResult) innerType = CajetaType::of(innerResult);
+            if (innerResult) {
+                innerType = CajetaType::of(innerResult);
+                // CajetaType::of can't recover a class type from an opaque-
+                // pointer call result: a method returning `#SomeClass` lowers
+                // to a bare `ptr`, so of() yields null. Ask the receiver class
+                // for the method's DECLARED return type instead. Without this,
+                // spawn of ANY object-returning method tripped the `!innerType`
+                // bail below, which abandoned tramp_try unterminated and JIT
+                // verify rejected the module ("Basic Block %tramp_try does not
+                // have terminator").
+                if (!innerType) {
+                    if (MethodPtr m = targetClass->resolveMethod(
+                            methodNameCopy, entries, /*isConstructor=*/false,
+                            /*floatingParams=*/false)) {
+                        innerType = m->getReturnType();
+                    }
+                }
+            }
         }
-        if (!innerResult) {
+        if (!innerResult || !innerType) {
+            // Resolution failed after the trampoline shell (entry + try/catch/
+            // finish blocks) was already emitted. Returning nullptr here would
+            // leave tramp_try unterminated and fail JIT verify with a confusing
+            // message; throw a clear diagnostic instead (the partial module is
+            // discarded with the failed compile).
             outerBuilder->SetInsertPoint(outerInsertBlock);
-            return nullptr;
-        }
-        if (!innerType) {
-            outerBuilder->SetInsertPoint(outerInsertBlock);
-            return nullptr;
+            throw Exception(
+                "spawn target `" + innerCall->getMethodCallName()
+                + "` could not be resolved to a callable method",
+                "CAJETA_ERROR_ASYNC_SPAWN_UNRESOLVED");
         }
         auto task = CajetaTask::getOrCreate(module, innerType);
         llvm::Type* taskTy = task->getLlvmType();
