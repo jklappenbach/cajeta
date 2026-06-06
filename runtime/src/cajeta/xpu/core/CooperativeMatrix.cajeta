@@ -30,13 +30,43 @@ import cajeta.xpu.core.Buffer;
  *     c.mma(a, b);                           // c = a * b + c  (one tile FMA)
  *     c.store(bufC, 0u, 0u, 16u);
  *
+ * That is one tile. A **real GEMM** tiles a larger product: the `offset` and
+ * `stride` arguments select a `Rows`x`Cols` sub-tile of a wider matrix, and a
+ * K-loop accumulates the partial products into a single accumulator in place.
+ * `C[16x16] = A[16x32] · B[32x16]` (two K-tiles) is just a loop — zero the
+ * accumulator once, then walk K:
+ *
+ *     CooperativeMatrix<float32,16,16,2> acc;
+ *     acc.splat(0.0f);
+ *     CooperativeMatrix<float16,16,16,0> ta;
+ *     CooperativeMatrix<float16,16,16,1> tb;
+ *     for (int32 kt = 0; kt < 2; kt = kt + 1) {
+ *         ta.load(a, kt * 16, 0, 32);     // A sub-tile: offset kt*16, stride 32
+ *         tb.load(b, kt * 256, 0, 16);    // B sub-tile: offset kt*16 rows, stride 16
+ *         acc.mma(ta, tb);                // acc += ta · tb  (K-accumulation)
+ *     }
+ *     acc.store(c, 0, 0, 16);
+ *
+ * Note the A stride (32) is the full row width of the wider matrix, NOT the tile
+ * width — that is what makes `load` gather a 16x16 window out of a larger
+ * row-major matrix. This multi-tile K-loop GEMM is device-verified on the native
+ * matrix cores (gfx1151 WMMA); tiling the M/N *output* dimensions across multiple
+ * waves (a grid of output tiles) is the next step.
+ *
  * `load`/`store` move the tile to/from a global `Buffer<T>` (a StorageBuffer);
- * the matrix VALUE never leaves the register file. (Loading from a
- * workgroup-shared tile — the classic LDS-staged GEMM optimization — is a later
- * increment; the type and ops are storage-class-agnostic.) For correctness the
- * A and B `Use`/shape must form a valid product into this accumulator; v1 targets
- * the square Rows == Cols == K tile (so A is `<...,0>` and B is `<...,1>` of the
- * same `<T,Rows,Cols>`).
+ * the matrix VALUE never leaves the register file. (Staging the load through a
+ * workgroup-shared tile — the classic LDS-staged GEMM optimization, where the
+ * workgroup cooperatively loads a tile into LDS once and many waves re-read it —
+ * is deferred pending a design discussion. The primitives exist (`shared`
+ * placement / `Shared<T>` is workgroup memory, and `workgroupBarrier` is wired
+ * per backend); what is unsettled is the *surface*: how a CooperativeMatrix load
+ * consumes a `Shared<T>` tile, the staging/double-buffering strategy, and how it
+ * composes with the M/N/K tiling above — a design choice, not just a lowering
+ * tweak. The type and ops are already storage-class-agnostic.) For correctness
+ * the A and B `Use`/shape must
+ * form a valid product into this accumulator; v1 targets the square
+ * Rows == Cols == K tile (so A is `<...,0>` and B is `<...,1>` of the same
+ * `<T,Rows,Cols>`).
  *
  * ## Runs on every backend — native cores or a portable fallback (CM6)
  *
@@ -47,9 +77,11 @@ import cajeta.xpu.core.Buffer;
  *     `SPV_KHR_cooperative_matrix` (`OpCooperativeMatrix*KHR`) for the dtype
  *     configs the driver advertises: **float16** and **8-bit integer**
  *     multiplicands (with f32 / i32 accumulators). On AMD it maps to RDNA3
- *     **WMMA** — `v_wmma_f32_16x16x16_{f16,bf16}` for a 16x16x16 tile with an
- *     f32 accumulator, device-verified on gfx1151/RDNA3.5 (the lowerer marshals
- *     the per-lane fragment by hand and compiles the kernel wave32). So **bf16
+ *     **WMMA** — `v_wmma_f32_16x16x16_{f16,bf16}` (f32 accumulator) and
+ *     `v_wmma_i32_16x16x16_iu8` (**int8** multiplicands, i32 accumulator — the
+ *     quantized-inference config) for a 16x16x16 tile, device-verified on
+ *     gfx1151/RDNA3.5 (the lowerer marshals the per-lane fragment by hand —
+ *     int8 packed 4-per-i32 — and compiles the kernel wave32). So **bf16
  *     matmul is native on AMD** even though it is the software tier on Vulkan.
  *   - **Software** — a portable flat tile-matmul: a `[Rows*Cols x T]` tile, a
  *     strided row/col-major gather, and an honest triple-loop `C = A·B`
