@@ -630,6 +630,76 @@ TEST(XpuVulkanEmitTests, lowersCooperativeMatrixToSpirv) {
     }
 }
 
+// Integer dot product (SPV_KHR_integer_dot_product, DP4a). `Vector<int8,4>` /
+// `Vector<uint8,4>` `.dot()` lowers to llvm.spv.dot4add.{i8,u8}packed, which the
+// SPIR-V backend selects to OpSDot / OpUDot ... PackedVectorFormat4x8Bit + OpIAdd
+// (with the DotProduct / DotProductInput4x8BitPacked capabilities + the
+// SPV_KHR_integer_dot_product extension). Signedness comes from the element type;
+// the optional second arg is the int32 accumulator (fused dot-add). GPU-free:
+// proves the lowering and that the module is spirv-val-clean under Vulkan 1.3.
+TEST(XpuVulkanEmitTests, lowersIntegerDotToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "public class D {\n"
+        "    @Kernel\n"
+        "    public static void dp4a(Buffer<int32> out, uint32 n) {\n"
+        "        Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);\n"
+        "        Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);\n"
+        "        int32 d = a.dot(b);\n"          // signed dot
+        "        int32 e = a.dot(b, d);\n"       // fused signed dot-add
+        "        Vector<uint8,4> u = new Vector<uint8,4>(9, 10, 11, 12);\n"
+        "        int32 f = u.dot(u);\n"          // unsigned dot
+        "        out[0] = e + f;\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.D");
+    auto k = findMethod(module->getStructures()["test.D"], "dp4a");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_idot_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("llvm.spv.dot4add.i8packed"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.dot4add.u8packed"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_idot_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpCapability DotProduct"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpCapability DotProductInput4x8BitPacked"),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpExtension \"SPV_KHR_integer_dot_product\""),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpSDot"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpUDot"), std::string::npos) << text;
+    EXPECT_NE(text.find("PackedVectorFormat4x8Bit"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_idot_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the integer-dot module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // CM5b — the device-realistic MIXED-PRECISION config: A and B are float16
 // (IEEE half) tiles, the accumulator C is float32. This is the only float
 // cooperative-matrix config the RADV STRIX_HALO WMMA path actually supports

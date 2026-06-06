@@ -1487,9 +1487,30 @@ private:
         llvm::Value* self = builder.CreateLoad(vt, values[recv], recv);
         const auto& args = mc->getParameters();
         if (name == "dot") {
-            if (args.size() != 1) unsupported("Vector.dot expects one argument");
+            if (isFloat) {
+                if (args.size() != 1)
+                    unsupported("Vector.dot expects one argument");
+                return vecops::dot(builder, self,
+                                   lowerExpr(args[0].expression), true);
+            }
+            // Integer dot (DP4a): Vector<int8,4>/<uint8,4> -> int32, with an
+            // optional int32 accumulator. a.dot(b) = sum(a_i*b_i);
+            // a.dot(b, acc) = acc + sum(a_i*b_i).
+            unsigned lanes = vt->getNumElements();
+            unsigned bits = vt->getElementType()->getIntegerBitWidth();
+            if (lanes != 4 || bits != 8)
+                unsupported("integer Vector.dot currently supports 4-lane "
+                            "8-bit vectors (DP4a): Vector<int8,4> / "
+                            "Vector<uint8,4>");
+            if (args.size() != 1 && args.size() != 2)
+                unsupported("Vector.dot expects (other) or (other, acc)");
             llvm::Value* other = lowerExpr(args[0].expression);
-            return vecops::dot(builder, self, other, isFloat);
+            llvm::Type* i32 = llvm::Type::getInt32Ty(builder.getContext());
+            llvm::Value* acc = args.size() == 2
+                ? coerceTo(lowerExpr(args[1].expression), i32)
+                : llvm::ConstantInt::get(i32, 0);
+            bool sgn = signedness.count(recv) ? signedness[recv] : true;
+            return target.integerDot4x8(builder, mod, self, other, acc, sgn);
         }
         if (name == "length") {
             if (!isFloat) unsupported("Vector.length requires a "
@@ -3074,6 +3095,14 @@ llvm::Value* LoweringTarget::transcendental(
     llvm::Function* fn =
         llvm::Intrinsic::getOrInsertDeclaration(&m, it->second, {ft});
     return b.CreateCall(fn, std::vector<llvm::Value*>(args.begin(), args.end()));
+}
+
+// Default integer dot: the portable widening reduce (correct on CPU/AMD/NVIDIA).
+// Vulkan overrides this to emit the DP4a op (llvm.spv.dot4add.*).
+llvm::Value* LoweringTarget::integerDot4x8(
+    llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* a, llvm::Value* c,
+    llvm::Value* acc, bool isSigned) {
+    return vecops::idotWiden(b, a, c, acc, isSigned);
 }
 
 // Ray query (SPV_KHR_ray_query) is Vulkan-only — only SpirvTarget overrides
