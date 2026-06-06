@@ -105,6 +105,16 @@ namespace cajeta {
     // alloca address IS the value being yielded.
     llvm::Value* loadIfLValue(CajetaModulePtr module, llvm::Value* v, ExpressionPtr ast) {
         if (!v) return v;
+        // A constant null pointer is an r-value (the `null` literal, or a
+        // typed null cast like `(TcpStream) null` passed as a borrowed
+        // class/interface arg), never a slot to load through. The class-ref
+        // and pointer-with-different-type branches below would otherwise
+        // emit `load ptr, null` — a guaranteed segfault — treating the null
+        // value as if it were the address of a class slot. Hand back the
+        // null reference itself.
+        if (llvm::isa<llvm::ConstantPointerNull>(v)) {
+            return v;
+        }
         auto* builder = module->getBuilder();
         bool treatAllocaAsSlot = !ast
             || dynamic_pointer_cast<IdentifierExpression>(ast) != nullptr;
