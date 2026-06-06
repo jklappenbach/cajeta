@@ -473,3 +473,117 @@ TEST(XpuCooperativeMatrixAmdDeviceTests, gemmKLoopOnDevice) {
                               << ref[i * Ndim + j];
     EXPECT_EQ(mismatches, 0u) << "K-loop GEMM had " << mismatches << " mismatches";
 }
+
+// Full tiled GEMM: C[32x32] = A[32x32] · B[32x32], K=32. The output is a 2x2 grid
+// of 16x16 tiles; each tile is computed by its OWN wave (one block = 32 lanes =
+// one wave), and within a wave a 2-deep K-loop sums the two K-tiles. This is the
+// M/N axis of tiling — the step past the single-output-tile K-loop GEMM:
+//   - the launch is grid=4 blocks of 32, so the four waves run concurrently;
+//   - each wave reads Workgroup.x() (its block index 0..3) and decodes its output
+//     tile (ti = block/2, tj = block%2) — all 32 lanes of a wave agree on it;
+//   - the offsets pick that wave's sub-tiles out of the 32-wide row-major matrices
+//     (A row-tile ti, B col-tile tj, the shared K walked by the loop).
+// Layout-sensitive non-uniform data; K=32 small-integer sums stay exact in f32.
+const char* kGemmTiledSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.xpu.core.Workgroup;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void gemm(Buffer<float16> a, Buffer<float16> b,\n"
+    "                            Buffer<float32> c) {\n"
+    "        uint32 tile = Workgroup.x();\n"
+    "        uint32 ti = tile / 2;\n"
+    "        uint32 tj = tile % 2;\n"
+    "        uint32 aBase = ti * 512;\n"        // (ti*16) rows * 32 stride
+    "        uint32 bBase = tj * 16;\n"          // tj-th 16-col band
+    "        uint32 cBase = ti * 512 + tj * 16;\n"
+    "        CooperativeMatrix<float32,16,16,2> acc;\n"
+    "        acc.splat(0.0f);\n"
+    "        CooperativeMatrix<float16,16,16,0> ta;\n"
+    "        CooperativeMatrix<float16,16,16,1> tb;\n"
+    "        for (uint32 kt = 0; kt < 2; kt = kt + 1) {\n"
+    "            ta.load(a, aBase + kt * 16, 0, 32);\n"   // A sub-tile (ti, kt)
+    "            tb.load(b, bBase + kt * 512, 0, 32);\n"   // B sub-tile (kt, tj)
+    "            acc.mma(ta, tb);\n"
+    "        }\n"
+    "        acc.store(c, cBase, 0, 32);\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCooperativeMatrixAmdDeviceTests, gemmOutputTilesOnDevice) {
+    if (!HipDriver::available()) GTEST_SKIP() << "no ROCm/HIP device available";
+
+    constexpr unsigned D = 32;             // M = N = K = 32 (a 2x2x2 tile grid)
+    constexpr unsigned SZ = D * D;         // 1024
+    constexpr unsigned NTILES = (D / 16) * (D / 16);  // 4 output tiles
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kGemmTiledSource);
+    auto k = findMethod(module->getStructures()["test.M"], "gemm");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_gemm_tiled_amddevice", ctx);
+    configureDeviceModule(dev, *tm);
+    lowerKernel(k, dev);
+    std::vector<uint8_t> hsaco = assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
+
+    std::vector<_Float16> hostA(SZ), hostB(SZ);
+    std::vector<float> ref(SZ, 0.0f);
+    for (unsigned i = 0; i < D; ++i)
+        for (unsigned kk = 0; kk < D; ++kk)
+            hostA[i * D + kk] = (_Float16) ((i + 2 * kk) % 5);
+    for (unsigned kk = 0; kk < D; ++kk)
+        for (unsigned j = 0; j < D; ++j)
+            hostB[kk * D + j] = (_Float16) ((3 * kk + j) % 4);
+    for (unsigned i = 0; i < D; ++i)
+        for (unsigned j = 0; j < D; ++j) {
+            float acc = 0.0f;
+            for (unsigned kk = 0; kk < D; ++kk)
+                acc += (float) hostA[i * D + kk] * (float) hostB[kk * D + j];
+            ref[i * D + j] = acc;
+        }
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "gemm");
+    ASSERT_NE(fn, nullptr);
+
+    HipDevicePtr dA = hip.alloc(SZ * sizeof(_Float16));
+    HipDevicePtr dB = hip.alloc(SZ * sizeof(_Float16));
+    HipDevicePtr dC = hip.alloc(SZ * sizeof(float));
+    ASSERT_NE(dA, nullptr);
+    ASSERT_NE(dB, nullptr);
+    ASSERT_NE(dC, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dA, hostA.data(), SZ * sizeof(_Float16)));
+    ASSERT_TRUE(hip.memcpyHtoD(dB, hostB.data(), SZ * sizeof(_Float16)));
+    std::vector<float> seed(SZ, -1.0f);
+    ASSERT_TRUE(hip.memcpyHtoD(dC, seed.data(), SZ * sizeof(float)));
+
+    // One block (one wave of 32) per output tile; the four run concurrently.
+    void* params[] = { &dA, &dB, &dC };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/NTILES, /*block=*/32, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<float> out(SZ, -2.0f);
+    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dC, SZ * sizeof(float)));
+    hip.free(dA);
+    hip.free(dB);
+    hip.free(dC);
+
+    size_t mismatches = 0;
+    for (unsigned i = 0; i < D; ++i)
+        for (unsigned j = 0; j < D; ++j)
+            if (out[i * D + j] != ref[i * D + j] && mismatches++ < 8)
+                ADD_FAILURE() << "tiled GEMM mismatch at (" << i << "," << j
+                              << "): got " << out[i * D + j] << " want "
+                              << ref[i * D + j];
+    EXPECT_EQ(mismatches, 0u) << "tiled GEMM had " << mismatches << " mismatches";
+}
