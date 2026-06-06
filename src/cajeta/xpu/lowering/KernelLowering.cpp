@@ -1885,6 +1885,34 @@ private:
             // tiled GEMM (the consume side is CooperativeMatrix.load(Shared<T>)).
             return lowerCoopStage(name, mc);
         }
+        // Buffer<float32> float atomics: buf.atomic{Add,Min,Max}(index, value).
+        // An atomic RMW on the element pointer (the same bufferElementPtr seam as
+        // buf[i]); returns the OLD value. f32 v1 — the parallel-reduction /
+        // histogram lever. SPV_EXT_shader_atomic_float_{add,min_max} on Vulkan.
+        if (!recv.empty() && bufferBases.count(recv) &&
+            (name == "atomicAdd" || name == "atomicMin" || name == "atomicMax")) {
+            const auto& args = mc->getParameters();
+            if (args.size() != 2)
+                unsupported("Buffer." + name + " expects (index, value)");
+            llvm::Type* elemTy = bufferElems[recv];
+            if (!elemTy->isFloatTy())
+                unsupported("Buffer." + name + " currently supports "
+                            "float32 buffers (v1)");
+            llvm::Value* idx = lowerExpr(args[0].expression);
+            llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+            if (idx->getType() != i64)
+                idx = builder.CreateIntCast(idx, i64,
+                                            exprSigned(args[0].expression));
+            llvm::Value* ptr = target.bufferElementPtr(builder, mod,
+                                                       bufferBases[recv],
+                                                       elemTy, idx);
+            llvm::Value* val = coerceTo(lowerExpr(args[1].expression), elemTy);
+            LoweringTarget::AtomicFloatOp op =
+                name == "atomicAdd" ? LoweringTarget::AtomicFloatOp::Add
+              : name == "atomicMin" ? LoweringTarget::AtomicFloatOp::Min
+                                    : LoweringTarget::AtomicFloatOp::Max;
+            return target.atomicFloatRMW(builder, mod, op, ptr, val);
+        }
         // Matrix<T,R,C> instance methods (B1): transpose/identity/row/col/
         // hadamard. Checked BEFORE the vector branch — a matrix local's slot is
         // a `<R*C x T>` vector type, so vectorSlotType(recv) is non-null for it.
@@ -3103,6 +3131,20 @@ llvm::Value* LoweringTarget::integerDot4x8(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* a, llvm::Value* c,
     llvm::Value* acc, bool isSigned) {
     return vecops::idotWiden(b, a, c, acc, isSigned);
+}
+
+// Default float atomic: a relaxed, system-scope atomicrmw. Selects the native
+// global FP atomic on AMDGPU/NVPTX and a lock/cmpxchg on CPU. Vulkan overrides
+// (it needs Device scope + AcquireRelease to satisfy spirv-val).
+llvm::Value* LoweringTarget::atomicFloatRMW(
+    llvm::IRBuilderBase& b, llvm::Module& /*m*/, AtomicFloatOp op,
+    llvm::Value* ptr, llvm::Value* value) {
+    llvm::AtomicRMWInst::BinOp binop =
+        op == AtomicFloatOp::Add ? llvm::AtomicRMWInst::FAdd
+      : op == AtomicFloatOp::Min ? llvm::AtomicRMWInst::FMin
+                                 : llvm::AtomicRMWInst::FMax;
+    return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
+                             llvm::AtomicOrdering::Monotonic);
 }
 
 // Ray query (SPV_KHR_ray_query) is Vulkan-only — only SpirvTarget overrides

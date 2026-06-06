@@ -310,6 +310,26 @@ public:
         return b.CreateCall(f, {acc, x, y}, "dp4a");
     }
 
+    // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) -----------
+    // Vulkan rejects CrossDevice scope and SequentiallyConsistent / relaxed-with-
+    // storage-class memory semantics on OpAtomicF*EXT, so emit the atomicrmw with
+    // Device scope + AcquireRelease (the SPIR-V backend maps "device"→Scope Device
+    // and AcquireRelease→the matching semantics, including the storage-class bit
+    // for the StorageBuffer pointer). The op (OpAtomicFAddEXT/FMinEXT/FMaxEXT) and
+    // its capability + extension are selected by the backend from the BinOp.
+    llvm::Value* atomicFloatRMW(llvm::IRBuilderBase& b, llvm::Module& m,
+                                AtomicFloatOp op, llvm::Value* ptr,
+                                llvm::Value* value) override {
+        llvm::AtomicRMWInst::BinOp binop =
+            op == AtomicFloatOp::Add ? llvm::AtomicRMWInst::FAdd
+          : op == AtomicFloatOp::Min ? llvm::AtomicRMWInst::FMin
+                                     : llvm::AtomicRMWInst::FMax;
+        llvm::SyncScope::ID dev =
+            m.getContext().getOrInsertSyncScopeID("device");
+        return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
+                                 llvm::AtomicOrdering::AcquireRelease, dev);
+    }
+
     // --- ray query (SPV_KHR_ray_query) ----------------------------------------
     // The ops lower to the llvm.spv.ray.query.* intrinsics + GlobalISel
     // selection (cajeta-gpu Part C increments 1/2/2c, in the cajeta-llvm fork).

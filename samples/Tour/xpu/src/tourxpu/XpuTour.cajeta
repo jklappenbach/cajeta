@@ -131,6 +131,24 @@ public final class XpuTour {
         }
     }
 
+    // ---- Float atomics: lock-free parallel reduction -------------------------
+    // reduceAtomic: every thread folds its input into a SHARED accumulator with
+    // atomic read-modify-writes — a sum (atomicAdd), a max, and a min, all racing
+    // safely. On Vulkan these are OpAtomicFAddEXT/FMinEXT/FMaxEXT
+    // (SPV_EXT_shader_atomic_float_*); on AMD/NVIDIA/CPU the native atomicrmw.
+    //   in[i] = i, i in [0, n).  out starts {0, 0, BIG}.
+    //   out[0] = sum(0..n-1) = n*(n-1)/2;  out[1] = max = n-1;  out[2] = min = 0
+    @Kernel
+    public static void reduceAtomic(Buffer<float32> out, Buffer<float32> in,
+                                    uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            out.atomicAdd(0, in[i]);     // lock-free sum
+            out.atomicMax(1, in[i]);     // running max
+            out.atomicMin(2, in[i]);     // running min
+        }
+    }
+
     // ---- Transforms: quaternions, determinant, inverse -----------------------
     // 3-D rotation algebra and small-matrix solves, the same source on every
     // backend. See cajeta-docs/Quaternions.md + MatrixDeterminantInverse.md.
@@ -302,6 +320,7 @@ public final class XpuTour {
         runTransform();
         runMaskSelect();
         runIntegerDot();
+        runAtomics();
         runTransforms();
         runPrecision();
         runCoopMatrix();
@@ -466,6 +485,32 @@ public final class XpuTour {
         out.download(hout);
         System.stdout.println("  int8 a.dot(b) + a.dot(b,100) + uint8 u.dot(w):  out[0]="
                             + hout[0] + "  (expect 1265)");
+    }
+
+    // Float atomics: a lock-free parallel reduction (sum / max / min) where every
+    // thread races to fold into one shared accumulator. Vulkan emits the
+    // OpAtomicF*EXT hardware atomics; AMD/NVIDIA/CPU the native atomicrmw. See
+    // cajeta-docs/FloatAtomics.md.
+    static void runAtomics() {
+        System.stdout.println("");
+        System.stdout.println("-- float atomics: lock-free parallel reduction --");
+        uint32 n = 256;
+        float32[] hin = new float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (float32) i; }
+        float32[] hout = new float32[3];
+        hout[0] = 0.0f; hout[1] = 0.0f; hout[2] = 1.0e9f;
+        Buffer<float32> in = stack Buffer<float32>(n);
+        Buffer<float32> out = stack Buffer<float32>(3);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        reduceAtomic.launch(s, grid: [(n + 63) / 64], block: [64])(out, in, n);
+        s.sync();
+        out.download(hout);
+        // sum(0..255)=32640, max=255, min=0
+        System.stdout.println("  sum=" + (int32) hout[0] + " max=" + (int32) hout[1]
+                            + " min=" + (int32) hout[2]
+                            + "  (expect 32640, 255, 0)");
     }
 
     // Quaternion rotation algebra + small-matrix determinant/inverse/solve, run
