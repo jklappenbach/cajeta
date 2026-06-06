@@ -1,23 +1,87 @@
 package cajeta.lang;
 
 /**
- * Generic numeric utilities. `max`, `min`, and `clamp` are
- * method-level-templated static methods (cajeta-docs/stdlib/
- * MethodLevelTemplate.md): each is monomorphized per T at the call
- * site, so `Math.max(3, 7)` produces a `max<int32>` and
- * `Math.max(1.5, 2.5)` produces a `max<float64>`, both with zero
- * dispatch cost.
+ * # Math — numeric utilities + the device math intrinsics
  *
- * v1 limitation: the bound on T (Comparable) isn't enforced yet —
- * the body uses the `>` and `<` operators, which work for built-in
- * primitives but won't link cleanly for user classes until operator-
- * overloading flows through method-level template specializations.
- * For primitives this works today.
+ * `Math` is the one stop for scalar and vector numeric functions. It has two
+ * kinds of members:
+ *
+ * 1. **Declared, method-level-templated** — `max`, `min`, `clamp` below. Each is
+ *    monomorphized per `T` at the call site (zero dispatch cost):
+ *    ```
+ *    int32   a = Math.max(3, 7);          // -> max<int32>   = 7
+ *    float64 b = Math.clamp(1.5, 0.0, 1.0); // -> clamp<float64> = 1.0
+ *    ```
+ * 2. **Compiler intrinsics** — `sqrt`, `sin`, `cos`, `pow`, … are not declared
+ *    here; the compiler intercepts the call and emits the right instruction
+ *    (host *and* inside an `@Kernel`). They are documented below so this file is
+ *    the single source of the Math surface.
+ *
+ * ## Intrinsic functions
+ *
+ * **Native (lower directly on every backend — no device library):**
+ * `sqrt`, `floor`, `ceil`, `trunc`, `round`, `abs`, `fma(a,b,c)` (= `a*b+c`),
+ * plus the scalar `min`/`max` above.
+ * ```
+ * float32 h = Math.sqrt(x*x + y*y);
+ * float32 m = Math.fma(a, b, c);        // fused multiply-add
+ * ```
+ *
+ * **Transcendentals (B2 increment 2):** `sin`, `cos`, `tan`, `asin`, `acos`,
+ * `atan`, `atan2(y,x)`, `exp`, `exp2`, `log`, `log2`, `log10`, `pow(x,y)`,
+ * `rsqrt(x)` (= `1/sqrt(x)`). In a kernel these realize per backend — CPU
+ * `libm`, Vulkan `OpExtInst GLSL.std.450`, AMD `ocml` (`__ocml_*`), NVIDIA
+ * `libdevice` (`__nv_*`):
+ * ```
+ * @Kernel
+ * public static void rotate(Buffer<float32> out, float32 angle, uint32 n) {
+ *     uint32 i = Thread.globalIdX();
+ *     if (i < n) { out[i] = Math.cos(angle) - Math.sin(angle); }
+ * }
+ * ```
+ *
+ * ## Vectorized forms
+ *
+ * Any of the intrinsics applies **element-wise** to a `Vector<T,N>`:
+ * ```
+ * Vector<float32,4> v  = new Vector<float32,4>(0.0f, 0.5f, 1.0f, 2.0f);
+ * Vector<float32,4> s  = Math.sin(v);     // (sin v.x, sin v.y, sin v.z, sin v.w)
+ * Vector<float32,4> sq = Math.sqrt(v);    // element-wise sqrt
+ * ```
+ * (On AMD/NVIDIA the per-lane device-library call is scalarized automatically.)
+ *
+ * ## Precision: `@FastMath`
+ *
+ * Annotate a `@Kernel` with `@FastMath` to relax IEEE FP for its whole body —
+ * the backend may fuse multiply-adds, use reciprocals, and pick approximate
+ * transcendentals (the LLVM fast-math flags). Opt-in; it trades precision for
+ * speed:
+ * ```
+ * @Kernel @FastMath
+ * public static void saxpy(Buffer<float32> y, Buffer<float32> x,
+ *                          float32 a, uint32 n) {
+ *     uint32 i = Thread.globalIdX();
+ *     if (i < n) { y[i] = a * x[i] + y[i]; }   // may contract to one fma
+ * }
+ * ```
+ *
+ * **v1 limitation (declared templates only):** the `T` bound on `max`/`min`/
+ * `clamp` (`Comparable`) isn't enforced yet — the body uses `>`/`<`, which work
+ * for built-in primitives but won't link for user classes until operator
+ * overloading flows through method-level template specialization.
+ *
+ * @see cajeta-docs/MaskSelect.md      branchless per-lane conditionals
+ * @see cajeta-docs/stdlib/MethodLevelTemplate.md   the templating mechanism
  */
 public class Math {
     /**
-     * Returns the larger of `a` and `b`. Per-T monomorphization;
-     * non-virtual by virtue of being `static` and method-templated.
+     * The larger of `a` and `b`. Per-`T` monomorphization; non-virtual (it is
+     * `static` and method-templated).
+     * ```
+     * Math.max(3, 7)       // 7   (max<int32>)
+     * Math.max(1.5, 2.5)   // 2.5 (max<float64>)
+     * ```
+     * (For an element-wise vector max use `a.max(b)` on a `Vector<T,N>`.)
      */
     public static T max<T>(T a, T b) {
         if (a > b) { return a; }
@@ -25,7 +89,10 @@ public class Math {
     }
 
     /**
-     * Returns the smaller of `a` and `b`.
+     * The smaller of `a` and `b` (per-`T`, like {@link #max}).
+     * ```
+     * Math.min(3, 7)   // 3
+     * ```
      */
     public static T min<T>(T a, T b) {
         if (a < b) { return a; }
@@ -33,9 +100,13 @@ public class Math {
     }
 
     /**
-     * Returns `x` clamped to `[lo, hi]`. Implemented via min + max
-     * (themselves method-level-templated) so the single declaration
-     * specializes for every T the caller uses.
+     * `x` clamped to `[lo, hi]`. Built from `min` + `max` (themselves
+     * method-templated) so the one declaration specializes for every `T`.
+     * ```
+     * Math.clamp(15, 0, 10)   // 10  (above the range)
+     * Math.clamp(-5, 0, 10)   // 0   (below)
+     * Math.clamp(5,  0, 10)   // 5   (in range)
+     * ```
      */
     public static T clamp<T>(T x, T lo, T hi) {
         return Math.max(lo, Math.min(hi, x));

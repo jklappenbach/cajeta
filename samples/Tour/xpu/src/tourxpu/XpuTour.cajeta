@@ -4,6 +4,7 @@ import cajeta.xpu.core.Buffer;
 import cajeta.xpu.core.Stream;
 import cajeta.xpu.core.Thread;
 import cajeta.xpu.core.Wave;
+import cajeta.lang.Math;
 
 // Cajeta XPU tour — portable @Kernel programs run through the runtime
 // backend dispatcher. The SAME source compiles for NVIDIA (NVPTX), AMD
@@ -147,6 +148,50 @@ public final class XpuTour {
         }
     }
 
+    // ---- Precision & dtypes: @FastMath, vectorized math, fp16/bf16 -----------
+    // The device-math surface: per-thread transcendentals, elementwise math over
+    // vectors, the 16-bit ML float types, and the @FastMath precision knob. See
+    // cajeta.lang.Math + cajeta-docs/MaskSelect.md.
+
+    // @FastMath relaxes IEEE FP (FMA fusion, approximate transcendentals) for the
+    // whole body. out[i] = sqrt(i*i)*2 + 1 = 2*i + 1 (i >= 0).
+    @Kernel
+    @FastMath
+    public static void fastMath(Buffer<float32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            float32 x = (float32) i;
+            out[i] = Math.sqrt(x * x) * 2.0f + 1.0f;
+        }
+    }
+
+    // Vectorized math: Math.<fn> applies elementwise to a Vector<T,N>.
+    // sqrt((4,9,16,25)) = (2,3,4,5); sum = 14.  out[i] = 14 + i.
+    @Kernel
+    public static void vecMath(Buffer<float32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            Vector<float32,4> q = new Vector<float32,4>(4.0f, 9.0f, 16.0f, 25.0f);
+            Vector<float32,4> r = Math.sqrt(q);
+            out[i] = r.x + r.y + r.z + r.w + (float32) i;
+        }
+    }
+
+    // 16-bit ML float types — float16 (binary16) and bfloat16 (brain float).
+    // Both portable: bfloat16 is a storage format computed in f32. h=(1,2,3,4),
+    // h+h=(2,4,6,8) -> h2.w=8; b=(10,20), b+b=(20,40) -> b2.y=40; out = 48 + i.
+    @Kernel
+    public static void floatTypes(Buffer<float32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            Vector<float16,4> h = new Vector<float16,4>(1.0f, 2.0f, 3.0f, 4.0f);
+            Vector<float16,4> h2 = h + h;
+            Vector<bfloat16,2> b = new Vector<bfloat16,2>(10.0f, 20.0f);
+            Vector<bfloat16,2> b2 = b + b;
+            out[i] = (float32) h2.w + (float32) b2.y + (float32) i;
+        }
+    }
+
     // waveReduce: out[i] = sum of in over i's wave. A wave-cooperative kernel —
     // the wave is the warp on a GPU, the SIMD vector on the CPU. Width-agnostic:
     // it queries the environment (Wave.reduceSum / width() / laneId()) rather
@@ -172,6 +217,7 @@ public final class XpuTour {
         runTransform();
         runMaskSelect();
         runTransforms();
+        runPrecision();
         runWave();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
@@ -340,6 +386,38 @@ public final class XpuTour {
                             + (int32)(hq[0] + 0.5f) + "   (expect 4)");
         System.stdout.println("  matrix (det + g*g^-1 diag + solve x) sum = "
                             + (int32)(hl[0] + 0.5f) + "   (expect 15)");
+    }
+
+    // @FastMath, vectorized math (Math.sqrt over a vector), and the fp16/bf16
+    // dtypes — each a fixed checkable constant per thread.
+    static void runPrecision() {
+        System.stdout.println("");
+        System.stdout.println("-- precision & dtypes: @FastMath / vectorized math / fp16+bf16 --");
+        uint32 n = 256;
+        float32[] hf = new float32[n];
+        float32[] hv = new float32[n];
+        float32[] hd = new float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hf[i] = 0.0f; hv[i] = 0.0f; hd[i] = 0.0f; }
+        Buffer<float32> f = stack Buffer<float32>(n);
+        Buffer<float32> v = stack Buffer<float32>(n);
+        Buffer<float32> d = stack Buffer<float32>(n);
+        f.upload(hf);
+        v.upload(hv);
+        d.upload(hd);
+        Stream s = Stream.current();
+        fastMath.launch(s, grid: [(n + 63) / 64], block: [64])(f, n);
+        vecMath.launch(s, grid: [(n + 63) / 64], block: [64])(v, n);
+        floatTypes.launch(s, grid: [(n + 63) / 64], block: [64])(d, n);
+        s.sync();
+        f.download(hf);
+        v.download(hv);
+        d.download(hd);
+        System.stdout.println("  @FastMath  2*i+1:   [10]=" + (int32) hf[10]
+                            + " [100]=" + (int32) hf[100] + "  (expect 21, 201)");
+        System.stdout.println("  vectorized sqrt sum: [0]=" + (int32) hv[0]
+                            + " [10]=" + (int32) hv[10] + "  (expect 14, 24)");
+        System.stdout.println("  fp16+bf16 (h2.w+b2.y): [0]=" + (int32) hd[0]
+                            + " [10]=" + (int32) hd[10] + "  (expect 48, 58)");
     }
 
     static void runWave() {
