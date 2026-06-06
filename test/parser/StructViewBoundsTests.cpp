@@ -83,14 +83,14 @@ TEST(StructViewBoundsTests, exactSizeBufferConstructs) {
     auto src =
         "package test;\n"
         "@HostEndian\n"
-        "public view Pair {\n"
+        "public view Duo {\n"
         "    int32 a;\n"
         "    int32 b;\n"
         "}\n"
         "public final class B {\n"
         "    public static int32 run() {\n"
         "        int32[] bytes = heap int32[2];\n"     // 8 bytes, struct is 8
-        "        Pair p = Pair(bytes);\n"
+        "        Duo p = Duo(bytes);\n"
         "        p.a = 11;\n"
         "        p.b = 22;\n"
         "        return p.a + p.b;\n"
@@ -100,14 +100,14 @@ TEST(StructViewBoundsTests, exactSizeBufferConstructs) {
 }
 
 TEST(StructViewBoundsTests, oneByteShortStillThrows) {
-    // 7 bytes available (1 byte short of 8-byte Pair struct). With int32
+    // 7 bytes available (1 byte short of 8-byte Duo struct). With int32
     // elements (4 bytes each), the closest we can get to 7 is int32[1] = 4
     // bytes — also too small. The throw still fires. We just verify any
     // undersize buffer is rejected.
     auto src =
         "package test;\n"
         "@HostEndian\n"
-        "public view Pair {\n"
+        "public view Duo {\n"
         "    int32 a;\n"
         "    int32 b;\n"
         "}\n"
@@ -115,7 +115,7 @@ TEST(StructViewBoundsTests, oneByteShortStillThrows) {
         "    public static int32 run() {\n"
         "        int32[] bytes = heap int32[1];\n"
         "        try {\n"
-        "            Pair p = Pair(bytes);\n"
+        "            Duo p = Duo(bytes);\n"
         "            return 0;\n"
         "        } catch (Exception e) {\n"
         "            return 1;\n"

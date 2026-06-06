@@ -173,9 +173,11 @@ TEST(StreamingBodyTests, responseChunkedHeadIsHeadOnly) {
         "int8[] head = HttpSerializer.responseChunkedHead(r);\n"
         "String s = heap String(#head, head.count());\n"
         "if (!s.startsWith(\"HTTP/1.1 200 OK\\r\\n\")) return -1;\n"
-        "if (s.indexOf(\"Content-Type: text/plain\") < 0) return -2;\n"
+        // Headers normalizes field names to lowercase on the wire (the
+        // documented Headers contract + HttpSerializer.nameAt convention).
+        "if (s.indexOf(\"content-type: text/plain\") < 0) return -2;\n"
         // Auto-added chunked framing.
-        "if (s.indexOf(\"Transfer-Encoding: chunked\") < 0) return -3;\n"
+        "if (s.indexOf(\"transfer-encoding: chunked\") < 0) return -3;\n"
         // Ends at the head terminator — no chunk, no 0-terminator.
         "if (!s.endsWith(\"\\r\\n\\r\\n\")) return -4;\n"
         "if (s.indexOf(\"0\\r\\n\\r\\n\\r\\n\") >= 0) return -5;\n"  // no body framing
