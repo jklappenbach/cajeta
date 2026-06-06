@@ -1,0 +1,270 @@
+package cajeta.net.ws;
+
+import cajeta.lang.String;
+import cajeta.hash.Sha1;
+import cajeta.codec.Base64;
+import cajeta.net.Headers;
+import cajeta.net.http.HttpRequest;
+import cajeta.net.http.HttpResponse;
+import cajeta.net.ws.HandshakeRejectedException;
+
+/**
+ * The **WebSocket server-side opening handshake** (RFC 6455 §4.2) — plan
+ * item **NET-10.2**. Given the client's HTTP/1.1
+ * [`Upgrade`](../http/HttpRequest.cajeta) request, it **validates** the
+ * request is a well-formed WebSocket upgrade, **computes** the
+ * `Sec-WebSocket-Accept` response token, and **builds** the
+ * `101 Switching Protocols` [`HttpResponse`](../http/HttpResponse.cajeta)
+ * that switches the connection to WebSocket framing
+ * ([`WsFrameDecoder`](WsFrameDecoder.cajeta)/[`WsFrameEncoder`](WsFrameEncoder.cajeta),
+ * NET-10.3). The mirror of the client handshake (NET-10.1).
+ *
+ * ## Where this sits
+ *
+ * This is **pure logic** — an [`HttpRequest`](../http/HttpRequest.cajeta)
+ * in, an [`HttpResponse`](../http/HttpResponse.cajeta) (or a
+ * [`HandshakeRejectedException`](HandshakeRejectedException.cajeta)) out —
+ * no sockets, no native intrinsics, exactly the testable shape of
+ * [`HttpServer.handleRequest`](../http/HttpServer.cajeta) (NET-9.1) whose
+ * request loop produces the [`HttpRequest`](../http/HttpRequest.cajeta)
+ * this consumes. The full `WebSocket` route wiring
+ * (`HttpServer route -> upgrade(request) -> WebSocket`) is **NET-10.7**;
+ * this item ships the handshake **protocol** — validation + the accept
+ * key + the `101` response — that NET-10.7 calls into. It composes three
+ * already-landed primitives: [`Sha1`](../../hash/Sha1.cajeta) (NET-11.2),
+ * [`Base64`](../../codec/Base64.cajeta) (NET-11.3), and the
+ * [`Headers`](../Headers.cajeta)/[`HttpRequest`](../http/HttpRequest.cajeta)/[`HttpResponse`](../http/HttpResponse.cajeta)
+ * message model (NET-7.x).
+ *
+ * ## The handshake (RFC 6455 §4.2.1 / §4.2.2)
+ *
+ * A valid client Upgrade request is a `GET` on HTTP/1.1 carrying:
+ *
+ *   - `Upgrade: websocket` — the `Upgrade` token, **case-insensitive**.
+ *   - `Connection: Upgrade` — the `Connection` header's token list MUST
+ *     include `upgrade` (case-insensitive); it may carry others
+ *     (`keep-alive, Upgrade`), so this is a **token containment** check.
+ *   - `Sec-WebSocket-Key` — a 16-byte nonce the client base64-encoded
+ *     (24 chars). The server does **not** decode or re-validate its
+ *     length in v1 — it is opaque input to the accept computation — but
+ *     it MUST be present and non-empty.
+ *   - `Sec-WebSocket-Version: 13` — the only version RFC 6455 defines. A
+ *     mismatch is rejected with HTTP `426 Upgrade Required` (the server
+ *     SHOULD echo a `Sec-WebSocket-Version: 13` header so the client can
+ *     retry — see [`reject`](#reject)).
+ *
+ * The response on success is:
+ *
+ * ```
+ * HTTP/1.1 101 Switching Protocols
+ * Upgrade: websocket
+ * Connection: Upgrade
+ * Sec-WebSocket-Accept: <accept>
+ * ```
+ *
+ * where `<accept>` = [`acceptKey`](#acceptKey)`(Sec-WebSocket-Key)`.
+ *
+ * ## The accept token (RFC 6455 §1.3)
+ *
+ * ```
+ * Sec-WebSocket-Accept = base64( SHA-1( Sec-WebSocket-Key + GUID ) )
+ * ```
+ *
+ * with the protocol-constant `GUID` =
+ * `"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"`. SHA-1's collision weakness is
+ * irrelevant here — the GUID is a fixed magic string, not a secret, so
+ * the construction is a protocol handshake, not a security MAC (see
+ * [`Sha1`](../../hash/Sha1.cajeta)'s "not for security use" note).
+ *
+ * The §1.3 worked example — key `"dGhlIHNhbXBsZSBub25jZQ=="` yields accept
+ * `"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="` — is the acceptance vector
+ * (`WebSocketTests.acceptKeyMatchesRfcExample`).
+ */
+public class WsServerHandshake {
+
+    /**
+     * The RFC 6455 §1.3 handshake **magic GUID**, appended to the client
+     * key before hashing. A protocol constant — its 36 ASCII bytes are
+     * the same on every handshake.
+     */
+    public static #String guid() {
+        String g = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        return heap String(g.bytes, g.byteLength);
+    }
+
+    /**
+     * Compute the `Sec-WebSocket-Accept` token for a client
+     * `Sec-WebSocket-Key`: `base64(SHA-1(key + GUID))` (RFC 6455 §1.3).
+     *
+     * The key + the [`guid`](#guid) are fed to a streaming
+     * [`Sha1`](../../hash/Sha1.cajeta) as two `update`s (no intermediate
+     * concatenation buffer), and the 20-byte digest is
+     * standard-alphabet, padded [`Base64`](../../codec/Base64.cajeta) —
+     * the 28-char (`"...="`) accept string.
+     */
+    public static #String acceptKey(String key) {
+        String g = WsServerHandshake.guid();
+        Sha1 h = new Sha1();
+        h.update(key.bytes, (int64) key.byteLength);
+        h.update(g.bytes, (int64) g.byteLength);
+        int8[] digest = h.digest();                 // 20 bytes
+        return Base64.encode(digest, (int64) digest.count());
+    }
+
+    /**
+     * **Validate + accept** a client Upgrade request, returning the
+     * `101 Switching Protocols` response to send. Throws
+     * [`HandshakeRejectedException`](HandshakeRejectedException.cajeta)
+     * (carrying the HTTP status the caller should respond with instead)
+     * when the request is not a well-formed WebSocket upgrade.
+     *
+     * On success the connection is to be switched to WS framing after the
+     * `101` is written; that switch is the NET-10.7 façade's job — this
+     * method produces only the response.
+     */
+    public static #HttpResponse accept(HttpRequest request) {
+        WsServerHandshake.validate(request);
+        String key = request.getHeaders().get("Sec-WebSocket-Key");
+        String acceptValue = WsServerHandshake.acceptKey(key);
+        return WsServerHandshake.switchingResponse(acceptValue);
+    }
+
+    /**
+     * Whether `request` is a syntactically valid WebSocket Upgrade
+     * request — the non-throwing predicate form of [`validate`](#validate),
+     * for a caller (a router) that wants to branch rather than catch. A
+     * `Sec-WebSocket-Version` mismatch counts as **not** a WS handshake
+     * here (it returns `false`); [`validate`](#validate)/[`accept`](#accept)
+     * distinguish it with the `426` status.
+     */
+    public static boolean isUpgradeRequest(HttpRequest request) {
+        if (!WsServerHandshake.methodIsGet(request)) {
+            return false;
+        }
+        Headers h = request.getHeaders();
+        if (!WsServerHandshake.headerHasToken(h, "Upgrade", "websocket")) {
+            return false;
+        }
+        if (!WsServerHandshake.headerHasToken(h, "Connection", "upgrade")) {
+            return false;
+        }
+        if (!WsServerHandshake.hasNonEmpty(h, "Sec-WebSocket-Key")) {
+            return false;
+        }
+        return WsServerHandshake.versionIs13(h);
+    }
+
+    /**
+     * Throw [`HandshakeRejectedException`](HandshakeRejectedException.cajeta)
+     * if `request` is not a valid WebSocket Upgrade request. The status on
+     * the exception is `426 Upgrade Required` for a
+     * `Sec-WebSocket-Version` mismatch (RFC 6455 §4.4) and `400 Bad
+     * Request` for any other malformation, so the rejecting server sends
+     * the right HTTP error.
+     */
+    public static void validate(HttpRequest request) {
+        if (!WsServerHandshake.methodIsGet(request)) {
+            throw heap HandshakeRejectedException(
+                "websocket upgrade requires the GET method", 400);
+        }
+        Headers h = request.getHeaders();
+        if (!WsServerHandshake.headerHasToken(h, "Upgrade", "websocket")) {
+            throw heap HandshakeRejectedException(
+                "missing or non-websocket Upgrade header", 400);
+        }
+        if (!WsServerHandshake.headerHasToken(h, "Connection", "upgrade")) {
+            throw heap HandshakeRejectedException(
+                "Connection header does not request upgrade", 400);
+        }
+        if (!WsServerHandshake.hasNonEmpty(h, "Sec-WebSocket-Key")) {
+            throw heap HandshakeRejectedException(
+                "missing Sec-WebSocket-Key header", 400);
+        }
+        if (!WsServerHandshake.versionIs13(h)) {
+            // RFC 6455 §4.4: the server responds 426 and SHOULD echo the
+            // versions it supports so the client can retry.
+            throw heap HandshakeRejectedException(
+                "unsupported Sec-WebSocket-Version (only 13)", 426);
+        }
+    }
+
+    /**
+     * Build the rejection HTTP response for a
+     * [`HandshakeRejectedException`](HandshakeRejectedException.cajeta) —
+     * the server's reply when [`accept`](#accept) throws. A `426`
+     * (version mismatch) carries the `Sec-WebSocket-Version: 13` header
+     * (RFC 6455 §4.4) telling the client which version to retry with;
+     * other rejections are a bare status response.
+     */
+    public static #HttpResponse reject(HandshakeRejectedException e) {
+        HttpResponse r = HttpResponse.of(e.httpStatus);
+        if (e.httpStatus == 426) {
+            r.setHeader("Sec-WebSocket-Version", "13");
+        }
+        return #r;
+    }
+
+    // ----- response building ----------------------------------------------
+
+    /**
+     * The `101 Switching Protocols` response carrying the upgrade headers
+     * and the computed `Sec-WebSocket-Accept`. The `Connection: Upgrade`
+     * + `Upgrade: websocket` pair tells the peer the connection is now a
+     * WebSocket (and must **not** be reused as plain HTTP — keep-alive is
+     * moot once switched).
+     */
+    static #HttpResponse switchingResponse(String acceptValue) {
+        HttpResponse r = HttpResponse.of(101);
+        r.setHeader("Upgrade", "websocket");
+        r.setHeader("Connection", "Upgrade");
+        r.setHeader("Sec-WebSocket-Accept", acceptValue);
+        return #r;
+    }
+
+    // ----- validation helpers ---------------------------------------------
+
+    /** True iff the request-line method is exactly `GET` (case-sensitive). */
+    static boolean methodIsGet(HttpRequest request) {
+        return request.getMethod().equals("GET");
+    }
+
+    /**
+     * True iff header `name` is present and its value **contains** the
+     * `token` as a case-insensitive substring. The
+     * [`Headers`](../Headers.cajeta) map already lowercases names; this
+     * lowercases the value so `"WebSocket"` matches `"websocket"` and a
+     * `Connection: keep-alive, Upgrade` list matches the `upgrade` token.
+     * (`token` must be supplied lowercase.)
+     */
+    static boolean headerHasToken(Headers h, String name, String token) {
+        String v = h.get(name);
+        if (v == null) {
+            return false;
+        }
+        String lower = v.toLowerCase();
+        return lower.contains(token);
+    }
+
+    /** True iff header `name` is present with a non-empty value. */
+    static boolean hasNonEmpty(Headers h, String name) {
+        String v = h.get(name);
+        if (v == null) {
+            return false;
+        }
+        return v.byteLength > 0;
+    }
+
+    /**
+     * True iff `Sec-WebSocket-Version` is exactly `13` — the only version
+     * RFC 6455 defines. The value is OWS-trimmed by
+     * [`Headers`](../Headers.cajeta) on insert, so a bare `equals("13")`
+     * suffices.
+     */
+    static boolean versionIs13(Headers h) {
+        String v = h.get("Sec-WebSocket-Version");
+        if (v == null) {
+            return false;
+        }
+        return v.equals("13");
+    }
+}

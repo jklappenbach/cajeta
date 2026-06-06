@@ -4,7 +4,6 @@
 
 #include <llvm/Support/Error.h>
 
-#include <regex>
 #include <string>
 
 namespace cajeta::buildtool {

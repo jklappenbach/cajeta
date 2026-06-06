@@ -21,6 +21,14 @@ find_package(LLVM CONFIG QUIET)
 
 add_executable(${BINARY} ${TEST_SOURCES})
 
+# The networking test suite (Phase NET-*) shares fixtures/harnesses under
+# test/net/ that sibling directories include as `"net/Foo.h"` (e.g.
+# test/expression/NetCancellationTests.cpp -> "net/ReactorHarness.h"). Put the
+# test root on the include path so those root-relative includes resolve from
+# any subdirectory. Existing `"../jit/..."`-style relative includes are
+# unaffected (they resolve relative to the including file).
+target_include_directories(${BINARY} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # ROCm / upstream LLVM is built with LLVM_ENABLE_RTTI=OFF, so it ships no
 # C++ typeinfo for its own classes — it uses LLVM's hand-rolled
 # isa<>/dyn_cast<> RTTI instead. The llvm::Error consumers (toString /
@@ -42,6 +50,12 @@ target_link_libraries(${BINARY} PRIVATE
         ${CMAKE_PROJECT_NAME}_lib
         GTest::gtest
         GTest::gtest_main)
+
+# The build-tool HTTP test server (test/buildtool/TestHttpServer.h) speaks
+# Winsock2 on Windows; link the sockets library.
+if(WIN32)
+    target_link_libraries(${BINARY} PRIVATE ws2_32)
+endif()
 
 # Bake the project source root into the test binary so the disk-reading
 # CompilerTests (`canParseOnValidShortPackage`, etc.) can find their .cajeta

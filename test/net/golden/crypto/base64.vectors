@@ -1,0 +1,26 @@
+# Base64 golden vectors.
+#
+# Two alphabets are pinned (NET-11.3):
+#   std     -> RFC 4648 standard ('+' '/', '=' padding)
+#   urlsafe -> RFC 4648 url-safe ('-' '_', '=' padding)
+#
+# Format (fields '|'-separated):
+#   <name> | <input-spec> | <std-encoded> | <urlsafe-encoded>
+#
+# <input-spec> uses the same grammar as the SHA vectors. An empty
+# encoded field is written as the literal token <EMPTY> to keep the
+# column count stable.
+#
+# The RFC 4648 §10 progressive-length vectors ("", f, fo, foo, foob,
+# fooba, foobar) exercise every padding length (0, 1, 2 '=' chars).
+# The high-byte vectors prove the alphabet divergence: std emits
+# '+' '/', url-safe emits '-' '_'.
+empty   | empty            | <EMPTY>   | <EMPTY>
+f       | ascii:f          | Zg==      | Zg==
+fo      | ascii:fo         | Zm8=      | Zm8=
+foo     | ascii:foo        | Zm9v      | Zm9v
+foob    | ascii:foob       | Zm9vYg==  | Zm9vYg==
+fooba   | ascii:fooba      | Zm9vYmE=  | Zm9vYmE=
+foobar  | ascii:foobar     | Zm9vYmFy  | Zm9vYmFy
+hi-bytes| hex:fbffbf       | +/+/      | -_-_
+plusslash| hex:fb          | +w==      | -w==

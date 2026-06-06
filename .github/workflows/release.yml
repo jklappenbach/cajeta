@@ -62,8 +62,87 @@ env:
   GIT_LFS_SKIP_SMUDGE: 1
 
 jobs:
+  # Build the IntelliJ IDEA plugin once (plan §7). Its distribution zip is
+  # downloaded by every compiler build job and embedded into the binary
+  # (xxd -i in src/CMakeLists.txt) so `cajeta ide install` works from any
+  # distribution form. Built before the matrix via `needs: plugin`.
+  plugin:
+    name: build IDE plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java (JDK 21)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Sync plugin version to VERSION (D9)
+        run: |
+          set -euo pipefail
+          V=$(cat VERSION | tr -d '[:space:]')
+          echo "PLUGIN_VERSION=$V" >> "$GITHUB_ENV"
+          echo "::notice::IDE plugin version = $V"
+
+      - name: Build plugin
+        working-directory: ide-plugins/idea
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon -PpluginVersion="${PLUGIN_VERSION}" buildPlugin
+
+      # Structural / compatibility verification (242 … 261.*). Non-fatal: the
+      # JetBrains plugin verifier downloads IDE distributions and can be flaky /
+      # slow; a verifier hiccup shouldn't red the whole release. Tighten to a
+      # gate once it's proven stable in CI.
+      - name: Verify plugin (non-fatal)
+        working-directory: ide-plugins/idea
+        continue-on-error: true
+        run: ./gradlew --no-daemon -PpluginVersion="${PLUGIN_VERSION}" verifyPlugin
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cajeta-plugin
+          path: ide-plugins/idea/build/distributions/*.zip
+          if-no-files-found: warn
+
+      # Sign + publish to the JetBrains Marketplace (plan §8 / D10). Production
+      # only — never on dry-run — and pre-release tags (v*-rc1, v*-beta1) are
+      # skipped so they don't land on the stable channel. No-op (warning, not
+      # failure) until the signing cert / PUBLISH_TOKEN secrets are configured
+      # AND the one-time manual first upload has been done on the Marketplace.
+      - name: Publish plugin to JetBrains Marketplace
+        if: github.event_name == 'push' || inputs.mode == 'production'
+        working-directory: ide-plugins/idea
+        continue-on-error: true
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Skip pre-release tags (don't ship rc/beta to the stable channel).
+          if [ "${{ github.event_name }}" = "push" ]; then
+            case "${GITHUB_REF_NAME}" in
+              *-*) echo "::notice::pre-release tag ${GITHUB_REF_NAME}; skipping Marketplace publish"; exit 0 ;;
+            esac
+          fi
+          if [ -z "${PUBLISH_TOKEN:-}" ] || [ -z "${CERTIFICATE_CHAIN:-}" ]; then
+            echo "::warning::Marketplace secrets (PUBLISH_TOKEN / signing cert) not set; skipping signPlugin + publishPlugin"
+            exit 0
+          fi
+          # publishPlugin depends on signPlugin; run both explicitly for clarity.
+          ./gradlew --no-daemon -PpluginVersion="${PLUGIN_VERSION}" signPlugin publishPlugin
+
   build:
     name: build (${{ matrix.target }})
+    needs: plugin
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -183,13 +262,15 @@ jobs:
             llvm-22-dev \
             libllvm22 \
             libantlr4-runtime-dev \
-            openjdk-17-jre \
+            openjdk-21-jre \
             libgtest-dev \
             libgoogle-glog-dev \
             libzstd-dev \
             vim-common \
             libxxhash-dev \
-            libssl-dev
+            libssl-dev \
+            rpm \
+            file
           sudo apt-get install -y lld-22-dev || \
             echo "::warning::lld-22-dev unavailable on this runner; --emit=exe will fall back to system linker"
 
@@ -211,7 +292,7 @@ jobs:
             ninja \
             llvm \
             antlr4-cpp-runtime \
-            openjdk@17 \
+            openjdk@21 \
             googletest \
             glog \
             zstd \
@@ -240,7 +321,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup MSYS2 (Windows)
         if: runner.os == 'Windows'
@@ -262,6 +343,19 @@ jobs:
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-openssl
             vim
+
+      # ---- Fetch the prebuilt IDE plugin for embedding ------------------
+      # The `plugin` job built Cajeta's IDEA plugin once; drop its zip where
+      # src/CMakeLists.txt's embed glob looks (ide-plugins/idea/build/
+      # distributions/*.zip) so the Configure step below bakes it into the
+      # binary. Non-fatal: if it's missing, the embed falls back to a stub and
+      # `cajeta ide install` reports no bundled plugin (the compiler still ships).
+      - name: Download IDE plugin (for embedding)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: cajeta-plugin
+          path: ide-plugins/idea/build/distributions
 
       # ---- Configure + build (all platforms) ----------------------------
       # setup.sh's dep-install logic is gated by CAJETA_SKIP_DEPS=1 here
@@ -308,6 +402,58 @@ jobs:
         continue-on-error: ${{ matrix.target != 'x86_64-linux-gnu' }}
         run: NO_BUILD=1 ./release_tests.sh
 
+      # ---- Provision the installer toolchain ----------------------------
+      # WiX Toolset for the Windows MSI. Pinned to v5: v6/v7 require accepting
+      # the Open Source Maintenance Fee (OSMF) EULA. CPack's WIX generator uses
+      # the modern `wix` CLI (CPACK_WIX_VERSION >= 4, set in CPackOptions.cmake).
+      # dotnet is preinstalled on windows-latest; the UI extension is needed by
+      # the CPack-generated authoring. Append the tools dir to PATH for later
+      # steps (msys2 inherits the Windows PATH, so the bash cpack step sees wix).
+      - name: Provision WiX (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # ---- Build native installers (CPack) ------------------------------
+      # Wraps the CMake install() tree (top-level CMakeLists.txt §3) into the
+      # platform-native format(s). Linux: .deb + .rpm (both arches via the
+      # respective runners); Windows: .msi; macOS: .pkg (productbuild). The
+      # generic .tar.gz/.zip is still hand-staged below as the Tier-0 artifact.
+      # Runs in every mode (incl. dry-run) — the release-publish job is what
+      # gates on mode, so dry-run still produces + uploads installers.
+      #
+      # NOTE: the Linux .deb/.rpm dependency lists are only fully correct once
+      # the D2 Linux static-link lands (plan §3/§1); until then they may declare
+      # libLLVM. The package *shape* is produced and uploaded regardless.
+      - name: Build native installers
+        id: installers
+        # Non-fatal for now: the installer formats aren't validated end-to-end
+        # yet (D2 Linux static-link + §4 clean-container install-test + §6 macOS
+        # path/signing are still open). Producing them must NOT red the existing
+        # tarball release. Flip to a hard gate per-target as each is validated.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cd build
+          case "${{ runner.os }}" in
+            Linux)
+              cpack -G DEB
+              cpack -G RPM
+              ;;
+            macOS)
+              cpack -G productbuild
+              ;;
+            Windows)
+              cpack -G WIX
+              ;;
+          esac
+          echo "Produced installers:"
+          ls -la *.deb *.rpm *.msi *.pkg 2>/dev/null || true
+
       # ---- Package ------------------------------------------------------
       # MSYS2 ships bash + tar + zip, so the staging and archive logic
       # is uniform across all three platforms. cajeta the binary lands
@@ -349,6 +495,11 @@ jobs:
           path: |
             cajeta-v${{ steps.version.outputs.ref_version }}-${{ matrix.target }}.tar.gz
             cajeta-v${{ steps.version.outputs.ref_version }}-${{ matrix.target }}.zip
+            build/*.deb
+            build/*.rpm
+            build/*.msi
+            build/*.pkg
+            build/*.sha256
           if-no-files-found: ignore
 
   release:
@@ -428,6 +579,12 @@ jobs:
           files: |
             artifacts/**/cajeta-v*.tar.gz
             artifacts/**/cajeta-v*.zip
+            artifacts/**/cajeta-idea-*.zip
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
+            artifacts/**/*.msi
+            artifacts/**/*.pkg
+            artifacts/**/*.sha256
 
       - name: Dry-run summary
         if: steps.params.outputs.mode == 'dry-run'

@@ -30,6 +30,30 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
+        // The built-in standard library: these `cajeta.*` modules ship embedded
+        // in the compiler (cajeta_stdlib_embedded.cpp) and are compiled from
+        // source alongside user code, so they are neither fetched from a
+        // repository nor placed on the classpath — like Go's GOROOT or Zig's
+        // bundled `std`. A project may still *declare* them (the version pins
+        // the stdlib API level), but the resolver satisfies them implicitly.
+        //
+        // Scoped to the actual embedded roots so it does NOT swallow first-party
+        // packages that genuinely resolve (plugins like `cajeta.coverage` /
+        // `cajeta.lint.security`, or `cajeta.testkit`) — those are not stdlib and
+        // ship as their own artifacts. Keep in sync with runtime/src/cajeta/*.
+        bool isBuiltinStdlibDep(const std::string& name) {
+            static const char* const kStdlibRoots[] = {
+                "cajeta.codec", "cajeta.collection", "cajeta.error",
+                "cajeta.hash", "cajeta.io", "cajeta.lang", "cajeta.threading",
+                "cajeta.time", "cajeta.wire", "cajeta.xpu",
+            };
+            for (const char* root : kStdlibRoots) {
+                std::string r(root);
+                if (name == r || name.rfind(r + ".", 0) == 0) return true;
+            }
+            return false;
+        }
+
         std::vector<std::string> splitDots(const std::string& s) {
             std::vector<std::string> out;
             std::string cur;
@@ -845,6 +869,17 @@ namespace cajeta::buildtool {
 
         auto deps = parseDependencies(m);
         if (!deps) { closeTotal(); return deps.takeError(); }
+
+        // Drop built-in stdlib (`cajeta.*`) deps before resolution: they are
+        // satisfied by the compiler's embedded stdlib, not fetched. This lets a
+        // project that depends only on the stdlib build with no repositories
+        // configured and with no network — the common case for a fresh
+        // `cajeta init` project (and the bootstrap for first-party tools).
+        deps->erase(std::remove_if(deps->begin(), deps->end(),
+                        [](const DependencySpec& d) {
+                            return isBuiltinStdlibDep(d.name);
+                        }),
+                    deps->end());
 
         auto repoSpecs = parseRepositories(m);
         if (!repoSpecs) { closeTotal(); return repoSpecs.takeError(); }

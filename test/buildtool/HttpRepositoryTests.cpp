@@ -25,6 +25,7 @@
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/repo/HttpRepository.h"
 #include "TestHttpServer.h"
+#include "TempTeardown.h"
 
 #include <gtest/gtest.h>
 #include <llvm/Support/Error.h>
@@ -37,7 +38,7 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
+#include "../PortableEnv.h"
 
 using cajeta::buildtool::HttpRepository;
 using cajeta::buildtool::loadManifestString;
@@ -68,7 +69,7 @@ namespace {
     std::filesystem::path makeTempDir(const std::string& tag) {
         auto p = std::filesystem::temp_directory_path() /
                  ("cajeta-http-test-" + tag + "-" +
-                  std::to_string(::getpid()) + "-" +
+                  std::to_string(cajeta_getpid()) + "-" +
                   std::to_string(::rand()));
         std::filesystem::create_directories(p);
         return p;
@@ -189,7 +190,7 @@ TEST(HttpRepositoryTests, listVersionsParsesV1Response) {
     EXPECT_EQ((*vers)[1], "1.2.3");
     EXPECT_EQ((*vers)[2], "1.2.4");
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryTests, listVersionsReturnsEmptyOn404) {
@@ -203,7 +204,7 @@ TEST(HttpRepositoryTests, listVersionsReturnsEmptyOn404) {
     ASSERT_TRUE((bool)vers) << errorText(vers.takeError());
     EXPECT_TRUE(vers->empty());
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryTests, fetchWritesArtifactToStageDir) {
@@ -221,7 +222,7 @@ TEST(HttpRepositoryTests, fetchWritesArtifactToStageDir) {
     std::ostringstream got; got << in.rdbuf();
     EXPECT_EQ(got.str(), body);
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryTests, fetchManifestJsonReturnsManifestEndpoint) {
@@ -238,7 +239,7 @@ TEST(HttpRepositoryTests, fetchManifestJsonReturnsManifestEndpoint) {
     ASSERT_TRUE(js->has_value());
     EXPECT_EQ(**js, manifest);
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryTests, fetchManifestJsonReturnsNulloptOn404) {
@@ -252,7 +253,7 @@ TEST(HttpRepositoryTests, fetchManifestJsonReturnsNulloptOn404) {
     ASSERT_TRUE((bool)js) << errorText(js.takeError());
     EXPECT_FALSE(js->has_value());
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryTests, fetchErrorsOnNonSuccessStatus) {
@@ -268,7 +269,7 @@ TEST(HttpRepositoryTests, fetchErrorsOnNonSuccessStatus) {
     EXPECT_NE(msg.find("500"), std::string::npos)
         << "expected status citation, got: " << msg;
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 // ─── bearer-token auth (literal and env-var forms) ────────────────────
@@ -288,7 +289,7 @@ TEST(HttpRepositoryTests, bearerLiteralTokenLandsInAuthHeader) {
 
     EXPECT_EQ(srv.lastAuthHeader(), "Bearer secret-literal-xyz");
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryTests, bearerEnvTokenLandsInAuthHeader) {
@@ -310,7 +311,7 @@ TEST(HttpRepositoryTests, bearerEnvTokenLandsInAuthHeader) {
     EXPECT_EQ(srv.lastAuthHeader(), "Bearer secret-env-abc");
 
     ::unsetenv("CAJETA_HTTP_TESTS_TOKEN");
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryTests, missingEnvVarSendsNoAuthHeader) {
@@ -331,5 +332,5 @@ TEST(HttpRepositoryTests, missingEnvVarSendsNoAuthHeader) {
     ASSERT_TRUE((bool)vers) << errorText(vers.takeError());
     EXPECT_EQ(srv.lastAuthHeader(), "");
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }

@@ -1,0 +1,176 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+import cajeta.net.IpAddress;
+import cajeta.net.SocketAddress;
+import cajeta.net.TcpStream;
+import cajeta.net.NetErrors;
+import cajeta.net.NetException;
+import cajeta.net.reactor.Reactor;
+
+// NOTE (NET / b1 socket receiver-lowering): the listener surface. `bind` /
+// `accept` / `acceptFd` / `boundPort` / `close` are intrinsic-lowered at the
+// call site (see MethodCallExpression.cpp, `cajeta.net.TcpListener` block).
+// `acceptAsync` (NET-3.3 / b3) is a pure-Cajeta readiness loop over the lowered
+// `acceptFd` + the WouldBlock classifier + `cajeta.net.reactor.Reactor` (which
+// b3 un-gates) — it parks the fiber on listener-readability instead of blocking
+// the carrier in `accept`.
+
+/**
+ * A **passive TCP listening socket** — `bind` + `listen` + a blocking
+ * [`accept`](#accept) that returns one accepted connection (plan item
+ * **NET-1.4**). The method bodies are intrinsic-lowered at the call site
+ * (exactly as `File`'s are); the stub bodies exist for the parser.
+ */
+public class TcpListener {
+    /**
+     * The OS listening-socket descriptor, or `-1` once closed. First declared
+     * field → struct field index 1 (after the vtable), the same index
+     * `File` / `TcpStream` use.
+     */
+    public int32 fd;
+
+    /**
+     * Internal handle ctor wired by [`bind`](#bind).
+     *
+     * NOTE (b1): the listener carries only `fd`. The full
+     * `localAddress() -> SocketAddress` accessor (which materializes a
+     * `SocketAddress` object) arrives with the object-materializing lowering
+     * in a later increment; b1 exposes [`boundPort`](#boundPort) instead. The
+     * `bind` static lowering allocates this object directly (bypassing this
+     * ctor, like `File.open`), so keeping the struct to a single `fd` field
+     * avoids a non-primitive field the bypass would leave uninitialized.
+     */
+    public TcpListener(int32 fd) {
+        this.fd = fd;
+    }
+
+    // ----- bind / listen factory -------------------------------------------
+
+    /**
+     * Bind a fresh TCP listening socket to `addr` and start listening with the
+     * default backlog (128). Intrinsic-lowered to
+     * `__cajeta_net_socket` → `__cajeta_net_set_reuseaddr` →
+     * `__cajeta_net_sockaddr_pack` → `__cajeta_net_bind` →
+     * `__cajeta_net_listen`, returning an owned, listening `TcpListener`.
+     */
+    public static #TcpListener bind(SocketAddress addr) {
+        return heap TcpListener(-1);
+    }
+
+    // ----- accept ----------------------------------------------------------
+
+    /**
+     * Block until a client connects, then return the accepted connection as a
+     * `TcpStream` (NET-1.3). Intrinsic-lowered: `connFd =
+     * __cajeta_net_accept(this.fd, null, null)` → `heap TcpStream(connFd)`.
+     */
+    public #TcpStream accept() {
+        return heap TcpStream(this.acceptFd());
+    }
+
+    /**
+     * The fd-level half of [`accept`](#accept): block for one connection and
+     * return its **raw descriptor** (`>= 0`), or `throw` on failure.
+     * Intrinsic-lowered to `__cajeta_net_accept(this.fd, null, null)`.
+     */
+    public int32 acceptFd() {
+        return -1;
+    }
+
+    // ----- async accept (NET-3.3 / b3) -------------------------------------
+    //
+    // WouldBlock classifier + non-blocking toggle, bound to the NET-1.7 native
+    // shim (the same bridges `TcpStream` uses). `@Native` private static
+    // forwarders; static dispatch bypasses the vtable so there is no
+    // `final`-class gating concern.
+
+    /** 1 iff the last socket op failed with WouldBlock / in-progress. */
+    @Native("__cajeta_net_is_wouldblock")
+    private static int32 isWouldBlockNative();
+
+    /** The normalized `cajeta_net_err` ordinal of the last socket op. */
+    @Native("__cajeta_net_last_error")
+    private static int32 lastErrorNative();
+
+    /** Toggle non-blocking mode on `fd` (tracked form). Returns 0 / -1. */
+    @Native("__cajeta_net_set_nonblocking_tracked")
+    private static int32 setNonBlockingNative(int32 fd, int32 nonblocking);
+
+    /**
+     * Async accept — **park the fiber** (not the carrier) on the listening
+     * socket until a connection is pending, then return it as a
+     * [`TcpStream`](TcpStream.cajeta) (plan item **NET-3.3**). The async twin
+     * of [`accept`](#accept): the listener fd is put into non-blocking mode and
+     * the reactor initialized once; a non-blocking [`acceptFd`](#acceptFd)
+     * either returns a connection fd (`>= 0`) or `-1`. On `-1` the WouldBlock
+     * classifier parks via
+     * [`Reactor.awaitReadable`](reactor/Reactor.cajeta#awaitReadable) and
+     * retries; any other error raises the mapped
+     * [`NetException`](NetException.cajeta) subtype. The returned stream is
+     * **owned** by the caller.
+     */
+    public #TcpStream acceptAsync() {
+        int32 lfd = this.fd;
+        TcpListener.setNonBlockingNative(lfd, 1);
+        Reactor.init();
+        int32 connFd = -1;
+        boolean done = false;
+        while (!done) {
+            int32 c = this.acceptFd();
+            if (c >= 0) {
+                connFd = c;
+                done = true;
+            } else {
+                if (TcpListener.isWouldBlockNative() == 1) {
+                    Reactor.awaitReadable(lfd);   // park; retry on a pending conn
+                } else {
+                    int32 err = TcpListener.lastErrorNative();
+                    throw NetErrors.fromErrno(err, "acceptAsync");
+                }
+            }
+        }
+        return heap TcpStream(connFd);
+    }
+
+    // ----- address ---------------------------------------------------------
+
+    /**
+     * The kernel-assigned local **port** this listener is bound to (resolves
+     * the ephemeral port for a `:0` bind). Intrinsic-lowered to
+     * `__cajeta_net_getsockname(this.fd, scratch, &len)` →
+     * `__cajeta_net_sockaddr_unpack(scratch, len, octets, &port)`, returning
+     * the unpacked `port`. The lightweight port-only query the b1 loopback
+     * echo uses to connect a client back to an ephemeral-port listener
+     * (the full `SocketAddress`-returning `localAddress()` arrives with the
+     * object-materializing lowering in a later increment).
+     */
+    public int32 boundPort() {
+        return -1;
+    }
+
+    /**
+     * The bound local endpoint as a materialized [`SocketAddress`](SocketAddress.cajeta).
+     *
+     * **Placeholder** pending the object-materializing `getsockname` lowering
+     * (the increment that resolves the kernel-assigned address/port into a
+     * fresh `SocketAddress`). Until then this returns the IPv4 wildcard
+     * `0.0.0.0:0` so the `Server` / `HttpServer` `localAddress()` accessors
+     * that read through to it stay constructible and type-stable. The
+     * lightweight port-only query the b1 loopback echo needs is
+     * [`boundPort`](#boundPort), which is intrinsic-lowered today.
+     */
+    public #SocketAddress localAddress() {
+        return heap SocketAddress();
+    }
+
+    // ----- lifecycle -------------------------------------------------------
+
+    /**
+     * Close the listening socket. Idempotent — sets `this.fd = -1` so a second
+     * call is a no-op. Lowers to `__cajeta_net_close(this.fd)`.
+     */
+    public void close() {
+        return;
+    }
+}

@@ -1,0 +1,63 @@
+package cajeta.net.uri;
+
+import cajeta.net.NetException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by [`Uri.parse`](Uri.cajeta) when the input is not a
+ * well-formed URI per **RFC 3986**. The `position` field carries the
+ * 0-based byte offset at which the parser noticed the problem, so the
+ * caller can point at the offending character.
+ *
+ * ## Hierarchy
+ *
+ * The networking spec ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md)
+ * §Error model) places `MalformedUri` under
+ * [`cajeta.net.NetException`](../NetException.cajeta) (plan item
+ * **NET-6.5**), the networking peer of `cajeta.io.file.IoException`.
+ * `NetException` (plan item **NET-1.8**) has now landed, so this class
+ * extends it directly — every `cajeta.net` failure, socket-layer or
+ * URI-layer, is catchable as a single `NetException`. (NET-6.1
+ * originally rooted this on `cajeta.error.RecoverableException` as a
+ * placeholder, because NET-1.8 had not yet been built; NET-6.5 is that
+ * one-line reparent.)
+ *
+ * `NetException extends cajeta.error.RecoverableException`, so the
+ * `Recoverable` discipline is unchanged: a caller of `Uri.parse`
+ * either catches `MalformedUriException` (or the `NetException` root)
+ * explicitly, or declares it in its `throws` clause and propagates
+ * upward — exactly as the [`cajeta.io.file`](../../io/file/IoException.cajeta)
+ * hierarchy does. The `(message, position)` constructor contract is
+ * **unchanged** from NET-6.1; existing call sites and
+ * `e.position`-reading catch blocks keep working byte-for-byte.
+ *
+ * ## The inherited `kind`
+ *
+ * As a `NetException`, every instance carries the cross-platform
+ * [`kind`](../NetException.cajeta) ordinal so a single
+ * `catch (NetException e)` can branch on `e.kind`. A malformed URI is
+ * a *parse* failure, not an errno-derived socket error, so it is
+ * classified to [`NetException.KIND_INVALID`](../NetException.cajeta)
+ * (12) — the "invalid input" bucket (the
+ * [`Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md) chart
+ * maps `EINVAL` and friends here). The precise byte offset still lives
+ * in `position`; `kind` is the coarse cross-subtype discriminant.
+ *
+ * This mirrors [`cajeta.codec.json.JsonParseException`](../../codec/json/JsonParseException.cajeta),
+ * which carries the same `(message, position)` shape.
+ */
+public class MalformedUriException extends NetException {
+    /**
+     * Byte offset (0-based) into the original input at which the
+     * parser rejected the URI. `-1` when the failure is not tied to a
+     * single position (e.g. a wholly empty input).
+     */
+    public int64 position;
+
+    public MalformedUriException(String message, int64 position) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 12;   // NetException.KIND_INVALID
+        this.position = position;
+    }
+}

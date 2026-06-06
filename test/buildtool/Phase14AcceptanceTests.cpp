@@ -29,7 +29,8 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <unistd.h>
+
+#include "../PortableEnv.h"
 
 using cajeta::buildtool::computeDispatchDecision;
 using cajeta::buildtool::DispatchAction;

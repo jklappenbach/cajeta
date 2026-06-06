@@ -23,6 +23,10 @@ add_definitions(-DANTLR4CPP_STATIC)
 
 find_package(glog 0.6.0 REQUIRED)
 find_package(GTest REQUIRED)
+# zlib backs the embedded-IDE-plugin extraction (`cajeta ide install`): the
+# plugin distribution zip's DEFLATE entries are raw-inflated via zlib. Linked
+# unconditionally (the lld branch below also uses it, but that path is optional).
+find_package(ZLIB REQUIRED)
 # libcrypto from OpenSSL backs `cajeta archive sign` / `verify-sig`
 # (ed25519 detached signatures + PEM key parsing). See
 # cajeta-docs/ArchiveManagement.md §8.
@@ -333,14 +337,24 @@ if(APPLE)
     list(APPEND CAJETA_RT_FLAGS "-fno-emulated-tls")
 endif()
 
+# cajeta_runtime.c is a single TU that `#include`s the per-subsystem native
+# sources (cajeta_net_*.c, cajeta_hash_*.c, …). A bare `DEPENDS` on the top
+# file would NOT rebuild the bitcode when one of those included .c files
+# changes — clang emits no dependency info without `-MD`. Emit a depfile and
+# wire it through `DEPFILE` so every transitive include is tracked (Ninja);
+# otherwise edits to an included runtime source silently ship a stale bitcode
+# (a real bug: a new intrinsic added to e.g. cajeta_net_socket.c would be
+# missing from the embedded runtime, so getRuntimeFunction can't find it).
 add_custom_command(
         OUTPUT ${CAJETA_RT_BC}
         COMMAND ${CAJETA_CLANG} -c -emit-llvm -O2 -fno-builtin
                 -ffunction-sections -fdata-sections
+                -MD -MF ${CAJETA_RT_BC}.d
                 -I${CAJETA_XXHASH_INCLUDE_DIR}
                 ${CAJETA_RT_FLAGS}
                 -o ${CAJETA_RT_BC} ${CAJETA_RT_SRC}
         DEPENDS ${CAJETA_RT_SRC}
+        DEPFILE ${CAJETA_RT_BC}.d
         COMMENT "Compiling Cajeta runtime to LLVM bitcode")
 
 # xxd -i derives the C variable name from the input filename, so we run it in
@@ -360,6 +374,15 @@ list(APPEND GENERATED_SOURCES ${CAJETA_RT_EMBED})
 # embedded bitcode version; the native one only matters for the test binary.
 set_source_files_properties(${CAJETA_RT_SRC} PROPERTIES LANGUAGE C)
 list(APPEND GENERATED_SOURCES ${CAJETA_RT_SRC})
+
+# cajeta.net TLS engine (NET-5.1). Compiled as a STANDALONE native C object —
+# NOT #included into cajeta_runtime.c — so OpenSSL's headers stay out of the
+# embedded JIT bitcode (which is loaded into every JIT test). The `__cajeta_tls_*`
+# symbols land in libcajeta_lib, so the test binary calls them directly and the
+# JIT resolves them through its process-symbol generator at @Native call sites.
+set(CAJETA_TLS_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_tls.c)
+set_source_files_properties(${CAJETA_TLS_SRC} PROPERTIES LANGUAGE C)
+list(APPEND GENERATED_SOURCES ${CAJETA_TLS_SRC})
 
 # Embed the cajeta stdlib `.cajeta` source files into the compiler binary.
 # The Compiler iterates the resulting cajeta::stdlib::g_files manifest at
@@ -396,7 +419,33 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
+        # ── cajeta.net (cajeta-net branch, NET-* plan) — PURE-LOGIC SLICE.
+        # Only directories whose .cajeta sources are pure logic (no socket /
+        # reactor intrinsic calls) are eagerly compiled here. The socket-backed
+        # files call compiler receiver-dispatch lowering that isn't implemented
+        # yet (NET-1.3 / MethodCallExpression.cpp); eager-compiling them crashes
+        # the stdlib build. Those are isolated under gated subdirs and are NOT
+        # listed: cajeta/net/socket, cajeta/net/reactor, cajeta/net/dns, and the
+        # socket-backed files of net/http + net/ws (see net/http/socket,
+        # net/ws/socket). The embed glob is non-recursive, so listing net/http
+        # picks up only its pure message-model files, not net/http/socket.
+        # cajeta.net core: NetException + exception hierarchy + Headers +
+        # TcpStream/TcpListener/UdpSocket (sync surface, b1/b2) + the async
+        # buffered-stream trio AsyncReader/AsyncWriter/RingBuffer (NET-3.5, b3).
+        # The async trio declares `package cajeta.net` and lives here (NOT under
+        # net/socket): the JIT compile path enforces package==dir, so a file
+        # under net/socket would have to declare `package cajeta.net.socket`.
+        # The b5 server stack (Server/SharedPoolServer/ConnectionLimiter/...)
+        # is isolated under net/socket/server (NOT listed) so it stays gated.
+        ${CAJETA_STDLIB_ROOT}/cajeta/net
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/reactor  # async I/O reactor (NET-3.1 @Native bridges, b3)
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/dns      # DNS (NET-2, b4) — diagnostic un-gate
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/tls      # TLS engine surface (NET-5, b6)
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/uri      # RFC 3986 URI parse/build (NET-6)
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/http     # HTTP/1.1 message model (NET-7) — pure files; net/http/socket gated
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/ws       # WebSocket frame codec + protocol (NET-10) — pure files; net/ws/socket gated
         ${CAJETA_STDLIB_ROOT}/cajeta/wire
+        ${CAJETA_STDLIB_ROOT}/cajeta/codec        # Base64 (NET-11.3)
         ${CAJETA_STDLIB_ROOT}/cajeta/codec/json
         # Larger-than-memory collections. Listed after collection/wire/
         # io.file so its dependencies (BPlusTree shape, Encoder, File) are
@@ -453,6 +502,44 @@ add_custom_command(
 
 set_source_files_properties(${CAJETA_STDLIB_EMBED} PROPERTIES GENERATED TRUE)
 list(APPEND GENERATED_SOURCES ${CAJETA_STDLIB_EMBED})
+# ------------------------------------------------------------------------------
+
+# --- Embedded IntelliJ IDEA plugin (plan §7) ---------------------------------
+# Embed the plugin distribution zip into the compiler binary via xxd -i (same
+# mechanism as the runtime bitcode), so `cajeta ide install` can extract it
+# into the IDE plugins dir from any distribution form (D8). The Gradle build
+# (release.yml §10) drops Cajeta-<ver>.zip under build/distributions/ before
+# this configure runs. When no zip is present (a configure before the plugin
+# build, e.g. a fresh dev tree), embed a zero-length stub so the build still
+# links; `cajeta ide install` then reports no bundled plugin.
+set(CAJETA_PLUGIN_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_plugin_embedded.cpp)
+file(GLOB CAJETA_PLUGIN_ZIPS CONFIGURE_DEPENDS
+     ${PROJECT_SOURCE_DIR}/ide-plugins/idea/build/distributions/*.zip)
+if(CAJETA_PLUGIN_ZIPS)
+    list(GET CAJETA_PLUGIN_ZIPS 0 CAJETA_PLUGIN_ZIP)
+    # xxd derives the C symbol from the input filename, so copy to a stable
+    # name (cajeta_plugin.zip) first → symbols cajeta_plugin_zip[/ _len].
+    add_custom_command(
+        OUTPUT ${CAJETA_PLUGIN_EMBED}
+        COMMAND ${CMAKE_COMMAND} -E copy ${CAJETA_PLUGIN_ZIP}
+                ${CMAKE_CURRENT_BINARY_DIR}/cajeta_plugin.zip
+        COMMAND ${CAJETA_XXD} -i cajeta_plugin.zip ${CAJETA_PLUGIN_EMBED}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS ${CAJETA_PLUGIN_ZIP}
+        COMMENT "Embedding IDE plugin ${CAJETA_PLUGIN_ZIP}")
+    message(STATUS "Embedding IDE plugin: ${CAJETA_PLUGIN_ZIP}")
+else()
+    # Zero-length stub matching the xxd symbol names. Written at configure time
+    # (no command) so the source always exists; CONFIGURE_DEPENDS on the glob
+    # re-runs cmake and flips to the xxd path once a zip appears.
+    file(WRITE ${CAJETA_PLUGIN_EMBED}
+        "// AUTO-GENERATED stub: no IDE plugin zip available at build time.\n"
+        "unsigned char cajeta_plugin_zip[1] = { 0 };\n"
+        "unsigned int cajeta_plugin_zip_len = 0;\n")
+    message(STATUS "No IDE plugin zip under ide-plugins/idea/build/distributions/; embedding stub")
+endif()
+set_source_files_properties(${CAJETA_PLUGIN_EMBED} PROPERTIES GENERATED TRUE)
+list(APPEND GENERATED_SOURCES ${CAJETA_PLUGIN_EMBED})
 # ------------------------------------------------------------------------------
 
 # Isolate the llvm::Error consumers (toString/cantFail/consumeError) used by
@@ -554,6 +641,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         glog::glog
         zstd
         ZLIB::ZLIB
+        OpenSSL::SSL
         OpenSSL::Crypto
         CURL::libcurl)
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
@@ -561,7 +649,13 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
 # Only the test binary actually pulls the native runtime object; on
 # cajeta.exe this is a harmless unused import.
 if(WIN32)
-    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt)
+    # bcrypt: __cajeta_alloc/random helpers. ws2_32: the cajeta.net native
+    # runtime (cajeta_net_*.c, #included into cajeta_runtime.c) calls Winsock —
+    # WSAStartup/socket/bind/getaddrinfo/select/etc. crypt32: the OS trust-store
+    # shim in cajeta_tls.c (CertOpenSystemStore / CertEnumCertificatesInStore,
+    # NET-5.3). PUBLIC so every consumer (cajeta.exe, cajeta_test,
+    # cajeta_debug_test) inherits the import lib.
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt ws2_32 crypt32)
 endif()
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src

@@ -87,7 +87,7 @@ TEST(MeltUpgraderTests, planFindsHighestVersionAcrossRepos) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "platform.melt@1.0.0" ]
         }
@@ -120,7 +120,7 @@ TEST(MeltUpgraderTests, planExplicitVersionPicksThatVersion) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "platform.melt@1.0.0" ]
         }
@@ -146,7 +146,7 @@ TEST(MeltUpgraderTests, planErrorsForUndeclaredName) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "platform.melt@1.0.0" ]
         }
@@ -181,7 +181,7 @@ TEST(MeltUpgraderTests, planNoChangeWhenAlreadyAtHighest) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "p.melt@1.0.0" ]
         }
@@ -215,7 +215,7 @@ TEST(MeltUpgraderTests, depDeltaSurfacesAddedRemovedChanged) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "p.melt@1.0.0" ]
         }
@@ -253,7 +253,7 @@ TEST(MeltUpgraderTests, applyRewritesMeltsEntry) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "p.melt@1.0.0" ]
         }
@@ -281,7 +281,7 @@ TEST(MeltUpgraderTests, applyIsNoOpWhenNothingChanged) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "p.melt@1.0.0" ]
         }

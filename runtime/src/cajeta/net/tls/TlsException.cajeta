@@ -1,0 +1,19 @@
+package cajeta.net.tls;
+
+import cajeta.lang.String;
+import cajeta.net.NetException;
+
+/**
+ * Base type for TLS faults (**NET-5.6**) — a [`NetException`](../NetException.cajeta)
+ * so a caller that catches the net root catches TLS errors too. Raised for a
+ * handshake that fails for a non-certificate reason (protocol/library error,
+ * or the peer closing mid-handshake); certificate faults use the
+ * [`CertificateInvalidException`](CertificateInvalidException.cajeta) subtype.
+ */
+public class TlsException extends NetException {
+    public TlsException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 99;   // NetException.KIND_OTHER
+    }
+}

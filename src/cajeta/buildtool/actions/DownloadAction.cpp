@@ -32,8 +32,7 @@
 #include <string>
 #include <vector>
 
-#include <sys/wait.h>
-#include <unistd.h>
+#include "cajeta/buildtool/Subprocess.h"
 
 namespace cajeta::buildtool {
 
@@ -92,26 +91,13 @@ namespace cajeta::buildtool {
                 "--output", to->str(),
                 url->str(),
             };
-            // Convert argv to char* for execvp.
-            std::vector<char*> argp;
-            for (auto& a : argv) argp.push_back(a.data());
-            argp.push_back(nullptr);
-
-            pid_t pid = ::fork();
-            if (pid < 0) {
-                return err("download: fork failed");
+            SubprocessOptions so;
+            so.argv = argv;
+            SubprocessResult res = runSubprocess(so);
+            if (!res.launched) {
+                return err("download: failed to launch curl: " + res.error);
             }
-            if (pid == 0) {
-                ::execvp("curl", argp.data());
-                _exit(127);
-            }
-            int status = 0;
-            while (::waitpid(pid, &status, 0) < 0) {
-                // restart on EINTR
-            }
-            int exitCode = 0;
-            if (WIFEXITED(status)) exitCode = WEXITSTATUS(status);
-            else if (WIFSIGNALED(status)) exitCode = 128 + WTERMSIG(status);
+            int exitCode = res.code();
             if (exitCode == 127) {
                 return err("download: 'curl' not found in PATH "
                            "(Phase 4 uses curl as the HTTP transport; "

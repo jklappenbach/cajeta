@@ -399,11 +399,19 @@ namespace cajeta {
                 return nullptr;
             }
 
-            // Resolve this level's user-supplied size, loaded if it came from an alloca.
+            // Resolve this level's user-supplied size, coerced l-value →
+            // r-value. The same fix ArrayIndexExpression needed (see
+            // Expression.cpp): a field-read dimension like
+            // `new int8[this.chunkSize]` or a static-final
+            // `new int8[AsyncWriter.DEFAULT_BUFFER]` returns a GEP /
+            // GlobalVariable slot pointer, not an AllocaInst — the old
+            // alloca-only check left it a `ptr`, and the CreateIntCast
+            // below sext'd a pointer (LLVM verify error: "SExt only
+            // operates on integer"). loadIfLValue loads through GEP and
+            // GlobalVariable slots alike.
             llvm::Value* count = children[level]->generateCode(module);
-            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(count)) {
-                count = builder->CreateLoad(a->getAllocatedType(), a);
-            }
+            auto countAst = dynamic_pointer_cast<Expression>(children[level]);
+            count = loadIfLValue(module, count, countAst);
             if (count->getType() != i64Ty) {
                 count = builder->CreateIntCast(count, i64Ty, /*isSigned=*/true);
             }

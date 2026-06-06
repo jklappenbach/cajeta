@@ -1756,6 +1756,68 @@ Each is a decision, not a unit of work.
       shipping as `cajeta.*`. *Lean:* `cajeta.coverage`,
       `cajeta.lint.security`, possibly `cajeta.fmt.import-order`.
 
+### AOT executable linking (`--emit=exe`) — DONE (cc-driver)
+
+`Compiler::linkExecutable` now links through the **system C compiler/driver**
+(`$CC`, else `cc`/`clang`/`gcc`, found on PATH) rather than a raw in-process
+linker. The driver locates the platform CRT, startup objects, libc, and lib
+search paths and picks the right object format (ELF / COFF-mingw / Mach-O) for
+the host — robust and portable, the same approach rustc/ghc use. Runtime
+platform libs are added explicitly (`-lbcrypt -lpthread` on Windows;
+`-lpthread -lm -ldl` on Linux; `-lpthread` on macOS). Spawned via the build
+tool's portable `Subprocess` helper. **Verified: a scaffolded `cajeta init`
+project compiles fully offline, links, and runs (`hello from ...`, exit 0) as a
+native Windows PE.** This previously never worked on any platform.
+
+- [x] Driver-based link with correct per-OS object format + CRT/libc.
+- [x] `hello world` round-trip on Windows (compile → link → run).
+- [ ] Verify on Linux + macOS runners (the per-OS lib lists are best-effort,
+      untested off Windows).
+- [ ] `--linker-arg` passthrough for advanced cases (static linking, custom
+      sysroot, extra libs).
+- [ ] On Windows, append `.exe` to the output name (currently the artifact is
+      extension-less, e.g. `build/exe/com.example.basic`; it runs, but `.exe`
+      is conventional).
+- [ ] Prerequisite path for [[aot-debuginfo-and-release-stripping-plan]] —
+      split-debug/strip plug into this driver link (e.g. `-g`/`-s`/`objcopy`).
+
+### Program entry & command-line arguments
+
+`--emit=exe` accepts a static no-arg `main()` or `main(String[] args)`. The C
+`main(argc, argv)` shim (`Compiler::emitCMainShim`) materializes the cajeta
+`String[]` from argv via the `__cajeta_args_make` runtime helper (struct
+size/offsets + vtable passed from IR via DataLayout, so no hardcoded String
+ABI) and forwards it. `-D<key>=<value>` startup tokens are still consumed into
+system properties before the args vector is built.
+
+- [x] `main(String[] args)` receives the program arguments — **verified
+      end-to-end** (a program echoing `args[0..2]` prints the program path +
+      each argument, exit 0).
+- [x] **FIXED — array-of-class element access as a String argument.**
+      `println(args[i])` / `println(x[i])` for a `String[]` printed garbage /
+      segfaulted because `loadStringArg` only loaded *alloca* l-values, not the
+      array-element (or class-field) GEP, so it passed the element *slot
+      address* as the String pointer. Now routes through `loadIfLValue` (the
+      established l-value→r-value helper, which loads reference-array elements
+      and class fields as `ptr`), matching what BinaryOpExpression already does.
+      Also corrected `__cajeta_args_make`: `String[]` slots are `str_size`-
+      strided but hold a `String*` per element (matches the aggregate-init
+      lowering). Regression-checked: 194/194 across String/Stream/Json/
+      expression/Array suites.
+- [ ] Decide whether argv[0] (the program name) is included or stripped from
+      `args` (currently included; the `-D` scan skips index 0 but the args
+      vector does not). *Lean:* strip argv[0] so `args` is just user arguments,
+      matching most CLIs; expose the program path another way.
+- [ ] Drop-chain / ownership audit for the materialized `String[]` (owned
+      Strings holding heap byte copies) — confirm clean reclamation when `main`
+      drops the array vs. leaks-at-exit.
+- [ ] `int32 main(String[] args)` return path is exercised end-to-end (exit
+      code) once a CLI program (cvm) uses it.
+- [ ] Honor the reproducibility flags now accepted by the compiler
+      (`--source-date-epoch`, `--debug-prefix-map`, `--seed`) where the emit
+      stage embeds timestamps / paths (currently accepted + stored, not yet
+      consumed).
+
 ---
 
 ## Risks

@@ -240,19 +240,20 @@ TEST(FlavorTests, toCompilerFlagsRendersDeterministically) {
     using cajeta::buildtool::toCompilerFlags;
     llvm::json::Object props{
         {"opt",           "O2"},
-        {"asan",          true},
-        {"strip-symbols", false},
-        {"bounds-check",  "off"},
+        {"asan",          true},    // no compiler frontend flag — dropped
+        {"strip-symbols", false},   // no compiler frontend flag — dropped
+        {"bounds-check",  "off"},   // lowers to --bounds
+        {"source-tags",   true},    // boolean → --source-tags=on
     };
     auto flags = toCompilerFlags(props);
-    // Vocabulary order: opt, lto, debug-info, strip-symbols,
-    // bounds-check, null-checks, overflow-checks, asan, tsan, msan,
-    // ubsan, analytics, source-tags. Skip-on-absent.
-    ASSERT_EQ(flags.size(), 4u);
+    // Only properties that map to a compiler frontend flag are lowered, in
+    // vocabulary order, using the MAPPED flag name (bounds-check -> bounds).
+    // lto / debug-info / strip-symbols / sanitizers / analytics have no
+    // frontend flag and are honored at the emit/link stage instead.
+    ASSERT_EQ(flags.size(), 3u);
     EXPECT_EQ(flags[0], "--opt=O2");
-    EXPECT_EQ(flags[1], "--strip-symbols=false");
-    EXPECT_EQ(flags[2], "--bounds-check=off");
-    EXPECT_EQ(flags[3], "--asan=true");
+    EXPECT_EQ(flags[1], "--bounds=off");
+    EXPECT_EQ(flags[2], "--source-tags=on");
 }
 
 TEST(FlavorTests, validateCustomFlavorsAcceptsValidChain) {

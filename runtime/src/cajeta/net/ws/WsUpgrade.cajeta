@@ -1,0 +1,145 @@
+package cajeta.net.ws;
+
+import cajeta.lang.String;
+import cajeta.net.AsyncReader;
+import cajeta.net.AsyncWriter;
+import cajeta.net.uri.Uri;
+import cajeta.net.http.HttpRequest;
+import cajeta.net.http.HttpResponse;
+import cajeta.net.http.HttpParser;
+import cajeta.net.http.HttpSerializer;
+import cajeta.net.ws.WebSocket;
+import cajeta.net.ws.WsServerHandshake;
+import cajeta.net.ws.WsClientHandshake;
+
+/**
+ * The **WebSocket entry points** (RFC 6455 §4) — plan item **NET-10.7**: the
+ * socket-facing glue that runs the opening handshake over a buffered
+ * transport and hands back a live [`WebSocket`](WebSocket.cajeta), for both
+ * roles:
+ *
+ *   - [`acceptServer`](#acceptServer) — the **server** side: read the client
+ *     Upgrade request, validate + answer it with `101 Switching Protocols`
+ *     ([`WsServerHandshake`](WsServerHandshake.cajeta), NET-10.2), then switch
+ *     the connection to server-role WS framing
+ *     ([`WebSocket.forServer`](WebSocket.cajeta#forServer)). This is the
+ *     `HttpServer route -> upgrade(request) -> WebSocket` the plan names.
+ *   - [`connectClient`](#connectClient) — the **client** side: send the
+ *     `Upgrade` request with a fresh `Sec-WebSocket-Key`
+ *     ([`WsClientHandshake`](WsClientHandshake.cajeta), NET-10.1), read +
+ *     validate the `101`, then switch to client-role framing
+ *     ([`WebSocket.forClient`](WebSocket.cajeta#forClient)).
+ *
+ * ## Transport + ownership
+ *
+ * Both forms operate over an already-connected
+ * [`AsyncReader`](../AsyncReader.cajeta) / [`AsyncWriter`](../AsyncWriter.cajeta)
+ * pair — plaintext (`ws://`, over a [`TcpStream`](../TcpStream.cajeta)) or TLS
+ * (`wss://`, over a [`TlsStream`](../tls/TlsStream.cajeta)) — through the
+ * shared [`ByteChannel`](../ByteChannel.cajeta) seam, so the upgrade is
+ * scheme-agnostic. The reader/writer are **borrowed**: the caller that opened
+ * the socket owns it and the buffered halves, and keeps them alive for the
+ * returned [`WebSocket`](WebSocket.cajeta)'s lifetime (which borrows them in
+ * turn). The handful of handshake bytes that arrive *after* the head (an
+ * eager peer's first frame) are pushed back into the reader's staging ring
+ * ([`AsyncReader.stage`](../AsyncReader.cajeta#stage)) so the
+ * [`WebSocket`](WebSocket.cajeta) frame reader sees them.
+ *
+ * A scheme-aware `WebSocket.connect(wss-uri)` that *also* opens the socket is
+ * a thin convenience over [`connectClient`](#connectClient); this item ships
+ * the handshake-over-transport core both client and server share.
+ */
+public class WsUpgrade {
+    /**
+     * **Server upgrade.** Read the client's HTTP/1.1 Upgrade request off
+     * `reader`, validate + build the `101` response
+     * ([`WsServerHandshake.accept`](WsServerHandshake.cajeta#accept) — throws
+     * [`HandshakeRejectedException`](HandshakeRejectedException.cajeta) on a
+     * malformed upgrade), write it through `writer`, and return a server-role
+     * [`WebSocket`](WebSocket.cajeta) over the same borrowed transport.
+     */
+    public static #WebSocket acceptServer(AsyncReader reader, AsyncWriter writer) {
+        HttpRequest request = WsUpgrade.readRequest(reader);
+        HttpResponse response = WsServerHandshake.accept(request);
+        int8[] bytes = HttpSerializer.response(response);
+        writer.writeAll(bytes, 0, bytes.count());
+        writer.flush();
+        return WebSocket.forServer(reader, writer);
+    }
+
+    /**
+     * **Client upgrade.** Send the `Upgrade` request for `uri` (key derived
+     * from `keySeed` — see [`WsClientHandshake.placeholderKey`](WsClientHandshake.cajeta#placeholderKey)'s
+     * randomness scope note) through `writer`, read the server's response off
+     * `reader`, validate the `Sec-WebSocket-Accept`
+     * ([`WsClientHandshake.requireAccept`](WsClientHandshake.cajeta#requireAccept)
+     * — throws on a bad reply), and return a client-role
+     * [`WebSocket`](WebSocket.cajeta) over the same borrowed transport.
+     */
+    public static #WebSocket connectClient(AsyncReader reader, AsyncWriter writer,
+                                           Uri uri, int32 keySeed) {
+        String key = WsClientHandshake.placeholderKey(keySeed);
+        HttpRequest request = WsClientHandshake.buildRequest(uri, key);
+        int8[] bytes = HttpSerializer.request(request);
+        writer.writeAll(bytes, 0, bytes.count());
+        writer.flush();
+        HttpResponse response = WsUpgrade.readResponse(reader);
+        WsClientHandshake.requireAccept(response, key);
+        return WebSocket.forClient(reader, writer);
+    }
+
+    // ----- head readers (byte-at-a-time; re-stage post-head bytes) ----------
+
+    /**
+     * Read one HTTP/1.1 **request** head off `reader` (a byte at a time until
+     * the blank-line terminator), detaching it from the short-lived parser.
+     * Any bytes past the head — the peer's first WS frame on an eager client —
+     * are re-staged into `reader` so the [`WebSocket`](WebSocket.cajeta) frame
+     * reader picks them up. (A WS upgrade request carries no body.)
+     */
+    static #HttpRequest readRequest(AsyncReader reader) {
+        HttpParser parser = HttpParser.forRequest();
+        int8[] one = new int8[1];
+        while (!parser.isComplete()) {
+            int32 n = reader.read(one, 0, 1);
+            if (n == 0) {
+                parser.endInput();      // truncated head -> UnexpectedEof
+                break;
+            }
+            parser.feed(one, 1);
+        }
+        HttpRequest request = parser.takeRequest();
+        int8[] leftover = parser.leftover();
+        int32 llen = parser.leftoverLength();
+        if (llen > 0) {
+            reader.stage(leftover, llen);
+        }
+        return #request;
+    }
+
+    /**
+     * Read one HTTP/1.1 **response** head off `reader` (the
+     * [`readRequest`](#readRequest) twin), detaching it and re-staging any
+     * post-head bytes (the server's first frame) for the
+     * [`WebSocket`](WebSocket.cajeta).
+     */
+    static #HttpResponse readResponse(AsyncReader reader) {
+        HttpParser parser = HttpParser.forResponse();
+        int8[] one = new int8[1];
+        while (!parser.isComplete()) {
+            int32 n = reader.read(one, 0, 1);
+            if (n == 0) {
+                parser.endInput();
+                break;
+            }
+            parser.feed(one, 1);
+        }
+        HttpResponse response = parser.takeResponse();
+        int8[] leftover = parser.leftover();
+        int32 llen = parser.leftoverLength();
+        if (llen > 0) {
+            reader.stage(leftover, llen);
+        }
+        return #response;
+    }
+}
