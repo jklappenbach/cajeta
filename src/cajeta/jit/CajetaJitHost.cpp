@@ -35,6 +35,7 @@
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
+#include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
@@ -270,6 +271,21 @@ BuiltJit buildJit(const JitRunOptions& opts) {
         return out;
     }
     out.jit = std::move(*jitOrErr);
+
+    // GDB JIT symbolization. On in debug mode (so `cajeta jit-run -g` yields
+    // named JIT frames under a debugger instead of bare addresses), off in
+    // release (enableDebuggerSupport installs a JITLink plugin that synthesizes
+    // and registers a debug object per module — real per-module overhead paid
+    // whether or not a debugger ever attaches). CAJETA_JIT_GDB=1 force-enables
+    // it regardless of mode for ad-hoc release-JIT diagnostics. Requires the
+    // JITLink ObjectLinkingLayer (the LLVM 22 default on x86-64 ELF); on RTDyld
+    // it returns an Error we surface and continue (symbolization simply absent).
+    if (opts.debugInfo || std::getenv("CAJETA_JIT_GDB")) {
+        if (auto err = llvm::orc::enableDebuggerSupport(*out.jit)) {
+            std::cerr << "cajeta jit: GDB symbolization unavailable: "
+                      << cajeta::jit::toString(std::move(err)) << "\n";
+        }
+    }
 
     if (auto err = out.jit->addIRModule(std::move(tsModule))) {
         std::cerr << "cajeta jit: addIRModule failed: "
