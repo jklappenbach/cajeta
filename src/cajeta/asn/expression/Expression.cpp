@@ -2004,10 +2004,27 @@ namespace cajeta {
                 if (!f) continue;  // class name, namespace, or unresolved
                 CajetaTypePtr t = f->getType();
                 if (!t) continue;
-                // Skip function-typed captures for now — capturing a
-                // closure inside another closure needs careful thinking
-                // about closure-record lifetime and isn't part of L2-3.
-                if (std::dynamic_pointer_cast<CajetaFunctionType>(t)) continue;
+                // Function-typed captures. A function value is a single
+                // `ptr` to a closure record `{ fn, captures }`, so a *borrow*
+                // capture is just the usual pointer copy (the borrow path
+                // below): the closure record outlives the capturing closure
+                // exactly as any borrowed heap object does, and the escape
+                // check (hasBorrowCaptures) ties the lifetimes the same way.
+                // Only a `#`-*transfer* capture of a closure stays deferred —
+                // surrendering the record means the capturing closure's
+                // synthesized drop_fn must free it, which L2 drop synthesis
+                // doesn't model yet.
+                if (std::dynamic_pointer_cast<CajetaFunctionType>(t)) {
+                    if (transferNames.find(name) != transferNames.end()) {
+                        throw Exception(
+                            "transfer-capturing a function value (`#" + name
+                            + "`) inside a closure is not supported yet — "
+                            "capture it by borrow (drop the `#`) or restructure "
+                            "so the closure is not moved",
+                            "CAJETA_ERROR_NOT_IMPLEMENTED");
+                    }
+                    // else: fall through to the pointer-slot borrow path.
+                }
                 // Source-of-truth for "is this a value or a pointer slot"
                 // is the outer field's existing alloca, not the type
                 // flags. A few language types (CajetaArray in particular)
@@ -3691,15 +3708,36 @@ namespace cajeta {
             innerResult = targetClass->invokeMethod(
                 methodNameCopy, entries, /*isConstructor=*/false,
                 /*thisValue=*/nullptr);
-            if (innerResult) innerType = CajetaType::of(innerResult);
+            if (innerResult) {
+                innerType = CajetaType::of(innerResult);
+                // CajetaType::of can't recover a class type from an opaque-
+                // pointer call result: a method returning `#SomeClass` lowers
+                // to a bare `ptr`, so of() yields null. Ask the receiver class
+                // for the method's DECLARED return type instead. Without this,
+                // spawn of ANY object-returning method tripped the `!innerType`
+                // bail below, which abandoned tramp_try unterminated and JIT
+                // verify rejected the module ("Basic Block %tramp_try does not
+                // have terminator").
+                if (!innerType) {
+                    if (MethodPtr m = targetClass->resolveMethod(
+                            methodNameCopy, entries, /*isConstructor=*/false,
+                            /*floatingParams=*/false)) {
+                        innerType = m->getReturnType();
+                    }
+                }
+            }
         }
-        if (!innerResult) {
+        if (!innerResult || !innerType) {
+            // Resolution failed after the trampoline shell (entry + try/catch/
+            // finish blocks) was already emitted. Returning nullptr here would
+            // leave tramp_try unterminated and fail JIT verify with a confusing
+            // message; throw a clear diagnostic instead (the partial module is
+            // discarded with the failed compile).
             outerBuilder->SetInsertPoint(outerInsertBlock);
-            return nullptr;
-        }
-        if (!innerType) {
-            outerBuilder->SetInsertPoint(outerInsertBlock);
-            return nullptr;
+            throw Exception(
+                "spawn target `" + innerCall->getMethodCallName()
+                + "` could not be resolved to a callable method",
+                "CAJETA_ERROR_ASYNC_SPAWN_UNRESOLVED");
         }
         auto task = CajetaTask::getOrCreate(module, innerType);
         llvm::Type* taskTy = task->getLlvmType();

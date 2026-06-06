@@ -247,6 +247,19 @@ namespace cajeta {
         if (dynamic_pointer_cast<NewExpression>(ast)) {
             return v;
         }
+        // A `#x` MoveExpression has ALREADY loaded its operand to the
+        // r-value (the owned heap pointer) — see MoveExpression::
+        // generateCode, which loads through the source alloca before
+        // returning. Without this carve-out the class-ref catch-all
+        // below loads through that pointer AGAIN and hands back the
+        // vtable word (the struct's first 8 bytes) instead of the
+        // instance reference, so `this.field = #param` stores the
+        // vtable address and every later dispatch / field read through
+        // the field reads garbage. Same shape as the NewExpression /
+        // MethodCallExpression carve-outs.
+        if (dynamic_pointer_cast<MoveExpression>(ast)) {
+            return v;
+        }
         // MethodCallExpression: the return value of a call IS the
         // language-level value. For class returns the callee returns
         // `ptr` (per Method::generatePrototype's pass-by-pointer

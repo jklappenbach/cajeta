@@ -1,0 +1,293 @@
+package cajeta.net.dns;
+
+import cajeta.lang.String;
+import cajeta.net.AddressFamily;
+import cajeta.net.IpAddress;
+import cajeta.net.SocketAddress;
+import cajeta.net.NetException;
+import cajeta.net.dns.ResolveFamily;
+import cajeta.net.dns.ResolveErrors;
+import cajeta.net.dns.UnknownHostException;
+import cajeta.net.dns.ResolutionFailedException;
+
+/**
+ * **Blocking host name resolution** — turn a hostname (or a numeric
+ * literal) into the list of [`SocketAddress`](../SocketAddress.cajeta)
+ * endpoints it maps to (plan item **NET-2.2**).
+ *
+ * ```cajeta
+ * SocketAddress[] addrs = Dns.resolve("example.test", 443);
+ * SocketAddress[] v6    = Dns.resolve("example.test", 443, ResolveFamily.V6_ONLY);
+ * ```
+ *
+ * ## What this is (and is not)
+ *
+ * This is the **synchronous** resolver: it drives libc/Winsock
+ * `getaddrinfo` through the NET-2.1 native intrinsics and **parks the
+ * carrier thread** in the syscall while the lookup runs. It is the
+ * simple, correct primitive every higher layer is built on — the
+ * Phase-1/2 bring-up surface and the body the async form wraps.
+ *
+ * The **async** form — [`Dns.resolveAsync`] (NET-2.3) — runs this same
+ * lookup on a carrier-pool worker and parks the calling *fiber* (never
+ * a carrier) on the result; the **TTL cache** (NET-2.4) and the typed
+ * [`UnknownHost`]/[`ResolutionFailed`] subtypes (NET-2.5) layer on top.
+ * Those are deliberately **not** here: NET-2.2 is the blocking lookup
+ * only. Until NET-2.5 refines the taxonomy, a failed lookup raises the
+ * base [`NetException`](../NetException.cajeta) (carrying the resolve
+ * ordinal in `kind`), which NET-2.5 will narrow to `UnknownHost` /
+ * `ResolutionFailed` without changing this call's shape.
+ *
+ * ## Native bridge contract (mirrors NET-2.1)
+ *
+ * The `@Native` declarations below bind the seven
+ * [`__cajeta_net_getaddrinfo*`](../../../../native/cajeta_net_getaddrinfo.c)
+ * intrinsics — the **same** result-handle iterator
+ * [`NetResolveTests`](../../../../../test/parser/NetResolveTests.cpp)
+ * pins. The flow is exactly the one that file documents:
+ *
+ *   1. [`getaddrinfoNative`] resolves `host` + `port` under the native
+ *      family filter, returning an opaque result-block `pointer`
+ *      (NULL on failure / zero results).
+ *   2. On NULL, [`getaddrinfoError`] carries the normalized resolve
+ *      ordinal → we raise.
+ *   3. Otherwise [`getaddrinfoCount`] sizes the result; for each entry
+ *      [`getaddrinfoFamily`] / [`getaddrinfoOctets`] /
+ *      [`getaddrinfoPort`] reconstruct an
+ *      [`IpAddress.fromOctets`](../IpAddress.cajeta) +
+ *      [`SocketAddress.of`](../SocketAddress.cajeta) — the **same**
+ *      unmarshalling path `accept` / `recvfrom` use.
+ *   4. [`freeaddrinfoNative`] releases the block in a `finally`-style
+ *      drop (NULL-safe, so the unconditional release after the copy-out
+ *      is correct even on the failure path).
+ *
+ * The host crosses the boundary as its UTF-8 `int8[]` bytes + a length
+ * (the bridge does not require NUL-termination — the C side copies and
+ * terminates), matching the `NetResolveTests` data-literal shape.
+ */
+public final class Dns {
+
+    // --- @Native bridges to the NET-2.1 getaddrinfo intrinsics ----------
+
+    /**
+     * Resolve `host[0..hostLen)` + `port` under `familyFilter`
+     * (native filter space: `-1` both, `0` V4-only, `1` V6-only),
+     * returning the opaque result-block handle (NULL on failure / no
+     * addresses). See [`Dns.nativeFilter`](#nativeFilter) for the
+     * [`ResolveFamily`](ResolveFamily.cajeta) → filter mapping.
+     */
+    @Native("__cajeta_net_getaddrinfo")
+    private static #pointer getaddrinfoNative(int8[] host, int32 hostLen,
+                                              int32 port, int32 familyFilter);
+
+    /** Address count of a non-NULL handle (`0` for NULL). */
+    @Native("__cajeta_net_getaddrinfo_count")
+    private static int32 getaddrinfoCount(pointer handle);
+
+    /**
+     * The normalized `cajeta_resolve_err` ordinal of the last
+     * [`getaddrinfoNative`](#getaddrinfoNative) call on this thread
+     * (`0` = OK). `1` (NONAME) / `2` (NODATA) are the not-found
+     * ordinals NET-2.5 maps to `UnknownHost`.
+     */
+    @Native("__cajeta_net_getaddrinfo_error")
+    private static int32 getaddrinfoError();
+
+    /** Cajeta [`AddressFamily`](../AddressFamily.cajeta) ordinal
+     *  (`0` = V4, `1` = V6) of the `index`-th address, `-1` if OOR. */
+    @Native("__cajeta_net_getaddrinfo_family")
+    private static int32 getaddrinfoFamily(pointer handle, int32 index);
+
+    /** Host-order port baked into the `index`-th address, `-1` if OOR. */
+    @Native("__cajeta_net_getaddrinfo_port")
+    private static int32 getaddrinfoPort(pointer handle, int32 index);
+
+    /** Copy the `index`-th address's network-order octets into `out`
+     *  (>= 16 bytes); returns the count written (`4` V4 / `16` V6),
+     *  `-1` if OOR. */
+    @Native("__cajeta_net_getaddrinfo_octets")
+    private static int32 getaddrinfoOctets(pointer handle, int32 index,
+                                           int8[] out);
+
+    /** Release a result-block handle (NULL-safe). */
+    @Native("__cajeta_net_freeaddrinfo")
+    private static void freeaddrinfoNative(pointer handle);
+
+    // --- public resolve surface -----------------------------------------
+
+    /**
+     * Resolve `host` to its addresses with **port 0** and **no family
+     * restriction** (`ResolveFamily.BOTH`). The convenience form for
+     * "just give me the IPs" — callers that need a port use
+     * [`resolve(host, port)`](#resolve).
+     *
+     * @param host the hostname or numeric IP literal to resolve.
+     * @return a freshly owned array of every resolved endpoint (at
+     *         least one element; a zero-address lookup raises instead).
+     * @throws NetException on any resolution failure (NET-2.5 narrows
+     *         this to `UnknownHost` / `ResolutionFailed`).
+     */
+    public static #SocketAddress[] resolve(String host) {
+        return Dns.resolve(host, 0, ResolveFamily.BOTH);
+    }
+
+    /**
+     * Resolve `host` to its addresses, baking `port` into each, with
+     * no family restriction (`ResolveFamily.BOTH`).
+     *
+     * @param host the hostname or numeric IP literal to resolve.
+     * @param port the `0..65535` port carried by every returned
+     *             [`SocketAddress`](../SocketAddress.cajeta).
+     * @return a freshly owned, non-empty array of endpoints.
+     * @throws NetException on any resolution failure.
+     */
+    public static #SocketAddress[] resolve(String host, int32 port) {
+        return Dns.resolve(host, port, ResolveFamily.BOTH);
+    }
+
+    /**
+     * Resolve `host` to its addresses, baking `port` into each and
+     * restricting the result to `family` (`V4_ONLY` / `V6_ONLY` /
+     * `BOTH`).
+     *
+     * Drives the NET-2.1 intrinsics end-to-end: one native resolve,
+     * then a per-entry unmarshal into `IpAddress` + `SocketAddress`,
+     * then an unconditional release of the native block. The returned
+     * array owns its element handles (each is a fresh `SocketAddress`
+     * over fresh octet bytes); nothing aliases the freed native block.
+     *
+     * @param host   the hostname or numeric IP literal to resolve.
+     * @param port   the `0..65535` port baked into every result.
+     * @param family the address-family filter to apply.
+     * @return a freshly owned, non-empty array of endpoints.
+     * @throws NetException on a NULL host, a failed lookup, or a
+     *         zero-address result (the native layer returns a NULL
+     *         handle for all three; the resolve ordinal is carried in
+     *         `kind`).
+     */
+    public static #SocketAddress[] resolve(String host, int32 port,
+                                           ResolveFamily family) {
+        if (host == null) {
+            throw heap NetException("cannot resolve a null host",
+                NetException.KIND_INVALID);
+        }
+        int8[] hostBytes = host.bytes;
+        int32 hostLen = host.byteLength;
+        int32 filter = Dns.nativeFilter(family);
+
+        pointer handle = Dns.getaddrinfoNative(hostBytes, hostLen, port, filter);
+
+        // A NULL handle ⇒ failure or zero addresses; the NULL-safe
+        // `count` accessor reports 0 for it, and a successful resolve
+        // always reports >= 1 (the native layer returns NULL — never a
+        // zero-count handle — for an empty result). So a 0 count is the
+        // single, pointer-comparison-free failure test, matching the
+        // `NetResolveTests.badHostReturnsNullWithNonameError` discipline.
+        int32 count = Dns.getaddrinfoCount(handle);
+        if (count == 0) {
+            // The thread-local resolve ordinal classifies the failure
+            // (NET-2.5): NONAME/NODATA are definitive name-not-found
+            // negatives → UnknownHostException; every other ordinal is a
+            // transport/server/local failure → ResolutionFailedException.
+            // Each subtype carries the precise ordinal in `resolveErrno`
+            // and the host-naming message. The split mirrors the reusable
+            // `ResolveErrors.fromResolveErrno` table (which the async /
+            // cache layers reuse); it is inlined here as a direct
+            // `throw heap <Subtype>` because that is the proven throw form
+            // in this stdlib. `freeaddrinfoNative` is NULL-safe, so
+            // releasing the (NULL) handle here keeps the cleanup uniform.
+            int32 err = Dns.getaddrinfoError();
+            Dns.freeaddrinfoNative(handle);
+            String detail = Dns.failureMessage(host);
+            if (err == ResolveErrors.RESOLVE_NONAME) {
+                throw heap UnknownHostException(detail, err);
+            }
+            if (err == ResolveErrors.RESOLVE_NODATA) {
+                throw heap UnknownHostException(detail, err);
+            }
+            throw heap ResolutionFailedException(detail, err);
+        }
+
+        // Copy every entry out before releasing the native block.
+        SocketAddress[] out = new SocketAddress[count];
+        int32 i = 0;
+        while (i < count) {
+            int8[] oct = new int8[16];
+            int32 n = Dns.getaddrinfoOctets(handle, i, oct);
+            // `n` is 4 (V4) or 16 (V6); fromOctets selects the family
+            // from the length, matching the family ordinal the native
+            // accessor would report.
+            IpAddress ip = IpAddress.fromOctets(oct, n);
+            int32 p = Dns.getaddrinfoPort(handle, i);
+            out[i] = SocketAddress.of(#ip, p);
+            i = i + 1;
+        }
+        Dns.freeaddrinfoNative(handle);
+        return #out;
+    }
+
+    // --- internals ------------------------------------------------------
+
+    /**
+     * Map a [`ResolveFamily`](ResolveFamily.cajeta) to the native
+     * `getaddrinfo` family filter the NET-2.1 intrinsic expects:
+     * `BOTH → -1` (`AF_UNSPEC`), `V4_ONLY → 0` (`AF_INET`),
+     * `V6_ONLY → 1` (`AF_INET6`). This is the single place the
+     * enum-ordinal/native-filter divergence is reconciled, so the
+     * platform filter value never escapes into application code.
+     */
+    private static int32 nativeFilter(ResolveFamily family) {
+        if (family == ResolveFamily.V4_ONLY) {
+            return 0;
+        }
+        if (family == ResolveFamily.V6_ONLY) {
+            return 1;
+        }
+        return -1;   // BOTH → AF_UNSPEC
+    }
+
+    /**
+     * Build the failure message `"failed to resolve host: <host>"` so
+     * the diagnostic names the host (the NET-2.5 acceptance the typed
+     * `UnknownHost` later pins). Concatenates the fixed prefix with the
+     * host bytes into a fresh owned `String`, since the v1 stdlib
+     * `String` has no `concat` primitive.
+     */
+    private static #String failureMessage(String host) {
+        int8[] prefix = new int8[18];
+        prefix[0] = (int8) 102;   // 'f'
+        prefix[1] = (int8) 97;    // 'a'
+        prefix[2] = (int8) 105;   // 'i'
+        prefix[3] = (int8) 108;   // 'l'
+        prefix[4] = (int8) 101;   // 'e'
+        prefix[5] = (int8) 100;   // 'd'
+        prefix[6] = (int8) 32;    // ' '
+        prefix[7] = (int8) 116;   // 't'
+        prefix[8] = (int8) 111;   // 'o'
+        prefix[9] = (int8) 32;    // ' '
+        prefix[10] = (int8) 114;  // 'r'
+        prefix[11] = (int8) 101;  // 'e'
+        prefix[12] = (int8) 115;  // 's'
+        prefix[13] = (int8) 111;  // 'o'
+        prefix[14] = (int8) 108;  // 'l'
+        prefix[15] = (int8) 118;  // 'v'
+        prefix[16] = (int8) 101;  // 'e'
+        prefix[17] = (int8) 32;   // ' '
+
+        int8[] hostBytes = host.bytes;
+        int32 hostLen = host.byteLength;
+        int32 total = 18 + hostLen;
+        int8[] msg = new int8[total];
+        int32 i = 0;
+        while (i < 18) {
+            msg[i] = prefix[i];
+            i = i + 1;
+        }
+        int32 j = 0;
+        while (j < hostLen) {
+            msg[18 + j] = hostBytes[j];
+            j = j + 1;
+        }
+        return heap String(#msg, total);
+    }
+}

@@ -37,6 +37,7 @@
 #include "cajeta/buildtool/repo/HttpRepository.h"
 #include "cajeta/buildtool/repo/TarZstd.h"
 #include "TestHttpServer.h"
+#include "TempTeardown.h"
 
 #include <gtest/gtest.h>
 #include <llvm/Support/Error.h>
@@ -48,7 +49,7 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
+#include "../PortableEnv.h"
 
 using cajeta::buildtool::BundleEntry;
 using cajeta::buildtool::BundleRequest;
@@ -76,7 +77,7 @@ namespace {
     std::filesystem::path makeTempDir(const std::string& tag) {
         auto p = std::filesystem::temp_directory_path() /
                  ("cajeta-v2-" + tag + "-" +
-                  std::to_string(::getpid()) + "-" +
+                  std::to_string(cajeta_getpid()) + "-" +
                   std::to_string(::rand()));
         std::filesystem::create_directories(p);
         return p;
@@ -175,7 +176,7 @@ TEST(HttpRepositoryV2Tests, capabilityProbeReadsWellKnownEndpoint) {
     EXPECT_TRUE(cap->bundle);
     EXPECT_TRUE(cap->contentAddressed);
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryV2Tests, capabilityProbeIsCachedAcrossCalls) {
@@ -191,7 +192,7 @@ TEST(HttpRepositoryV2Tests, capabilityProbeIsCachedAcrossCalls) {
     ASSERT_TRUE((bool)repo.capabilities());
     EXPECT_EQ(srv.hitCount("/.well-known/cajeta-capabilities.json"), 1);
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 // ─── Acceptance #4 — v1-only client against v2-capable server ──
@@ -232,7 +233,7 @@ TEST(HttpRepositoryV2Tests, v1OnlyClientWorksAgainstV2Server) {
     EXPECT_EQ(srv.hitCount("/.well-known/cajeta-capabilities.json"), 0);
     EXPECT_EQ(srv.hitCount("/v2/resolve?name=acme.lib&version=1.0.0"), 0);
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 // ─── Acceptance #5 — v2-aware client against v1-only server ────
@@ -261,7 +262,7 @@ TEST(HttpRepositoryV2Tests, v2ClientFallsBackOnV1OnlyServer) {
     auto path = repo.fetch("acme.lib", "1.0.0");
     ASSERT_TRUE((bool)path) << errorText(path.takeError());
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 // ─── Acceptance #1 — 50-dep cold install: one /v2/bundle req ──
@@ -320,8 +321,8 @@ TEST(HttpRepositoryV2Tests, manyDepColdInstallIssuesSingleBundleRequest) {
             << "missing artifact for " << e.name << "@" << e.version;
     }
 
-    std::filesystem::remove_all(stage);
-    std::filesystem::remove_all(destDir);
+    rmTree(stage);
+    rmTree(destDir);
 }
 
 // ─── Acceptance #2 — bumped dep fetches only the delta ────────
@@ -381,8 +382,8 @@ TEST(HttpRepositoryV2Tests, singleDepBumpFetchesOnlyDiff) {
     EXPECT_NE(body.find("sha256:cccc"), std::string::npos);
     EXPECT_NE(body.find("dep.bumped"), std::string::npos);
 
-    std::filesystem::remove_all(stage);
-    std::filesystem::remove_all(destDir);
+    rmTree(stage);
+    rmTree(destDir);
 }
 
 // ─── Acceptance #3 — retracted artifact ───────────────────────
@@ -412,7 +413,7 @@ TEST(HttpRepositoryV2Tests, retractedArtifactInstallableByDigest) {
     std::ifstream in(*path); std::stringstream ss; ss << in.rdbuf();
     EXPECT_EQ(ss.str(), "bytes");
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryV2Tests, newResolveSurfacesRetraction) {
@@ -436,7 +437,7 @@ TEST(HttpRepositoryV2Tests, newResolveSurfacesRetraction) {
     // on a *new* (non-lockfile-pinned) resolve — we pin the data
     // path here so the warning has a place to attach.
 
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 // ─── Acceptance #6 — differential lockfile fetch ──────────────
@@ -498,8 +499,8 @@ TEST(HttpRepositoryV2Tests, lockfileDiffTransfersOnlyDelta) {
     EXPECT_NE(body.find("sha256:oldlf"), std::string::npos);
     EXPECT_NE(body.find("sha256:newlf"), std::string::npos);
 
-    std::filesystem::remove_all(stage);
-    std::filesystem::remove_all(destDir);
+    rmTree(stage);
+    rmTree(destDir);
 }
 
 TEST(HttpRepositoryV2Tests, lockfileDiffFalls404SurfacesAsRetryHint) {
@@ -518,8 +519,8 @@ TEST(HttpRepositoryV2Tests, lockfileDiffFalls404SurfacesAsRetryHint) {
     EXPECT_NE(msg.find("v2/bundle"), std::string::npos)
         << "404 message should hint that caller should retry as "
            "/v2/bundle, got: " << msg;
-    std::filesystem::remove_all(stage);
-    std::filesystem::remove_all(destDir);
+    rmTree(stage);
+    rmTree(destDir);
 }
 
 // ─── Acceptance #7 — transparency-log check ───────────────────
@@ -540,7 +541,7 @@ TEST(HttpRepositoryV2Tests, transparencyLogValidEntryRoundtripsTypedFields) {
     EXPECT_EQ(entry->logIndex, 12345);
     EXPECT_EQ(entry->logSignature, "sig-bytes-base64");
     EXPECT_EQ(entry->issuer, "github.com/example/foo");
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryV2Tests, transparencyLogMissingSignatureFails) {
@@ -558,7 +559,7 @@ TEST(HttpRepositoryV2Tests, transparencyLogMissingSignatureFails) {
     auto msg = errorText(entry.takeError());
     EXPECT_NE(msg.find("log-signature"), std::string::npos);
     EXPECT_NE(msg.find("refusing install"), std::string::npos);
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 TEST(HttpRepositoryV2Tests, transparencyLog404RefusesInstall) {
@@ -573,7 +574,7 @@ TEST(HttpRepositoryV2Tests, transparencyLog404RefusesInstall) {
     auto msg = errorText(entry.takeError());
     EXPECT_NE(msg.find("no transparency-log entry"), std::string::npos);
     EXPECT_NE(msg.find("refusing install"), std::string::npos);
-    std::filesystem::remove_all(stage);
+    rmTree(stage);
 }
 
 // ─── TarZstd round-trip (foundation for the bundle endpoints) ──

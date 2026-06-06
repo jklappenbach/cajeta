@@ -17,6 +17,9 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "../asn/AbstractSyntaxNode.h"
 #include "../type/CajetaType.h"
+#include "../type/CajetaArray.h"
+#include "../type/FormalParameter.h"
+#include "../type/QualifiedName.h"
 #include "cajeta/error/CajetaExceptions.h"
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
@@ -30,8 +33,10 @@
 #include "../xpu/cpu/CpuBackend.h"
 #include "../xpu/cpu/CpuKernelLowering.h"
 #include "../method/Method.h"
+#include "cajeta/buildtool/Subprocess.h"
 #include "llvm/IR/Module.h"
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <sys/stat.h>
 
@@ -126,7 +131,15 @@ namespace cajeta {
 
         std::any visitInterfaceDeclaration(
                 CajetaParser::InterfaceDeclarationContext* ctx) override {
-            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            // markInterface=true so fromContext's placeholder synthesis
+            // builds a FAT 24-byte interface pointer for a forward-
+            // referenced interface-typed field/param/local (e.g.
+            // `ByteChannel stream;` in AsyncReader, parsed before
+            // ByteChannel.cajeta). Without the mark the placeholder is a
+            // thin class pointer and interface dispatch through such a
+            // field is silently dropped at codegen.
+            registerAndRecurse(ctx->identifier()->getText(), ctx,
+                                /*markEnum=*/false, /*markInterface=*/true);
             captureTemplateMeta(ctx);
             return defaultResult();
         }
@@ -153,7 +166,8 @@ namespace cajeta {
     private:
         void registerAndRecurse(const std::string& shortName,
                                  antlr4::tree::ParseTree* tree,
-                                 bool markEnum = false) {
+                                 bool markEnum = false,
+                                 bool markInterface = false) {
             // Compose canonical from package + enclosing class
             // stack + this short name. Mirrors CajetaLlvmVisitor's
             // visitClassDeclaration package-adjustment for nested
@@ -168,6 +182,7 @@ namespace cajeta {
             canonical += shortName;
             CajetaType::registerArchive(canonical, shortName);
             if (markEnum) CajetaType::markArchiveEnum(canonical);
+            if (markInterface) CajetaType::markArchiveInterface(canonical);
             lastCanonical = canonical;
             enclosingStack.push_back(shortName);
             visitChildren(tree);
@@ -1064,57 +1079,98 @@ namespace cajeta {
     // when it was found at CMake-configure time (see CAJETA_HAS_LLD in CMakeLists.txt);
     // otherwise emits a clear diagnostic so the user can link with their toolchain.
     void Compiler::linkExecutable(const string& archiveRootPath) {
-#ifdef CAJETA_HAS_LLD
-        std::vector<const char*> args;
-        args.push_back("ld.lld");
-        for (auto& obj : objectFiles) {
-            args.push_back(obj.c_str());
-        }
-        string outArg = "-o";
         string outPath = outputPath.empty()
             ? (archiveRootPath + "a.out")
             : outputPath;
-        args.push_back(outArg.c_str());
-        args.push_back(outPath.c_str());
-        // Caller is responsible for any libc / sysroot flags via environment or a
-        // future --linker-arg passthrough. For pure-Cajeta programs that don't pull
-        // libc symbols this minimal arg list is enough.
-        lld::Result r = lld::lldMain(args, llvm::outs(), llvm::errs(),
-            {{lld::Gnu, &lld::elf::link}});
-        if (r.retCode != 0) {
-            cerr << "cajeta: lld link failed (exit " << r.retCode << ")" << std::endl;
+
+        // Link through the system C compiler/driver rather than calling a raw
+        // linker: the driver locates the platform's CRT, startup objects, libc,
+        // and library search paths, and selects the right object format
+        // (ELF / COFF-mingw / Mach-O) for the host — far more robust and
+        // portable than reconstructing a per-OS link line. (Linking inherently
+        // needs the platform CRT/libc, so a system toolchain is required
+        // regardless.) Honor $CC, then fall back to the usual driver names.
+        std::vector<std::string> drivers;
+        if (const char* envCc = std::getenv("CC")) {
+            if (*envCc) drivers.emplace_back(envCc);
         }
+        drivers.emplace_back("cc");
+        drivers.emplace_back("clang");
+        drivers.emplace_back("gcc");
+
+        buildtool::SubprocessResult res;
+        bool launched = false;
+        std::string usedDriver;
+        for (const auto& drv : drivers) {
+            buildtool::SubprocessOptions opt;
+            opt.argv.push_back(drv);
+            for (const auto& obj : objectFiles) opt.argv.push_back(obj);
+            opt.argv.push_back("-o");
+            opt.argv.push_back(outPath);
+            // Platform libraries the cajeta runtime references (the driver adds
+            // the CRT + libc itself).
+#if defined(_WIN32)
+            opt.argv.push_back("-lbcrypt");   // BCryptGenRandom (runtime RNG)
+            opt.argv.push_back("-lpthread");  // winpthreads
+#elif defined(__APPLE__)
+            opt.argv.push_back("-lpthread");
 #else
-        cerr << "cajeta: --emit=exe requires lld libraries (install lld-"
-             << LLVM_VERSION_MAJOR << "-dev and reconfigure with CMake)."
-             << std::endl;
-        cerr << "Object files produced: ";
-        for (auto& obj : objectFiles) cerr << obj << " ";
-        cerr << "\nLink with: cc " ;
-        for (auto& obj : objectFiles) cerr << obj << " ";
-        cerr << "-o <executable>" << std::endl;
+            opt.argv.push_back("-lpthread");
+            opt.argv.push_back("-lm");
+            opt.argv.push_back("-ldl");
 #endif
+            res = buildtool::runSubprocess(opt);
+            if (res.launched) { launched = true; usedDriver = drv; break; }
+        }
+
+        if (!launched) {
+            cerr << "cajeta: --emit=exe could not find a C compiler to link "
+                 << "with (tried $CC, cc, clang, gcc). Set $CC to your "
+                 << "toolchain's driver." << std::endl;
+            return;
+        }
+        if (res.code() != 0) {
+            cerr << "cajeta: link failed — '" << usedDriver << "' exited "
+                 << res.code() << std::endl;
+        }
     }
 
     void Compiler::emitCMainShim(const std::string& entryMethod) {
         // entryMethod arrives as `pkg.subpkg.Class.method` (dotted). Split
         // on the last '.' to separate class canonical from method name.
         // No method name → no shim.
-        auto lastDot = entryMethod.rfind('.');
-        if (lastDot == std::string::npos || lastDot + 1 >= entryMethod.size()) {
+        // Accept the canonical `package.Class::method` form (what the build
+        // tool emits) as well as the legacy all-dotted `package.Class.method`.
+        std::string classCanonical;
+        std::string methodName;
+        auto sep = entryMethod.find("::");
+        if (sep != std::string::npos) {
+            classCanonical = entryMethod.substr(0, sep);
+            methodName     = entryMethod.substr(sep + 2);
+        } else {
+            auto lastDot = entryMethod.rfind('.');
+            if (lastDot == std::string::npos || lastDot + 1 >= entryMethod.size()) {
+                cerr << "cajeta: --emit=" << (emitMode == EmitMode::Exe ? "exe" : "obj")
+                     << " entry method `" << entryMethod
+                     << "` must be in `package.Class::method` form" << std::endl;
+                return;
+            }
+            classCanonical = entryMethod.substr(0, lastDot);
+            methodName     = entryMethod.substr(lastDot + 1);
+        }
+        if (classCanonical.empty() || methodName.empty()) {
             cerr << "cajeta: --emit=" << (emitMode == EmitMode::Exe ? "exe" : "obj")
                  << " entry method `" << entryMethod
-                 << "` must be in `package.Class.method` form" << std::endl;
+                 << "` must be in `package.Class::method` form" << std::endl;
             return;
         }
-        std::string classCanonical = entryMethod.substr(0, lastDot);
-        std::string methodName     = entryMethod.substr(lastDot + 1);
 
         // Walk every user module looking for the matching class + method.
-        // Static, parameter-less; int32 or void return supported. Other
-        // shapes (e.g. `main(String[] args)`) are deferred — pre-parse
-        // argv handling needs the cajeta String[] materialization path.
+        // Static; int32 or void return. Two accepted shapes: a no-arg
+        // `main()`, or `main(String[] args)` which receives the command-line
+        // arguments (materialized from C argv by the shim below).
         MethodPtr entry;
+        bool entryTakesArgs = false;
         for (auto& m : modules) {
             auto it = m->getStructures().find(classCanonical);
             if (it == m->getStructures().end() || !it->second) continue;
@@ -1124,11 +1180,28 @@ namespace cajeta {
                 if (candidate->isMethodTemplate()) continue;
                 auto& mods = candidate->getModifiers();
                 if (mods.find(STATIC) == mods.end()) continue;
-                // Static method's parameterList has no `this` prepended; the
-                // entry shim wants a parameter-less function.
-                if (!candidate->getParameterList().empty()) continue;
-                entry = candidate;
-                break;
+                // Static method's parameterList has no `this` prepended.
+                const auto& params = candidate->getParameterList();
+                if (params.empty()) {
+                    entry = candidate;
+                    entryTakesArgs = false;
+                    break;
+                }
+                // Accept exactly one `String[]` parameter (the args vector).
+                if (params.size() == 1 && params[0] && params[0]->getType()) {
+                    auto arr = std::dynamic_pointer_cast<CajetaArray>(
+                        params[0]->getType());
+                    if (arr && arr->getElementType() &&
+                        arr->getElementType()->getQName() &&
+                        arr->getElementType()->getQName()->getTypeName()
+                            == "String" &&
+                        arr->getElementType()->getQName()->getPackageName()
+                            == "cajeta.lang") {
+                        entry = candidate;
+                        entryTakesArgs = true;
+                        break;
+                    }
+                }
             }
             if (entry) break;
         }
@@ -1245,7 +1318,59 @@ namespace cajeta {
             b.SetInsertPoint(afterLoop);
         }
 
-        llvm::Value* ret = b.CreateCall(entryExtern, {});
+        // For `main(String[] args)`, materialize the cajeta String[] from
+        // (argc, argv) and pass it. __cajeta_args_make takes the String class's
+        // total size + field byte offsets (from DataLayout) and its vtable, so
+        // the runtime writes each instance without any hardcoded String ABI.
+        std::vector<llvm::Value*> callArgs;
+        if (entryTakesArgs) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(
+                CajetaType::of("String"));
+            llvm::StructType* strStructTy =
+                (klass && llvm::isa_and_nonnull<llvm::StructType>(
+                              klass->getLlvmType()))
+                    ? llvm::cast<llvm::StructType>(klass->getLlvmType())
+                    : nullptr;
+            if (!strStructTy) {
+                cerr << "cajeta: --emit=exe entry `" << entryMethod
+                     << "` takes String[] but the String class is unavailable"
+                     << std::endl;
+                return;
+            }
+            const llvm::DataLayout& dl = lmod->getDataLayout();
+            const llvm::StructLayout* sl = dl.getStructLayout(strStructTy);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+            auto i64c = [&](uint64_t v) {
+                return llvm::ConstantInt::get(i64Ty, v);
+            };
+            // Field order matches the literal materialization: 0 vtable,
+            // 1 bytes, 2 byteLength, 3 mode, 4 cachedCpLength.
+            llvm::Value* strSize    = i64c(dl.getTypeAllocSize(strStructTy));
+            llvm::Value* offBytes   = i64c(sl->getElementOffset(1));
+            llvm::Value* offByteLen = i64c(sl->getElementOffset(2));
+            llvm::Value* offMode    = i64c(sl->getElementOffset(3));
+            llvm::Value* offCpLen   = i64c(sl->getElementOffset(4));
+
+            llvm::Constant* vtableRef =
+                llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx, 0));
+            if (auto* vt = klass->getVirtualTableGlobal()) {
+                vtableRef = CajetaModule::ensureGlobalInModule(lmod, vt);
+            }
+
+            llvm::FunctionType* argsMakeTy = llvm::FunctionType::get(
+                ptrTy,
+                {i64Ty, ptrTy, ptrTy, i64Ty, i64Ty, i64Ty, i64Ty, i64Ty},
+                false);
+            llvm::FunctionCallee argsMakeFn =
+                lmod->getOrInsertFunction("__cajeta_args_make", argsMakeTy);
+            llvm::Value* argcI64 = b.CreateSExt(mainFn->getArg(0), i64Ty);
+            llvm::Value* argsArray = b.CreateCall(argsMakeFn,
+                {argcI64, mainFn->getArg(1), vtableRef, strSize,
+                 offBytes, offByteLen, offMode, offCpLen});
+            callArgs.push_back(argsArray);
+        }
+
+        llvm::Value* ret = b.CreateCall(entryExtern, callArgs);
         // Translate the cajeta return into a C exit code.
         //   int32  → cast (identity) to i32 and return.
         //   void   → return 0.

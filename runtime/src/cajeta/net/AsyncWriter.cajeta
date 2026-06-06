@@ -1,0 +1,207 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+import cajeta.net.TcpStream;
+import cajeta.net.ByteChannel;
+
+/**
+ * Buffered **async byte-stream writer** over a [`TcpStream`](TcpStream.cajeta)
+ * — plan item **NET-3.5**, the write half of the `AsyncReader`/`AsyncWriter`
+ * pair the HTTP/1.1 and WebSocket serializers emit *through*. It
+ * accumulates small writes into an owned buffer and flushes them to the
+ * socket in one [`writeAllAsync`](TcpStream.cajeta#writeAllAsync), so the
+ * codecs above can emit a status line, a header at a time, and a body
+ * without paying a syscall per fragment.
+ *
+ * ## Why buffer the write side
+ *
+ * An HTTP serializer ([`HttpSerializer`](http/HttpSerializer.cajeta))
+ * emits the head as many small `appendString` / `appendCrlf` calls; a
+ * WebSocket frame is a few header bytes then a payload. Sending each
+ * fragment straight to the socket would be one `send` syscall per
+ * fragment (and, with `TCP_NODELAY`, one packet each). Coalescing into a
+ * buffer and flushing once is the `bufio.Writer` (Go) / `BufWriter`
+ * (Rust) shape — fewer syscalls, better packetization. The buffer
+ * auto-flushes when it fills so a large body still streams through
+ * bounded memory rather than growing without limit.
+ *
+ * ## Fiber-parking, never carrier-blocking
+ *
+ * Every flush goes through
+ * [`TcpStream.writeAllAsync`](TcpStream.cajeta#writeAllAsync), which
+ * parks the **fiber** (not the carrier) until the socket's send buffer
+ * has room — so a writer back-pressured by a slow peer yields its
+ * carrier (the no-carrier-blocks invariant). This type adds no I/O of
+ * its own beyond that one async primitive.
+ *
+ * ## Flush discipline
+ *
+ * Buffered bytes are **not** on the wire until [`flush`](#flush) (or an
+ * auto-flush triggered by the buffer filling). A caller that needs a
+ * partial message visible to the peer — a `100-continue`, a chunk
+ * boundary, the end of a response head before streaming a body — calls
+ * [`flush`](#flush) explicitly. Forgetting the final `flush` is the
+ * classic buffered-writer bug, so the surface keeps it explicit and the
+ * codecs flush at each message boundary.
+ *
+ * ## Ownership
+ *
+ * The writer **borrows** the [`TcpStream`](TcpStream.cajeta) (does not
+ * own or close it — the caller that opened the socket closes it, after a
+ * final [`flush`](#flush)). The internal byte buffer is owned and
+ * array-dropped on drop. Single-fiber ownership: one writer drives one
+ * connection, so no locking.
+ */
+public class AsyncWriter {
+    /** Default coalescing-buffer capacity (bytes) when the caller doesn't pick one. */
+    public static final int32 DEFAULT_BUFFER = 8192;
+
+    /**
+     * The channel this writer flushes to — a plaintext
+     * [`TcpStream`](TcpStream.cajeta) or a [`TlsStream`](tls/TlsStream.cajeta),
+     * via the [`ByteChannel`](ByteChannel.cajeta) seam (NET-8.1 / NET-9.5).
+     * **Borrowed** — not owned, not closed here.
+     */
+    ByteChannel stream;
+
+    /**
+     * Coalescing buffer: bytes staged by `write`/`writeAll` but not yet
+     * on the wire. Owned. [`flush`](#flush) drains it to the socket; it
+     * auto-flushes when it fills so the steady state never grows.
+     */
+    int8[] buf;
+
+    /** Allocated buffer length. */
+    int32 cap;
+
+    /** Bytes currently staged (`0 <= size <= cap`). */
+    int32 size;
+
+    /**
+     * Wrap `stream` with a default-capacity ([`DEFAULT_BUFFER`](#DEFAULT_BUFFER))
+     * coalescing buffer. The stream is **borrowed**; the caller still
+     * owns and closes it.
+     */
+    public AsyncWriter(ByteChannel stream) {
+        // Bind the static-final to a local before using it as an array
+        // dimension: `new int8[AsyncWriter.DEFAULT_BUFFER]` mis-lowers the
+        // static-field read as the global's *address* (a `ptr`), which the
+        // array-size path then `sext`s to i64 — an invalid-IR verify failure
+        // ("SExt only operates on integer"). A named int32 local pins the
+        // value load. (Compiler-gap workaround; same class as the documented
+        // `new T[this.field]` mistype.)
+        // Bind the static-final to a local before using it as an array
+        // dimension: `new int8[AsyncWriter.DEFAULT_BUFFER]` mis-lowers the
+        // static-field read as the global's *address* (a `ptr`), which the
+        // array-size path then `sext`s to i64 — an invalid-IR verify failure
+        // ("SExt only operates on integer"). A named int32 local pins the
+        // value load. (Compiler-gap workaround; same class as the documented
+        // `new T[this.field]` mistype.)
+        int32 c = AsyncWriter.DEFAULT_BUFFER;
+        this.stream = stream;
+        this.cap = c;
+        this.buf = new int8[c];
+        this.size = 0;
+    }
+
+    /**
+     * Wrap `stream` with a `capacity`-byte coalescing buffer. `capacity`
+     * must be `> 0`; pick small for a latency-sensitive request/response
+     * exchange, large to amortize syscalls on a bulk upload.
+     */
+    public AsyncWriter(ByteChannel stream, int32 capacity) {
+        int32 c = capacity;
+        if (c < 1) {
+            c = 1;
+        }
+        this.stream = stream;
+        this.cap = c;
+        this.buf = new int8[c];
+        this.size = 0;
+    }
+
+    /** Bytes currently staged in the buffer (not yet on the wire). */
+    public int32 pending() {
+        return this.size;
+    }
+
+    /**
+     * Stage `data[offset .. offset+length)` into the coalescing buffer,
+     * auto-flushing whenever the buffer fills. This is the **all** form
+     * — every byte is staged (and eventually sent); a payload larger than
+     * the buffer is sent in buffer-sized flushes rather than buffered
+     * whole, so a multi-gigabyte body streams through bounded memory.
+     *
+     * The bytes are **not** guaranteed on the wire until [`flush`](#flush)
+     * (any tail smaller than the buffer stays staged). Each auto-flush
+     * parks the fiber on
+     * [`TcpStream.writeAllAsync`](TcpStream.cajeta#writeAllAsync) until
+     * the socket accepts it.
+     */
+    public void writeAll(int8[] data, int32 offset, int32 length) {
+        int32 done = 0;
+        while (done < length) {
+            if (this.size == this.cap) {
+                this.flush();
+            }
+            int32 room = this.cap - this.size;
+            int32 take = length - done;
+            if (take > room) {
+                take = room;
+            }
+            int32 i = 0;
+            while (i < take) {
+                this.buf[this.size + i] = data[offset + done + i];
+                i = i + 1;
+            }
+            this.size = this.size + take;
+            done = done + take;
+        }
+    }
+
+    /**
+     * Stage a single byte, auto-flushing first if the buffer is full. The
+     * per-byte form the codecs use for delimiters (CRLF, a frame opcode)
+     * between larger [`writeAll`](#writeAll) runs.
+     */
+    public void writeByte(int8 b) {
+        if (this.size == this.cap) {
+            this.flush();
+        }
+        this.buf[this.size] = b;
+        this.size = this.size + 1;
+    }
+
+    /**
+     * Stage a [`String`](../lang/String.cajeta)'s bytes verbatim (UTF-8,
+     * the Cajeta wire form) — the convenience the text-protocol
+     * serializers reach for to emit a header line or a status line.
+     * Equivalent to [`writeAll`](#writeAll) over the string's byte
+     * storage.
+     */
+    public void writeString(String s) {
+        this.writeAll(s.bytes, 0, s.byteLength);
+    }
+
+    /**
+     * Push all staged bytes to the socket, **parking the fiber** until
+     * the whole buffer is accepted, then reset the buffer to empty. A
+     * no-op when nothing is staged. This is the call that makes a
+     * buffered message actually visible to the peer — the codecs invoke
+     * it at each message boundary, and the caller invokes it once more
+     * before closing the connection.
+     *
+     * Uses [`TcpStream.writeAllAsync`](TcpStream.cajeta#writeAllAsync),
+     * which loops over short writes and would-block waits until every
+     * staged byte is sent or a write raises
+     * ([`BrokenPipeException`](BrokenPipeException.cajeta) on a closed
+     * peer).
+     */
+    public void flush() {
+        if (this.size == 0) {
+            return;
+        }
+        this.stream.writeAllAsync(this.buf, (int64) 0, (int64) this.size);
+        this.size = 0;
+    }
+}

@@ -267,9 +267,9 @@ TEST(Phase13, archiveInstallVerifySidecarsRoundTrip) {
     in.archiveName = "x.cja";
     in.archiveSha256 = sha;
     auto doc = composeProvenanceJson(in);
-    writeFile(std::string(archive) + ".attestation", doc);
+    writeFile(archive.string() + ".attestation", doc);
     // Read back and verify.
-    std::ifstream af(std::string(archive) + ".attestation",
+    std::ifstream af(archive.string() + ".attestation",
                      std::ios::binary);
     std::ostringstream as; as << af.rdbuf();
     auto r = verifyProvenanceJson(as.str(), sha);
@@ -289,13 +289,13 @@ TEST(Phase13, installRefusesTamperedArchive) {
     in.archiveName = "x.cja";
     in.archiveSha256 = sha;
     auto doc = composeProvenanceJson(in);
-    writeFile(std::string(archive) + ".attestation", doc);
+    writeFile(archive.string() + ".attestation", doc);
     // Tamper: rewrite the archive's bytes.
     writeFile(archive, "the-tampered-payload");
     std::ifstream f2(archive, std::ios::binary);
     std::ostringstream ss2; ss2 << f2.rdbuf();
     std::string newSha = cajeta::buildtool::sha256Hex(ss2.str());
-    std::ifstream af(std::string(archive) + ".attestation",
+    std::ifstream af(archive.string() + ".attestation",
                      std::ios::binary);
     std::ostringstream as; as << af.rdbuf();
     auto r = verifyProvenanceJson(as.str(), newSha);

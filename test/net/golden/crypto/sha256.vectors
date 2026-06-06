@@ -1,0 +1,19 @@
+# SHA-256 golden vectors (FIPS 180-4 / NIST CAVP known-answer).
+#
+# Format (one vector per non-comment line, fields '|'-separated):
+#   <name> | <input-spec> | <hex-digest>
+#
+# <input-spec> grammar (see GoldenVectors.h::decodeInputSpec):
+#   empty               -> the zero-length message
+#   ascii:<text>        -> the literal ASCII bytes of <text> (no '|' allowed)
+#   hex:<hexbytes>      -> raw bytes decoded from hex
+#   repeat:<byte>:<n>   -> <byte> (a single ASCII char) repeated <n> times
+#
+# Digests are lowercase hex, 64 chars (32 bytes). These are the
+# canonical FIPS 180-4 examples plus the classic 1,000,000-'a' case.
+# When NET-11.1 lands its Sha256.update/digest, it pins against these.
+empty       | empty                                                                                                          | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+abc         | ascii:abc                                                                                                      | ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+two-block   | ascii:abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq                                                  | 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
+multi-block | ascii:abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu | cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1
+million-a   | repeat:a:1000000                                                                                               | cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0

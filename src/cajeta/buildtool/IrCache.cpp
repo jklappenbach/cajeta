@@ -171,10 +171,13 @@ namespace cajeta::buildtool {
         for (auto it = fs::recursive_directory_iterator(rootDir_, ec);
              !ec && it != fs::recursive_directory_iterator(); ++it) {
             if (!it->is_regular_file()) continue;
+            // path().c_str() is wchar_t* on Windows; ::stat takes const char*.
+            // Use the narrow form (also reused for Entry::path below).
+            std::string p = it->path().string();
             struct stat st;
-            if (::stat(it->path().c_str(), &st) != 0) continue;
+            if (::stat(p.c_str(), &st) != 0) continue;
             Entry e;
-            e.path = it->path().string();
+            e.path = p;
             e.size = static_cast<uint64_t>(st.st_size);
             e.atime = std::chrono::system_clock::from_time_t(st.st_atime);
             entries.push_back(std::move(e));

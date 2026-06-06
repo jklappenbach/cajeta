@@ -42,6 +42,7 @@ Supported binary targets (see [RELEASING.md](RELEASING.md) for the full matrix):
 
 - [Version](#version)
 - [Quick taste](#quick-taste)
+- [Installing](#installing)
 - [Building](#building)
 - [Running the tests](#running-the-tests)
 - [Language reference](#language-reference)
@@ -96,6 +97,62 @@ public final class App {
 
 ---
 
+## Installing
+
+Released binaries are self-contained — the language runtime and standard
+library are baked into the `cajeta` executable, and platform installers bundle
+the few system libraries they need, so there's nothing else to install.
+
+**Direct download (every platform).** Grab the artifact for your OS/arch from the
+[Releases page](https://github.com/jklappenbach/cajeta/releases):
+
+| Platform | Artifact | Install |
+|---|---|---|
+| Debian / Ubuntu | `cajeta_<ver>_<arch>.deb` | `sudo apt install ./cajeta_<ver>_<arch>.deb` |
+| Fedora / RHEL | `cajeta-<ver>-1.<arch>.rpm` | `sudo dnf install ./cajeta-<ver>-1.<arch>.rpm` |
+| Windows | `cajeta-<ver>-<arch>.msi` | double-click, or `msiexec /i cajeta-<ver>-<arch>.msi` |
+| macOS | `cajeta-<ver>-<arch>.pkg` | open it, or `sudo installer -pkg cajeta-<ver>-<arch>.pkg -target /` |
+| any Linux / generic | `cajeta-v<ver>-<triple>.tar.gz` | unpack; `bin/cajeta` is the compiler |
+
+The `.deb`/`.rpm`/`.msi` put `cajeta` on your `PATH` automatically (the `.msi`
+also adds it to the system `PATH`). Verify with `cajeta --version`.
+
+**Stay current with `cvm` (planned).** Distro repos lag, so the package managers
+ship **`cvm`** — the Cajeta Version Manager — rather than the compiler directly.
+`cvm` is version-independent: install it once and it fetches/switches any Cajeta
+toolchain (a 1.0 `cvm` installs an 8.0 `cajeta`). Once the repos/taps are
+published:
+
+```sh
+# Debian/Ubuntu (apt repo)      sudo apt install cvm
+# Fedora/RHEL (dnf repo)        sudo dnf install cvm
+# Arch (AUR)                    yay -S cvm
+# macOS / Linux (Homebrew)      brew install jklappenbach/tap/cvm
+# Windows (winget)              winget install cvm
+# brewless / repoless bootstrap (rustup-style, writes to ~/.cajeta):
+curl --proto '=https' -sSf https://sh.cajeta.dev | sh
+
+cvm install latest      # then: cvm default <ver>, cvm which, cvm doctor
+```
+
+`cvm` installs toolchains under `~/.cajeta` and puts the active one on your
+`PATH`; if a system-wide `cajeta` is already installed it reconciles with it
+(coexist, or it advises removing the system copy). The direct installers above
+remain the no-manager / pinned / offline path.
+
+**IntelliJ IDEA plugin.** The compiler ships with the IDEA plugin embedded.
+Install it into every detected IDEA with:
+
+```sh
+cajeta ide install      # also: cajeta ide list | cajeta ide uninstall
+```
+
+Then restart IntelliJ. (Or install from the JetBrains Marketplace, or via
+*Settings → Plugins → Install Plugin from Disk* using the `cajeta-idea-<ver>.zip`
+attached to the release.)
+
+---
+
 ## Building
 
 The compiler is configured via CMake and built with Ninja. Two scripts wrap the typical flow:
@@ -112,7 +169,7 @@ The compiler is configured via CMake and built with Ninja. Two scripts wrap the 
 ```sh
 sudo apt install \
     cmake ninja-build clang-22 llvm-22-dev libllvm22 \
-    libantlr4-runtime-dev openjdk-17-jre \
+    libantlr4-runtime-dev openjdk-21-jre \
     libgtest-dev libgoogle-glog-dev libzstd-dev vim-common libxxhash-dev
 ```
 
@@ -120,7 +177,7 @@ Notes:
 - LLVM 22 isn't in Ubuntu's stock repos yet. If the `llvm-22-*` packages aren't found, add the [apt.llvm.org](https://apt.llvm.org) source first (`./setup.sh` does this automatically): ``echo "deb http://apt.llvm.org/$(. /etc/os-release; echo $VERSION_CODENAME)/ llvm-toolchain-$(. /etc/os-release; echo $VERSION_CODENAME)-22 main" | sudo tee /etc/apt/sources.list.d/llvm-22.list`` (after importing the repo key).
 - `clang-22` is required at compiler-build time to compile `runtime/native/cajeta_runtime.c` to LLVM bitcode, which is then embedded into the Cajeta compiler binary.
 - `vim-common` provides `xxd`, used to convert the bitcode bytes into a C array.
-- `openjdk-17-jre` runs the bundled ANTLR4 jar in `tools/antlr/`.
+- `openjdk-21-jre` runs the bundled ANTLR4 jar in `tools/antlr/`.
 - `libxxhash-dev` is the xxhash header for the cajeta.hash runtime.
 - The project defaults to LLVM 22 (mainline upstream — the apt/Homebrew packages). Use a mainline build, not a vendor fork: ROCm's LLVM is compiled without RTTI and won't link the test JIT helper cleanly. LLVM 18 doesn't know about Zen 5 CPUs, so don't go below 22.
 - To target a different LLVM, set `CAJETA_LLVM_VERSION` (or `LLVM_DIR`) before running setup: `CAJETA_LLVM_VERSION=22 ./setup.sh`.

@@ -1,0 +1,20 @@
+# URI component-parse golden vectors (RFC 3986 §3).
+#
+# NET-6.1's Uri.parse must split each input into the seven RFC 3986
+# components. Absent components are the literal token <NONE> (an
+# *empty-but-present* component — e.g. an empty query in "http://h/?"
+# — is the token <EMPTY>, distinct from <NONE>).
+#
+# Format (fields '|'-separated):
+#   <name> | <input> | <scheme> | <userinfo> | <host> | <port> | <path> | <query> | <fragment>
+#
+full        | https://u:p@h.test:8443/a/b?x=1&y=2#frag | https | u:p  | h.test | 8443 | /a/b      | x=1&y=2 | frag
+no-userinfo | http://example.test/path                 | http  | <NONE> | example.test | <NONE> | /path | <NONE>  | <NONE>
+root-only   | http://example.test/                     | http  | <NONE> | example.test | <NONE> | /     | <NONE>  | <NONE>
+ipv6-host   | http://[::1]:80/                         | http  | <NONE> | ::1    | 80   | /         | <NONE>  | <NONE>
+ipv6-full   | https://[2001:db8::1]:443/x              | https | <NONE> | 2001:db8::1 | 443 | /x   | <NONE>  | <NONE>
+query-empty | http://h.test/?                          | http  | <NONE> | h.test | <NONE> | /       | <EMPTY> | <NONE>
+frag-empty  | http://h.test/#                          | http  | <NONE> | h.test | <NONE> | /       | <NONE>  | <EMPTY>
+mailto      | mailto:user@example.test                 | mailto | <NONE> | <NONE> | <NONE> | user@example.test | <NONE> | <NONE>
+no-port     | ws://h.test/socket                       | ws    | <NONE> | h.test | <NONE> | /socket | <NONE>  | <NONE>
+encoded-path| http://h.test/a%20b/c                    | http  | <NONE> | h.test | <NONE> | /a%20b/c | <NONE> | <NONE>

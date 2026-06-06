@@ -23,8 +23,14 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <unistd.h>
-#include <sys/stat.h>
+#if defined(_WIN32)
+#  include <process.h>   // _getpid
+#  define CAJETA_GETPID _getpid
+#else
+#  include <unistd.h>
+#  include <sys/stat.h>
+#  define CAJETA_GETPID ::getpid
+#endif
 
 using cajeta::buildtool::ActionResult;
 using cajeta::buildtool::invokePluginAction;
@@ -47,7 +53,7 @@ namespace {
     std::filesystem::path tempDir(const std::string& tag) {
         auto p = std::filesystem::temp_directory_path() /
                  ("cajeta-plugin-" + tag + "-" +
-                  std::to_string(::getpid()) + "-" +
+                  std::to_string(CAJETA_GETPID()) + "-" +
                   std::to_string(::rand()));
         std::filesystem::create_directories(p);
         return p;
@@ -65,7 +71,9 @@ namespace {
             std::ofstream out(path, std::ios::binary | std::ios::trunc);
             out << "#!/bin/sh\n" << body;
         }
-        ::chmod(path.c_str(), 0755);
+#if !defined(_WIN32)
+        ::chmod(path.string().c_str(), 0755);  // exec bit is a POSIX concept
+#endif
         return path;
     }
 
@@ -250,7 +258,7 @@ TEST(PluginRuntimeTests, requestCarriesParamsAndCapabilities) {
     auto dir = tempDir("echo");
     auto echoFile = dir / "request.json";
     auto bin = stageScript(dir, "p.sh",
-        std::string("cat > '") + echoFile.string() + "'\n"
+        std::string("cat > '") + echoFile.generic_string() + "'\n"
         "printf '{\"kind\":\"result\",\"status\":\"ok\"}\\n'\n");
     auto m = makeManifest();
     auto props = makeProps(m);

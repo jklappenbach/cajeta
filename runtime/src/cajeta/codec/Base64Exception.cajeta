@@ -1,0 +1,31 @@
+package cajeta.codec;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by [[Base64]]`.decode` on malformed input — a character
+ * outside the configured alphabet (and not `=` padding), or an
+ * input length that cannot correspond to any byte sequence (a
+ * stripped length of `1 mod 4`, which would imply a single
+ * dangling sextet with no whole byte).
+ *
+ * Recoverable, not Unrecoverable: decode boundaries are routinely
+ * fed untrusted input (HTTP `Authorization` headers, WS handshake
+ * keys, JSON `"..."` blobs), so callers either catch this subtype
+ * or declare it. Mirrors the `cajeta.io.file` exception discipline
+ * (see [[IoException]]) and [[JsonParseException]].
+ *
+ * `position` is the 0-based byte offset into the *encoded* input at
+ * which the decoder noticed the problem. For a length error
+ * (`1 mod 4`) it points one past the last consumed character.
+ */
+public class Base64Exception extends RecoverableException {
+    public int64 position;
+
+    public Base64Exception(String message, int64 position) {
+        this.message = message;
+        this.cause = 0;
+        this.position = position;
+    }
+}

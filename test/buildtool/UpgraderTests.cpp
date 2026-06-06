@@ -100,7 +100,7 @@ namespace {
   "settings": {
     "repositories": [
       { "name": "local", "type": "filesystem", "path": ")"
-            << repoRoot.string() << R"(" }
+            << repoRoot.generic_string() << R"(" }
     ],
     "dependencies": {)";
         for (size_t i = 0; i < deps.size(); ++i) {

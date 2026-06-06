@@ -1,0 +1,208 @@
+package cajeta.net;
+
+import cajeta.net.Server;
+import cajeta.net.SharedPoolServer;
+import cajeta.net.SocketAddress;
+import cajeta.net.TcpStream;
+
+/**
+ * The **accept-model selection** for a [`Server`](Server.cajeta) — the
+ * value the [`ServerBuilder`](ServerBuilder.cajeta) `.model(...)` step
+ * takes to pick *which* of the two shipped accept stacks a build wires
+ * up (plan item **NET-4.5**). It is a tiny, immutable carrier:
+ *
+ *   - a **kind** ordinal — [`FIBER_PER_CONNECTION_KIND`](#FIBER_PER_CONNECTION_KIND)
+ *     (Model A) or [`SHARED_POOL_KIND`](#SHARED_POOL_KIND) (Model B); and
+ *   - a **pool size** — the worker count, meaningful only for the
+ *     shared-pool model and ignored otherwise.
+ *
+ * ## The two models (and when to pick which)
+ *
+ *   - **Model A — fiber-per-connection** ([`Server`](Server.cajeta),
+ *     NET-4.2): the default. The accept loop `spawn`s one fiber per
+ *     accepted socket. Simplest, lowest latency, structured-concurrency
+ *     friendly (a scope owns every connection fiber; shutdown awaits
+ *     them). **Cost:** ~64 KB stack *per connection*. **Use when**
+ *     connection counts are moderate, latency matters, each connection
+ *     is mostly active.
+ *   - **Model B — event-driven shared-pool**
+ *     ([`SharedPoolServer`](SharedPoolServer.cajeta), NET-4.3): a
+ *     bounded pool of `N` worker fibers drains a bounded work
+ *     [`Channel`](../threading/Channel.cajeta). **Bounded memory**
+ *     (≈ pool-size live handler fibers, not one per connection) under
+ *     C10K-style fan-in, at a slightly higher per-turn overhead (a
+ *     `Channel` hop). **Use when** many mostly-idle connections fan in
+ *     and bounded memory matters more than per-connection latency.
+ *
+ * The full tradeoff prose lives in
+ * [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models).
+ *
+ * ## Why a carrier, not a bare ordinal
+ *
+ * [`ServerState`](ServerState.cajeta) is a *bare* `int32` ordinal
+ * because it only ever names one of four states. The model selection
+ * carries a **parameter** (the pool size) for one of its kinds, so it
+ * is a value object: `ServerModel.fiberPerConnection()` and
+ * `ServerModel.sharedPool(8)` mirror the spec's `FiberPerConnection`
+ * and `SharedPool(8)` exactly, and the builder reads back
+ * [`kind`](#kind) + [`poolSize`](#poolSize) to dispatch to the right
+ * [`Server.bind`](Server.cajeta#bind) /
+ * [`SharedPoolServer.bind`](SharedPoolServer.cajeta#bind) factory. The
+ * kind ordinals are an **append-only** contract — never renumber an
+ * existing value.
+ *
+ * This is a **pure value type** — no I/O — so the model-selection logic
+ * tests directly (which factory a given model selects), the
+ * `ServerTests` model-selection rows the plan names.
+ */
+public class ServerModel {
+    /**
+     * The [`kind`](#kind) ordinal for **Model A — fiber-per-connection**
+     * (the default). A [`ServerBuilder`](ServerBuilder.cajeta) that sees
+     * this kind builds a plain [`Server`](Server.cajeta).
+     */
+    public static final int32 FIBER_PER_CONNECTION_KIND = 0;
+
+    /**
+     * The [`kind`](#kind) ordinal for **Model B — event-driven
+     * shared-pool**. A [`ServerBuilder`](ServerBuilder.cajeta) that sees
+     * this kind builds a [`SharedPoolServer`](SharedPoolServer.cajeta)
+     * sized by [`poolSize`](#poolSize).
+     */
+    public static final int32 SHARED_POOL_KIND = 1;
+
+    /**
+     * Which accept stack this model selects — one of
+     * [`FIBER_PER_CONNECTION_KIND`](#FIBER_PER_CONNECTION_KIND) or
+     * [`SHARED_POOL_KIND`](#SHARED_POOL_KIND). Set once at construction;
+     * the builder branches on it.
+     */
+    public int32 kind;
+
+    /**
+     * The worker-pool size — the cap on concurrent handler fibers for
+     * **Model B**. Meaningful only when [`kind`](#kind) is
+     * [`SHARED_POOL_KIND`](#SHARED_POOL_KIND); for the fiber-per-connection
+     * model it is `0` and unused. Always ≥ 1 for a shared-pool model
+     * (the [`sharedPool`](#sharedPool) factory normalizes a non-positive
+     * request up to 1, matching
+     * [`SharedPoolServer`](SharedPoolServer.cajeta#SharedPoolServer)).
+     */
+    public int32 poolSize;
+
+    /**
+     * Internal ctor. User code goes through the
+     * [`fiberPerConnection`](#fiberPerConnection) /
+     * [`sharedPool`](#sharedPool) factories, which name the two shipped
+     * models the way the spec writes them.
+     */
+    public ServerModel(int32 kind, int32 poolSize) {
+        this.kind = kind;
+        this.poolSize = poolSize;
+    }
+
+    /**
+     * **Model A — fiber-per-connection** (the default): one fiber per
+     * accepted socket. The builder built from this model produces a
+     * plain [`Server`](Server.cajeta). The spec writes this
+     * `FiberPerConnection`.
+     */
+    public static #ServerModel fiberPerConnection() {
+        return heap ServerModel(ServerModel.FIBER_PER_CONNECTION_KIND, 0);
+    }
+
+    /**
+     * **Model B — event-driven shared-pool** with `poolSize` worker
+     * fibers. The builder built from this model produces a
+     * [`SharedPoolServer`](SharedPoolServer.cajeta) sized to `poolSize`.
+     * The spec writes this `SharedPool(n)`.
+     *
+     * A non-positive `poolSize` is normalized up to `1` — the same
+     * floor [`SharedPoolServer`](SharedPoolServer.cajeta#SharedPoolServer)
+     * applies — so the model never names a zero-worker pool.
+     *
+     * @param poolSize the number of worker fibers (≥ 1) — the cap on
+     *                 concurrent handler fibers.
+     */
+    public static #ServerModel sharedPool(int32 poolSize) {
+        int32 n = poolSize;
+        if (n < 1) {
+            n = 1;
+        }
+        return heap ServerModel(ServerModel.SHARED_POOL_KIND, n);
+    }
+
+    /**
+     * `true` if this model selects **Model A — fiber-per-connection**.
+     * The builder uses this to decide which `bind` factory to call.
+     */
+    public boolean isFiberPerConnection() {
+        return this.kind == ServerModel.FIBER_PER_CONNECTION_KIND;
+    }
+
+    /**
+     * `true` if this model selects **Model B — event-driven
+     * shared-pool**.
+     */
+    public boolean isSharedPool() {
+        return this.kind == ServerModel.SHARED_POOL_KIND;
+    }
+
+    /**
+     * The worker-pool size — meaningful only for **Model B**
+     * ([`SHARED_POOL_KIND`](#SHARED_POOL_KIND)); `0` for Model A.
+     */
+    public int32 getPoolSize() {
+        return this.poolSize;
+    }
+
+    // ----- materialization (the bind seam shared by both models) -----------
+
+    /**
+     * **Build the [`Server`](Server.cajeta) core for this model**, binding
+     * `addr` with the `(TcpStream) -> void` connection `handler`. This is the
+     * single branch point that lets one bind path serve *either* accept
+     * stack: a [`FIBER_PER_CONNECTION_KIND`](#FIBER_PER_CONNECTION_KIND)
+     * model yields a plain [`Server`](Server.cajeta) (Model A — a fiber per
+     * connection), a [`SHARED_POOL_KIND`](#SHARED_POOL_KIND) model yields a
+     * [`SharedPoolServer`](SharedPoolServer.cajeta) (Model B — a bounded
+     * worker pool of [`poolSize`](#poolSize)).
+     *
+     * Both are returned as a [`Server`](Server.cajeta):
+     * [`SharedPoolServer`](SharedPoolServer.cajeta) **extends**
+     * [`Server`](Server.cajeta) and overrides the
+     * [`serve`](Server.cajeta#serve) / [`dispatch`](Server.cajeta#dispatch) /
+     * [`shutdown`](Server.cajeta#shutdown) seam, so a caller holding the base
+     * type drives whichever model was selected through one polymorphic
+     * surface. That is precisely how
+     * [`HttpServer`](http/HttpServer.cajeta) runs the *same* per-connection
+     * handler on either accept model — the **NET-9.2** deliverable — and the
+     * model-selection surface a future
+     * [`ServerBuilder`](ServerBuilder.cajeta) (NET-4.5) wires.
+     */
+    public #Server bindServer(SocketAddress addr, (TcpStream) -> void handler) {
+        if (this.kind == ServerModel.SHARED_POOL_KIND) {
+            SharedPoolServer pool = SharedPoolServer.bind(addr, this.poolSize, handler);
+            return #pool;
+        }
+        Server core = Server.bind(addr, handler);
+        return #core;
+    }
+
+    /**
+     * As [`bindServer`](#bindServer) but with an explicit accept-queue
+     * `backlog` (the `listen(2)` backlog) threaded to whichever model's
+     * `bindWithBacklog` factory, so a model-selected server can still tune
+     * its kernel accept queue (the NET-4.4 knob both models honor).
+     */
+    public #Server bindServerWithBacklog(SocketAddress addr, int32 backlog,
+                                         (TcpStream) -> void handler) {
+        if (this.kind == ServerModel.SHARED_POOL_KIND) {
+            SharedPoolServer pool =
+                SharedPoolServer.bindWithBacklog(addr, backlog, this.poolSize, handler);
+            return #pool;
+        }
+        Server core = Server.bindWithBacklog(addr, backlog, handler);
+        return #core;
+    }
+}

@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <string>
 
+#include "../PortableEnv.h"
+
 using cajeta::buildtool::loadManifestString;
 using cajeta::buildtool::parseCliOverride;
 using cajeta::buildtool::PropertyOverrides;

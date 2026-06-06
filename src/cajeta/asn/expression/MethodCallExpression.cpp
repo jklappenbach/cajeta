@@ -266,7 +266,22 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         auto& llvmCtx = *module->getLlvmContext();
         llvm::Value* v = argNode->generateCode(module);
-        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+        auto argExpr = std::dynamic_pointer_cast<Expression>(argNode);
+        CajetaTypePtr argTy = argExpr ? argExpr->getResolvedType() : nullptr;
+        if (!argTy && argExpr) {
+            argExpr->resolveTypes(module);
+            argTy = argExpr->getResolvedType();
+        }
+        // Load through l-values to the r-value: a String passed as a local
+        // (alloca), an array element (`args[i]` — an ArrayIndex GEP whose slot
+        // holds the heap `String*`), or a class field (a DotExpression GEP)
+        // must become the heap String pointer, not the slot address.
+        // loadIfLValue uses the AST's resolved type to load reference elements
+        // as `ptr`; it leaves literal globals / r-values untouched. (The old
+        // alloca-only load mishandled array elements and fields.)
+        if (argExpr) {
+            v = loadIfLValue(module, v, argExpr);
+        } else if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(a->getAllocatedType(), a);
         }
         // Post Phase 2b-β: a "String" arg is now a class
@@ -279,12 +294,6 @@ namespace cajeta {
         // pointer, then GEP past its 8-byte count to land on the
         // first data byte. The literal codegen guarantees null
         // termination so any strlen-reader sees the right end.
-        auto argExpr = std::dynamic_pointer_cast<Expression>(argNode);
-        CajetaTypePtr argTy = argExpr ? argExpr->getResolvedType() : nullptr;
-        if (!argTy && argExpr) {
-            argExpr->resolveTypes(module);
-            argTy = argExpr->getResolvedType();
-        }
         if (argTy) {
             auto cls = std::dynamic_pointer_cast<CajetaClass>(argTy);
             if (cls && cls->getQName()
@@ -1463,6 +1472,323 @@ namespace cajeta {
             }
         }
 
+        // ----- TcpStream.connect / TcpListener.bind static intrinsic (NET-1.3 / NET-1.4 / b1) -----
+        //
+        // Mirrors the File.<static> lowering above. We detect the receiver
+        // identifier ("TcpStream" / "TcpListener") resolving to the canonical
+        // class, pack the SocketAddress arg into a sockaddr scratch buffer via
+        // __cajeta_net_sockaddr_pack, run the socket()+connect()/bind()+listen()
+        // syscall sequence, and (on success) malloc + initialize the returned
+        // object exactly the way File.open allocates+returns its handle.
+        //
+        // SocketAddress layout: { vtable@0, ip@1 (IpAddress*), port@2 (i32) }.
+        // IpAddress layout:     { vtable@0, family@1 (i32 ordinal), octets@2 (int8[]*) }.
+        // The family ordinal (0=V4,1=V6) is the cajeta-portable value the pack
+        // intrinsic switches on; the native socket() family is selected here
+        // (AF_INET=2 everywhere; AF_INET6=23 on Windows — b1 exercises V4).
+        if (!children.empty()) {
+            auto netId = dynamic_pointer_cast<IdentifierExpression>(children[0]);
+            std::string netName = netId ? netId->getTextValue() : "";
+            bool wantStream   = (netName == "TcpStream");
+            bool wantListener = (netName == "TcpListener");
+            // ----- UdpSocket / socket-option intrinsic (b2) -----
+            // UdpSocket.bind reuses the b1 connect/bind static path: same
+            // sockaddr_pack + socket + bind sequence, but SOCK_DGRAM (no
+            // listen, no reuseaddr).
+            bool wantUdp      = (netName == "UdpSocket");
+            if (wantStream || wantListener || wantUdp) {
+                auto& cmapN = CajetaType::getCanonicalMap();
+                std::string canonKey = wantStream ? "cajeta.net.TcpStream"
+                                     : wantListener ? "cajeta.net.TcpListener"
+                                                    : "cajeta.net.UdpSocket";
+                auto itN = cmapN.find(netName);
+                if (itN == cmapN.end()) itN = cmapN.find(canonKey);
+                CajetaClassPtr netCls;
+                if (itN != cmapN.end()) {
+                    netCls = std::dynamic_pointer_cast<CajetaClass>(itN->second);
+                }
+                bool isOurNet = netCls && netCls->getQName()
+                    && netCls->getQName()->toCanonical() == canonKey;
+                bool isConnect = wantStream && methodCallName == "connect"
+                                 && parameters.size() == 1;
+                // NET-3.3 connectAsync: same sockaddr_pack + socket prologue as
+                // the blocking connect, but the socket is made non-blocking and
+                // an in-progress connect parks the fiber on the reactor's
+                // writable readiness, then reads SO_ERROR — a distinct control
+                // shape lowered below.
+                bool isConnectAsync = wantStream && methodCallName == "connectAsync"
+                                 && parameters.size() == 1;
+                bool isBind    = wantListener && methodCallName == "bind"
+                                 && parameters.size() == 1;
+                bool isUdpBind = wantUdp && methodCallName == "bind"
+                                 && parameters.size() == 1;
+                if (isOurNet && (isConnect || isConnectAsync || isBind || isUdpBind)) {
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                    llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+
+                    llvm::Function* sockFn = module->getRuntimeFunction("__cajeta_net_socket");
+                    llvm::Function* packFn = module->getRuntimeFunction("__cajeta_net_sockaddr_pack");
+                    llvm::Function* connFn = module->getRuntimeFunction("__cajeta_net_connect");
+                    llvm::Function* bindFn = module->getRuntimeFunction("__cajeta_net_bind");
+                    llvm::Function* listenFn = module->getRuntimeFunction("__cajeta_net_listen");
+                    llvm::Function* reuseFn = module->getRuntimeFunction("__cajeta_net_set_reuseaddr");
+                    llvm::Function* closeFn = module->getRuntimeFunction("__cajeta_net_close");
+                    llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+                    // connectAsync (NET-3.3) intrinsics: toggle non-blocking,
+                    // classify the in-progress connect, park on writability,
+                    // and read the SO_ERROR outcome.
+                    llvm::Function* setNbFn   = module->getRuntimeFunction("__cajeta_net_set_nonblocking");
+                    llvm::Function* inProgFn  = module->getRuntimeFunction("__cajeta_net_is_in_progress");
+                    llvm::Function* awaitWrFn = module->getRuntimeFunction("__cajeta_net_await_writable");
+                    llvm::Function* connResFn = module->getRuntimeFunction("__cajeta_net_connect_result");
+
+                    // Resolve the SocketAddress / IpAddress llvm struct types
+                    // so we can GEP the ip / family / octets / port fields.
+                    CajetaClassPtr saCls;
+                    CajetaClassPtr ipCls;
+                    {
+                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
+                        if (sIt != cmapN.end())
+                            saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
+                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
+                        if (iIt != cmapN.end())
+                            ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
+                    }
+
+                    if (sockFn && packFn
+                            && (isConnect ? (connFn != nullptr)
+                                : isConnectAsync ? (connFn && setNbFn && inProgFn
+                                                    && awaitWrFn && connResFn)
+                                : isUdpBind ? (bindFn != nullptr)
+                                            : (bindFn && listenFn))
+                            && saCls && ipCls
+                            && llvm::isa<llvm::StructType>(saCls->getLlvmType())
+                            && llvm::isa<llvm::StructType>(ipCls->getLlvmType())) {
+                        auto* saTy = llvm::cast<llvm::StructType>(saCls->getLlvmType());
+                        auto* ipTy = llvm::cast<llvm::StructType>(ipCls->getLlvmType());
+
+                        // Generate the SocketAddress arg pointer.
+                        llvm::Value* sa = parameters[0].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(sa)) {
+                            sa = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        // ip = sa.ip (field 1); port = sa.port (field 2).
+                        llvm::Value* ipSlot = builder->CreateStructGEP(saTy, sa, 1, "na.ip_slot");
+                        llvm::Value* ip = builder->CreateLoad(ptrTy, ipSlot, "na.ip");
+                        llvm::Value* portSlot = builder->CreateStructGEP(saTy, sa, 2, "na.port_slot");
+                        llvm::Value* port = builder->CreateLoad(i32Ty, portSlot, "na.port");
+                        // family = ip.family (field 1, i32 ordinal); octets = ip.octets (field 2).
+                        llvm::Value* famSlot = builder->CreateStructGEP(ipTy, ip, 1, "na.fam_slot");
+                        llvm::Value* family = builder->CreateLoad(i32Ty, famSlot, "na.family");
+                        llvm::Value* octSlot = builder->CreateStructGEP(ipTy, ip, 2, "na.oct_slot");
+                        llvm::Value* octArr = builder->CreateLoad(ptrTy, octSlot, "na.octets_arr");
+                        llvm::Value* octData = builder->CreateInBoundsGEP(
+                            i8Ty, octArr, llvm::ConstantInt::get(i64Ty, 8), "na.octets");
+
+                        // Pack into a sockaddr scratch buffer.
+                        llvm::Value* scratch = builder->CreateAlloca(
+                            llvm::ArrayType::get(i8Ty, 128), nullptr, "na.scratch");
+                        llvm::Value* addrlen = builder->CreateCall(packFn,
+                            {family, octData, port, scratch,
+                             llvm::ConstantInt::get(i32Ty, 128)}, "na.addrlen");
+
+                        // Native socket() family: AF_INET(2) for V4, AF_INET6
+                        // (23 on Windows) for V6. SOCK_STREAM(1), proto 0.
+                        llvm::Value* isV4 = builder->CreateICmpEQ(family,
+                            llvm::ConstantInt::get(i32Ty, 0), "na.isV4");
+                        llvm::Value* nativeFamily = builder->CreateSelect(isV4,
+                            llvm::ConstantInt::get(i32Ty, 2),
+                            llvm::ConstantInt::get(i32Ty, 23), "na.nativeFamily");
+                        // SOCK_STREAM(1) for TCP, SOCK_DGRAM(2) for UDP — the
+                        // portable values __cajeta_net_socket maps. (b2)
+                        int32_t sockType = isUdpBind ? 2 : 1;
+                        llvm::Value* fd = builder->CreateCall(sockFn,
+                            {nativeFamily, llvm::ConstantInt::get(i32Ty, sockType),
+                             llvm::ConstantInt::get(i32Ty, 0)}, "na.fd");
+
+                        // Failure-sentinel check helper: if `cond` is true, throw
+                        // an informational tag and unreachable.
+                        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                        auto throwIf = [&](llvm::Value* cond, uint64_t tag,
+                                           llvm::Value* fdToClose) {
+                            llvm::BasicBlock* failBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.fail", parentFn);
+                            llvm::BasicBlock* okBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.ok", parentFn);
+                            builder->CreateCondBr(cond, failBB, okBB);
+                            builder->SetInsertPoint(failBB);
+                            if (fdToClose && closeFn) {
+                                builder->CreateCall(closeFn, {fdToClose});
+                            }
+                            if (throwFn) {
+                                llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                    llvm::ConstantInt::get(i64Ty, tag), ptrTy);
+                                builder->CreateCall(throwFn, {tagPtr});
+                            }
+                            builder->CreateUnreachable();
+                            builder->SetInsertPoint(okBB);
+                        };
+
+                        // sockaddr_pack failure: addrlen <= 0.
+                        throwIf(builder->CreateICmpSLE(addrlen,
+                            llvm::ConstantInt::get(i32Ty, 0)), 0x100, nullptr);
+
+                        // socket() failure: fd < 0.
+                        // NOTE (b1): the failure path throws a small integer
+                        // sentinel (< the zero-page boundary __cajeta_throw
+                        // guards on), so an uncaught socket failure exits
+                        // cleanly (exit 1) rather than dereferencing a bogus
+                        // pointer. Constructing a proper NetException subtype
+                        // (so callers can `catch (NetException)`) is a later
+                        // increment; b1's success path is what the loopback
+                        // echo exercises.
+                        throwIf(builder->CreateICmpSLT(fd,
+                            llvm::ConstantInt::get(i32Ty, 0)), 0x101, nullptr);
+
+                        if (isConnect) {
+                            llvm::Value* rc = builder->CreateCall(connFn,
+                                {fd, scratch, addrlen}, "na.connect_rc");
+                            // connect failure: rc != 0 → close fd then throw.
+                            throwIf(builder->CreateICmpNE(rc,
+                                llvm::ConstantInt::get(i32Ty, 0)), 0x102, fd);
+                        } else if (isConnectAsync) {
+                            // ----- non-blocking connect (NET-3.3 connectAsync) -----
+                            // Mirrors the C dance documented above
+                            // __cajeta_net_connect: make the socket non-blocking,
+                            // issue connect; rc==0 means it completed immediately
+                            // (loopback usually does). Otherwise distinguish the
+                            // in-progress case (EINPROGRESS / WSAEWOULDBLOCK) — for
+                            // which we park the fiber on reactor writability then
+                            // read SO_ERROR — from a hard connect failure.
+                            // is_in_progress() reads the errno set by connect, so
+                            // nothing may syscall between the two calls (only the
+                            // icmp/branch below).
+                            builder->CreateCall(setNbFn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 1)});
+                            llvm::Value* rc = builder->CreateCall(connFn,
+                                {fd, scratch, addrlen}, "na.aconnect_rc");
+                            llvm::Value* immediate = builder->CreateICmpEQ(rc,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_now");
+                            llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_done", parentFn);
+                            llvm::BasicBlock* pendingBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_pending", parentFn);
+                            builder->CreateCondBr(immediate, doneBB, pendingBB);
+
+                            // pending: connect returned -1; is it in-flight or a
+                            // hard error?
+                            builder->SetInsertPoint(pendingBB);
+                            llvm::Value* inProg = builder->CreateCall(inProgFn,
+                                {}, "na.aconnect_inprog");
+                            llvm::Value* isInProg = builder->CreateICmpNE(inProg,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_isinprog");
+                            llvm::BasicBlock* awaitBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_await", parentFn);
+                            llvm::BasicBlock* hardFailBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_hardfail", parentFn);
+                            builder->CreateCondBr(isInProg, awaitBB, hardFailBB);
+
+                            // hard connect failure (e.g. ECONNREFUSED returned
+                            // synchronously): close + throw.
+                            builder->SetInsertPoint(hardFailBB);
+                            if (closeFn) builder->CreateCall(closeFn, {fd});
+                            if (throwFn) {
+                                llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                    llvm::ConstantInt::get(i64Ty, 0x106), ptrTy);
+                                builder->CreateCall(throwFn, {tagPtr});
+                            }
+                            builder->CreateUnreachable();
+
+                            // in-progress: park the fiber until the socket is
+                            // writable, then read SO_ERROR to learn the outcome.
+                            builder->SetInsertPoint(awaitBB);
+                            builder->CreateCall(awaitWrFn, {fd});
+                            llvm::Value* soerr = builder->CreateCall(connResFn,
+                                {fd}, "na.aconnect_soerr");
+                            llvm::Value* soOk = builder->CreateICmpEQ(soerr,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_sook");
+                            llvm::BasicBlock* soFailBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_sofail", parentFn);
+                            builder->CreateCondBr(soOk, doneBB, soFailBB);
+
+                            // SO_ERROR != 0 → the connect failed after readiness.
+                            builder->SetInsertPoint(soFailBB);
+                            if (closeFn) builder->CreateCall(closeFn, {fd});
+                            if (throwFn) {
+                                llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                    llvm::ConstantInt::get(i64Ty, 0x107), ptrTy);
+                                builder->CreateCall(throwFn, {tagPtr});
+                            }
+                            builder->CreateUnreachable();
+
+                            // converge: the socket is connected (non-blocking).
+                            // Fall through to the shared wrap code below.
+                            builder->SetInsertPoint(doneBB);
+                        } else if (isUdpBind) {
+                            // ----- UdpSocket.bind (b2): bind only, no listen.
+                            // SO_REUSEADDR best-effort (multicast group sharing).
+                            if (reuseFn) {
+                                builder->CreateCall(reuseFn,
+                                    {fd, llvm::ConstantInt::get(i32Ty, 1)});
+                            }
+                            llvm::Value* brc = builder->CreateCall(bindFn,
+                                {fd, scratch, addrlen}, "na.udp_bind_rc");
+                            throwIf(builder->CreateICmpNE(brc,
+                                llvm::ConstantInt::get(i32Ty, 0)), 0x105, fd);
+                        } else {
+                            // bind: set SO_REUSEADDR (best-effort), bind, listen.
+                            if (reuseFn) {
+                                builder->CreateCall(reuseFn,
+                                    {fd, llvm::ConstantInt::get(i32Ty, 1)});
+                            }
+                            llvm::Value* brc = builder->CreateCall(bindFn,
+                                {fd, scratch, addrlen}, "na.bind_rc");
+                            throwIf(builder->CreateICmpNE(brc,
+                                llvm::ConstantInt::get(i32Ty, 0)), 0x103, fd);
+                            llvm::Value* lrc = builder->CreateCall(listenFn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 128)}, "na.listen_rc");
+                            throwIf(builder->CreateICmpNE(lrc,
+                                llvm::ConstantInt::get(i32Ty, 0)), 0x104, fd);
+                        }
+
+                        // Allocate + init the returned TcpStream / TcpListener
+                        // wrapping `fd` (mirror File.open's malloc+memset+vtable+fd).
+                        if (netCls->getLlvmType()
+                                && llvm::isa<llvm::StructType>(netCls->getLlvmType())) {
+                            auto* outTy = llvm::cast<llvm::StructType>(netCls->getLlvmType());
+                            const llvm::DataLayout& dl =
+                                module->getLlvmModule()->getDataLayout();
+                            llvm::Constant* size = llvm::ConstantInt::get(
+                                i64Ty, dl.getTypeAllocSize(outTy));
+                            llvm::Value* inst = MemoryManager::createMallocInstruction(
+                                module, size, builder->GetInsertBlock());
+                            builder->CreateMemSet(inst,
+                                llvm::ConstantInt::get(i8Ty, 0),
+                                size, llvm::MaybeAlign(8));
+                            llvm::Constant* vtableRef =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            if (auto* vt = netCls->getVirtualTableGlobal()) {
+                                vtableRef = CajetaModule::ensureGlobalInModule(
+                                    module->getLlvmModule(), vt);
+                            }
+                            builder->CreateStore(vtableRef,
+                                builder->CreateStructGEP(outTy, inst, 0, "na.vtable_slot"));
+                            // fd at field index 1.
+                            builder->CreateStore(fd,
+                                builder->CreateStructGEP(outTy, inst, 1, "na.fd_slot"));
+                            resolvedType = netCls;
+                            return inst;
+                        }
+                    }
+                }
+            }
+        }
+
         // ----- Math.<fn>(...) intrinsic -----
         // Math acts as a static-only namespace today (no instance, no class file). We
         // recognize the literal identifier `Math` as receiver and lower each call to a
@@ -2364,7 +2690,34 @@ namespace cajeta {
         // wrong-answer bug rather than a hard error.
         if (receiver && receiverType) {
             auto recvClass = dynamic_pointer_cast<CajetaClass>(receiverType);
+            // A real METHOD named `methodCallName` takes precedence over a
+            // same-named function-typed FIELD. The builder idiom declares both
+            // — a `handler` closure field AND a `handler(fn)` setter — and
+            // `b.handler(fn)` must call the SETTER, not try to invoke the
+            // (often null) field-closure. Without this guard the field path
+            // below greedily wins: it evaluates the arg eagerly (a bare-param
+            // lambda then fails inference before the method's expectedType
+            // propagator runs) and, at runtime, calls through the null field
+            // slot. Only fall into field-invocation when no method shadows it.
+            bool sameNamedMethod = false;
             if (recvClass) {
+                std::function<bool(const CajetaClassPtr&)> hasMethod =
+                    [&](const CajetaClassPtr& cls) -> bool {
+                        for (auto& mEntry : cls->getMethods()) {
+                            if (mEntry.second
+                                    && mEntry.second->getName() == methodCallName
+                                    && !mEntry.second->isConstructor()) {
+                                return true;
+                            }
+                        }
+                        for (auto& parent : cls->getSuperClasses()) {
+                            if (hasMethod(parent)) return true;
+                        }
+                        return false;
+                    };
+                sameNamedMethod = hasMethod(recvClass);
+            }
+            if (recvClass && !sameNamedMethod) {
                 StructurePropertyPtr fnField;
                 CajetaClassPtr fieldOwner;
                 std::function<bool(const CajetaClassPtr&)> findFnField =
@@ -4040,6 +4393,714 @@ namespace cajeta {
                             builder->CreateCall(fn, {fd});
                             resolvedType = CajetaType::of("void");
                             return nullptr;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ----- TcpStream / TcpListener instance-method intrinsic (NET-1.3 / NET-1.4 / b1) -----
+        //
+        // Mirrors the File instance lowering above: the cajeta-side bodies are
+        // stubs; we lower calls to the `__cajeta_net_*` runtime helpers via the
+        // receiver's `fd` field (struct index 1, after the vtable — the same
+        // index File.fd uses). For a byte-buffer arg we GEP past the array's
+        // 8-byte count header then add the caller offset (`&buf[8 + off]`).
+        if (thisValue && targetClass && targetClass->getQName()) {
+            const std::string netCanonical = targetClass->getQName()->toCanonical();
+            bool isTcpStream   = netCanonical == "cajeta.net.TcpStream";
+            bool isTcpListener = netCanonical == "cajeta.net.TcpListener";
+            // ----- UdpSocket / socket-option intrinsic (b2) -----
+            bool isUdpSocket   = netCanonical == "cajeta.net.UdpSocket";
+            if (isTcpStream || isTcpListener || isUdpSocket) {
+                auto* netStructTy =
+                    llvm::cast<llvm::StructType>(targetClass->getLlvmType());
+                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+                // fd is the first declared field → struct index 1 (vtable@0).
+                auto loadNetFd = [&]() -> llvm::Value* {
+                    llvm::Value* fdSlot = builder->CreateStructGEP(
+                        netStructTy, thisValue, 1, "net.fd_slot");
+                    return builder->CreateLoad(i32Ty, fdSlot, "net.fd");
+                };
+                // &buf[8 + offset]: skip the array header, add the offset.
+                auto bufPtrAtOffset = [&](size_t argIdx, llvm::Value* offV) -> llvm::Value* {
+                    llvm::Value* arr = parameters[argIdx].expression->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
+                        arr = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
+                    llvm::Value* dataStart = builder->CreateInBoundsGEP(
+                        i8Ty, arr, llvm::ConstantInt::get(i64Ty, 8),
+                        "net.buf_start");
+                    return builder->CreateInBoundsGEP(
+                        i8Ty, dataStart, offV, "net.buf_off");
+                };
+                auto loadI64Arg = [&](size_t argIdx) -> llvm::Value* {
+                    llvm::Value* v = parameters[argIdx].expression->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+                        v = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
+                    if (v && v->getType() != i64Ty && v->getType()->isIntegerTy()) {
+                        v = builder->CreateIntCast(v, i64Ty, true);
+                    }
+                    return v;
+                };
+
+                // --- TcpStream.read(dst, offset, length) -> int64 (recv) ---
+                if (isTcpStream && methodCallName == "read"
+                        && parameters.size() == 3) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_recv");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* off = loadI64Arg(1);
+                        llvm::Value* len = loadI64Arg(2);
+                        llvm::Value* buf = bufPtrAtOffset(0, off);
+                        llvm::Value* n = builder->CreateCall(fn,
+                            {fd, buf, len, llvm::ConstantInt::get(i32Ty, 0)},
+                            "net.recv");
+                        resolvedType = CajetaType::of("int64");
+                        return n;
+                    }
+                }
+                // --- TcpStream.write(data, offset, length) -> int64 (send) ---
+                if (isTcpStream && methodCallName == "write"
+                        && parameters.size() == 3) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_send");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* off = loadI64Arg(1);
+                        llvm::Value* len = loadI64Arg(2);
+                        llvm::Value* buf = bufPtrAtOffset(0, off);
+                        llvm::Value* n = builder->CreateCall(fn,
+                            {fd, buf, len, llvm::ConstantInt::get(i32Ty, 0)},
+                            "net.send");
+                        resolvedType = CajetaType::of("int64");
+                        return n;
+                    }
+                }
+                // --- TcpStream.shutdown(how) -> void ---
+                if (isTcpStream && methodCallName == "shutdown"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_shutdown");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* how = parameters[0].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(how)) {
+                            how = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        if (how && how->getType() != i32Ty
+                                && how->getType()->isIntegerTy()) {
+                            how = builder->CreateIntCast(how, i32Ty, true);
+                        }
+                        builder->CreateCall(fn, {fd, how});
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
+                // --- TcpStream.close() / TcpListener.close() -> void ---
+                if ((isTcpStream || isTcpListener) && methodCallName == "close"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_close");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        builder->CreateCall(fn, {fd});
+                        // this.fd = -1 (idempotency: close(-1) is a no-op).
+                        llvm::Value* fdSlot = builder->CreateStructGEP(
+                            netStructTy, thisValue, 1, "net.fd_slot");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, -1), fdSlot);
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
+                // --- TcpListener.acceptFd() -> int32 (accept, discard peer) ---
+                if (isTcpListener && methodCallName == "acceptFd"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_accept");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* nullPtr =
+                            llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(ptrTy));
+                        llvm::Value* connFd = builder->CreateCall(fn,
+                            {fd, nullPtr, nullPtr}, "net.accept");
+                        resolvedType = CajetaType::of("int32");
+                        return connFd;
+                    }
+                }
+                // --- TcpListener.boundPort() -> int32 (getsockname+unpack) ---
+                if (isTcpListener && methodCallName == "boundPort"
+                        && parameters.empty()) {
+                    llvm::Function* nameFn = module->getRuntimeFunction(
+                        "__cajeta_net_getsockname");
+                    llvm::Function* unpackFn = module->getRuntimeFunction(
+                        "__cajeta_net_sockaddr_unpack");
+                    if (nameFn && unpackFn) {
+                        llvm::Value* fd = loadNetFd();
+                        // sockaddr scratch (128 = sockaddr_storage upper bound),
+                        // a len in/out i32, an octets[16] out, a port i32 out.
+                        llvm::Value* scratch = builder->CreateAlloca(
+                            llvm::ArrayType::get(i8Ty, 128), nullptr, "net.scratch");
+                        llvm::Value* lenSlot = builder->CreateAlloca(
+                            i32Ty, nullptr, "net.addrlen");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, 128), lenSlot);
+                        llvm::Value* octets = builder->CreateAlloca(
+                            llvm::ArrayType::get(i8Ty, 16), nullptr, "net.octets");
+                        llvm::Value* portSlot = builder->CreateAlloca(
+                            i32Ty, nullptr, "net.port");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, 0), portSlot);
+                        builder->CreateCall(nameFn, {fd, scratch, lenSlot});
+                        llvm::Value* addrlen = builder->CreateLoad(
+                            i32Ty, lenSlot, "net.addrlen.v");
+                        builder->CreateCall(unpackFn,
+                            {scratch, addrlen, octets, portSlot});
+                        resolvedType = CajetaType::of("int32");
+                        return builder->CreateLoad(i32Ty, portSlot, "net.boundPort");
+                    }
+                }
+
+                // ----- UdpSocket / socket-option intrinsic (b2) -----
+                //
+                // Typed socket-option pairs (NET-1.6) on TcpStream + UdpSocket.
+                // Each lowers to its dedicated get/set intrinsic via this.fd.
+                // Boolean setters bind the param to a local i32 (`on ? 1 : 0`);
+                // boolean getters compare the int32 intrinsic result `!= 0`.
+
+                // Coerce a boolean/int arg to a clean i32, binding via a local
+                // alloca first so a field/param-as-arg can't mistype (b1 rule).
+                auto loadI32Arg = [&](size_t argIdx) -> llvm::Value* {
+                    llvm::Value* v =
+                        parameters[argIdx].expression->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+                        v = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
+                    if (v && v->getType() != i32Ty && v->getType()->isIntegerTy()) {
+                        v = builder->CreateIntCast(v, i32Ty, true);
+                    }
+                    return v;
+                };
+                // `on ? 1 : 0`: normalize a boolean (i1/i32) arg to 0/1.
+                auto boolArgAsOnOff = [&](size_t argIdx) -> llvm::Value* {
+                    llvm::Value* v = loadI32Arg(argIdx);
+                    llvm::Value* nz = builder->CreateICmpNE(
+                        v, llvm::ConstantInt::get(v->getType(), 0), "opt.nz");
+                    return builder->CreateSelect(nz,
+                        llvm::ConstantInt::get(i32Ty, 1),
+                        llvm::ConstantInt::get(i32Ty, 0), "opt.onoff");
+                };
+                // A boolean-option setter: __cajeta_net_set_<opt>(fd, on?1:0).
+                auto lowerBoolSetter = [&](const char* sym) -> bool {
+                    llvm::Function* fn = module->getRuntimeFunction(sym);
+                    if (!fn) return false;
+                    llvm::Value* fd = loadNetFd();
+                    llvm::Value* on = boolArgAsOnOff(0);
+                    builder->CreateCall(fn, {fd, on});
+                    resolvedType = CajetaType::of("void");
+                    return true;
+                };
+                // A boolean-option getter: __cajeta_net_get_<opt>(fd) != 0.
+                // (returns nullptr-on-miss via the `out` ref so callers can
+                // distinguish "no such intrinsic" from a real i1 result.)
+                auto lowerBoolGetter = [&](const char* sym,
+                                           llvm::Value*& out) -> bool {
+                    llvm::Function* fn = module->getRuntimeFunction(sym);
+                    if (!fn) return false;
+                    llvm::Value* fd = loadNetFd();
+                    llvm::Value* r = builder->CreateCall(fn, {fd}, "opt.get");
+                    out = builder->CreateICmpNE(
+                        r, llvm::ConstantInt::get(i32Ty, 0), "opt.bool");
+                    resolvedType = CajetaType::of("boolean");
+                    return true;
+                };
+                // An int-option setter: __cajeta_net_set_<opt>(fd, value).
+                auto lowerIntSetter = [&](const char* sym) -> bool {
+                    llvm::Function* fn = module->getRuntimeFunction(sym);
+                    if (!fn) return false;
+                    llvm::Value* fd = loadNetFd();
+                    llvm::Value* val = loadI32Arg(0);
+                    builder->CreateCall(fn, {fd, val});
+                    resolvedType = CajetaType::of("void");
+                    return true;
+                };
+                // An int-option getter: __cajeta_net_get_<opt>(fd) -> int32.
+                auto lowerIntGetter = [&](const char* sym,
+                                          llvm::Value*& out) -> bool {
+                    llvm::Function* fn = module->getRuntimeFunction(sym);
+                    if (!fn) return false;
+                    llvm::Value* fd = loadNetFd();
+                    out = builder->CreateCall(fn, {fd}, "opt.iget");
+                    resolvedType = CajetaType::of("int32");
+                    return true;
+                };
+
+                bool isOptHolder = isTcpStream || isUdpSocket;
+                if (isOptHolder) {
+                    // Boolean option pairs (TcpStream NoDelay/KeepAlive;
+                    // UdpSocket Broadcast). One-arg setter / zero-arg getter.
+                    struct BoolOpt { const char* m; const char* setSym;
+                                     const char* getSym; bool tcp; bool udp; };
+                    static const BoolOpt boolOpts[] = {
+                        {"NoDelay",   "__cajeta_net_set_nodelay",
+                                      "__cajeta_net_get_nodelay",   true,  false},
+                        {"KeepAlive", "__cajeta_net_set_keepalive",
+                                      "__cajeta_net_get_keepalive", true,  false},
+                        {"Broadcast", "__cajeta_net_set_broadcast",
+                                      "__cajeta_net_get_broadcast", false, true},
+                    };
+                    for (const auto& o : boolOpts) {
+                        bool applies = (isTcpStream && o.tcp)
+                                    || (isUdpSocket && o.udp);
+                        if (!applies) continue;
+                        if (methodCallName == std::string("set") + o.m
+                                && parameters.size() == 1) {
+                            if (lowerBoolSetter(o.setSym)) return nullptr;
+                        }
+                        if (methodCallName == std::string("get") + o.m
+                                && parameters.empty()) {
+                            llvm::Value* out = nullptr;
+                            if (lowerBoolGetter(o.getSym, out)) return out;
+                        }
+                    }
+                    // Int option pairs: Recv/Send buffer sizes (both types).
+                    struct IntOpt { const char* m; const char* setSym;
+                                    const char* getSym; };
+                    static const IntOpt intOpts[] = {
+                        {"RecvBufferSize", "__cajeta_net_set_recvbuf",
+                                           "__cajeta_net_get_recvbuf"},
+                        {"SendBufferSize", "__cajeta_net_set_sendbuf",
+                                           "__cajeta_net_get_sendbuf"},
+                    };
+                    for (const auto& o : intOpts) {
+                        if (methodCallName == std::string("set") + o.m
+                                && parameters.size() == 1) {
+                            if (lowerIntSetter(o.setSym)) return nullptr;
+                        }
+                        if (methodCallName == std::string("get") + o.m
+                                && parameters.empty()) {
+                            llvm::Value* out = nullptr;
+                            if (lowerIntGetter(o.getSym, out)) return out;
+                        }
+                    }
+                    // TTL: the native helper takes an extra `is_v6` flag. The
+                    // socket family isn't stored on the wrapper (b2 exercises
+                    // V4), so pass is_v6 = 0. setTtl(int32) / getTtl().
+                    if (methodCallName == "setTtl" && parameters.size() == 1) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_net_set_ttl");
+                        if (fn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* ttl = loadI32Arg(0);
+                            builder->CreateCall(fn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 0), ttl});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (methodCallName == "getTtl" && parameters.empty()) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_net_get_ttl");
+                        if (fn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* r = builder->CreateCall(fn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 0)},
+                                "opt.ttl");
+                            resolvedType = CajetaType::of("int32");
+                            return r;
+                        }
+                    }
+                }
+                // Linger is TcpStream-only here (setLinger(bool,int32) /
+                // getLinger()->bool reading the on-flag via the out pointers).
+                if (isTcpStream && methodCallName == "setLinger"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn =
+                        module->getRuntimeFunction("__cajeta_net_set_linger");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* on = boolArgAsOnOff(0);
+                        llvm::Value* secs = loadI32Arg(1);
+                        builder->CreateCall(fn, {fd, on, secs});
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
+                if (isTcpStream && methodCallName == "getLinger"
+                        && parameters.empty()) {
+                    llvm::Function* fn =
+                        module->getRuntimeFunction("__cajeta_net_get_linger");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* onOut = builder->CreateAlloca(
+                            i32Ty, nullptr, "linger.on");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, 0), onOut);
+                        llvm::Value* secsOut = builder->CreateAlloca(
+                            i32Ty, nullptr, "linger.secs");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, 0), secsOut);
+                        builder->CreateCall(fn, {fd, onOut, secsOut});
+                        llvm::Value* onV = builder->CreateLoad(
+                            i32Ty, onOut, "linger.on.v");
+                        resolvedType = CajetaType::of("boolean");
+                        return builder->CreateICmpNE(onV,
+                            llvm::ConstantInt::get(i32Ty, 0), "linger.bool");
+                    }
+                }
+
+                // ----- UdpSocket datagram I/O (b2) -----
+                //
+                // sendTo/recvFrom pack/unpack the SocketAddress like the b1
+                // static connect/bind path; send/recv/connect/close mirror the
+                // TcpStream forms. localAddress + recvFrom's `from` build a
+                // SocketAddress from the unpacked sockaddr.
+                if (isUdpSocket) {
+                    // Pack a SocketAddress arg into a 128-byte sockaddr scratch.
+                    // Returns {scratch, addrlen}; mirrors the b1 connect path.
+                    auto packSockAddrArg =
+                        [&](size_t argIdx, llvm::Value*& scratchOut,
+                            llvm::Value*& addrlenOut) -> bool {
+                        auto& cmapN = CajetaType::getCanonicalMap();
+                        CajetaClassPtr saCls, ipCls;
+                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
+                        if (sIt != cmapN.end())
+                            saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
+                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
+                        if (iIt != cmapN.end())
+                            ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
+                        llvm::Function* packFn = module->getRuntimeFunction(
+                            "__cajeta_net_sockaddr_pack");
+                        if (!packFn || !saCls || !ipCls
+                                || !llvm::isa<llvm::StructType>(saCls->getLlvmType())
+                                || !llvm::isa<llvm::StructType>(ipCls->getLlvmType()))
+                            return false;
+                        auto* saTy = llvm::cast<llvm::StructType>(saCls->getLlvmType());
+                        auto* ipTy = llvm::cast<llvm::StructType>(ipCls->getLlvmType());
+                        llvm::Value* sa =
+                            parameters[argIdx].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(sa)) {
+                            sa = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        // sa.ip @1, sa.port @2 (vtable@0).
+                        llvm::Value* ip = builder->CreateLoad(ptrTy,
+                            builder->CreateStructGEP(saTy, sa, 1, "udp.ip_slot"),
+                            "udp.ip");
+                        llvm::Value* port = builder->CreateLoad(i32Ty,
+                            builder->CreateStructGEP(saTy, sa, 2, "udp.port_slot"),
+                            "udp.port");
+                        // ip.family @1, ip.octets @2.
+                        llvm::Value* family = builder->CreateLoad(i32Ty,
+                            builder->CreateStructGEP(ipTy, ip, 1, "udp.fam_slot"),
+                            "udp.family");
+                        llvm::Value* octArr = builder->CreateLoad(ptrTy,
+                            builder->CreateStructGEP(ipTy, ip, 2, "udp.oct_slot"),
+                            "udp.octets_arr");
+                        llvm::Value* octData = builder->CreateInBoundsGEP(
+                            i8Ty, octArr, llvm::ConstantInt::get(i64Ty, 8),
+                            "udp.octets");
+                        scratchOut = builder->CreateAlloca(
+                            llvm::ArrayType::get(i8Ty, 128), nullptr, "udp.sa");
+                        addrlenOut = builder->CreateCall(packFn,
+                            {family, octData, port, scratchOut,
+                             llvm::ConstantInt::get(i32Ty, 128)}, "udp.addrlen");
+                        return true;
+                    };
+
+                    // Build a heap SocketAddress from an unpacked octets[16] +
+                    // host-order port + family. Allocates a fresh octet array
+                    // (header'd, like `new int8[16]`) for the IpAddress so the
+                    // result owns its storage. Returns the SocketAddress* (or
+                    // null on a missing dependency).
+                    auto buildSockAddr =
+                        [&](llvm::Value* octets16, llvm::Value* portV,
+                            llvm::Value* familyV) -> llvm::Value* {
+                        auto& cmapN = CajetaType::getCanonicalMap();
+                        CajetaClassPtr saCls, ipCls;
+                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
+                        if (sIt != cmapN.end())
+                            saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
+                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
+                        if (iIt != cmapN.end())
+                            ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
+                        llvm::Function* newArr = module->getRuntimeFunction(
+                            "__cajeta_new_array_header");
+                        if (!saCls || !ipCls || !newArr
+                                || !llvm::isa<llvm::StructType>(saCls->getLlvmType())
+                                || !llvm::isa<llvm::StructType>(ipCls->getLlvmType()))
+                            return nullptr;
+                        auto* saTy = llvm::cast<llvm::StructType>(saCls->getLlvmType());
+                        auto* ipTy = llvm::cast<llvm::StructType>(ipCls->getLlvmType());
+                        const llvm::DataLayout& dl =
+                            module->getLlvmModule()->getDataLayout();
+                        auto allocObj = [&](CajetaClassPtr cls,
+                                            llvm::StructType* ty) -> llvm::Value* {
+                            llvm::Constant* size = llvm::ConstantInt::get(
+                                i64Ty, dl.getTypeAllocSize(ty));
+                            llvm::Value* inst =
+                                MemoryManager::createMallocInstruction(
+                                    module, size, builder->GetInsertBlock());
+                            builder->CreateMemSet(inst,
+                                llvm::ConstantInt::get(i8Ty, 0), size,
+                                llvm::MaybeAlign(8));
+                            llvm::Constant* vt =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            if (auto* g = cls->getVirtualTableGlobal()) {
+                                vt = CajetaModule::ensureGlobalInModule(
+                                    module->getLlvmModule(), g);
+                            }
+                            builder->CreateStore(vt,
+                                builder->CreateStructGEP(ty, inst, 0, "sa.vt"));
+                            return inst;
+                        };
+                        // Fresh 16-byte octet array (8-byte header + 16 bytes).
+                        llvm::Value* arr = builder->CreateCall(newArr,
+                            {llvm::ConstantInt::get(i64Ty, 8),
+                             llvm::ConstantInt::get(i64Ty, 1),
+                             llvm::ConstantInt::get(i64Ty, 16)}, "sa.octarr");
+                        llvm::Value* arrData = builder->CreateInBoundsGEP(
+                            i8Ty, arr, llvm::ConstantInt::get(i64Ty, 8),
+                            "sa.octdata");
+                        builder->CreateMemCpy(arrData, llvm::MaybeAlign(1),
+                            octets16, llvm::MaybeAlign(1),
+                            llvm::ConstantInt::get(i64Ty, 16));
+                        // IpAddress { vtable@0, family@1, octets@2 }.
+                        llvm::Value* ipInst = allocObj(ipCls, ipTy);
+                        builder->CreateStore(familyV,
+                            builder->CreateStructGEP(ipTy, ipInst, 1, "ip.fam"));
+                        builder->CreateStore(arr,
+                            builder->CreateStructGEP(ipTy, ipInst, 2, "ip.oct"));
+                        // SocketAddress { vtable@0, ip@1, port@2 }.
+                        llvm::Value* saInst = allocObj(saCls, saTy);
+                        builder->CreateStore(ipInst,
+                            builder->CreateStructGEP(saTy, saInst, 1, "sa.ip"));
+                        builder->CreateStore(portV,
+                            builder->CreateStructGEP(saTy, saInst, 2, "sa.port"));
+                        return saInst;
+                    };
+
+                    // --- UdpSocket.sendTo(data, offset, length, dest) -> i32 ---
+                    if (methodCallName == "sendTo" && parameters.size() == 4) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_sendto");
+                        llvm::Value* scratch = nullptr;
+                        llvm::Value* addrlen = nullptr;
+                        if (fn && packSockAddrArg(3, scratch, addrlen)) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* off = loadI64Arg(1);
+                            llvm::Value* len = loadI64Arg(2);
+                            llvm::Value* buf = bufPtrAtOffset(0, off);
+                            llvm::Value* n = builder->CreateCall(fn,
+                                {fd, buf, len,
+                                 llvm::ConstantInt::get(i32Ty, 0),
+                                 scratch, addrlen}, "udp.sendto");
+                            // sendto returns int64; the surface is int32.
+                            resolvedType = CajetaType::of("int32");
+                            return builder->CreateIntCast(n, i32Ty, true);
+                        }
+                    }
+                    // --- UdpSocket.recvFrom(dst, offset, capacity) -> RecvResult ---
+                    if (methodCallName == "recvFrom" && parameters.size() == 3) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_recvfrom");
+                        llvm::Function* unpackFn = module->getRuntimeFunction(
+                            "__cajeta_net_sockaddr_unpack");
+                        auto& cmapN = CajetaType::getCanonicalMap();
+                        auto rrIt = cmapN.find("cajeta.net.RecvResult");
+                        if (rrIt == cmapN.end()) rrIt = cmapN.find("RecvResult");
+                        CajetaClassPtr rrCls = rrIt != cmapN.end()
+                            ? std::dynamic_pointer_cast<CajetaClass>(rrIt->second)
+                            : nullptr;
+                        if (fn && unpackFn && rrCls
+                                && llvm::isa<llvm::StructType>(rrCls->getLlvmType())) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* off = loadI64Arg(1);
+                            llvm::Value* cap = loadI64Arg(2);
+                            llvm::Value* buf = bufPtrAtOffset(0, off);
+                            // sockaddr out + len in/out.
+                            llvm::Value* scratch = builder->CreateAlloca(
+                                llvm::ArrayType::get(i8Ty, 128), nullptr,
+                                "udp.rf.sa");
+                            llvm::Value* lenSlot = builder->CreateAlloca(
+                                i32Ty, nullptr, "udp.rf.len");
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 128), lenSlot);
+                            llvm::Value* n = builder->CreateCall(fn,
+                                {fd, buf, cap,
+                                 llvm::ConstantInt::get(i32Ty, 0),
+                                 scratch, lenSlot}, "udp.recvfrom");
+                            llvm::Value* count =
+                                builder->CreateIntCast(n, i32Ty, true);
+                            // Unpack the sender address.
+                            llvm::Value* addrlen = builder->CreateLoad(
+                                i32Ty, lenSlot, "udp.rf.len.v");
+                            llvm::Value* octets = builder->CreateAlloca(
+                                llvm::ArrayType::get(i8Ty, 16), nullptr,
+                                "udp.rf.oct");
+                            builder->CreateMemSet(octets,
+                                llvm::ConstantInt::get(i8Ty, 0),
+                                llvm::ConstantInt::get(i64Ty, 16),
+                                llvm::MaybeAlign(1));
+                            llvm::Value* portSlot = builder->CreateAlloca(
+                                i32Ty, nullptr, "udp.rf.port");
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 0), portSlot);
+                            llvm::Value* fam = builder->CreateCall(unpackFn,
+                                {scratch, addrlen, octets, portSlot},
+                                "udp.rf.fam");
+                            // unpack returns the family ordinal (0=V4) or -1;
+                            // clamp a -1 to 0 so buildSockAddr stays valid.
+                            llvm::Value* famOk = builder->CreateICmpSLT(fam,
+                                llvm::ConstantInt::get(i32Ty, 0), "udp.rf.famneg");
+                            llvm::Value* famClamped = builder->CreateSelect(
+                                famOk, llvm::ConstantInt::get(i32Ty, 0), fam,
+                                "udp.rf.fam.c");
+                            llvm::Value* portV = builder->CreateLoad(
+                                i32Ty, portSlot, "udp.rf.port.v");
+                            llvm::Value* from =
+                                buildSockAddr(octets, portV, famClamped);
+                            // RecvResult { vtable@0, count@1, from@2 }.
+                            auto* rrTy = llvm::cast<llvm::StructType>(
+                                rrCls->getLlvmType());
+                            const llvm::DataLayout& dl =
+                                module->getLlvmModule()->getDataLayout();
+                            llvm::Constant* size = llvm::ConstantInt::get(
+                                i64Ty, dl.getTypeAllocSize(rrTy));
+                            llvm::Value* rr =
+                                MemoryManager::createMallocInstruction(
+                                    module, size, builder->GetInsertBlock());
+                            builder->CreateMemSet(rr,
+                                llvm::ConstantInt::get(i8Ty, 0), size,
+                                llvm::MaybeAlign(8));
+                            llvm::Constant* vt =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            if (auto* g = rrCls->getVirtualTableGlobal()) {
+                                vt = CajetaModule::ensureGlobalInModule(
+                                    module->getLlvmModule(), g);
+                            }
+                            builder->CreateStore(vt,
+                                builder->CreateStructGEP(rrTy, rr, 0, "rr.vt"));
+                            builder->CreateStore(count,
+                                builder->CreateStructGEP(rrTy, rr, 1, "rr.count"));
+                            if (from) {
+                                builder->CreateStore(from,
+                                    builder->CreateStructGEP(rrTy, rr, 2,
+                                        "rr.from"));
+                            }
+                            resolvedType = rrCls;
+                            return rr;
+                        }
+                    }
+                    // --- UdpSocket.connect(peer) -> void ---
+                    if (methodCallName == "connect" && parameters.size() == 1) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_connect");
+                        llvm::Value* scratch = nullptr;
+                        llvm::Value* addrlen = nullptr;
+                        if (fn && packSockAddrArg(0, scratch, addrlen)) {
+                            llvm::Value* fd = loadNetFd();
+                            builder->CreateCall(fn, {fd, scratch, addrlen});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    // --- UdpSocket.send(data, offset, length) -> i32 ---
+                    if (methodCallName == "send" && parameters.size() == 3) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_send");
+                        if (fn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* off = loadI64Arg(1);
+                            llvm::Value* len = loadI64Arg(2);
+                            llvm::Value* buf = bufPtrAtOffset(0, off);
+                            llvm::Value* n = builder->CreateCall(fn,
+                                {fd, buf, len,
+                                 llvm::ConstantInt::get(i32Ty, 0)}, "udp.send");
+                            resolvedType = CajetaType::of("int32");
+                            return builder->CreateIntCast(n, i32Ty, true);
+                        }
+                    }
+                    // --- UdpSocket.recv(dst, offset, capacity) -> i32 ---
+                    if (methodCallName == "recv" && parameters.size() == 3) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_recv");
+                        if (fn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* off = loadI64Arg(1);
+                            llvm::Value* cap = loadI64Arg(2);
+                            llvm::Value* buf = bufPtrAtOffset(0, off);
+                            llvm::Value* n = builder->CreateCall(fn,
+                                {fd, buf, cap,
+                                 llvm::ConstantInt::get(i32Ty, 0)}, "udp.recv");
+                            resolvedType = CajetaType::of("int32");
+                            return builder->CreateIntCast(n, i32Ty, true);
+                        }
+                    }
+                    // --- UdpSocket.localAddress() -> SocketAddress ---
+                    if (methodCallName == "localAddress" && parameters.empty()) {
+                        llvm::Function* nameFn = module->getRuntimeFunction(
+                            "__cajeta_net_getsockname");
+                        llvm::Function* unpackFn = module->getRuntimeFunction(
+                            "__cajeta_net_sockaddr_unpack");
+                        if (nameFn && unpackFn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* scratch = builder->CreateAlloca(
+                                llvm::ArrayType::get(i8Ty, 128), nullptr,
+                                "udp.la.sa");
+                            llvm::Value* lenSlot = builder->CreateAlloca(
+                                i32Ty, nullptr, "udp.la.len");
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 128), lenSlot);
+                            llvm::Value* octets = builder->CreateAlloca(
+                                llvm::ArrayType::get(i8Ty, 16), nullptr,
+                                "udp.la.oct");
+                            builder->CreateMemSet(octets,
+                                llvm::ConstantInt::get(i8Ty, 0),
+                                llvm::ConstantInt::get(i64Ty, 16),
+                                llvm::MaybeAlign(1));
+                            llvm::Value* portSlot = builder->CreateAlloca(
+                                i32Ty, nullptr, "udp.la.port");
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 0), portSlot);
+                            builder->CreateCall(nameFn, {fd, scratch, lenSlot});
+                            llvm::Value* addrlen = builder->CreateLoad(
+                                i32Ty, lenSlot, "udp.la.len.v");
+                            llvm::Value* fam = builder->CreateCall(unpackFn,
+                                {scratch, addrlen, octets, portSlot},
+                                "udp.la.fam");
+                            llvm::Value* famNeg = builder->CreateICmpSLT(fam,
+                                llvm::ConstantInt::get(i32Ty, 0), "udp.la.famneg");
+                            llvm::Value* famClamped = builder->CreateSelect(
+                                famNeg, llvm::ConstantInt::get(i32Ty, 0), fam,
+                                "udp.la.fam.c");
+                            llvm::Value* portV = builder->CreateLoad(
+                                i32Ty, portSlot, "udp.la.port.v");
+                            llvm::Value* sa =
+                                buildSockAddr(octets, portV, famClamped);
+                            if (sa) {
+                                auto& cmapN2 = CajetaType::getCanonicalMap();
+                                auto sIt = cmapN2.find("cajeta.net.SocketAddress");
+                                if (sIt == cmapN2.end())
+                                    sIt = cmapN2.find("SocketAddress");
+                                if (sIt != cmapN2.end())
+                                    resolvedType =
+                                        std::dynamic_pointer_cast<CajetaClass>(
+                                            sIt->second);
+                                return sa;
+                            }
                         }
                     }
                 }

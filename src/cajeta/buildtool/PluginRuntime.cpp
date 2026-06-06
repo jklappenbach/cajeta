@@ -71,12 +71,12 @@
 #include <cerrno>
 #include <cstring>
 #include <iostream>
+#include <cstdio>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#include <sys/wait.h>
-#include <unistd.h>
+#include "cajeta/buildtool/Subprocess.h"
 
 namespace cajeta::buildtool {
 
@@ -135,39 +135,6 @@ namespace cajeta::buildtool {
             os << llvm::json::Value(std::move(req));
             os.flush();
             return out;
-        }
-
-        // Read a fd to EOF in chunks; return what was read so far on
-        // EINTR / EOF.
-        void drainFd(int fd, std::string& out) {
-            char buf[4096];
-            for (;;) {
-                ssize_t n = ::read(fd, buf, sizeof(buf));
-                if (n > 0) {
-                    out.append(buf, static_cast<size_t>(n));
-                    continue;
-                }
-                if (n == 0) break;
-                if (errno == EINTR) continue;
-                break;
-            }
-        }
-
-        // Write `bytes` to fd, blocking until done. Returns false on
-        // a real I/O error (the caller fails the dispatch).
-        bool writeAll(int fd, const std::string& bytes) {
-            size_t written = 0;
-            while (written < bytes.size()) {
-                ssize_t n = ::write(fd, bytes.data() + written,
-                                    bytes.size() - written);
-                if (n < 0) {
-                    if (errno == EINTR) continue;
-                    return false;
-                }
-                if (n == 0) return false;
-                written += static_cast<size_t>(n);
-            }
-            return true;
         }
 
         struct ProtocolState {
@@ -305,104 +272,36 @@ namespace cajeta::buildtool {
         std::string requestJson = serializeRequest(
             plugin, actionName, params, ctx);
 
-        int inPipe[2];   // parent writes, child reads
-        int outPipe[2];  // child writes, parent reads
-        int errPipe[2];  // child writes stderr, parent reads
-        if (::pipe(inPipe) < 0) {
-            return err(std::string("plugin: pipe(stdin): ") +
-                       std::strerror(errno));
-        }
-        if (::pipe(outPipe) < 0) {
-            ::close(inPipe[0]); ::close(inPipe[1]);
-            return err(std::string("plugin: pipe(stdout): ") +
-                       std::strerror(errno));
-        }
-        if (::pipe(errPipe) < 0) {
-            ::close(inPipe[0]); ::close(inPipe[1]);
-            ::close(outPipe[0]); ::close(outPipe[1]);
-            return err(std::string("plugin: pipe(stderr): ") +
-                       std::strerror(errno));
-        }
-
-        pid_t pid = ::fork();
-        if (pid < 0) {
-            ::close(inPipe[0]); ::close(inPipe[1]);
-            ::close(outPipe[0]); ::close(outPipe[1]);
-            ::close(errPipe[0]); ::close(errPipe[1]);
-            return err(std::string("plugin: fork: ") +
-                       std::strerror(errno));
-        }
-        if (pid == 0) {
-            ::dup2(inPipe[0],  STDIN_FILENO);
-            ::dup2(outPipe[1], STDOUT_FILENO);
-            ::dup2(errPipe[1], STDERR_FILENO);
-            ::close(inPipe[0]);  ::close(inPipe[1]);
-            ::close(outPipe[0]); ::close(outPipe[1]);
-            ::close(errPipe[0]); ::close(errPipe[1]);
-            // Single-arg exec: the plugin binary takes no positional
-            // arguments. Everything it needs is on stdin.
-            ::execl(plugin.binaryPath.c_str(),
-                    plugin.binaryPath.c_str(),
-                    static_cast<char*>(nullptr));
-            std::string msg = "plugin: cannot execute '" +
-                              plugin.binaryPath + "': " +
-                              std::strerror(errno) + "\n";
-            ::write(STDERR_FILENO, msg.data(), msg.size());
-            _exit(127);
-        }
-
-        // Parent closes child-side fds + writes request, then reads
-        // back stdout/stderr. The order is: write all of stdin, close
-        // it, then drain stdout/stderr in sequence. Plugins that emit
-        // huge amounts on stdout before draining stdin would deadlock
-        // — but cajeta plugins' params are bounded by manifest size,
-        // so the simple serial pattern works for v1.
-        ::close(inPipe[0]);
-        ::close(outPipe[1]);
-        ::close(errPipe[1]);
-
-        if (!writeAll(inPipe[1], requestJson)) {
-            ::close(inPipe[1]);
-            ::close(outPipe[0]);
-            ::close(errPipe[0]);
-            // Reap the child even on write failure to avoid zombies.
-            int status = 0;
-            ::waitpid(pid, &status, 0);
-            return err("plugin: failed to write request to '" +
-                       plugin.binaryPath + "'");
-        }
-        ::close(inPipe[1]);
-
+        // Single-arg spawn: the plugin binary takes no positional arguments —
+        // everything it needs is on stdin. Feed it the request, capture its
+        // stdout/stderr. Plugins that emit huge amounts on stdout before
+        // draining stdin could deadlock, but cajeta plugins' params are bounded
+        // by manifest size, so the simple serial pattern works for v1.
         std::string stdoutBuf;
         std::string stderrBuf;
-        drainFd(outPipe[0], stdoutBuf);
-        drainFd(errPipe[0], stderrBuf);
-        ::close(outPipe[0]);
-        ::close(errPipe[0]);
-
-        int status = 0;
-        for (;;) {
-            pid_t w = ::waitpid(pid, &status, 0);
-            if (w < 0) {
-                if (errno == EINTR) continue;
-                return err(std::string("plugin: waitpid: ") +
-                           std::strerror(errno));
-            }
-            break;
+        SubprocessOptions so;
+        so.argv = {plugin.binaryPath};
+        so.stdinData = &requestJson;
+        so.outData = &stdoutBuf;
+        so.errData = &stderrBuf;
+        SubprocessResult procRes = runSubprocess(so);
+        if (!procRes.launched) {
+            return err("plugin: cannot execute '" + plugin.binaryPath +
+                       "': " + procRes.error);
         }
 
         // Forward the plugin's stderr verbatim — that's where its
         // crash traces / "binary not found" land.
         if (!stderrBuf.empty()) {
-            ::write(STDERR_FILENO, stderrBuf.data(), stderrBuf.size());
+            std::fwrite(stderrBuf.data(), 1, stderrBuf.size(), stderr);
         }
 
-        if (WIFSIGNALED(status)) {
+        if (procRes.signaled) {
             return err("plugin '" + plugin.name + "' crashed (signal " +
-                       std::to_string(WTERMSIG(status)) + ") while " +
+                       std::to_string(procRes.signal) + ") while " +
                        "dispatching '" + actionName + "'");
         }
-        int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        int exitCode = procRes.exited ? procRes.exitCode : -1;
         if (exitCode != 0) {
             return err("plugin '" + plugin.name + "' exited " +
                        std::to_string(exitCode) +

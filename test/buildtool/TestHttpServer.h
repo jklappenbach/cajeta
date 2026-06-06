@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
 #include <mutex>
 #include <sstream>
@@ -17,13 +18,40 @@
 #include <thread>
 #include <unordered_map>
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+// Berkeley sockets on POSIX; the (largely API-compatible) Winsock2 surface on
+// Windows. The small shims below paper over the handful of real differences:
+// the socket handle type, the close/shutdown spellings, and the invalid-handle
+// sentinel (Windows SOCKET is unsigned, so the POSIX `< 0` checks don't work).
+#if defined(_WIN32)
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+using cajeta_socket_t = SOCKET;
+#  define CAJETA_CLOSESOCK closesocket
+#  define CAJETA_SHUT_RDWR SD_BOTH
+#  define CAJETA_BAD_SOCKET INVALID_SOCKET
+#else
+#  include <arpa/inet.h>
+#  include <netinet/in.h>
+#  include <sys/socket.h>
+#  include <sys/types.h>
+#  include <unistd.h>
+using cajeta_socket_t = int;
+#  define CAJETA_CLOSESOCK ::close
+#  define CAJETA_SHUT_RDWR SHUT_RDWR
+#  define CAJETA_BAD_SOCKET (-1)
+#endif
 
 namespace cajeta::buildtool::testing {
+
+#if defined(_WIN32)
+    // Process-wide Winsock init/teardown, done once on first server use.
+    inline void ensureWinsock() {
+        static struct WinsockGuard {
+            WinsockGuard() { WSADATA d; ::WSAStartup(MAKEWORD(2, 2), &d); }
+            ~WinsockGuard() { ::WSACleanup(); }
+        } guard;
+    }
+#endif
 
     class TestHttpServer {
     public:
@@ -37,13 +65,16 @@ namespace cajeta::buildtool::testing {
         };
 
         TestHttpServer() {
+#if defined(_WIN32)
+            ensureWinsock();
+#endif
             sock_ = ::socket(AF_INET, SOCK_STREAM, 0);
-            if (sock_ < 0) {
+            if (sock_ == CAJETA_BAD_SOCKET) {
                 throw std::runtime_error("socket() failed");
             }
             int one = 1;
             ::setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR,
-                         &one, sizeof(one));
+                         reinterpret_cast<const char*>(&one), sizeof(one));
             sockaddr_in addr{};
             addr.sin_family = AF_INET;
             addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -118,9 +149,9 @@ namespace cajeta::buildtool::testing {
 
         void stop() {
             if (!running_.exchange(false)) return;
-            ::shutdown(sock_, SHUT_RDWR);
-            ::close(sock_);
-            sock_ = -1;
+            ::shutdown(sock_, CAJETA_SHUT_RDWR);
+            CAJETA_CLOSESOCK(sock_);
+            sock_ = CAJETA_BAD_SOCKET;
             if (worker_.joinable()) worker_.join();
         }
 
@@ -129,15 +160,15 @@ namespace cajeta::buildtool::testing {
             while (running_) {
                 sockaddr_in caddr{};
                 socklen_t clen = sizeof(caddr);
-                int conn = ::accept(sock_,
+                cajeta_socket_t conn = ::accept(sock_,
                                     reinterpret_cast<sockaddr*>(&caddr),
                                     &clen);
-                if (conn < 0) {
+                if (conn == CAJETA_BAD_SOCKET) {
                     if (!running_) break;
                     continue;
                 }
                 handle(conn);
-                ::close(conn);
+                CAJETA_CLOSESOCK(conn);
             }
         }
 
@@ -160,12 +191,12 @@ namespace cajeta::buildtool::testing {
             }
         }
 
-        void handle(int conn) {
+        void handle(cajeta_socket_t conn) {
             std::string buf;
             char tmp[4096];
             // Read until end of headers (CRLFCRLF).
             while (buf.find("\r\n\r\n") == std::string::npos) {
-                ssize_t n = ::recv(conn, tmp, sizeof(tmp), 0);
+                int n = ::recv(conn, tmp, static_cast<int>(sizeof(tmp)), 0);
                 if (n <= 0) return;
                 buf.append(tmp, static_cast<size_t>(n));
                 if (buf.size() > (1 << 20)) return;
@@ -179,7 +210,7 @@ namespace cajeta::buildtool::testing {
             if (contentLength > 0) {
                 body = buf.substr(headersEnd);
                 while (static_cast<long>(body.size()) < contentLength) {
-                    ssize_t n = ::recv(conn, tmp, sizeof(tmp), 0);
+                    int n = ::recv(conn, tmp, static_cast<int>(sizeof(tmp)), 0);
                     if (n <= 0) break;
                     body.append(tmp, static_cast<size_t>(n));
                 }
@@ -241,14 +272,14 @@ namespace cajeta::buildtool::testing {
             const char* p = out.data();
             size_t rem = out.size();
             while (rem > 0) {
-                ssize_t n = ::send(conn, p, rem, 0);
+                int n = ::send(conn, p, static_cast<int>(rem), 0);
                 if (n <= 0) break;
                 p += n;
                 rem -= static_cast<size_t>(n);
             }
         }
 
-        int sock_ = -1;
+        cajeta_socket_t sock_ = CAJETA_BAD_SOCKET;
         int port_ = 0;
         std::atomic<bool> running_{false};
         std::thread worker_;

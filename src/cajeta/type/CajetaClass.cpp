@@ -549,10 +549,16 @@ namespace cajeta {
             // drop-chain dispatch at scope exit.
             llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
             typeMap[TypeKey(llvmType)] = shared_from_this();
-            llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
-            llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
-            vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
-            ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
+            // The body may already be set if a forward reference synthesized
+            // this interface's fat placeholder (CajetaType::fromContext's
+            // born-fat interface branch) — setBody on a non-opaque struct
+            // asserts, so only populate it the first time.
+            if (((llvm::StructType*) llvmType)->isOpaque()) {
+                llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+                vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
+                ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
+            }
 
             canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
             canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
@@ -630,6 +636,21 @@ namespace cajeta {
         auto* lctx = module->getLlvmContext();
         auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {
             CajetaTypePtr t = p->getType();
+            // A null field type at layout time means the declared type
+            // never resolved. visitFieldDeclaration's guard catches the
+            // common path, but a class carrying an @Native method is
+            // prototyped during prelude codegen — before that visitor
+            // guard runs — so an unresolved field type (e.g. `bool`, which
+            // isn't a primitive; the canonical name is `boolean`) reaches
+            // here and used to segfault at `t->getLlvmType()`. Emit the
+            // same diagnostic shape instead of crashing.
+            if (!t) {
+                throw Exception(
+                    "unknown type for field '" + p->getName()
+                        + "' in '" + toCanonical()
+                        + "'; not a primitive, native, or user-defined type",
+                    "CAJETA_ERROR_UNKNOWN_TYPE");
+            }
             if (dynamic_pointer_cast<CajetaArray>(t)) {
                 return llvm::PointerType::get(*lctx, 0);
             }
@@ -3343,9 +3364,20 @@ namespace cajeta {
             // classes, interfaces, function types, and unbound type
             // parameters (wildcard `?`) which arise when the ctor was
             // registered on a template's open form (e.g. Optional<?>'s
-            // `value:?` formal during stream-pipeline lowering).
+            // `value:?` formal during stream-pipeline lowering), AND arrays.
+            // An array is a REFERENCE type that accepts null, but its
+            // composite type-id (ARRAY_TYPE_ID = STRUCT_ID | PRIMITIVE_FLAG)
+            // carries the PRIMITIVE_FLAG bit, so a bare flag test would
+            // wrongly reject `null` against an array formal (e.g.
+            // `WsFrameEncoder.encode(frame, null)` where the param is
+            // `int8[]`) — the call then fails to resolve and mis-lowers to a
+            // non-null garbage pointer. Only a true SCALAR primitive (int32,
+            // boolean, …) rejects a null arg.
+            bool declIsArray =
+                dynamic_pointer_cast<CajetaArray>(declaredType) != nullptr;
             bool declIsPrimitive =
-                (declaredType->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+                (declaredType->getTypeFlags() & PRIMITIVE_FLAG) != 0
+                && !declIsArray;
             if (declIsPrimitive) return -1;
             return 1000;
         }
@@ -3763,8 +3795,19 @@ namespace cajeta {
         // *current* class; the parent walk below picks up inherited
         // methods via recursion, which itself triggers this fallback at
         // each level.
+        // Relax a bare `null` literal (resolved to the primitive `pointer`)
+        // to match any reference-typed formal — for CONSTRUCTORS and ordinary
+        // named methods alike, so `Box.take(null)` (take(String)) resolves
+        // instead of failing to a null codegen. OPERATOR methods stay strict:
+        // `String s == null` must keep its direct ptr-icmp lowering rather than
+        // resolving up to `Object::operator==(Object, Object)`, whose body
+        // dereferences the receiver via vtable lookup and SIGSEGVs on null
+        // (the original gating reason — see subtypeDistance's relaxNullToRef
+        // note). The distance is 1000, so any non-null candidate still wins.
+        bool relaxNull = isConstructor
+            || methodName.rfind("operator", 0) != 0;
         if (MethodPtr m = findSubtypeMatch(*genericMap, methodName, parameters,
-                /*relaxNullToRef=*/isConstructor)) {
+                /*relaxNullToRef=*/relaxNull)) {
             return m;
         }
 

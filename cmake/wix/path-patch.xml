@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CPack WiX patch (plan/installer-plan.md §5). Two concerns:
+
+  1. PATH: add the install's bin/ to the system PATH so `cajeta` is on PATH
+     after an MSI install without manual setup. The fragment is merged into the
+     component that owns cajeta.exe. That component id
+     (CM_CP_cajeta.bin.cajeta.exe) is derived deterministically by CPack from
+     the COMPONENT name ("cajeta") + the relative install path
+     (bin/cajeta.exe), so it is stable across builds. [CM_DP_cajeta.bin] is the
+     WiX directory token for the installed bin/ folder, resolved at install
+     time.
+
+  2. IDE-plugin hint: the finish dialog tells the user to run
+     `cajeta ide install` to install the IntelliJ plugin (D8). We deliberately
+     do NOT auto-run it from the MSI — installer custom actions run as
+     LocalSystem, but the JetBrains plugins dir is per-user (%APPDATA%), so an
+     elevated run would target the wrong (SYSTEM) profile. WIXUI_EXITDIALOGOPTIONALTEXT
+     is rendered by the WixUI_InstallDir dialog set that CPackWIX uses by default.
+     The #PRODUCT special id inserts the <Property> under the root Package.
+-->
+<CPackWiXPatch>
+  <CPackWiXFragment Id="CM_CP_cajeta.bin.cajeta.exe">
+    <Environment Id="CajetaSystemPath"
+                 Name="PATH"
+                 Value="[CM_DP_cajeta.bin]"
+                 Permanent="no"
+                 Part="last"
+                 Action="set"
+                 System="yes" />
+  </CPackWiXFragment>
+  <CPackWiXFragment Id="#PRODUCT">
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT"
+              Value="To install the Cajeta plugin for IntelliJ IDEA, open a new terminal and run:  cajeta ide install" />
+  </CPackWiXFragment>
+</CPackWiXPatch>

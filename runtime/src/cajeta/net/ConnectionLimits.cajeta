@@ -1,0 +1,182 @@
+package cajeta.net;
+
+import cajeta.net.LoadShedPolicy;
+
+/**
+ * The **connection-limit configuration** common to both server accept
+ * models (plan item **NET-4.4**) — the small bundle of resource caps the
+ * [`Server`](Server.cajeta) (Model A) and
+ * [`SharedPoolServer`](SharedPoolServer.cajeta) (Model B) share, so the
+ * backpressure surface is identical regardless of dispatch model. It groups
+ * the four knobs the spec
+ * ([`cajeta-docs/Net.md` §Backpressure](../../../../../cajeta-docs/Net.md#backpressure))
+ * names:
+ *
+ *   1. **`maxConnections`** — the max-concurrent-connections cap, enforced
+ *      by a [`ConnectionLimiter`](ConnectionLimiter.cajeta) (a semaphore-
+ *      style permit pool) gating admission. `0` ⇒ unbounded (no cap).
+ *   2. **`listenBacklog`** — the kernel `listen(2)` accept-queue depth
+ *      (NET-1.4's [`TcpListener.bindWithBacklog`](TcpListener.cajeta#bindWithBacklog)
+ *      knob), surfaced here as config so a server's fan-in tolerance is
+ *      configured in one place.
+ *   3. **`readBufferCap`** / **`writeBufferCap`** — the per-connection
+ *      read/write buffer caps (bytes). A slow reader/writer is bounded to
+ *      this much buffered data before its own
+ *      [`AsyncReader`](AsyncReader.cajeta) / [`AsyncWriter`](AsyncWriter.cajeta)
+ *      fiber parks — the high-water mark of the NET-11.5 watermark
+ *      backpressure, so a slow client blocks **its own** writer fiber
+ *      without consuming unbounded memory or stalling other connections
+ *      (the `ServerTests.slowClientDoesNotStallOthers` acceptance).
+ *   4. **`shedPolicy`** — what to do with a connection that would exceed
+ *      `maxConnections`: [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) (close it)
+ *      or [`BLOCK`](LoadShedPolicy.cajeta#BLOCK) (park the accept loop until
+ *      a slot frees).
+ *
+ * ## Immutable value, sensible defaults
+ *
+ * An instance is a read-only snapshot built once at server-construction
+ * time (the [`Server.builder()`](Server.cajeta) NET-4.5 surface threads it
+ * through) — never mutated after a server starts. [`defaults`](#defaults)
+ * supplies the out-of-the-box posture; the `withX` copy-helpers build a
+ * tweaked variant without a builder, the same shape
+ * [`HttpParserLimits`](http/HttpParserLimits.cajeta) uses.
+ */
+public class ConnectionLimits {
+    /** Default cap on concurrent connections (`1024`). `0` ⇒ unbounded. */
+    public static final int32 DEFAULT_MAX_CONNECTIONS = 1024;
+
+    /** Default kernel `listen` backlog (`128`) — matches NET-1.4's default. */
+    public static final int32 DEFAULT_LISTEN_BACKLOG = 128;
+
+    /** Default per-connection read buffer cap (`65536` bytes — 64 KiB). */
+    public static final int32 DEFAULT_READ_BUFFER_CAP = 65536;
+
+    /** Default per-connection write buffer cap (`65536` bytes — 64 KiB). */
+    public static final int32 DEFAULT_WRITE_BUFFER_CAP = 65536;
+
+    /**
+     * Max concurrent connections the server admits. A
+     * [`ConnectionLimiter`](ConnectionLimiter.cajeta) is sized to this; the
+     * (cap+1)th admission is shed per [`shedPolicy`](#shedPolicy). `0` ⇒ no
+     * cap (the limiter is bypassed). Field index 1 (after the vtable).
+     */
+    public int32 maxConnections;
+
+    /**
+     * The kernel `listen(2)` backlog — how many accepted-but-not-yet-
+     * `accept()`ed connections the kernel queues before it starts refusing
+     * at the SYN level. Passed through to
+     * [`TcpListener.bindWithBacklog`](TcpListener.cajeta#bindWithBacklog).
+     */
+    public int32 listenBacklog;
+
+    /**
+     * Per-connection read buffer cap (bytes): the high-water mark a
+     * connection's inbound buffering is bounded to before its reader fiber
+     * parks. Bounds the memory a single slow consumer can pin.
+     */
+    public int32 readBufferCap;
+
+    /**
+     * Per-connection write buffer cap (bytes): the high-water mark a
+     * connection's outbound buffering is bounded to before its writer fiber
+     * parks. A slow client (one not draining its socket) thus blocks **its
+     * own** writer here rather than letting the server buffer unboundedly —
+     * the property that keeps one slow client from stalling the others.
+     */
+    public int32 writeBufferCap;
+
+    /**
+     * The [`LoadShedPolicy`](LoadShedPolicy.cajeta) ordinal applied when a
+     * connection would exceed [`maxConnections`](#maxConnections):
+     * [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) (default) or
+     * [`BLOCK`](LoadShedPolicy.cajeta#BLOCK).
+     */
+    public int32 shedPolicy;
+
+    /**
+     * Build an explicit limit set. User code usually starts from
+     * [`defaults`](#defaults) and tweaks with the `withX` helpers rather
+     * than calling this directly; it exists so the
+     * [`Server.builder()`](Server.cajeta) (NET-4.5) can assemble a fully
+     * specified instance in one shot.
+     *
+     * @param maxConnections concurrent-connection cap (`0` ⇒ unbounded).
+     * @param listenBacklog  kernel `listen` backlog depth.
+     * @param readBufferCap  per-connection read high-water (bytes).
+     * @param writeBufferCap per-connection write high-water (bytes).
+     * @param shedPolicy     a [`LoadShedPolicy`](LoadShedPolicy.cajeta)
+     *                       ordinal.
+     */
+    public ConnectionLimits(int32 maxConnections, int32 listenBacklog,
+                            int32 readBufferCap, int32 writeBufferCap,
+                            int32 shedPolicy) {
+        this.maxConnections = maxConnections;
+        this.listenBacklog = listenBacklog;
+        this.readBufferCap = readBufferCap;
+        this.writeBufferCap = writeBufferCap;
+        this.shedPolicy = shedPolicy;
+    }
+
+    /**
+     * The out-of-the-box limit set: `1024` concurrent connections, a `128`
+     * kernel backlog, 64 KiB read + write buffer caps, and the
+     * [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) shed policy (shed the surplus
+     * rather than queue it — the latency-favouring default). The posture a
+     * [`Server.bind`](Server.cajeta#bind) gets when the caller does not
+     * configure limits.
+     */
+    public static #ConnectionLimits defaults() {
+        return heap ConnectionLimits(ConnectionLimits.DEFAULT_MAX_CONNECTIONS,
+                                     ConnectionLimits.DEFAULT_LISTEN_BACKLOG,
+                                     ConnectionLimits.DEFAULT_READ_BUFFER_CAP,
+                                     ConnectionLimits.DEFAULT_WRITE_BUFFER_CAP,
+                                     LoadShedPolicy.REFUSE);
+    }
+
+    /**
+     * A copy of these limits with a different concurrent-connection cap.
+     * `0` ⇒ unbounded. The copy-on-write helper that keeps a
+     * [`ConnectionLimits`](ConnectionLimits.cajeta) effectively immutable —
+     * the [`HttpParserLimits`](http/HttpParserLimits.cajeta) `withX` shape.
+     */
+    public #ConnectionLimits withMaxConnections(int32 max) {
+        return heap ConnectionLimits(max, this.listenBacklog,
+                                     this.readBufferCap, this.writeBufferCap,
+                                     this.shedPolicy);
+    }
+
+    /** A copy with a different kernel `listen` backlog. */
+    public #ConnectionLimits withListenBacklog(int32 backlog) {
+        return heap ConnectionLimits(this.maxConnections, backlog,
+                                     this.readBufferCap, this.writeBufferCap,
+                                     this.shedPolicy);
+    }
+
+    /** A copy with different per-connection read + write buffer caps. */
+    public #ConnectionLimits withBufferCaps(int32 readCap, int32 writeCap) {
+        return heap ConnectionLimits(this.maxConnections, this.listenBacklog,
+                                     readCap, writeCap, this.shedPolicy);
+    }
+
+    /**
+     * A copy with a different [`LoadShedPolicy`](LoadShedPolicy.cajeta) —
+     * e.g. `defaults().withShedPolicy(LoadShedPolicy.BLOCK)` to favour
+     * throughput over shedding.
+     */
+    public #ConnectionLimits withShedPolicy(int32 policy) {
+        return heap ConnectionLimits(this.maxConnections, this.listenBacklog,
+                                     this.readBufferCap, this.writeBufferCap,
+                                     policy);
+    }
+
+    /**
+     * `true` when [`maxConnections`](#maxConnections) is `0` — the
+     * "no concurrent-connection cap" sentinel a
+     * [`ConnectionLimiter`](ConnectionLimiter.cajeta) reads to bypass
+     * admission gating entirely (every `tryAdmit` succeeds).
+     */
+    public boolean isUnbounded() {
+        return this.maxConnections == 0;
+    }
+}

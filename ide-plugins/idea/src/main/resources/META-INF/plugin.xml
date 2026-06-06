@@ -1,13 +1,39 @@
 <idea-plugin>
     <id>dev.cajeta.idea</id>
     <name>Cajeta</name>
-    <vendor>cajeta</vendor>
+    <!-- Marketplace requires a vendor with a real email + url; a bare
+         <vendor>cajeta</vendor> is rejected at upload. (plan §8 / D6) -->
+    <vendor email="jklappenbach@gmail.com"
+            url="https://github.com/jklappenbach/cajeta">Julian Klappenbach</vendor>
+
+    <!-- NOTE: <version>, <idea-version since-build/until-build> are intentionally
+         omitted — the IntelliJ Platform Gradle plugin patches them at build time
+         from gradle.properties (pluginVersion / pluginSinceBuild / pluginUntilBuild),
+         which keeps the plugin version synced to the repo VERSION (D9). -->
 
     <description><![CDATA[
-        <p>IntelliJ IDEA support for the Cajeta language: syntax
-        highlighting, parser-driven PSI, compiler-driven linting,
-        and Obsidian-style rendered markdown in comments.</p>
+        <p><b>Cajeta language support for IntelliJ IDEA.</b></p>
+        <p>First-class editing for the <a href="https://github.com/jklappenbach/cajeta">Cajeta</a>
+        compiled language:</p>
+        <ul>
+            <li>Syntax highlighting and a parser-driven PSI (full ANTLR4 grammar).</li>
+            <li>Compiler-driven linting / annotations surfaced inline in the editor.</li>
+            <li>Brace matching, commenter, and a structure view.</li>
+            <li>Obsidian-style rendered Markdown inside source comments.</li>
+            <li>Run/debug integration over the Debug Adapter Protocol (line and
+                exception breakpoints) backed by the <code>cajeta dap</code> server.</li>
+            <li>New-project wizard for Cajeta projects.</li>
+        </ul>
+        <p>Requires the <code>cajeta</code> compiler on your system; install it from
+        the project's releases, or via your package manager. The compiler can also
+        install this plugin for you with <code>cajeta ide install</code>.</p>
     ]]></description>
+
+    <change-notes><![CDATA[
+        <p>See the <a href="https://github.com/jklappenbach/cajeta/releases">GitHub
+        releases page</a> for the full, per-version changelog. The plugin version
+        tracks the Cajeta compiler version.</p>
+    ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
 

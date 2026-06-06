@@ -919,55 +919,143 @@ namespace cajeta {
         // type below.
         llvm::Value* thrownValPtr = builder->CreateCall(getThrown, {});
         builder->CreateCall(pop, {});
-        if (!catchClauses.empty()) {
-            auto& c = catchClauses[0];  // single-clause for now
-            if (!c.variableName.empty()) {
-                auto type = c.type ? c.type : CajetaType::of("int64");
-                llvm::Type* bindTy = type->getLlvmType();
-                if (!bindTy) bindTy = i64Ty;
-                // Class-typed catch bindings (catch (Throwable e), etc.)
-                // hold a heap pointer, not a struct-by-value. The class's
-                // getLlvmType() returns the struct type, so we substitute
-                // `ptr` for the alloca's stored element. The thrown value
-                // is already a ptr, so it stores directly.
-                llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
-                bool classTypedBinding =
-                    dynamic_pointer_cast<CajetaClass>(type) != nullptr;
-                if (classTypedBinding) bindTy = ptrTy;
-                llvm::Value* slot = entryBuilder.CreateAlloca(bindTy);
-                // Integer catch binding: PtrToInt to recover the legacy
-                // i64-throw shape. Pointer/class binding: store the ptr
-                // directly.
-                llvm::Value* storeVal = thrownValPtr;
-                if (bindTy->isIntegerTy()) {
-                    storeVal = builder->CreatePtrToInt(thrownValPtr, i64Ty);
-                    if (bindTy != i64Ty) {
-                        storeVal = builder->CreateIntCast(storeVal, bindTy,
-                            /*isSigned=*/true);
-                    }
-                }
-                builder->CreateStore(storeVal, slot);
-                auto& scope = module->getScopeStack();
-                if (!scope.isEmpty()) {
-                    auto field = make_shared<HeapField>(module, c.variableName, type);
-                    field->setAllocation(llvm::cast<llvm::AllocaInst>(slot));
-                    scope.peek()->putField(field);
+
+        // Multi-clause type dispatch (Error-model RTTI catch-matching). For
+        // each catch clause IN SOURCE ORDER, test whether the thrown object's
+        // runtime type is-a the clause's declared type — a vtable parent-chain
+        // walk via __cajeta_exc_matches, the same chain __cajeta_is_unrecoverable
+        // uses. The FIRST matching clause binds + runs its body, then branches
+        // to afterBB. If NO clause matches, the exception is re-thrown so it
+        // propagates to the enclosing frame (we already popped this try's frame,
+        // so the re-throw targets the outer handler). Previously only
+        // catchClauses[0] ran unconditionally, so a sibling/unrelated catch
+        // wrongly caught a leaf it shouldn't (the documented gap).
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Function* excMatches = module->getRuntimeFunction("__cajeta_exc_matches");
+        llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+
+        // Bind the thrown value to a clause's catch variable in the current
+        // scope (int-shaped bindings PtrToInt back to the legacy throw shape;
+        // class/pointer bindings store the ptr directly).
+        auto bindCatchVar = [&](const CatchClause& c) {
+            if (c.variableName.empty()) return;
+            auto type = c.type ? c.type : CajetaType::of("int64");
+            llvm::Type* bindTy = type->getLlvmType();
+            if (!bindTy) bindTy = i64Ty;
+            bool classTypedBinding =
+                dynamic_pointer_cast<CajetaClass>(type) != nullptr;
+            if (classTypedBinding) bindTy = ptrTy;
+            llvm::Value* slot = entryBuilder.CreateAlloca(bindTy);
+            llvm::Value* storeVal = thrownValPtr;
+            if (bindTy->isIntegerTy()) {
+                storeVal = builder->CreatePtrToInt(thrownValPtr, i64Ty);
+                if (bindTy != i64Ty) {
+                    storeVal = builder->CreateIntCast(storeVal, bindTy,
+                        /*isSigned=*/true);
                 }
             }
-            if (c.body) c.body->generateCode(module);
-        }
-        if (!builder->GetInsertBlock()->getTerminator()) {
+            builder->CreateStore(storeVal, slot);
+            auto& scope = module->getScopeStack();
+            if (!scope.isEmpty()) {
+                auto field = make_shared<HeapField>(module, c.variableName, type);
+                field->setAllocation(llvm::cast<llvm::AllocaInst>(slot));
+                scope.peek()->putField(field);
+            }
+        };
+
+        std::vector<std::set<std::string>> armNYAs;  // per-arm post-NYA for DA merge
+
+        if (!catchClauses.empty()) {
+            // Legacy `throw 42` idiom: the value is an integer IntToPtr'd into
+            // the throw slot (below the zero-page boundary), with no vtable to
+            // walk. To preserve the historical "first clause catches an untyped
+            // throw" behavior — and the int-binding tests — such a value matches
+            // the first clause unconditionally. Real Throwable instances
+            // (>= 4096) dispatch by the vtable walk.
+            llvm::Value* thrownInt = builder->CreatePtrToInt(thrownValPtr, i64Ty);
+            llvm::Value* isLegacyInt = builder->CreateICmpULT(thrownInt,
+                llvm::ConstantInt::get(i64Ty, 4096));
+            for (size_t ci = 0; ci < catchClauses.size(); ++ci) {
+                auto& c = catchClauses[ci];
+                bool lastClause = (ci + 1 == catchClauses.size());
+                llvm::BasicBlock* bindBB =
+                    llvm::BasicBlock::Create(ctx, "catch_bind", parentFn);
+                llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(ctx,
+                    lastClause ? "catch_nomatch" : "catch_test", parentFn);
+
+                // Resolve this clause's #VTable global (the identity we match
+                // the thrown object's chain against). A non-class clause (e.g.
+                // `catch (int64 e)`) or a class with no vtable is treated as a
+                // catch-all — it matches unconditionally (last-resort clause).
+                //
+                // The universal roots `cajeta.error.Throwable` /
+                // `cajeta.error.Exception` are ALSO catch-all: they catch every
+                // exception by definition, and treating them so avoids
+                // dereferencing a legacy `throw 12345` integer-as-pointer (whose
+                // value can exceed the 4096 low-address guard, so it isn't
+                // covered by isLegacyInt) for a vtable read that would SIGSEGV.
+                llvm::Constant* catchVt = nullptr;
+                auto catchClass = dynamic_pointer_cast<CajetaClass>(c.type);
+                bool universalCatch = false;
+                if (catchClass && catchClass->getQName()) {
+                    auto canon = catchClass->getQName()->toCanonical();
+                    universalCatch = (canon == "cajeta.error.Throwable"
+                        || canon == "cajeta.error.Exception");
+                }
+                if (catchClass && !universalCatch) {
+                    if (auto* vt = catchClass->getVirtualTableGlobal()) {
+                        catchVt = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), vt);
+                    }
+                }
+                if (catchVt && excMatches) {
+                    llvm::Value* m = builder->CreateCall(excMatches,
+                        {thrownValPtr, catchVt}, "catch.match");
+                    llvm::Value* isM = builder->CreateICmpNE(m,
+                        llvm::ConstantInt::get(i32Ty, 0));
+                    // A legacy int throw matches the first clause it reaches.
+                    llvm::Value* cond = builder->CreateOr(isLegacyInt, isM);
+                    builder->CreateCondBr(cond, bindBB, nextBB);
+                } else {
+                    builder->CreateBr(bindBB);  // catch-all clause
+                }
+
+                // --- matched: bind + run the body from the pre-try baseline ---
+                builder->SetInsertPoint(bindBB);
+                if (daScope) daScope->restoreNotYetAssigned(preTryNYA);
+                bindCatchVar(c);
+                if (c.body) c.body->generateCode(module);
+                if (daScope) armNYAs.push_back(daScope->snapshotNotYetAssigned());
+                if (!builder->GetInsertBlock()->getTerminator()) {
+                    builder->CreateBr(afterBB);
+                }
+
+                // Continue testing the next clause (or land on the nomatch
+                // block after the loop).
+                builder->SetInsertPoint(nextBB);
+            }
+            // No clause matched: re-throw to the enclosing frame.
+            if (throwFn) {
+                builder->CreateCall(throwFn, {thrownValPtr});
+            }
+            builder->CreateUnreachable();
+        } else {
+            // try { … } finally { … } with no catch clauses: the frame is
+            // already popped; fall through to afterBB so the finally body runs.
             builder->CreateBr(afterBB);
         }
 
-        // Merge post-try and post-catch NYA: a name is NYA-after iff
-        // NYA in either arm (the union). When there are no catch
-        // clauses (try {…} alone), any throw propagates out of the
-        // enclosing method — the only reachable post-after state is
-        // the post-try one, so skip the union with the catch arm.
+        // Merge post-try and post-catch NYA: a name is NYA-after iff NYA in the
+        // try arm OR any catch arm (union). The nomatch re-throw doesn't reach
+        // afterBB, so it doesn't contribute. With no catch clauses (try {…}
+        // alone), any throw propagates out, so only the post-try state reaches
+        // afterBB.
         if (daScope) {
-            if (!catchClauses.empty()) {
-                std::set<std::string> postCatchNYA = daScope->snapshotNotYetAssigned();
+            if (!armNYAs.empty()) {
+                std::set<std::string> postCatchNYA = armNYAs[0];
+                for (size_t k = 1; k < armNYAs.size(); ++k) {
+                    for (auto& n : armNYAs[k]) postCatchNYA.insert(n);
+                }
                 daScope->restoreNotYetAssigned(postTryNYA);
                 daScope->mergeNotYetAssigned(postCatchNYA);
             } else {

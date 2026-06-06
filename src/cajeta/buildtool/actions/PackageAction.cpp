@@ -33,9 +33,9 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <vector>
+
+#include "cajeta/buildtool/Subprocess.h"
 
 namespace cajeta::buildtool {
 
@@ -127,31 +127,15 @@ namespace cajeta::buildtool {
         // exec failure the error message names the missing tool so
         // CI failures point at the actionable cause ("install zip").
         llvm::Expected<int> runChild(const std::vector<std::string>& argv) {
-            std::vector<char*> argp;
-            for (auto& a : argv) argp.push_back(
-                const_cast<char*>(a.c_str()));
-            argp.push_back(nullptr);
-            pid_t pid = ::fork();
-            if (pid < 0) {
-                return err(std::string("fork: ") + std::strerror(errno));
+            SubprocessOptions so;
+            so.argv = argv;
+            SubprocessResult res = runSubprocess(so);
+            if (!res.launched) {
+                return err("cannot exec '" +
+                           (argv.empty() ? std::string() : argv[0]) +
+                           "': " + res.error);
             }
-            if (pid == 0) {
-                ::execvp(argp[0], argp.data());
-                std::string msg = "cannot exec '" + std::string(argp[0]) +
-                                  "': " + std::strerror(errno) + "\n";
-                ::write(STDERR_FILENO, msg.data(), msg.size());
-                _exit(127);
-            }
-            int status = 0;
-            while (::waitpid(pid, &status, 0) < 0) {
-                if (errno != EINTR) {
-                    return err(std::string("waitpid: ") +
-                               std::strerror(errno));
-                }
-            }
-            if (WIFEXITED(status)) return WEXITSTATUS(status);
-            if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
-            return -1;
+            return res.code();
         }
 
         // Compute a stable cache key for (input-sha256, format,

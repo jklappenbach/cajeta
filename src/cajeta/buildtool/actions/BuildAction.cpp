@@ -29,16 +29,23 @@
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
-#include <cerrno>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
 
-#include <sys/wait.h>
-#include <unistd.h>
+#include "cajeta/buildtool/Subprocess.h"
+
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>  // GetModuleFileNameA (running-exe path)
+#endif
 
 #ifndef CAJETA_VERSION
 #define CAJETA_VERSION "0.0.0-unknown"
@@ -53,16 +60,23 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Find the cajeta binary path. Prefer /proc/self/exe on
-        // Linux (always the running binary); fall back to "cajeta"
-        // on PATH otherwise.
+        // Find the cajeta binary path. Prefer the running executable
+        // (/proc/self/exe on Linux, GetModuleFileName on Windows); fall
+        // back to "cajeta" on PATH otherwise.
         std::string findCajetaBinary() {
             char buf[4096];
+#if defined(_WIN32)
+            DWORD n = ::GetModuleFileNameA(nullptr, buf, sizeof(buf));
+            if (n > 0 && n < sizeof(buf)) {
+                return std::string(buf, n);
+            }
+#else
             ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
             if (n > 0) {
                 buf[n] = '\0';
                 return std::string(buf);
             }
+#endif
             return "cajeta";
         }
 
@@ -342,35 +356,16 @@ namespace cajeta::buildtool {
             argv.push_back(sourceRoot);
             argv.push_back(archiveRoot.string());
 
-            std::vector<char*> argp;
-            for (auto& a : argv) argp.push_back(a.data());
-            argp.push_back(nullptr);
-
-            // Fork + exec. Compiler stdout/stderr pass through to
-            // the parent terminal so the developer sees the output.
-            pid_t pid = ::fork();
-            if (pid < 0) {
-                return err(std::string("build: fork failed: ") +
-                           std::strerror(errno));
+            // Run the compiler. Its stdout/stderr pass through to the parent
+            // terminal so the developer sees the output.
+            SubprocessOptions so;
+            so.argv = argv;
+            SubprocessResult res = runSubprocess(so);
+            if (!res.launched) {
+                return err("build: cannot exec '" + cajetaBin + "': " +
+                           res.error);
             }
-            if (pid == 0) {
-                ::execvp(cajetaBin.c_str(), argp.data());
-                std::string msg = "build: cannot exec '" + cajetaBin +
-                                  "': " + std::strerror(errno) + "\n";
-                ::write(STDERR_FILENO, msg.data(), msg.size());
-                _exit(127);
-            }
-
-            int status = 0;
-            while (::waitpid(pid, &status, 0) < 0) {
-                if (errno != EINTR) {
-                    return err(std::string("build: waitpid: ") +
-                               std::strerror(errno));
-                }
-            }
-            int exitCode = WIFEXITED(status) ? WEXITSTATUS(status)
-                         : WIFSIGNALED(status) ? 128 + WTERMSIG(status)
-                         : -1;
+            int exitCode = res.code();
             if (exitCode != 0) {
                 return err("build: compiler exited " +
                            std::to_string(exitCode));

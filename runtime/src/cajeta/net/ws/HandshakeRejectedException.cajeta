@@ -1,0 +1,80 @@
+package cajeta.net.ws;
+
+import cajeta.lang.String;
+
+/**
+ * The WebSocket **opening handshake was rejected** — RFC 6455 §4. Raised
+ * on either side of the handshake when the peer's half of the
+ * `Upgrade: websocket` exchange does not satisfy the protocol:
+ *
+ *   - **server side** ([`WsServerHandshake.accept`](WsServerHandshake.cajeta),
+ *     **NET-10.2**) — the client's Upgrade request is malformed: a method
+ *     other than `GET`, a missing or non-`websocket` `Upgrade` header, a
+ *     `Connection` header that does not name the `upgrade` token, a
+ *     missing `Sec-WebSocket-Key`, or a `Sec-WebSocket-Version` other than
+ *     `13` (RFC 6455 §4.2.1). A server that rejects responds with a normal
+ *     HTTP error (e.g. `400`, or `426 Upgrade Required` with a
+ *     `Sec-WebSocket-Version: 13` header) rather than `101`.
+ *   - **client side** ([`WsClientHandshake`](WsClientHandshake.cajeta),
+ *     **NET-10.1**) — the server's response is not a valid acceptance: a
+ *     status other than `101`, a missing/incorrect `Sec-WebSocket-Accept`
+ *     (it must equal `base64(SHA-1(key + GUID))`), or a missing upgrade
+ *     header.
+ *
+ * Carries an optional [`httpStatus`](#httpStatus) the server side uses to
+ * pick the HTTP error response to send in lieu of `101` (`400` for a
+ * generally malformed request, `426` for a version mismatch). The default
+ * is `400 Bad Request`.
+ *
+ * ## Hierarchy
+ *
+ * A [`WebSocketException`](WebSocketException.cajeta), so it inherits the
+ * `kind == NetException.KIND_INVALID` (12) discriminant — the peer sent a
+ * handshake that violates RFC 6455, an invalid-input fault, classified
+ * alongside [`ProtocolViolationException`](ProtocolViolationException.cajeta)
+ * and the HTTP/URI parse faults. The networking spec
+ * ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md) §Error model)
+ * lists `HandshakeRejected` as a sibling of `ProtocolViolation`,
+ * `MessageTooLarge`, and `ConnectionClosed` under the WS family; the full
+ * NET-10.8 hierarchy fills in the latter three, while this leaf ships with
+ * the server handshake (**NET-10.2**) that is its first raiser.
+ *
+ * ## Construction
+ *
+ * Per [`cajeta.error.Throwable`](../../error/Throwable.cajeta)'s contract
+ * (each subclass sets the inherited fields directly, no `super(...)`
+ * chaining), the constructors stamp `message`/`cause`/`kind` themselves.
+ */
+public class HandshakeRejectedException extends WebSocketException {
+    /**
+     * The HTTP status a rejecting **server** should send in place of the
+     * `101 Switching Protocols` upgrade — `400` for a generally malformed
+     * Upgrade request, `426` ("Upgrade Required") for a
+     * `Sec-WebSocket-Version` mismatch. On the **client** side this is the
+     * status the rejected server response carried (or `400` when the fault
+     * is a bad/absent accept key on an otherwise-`101` response).
+     */
+    public int32 httpStatus;
+
+    /**
+     * Reject with the default `400 Bad Request` status — a generally
+     * malformed handshake.
+     */
+    public HandshakeRejectedException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 12;            // NetException.KIND_INVALID
+        this.httpStatus = 400;
+    }
+
+    /**
+     * Reject with an explicit HTTP status (`426` for a version mismatch,
+     * `400` otherwise).
+     */
+    public HandshakeRejectedException(String message, int32 httpStatus) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 12;            // NetException.KIND_INVALID
+        this.httpStatus = httpStatus;
+    }
+}

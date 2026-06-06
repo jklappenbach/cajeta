@@ -53,13 +53,13 @@ echo [setup] Using MSYS2 at %MSYS2_ROOT%
 rem --- Java (runs the ANTLR4 codegen jar during the build) ------------------
 where java >nul 2>&1
 if errorlevel 1 (
-    echo [setup] Java not found -- installing Temurin 17 JDK via winget...
+    echo [setup] Java not found -- installing Temurin 21 JDK via winget...
     where winget >nul 2>&1
     if errorlevel 1 (
-        echo [setup] WARNING: winget unavailable and no java on PATH. Install a JDK 17+
+        echo [setup] WARNING: winget unavailable and no java on PATH. Install a JDK 21+
         echo          before building, or ANTLR codegen will fail.
     ) else (
-        winget install --id EclipseAdoptium.Temurin.17.JDK -e --accept-package-agreements --accept-source-agreements --disable-interactivity
+        winget install --id EclipseAdoptium.Temurin.21.JDK -e --accept-package-agreements --accept-source-agreements --disable-interactivity
         echo [setup] NOTE: open a NEW terminal so PATH picks up java, then re-run this script.
     )
 )

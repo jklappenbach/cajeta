@@ -517,6 +517,40 @@ TEST(ErrorModelTests, unknownInheritedFieldTypeThrowsCleanError) {
     }
 }
 
+// A class carrying an @Native method is prototyped during prelude codegen —
+// *before* visitFieldDeclaration's unknown-type guard would run on the embed
+// path — so an unresolved field type on such a class reached struct-layout
+// assembly (CajetaClass::generatePrototype's fieldLayoutType) with a null
+// CajetaType and segfaulted at `t->getLlvmType()`. The b3 net bring-up hit this
+// exact shape with a `bool` field (the canonical primitive name is `boolean`;
+// `bool` resolves to no type). The layout-site guard now turns the crash into
+// the same clean CAJETA_ERROR_UNKNOWN_TYPE diagnostic, naming the field.
+TEST(ErrorModelTests, nativeMethodClassUnknownFieldTypeThrowsCleanError) {
+    auto src =
+        "package test;\n"
+        "public final class Bridge {\n"
+        "    public bool flag;\n"
+        "    @Native(\"__cajeta_hash_seed\")\n"
+        "    public static int64 seed() { }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected cajeta::Exception (unknown type) but compile succeeded";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_UNKNOWN_TYPE");
+        EXPECT_NE(e.getMessage().find("flag"), std::string::npos)
+            << "exception message '" << e.getMessage()
+            << "' did not name the offending field";
+    } catch (std::exception& e) {
+        FAIL() << "expected cajeta::Exception, got std::exception: " << e.what();
+    }
+}
+
 // #211 regression: writing to a String-typed field of a regular class used
 // to crash codegen because the variable-size-field check (intended for
 // CajetaStruct zero-copy types) fired indiscriminately on any class with

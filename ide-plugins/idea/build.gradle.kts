@@ -48,6 +48,25 @@ intellijPlatform {
             untilBuild = providers.gradleProperty("pluginUntilBuild")
         }
     }
+
+    // Marketplace signing + publishing (plan §8). All inputs come from
+    // environment variables (CI secrets), so configure is a no-op when they're
+    // unset — `buildPlugin`/`verifyPlugin` don't need them, and `signPlugin`/
+    // `publishPlugin` only run on production tags in release.yml.
+    signing {
+        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("PRIVATE_KEY")
+        password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
+    }
+
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
+        // Stable channel by default; release.yml skips publishing pre-release
+        // tags entirely (so EAP-channel routing isn't needed yet).
+        channels = providers.gradleProperty("pluginChannel")
+            .map { listOf(it) }
+            .orElse(listOf("default"))
+    }
 }
 
 // The org.gradle.antlr plugin resolves source paths relative to the

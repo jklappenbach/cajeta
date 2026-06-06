@@ -574,6 +574,48 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
     return hdr;
 }
 
+void* __cajeta_alloc(uint64_t size);  // defined below; used by __cajeta_args_make
+
+// Materialize a cajeta `String[]` from C `argv` for a `main(String[] args)`
+// entry point. The String struct's total size and field byte offsets, plus the
+// String vtable, are passed in from the emit shim (computed via LLVM's
+// DataLayout on the real class type) so nothing about the String ABI is
+// hardcoded here. Returns a standard CajetaArray `{ i64 count, [count x ptr] }`
+// of owned (mode=0) String instances, each holding a heap copy of an argv slot.
+void* __cajeta_args_make(int64_t argc, char** argv,
+                         void* string_vtable, int64_t str_size,
+                         int64_t off_bytes, int64_t off_byte_len,
+                         int64_t off_mode, int64_t off_cplen) {
+    if (argc < 0) argc = 0;
+    // cajeta `String[]` has array LLVM type `{ i64, [0 x %String] }`, so the
+    // element STRIDE is the full String struct size — but each slot holds a
+    // `String*` POINTER in its first 8 bytes (the codegen stores/loads a
+    // pointer per element; see the aggregate-init lowering). So: allocate the
+    // backing with `str_size` stride, then store one heap String* per slot.
+    void* arr = __cajeta_new_array_header(8, (uint64_t) str_size, (uint64_t) argc);
+    char* base = (char*) arr + 8;
+    for (int64_t i = 0; i < argc; i++) {
+        const char* s = (argv && argv[i]) ? argv[i] : "";
+        int64_t len = (int64_t) strlen(s);
+        // bytes payload: CajetaArray { i64 count=len, [len+1 x i8] } — the
+        // trailing NUL keeps any legacy strlen reader happy (matches the
+        // string-literal materialization in LiteralExpression.cpp).
+        void* bytes = __cajeta_new_array_header(8, 1, (uint64_t) (len + 1));
+        *((int64_t*) bytes) = len;                       // count excludes the NUL
+        memcpy((char*) bytes + 8, s, (size_t) len + 1);  // copy incl. the NUL
+        // Heap String instance (vtable is field 0, offset 0 by construction).
+        void* str = __cajeta_alloc((uint64_t) str_size);
+        *(void**)   ((char*) str)                = string_vtable;
+        *(void**)   ((char*) str + off_bytes)    = bytes;
+        *(int32_t*) ((char*) str + off_byte_len) = (int32_t) len;
+        *(int32_t*) ((char*) str + off_mode)     = 0;    // owned: drop reclaims bytes
+        *(int32_t*) ((char*) str + off_cplen)    = -1;   // codepoint length uncomputed
+        // Store the pointer at the (str_size-strided) element slot.
+        *(void**) (base + (size_t) i * (size_t) str_size) = str;
+    }
+    return arr;
+}
+
 // Idempotent — see FieldOwnership.md § Solution B. Auto field drop and the
 // owning local's chain pop both call this for the same array address; the
 // first one wins the live-set claim and actually frees, the second sees
@@ -830,7 +872,38 @@ static inline int __cajeta_swapcontext(ucontext_t* from, ucontext_t* to) {
 #  pragma clang diagnostic pop
 #endif
 
-#define CAJETA_FIBER_STACK_SIZE (64 * 1024)
+// Per-fiber stack size. A fiber runs arbitrary Cajeta code, which routinely
+// calls down into native C libraries (OpenSSL during a TLS handshake parses an
+// X.509 chain, runs ECDSA P-256, decodes ASN.1 — a call tree that alone wants
+// well over 64 KB of stack). The fiber stack is a plain `malloc` with NO guard
+// page, so an overflow does not fault cleanly — it silently scribbles over
+// adjacent heap and surfaces later as a SIGSEGV (full speed) or a wedged
+// scheduler (under a debugger, where the heap layout differs). 64 KB was enough
+// for the shallow channel/fan-out fibers the early tests exercised but far too
+// little for a fiber that drives a real native library; size it like a
+// conventional OS thread stack (1 MB) so any reasonable native call depth fits.
+// Overridable via $CAJETA_FIBER_STACK_KB for pathological depths or tight
+// memory budgets.
+#define CAJETA_FIBER_STACK_SIZE (1024 * 1024)
+
+// Resolve the per-fiber stack size once, honoring $CAJETA_FIBER_STACK_KB (a
+// size in KiB) when set to a sane positive value, else CAJETA_FIBER_STACK_SIZE.
+// Cached in a static so every fiber in the process gets the same size without
+// re-parsing the environment. A clamp floors the override at 64 KiB so a
+// mis-set tiny value can't reintroduce the overflow this default guards against.
+static size_t __cajeta_fiber_stack_size(void) {
+    static size_t cached = 0;
+    if (cached == 0) {
+        size_t sz = (size_t) CAJETA_FIBER_STACK_SIZE;
+        const char* env = getenv("CAJETA_FIBER_STACK_KB");
+        if (env && *env) {
+            long kb = atol(env);
+            if (kb >= 64) sz = (size_t) kb * 1024;
+        }
+        cached = sz;
+    }
+    return cached;
+}
 
 typedef void (*cajeta_task_trampoline_fn)(void* arg);
 
@@ -904,6 +977,15 @@ struct cajeta_fiber {
     // Same aliasing rationale as scope_top/drop_top; selected by
     // __cajeta_dbg_top_ptr based on fiber-vs-main context.
     struct cajeta_dbg_frame* dbg_top;
+    // Home carrier — the carrier that FIRST dispatched (started) this fiber.
+    // -1 until then. Once a fiber has started, its saved `ucontext` (stack +
+    // register state) is bound to that carrier; resuming it on a *different*
+    // carrier is the unsolved cross-carrier handoff (corrupts on a multi-
+    // carrier pool — see __cajeta_steal_one / __cajeta_publish_ready). So a
+    // started fiber is pinned here: only its home carrier ever resumes it.
+    // Fresh (not-yet-started) fibers have no saved context and may run on any
+    // carrier — that's where the pool's parallelism comes from.
+    int home_carrier;
 };
 
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -1055,6 +1137,14 @@ static int __cajeta_reactor_shutdown_requested = 0;
 static int __cajeta_reactor_epfd = -1;
 #endif
 
+// NET-3.2 — net-reactor lifecycle teardown hook (defined in
+// cajeta_net_reactor_lifecycle.c, #included at the bottom of this TU). Forward-
+// declared here so __cajeta_task_shutdown can drain + close the net reactor's
+// own lifecycle state (the `started` latch, the live-registration balance, the
+// shutdown wake pipe) once the carriers + R9.4 reactor thread are joined. It is
+// idempotent and a cheap no-op when no awaitable net op ever ran.
+int32_t __cajeta_net_reactor_shutdown(void);
+
 // R8.3 — multi-carrier pool, flag-gated N=1.
 //
 // Each carrier owns one Chase-Lev deque + a deque_mutex that protects
@@ -1200,9 +1290,18 @@ static void __cajeta_fiber_entry(void) {
 static void __cajeta_publish_ready(struct cajeta_fiber* f) {
     f->state = CAJETA_FIBER_READY;
     f->next = NULL;
-    struct cajeta_carrier* target = __cajeta_my_carrier
-        ? __cajeta_my_carrier
-        : &__cajeta_carriers[0];
+    // A fiber that has already started is pinned to its home carrier — its
+    // saved ucontext can only be resumed there. Route it home regardless of
+    // who is waking it. A fresh fiber (home_carrier < 0) has no saved context
+    // yet, so route it to the waker's own carrier for locality (it may still be
+    // stolen by an idle peer — safe, since it makecontext's on the stealer).
+    struct cajeta_carrier* target;
+    if (f->home_carrier >= 0) {
+        target = &__cajeta_carriers[f->home_carrier];
+    } else {
+        target = __cajeta_my_carrier ? __cajeta_my_carrier
+                                     : &__cajeta_carriers[0];
+    }
     pthread_mutex_lock(&target->deque_mutex);
     __cajeta_deque_push_bottom(&target->deque, f);
     pthread_mutex_unlock(&target->deque_mutex);
@@ -1248,7 +1347,25 @@ static struct cajeta_fiber* __cajeta_steal_one(struct cajeta_carrier* self) {
         int idx = (start + step) % n;
         if (&__cajeta_carriers[idx] == self) continue;
         struct cajeta_fiber* f = __cajeta_deque_steal(&__cajeta_carriers[idx].deque);
-        if (f) return f;
+        if (!f) continue;
+        // Only fresh fibers (no home yet) or fibers already homed to us may run
+        // here. A started fiber pinned to another carrier carries a live
+        // ucontext bound to that carrier — resuming it on `self` is the
+        // cross-carrier handoff that corrupts. Hand it back to its home deque
+        // (waking that carrier if it's parked) and keep scanning.
+        if (f->home_carrier >= 0 && f->home_carrier != self->carrier_id) {
+            struct cajeta_carrier* home = &__cajeta_carriers[f->home_carrier];
+            pthread_mutex_lock(&home->deque_mutex);
+            __cajeta_deque_push_bottom(&home->deque, f);
+            pthread_mutex_unlock(&home->deque_mutex);
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            if (__cajeta_sleeping_count > 0) {
+                pthread_cond_broadcast(&__cajeta_task_queue_cond);
+            }
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            continue;
+        }
+        return f;
     }
     return NULL;
 }
@@ -1326,14 +1443,19 @@ static void* __cajeta_carrier_loop(void* arg) {
             // arch-dependently into the synthesized frame). v1 punts:
             // stealing is disabled below until the cross-carrier
             // uc_link handoff is solved at a deeper layer.
-            f->stack = malloc(CAJETA_FIBER_STACK_SIZE);
+            size_t stack_size = __cajeta_fiber_stack_size();
+            f->stack = malloc(stack_size);
             if (!f->stack) {
                 fprintf(stderr, "cajeta: fiber stack malloc failed\n");
                 abort();
             }
+            // First dispatch: this carrier becomes the fiber's home. From here
+            // on the fiber's saved ucontext is bound to this carrier, so only
+            // this carrier may resume it (steal/publish honor home_carrier).
+            f->home_carrier = self->carrier_id;
             __cajeta_getcontext(&f->ctx);
             f->ctx.uc_stack.ss_sp = f->stack;
-            f->ctx.uc_stack.ss_size = CAJETA_FIBER_STACK_SIZE;
+            f->ctx.uc_stack.ss_size = stack_size;
             f->ctx.uc_link = &__cajeta_carrier_ctx;
             __cajeta_makecontext(&f->ctx, __cajeta_fiber_entry, 0);
         }
@@ -1424,6 +1546,14 @@ void __cajeta_task_shutdown(void) {
 #endif
     }
     pthread_mutex_unlock(&__cajeta_task_mutex);
+
+    // NET-3.2 — tear down the net-reactor lifecycle (separate from the R9.4
+    // engine above): wake any portable-path waiter, drain the live-registration
+    // balance, reset the lazy-init latch, and close the shutdown wake pipe. Done
+    // OUTSIDE __cajeta_task_mutex — it takes its own dedicated lifecycle mutex,
+    // and keeping the two lock domains disjoint avoids any ordering coupling.
+    // Idempotent + a no-op when no awaitable net op ever initialized it.
+    __cajeta_net_reactor_shutdown();
 }
 
 // Enqueue a trampoline-arg pair as a fresh fiber. The actual stack +
@@ -1451,6 +1581,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     f->exc_top = NULL;
     f->cancel_with = NULL;
     f->dbg_top = NULL;
+    f->home_carrier = -1;   // assigned on first dispatch (see carrier_loop)
     if (fiber_slot) *fiber_slot = f;
 
     pthread_mutex_lock(&__cajeta_task_mutex);
@@ -1474,7 +1605,15 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
             int parsed = atoi(env);
             n = (parsed >= 1) ? parsed : 1;
         } else {
+#if defined(_WIN32)
+            // sysconf/_SC_NPROCESSORS_ONLN is POSIX; on Windows ask the Win32
+            // API (windows.h is included at file scope for the fiber/lock paths).
+            SYSTEM_INFO cpu_si;
+            GetSystemInfo(&cpu_si);
+            long cores = (long) cpu_si.dwNumberOfProcessors;
+#else
             long cores = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
             if (cores < 1) cores = 1;
             n = (int) cores;
             if (n > CAJETA_DEFAULT_CARRIERS_CAP) n = CAJETA_DEFAULT_CARRIERS_CAP;
@@ -3304,6 +3443,32 @@ int32_t __cajeta_is_unrecoverable(void* throwable) {
     return 0;
 }
 
+// __cajeta_exc_matches — does the thrown object's runtime type match (is-a)
+// the catch clause's declared type? Generalizes __cajeta_is_unrecoverable: the
+// caller passes the catch type's #VTable global; we walk the thrown object's
+// vtable parent chain (parent at CAJETA_VTABLE_PARENT_OFFSET, the same chain the
+// unrecoverable check uses) and return 1 iff `catch_vtable` appears anywhere in
+// it — i.e. the thrown class IS the catch class or a descendant of it. This is
+// the runtime half of try/catch type dispatch (TryStatement emits one call per
+// catch clause, in source order, first match wins). A null `catch_vtable`
+// (a non-class / catch-all clause) is handled at the codegen level, not here.
+int32_t __cajeta_exc_matches(void* throwable, void* catch_vtable) {
+    if (!throwable || !catch_vtable) return 0;
+    // Same low-address guard as the unrecoverable walk: a legacy `throw 42`
+    // int-as-pointer must never be dereferenced for its vtable slot.
+    if ((uintptr_t) throwable < 4096) return 0;
+    void* vtable = *(void**) throwable;   // instance slot 0 = vtable ptr
+    // Defensive walk: cap the depth and sanity-check each vtable pointer is a
+    // real (high) address before dereferencing its parent slot. A malformed or
+    // uninitialized chain returns no-match rather than segfaulting the matcher.
+    for (int depth = 0; depth < 256; ++depth) {
+        if ((uintptr_t) vtable < 4096) break;
+        if (vtable == catch_vtable) return 1;
+        vtable = *(void**) ((char*) vtable + CAJETA_VTABLE_PARENT_OFFSET);
+    }
+    return 0;
+}
+
 // Forward decl — defined alongside __cajeta_throw further down.
 static void __cajeta_emit_uncaught(void* value, int is_unrec);
 
@@ -4450,6 +4615,13 @@ void __cajeta_md5_oneshot_hex_into(const void* data_hdr, int64_t len, void* out_
         out[i*2 + 1] = (uint8_t) HEX[digest[i] & 0xF];
     }
 }
+
+// --- cajeta.hash.SHA-256 (NET-11.1, FIPS 180-4) ----------------------------
+// Kept in its own reviewable source file and #included here so it rides the
+// single-TU runtime -> bitcode -> embed build with NO CMake change (the build
+// compiles ONLY cajeta_runtime.c to bitcode; sibling .c files must be textually
+// included to be embedded + linker-merged into user modules).
+#include "cajeta_sha256.c"
 
 // --- cajeta.hash.SipHash (SipHash-2-4) -------------------------------------
 // SipHash-2-4 over arbitrary bytes with a 128-bit key. Designed for
@@ -6937,3 +7109,83 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
     }
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.1 native socket intrinsics (BSD sockets / Winsock).
+//
+// Kept in its own reviewable source file and #included here so it rides the
+// single-TU runtime → bitcode → embed build without a CMake change (the build
+// compiles ONLY cajeta_runtime.c to bitcode; sibling .c files must be textually
+// included to be embedded + linker-merged into user modules). See the file
+// header in cajeta_net_socket.c for the full ABI + errno-shim rationale.
+// ---------------------------------------------------------------------------
+#include "cajeta_net_socket.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.7 non-blocking mode + WouldBlock-as-a-value intrinsics.
+// MUST be included AFTER cajeta_net_socket.c (reuses its fd-ABI helpers,
+// cajeta_net_raw_errno, and the CAJETA_NET_* ordinal contract).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_nonblocking.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.2 native sockaddr marshalling intrinsics.
+// ---------------------------------------------------------------------------
+#include "cajeta_net_sockaddr.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.3 native getsockname/getpeername intrinsics.
+// MUST be included AFTER cajeta_net_socket.c (reuses its fd-ABI typedefs +
+// cajeta_net_from_fd helper).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_getname.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.4 native TcpListener support intrinsics.
+// MUST be included AFTER cajeta_net_socket.c + cajeta_net_sockaddr.c (reuses
+// their fd narrowing helpers, SOL_SOCKET context, and storage-size helper).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_listener.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.6 native typed socket-option surface. MUST be included
+// AFTER cajeta_net_socket.c (reuses its fd-ABI helpers).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_socket_options.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-2.1 native getaddrinfo (name resolution) intrinsics.
+// MUST be included AFTER cajeta_net_socket.c (uses its file-static
+// cajeta_net_ensure_init() so WSAStartup ran on Windows).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_getaddrinfo.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net.reactor — NET-3.1 reactor engine intrinsics (init/register/
+// deregister/await_readable/await_writable + portable select() probe).
+// MUST be included AFTER cajeta_net_socket.c (reuses its file-static
+// cajeta_net_from_fd / cajeta_net_ensure_init) AND after the R9.4 reactor
+// block that defines __cajeta_io_wait (which it delegates to on Linux).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_reactor.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net.reactor — NET-3.2 reactor lifecycle (lazy init / clean shutdown).
+// MUST be included AFTER cajeta_net_reactor.c: its shutdown drains NET-3.1's
+// live-registration counter (__cajeta_net_reactor_active_reset) and its init is
+// the body NET-3.1's __cajeta_net_reactor_init delegates to. The runtime
+// teardown path (__cajeta_task_shutdown, far above) forward-declares + calls
+// __cajeta_net_reactor_shutdown from here.
+// ---------------------------------------------------------------------------
+#include "cajeta_net_reactor_lifecycle.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.hash — NET-11.2 SHA-1 (FIPS 180-4), WebSocket handshake only.
+//
+// Kept in its own reviewable source file and #included here so it rides the
+// single-TU runtime -> bitcode -> embed build without a CMake change (the build
+// compiles ONLY cajeta_runtime.c to bitcode; sibling .c files must be textually
+// included to be embedded + linker-merged into user modules). See the file
+// header in cajeta_sha1.c for the not-for-security-use rationale.
+// ---------------------------------------------------------------------------
+#include "cajeta_sha1.c"
