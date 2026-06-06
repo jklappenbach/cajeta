@@ -127,6 +127,12 @@ namespace xpu {
                                      // OpTypeAccelerationStructureKHR bound via
                                      // resource.handlefrombinding. `type` unused
                                      // (the AS handle is opaque). Ray-query only.
+            bool isImage = false;    // Image2D — a writable 2-D storage image
+                                     // (the writable twin of Texture2D). Carried
+                                     // as a backend handle; on Vulkan a STORAGE_IMAGE
+                                     // descriptor bound in GENERAL layout. `type` is
+                                     // the texel scalar (f32); written by
+                                     // `img.store(x, y, v)` (OpImageWrite).
         };
 
         // Create the kernel function for `name`. Default: a void-returning
@@ -168,6 +174,21 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle,
             llvm::Value* u, llvm::Value* v);
+
+        // Store `value` into the 2-D storage image `imgHandle` at INTEGER texel
+        // coordinate (x, y) — the lowering of `img.store(x, y, value)` (writable
+        // images, the gfx bridge / twin of sampleTexture). `imgHandle` is exactly
+        // the value materializeParam produced for the Image2D kernel param (Vulkan:
+        // a STORAGE_IMAGE descriptor bound in GENERAL layout). `x`/`y` are i32
+        // texel indices (NOT normalized); `value` is the f32 texel.
+        // Default: unsupported (XPU-N01) — only backends with storage-image write
+        // override. Vulkan emits a single OpImageWrite via
+        // llvm.spv.resource.store.2d (a <4 x f32> texel, value in .x; the image's
+        // R32 format keeps lane 0).
+        virtual void storeImage(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
+            llvm::Value* value);
 
         // --- transcendental math (B2 increment 2) ---------------------------
         // sin/cos/tan/asin/acos/atan (unary), pow/atan2 (binary), rsqrt. The

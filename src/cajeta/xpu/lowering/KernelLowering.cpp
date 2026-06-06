@@ -300,6 +300,10 @@ public:
                 // Texture2D handle (Item 8): kept as the materialized backend
                 // value (a ptr on CPU); read only by `tex.sample(...)`.
                 textureHandles[p.name] = v;
+            } else if (p.isImage) {
+                // Image2D handle (writable images): the materialized STORAGE_IMAGE
+                // descriptor; written only by `img.store(x, y, v)`.
+                imageHandles[p.name] = v;
             } else if (p.isSampler) {
                 // Sampler descriptor (Item 8): the materialized {i32,i32} value;
                 // consumed by `tex.sample(sampler, ...)` via the backend seam.
@@ -378,6 +382,7 @@ private:
     // handle per name. A `tex.sample(s, u, v)` looks the texture up here and the
     // sampler arg up in samplerHandles, then hands both to target.sampleTexture.
     std::map<std::string, llvm::Value*> textureHandles;  // texture name -> handle
+    std::map<std::string, llvm::Value*> imageHandles;    // image name -> storage-image handle
     std::map<std::string, llvm::Value*> samplerHandles;  // sampler name -> descriptor
     // AccelerationStructure kernel params and RayQuery body locals (cajeta-gpu
     // Part C ray query). An AS param's materialized descriptor handle is kept by
@@ -2058,6 +2063,24 @@ private:
                 return target.sampleTexture(builder, mod, th->second, samp, u, v);
             }
         }
+        // Image2D.store(x, y, value) (writable images). `recv` names a storage-
+        // image kernel param; (x, y) are INTEGER texel coords and value the f32
+        // texel. Lowered to the backend image-write seam (Vulkan OpImageWrite).
+        if (name == "store") {
+            auto ih = imageHandles.find(recv);
+            if (ih != imageHandles.end()) {
+                const auto& args = mc->getParameters();
+                if (args.size() != 3)
+                    unsupported("Image2D.store expects (x, y, value)");
+                llvm::Value* x = toI32(lowerExpr(args[0].expression));
+                llvm::Value* y = toI32(lowerExpr(args[1].expression));
+                llvm::Value* val = toFloat(lowerExpr(args[2].expression));
+                target.storeImage(builder, mod, ih->second, x, y, val);
+                // void op — return a dummy i32 0 (the sibling void device ops,
+                // e.g. CooperativeMatrix.store, use the same placeholder).
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+            }
+        }
 
         // A user-defined @Device helper call (resolved within the kernel's
         // class). Lower the helper to a device function (cached) and call it.
@@ -3152,8 +3175,8 @@ llvm::Function* LoweringTarget::createKernel(
     for (auto& p : params) {
         if (p.isBuffer)
             tys.push_back(bufferParamType(m, p.type));
-        else if (p.isTexture)
-            tys.push_back(textureParamType(m));   // texture handle (ptr/i64)
+        else if (p.isTexture || p.isImage)
+            tys.push_back(textureParamType(m));   // texture/image handle (ptr/i64)
         else
             tys.push_back(p.type);                 // scalar / sampler {i32,i32}
     }
@@ -3195,6 +3218,19 @@ llvm::Value* LoweringTarget::sampleTexture(llvm::IRBuilderBase& /*b*/,
     // tex.sample() in a kernel lowered for a backend that has not implemented it.
     throw cajeta::Exception(
         "XPU kernel lowering: texture sampling not supported on backend '" +
+        std::string(name()) + "'", "XPU-N01");
+}
+
+void LoweringTarget::storeImage(llvm::IRBuilderBase& /*b*/,
+                                llvm::Module& /*m*/,
+                                llvm::Value* /*imgHandle*/,
+                                llvm::Value* /*x*/, llvm::Value* /*y*/,
+                                llvm::Value* /*value*/) {
+    // Only backends with hardware storage-image write override this (Vulkan
+    // OpImageWrite). The default rejects an img.store() in a kernel lowered for
+    // a backend that has not implemented writable images.
+    throw cajeta::Exception(
+        "XPU kernel lowering: storage-image write not supported on backend '" +
         std::string(name()) + "'", "XPU-N01");
 }
 
@@ -3371,6 +3407,15 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             params.push_back({p->getName(), /*isBuffer=*/false,
                               llvm::Type::getFloatTy(ctx), /*isSigned=*/true,
                               /*isTexture=*/true, /*isSampler=*/false});
+        } else if (isImageType(t)) {
+            // Image2D (writable images): the write twin of Texture2D — a 2-D
+            // STORAGE_IMAGE handle. `type` is the texel scalar (f32); the backend
+            // carries the handle (a descriptor on Vulkan). isImage routes
+            // createKernel/materializeParam and the `.store()` lowering.
+            params.push_back({p->getName(), /*isBuffer=*/false,
+                              llvm::Type::getFloatTy(ctx), /*isSigned=*/true,
+                              /*isTexture=*/false, /*isSampler=*/false,
+                              /*isAccelStruct=*/false, /*isImage=*/true});
         } else if (isSamplerType(t)) {
             // Sampler (Item 8): filter/address descriptor. Carried by value as
             // the {i32 filterMode, i32 addressMode} struct (the same shape the
@@ -3451,6 +3496,8 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
         unsigned bytes = 0;
         if (p.isTexture) {
             kind = KernelParamInfo::Texture;
+        } else if (p.isImage) {
+            kind = KernelParamInfo::Image;
         } else if (p.isSampler) {
             kind = KernelParamInfo::Sampler;
         } else if (p.isAccelStruct) {

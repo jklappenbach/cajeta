@@ -39,6 +39,12 @@ bool isTextureCanonical(const std::string& canonical) {
 bool isSamplerCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.core.Sampler";
 }
+// Image2D (writable images) — the writable twin of Texture2D, matched by exact
+// canonical name (not a template). A 2-D float storage image, bound as a
+// STORAGE_IMAGE descriptor and written via `img.store(x, y, value)`.
+bool isImageCanonical(const std::string& canonical) {
+    return canonical == "cajeta.xpu.core.Image2D";
+}
 // AccelerationStructure (cajeta-gpu Part C) — a descriptor-bound BVH handle,
 // admissible as a kernel argument (it lowers to an OpTypeAccelerationStructureKHR
 // descriptor on Vulkan). RayQuery is NOT a kernel arg — it is a device-only
@@ -141,6 +147,7 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
         // admit it), but it must take the sampler-descriptor path, not the
         // by-value POD path.
         if (isTextureCanonical(canonical)) return true;
+        if (isImageCanonical(canonical)) return true;
         if (isSamplerCanonical(canonical)) return true;
         if (isAccelStructCanonical(canonical)) return true;
         if (isPodStruct(klass)) return true;
@@ -170,6 +177,10 @@ bool isTextureType(const CajetaTypePtr& type) {
 
 bool isSamplerType(const CajetaTypePtr& type) {
     return type && isSamplerCanonical(type->toCanonical());
+}
+
+bool isImageType(const CajetaTypePtr& type) {
+    return type && isImageCanonical(type->toCanonical());
 }
 
 bool isAccelStructType(const CajetaTypePtr& type) {
@@ -206,7 +217,7 @@ void validateKernelParams(const MethodPtr& method) {
                 << "' which is not admissible as a kernel argument. "
                 << "Admissible types: primitives, "
                 << "cajeta.xpu.core.Buffer<T>, cajeta.xpu.core.Texture2D, "
-                << "cajeta.xpu.core.Sampler, "
+                << "cajeta.xpu.core.Image2D, cajeta.xpu.core.Sampler, "
                 << "cajeta.xpu.core.AccelerationStructure, POD structs (a class with "
                 << "only primitive fields and no inheritance), or any type "
                 << "that implements cajeta.xpu.core.KernelArg.";

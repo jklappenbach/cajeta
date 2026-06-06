@@ -392,6 +392,78 @@ TEST(XpuVulkanEmitTests, lowersTextureSampleToSpirv) {
     }
 }
 
+// Writable images: Image2D.store(x, y, value) binds a STORAGE_IMAGE descriptor
+// and lowers to a single OpImageWrite (the cajeta-spirv llvm.spv.resource.store.2d
+// intrinsic). The image declares the R32f known format (matching the runtime
+// VK_FORMAT_R32_SFLOAT), so the write needs only the Shader capability — no
+// StorageImageWriteWithoutFormat (unsatisfiable for the vulkan1.3-compute triple).
+// GPU-free proof that the op is structurally spirv-val-clean under strict
+// spirv-val --target-env vulkan1.3.
+TEST(XpuVulkanEmitTests, lowersImageStoreToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Image2D;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void writeImg(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) {\n"
+        "            img.store(i % w, i / w, (float32) i);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "writeImg");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_imgstore_vulkan_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    llvm::Function* fn = lowerKernel(k, irModule);
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn->arg_size(), 0u);   // args arrive via descriptors
+
+    std::string ir = printModule(irModule);
+    // Storage image bound as a descriptor; written via the store.2d intrinsic.
+    EXPECT_NE(ir.find("llvm.spv.resource.handlefrombinding"),
+              std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.resource.store.2d"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_imgstore_vulkan_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpEntryPoint GLCompute"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpTypeImage"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpImageWrite"), std::string::npos) << text;
+    // R32f known format (matches the runtime VK_FORMAT_R32_SFLOAT) — avoids the
+    // StorageImageWriteWithoutFormat capability, which is unsatisfiable for the
+    // vulkan1.3-compute triple (it needs SPIR-V >= 1.6).
+    EXPECT_NE(text.find("R32f"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_imgstore_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the image-store module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // cajeta-gpu Part C increment 3a: a kernel that traces a ray query against a
 // descriptor-bound AccelerationStructure lowers to the SPV_KHR_ray_query ops.
 // The AS binds an ACCELERATION_STRUCTURE_KHR descriptor (handlefrombinding — the
