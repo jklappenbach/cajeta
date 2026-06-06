@@ -44,7 +44,7 @@ TEST(NestedViewTests, fixedSizeInnerInlines) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        Line l = Line(bytes);\n"
         "        l.start.x = 10;\n"
         "        l.start.y = 20;\n"
@@ -75,7 +75,7 @@ TEST(NestedViewTests, perViewEndiannessAnnotation) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[2];\n"
+        "        int32[] bytes = heap int32[2];\n"
         "        Outer o = Outer(bytes);\n"
         "        o.head.v = 16909060;\n"  // 0x01020304
         "        o.tail = 16909060;\n"
@@ -107,7 +107,7 @@ TEST(NestedViewTests, mixedEndiannessAcrossNesting) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[2];\n"
+        "        int32[] bytes = heap int32[2];\n"
         "        Mixed m = Mixed(bytes);\n"
         "        m.head.v = 1000;\n"
         "        m.tail = 2000;\n"
@@ -142,7 +142,7 @@ TEST(NestedViewTests, doublyNestedView) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[8];\n"  // 4 Points * 8 bytes / 4 = 8 i32s
+        "        int32[] bytes = heap int32[8];\n"  // 4 Points * 8 bytes / 4 = 8 i32s
         "        BoundingBox bb = BoundingBox(bytes);\n"
         "        bb.first.a.x = 1;\n"
         "        bb.first.b.y = 2;\n"

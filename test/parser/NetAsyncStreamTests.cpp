@@ -80,10 +80,10 @@ TEST(AsyncReaderTests, stagedBytesAreBufferedAndReadBack) {
     EXPECT_EQ(runI32(makeSource(
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncReader r = heap AsyncReader(t, 32);\n"
-        "int8[] src = new int8[4];\n"
+        "int8[] src = heap int8[4];\n"
         "src[0]=(int8)10; src[1]=(int8)20; src[2]=(int8)30; src[3]=(int8)40;\n"
         "int32 staged = r.stage(src, 4);\n"
-        "int8[] dst = new int8[4];\n"
+        "int8[] dst = heap int8[4];\n"
         "int32 n = r.read(dst, 0, 4);\n"
         "int32 sum = ((int32)dst[0])+((int32)dst[1])+((int32)dst[2])+((int32)dst[3]);\n"
         // staged=4, n=4, sum=100 -> 4*100000 + 4*10000 + 100 = 440100
@@ -94,11 +94,11 @@ TEST(AsyncReaderTests, readDrainedThenEofReturnsZero) {
     EXPECT_EQ(runI32(makeSource(
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncReader r = heap AsyncReader(t, 16);\n"
-        "int8[] src = new int8[2];\n"
+        "int8[] src = heap int8[2];\n"
         "src[0]=(int8)1; src[1]=(int8)2;\n"
         "r.stage(src, 2);\n"
         "r.markEof();\n"                       // peer closed; ring still holds 2
-        "int8[] dst = new int8[8];\n"
+        "int8[] dst = heap int8[8];\n"
         "int32 n1 = r.read(dst, 0, 8);\n"      // drains 2 from the ring
         "int32 n2 = r.read(dst, 0, 8);\n"      // ring empty + eof -> 0, no socket
         "int32 ended = 0;\n"
@@ -111,11 +111,11 @@ TEST(AsyncReaderTests, readExactFillsAcrossTheStagedBytes) {
     EXPECT_EQ(runI32(makeSource(
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncReader r = heap AsyncReader(t, 32);\n"
-        "int8[] src = new int8[5];\n"
+        "int8[] src = heap int8[5];\n"
         "int32 i = 0;\n"
         "while (i < 5) { src[i] = (int8)(i + 1); i = i + 1; }\n"
         "r.stage(src, 5);\n"
-        "int8[] dst = new int8[5];\n"
+        "int8[] dst = heap int8[5];\n"
         "r.readExact(dst, 0, 5);\n"
         "int32 sum = 0;\n"
         "int32 j = 0;\n"
@@ -128,11 +128,11 @@ TEST(AsyncReaderTests, readExactPastEofRaises) {
     EXPECT_EQ(runI32(makeSource(
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncReader r = heap AsyncReader(t, 16);\n"
-        "int8[] src = new int8[3];\n"
+        "int8[] src = heap int8[3];\n"
         "src[0]=(int8)7; src[1]=(int8)8; src[2]=(int8)9;\n"
         "r.stage(src, 3);\n"
         "r.markEof();\n"                       // only 3 will ever arrive
-        "int8[] dst = new int8[5];\n"
+        "int8[] dst = heap int8[5];\n"
         "try {\n"
         "    r.readExact(dst, 0, 5);\n"        // wants 5, EOF after 3 -> raise
         "    return -1;\n"
@@ -146,7 +146,7 @@ TEST(AsyncReaderTests, readUntilIncludesDelimiter) {
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncReader r = heap AsyncReader(t, 64);\n"
         // "ab\nXY" — read up to and including the first LF (10).
-        "int8[] src = new int8[5];\n"
+        "int8[] src = heap int8[5];\n"
         "src[0]=(int8)97; src[1]=(int8)98; src[2]=(int8)10;\n"   // a b \n
         "src[3]=(int8)88; src[4]=(int8)89;\n"                    // X Y
         "r.stage(src, 5);\n"
@@ -163,7 +163,7 @@ TEST(AsyncReaderTests, readUntilHonorsMaxBytesCap) {
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncReader r = heap AsyncReader(t, 64);\n"
         // No delimiter present; cap at 4 returns the first 4 bytes.
-        "int8[] src = new int8[6];\n"
+        "int8[] src = heap int8[6];\n"
         "int32 i = 0;\n"
         "while (i < 6) { src[i] = (int8) 65; i = i + 1; }\n"   // "AAAAAA"
         "r.stage(src, 6);\n"
@@ -178,7 +178,7 @@ TEST(AsyncReaderTests, readUntilAtEofReturnsRemainderWithoutDelimiter) {
     EXPECT_EQ(runI32(makeSource(
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncReader r = heap AsyncReader(t, 32);\n"
-        "int8[] src = new int8[3];\n"
+        "int8[] src = heap int8[3];\n"
         "src[0]=(int8)1; src[1]=(int8)2; src[2]=(int8)3;\n"   // no LF
         "r.stage(src, 3);\n"
         "r.markEof();\n"
@@ -196,7 +196,7 @@ TEST(AsyncReaderTests, nextYieldsChunkThenTerminatesAtEof) {
         // chunk, then an empty Optional once drained + EOF.
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncReader r = heap AsyncReader(t, 4);\n"
-        "int8[] src = new int8[6];\n"
+        "int8[] src = heap int8[6];\n"
         "int32 i = 0;\n"
         "while (i < 6) { src[i] = (int8) 1; i = i + 1; }\n"
         "int32 staged = r.stage(src, 6);\n"   // ring cap 4 -> only 4 fit
@@ -226,7 +226,7 @@ TEST(AsyncWriterTests, writeAllStagesWithoutSending) {
     EXPECT_EQ(runI32(makeSource(
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncWriter w = heap AsyncWriter(t, 64);\n"  // big enough: no auto-flush
-        "int8[] data = new int8[5];\n"
+        "int8[] data = heap int8[5];\n"
         "int32 i = 0;\n"
         "while (i < 5) { data[i] = (int8) 7; i = i + 1; }\n"
         "w.writeAll(data, 0, 5);\n"
@@ -256,7 +256,7 @@ TEST(AsyncWriterTests, writeAllRespectsOffsetAndLength) {
     EXPECT_EQ(runI32(makeSource(
         "TcpStream t = heap TcpStream(-1);\n"
         "AsyncWriter w = heap AsyncWriter(t, 64);\n"
-        "int8[] data = new int8[10];\n"
+        "int8[] data = heap int8[10];\n"
         "int32 i = 0;\n"
         "while (i < 10) { data[i] = (int8) i; i = i + 1; }\n"
         "w.writeAll(data, 3, 4);\n"   // bytes [3,4,5,6] -> 4 staged
@@ -271,7 +271,7 @@ TEST(AsyncWriterTests, mixedWritesCoalesceIntoOneBuffer) {
         "w.writeString(head);\n"
         "w.writeByte((int8) 13);\n"             // +1
         "w.writeByte((int8) 10);\n"             // +1
-        "int8[] body = new int8[8];\n"
+        "int8[] body = heap int8[8];\n"
         "int32 i = 0;\n"
         "while (i < 8) { body[i] = (int8) 88; i = i + 1; }\n"
         "w.writeAll(body, 0, 8);\n"             // +8

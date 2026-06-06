@@ -162,7 +162,7 @@ TEST(OrderChainingTests, beforeOrderResetThenDrop) {
         "    @Order(2)\n"
         "    @Before(Audited.class)\n"
         "    public static void dropSecond() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"

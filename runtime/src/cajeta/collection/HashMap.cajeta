@@ -136,9 +136,9 @@ public class HashMap<K, V> {
      */
     public HashMap(int64 initialCapacity) {
         this.cap = initialCapacity;
-        this.keys = new K[initialCapacity];
-        this.vals = new V[initialCapacity];
-        this.state = new int8[initialCapacity];
+        this.keys = heap K[initialCapacity];
+        this.vals = heap V[initialCapacity];
+        this.state = heap int8[initialCapacity];
         this.sizeCount = 0;
         this.usedSlots = 0;
     }
@@ -217,9 +217,9 @@ public class HashMap<K, V> {
     private void resize() {
         int64 oldCap = this.cap;
         int64 newCap = oldCap * 2;
-        K[] newKeys = new K[newCap];
-        V[] newVals = new V[newCap];
-        int8[] newState = new int8[newCap];
+        K[] newKeys = heap K[newCap];
+        V[] newVals = heap V[newCap];
+        int8[] newState = heap int8[newCap];
         int64 newSize = 0;
         int64 i = 0;
         while (i < oldCap) {
@@ -289,7 +289,7 @@ public class HashMap<K, V> {
         // via the drop chain — no escape because we only read the
         // element. Callers that need to disambiguate "absent" from
         // "present-and-null/zero" should use containsKey() first.
-        V[] missDefault = new V[1];
+        V[] missDefault = heap V[1];
         return missDefault[0];
     }
 

@@ -54,7 +54,7 @@ TEST(StringClassMethodTests, countAsciiThreeBytes) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        String s = heap String();\n"
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 'a';\n"
         "        b[1] = (int8) 'b';\n"
         "        b[2] = (int8) 'c';\n"
@@ -76,7 +76,7 @@ TEST(StringClassMethodTests, countUtf8TwoByteIsOneCodepoint) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        String s = heap String();\n"
-        "        int8[] b = new int8[2];\n"
+        "        int8[] b = heap int8[2];\n"
         "        b[0] = (int8) 0xC3;\n"  // leader (110xxxxx)
         "        b[1] = (int8) 0xA9;\n"  // continuation (10xxxxxx)
         "        s.bytes = b;\n"
@@ -97,7 +97,7 @@ TEST(StringClassMethodTests, countUtf8FourByteIsOneCodepoint) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        String s = heap String();\n"
-        "        int8[] b = new int8[4];\n"
+        "        int8[] b = heap int8[4];\n"
         "        b[0] = (int8) 0xF0;\n"  // leader (11110xxx)
         "        b[1] = (int8) 0x9F;\n"  // continuation
         "        b[2] = (int8) 0x98;\n"  // continuation
@@ -120,7 +120,7 @@ TEST(StringClassMethodTests, countMixedAsciiAndMultibyte) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        String s = heap String();\n"
-        "        int8[] b = new int8[7];\n"
+        "        int8[] b = heap int8[7];\n"
         "        b[0] = (int8) 0x61;\n"  // 'a' (ASCII, 1 byte)
         "        b[1] = (int8) 0xC3;\n"  // 'é' leader
         "        b[2] = (int8) 0xA9;\n"  // 'é' continuation
@@ -147,7 +147,7 @@ TEST(StringClassMethodTests, countReturnsCachedWhenPopulated) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        String s = heap String();\n"
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 'x';\n"
         "        b[1] = (int8) 'y';\n"
         "        b[2] = (int8) 'z';\n"

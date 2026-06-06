@@ -345,7 +345,7 @@ public class Stream<T> {
      */
     public final R fold<R>(R seed, (R, T) -> #R fn) {
         if (this.isParallel) {
-            throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER: 2-arg fold(seed, fn) cannot be applied to a parallel stream because there is no way to merge per-worker partials; use the 3-arg fold(seed, fn, combiner) overload, or call .sequential() first");
+            throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER: 2-arg fold(seed, fn) cannot be applied to a parallel stream because there is no way to merge per-worker partials; use the 3-arg fold(seed, fn, combiner) overload, or call .sequential() first");
         }
         R acc = seed;
         Optional<T> o = this.next();
@@ -444,7 +444,7 @@ public class Stream<T> {
      */
     public #Stream<T> take(int32 n) {
         if (this.isParallel) {
-            throw new Exception("take(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
+            throw heap Exception("take(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
         }
         return heap TakeStream<T>(this, n);
     }
@@ -455,7 +455,7 @@ public class Stream<T> {
      */
     public #Stream<T> skip(int32 n) {
         if (this.isParallel) {
-            throw new Exception("skip(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
+            throw heap Exception("skip(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
         }
         return heap SkipStream<T>(this, n);
     }

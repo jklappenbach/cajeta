@@ -76,7 +76,7 @@ TEST(HttpMessageTests, requestPostWithBody) {
     EXPECT_EQ(runI32(
         "HttpRequest r = HttpRequest.post(\"/submit\");\n"
         "if (!r.getMethod().equals(\"POST\")) return -1;\n"
-        "int8[] payload = new int8[3];\n"
+        "int8[] payload = heap int8[3];\n"
         "payload[0] = (int8) 104;\n"   // 'h'
         "payload[1] = (int8) 105;\n"   // 'i'
         "payload[2] = (int8) 33;\n"    // '!'
@@ -220,7 +220,7 @@ TEST(HttpMessageTests, responseHeadersAndBody) {
     EXPECT_EQ(runI32(
         "HttpResponse r = HttpResponse.ok();\n"
         "r.setHeader(\"Content-Type\", \"text/plain\");\n"
-        "int8[] payload = new int8[2];\n"
+        "int8[] payload = heap int8[2];\n"
         "payload[0] = (int8) 79;\n"    // 'O'
         "payload[1] = (int8) 75;\n"    // 'K'
         "r.body(payload, 2);\n"

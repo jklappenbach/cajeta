@@ -79,7 +79,7 @@ New test `SpawnDropTests.carrierDropsAccountedSeparately`: a spawned method decl
 
 `DetachExpression::generateCode` was previously a sync passthrough — it just `inner->generateCode(module)`'d the call, so `detach foo();` ran inline on the caller's thread, indistinguishable from a bare call. The fire-and-forget semantics `cajeta-docs/stdlib/Thread.md` describes weren't actually implemented.
 
-Spec tightened first (`cajeta-docs/stdlib/Thread.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `new T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
+Spec tightened first (`cajeta-docs/stdlib/Thread.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `heap T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
 
 Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue lowering — a new `detachMode` flag on `SpawnExpression` gates the two pieces detach skips:
 
@@ -90,7 +90,7 @@ Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue loweri
 
 Auxiliary fix: `SpawnExpression`'s value-store path now skips when the inner returns void (`isVoidTy()` check) and `CajetaTask::CajetaTask` substitutes an `i8` placeholder for the value slot when `elementType` is void — LLVM forbids storing void or putting it in an aggregate field. Previously latent because all spawn tests used int-returning inner functions; surfaced when `detach foo();` runs an `async void foo()`.
 
-New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediately; primitive captures work; `#`-transferred class captures work; bare class-typed identifier (borrow capture) is rejected at compile time. Fresh-allocator (`new T()` inline as arg) is documented as a Known gap rather than tested directly — the underlying NewExpression-as-method-call-argument codegen path is broken even for non-detach calls (`consume(new Payload())` crashes), so the detach-specific check accepting `NewExpression` will light up the moment that gap is fixed.
+New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediately; primitive captures work; `#`-transferred class captures work; bare class-typed identifier (borrow capture) is rejected at compile time. Fresh-allocator (`heap T()` inline as arg) is documented as a Known gap rather than tested directly — the underlying NewExpression-as-method-call-argument codegen path is broken even for non-detach calls (`consume(heap Payload())` crashes), so the detach-specific check accepting `NewExpression` will light up the moment that gap is fixed.
 
 ### Out of scope for this rollout
 
@@ -101,7 +101,7 @@ New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediatel
 
 ### Ownership-transfer model — why option (a)
 
-`MemoryModel.md` § Borrow / transfer rules: *"Auto-promotion for fresh `new`. An anonymous `new T(...)` expression in transfer position promotes implicitly. ... The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk."* Spawn is a fresh allocator with no prior identity — same rule applies. The drop-chain primitive `__cajeta_drop_mark_inactive` already exists for `#`-move; we're invoking it from a new call site, not inventing a mechanism.
+`MemoryModel.md` § Borrow / transfer rules: *"Auto-promotion for fresh `new`. An anonymous `heap T(...)` expression in transfer position promotes implicitly. ... The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk."* Spawn is a fresh allocator with no prior identity — same rule applies. The drop-chain primitive `__cajeta_drop_mark_inactive` already exists for `#`-move; we're invoking it from a new call site, not inventing a mechanism.
 
 Two alternatives considered and rejected:
 - *(b) Local skips its own drop when the initializer is a Spawn.* Localized but breaks `#`-move-out of Task locals — with no entry to deactivate, ownership can't be transferred out of the local later. Makes Task a second-class citizen for the move syntax.

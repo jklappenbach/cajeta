@@ -28,7 +28,7 @@ public class TestClass<X, Y extends Z> {
 
     public TestClass() {
         f = 10.00;
-        OtherClass oc1 = new OtherClass();
+        OtherClass oc1 = heap OtherClass();
         editableOc = oc1;
         immutableOc = #oc1;
     }

@@ -39,7 +39,7 @@ TEST(TemplateWildcardP5Tests, mapThenParallelReduceSums) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = new int32[8];\n"
+        "        int32[] xs = heap int32[8];\n"
         "        int32 i = 0;\n"
         "        while (i < 8) {\n"
         "            xs[i] = i + 1;\n"
@@ -62,7 +62,7 @@ TEST(TemplateWildcardP5Tests, parallelThenMapReduceSums) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = new int32[8];\n"
+        "        int32[] xs = heap int32[8];\n"
         "        int32 i = 0;\n"
         "        while (i < 8) {\n"
         "            xs[i] = i + 1;\n"
@@ -83,7 +83,7 @@ TEST(TemplateWildcardP5Tests, filterMapParallelReduceSums) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = new int32[10];\n"
+        "        int32[] xs = heap int32[10];\n"
         "        int32 i = 0;\n"
         "        while (i < 10) {\n"
         "            xs[i] = i + 1;\n"
@@ -110,7 +110,7 @@ TEST(TemplateWildcardP5Tests, mapParallelCountUnchanged) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = new int32[12];\n"
+        "        int32[] xs = heap int32[12];\n"
         "        int32 i = 0;\n"
         "        while (i < 12) {\n"
         "            xs[i] = i;\n"

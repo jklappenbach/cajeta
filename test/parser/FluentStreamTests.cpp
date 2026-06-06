@@ -131,7 +131,7 @@ TEST(FluentStreamTests, flatMapCount) {
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
         "        (int32) -> #Stream<int32> mk = (int32 v) -> {\n"
-        "            int32[] one = new int32[1];\n"
+        "            int32[] one = heap int32[1];\n"
         "            one[0] = v * 10;\n"
         "            ArrayStream<int32> inner = heap ArrayStream<int32>(one, 1);\n"
         "            return inner;\n"

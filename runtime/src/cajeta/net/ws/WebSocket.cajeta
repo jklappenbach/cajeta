@@ -139,15 +139,15 @@ public class WebSocket {
         this.decoder = null;
         this.protocol = null;
         // Bind the static-final to a local before using it as an array
-        // dimension: a direct `new int8[WebSocket.READ_CHUNK]` mis-lowers the
+        // dimension: a direct `heap int8[WebSocket.READ_CHUNK]` mis-lowers the
         // static-field read as the global's *address* (a `ptr`) rather than
         // loading its value, so the scratch buffer is sized/typed wrong and
         // `receive()` reads garbage (a decoded 0-length message over a live
         // socket). Same compiler gap AsyncReader/AsyncWriter document for
-        // `new int8[AsyncReader.DEFAULT_BUFFER]`; the local int32 pins the
+        // `heap int8[AsyncReader.DEFAULT_BUFFER]`; the local int32 pins the
         // value load.
         int32 rc = WebSocket.READ_CHUNK;
-        this.readScratch = new int8[rc];
+        this.readScratch = heap int8[rc];
         this.writeLock = null;
         this.isClient = false;
         this.maskCounter = 0;
@@ -231,7 +231,7 @@ public class WebSocket {
         if (text != null) {
             n = text.byteLength;
         }
-        int8[] pay = new int8[n];
+        int8[] pay = heap int8[n];
         int32 i = 0;
         while (i < n) {
             pay[i] = text.bytes[i];
@@ -253,7 +253,7 @@ public class WebSocket {
         if (data != null) {
             n = data.count();
         }
-        int8[] pay = new int8[n];
+        int8[] pay = heap int8[n];
         int32 i = 0;
         while (i < n) {
             pay[i] = data[i];
@@ -480,7 +480,7 @@ public class WebSocket {
     #int8[] nextMaskKey() {
         int32 c = this.maskCounter;
         this.maskCounter = c + 1;
-        int8[] key = new int8[4];
+        int8[] key = heap int8[4];
         key[0] = (int8) ((c >> 24) & 255);
         key[1] = (int8) ((c >> 16) & 255);
         key[2] = (int8) ((c >> 8) & 255);

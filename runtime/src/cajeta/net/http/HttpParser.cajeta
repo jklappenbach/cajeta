@@ -118,13 +118,13 @@ public class HttpParser {
         this.isRequest = true;
         this.limits = heap HttpParserLimits();
         this.headCap = 256;
-        this.head = new int8[256];
+        this.head = heap int8[256];
         this.headLen = 0;
         this.curLineLen = 0;
         this.newlineCount = 0;
         this.complete = false;
         this.bodyCap = 0;
-        this.body = new int8[0];
+        this.body = heap int8[0];
         this.bodyLen = 0;
         this.request = null;
         this.response = null;
@@ -306,7 +306,7 @@ public class HttpParser {
      */
     public #int8[] leftover() {
         int32 n = this.bodyLen;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             out[i] = this.body[i];
@@ -332,7 +332,7 @@ public class HttpParser {
 
     void growHead() {
         int32 newCap = this.headCap * 2;
-        int8[] dst = new int8[newCap];
+        int8[] dst = heap int8[newCap];
         int32 i = 0;
         while (i < this.headLen) {
             dst[i] = this.head[i];
@@ -352,7 +352,7 @@ public class HttpParser {
 
     void growBody() {
         int32 newCap = this.bodyCap == 0 ? 64 : this.bodyCap * 2;
-        int8[] dst = new int8[newCap];
+        int8[] dst = heap int8[newCap];
         int32 i = 0;
         while (i < this.bodyLen) {
             dst[i] = this.body[i];
@@ -697,7 +697,7 @@ public class HttpParser {
         if (len < 0) {
             len = 0;
         }
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
             out[i] = this.head[from + i];
@@ -707,7 +707,7 @@ public class HttpParser {
     }
 
     #String emptyString() {
-        int8[] e = new int8[0];
+        int8[] e = heap int8[0];
         return heap String(#e, 0);
     }
 

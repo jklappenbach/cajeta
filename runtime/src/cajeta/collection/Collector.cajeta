@@ -30,14 +30,14 @@ package cajeta.collection;
  * ## Usage
  *
  * ```cajeta
- * #ArrayList<int32> xs = new ArrayList<int32>();
+ * #ArrayList<int32> xs = heap ArrayList<int32>();
  * xs.add(1);
  * xs.add(2);
  * xs.add(3);
  *
  * // A custom Collector that folds the stream back into an ArrayList<int32>.
  * stack toList = Collector<int32, ArrayList<int32>>(
- *     () -> new ArrayList<int32>(),                        // supplier: fresh partial
+ *     () -> heap ArrayList<int32>(),                        // supplier: fresh partial
  *     (acc, x) -> { acc.add(x); return acc; },           // accumulator: per-element
  *     (left, right) -> { left.appendAll(right); return left; }); // combiner: merge partials
  *
@@ -62,7 +62,7 @@ public class Collector<T, R> {
      * ```cajeta
      * // Custom collector: fold a Stream<int32> into an ArrayList<int32>.
      * stack toList = Collector<int32, ArrayList<int32>>(
-     *     () -> new ArrayList<int32>(),                   // supplier: fresh partial
+     *     () -> heap ArrayList<int32>(),                   // supplier: fresh partial
      *     (acc, x) -> { acc.add(x); return acc; },      // accumulator: per-element
      *     (left, right) -> { left.appendAll(right); return left; }); // combiner: merge partials
      *

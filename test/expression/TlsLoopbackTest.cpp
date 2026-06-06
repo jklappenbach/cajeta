@@ -59,7 +59,7 @@ bool makeSelfSigned(const char* cn, std::string& certPem, std::string& keyPem) {
 }
 
 std::string emitBytes(const std::string& name, const std::string& data) {
-    std::string s = "        int8[] " + name + " = new int8["
+    std::string s = "        int8[] " + name + " = heap int8["
                   + std::to_string(data.size()) + "];\n";
     for (size_t i = 0; i < data.size(); i++) {
         s += "        " + name + "[" + std::to_string(i) + "L] = (int8) "
@@ -89,7 +89,7 @@ TEST(TlsLoopbackTest, spawnedServerLoopbackEchoNoTls) {
         "import cajeta.threading.Tasks;\n"
         "public final class M {\n"
         "    public static async int32 echoServer(#TcpStream sock, int8[] tag) {\n"
-        "        int8[] b = new int8[4];\n"
+        "        int8[] b = heap int8[4];\n"
         "        int64 n = sock.readAsync(b, (int64) 0, (int64) 4);\n"
         "        sock.writeAllAsync(b, (int64) 0, n);\n"
         "        return (int32) tag[0L];\n"   // use the int8[] spawn arg
@@ -104,13 +104,13 @@ TEST(TlsLoopbackTest, spawnedServerLoopbackEchoNoTls) {
         "            SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
         "            TcpStream client = TcpStream.connect(#connAddr);\n"
         "            TcpStream server = listener.accept();\n"
-        "            int8[] tag = new int8[2];\n"
+        "            int8[] tag = heap int8[2];\n"
         "            tag[0L] = (int8) 7; tag[1L] = (int8) 9;\n"
         "            Task<int32> t = spawn echoServer(#server, tag);\n"
-        "            int8[] ping = new int8[4];\n"
+        "            int8[] ping = heap int8[4];\n"
         "            ping[0L]=(int8)112; ping[1L]=(int8)105; ping[2L]=(int8)110; ping[3L]=(int8)103;\n"
         "            client.writeAsync(ping, (int64) 0, (int64) 4);\n"
-        "            int8[] echo = new int8[4];\n"
+        "            int8[] echo = heap int8[4];\n"
         "            int64 g = client.readAsync(echo, (int64) 0, (int64) 4);\n"
         "            int32 sr = await t;\n"
         "            listener.close();\n"
@@ -146,7 +146,7 @@ TEST(TlsLoopbackTest, clientTlsStreamConstructNoHandshake) {
         "    public static int32 run() {\n"
         "        () -> int32 body = () -> {\n"
         + emitBytes("cert", cert) +
-        "            int8[] host = new int8[9];\n"
+        "            int8[] host = heap int8[9];\n"
         "            host[0L]=(int8)108; host[1L]=(int8)111; host[2L]=(int8)99;\n"
         "            host[3L]=(int8)97; host[4L]=(int8)108; host[5L]=(int8)104;\n"
         "            host[6L]=(int8)111; host[7L]=(int8)115; host[8L]=(int8)116;\n"
@@ -248,7 +248,7 @@ TEST(TlsLoopbackTest, tlsHandshakeAndEchoOverLoopback) {
         "                                         int8[] key, int32 keyLen) {\n"
         "        TlsStream st = TlsStream.server(#sock, cert, certLen, key, keyLen);\n"
         "        st.handshake();\n"
-        "        int8[] inbuf = new int8[256];\n"
+        "        int8[] inbuf = heap int8[256];\n"
         "        int32 n = st.read(inbuf, 256);\n"
         "        st.write(inbuf, n);\n"
         "        return n;\n"
@@ -257,7 +257,7 @@ TEST(TlsLoopbackTest, tlsHandshakeAndEchoOverLoopback) {
         "        () -> int32 body = () -> {\n"
         + emitBytes("cert", cert)
         + emitBytes("key", key) +
-        "            int8[] host = new int8[9];\n"   // "localhost"
+        "            int8[] host = heap int8[9];\n"   // "localhost"
         "            host[0L]=(int8)108; host[1L]=(int8)111; host[2L]=(int8)99;\n"
         "            host[3L]=(int8)97; host[4L]=(int8)108; host[5L]=(int8)104;\n"
         "            host[6L]=(int8)111; host[7L]=(int8)115; host[8L]=(int8)116;\n"
@@ -275,10 +275,10 @@ TEST(TlsLoopbackTest, tlsHandshakeAndEchoOverLoopback) {
         "            Task<int32> serverTask = spawn runServer(#server, cert, cl, key, kl);\n"
         "            TlsStream ct = TlsStream.client(#client, host, 9, cert, cl);\n"
         "            ct.handshake();\n"
-        "            int8[] ping = new int8[4];\n"
+        "            int8[] ping = heap int8[4];\n"
         "            ping[0L]=(int8)112; ping[1L]=(int8)105; ping[2L]=(int8)110; ping[3L]=(int8)103;\n"
         "            ct.write(ping, 4);\n"
-        "            int8[] echo = new int8[256];\n"
+        "            int8[] echo = heap int8[256];\n"
         "            int32 got = ct.read(echo, 256);\n"
         "            int32 sret = await serverTask;\n"
         "            listener.close();\n"
@@ -321,7 +321,7 @@ TEST(TlsLoopbackTest, tlsListenerAcceptWithAlpnOverLoopback) {
         "public final class M {\n"
         "    public static async int32 serveOne(#TlsListener listener) {\n"
         "        TlsStream s = listener.accept();\n"   // accept + server handshake
-        "        int8[] buf = new int8[256];\n"
+        "        int8[] buf = heap int8[256];\n"
         "        int32 n = s.read(buf, 256);\n"
         "        s.write(buf, n);\n"
         "        return n;\n"
@@ -332,7 +332,7 @@ TEST(TlsLoopbackTest, tlsListenerAcceptWithAlpnOverLoopback) {
         + emitBytes("key", key)
         + emitBytes("sproto", serverProtos)
         + emitBytes("cproto", clientProtos) +
-        "            int8[] host = new int8[9];\n"   // \"localhost\"
+        "            int8[] host = heap int8[9];\n"   // \"localhost\"
         "            host[0L]=(int8)108; host[1L]=(int8)111; host[2L]=(int8)99;\n"
         "            host[3L]=(int8)97; host[4L]=(int8)108; host[5L]=(int8)104;\n"
         "            host[6L]=(int8)111; host[7L]=(int8)115; host[8L]=(int8)116;\n"
@@ -351,12 +351,12 @@ TEST(TlsLoopbackTest, tlsListenerAcceptWithAlpnOverLoopback) {
         "            TlsStream ct = TlsStream.client(#client, host, 9, cert, cl);\n"
         "            ct.offerAlpn(cproto, 12);\n"
         "            ct.handshake();\n"
-        "            int8[] neg = new int8[64];\n"
+        "            int8[] neg = heap int8[64];\n"
         "            int32 nlen = ct.negotiatedAlpn(neg, 64);\n"
-        "            int8[] ping = new int8[4];\n"
+        "            int8[] ping = heap int8[4];\n"
         "            ping[0L]=(int8)112; ping[1L]=(int8)105; ping[2L]=(int8)110; ping[3L]=(int8)103;\n"
         "            ct.write(ping, 4);\n"
-        "            int8[] echo = new int8[256];\n"
+        "            int8[] echo = heap int8[256];\n"
         "            int32 got = ct.read(echo, 256);\n"
         "            int32 sret = await serverTask;\n"
         "            if (sret != 4) { return -2; }\n"

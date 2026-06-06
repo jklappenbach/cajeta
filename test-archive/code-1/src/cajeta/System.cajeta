@@ -5,7 +5,7 @@ public final class System extends Alpha {
     private int32 x = 5;
 
     public static void main() {
-        System system = new System();
+        System system = heap System();
         system.doSomething(34);
     }
 

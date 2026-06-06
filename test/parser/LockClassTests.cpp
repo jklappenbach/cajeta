@@ -58,7 +58,7 @@ int32_t runI32(const std::string& dBody) {
 TEST(LockClassTests, constructAndDestroy) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        return 1;\n"
         "    }\n"
     ), 1);
@@ -70,7 +70,7 @@ TEST(LockClassTests, constructAndDestroy) {
 TEST(LockClassTests, tryAcquireUncontendedSucceeds) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        int32 got = lock.tryAcquire();\n"
         "        if (got == 1) lock.releaseLock();\n"
         "        return got;\n"
@@ -84,7 +84,7 @@ TEST(LockClassTests, tryAcquireUncontendedSucceeds) {
 TEST(LockClassTests, tryAcquireWhileHeldFails) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        LockGuard held = lock.acquire();\n"
         "        int32 second = lock.tryAcquire();\n"
         "        return second;\n"
@@ -101,7 +101,7 @@ TEST(LockClassTests, tryAcquireWhileHeldFails) {
 TEST(LockClassTests, guardDropAtMethodExitReleasesBeforeDestroy) {
     EXPECT_EQ(runI32(
         "    public static int32 acquireAndReturn() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        LockGuard g = lock.acquire();\n"
         "        return 0;\n"
         "        // At return: g drops first (release), lock drops\n"
@@ -119,8 +119,8 @@ TEST(LockClassTests, guardDropAtMethodExitReleasesBeforeDestroy) {
 TEST(LockClassTests, twoIndependentLocks) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock a = new Lock();\n"
-        "        Lock b = new Lock();\n"
+        "        Lock a = heap Lock();\n"
+        "        Lock b = heap Lock();\n"
         "        LockGuard ga = a.acquire();\n"
         "        int32 bFree = b.tryAcquire();\n"
         "        if (bFree == 1) b.releaseLock();\n"
@@ -135,7 +135,7 @@ TEST(LockClassTests, twoIndependentLocks) {
 TEST(LockClassTests, repeatedManualAcquireRelease) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        int32 sum = 0;\n"
         "        int32 got1 = lock.tryAcquire();\n"
         "        if (got1 == 1) {\n"

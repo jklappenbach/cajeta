@@ -67,7 +67,7 @@ public class IpAddress {
      */
     public IpAddress() {
         this.family = AddressFamily.V4;
-        this.octets = new int8[16];
+        this.octets = heap int8[16];
         int32 i = 0;
         while (i < 16) {
             this.octets[i] = (int8) 0;
@@ -350,8 +350,8 @@ public class IpAddress {
         a.family = AddressFamily.V6;
 
         // head[] / tail[] hold parsed octets before / after the "::".
-        int8[] head = new int8[16];
-        int8[] tail = new int8[16];
+        int8[] head = heap int8[16];
+        int8[] tail = heap int8[16];
         int32 headLen = 0;      // octets written to head
         int32 tailLen = 0;      // octets written to tail
         boolean sawDoubleColon = false;
@@ -579,7 +579,7 @@ public class IpAddress {
     public #String toString() {
         if (this.isV4()) {
             // Max "255.255.255.255" = 15 bytes.
-            int8[] out = new int8[15];
+            int8[] out = heap int8[15];
             int32 pos = 0;
             int32 g = 0;
             while (g < 4) {
@@ -591,7 +591,7 @@ public class IpAddress {
                     IpAddress.byteAt(this.octets, g));
                 g = g + 1;
             }
-            int8[] exact = new int8[pos];
+            int8[] exact = heap int8[pos];
             int32 i = 0;
             while (i < pos) {
                 exact[i] = out[i];
@@ -602,7 +602,7 @@ public class IpAddress {
 
         // IPv6: build the eight 16-bit groups, find the longest run of
         // >= 2 zero groups (leftmost on a tie), then format.
-        int32[] groups = new int32[8];
+        int32[] groups = heap int32[8];
         int32 gi = 0;
         while (gi < 8) {
             int32 hi = IpAddress.byteAt(this.octets, gi * 2);
@@ -650,7 +650,7 @@ public class IpAddress {
         // "" + "::" + "1" = "::1", "2001:db8" + "::" + "1"), or simply all
         // eight groups joined by ':' when there is no run. `runEnd` is the
         // exclusive end of the collapsed run (== bestStart when none).
-        int8[] out = new int8[45];
+        int8[] out = heap int8[45];
         int32 pos = 0;
         int32 runEnd = (bestStart >= 0) ? (bestStart + bestLen) : -1;
 
@@ -691,7 +691,7 @@ public class IpAddress {
             }
         }
 
-        int8[] exact = new int8[pos];
+        int8[] exact = heap int8[pos];
         int32 i = 0;
         while (i < pos) {
             exact[i] = out[i];

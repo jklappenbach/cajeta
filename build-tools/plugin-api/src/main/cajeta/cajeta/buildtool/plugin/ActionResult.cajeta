@@ -27,7 +27,7 @@ import cajeta.collection.HashMap;
  *
  * Builder shape:
  *
- *     ActionResult r = #new ActionResult();
+ *     ActionResult r = #heap ActionResult();
  *     r.output("path", artifact.toString());
  *     r.findings(#findings);
  *     return r.error(  // fluent fail path
@@ -48,8 +48,8 @@ public class ActionResult {
     String                  errorMessage;
 
     public ActionResult() {
-        this.outputsMap   = #new HashMap<String, String>();
-        this.findingsList = #new ArrayList<Finding>();
+        this.outputsMap   = #heap HashMap<String, String>();
+        this.findingsList = #heap ArrayList<Finding>();
         this.errorMessage = "";
     }
 
@@ -58,7 +58,7 @@ public class ActionResult {
         this.outputsMap.put(key, value);
     }
 
-    /** Replace the finding list. Pass `#new ArrayList<Finding>()` to clear. */
+    /** Replace the finding list. Pass `#heap ArrayList<Finding>()` to clear. */
     public void findings(ArrayList<Finding> findings) {
         this.findingsList = findings;
     }
@@ -88,12 +88,12 @@ public class ActionResult {
 
     /**
      * Static fail-fast factory. Equivalent to
-     * `new ActionResult().error(message)` — provided so param-
+     * `heap ActionResult().error(message)` — provided so param-
      * validation paths read as `return ActionResult.error("...");`
      * without the temporary.
      */
     public static ActionResult error(String message) {
-        ActionResult r = #new ActionResult();
+        ActionResult r = #heap ActionResult();
         r.errorMessage = message;
         return #r;
     }

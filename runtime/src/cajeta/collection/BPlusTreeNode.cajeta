@@ -20,13 +20,13 @@ package cajeta.collection;
  *
  * ```cajeta
  * // A fresh, empty leaf root for an order-4 tree.
- * stack root = new BPlusTreeNode<string, int32>(true, 4);
+ * stack root = heap BPlusTreeNode<string, int32>(true, 4);
  * root.keys[0] = "alpha";
  * root.values[0] = 1;
  * root.numKeys = 1;
  *
  * // An internal router node holds separators + child links.
- * stack branch = new BPlusTreeNode<string, int32>(false, 4);
+ * stack branch = heap BPlusTreeNode<string, int32>(false, 4);
  * branch.children[0] = root;
  * ```
  *
@@ -53,20 +53,20 @@ public class BPlusTreeNode<K, V> {
      * node in place before splitting it; `numKeys` starts at `0`.
      *
      * ```cajeta
-     * stack leaf = new BPlusTreeNode<int32, string>(true, 4);   // holds up to 4 entries
-     * stack branch = new BPlusTreeNode<int32, string>(false, 4); // routes via child links
+     * stack leaf = heap BPlusTreeNode<int32, string>(true, 4);   // holds up to 4 entries
+     * stack branch = heap BPlusTreeNode<int32, string>(false, 4); // routes via child links
      * ```
      */
     public BPlusTreeNode(boolean leaf, int32 order) {
         this.leaf = leaf;
         this.numKeys = 0;
-        this.keys = new K[order + 1];
+        this.keys = heap K[order + 1];
         if (leaf) {
-            this.values = new V[order + 1];
+            this.values = heap V[order + 1];
             this.children = null;
         } else {
             this.values = null;
-            this.children = new BPlusTreeNode<K, V>[order + 2];
+            this.children = heap BPlusTreeNode<K, V>[order + 2];
         }
         this.next = null;
         this.parent = null;

@@ -138,7 +138,7 @@ TEST(LambdaL2Tests, capturesArrayByBorrow) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[7];\n"
+        "        int32[] arr = heap int32[7];\n"
         "        () -> int64 fn = () -> arr.count();\n"
         "        return (int32) fn();\n"
         "    }\n"
@@ -157,7 +157,7 @@ TEST(LambdaL2Tests, capturedHeapMutationVisible) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        arr[0] = 10;\n"
         "        (int32) -> int32 read = i -> arr[i];\n"
         "        arr[0] = 99;\n"
@@ -176,7 +176,7 @@ TEST(LambdaL2Tests, mixedPrimitiveAndHeapCaptures) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32 bias = 100;\n"
-        "        int32[] arr = new int32[5];\n"
+        "        int32[] arr = heap int32[5];\n"
         "        (int32) -> int32 fn = i -> arr[i] + bias;\n"
         "        return fn(0);\n"  // 0 + 100 = 100
         "    }\n"
@@ -206,7 +206,7 @@ TEST(LambdaL2Tests, blockBodyExplicitReturn) {
 // the explicit `return acc + x;`.
 //
 // This is the minimal repro of the Collectors.toList<T>() failure: the
-// stdlib body builds a `new Collector<T, ArrayList<T>>(seed, (...) -> {
+// stdlib body builds a `heap Collector<T, ArrayList<T>>(seed, (...) -> {
 // ...; return acc; })` and the lambda's `acc` return ought to fix R
 // = ArrayList<T>, not void.
 TEST(LambdaL2Tests, blockBodyReturnTypeInferredFromBodyUnderCtorArg) {
@@ -237,7 +237,7 @@ TEST(LambdaL2Tests, blockBodyWithCapturesAndLocals) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32 bias = 10;\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        arr[0] = 5;\n"
         "        (int32) -> int32 fn = i -> {\n"
         "            int32 v = arr[i];\n"
@@ -260,7 +260,7 @@ TEST(LambdaL2Tests, blockBodyDirectReturnHeapCap) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32 bias = 10;\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        arr[0] = 5;\n"
         "        (int32) -> int32 fn = i -> {\n"
         "            return arr[i] + bias;\n"

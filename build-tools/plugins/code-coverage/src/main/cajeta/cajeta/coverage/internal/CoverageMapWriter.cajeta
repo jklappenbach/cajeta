@@ -70,7 +70,7 @@ public class CoverageMapWriter {
 
     static void writeBitset(FileWriter w, CoverageMap.FileEntry e) {
         int32 nBytes = (e.totalProbes() + 7) / 8;
-        byte[] packed = #new byte[nBytes];
+        byte[] packed = #heap byte[nBytes];
         int32 pid = 0;
         while (pid < e.totalProbes()) {
             if (e.wasHit(pid)) {

@@ -53,7 +53,7 @@ const char* BRIDGES =
 
 // Emit `host` as a sequence of int8[] element assignments into `name`.
 std::string hostLiteral(const std::string& name, const std::string& host) {
-    std::string s = "        int8[] " + name + " = new int8["
+    std::string s = "        int8[] " + name + " = heap int8["
                   + std::to_string(host.size()) + "];\n";
     for (size_t i = 0; i < host.size(); i++) {
         s += "        " + name + "[" + std::to_string(i) + "L] = (int8) "
@@ -93,7 +93,7 @@ TEST(NetResolveTests, numericV4ResolvesToItself) {
         "        int32 c = count(h);\n"
         "        int32 fam = family(h, 0);\n"
         "        int32 p = port(h, 0);\n"
-        "        int8[] oct = new int8[16];\n"
+        "        int8[] oct = heap int8[16];\n"
         "        int32 w = octets(h, 0, oct);\n"
         "        int32 o0 = ((int32) oct[0L]) & 0xff;\n"
         "        int32 o1 = ((int32) oct[1L]) & 0xff;\n"
@@ -124,7 +124,7 @@ TEST(NetResolveTests, localhostResolvesToLoopback) {
         "        int32 i = 0;\n"
         "        while (i < c) {\n"
         "            int32 fam = family(h, i);\n"
-        "            int8[] oct = new int8[16];\n"
+        "            int8[] oct = heap int8[16];\n"
         "            int32 w = octets(h, i, oct);\n"
         "            if (fam == 0 && w == 4) {\n"
         "                int32 a0 = ((int32) oct[0L]) & 0xff;\n"
@@ -173,7 +173,7 @@ TEST(NetResolveTests, familyFilterSelectsV6) {
         "        pointer h = resolve(host, 3, 80, 1);\n"
         "        int32 c = count(h);\n"
         "        int32 fam = family(h, 0);\n"
-        "        int8[] oct = new int8[16];\n"
+        "        int8[] oct = heap int8[16];\n"
         "        int32 w = octets(h, 0, oct);\n"
         "        int32 sum = 0;\n"
         "        int32 i = 0;\n"
@@ -222,7 +222,7 @@ TEST(NetResolveTests, outOfRangeIndexReturnsSentinel) {
         hostLiteral("host", "127.0.0.1") +
         "        pointer h = resolve(host, 9, 80, -1);\n"
         "        int32 c = count(h);\n"
-        "        int8[] oct = new int8[16];\n"
+        "        int8[] oct = heap int8[16];\n"
         "        int32 fam = family(h, c);\n"     // index == count → OOR
         "        int32 p = port(h, c);\n"
         "        int32 w = octets(h, c, oct);\n"

@@ -164,7 +164,7 @@ The compiler synthesizes the annotation-instance construction at the call site â
 ```cajeta
 @Around(Audited.class)
 int around(@Original Function<int, int> proceed, JoinPoint jp, int x) {
-    if (!authorized()) throw new AuthException("denied");
+    if (!authorized()) throw heap AuthException("denied");
     return proceed(x);   // typed call to the original
 }
 ```
@@ -309,13 +309,13 @@ For each `@Component`, the compiler synthesizes two helpers:
 static Database __singleton_Database = null;
 static Database get_Database() {
     if (__singleton_Database == null) {
-        __singleton_Database = new Database();
+        __singleton_Database = heap Database();
         __singleton_Database.__postConstruct();
     }
     return __singleton_Database;
 }
 static Database make_Database() {
-    Database d = new Database();
+    Database d = heap Database();
     d.__postConstruct();
     return d;          // caller owns it
 }
@@ -326,7 +326,7 @@ static Database make_Database() {
 static UserService __singleton_UserService = null;
 static UserService get_UserService() {
     if (__singleton_UserService == null) {
-        UserService u = new UserService();
+        UserService u = heap UserService();
         u.db = get_Database();        // singleton site
         u.log = make_Logger();        // owner-scope site â€” tied to u's lifespan
         u.__postConstruct();

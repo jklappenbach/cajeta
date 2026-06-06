@@ -66,7 +66,7 @@ public class BufferPool {
         if (cap < 1) {
             cap = 1;
         }
-        this.freeList = new ByteBuffer[cap];
+        this.freeList = heap ByteBuffer[cap];
         this.listCap = cap;
         this.idleCount = 0;
         this.slabSize = slabSize;

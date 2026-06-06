@@ -66,18 +66,18 @@ int64_t observe(const std::string& body) {
 // --- Normal-flow drops ------------------------------------------------------
 
 TEST(DropChainTests, singleArrayDropsAtReturn) {
-    EXPECT_EQ(observe("int32[] xs = new int32[8];"), 1);
+    EXPECT_EQ(observe("int32[] xs = heap int32[8];"), 1);
 }
 
 TEST(DropChainTests, twoArraysBothDrop) {
     EXPECT_EQ(observe(
-        "int32[] a = new int32[4];\n"
-        "int32[] b = new int32[2];"), 2);
+        "int32[] a = heap int32[4];\n"
+        "int32[] b = heap int32[2];"), 2);
 }
 
 TEST(DropChainTests, multipleArrayUseDoesntChangeDropCount) {
     EXPECT_EQ(observe(
-        "int32[] xs = new int32[5];\n"
+        "int32[] xs = heap int32[5];\n"
         "xs[0] = 1;\n"
         "xs[1] = 2;"), 1);
 }
@@ -86,13 +86,13 @@ TEST(DropChainTests, multipleArrayUseDoesntChangeDropCount) {
 
 TEST(DropChainTests, moveOutSuppressesOriginalDrop) {
     EXPECT_EQ(observe(
-        "int32[] xs = new int32[5];\n"
+        "int32[] xs = heap int32[5];\n"
         "int32[] ys = #xs;"), 1);
 }
 
 TEST(DropChainTests, moveOutOfOneOfTwo) {
     EXPECT_EQ(observe(
-        "int32[] a = new int32[3];\n"
-        "int32[] b = new int32[3];\n"
+        "int32[] a = heap int32[3];\n"
+        "int32[] b = heap int32[3];\n"
         "int32[] c = #a;"), 2);
 }

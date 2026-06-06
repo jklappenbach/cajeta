@@ -38,7 +38,7 @@ public class PositionLookup {
     PositionLookup(ActionContext ctx) {
         this.ctx = ctx;
         this.tables =
-            #new HashMap<String, HashMap<int32, SourcePosition>>();
+            #heap HashMap<String, HashMap<int32, SourcePosition>>();
     }
 
     /**
@@ -46,7 +46,7 @@ public class PositionLookup {
      * `.lookup(file, probe)` per file.
      */
     public static PositionLookup load(ActionContext ctx, CoverageMap map) {
-        return #new PositionLookup(ctx);
+        return #heap PositionLookup(ctx);
     }
 
     /**
@@ -70,12 +70,12 @@ public class PositionLookup {
         if (pos.isPresent()) {
             return pos.get();
         }
-        return #new SourcePosition(0, 0, 0, 0);
+        return #heap SourcePosition(0, 0, 0, 0);
     }
 
     HashMap<int32, SourcePosition> loadSidecar(String file) {
         HashMap<int32, SourcePosition> out =
-            #new HashMap<int32, SourcePosition>();
+            #heap HashMap<int32, SourcePosition>();
         Path sidecar = sidecarPathFor(file);
         if (!sidecar.exists()) {
             return out;

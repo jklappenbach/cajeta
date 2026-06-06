@@ -63,7 +63,7 @@ public class Path {
      */
     public static #Path of(String s) {
         int32 n = s.byteLength;
-        int8[] copy = new int8[n];
+        int8[] copy = heap int8[n];
         int8[] src = s.bytes;
         int32 i = 0;
         while (i < n) {
@@ -118,7 +118,7 @@ public class Path {
         if (len < 0) {
             len = 0;
         }
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 j = 0;
         while (j < len) {
             out[j] = this.bytes[startIdx + j];
@@ -146,7 +146,7 @@ public class Path {
             i = i + 1;
         }
         int32 outLen = lastDot >= 0 ? lastDot : nameLen;
-        int8[] out = new int8[outLen];
+        int8[] out = heap int8[outLen];
         int32 j = 0;
         while (j < outLen) {
             out[j] = src[j];
@@ -175,11 +175,11 @@ public class Path {
             i = i + 1;
         }
         if (lastDot < 0) {
-            int8[] empty = new int8[0];
+            int8[] empty = heap int8[0];
             return heap String(#empty, 0);
         }
         int32 outLen = nameLen - lastDot - 1;
-        int8[] out = new int8[outLen];
+        int8[] out = heap int8[outLen];
         int32 j = 0;
         while (j < outLen) {
             out[j] = src[lastDot + 1 + j];
@@ -205,18 +205,18 @@ public class Path {
         }
         if (lastSep < 0) {
             // No separator → parent is empty.
-            int8[] empty = new int8[0];
+            int8[] empty = heap int8[0];
             return heap Path(#empty);
         }
         // Root "/": parent is "/". Catches the "/" case (lastSep
         // = 0, n = 1) and the "/foo" case (lastSep = 0, parent
         // bytes = "/").
         if (lastSep == 0) {
-            int8[] root = new int8[1];
+            int8[] root = heap int8[1];
             root[0] = (int8) 47;
             return heap Path(#root);
         }
-        int8[] out = new int8[lastSep];
+        int8[] out = heap int8[lastSep];
         int32 j = 0;
         while (j < lastSep) {
             out[j] = this.bytes[j];
@@ -316,7 +316,7 @@ public class Path {
      * ```
      */
     public #Path canonical() {
-        int8[] empty = new int8[0];
+        int8[] empty = heap int8[0];
         return heap Path(#empty);
     }
 
@@ -341,7 +341,7 @@ public class Path {
             && this.bytes[pLen - 1] != (int8) 47
             && sLen > 0;
         int32 outLen = pLen + (needsSep ? 1 : 0) + sLen;
-        int8[] out = new int8[outLen];
+        int8[] out = heap int8[outLen];
         int32 j = 0;
         int32 k = 0;
         while (k < pLen) {

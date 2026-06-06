@@ -33,7 +33,7 @@ import cajeta.collection.HashMap;
  * ## Usage
  *
  * ```cajeta
- * HashSet<int32> seen = new HashSet<int32>(16);
+ * HashSet<int32> seen = heap HashSet<int32>(16);
  * seen.add(7);
  * seen.add(7);                    // already a member — no-op
  * boolean has = seen.contains(7); // true
@@ -58,7 +58,7 @@ public class HashSet<T> {
      * Construct a HashSet with the given initial bucket capacity.
      *
      * ```cajeta
-     * HashSet<Tag> tags = new HashSet<Tag>(64);
+     * HashSet<Tag> tags = heap HashSet<Tag>(64);
      * ```
      *
      * @Param initialCapacity number of buckets to allocate; **must
@@ -66,7 +66,7 @@ public class HashSet<T> {
      *        mask-indexes on the value).
      */
     public HashSet(int64 initialCapacity) {
-        this.map = new HashMap<T, int8>(initialCapacity);
+        this.map = heap HashMap<T, int8>(initialCapacity);
     }
 
     /**

@@ -37,7 +37,7 @@ TEST(PerFiberDropChainTests, spawnedBodyDropsObservableFromMain) {
         "package test;\n"
         "public final class T {\n"
         "    public static int32 worker() {\n"
-        "        int32[] tmp = new int32[1];\n"  // drops at worker's scope exit
+        "        int32[] tmp = heap int32[1];\n"  // drops at worker's scope exit
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"

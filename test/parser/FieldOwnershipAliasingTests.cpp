@@ -171,7 +171,7 @@ TEST(FieldOwnershipAliasingTests, arrayFieldAliasingLocalDoesNotDoubleFree) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[4];\n"
+        "        int32[] arr = heap int32[4];\n"
         "        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4;\n"
         "        BufferHolder h = heap BufferHolder(arr);\n"
         "        return arr[0] + h.buf[1] + h.buf[2] + arr[3];\n"  // 1+2+3+4

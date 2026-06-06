@@ -269,7 +269,7 @@ public class WsProtocol {
         // Copy the reason String's bytes into a fresh owned String.
         String text = src.getReason();
         int32 n = text.byteLength;
-        int8[] rb = new int8[n];
+        int8[] rb = heap int8[n];
         int32 i = 0;
         while (i < n) {
             rb[i] = text.bytes[i];
@@ -289,7 +289,7 @@ public class WsProtocol {
     static #WsFrame copyFrame(WsFrame src) {
         int8[] sp = src.getPayload();
         int32 n = sp.count();
-        int8[] pay = new int8[n];
+        int8[] pay = heap int8[n];
         int32 i = 0;
         while (i < n) {
             pay[i] = sp[i];

@@ -271,7 +271,7 @@ public class ZonedDateTime implements Comparable<ZonedDateTime> {
             }
         }
         int32 len = dateLen + 1 + timeLen + offLen;
-        int8[] buf = new int8[len];
+        int8[] buf = heap int8[len];
         int32 p = 0;
         if (neg) {
             p = Fmt.writeChar(buf, p, 45);

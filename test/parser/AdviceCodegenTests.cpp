@@ -9,7 +9,7 @@
 // deferred to A6 (the @AfterThrowing pair).
 //
 // Tests observe advice firing via the dropCount intrinsic: each
-// advice method allocates `int32[] tmp = new int32[1];` whose
+// advice method allocates `int32[] tmp = heap int32[1];` whose
 // scope-exit drop bumps the counter by one. A run() wrapper resets
 // the counter, calls the advised target, then reads dropCount —
 // the result tells us how many advice methods executed.
@@ -64,7 +64,7 @@ TEST(AdviceCodegenTests, beforeFiresAroundBody) {
         "@Aspect public class AuditAspect {\n"
         "    @Before(Audited.class)\n"
         "    public static void onCall() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -89,7 +89,7 @@ TEST(AdviceCodegenTests, afterFiresOnFallThroughExit) {
         "@Aspect public class AuditAspect {\n"
         "    @After(Audited.class)\n"
         "    public static void onExit() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -114,7 +114,7 @@ TEST(AdviceCodegenTests, afterFiresOnExplicitReturn) {
         "@Aspect public class AuditAspect {\n"
         "    @After(Audited.class)\n"
         "    public static void onExit() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -145,12 +145,12 @@ TEST(AdviceCodegenTests, beforeAndAfterBothFire) {
         "@Aspect public class AuditAspect {\n"
         "    @Before(Audited.class)\n"
         "    public static void onEntry() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "    @After(Audited.class)\n"
         "    public static void onExit() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -176,14 +176,14 @@ TEST(AdviceCodegenTests, multipleBeforeAdviceAllFire) {
         "@Aspect public class AspectA {\n"
         "    @Before(Audited.class)\n"
         "    public static void a() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
         "@Aspect public class AspectB {\n"
         "    @Before(Audited.class)\n"
         "    public static void b() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"

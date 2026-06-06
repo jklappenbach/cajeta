@@ -40,7 +40,7 @@ TEST(CompilerOptionTests, boundsCheckOffSkipsAbort) {
     CajetaJit::Options opts;
     opts.boundsCheckEnabled = false;
     auto jit = CajetaJit::compile(arraySource("int32",
-        "int32[] arr = new int32[3];\n"
+        "int32[] arr = heap int32[3];\n"
         "arr[0] = 7;\n"
         "return arr[0];"), "test.O", opts);
     auto fn = jit->lookup<int32_t (*)()>("run");
@@ -56,7 +56,7 @@ TEST(CompilerOptionTests, boundsCheckOnFiresHelper) {
     CajetaJit::Options opts;
     opts.boundsCheckEnabled = true;
     auto jit = CajetaJit::compile(arraySource("int32",
-        "int32[] arr = new int32[3];\n"
+        "int32[] arr = heap int32[3];\n"
         "return arr[5];"), "test.O", opts);
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EXIT(fn(), CAJETA_DIED_BY_ABORT, "out of bounds");
@@ -591,7 +591,7 @@ TEST(CompilerOptionTests, boundsCheckTrapVariantTraps) {
         "package test;\n"
         "public final class O {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        return arr[5];\n"
         "    }\n"
         "}\n";

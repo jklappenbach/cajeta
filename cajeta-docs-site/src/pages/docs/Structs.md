@@ -120,7 +120,7 @@ public class User {
     private DbConnection        db;         // struct inline; holds a TcpSocket ref
 }
 
-User u = new User(...);
+User u = heap User(...);
 u.coords.first = 42;       // direct field write into User's heap allocation
 u.db.connectionId = 100;
 ```
@@ -190,7 +190,7 @@ void drain<T>(Iterator<T> it) {
 
 drain(arr.iter());                  // arr.iter() returns ArrayIter<int32>
                                     // → struct-rooted interface value, borrowed
-drain(new FileLineIter(path));      // → class-rooted interface value, owned
+drain(heap FileLineIter(path));      // → class-rooted interface value, owned
 ```
 
 ### Uniform dispatch path
@@ -222,7 +222,7 @@ public Iterator<int32> escapeBug() {
 }
 
 public Iterator<int32> ok() {
-    return new FileLineIter(...);    // class-rooted, owned interface value
+    return heap FileLineIter(...);    // class-rooted, owned interface value
                                       // can be returned freely
 }
 ```

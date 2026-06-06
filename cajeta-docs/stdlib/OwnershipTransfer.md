@@ -23,7 +23,7 @@ of them:
 **Owning containers.** `Optional<T>`, `Mutex<T>`, `Throwable`,
 `SelectResult<T>`, the stream wrapper chain — these conceptually wrap a
 value and hold it for their lifetime. The signature should *require*
-transfer: `new Optional(true, p)` without `#` should be an error, because
+transfer: `heap Optional(true, p)` without `#` should be an error, because
 silently transferring would let a caller-side typo (using the local twice)
 slip past the type system.
 

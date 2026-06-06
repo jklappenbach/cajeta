@@ -40,22 +40,22 @@ public class LtmBPlusTreeNode<K, V> {
      * normally calls this when growing the tree or splitting a node.
      *
      * ```cajeta
-     * # newLeaf = new LtmBPlusTreeNode<int64, string>(pageId, true, order);
+     * # newLeaf = heap LtmBPlusTreeNode<int64, string>(pageId, true, order);
      * newLeaf.nextLeafId = oldLeaf.pageId;
-     * # internal = new LtmBPlusTreeNode<int64, string>(rootId, false, order);
+     * # internal = heap LtmBPlusTreeNode<int64, string>(rootId, false, order);
      * ```
      */
     public LtmBPlusTreeNode(int64 pageId, boolean leaf, int32 order) {
         this.pageId = pageId;
         this.leaf = leaf;
         this.numKeys = 0;
-        this.keys = new K[order + 1];
+        this.keys = heap K[order + 1];
         if (leaf) {
-            this.values = new V[order + 1];
+            this.values = heap V[order + 1];
             this.childIds = null;
         } else {
             this.values = null;
-            this.childIds = new int64[order + 2];
+            this.childIds = heap int64[order + 2];
         }
         this.nextLeafId = -1;
         this.dirty = true;

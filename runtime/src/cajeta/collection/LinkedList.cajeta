@@ -10,7 +10,7 @@ package cajeta.collection;
  * or a stack: push/pop at either end in O(1).
  *
  * ```cajeta
- * LinkedList<int64> nums = new LinkedList<int64>();
+ * LinkedList<int64> nums = heap LinkedList<int64>();
  * nums.addTail(10);      // tail:  [10]
  * nums.addTail(20);      // tail:  [10, 20]
  * nums.addHead(5);       // head:  [5, 10, 20]
@@ -53,7 +53,7 @@ public class LinkedList<T> {
      * Create an empty list.
      *
      * ```cajeta
-     * LinkedList<string> names = new LinkedList<string>();
+     * LinkedList<string> names = heap LinkedList<string>();
      * names.addTail("ada");
      * ```
      */
@@ -147,7 +147,7 @@ public class LinkedList<T> {
      */
     public T head() {
         if (this.headNode == null) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         return this.headNode.value;
@@ -163,7 +163,7 @@ public class LinkedList<T> {
      */
     public T tail() {
         if (this.tailNode == null) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         return this.tailNode.value;
@@ -179,7 +179,7 @@ public class LinkedList<T> {
      */
     public T popHead() {
         if (this.headNode == null) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         LinkedListNode<T> node = this.headNode;
@@ -204,7 +204,7 @@ public class LinkedList<T> {
      */
     public T popTail() {
         if (this.tailNode == null) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         LinkedListNode<T> node = this.tailNode;
@@ -228,7 +228,7 @@ public class LinkedList<T> {
      */
     public T get(int64 idx) {
         if (idx < 0 || idx >= this.sizeCount) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         // Walk from the closer end to halve the worst-case cost.

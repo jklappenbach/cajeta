@@ -155,7 +155,7 @@ visibility-control as `@Getter`. Setter does NOT generate for
 `final` fields.
 
 For fields that hold class refs, the setter takes ownership of
-the new value (`#`-style transfer in) and drops the previous
+the heap value (`#`-style transfer in) and drops the previous
 holder via the live-set claim.
 
 ### hashing + toString

@@ -258,7 +258,7 @@ Tracked in Features.md.
 
 - **Algorithm classes** — static-method utilities (not instantiable).
   `SipHash.hashBytes(buf, len, Hash.processSeed())` rather than
-  `new SipHash(key).hash(...)`. The per-process key is threaded
+  `heap SipHash(key).hash(...)`. The per-process key is threaded
   from the runtime via `Hash.processSeed()`.
 
 - **`Hash.processSeed()`** — sourced from the OS cryptographic-

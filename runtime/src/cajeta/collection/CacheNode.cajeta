@@ -32,7 +32,7 @@ public class CacheNode<K, V> {
      * into the LRU list. Allocate on the heap so the cache can own it.
      *
      * ```cajeta
-     * CacheNode<K, V> fresh = #new CacheNode<K, V>(key, value, Cajeta.currentTimeNanos());
+     * CacheNode<K, V> fresh = #heap CacheNode<K, V>(key, value, Cajeta.currentTimeNanos());
      * ```
      */
     public CacheNode(K key, V value, int64 accessedAt) {

@@ -42,14 +42,14 @@ std::string buildOneShotMatchSrc(const std::string& input,
         "import cajeta.hash.Sha1;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] data = new int8[" + std::to_string(input.size() ? input.size() : 1) + "];\n";
+        "        int8[] data = heap int8[" + std::to_string(input.size() ? input.size() : 1) + "];\n";
     // For empty input we still allocate a 1-element array but hash 0 bytes.
     for (size_t i = 0; i < input.size(); i++) {
         src += "        data[" + std::to_string(i) + "L] = (int8) "
              + std::to_string((int)(uint8_t) input[i]) + ";\n";
     }
     src += "        int8[] digest = Sha1.hash(data, " + std::to_string(input.size()) + "L);\n";
-    src += "        int8[] expected = new int8[20];\n";
+    src += "        int8[] expected = heap int8[20];\n";
     for (size_t i = 0; i < 20; i++) {
         src += "        expected[" + std::to_string(i) + "L] = (int8) "
              + std::to_string((int)(int8_t) expected[i]) + ";\n";
@@ -128,14 +128,14 @@ TEST(Sha1Tests, streamingMatchesOneShot) {
         "import cajeta.hash.Sha1;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] piece1 = new int8[3];\n"
+        "        int8[] piece1 = heap int8[3];\n"
         "        piece1[0L] = (int8) 97; piece1[1L] = (int8) 98; piece1[2L] = (int8) 99;\n" // "abc"
-        "        int8[] piece2 = new int8[3];\n"
+        "        int8[] piece2 = heap int8[3];\n"
         "        piece2[0L] = (int8) 100; piece2[1L] = (int8) 101; piece2[2L] = (int8) 102;\n" // "def"
-        "        int8[] full = new int8[6];\n"
+        "        int8[] full = heap int8[6];\n"
         "        full[0L] = (int8) 97; full[1L] = (int8) 98; full[2L] = (int8) 99;\n"
         "        full[3L] = (int8) 100; full[4L] = (int8) 101; full[5L] = (int8) 102;\n"
-        "        Sha1 h = new Sha1();\n"
+        "        Sha1 h = heap Sha1();\n"
         "        h.update(piece1, 3L);\n"
         "        h.update(piece2, 3L);\n"
         "        int8[] streamed = h.digest();\n"
@@ -160,9 +160,9 @@ TEST(Sha1Tests, resetReusesInstance) {
         "import cajeta.hash.Sha1;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] abc = new int8[3];\n"
+        "        int8[] abc = heap int8[3];\n"
         "        abc[0L] = (int8) 97; abc[1L] = (int8) 98; abc[2L] = (int8) 99;\n"
-        "        Sha1 h = new Sha1();\n"
+        "        Sha1 h = heap Sha1();\n"
         "        h.update(abc, 3L);\n"
         "        int8[] first = h.digest();\n"
         "        h.reset();\n"

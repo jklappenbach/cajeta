@@ -33,7 +33,7 @@ const char* kHeader =
     "    int32[] vals;\n"
     "    public TriIter() {\n"
     "        this.i = 0;\n"
-    "        this.vals = new int32[3];\n"
+    "        this.vals = heap int32[3];\n"
     "        this.vals[0] = 10;\n"
     "        this.vals[1] = 20;\n"
     "        this.vals[2] = 30;\n"

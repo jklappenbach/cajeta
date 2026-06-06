@@ -60,9 +60,9 @@ public class BannedImports {
     public static BannedImports parse(
         ActionContext ctx, JsonArray arr) {
         ArrayList<BannedImportEntry> out =
-            #new ArrayList<BannedImportEntry>();
+            #heap ArrayList<BannedImportEntry>();
         if (arr == null) {
-            return #new BannedImports(out);
+            return #heap BannedImports(out);
         }
         int32 legacyCount = 0;
         int32 i = 0;
@@ -77,7 +77,7 @@ public class BannedImports {
                         "banned-imports[" + String.valueOf(i) +
                         "]: empty string entry");
                 }
-                out.add(#new BannedImportEntry(pat, ""));
+                out.add(#heap BannedImportEntry(pat, ""));
                 legacyCount = legacyCount + 1;
             } else {
                 throw stack LintConfigException(
@@ -93,7 +93,7 @@ public class BannedImports {
                 "typed form { \"pattern\": \"...\", \"reason\": \"...\" } " +
                 "so the reason shows up on lint findings");
         }
-        return #new BannedImports(out);
+        return #heap BannedImports(out);
     }
 
     static BannedImportEntry parseTypedEntry(JsonObject obj, int32 idx) {
@@ -122,6 +122,6 @@ public class BannedImports {
                 "]: reason must be non-empty (it surfaces in every " +
                 "finding the rule emits)");
         }
-        return #new BannedImportEntry(pattern, reason);
+        return #heap BannedImportEntry(pattern, reason);
     }
 }

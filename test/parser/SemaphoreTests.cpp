@@ -33,7 +33,7 @@ int32_t runI32(const std::string& dBody) {
 TEST(SemaphoreTests, availablePermitsReflectsInitial) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Semaphore s = new Semaphore(3);\n"
+        "        Semaphore s = heap Semaphore(3);\n"
         "        return s.availablePermits();\n"
         "    }\n"
     ), 3);
@@ -42,7 +42,7 @@ TEST(SemaphoreTests, availablePermitsReflectsInitial) {
 TEST(SemaphoreTests, acquireDecrements) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Semaphore s = new Semaphore(3);\n"
+        "        Semaphore s = heap Semaphore(3);\n"
         "        s.acquire();\n"
         "        return s.availablePermits();\n"
         "    }\n"
@@ -52,7 +52,7 @@ TEST(SemaphoreTests, acquireDecrements) {
 TEST(SemaphoreTests, acquireReleaseRestores) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Semaphore s = new Semaphore(2);\n"
+        "        Semaphore s = heap Semaphore(2);\n"
         "        s.acquire();\n"
         "        s.acquire();\n"
         "        s.release();\n"
@@ -66,7 +66,7 @@ TEST(SemaphoreTests, acquireReleaseRestores) {
 TEST(SemaphoreTests, withPermitBalancesCount) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Semaphore s = new Semaphore(2);\n"
+        "        Semaphore s = heap Semaphore(2);\n"
         "        s.withPermit(() -> { int32 x = 0; });\n"
         "        return s.availablePermits();\n"
         "    }\n"
@@ -88,8 +88,8 @@ TEST(SemaphoreTests, blockingAcquireWokenByRelease) {
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        Semaphore s = new Semaphore(0);\n"
-        "        int32[] out = new int32[1];\n"
+        "        Semaphore s = heap Semaphore(0);\n"
+        "        int32[] out = heap int32[1];\n"
         "        scope {\n"
         "            spawn consumer(s, out);\n"
         "            spawn producer(s);\n"

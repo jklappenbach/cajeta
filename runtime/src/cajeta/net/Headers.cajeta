@@ -70,8 +70,8 @@ public class Headers {
 
     public Headers() {
         this.cap = 8;
-        this.keys = new String[8];
-        this.values = new String[8];
+        this.keys = heap String[8];
+        this.values = heap String[8];
         this.sizeCount = 0;
     }
 
@@ -170,7 +170,7 @@ public class Headers {
     public #String[] getAll(String name) {
         String lname = name.toLowerCase();
         int32 n = this.countFor(lname);
-        String[] out = new String[n];
+        String[] out = heap String[n];
         int32 w = 0;
         int32 i = 0;
         while (i < this.sizeCount) {
@@ -286,7 +286,7 @@ public class Headers {
             }
             i = i + 1;
         }
-        int8[] out = new int8[total];
+        int8[] out = heap int8[total];
         int32 dst = 0;
         int32 emitted = 0;
         i = 0;
@@ -322,8 +322,8 @@ public class Headers {
      */
     void grow() {
         int32 newCap = this.cap * 2;
-        String[] dstK = new String[newCap];
-        String[] dstV = new String[newCap];
+        String[] dstK = heap String[newCap];
+        String[] dstV = heap String[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
             dstK[i] = this.keys[i];

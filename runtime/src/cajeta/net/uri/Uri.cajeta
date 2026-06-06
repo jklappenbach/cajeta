@@ -112,24 +112,24 @@ public class Uri {
      * partially-built instances never carry dangling state.
      */
     public Uri() {
-        int8[] e0 = new int8[0];
+        int8[] e0 = heap int8[0];
         this.scheme = heap String(#e0, 0);
         this.hasScheme = false;
         this.hasAuthority = false;
-        int8[] e1 = new int8[0];
+        int8[] e1 = heap int8[0];
         this.userinfo = heap String(#e1, 0);
         this.hasUserinfo = false;
-        int8[] e2 = new int8[0];
+        int8[] e2 = heap int8[0];
         this.host = heap String(#e2, 0);
         this.hostIsIpv6 = false;
         this.port = -1;
         this.hasExplicitPort = false;
-        int8[] e3 = new int8[0];
+        int8[] e3 = heap int8[0];
         this.path = heap String(#e3, 0);
-        int8[] e4 = new int8[0];
+        int8[] e4 = heap int8[0];
         this.query = heap String(#e4, 0);
         this.hasQuery = false;
-        int8[] e5 = new int8[0];
+        int8[] e5 = heap int8[0];
         this.fragment = heap String(#e5, 0);
         this.hasFragment = false;
     }
@@ -224,7 +224,7 @@ public class Uri {
         if (len < 0) {
             len = 0;
         }
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
             out[i] = b[begin + i];
@@ -524,7 +524,7 @@ public class Uri {
 
     /**
      * Copy `src`'s payload into `dst` starting at `at`, returning the
-     * new cursor (`at + src.byteLength`). A tiny "append a String into
+     * heap cursor (`at + src.byteLength`). A tiny "append a String into
      * a pre-sized int8[]" primitive — the language has no String
      * concatenation operator yet (NET-6.4 predates the `cajeta.text`
      * builders), so recomposition pre-computes the total length then
@@ -622,7 +622,7 @@ public class Uri {
             len = len + this.fragment.byteLength + 1;        // "#" fragment
         }
 
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 at = 0;
         if (this.hasScheme) {
             at = Uri.copyInto(out, at, this.scheme);
@@ -676,7 +676,7 @@ public class Uri {
     private static #String removeDotSegments(String path) {
         int32 n = path.byteLength;
         // Mutable working copy of the input (steps B/C rewrite it).
-        int8[] in = new int8[n];
+        int8[] in = heap int8[n];
         int32 z = 0;
         while (z < n) {
             in[z] = path.bytes[z];
@@ -684,7 +684,7 @@ public class Uri {
         }
         // Output is never larger than the (possibly grown-by-one via the
         // in-place "/.."->"/" rewrite, which shrinks net) input.
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 olen = 0;
         int32 i = 0;
         while (i < n) {
@@ -731,7 +731,7 @@ public class Uri {
                 }
             }
         }
-        int8[] fin = new int8[olen];
+        int8[] fin = heap int8[olen];
         int32 c = 0;
         while (c < olen) {
             fin[c] = out[c];
@@ -798,7 +798,7 @@ public class Uri {
     private static #String merge(Uri base, String refPath) {
         if (base.hasAuthority && base.path.byteLength == 0) {
             int32 len = refPath.byteLength + 1;
-            int8[] out = new int8[len];
+            int8[] out = heap int8[len];
             out[0] = (int8) 47;                              // '/'
             Uri.copyInto(out, 1, refPath);
             return heap String(#out, len);
@@ -815,7 +815,7 @@ public class Uri {
         }
         int32 keep = lastSlash + 1;                          // 0 if none
         int32 len = keep + refPath.byteLength;
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 k = 0;
         while (k < keep) {
             out[k] = base.path.bytes[k];
@@ -912,7 +912,7 @@ public class Uri {
      */
     private static #String cloneStr(String s) {
         int32 n = s.byteLength;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             out[i] = s.bytes[i];

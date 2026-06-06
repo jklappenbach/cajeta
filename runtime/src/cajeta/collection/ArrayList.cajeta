@@ -15,7 +15,7 @@ import cajeta.lang.stream.Stream;
  * `ArrayStream`):
  *
  * ```cajeta
- * ArrayList<int32> xs = new ArrayList<int32>();
+ * ArrayList<int32> xs = heap ArrayList<int32>();
  * xs.add(10);
  * xs.add(20);
  * xs.add(30);
@@ -51,13 +51,13 @@ public class ArrayList<T> {
      * the array grows automatically as elements are added.
      *
      * ```cajeta
-     * ArrayList<int32> xs = new ArrayList<int32>();
+     * ArrayList<int32> xs = heap ArrayList<int32>();
      * xs.add(42);
      * ```
      */
     public ArrayList() {
         this.capacity = 16;
-        this.data = new T[16];
+        this.data = heap T[16];
         this.sizeCount = 0;
     }
 
@@ -83,7 +83,7 @@ public class ArrayList<T> {
      * capacity first if it is full.
      *
      * ```cajeta
-     * ArrayList<int32> xs = new ArrayList<int32>();
+     * ArrayList<int32> xs = heap ArrayList<int32>();
      * xs.add(1);
      * xs.add(2);   // count() == 2
      * ```
@@ -91,7 +91,7 @@ public class ArrayList<T> {
     public void add(T v) {
         if (this.sizeCount >= this.capacity) {
             int32 newCap = this.capacity * 2;
-            T[] grown = new T[newCap];
+            T[] grown = heap T[newCap];
             int32 i = 0;
             while (i < this.sizeCount) {
                 grown[i] = this.data[i];
@@ -138,7 +138,7 @@ public class ArrayList<T> {
      * transfers to the caller (`#ArrayStream<T>`).
      *
      * ```cajeta
-     * ArrayList<int32> xs = new ArrayList<int32>();
+     * ArrayList<int32> xs = heap ArrayList<int32>();
      * xs.add(1);
      * xs.add(2);
      * #ArrayStream<int32> s = xs.stream();

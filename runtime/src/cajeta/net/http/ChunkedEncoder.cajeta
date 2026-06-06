@@ -62,13 +62,13 @@ public final class ChunkedEncoder {
      */
     public static #int8[] encodeChunk(int8[] data, int32 length) {
         if (length <= 0) {
-            return new int8[0];
+            return heap int8[0];
         }
         int8[] sizeLine = ChunkedEncoder.hexBytes(length);
         int32 sizeLen = sizeLine.count();
         // size-line + CRLF + data + CRLF
         int32 total = sizeLen + 2 + length + 2;
-        int8[] out = new int8[total];
+        int8[] out = heap int8[total];
         int32 w = 0;
         int32 i = 0;
         while (i < sizeLen) {
@@ -101,7 +101,7 @@ public final class ChunkedEncoder {
      * `"0\r\n\r\n"`.
      */
     public static #int8[] encodeLast() {
-        int8[] out = new int8[5];
+        int8[] out = heap int8[5];
         out[0] = (int8) 48;                 // '0'
         out[1] = (int8) 13;                 // CR
         out[2] = (int8) 10;                 // LF
@@ -119,11 +119,11 @@ public final class ChunkedEncoder {
      */
     static #int8[] hexBytes(int32 value) {
         if (value <= 0) {
-            int8[] z = new int8[1];
+            int8[] z = heap int8[1];
             z[0] = (int8) 48;               // '0'
             return #z;
         }
-        int8[] tmp = new int8[8];
+        int8[] tmp = heap int8[8];
         int32 nd = 0;
         int32 v = value;
         while (v > 0) {
@@ -136,7 +136,7 @@ public final class ChunkedEncoder {
             v = v / 16;
             nd = nd + 1;
         }
-        int8[] out = new int8[nd];
+        int8[] out = heap int8[nd];
         int32 i = 0;
         while (i < nd) {
             out[i] = tmp[nd - 1 - i];       // emit high-to-low

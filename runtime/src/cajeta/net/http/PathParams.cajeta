@@ -45,8 +45,8 @@ public class PathParams {
     /** An empty path-param map. */
     public PathParams() {
         this.cap = 4;
-        this.names = new String[4];
-        this.values = new String[4];
+        this.names = heap String[4];
+        this.values = heap String[4];
         this.sizeCount = 0;
     }
 
@@ -122,8 +122,8 @@ public class PathParams {
         while (newCap < need) {
             newCap = newCap * 2;
         }
-        String[] nn = new String[newCap];
-        String[] nv = new String[newCap];
+        String[] nn = heap String[newCap];
+        String[] nv = heap String[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
             nn[i] = this.names[i];

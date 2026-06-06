@@ -53,7 +53,7 @@ public class WsFrame {
         this.fin = true;
         this.opcode = 0;            // WsOpcode.CONTINUATION
         this.masked = false;
-        this.payload = new int8[0];
+        this.payload = heap int8[0];
     }
 
     /**

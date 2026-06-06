@@ -425,7 +425,7 @@ public class HttpServer {
                                   HttpParserLimits limits, AsyncReader reader) {
         HttpParser parser = HttpParser.forRequestWithLimits(limits);
         boolean sawAnyByte = false;
-        int8[] one = new int8[1];
+        int8[] one = heap int8[1];
 
         // --- read the head, a byte at a time, until terminated.
         try {
@@ -488,7 +488,7 @@ public class HttpServer {
         if (leftoverLen > 0) {
             body.feed(leftover, leftoverLen);
         }
-        int8[] chunk = new int8[2048];
+        int8[] chunk = heap int8[2048];
         while (!body.isComplete()) {
             int32 n = reader.read(chunk, 0, 2048);
             if (n == 0) {
@@ -612,7 +612,7 @@ public class HttpServer {
                                             AsyncReader reader, AsyncWriter writer) {
         HttpParser parser = HttpParser.forRequestWithLimits(parseLimits);
         boolean sawAnyByte = false;
-        int8[] one = new int8[1];
+        int8[] one = heap int8[1];
         int32 headMs = limits.headReadTimeoutMs;
 
         // --- read the head, a byte at a time, under the head deadline. ---
@@ -685,7 +685,7 @@ public class HttpServer {
             body.feed(leftover, leftoverLen);
         }
         int32 bodyMs = limits.bodyReadTimeoutMs;
-        int8[] chunk = new int8[2048];
+        int8[] chunk = heap int8[2048];
         int64 total = (int64) 0;
         // Account for the seed bytes already decoded.
         total = (int64) body.decodedLength();

@@ -268,7 +268,7 @@ ArrayStream<int32> s = heap ArrayStream<int32>(xs, 5);
 int64 total = s.fold(0L, (int64 acc, int32 x) -> acc + (int64) x);
 
 // Count Counter instances satisfying a predicate (no map needed).
-Counter[] cs = { new Counter(1), new Counter(2), new Counter(3) };
+Counter[] cs = { heap Counter(1), heap Counter(2), heap Counter(3) };
 ArrayStream<Counter> cs_s = heap ArrayStream<Counter>(cs, 3);
 int32 above1 = cs_s.fold(0, (int32 acc, Counter c) -> {
     return c.v > 1 ? acc + 1 : acc;

@@ -35,7 +35,7 @@ import cajeta.lang.String;
  *
  * Streaming `Hasher`:
  * ```cajeta
- * Sha1 h = new Sha1();
+ * Sha1 h = heap Sha1();
  * h.update(keyBytes, keyBytes.count());
  * h.update(guidBytes, guidBytes.count());
  * int8[] accept = h.digest();   // 20-byte digest, then base64 it
@@ -124,7 +124,7 @@ public final class Sha1 implements Hasher {
      * `int8[20]` and transfers ownership to the caller.
      */
     public static #int8[] hash(int8[] data, int64 len) {
-        int8[] out = new int8[20];
+        int8[] out = heap int8[20];
         Sha1.oneshotInto(data, len, out);
         return #out;
     }
@@ -133,7 +133,7 @@ public final class Sha1 implements Hasher {
      * One-shot lowercase 40-char hex digest of `data[0..len)`.
      */
     public static #String hashHex(int8[] data, int64 len) {
-        int8[] hex = new int8[40];
+        int8[] hex = heap int8[40];
         Sha1.oneshotHexInto(data, len, hex);
         return heap String(#hex, 40);
     }
@@ -166,7 +166,7 @@ public final class Sha1 implements Hasher {
      * subsequent updates produce undefined results until `reset()`.
      */
     public #int8[] digest() {
-        int8[] out = new int8[20];
+        int8[] out = heap int8[20];
         Sha1.finalizeInto(this.state, out);
         return #out;
     }

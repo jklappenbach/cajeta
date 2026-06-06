@@ -1,5 +1,5 @@
 //
-// Regression tests for `new T(...)` used inline as a method-call
+// Regression tests for `heap T(...)` used inline as a method-call
 // argument. Previously the call's parameter-eval loop fell back to
 // `CajetaType::of(value)` because NewExpression didn't set its own
 // resolvedType during the resolve-pass — `of(value)` returns the
@@ -29,7 +29,7 @@ int32_t runI32(const std::string& src) {
 
 } // namespace
 
-// Minimal repro: `consume(new Payload())` returned from run().
+// Minimal repro: `consume(heap Payload())` returned from run().
 // Without the resolveTypes override this segfaulted during codegen
 // of the return statement (null-typed value flowed through invoke
 // failure and into ReturnStatement::generateCode at val->getType()).
@@ -43,7 +43,7 @@ TEST(InlineNewProbe, basic) {
         "public final class D {\n"
         "    public static int32 consume(Payload p) { return 7; }\n"
         "    public static int32 run() {\n"
-        "        return consume(new Payload());\n"
+        "        return consume(heap Payload());\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 7);
@@ -62,7 +62,7 @@ TEST(InlineNewProbe, mixedInlineNewAndPrimitive) {
         "public final class D {\n"
         "    public static int32 consume(Payload p, int32 extra) { return extra; }\n"
         "    public static int32 run() {\n"
-        "        return consume(new Payload(), 17);\n"
+        "        return consume(heap Payload(), 17);\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 17);
@@ -82,7 +82,7 @@ TEST(InlineNewProbe, inlineNewAsStatementCall) {
         "public final class D {\n"
         "    public static int32 consume(Payload p) { return 0; }\n"
         "    public static int32 run() {\n"
-        "        consume(new Payload());\n"
+        "        consume(heap Payload());\n"
         "        return 99;\n"
         "    }\n"
         "}\n";

@@ -132,7 +132,7 @@ TEST(NullHandlingTests, bareNullAsInstanceMethodArg) {
         "}\n"
         "public final class N {\n"
         "    public static int32 run() {\n"
-        "        Box b = new Box();\n"
+        "        Box b = heap Box();\n"
         "        return b.take(null);\n"
         "    }\n"
         "}\n"), 9);

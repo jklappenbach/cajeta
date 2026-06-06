@@ -81,7 +81,7 @@ public class HttpResponse {
      * factories are the ergonomic entry points.
      */
     public HttpResponse() {
-        int8[] v = new int8[8];
+        int8[] v = heap int8[8];
         v[0] = (int8) 72;   // 'H'
         v[1] = (int8) 84;   // 'T'
         v[2] = (int8) 84;   // 'T'
@@ -92,12 +92,12 @@ public class HttpResponse {
         v[7] = (int8) 49;   // '1'
         this.version = heap String(#v, 8);
         this.status = 200;
-        int8[] r = new int8[2];
+        int8[] r = heap int8[2];
         r[0] = (int8) 79;   // 'O'
         r[1] = (int8) 75;   // 'K'
         this.reason = heap String(#r, 2);
         this.headers = heap Headers();
-        int8[] e = new int8[0];
+        int8[] e = heap int8[0];
         this.body = #e;
         this.hasBody = false;
     }
@@ -201,7 +201,7 @@ public class HttpResponse {
      * serializer (NET-7.5) frames this as `Content-Length: length`.
      */
     public HttpResponse body(int8[] data, int32 length) {
-        int8[] copy = new int8[length];
+        int8[] copy = heap int8[length];
         int32 i = 0;
         while (i < length) {
             copy[i] = data[i];

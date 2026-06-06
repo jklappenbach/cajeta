@@ -716,7 +716,7 @@ expression
          methodCall
        | identifier
        | THIS
-       | NEW nonWildcardTypeArguments? innerCreator
+       | HEAP nonWildcardTypeArguments? innerCreator
        | SUPER superSuffix
       )
     | expression '[' expression ']'
@@ -729,13 +729,12 @@ expression
     // classic cast-vs-call ambiguity on `(T)(x)` resolves to the earlier
     // cast alternative below, which is the conventional choice.
     | expression '(' parameterList? ')'
-    | NEW creator
     // Unified-class allocation prefixes (UnifiedClasses.md). `heap` and
     // `stack` are mandatory at the allocation site — bare `MyClass(args)`
-    // is a compile error. Both forms wrap either a constructor call (via
-    // `creator`) or an aggregate-init expression. `heap` is for now a
-    // synonym for `NEW creator`; `stack` lowers to a stack alloca + ctor
-    // call.
+    // is a compile error, and there is no `new` allocator (removed). Both
+    // forms wrap either a constructor call (via `creator`) or an aggregate-
+    // init expression. `heap` is the sole heap allocator; `stack` lowers to
+    // a stack alloca + ctor call.
     | HEAP  (creator | aggregateInitializer)
     | STACK (creator | aggregateInitializer)
     // `shared` is a third placement (GPU workgroup-shared memory, NV addrspace
@@ -777,10 +776,12 @@ expression
     | lambdaExpression // Java8
     | switchExpression // Java17
 
-    // Java 8 methodReference
+    // Java 8 methodReference. A constructor reference is spelled `Type::heap`
+    // (it is a deferred, escaping factory returning an owned `#Type`, so the
+    // placement is necessarily `heap` — never `stack`/`shared`).
     | expression '::' typeArguments? identifier
-    | typeType '::' (typeArguments? identifier | NEW)
-    | classType '::' typeArguments? NEW
+    | typeType '::' (typeArguments? identifier | HEAP)
+    | classType '::' typeArguments? HEAP
     ;
 
 // Java17

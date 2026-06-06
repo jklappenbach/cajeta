@@ -93,7 +93,7 @@ public class M {
     // Probe the wave width on this host (every lane writes W).
     public static uint32 probeWidth() {
         uint32 n = 256;
-        uint32[] h = new uint32[n];
+        uint32[] h = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { h[i] = 0; }
         Buffer<uint32> b = heap Buffer<uint32>(n);
         Stream s = Stream.current();
@@ -105,7 +105,7 @@ public class M {
 
     public static uint32 runWidth() {
         uint32 n = 256;
-        uint32[] h = new uint32[n];
+        uint32[] h = heap uint32[n];
         Buffer<uint32> b = heap Buffer<uint32>(n);
         Stream s = Stream.current();
         widthk.launch(s, grid: [1], block: [256])(b);
@@ -123,8 +123,8 @@ public class M {
         uint32 w = probeWidth();
         if (w < 2) { return 0; }
         uint32 n = 256;
-        uint32[] hin = new uint32[n];
-        uint32[] hout = new uint32[n];
+        uint32[] hin = heap uint32[n];
+        uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hout[i] = 0; }
         Buffer<uint32> bin = heap Buffer<uint32>(n);
         Buffer<uint32> bout = heap Buffer<uint32>(n);
@@ -148,8 +148,8 @@ public class M {
         if (w < 2) { return 0; }
         uint32 n = 256;
         uint32 active = 200;
-        uint32[] hin = new uint32[n];
-        uint32[] hout = new uint32[n];
+        uint32[] hin = heap uint32[n];
+        uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hout[i] = 0; }
         Buffer<uint32> bin = heap Buffer<uint32>(n);
         Buffer<uint32> bout = heap Buffer<uint32>(n);
@@ -176,7 +176,7 @@ public class M {
         uint32 w = probeWidth();
         if (w < 2) { return 0; }
         uint32 n = 256;
-        uint32[] hout = new uint32[n];
+        uint32[] hout = heap uint32[n];
         Buffer<uint32> bout = heap Buffer<uint32>(n);
         Stream s = Stream.current();
         ballotk.launch(s, grid: [1], block: [256])(bout);
@@ -199,7 +199,7 @@ public class M {
         uint32 w = probeWidth();
         if (w < 2) { return 0; }
         uint32 n = 256;
-        uint32[] hout = new uint32[n];
+        uint32[] hout = heap uint32[n];
         Buffer<uint32> bout = heap Buffer<uint32>(n);
         Stream s = Stream.current();
         lanek.launch(s, grid: [1], block: [256])(bout);
@@ -216,7 +216,7 @@ public class M {
         uint32 w = probeWidth();
         if (w < 2) { return 0; }
         uint32 n = 256;
-        uint32[] hout = new uint32[n];
+        uint32[] hout = heap uint32[n];
         Buffer<uint32> bout = heap Buffer<uint32>(n);
         Stream s = Stream.current();
         firstk.launch(s, grid: [1], block: [256])(bout);
@@ -235,8 +235,8 @@ public class M {
         uint32 w = probeWidth();
         if (w < 2) { return 0; }
         uint32 n = 256;
-        uint32[] hin = new uint32[n];
-        uint32[] hout = new uint32[n];
+        uint32[] hin = heap uint32[n];
+        uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = i + 100; hout[i] = 0; }
         Buffer<uint32> bin = heap Buffer<uint32>(n);
         Buffer<uint32> bout = heap Buffer<uint32>(n);

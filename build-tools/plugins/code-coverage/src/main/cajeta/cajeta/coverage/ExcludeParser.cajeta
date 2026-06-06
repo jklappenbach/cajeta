@@ -50,7 +50,7 @@ public class ExcludeParser {
      */
     public static ArrayList<Exclude> parse(
         ActionContext ctx, JsonArray excludeArr) {
-        ArrayList<Exclude> out = #new ArrayList<Exclude>();
+        ArrayList<Exclude> out = #heap ArrayList<Exclude>();
         if (excludeArr == null) {
             return out;
         }
@@ -68,7 +68,7 @@ public class ExcludeParser {
                         "exclude[" + String.valueOf(i) +
                         "]: empty string entry");
                 }
-                out.add(#new Exclude(ExcludeKind.FILE, pat, ""));
+                out.add(#heap Exclude(ExcludeKind.FILE, pat, ""));
                 backCompatCount = backCompatCount + 1;
             } else {
                 throw stack ExcludeConfigException(
@@ -113,7 +113,7 @@ public class ExcludeParser {
                 "specific justification (the reason shows up on " +
                 "every PR diff)");
         }
-        return #new Exclude(maybeKind.get(), pattern, reason);
+        return #heap Exclude(maybeKind.get(), pattern, reason);
     }
 
     static String requireString(JsonObject obj, String key, int32 idx) {

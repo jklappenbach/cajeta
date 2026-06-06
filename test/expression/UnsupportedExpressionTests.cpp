@@ -67,30 +67,11 @@ TEST(UnsupportedExpressionTests, methodReferenceTypeThrowsNotImplemented) {
     expectNotImplemented(src, "method reference");
 }
 
-TEST(UnsupportedExpressionTests, methodReferenceNewThrowsNotImplemented) {
-    // `ClassType::new` form — same COLONCOLON path. Stored into a
-    // function-typed local rather than called directly (grammar doesn't
-    // allow a method-reference value to be invoked with `()`).
-    auto src = makeSource("int32",
-        "() -> int32 ctor = int32::new;\n"
-        "        return 0;");
-    expectNotImplemented(src, "method reference");
-}
-
 // `super.method()` (primary-super form) is now implemented — see
 // MultipleInheritanceGapTests.superMethodCallReachesParent. The
 // remaining unimplemented super form is the qualified `obj.super.foo()`
 // shape (DOT-branch super-suffix), which only makes sense once inner
-// classes exist — and they're already covered by
-// innerCreatorThrowsNotImplemented below.
-
-TEST(UnsupportedExpressionTests, innerCreatorThrowsNotImplemented) {
-    // `obj.new Inner()` — DOT branch detects the innerCreator suffix.
-    auto src = makeSource("int32",
-        "int32 obj = 0;\n"
-        "return obj.new Inner();");
-    expectNotImplemented(src, "inner-class");
-}
+// classes exist.
 
 // `obj.method<T>(...)` — explicit method-level type arguments
 // (Form C). Now implemented as Phase 3 of cajeta-docs/stdlib/

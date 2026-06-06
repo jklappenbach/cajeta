@@ -5,7 +5,7 @@ package cajeta.time;
  * output. The stdlib has no `StringBuilder` yet, so date/time types such as
  * `LocalDate`, `LocalTime` and `ZonedDateTime` build an owned `int8[]`
  * of ASCII bytes and wrap it in a `String` (the same idiom `String.substring`
- * uses: `new int8[]` → `heap String(#bytes, len)`).
+ * uses: `heap int8[]` → `heap String(#bytes, len)`).
  *
  * Every `writeX` method takes the destination `buf` and a write cursor `pos`,
  * and returns the position just past the bytes it wrote, so calls chain. Use
@@ -13,12 +13,12 @@ package cajeta.time;
  *
  * ```cajeta
  * // Format the time 09:30 as "09:30"
- * int8[] buf = new int8[5];
+ * int8[] buf = heap int8[5];
  * int32 pos = 0;
  * pos = Fmt.writeUint(buf, pos, 9, 2);    // "09"
  * pos = Fmt.writeChar(buf, pos, 58);      // ':'  (ASCII 58)
  * pos = Fmt.writeUint(buf, pos, 30, 2);   // "30"
- * heap String text = new String(#buf, pos);
+ * heap String text = heap String(#buf, pos);
  * ```
  *
  * Package-private: not part of the public `cajeta.time` surface.

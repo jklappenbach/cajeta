@@ -60,7 +60,7 @@ public class ByteBuffer {
      * always passes its configured slab size.
      */
     public ByteBuffer(int32 capacity) {
-        this.data = new int8[capacity];
+        this.data = heap int8[capacity];
         this.cap = capacity;
         this.readPos = 0;
         this.writePos = 0;
@@ -240,7 +240,7 @@ public class ByteBuffer {
         if (newCap < needed) {
             newCap = needed;
         }
-        int8[] grown = new int8[newCap];
+        int8[] grown = heap int8[newCap];
         int32 i = 0;
         while (i < this.writePos) {
             grown[i] = this.data[i];

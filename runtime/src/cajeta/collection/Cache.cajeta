@@ -91,7 +91,9 @@ public class Cache<K, V> {
      * ```
      */
     public Cache(int32 maxEntries) {
-        this.entries = #new HashMap<K, CacheNode<K, V>>();
+        // Heap-allocate the backing table with an explicit power-of-2
+        // capacity (HashMap has no no-arg constructor; it auto-grows past 16).
+        this.entries = heap HashMap<K, CacheNode<K, V>>(16);
         this.mruHead = null;
         this.lruTail = null;
         this.maxEntries = maxEntries;
@@ -180,7 +182,7 @@ public class Cache<K, V> {
             this.moveToHead(node);
             return;
         }
-        CacheNode<K, V> fresh = #new CacheNode<K, V>(key, value, now);
+        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, value, now);
         this.entries.put(key, #fresh);
         this.linkAtHead(fresh);
         if (this.entries.count() > this.maxEntries) {
@@ -198,7 +200,9 @@ public class Cache<K, V> {
 
     /** Drop every entry and reset the LRU list to empty. */
     public void clear() {
-        this.entries = #new HashMap<K, CacheNode<K, V>>();
+        // Heap-allocate the backing table with an explicit power-of-2
+        // capacity (HashMap has no no-arg constructor; it auto-grows past 16).
+        this.entries = heap HashMap<K, CacheNode<K, V>>(16);
         this.mruHead = null;
         this.lruTail = null;
     }

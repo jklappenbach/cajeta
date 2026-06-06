@@ -69,16 +69,16 @@ TEST(NetLoopbackEchoTest, loopbackEchoRoundTrips) {
         "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
         "TcpStream client = TcpStream.connect(#connAddr);\n"
         "TcpStream server = listener.accept();\n"
-        "int8[] ping = new int8[4];\n"
+        "int8[] ping = heap int8[4];\n"
         "ping[0] = (int8) 112;\n"   // 'p'
         "ping[1] = (int8) 105;\n"   // 'i'
         "ping[2] = (int8) 110;\n"   // 'n'
         "ping[3] = (int8) 103;\n"   // 'g'
         "client.write(ping, (int64) 0, (int64) 4);\n"
-        "int8[] rbuf = new int8[4];\n"
+        "int8[] rbuf = heap int8[4];\n"
         "int64 got = server.read(rbuf, (int64) 0, (int64) 4);\n"
         "server.write(rbuf, (int64) 0, got);\n"
-        "int8[] echo = new int8[4];\n"
+        "int8[] echo = heap int8[4];\n"
         "int64 echoGot = client.read(echo, (int64) 0, (int64) 4);\n"
         "client.close();\n"
         "server.close();\n"

@@ -362,7 +362,7 @@ namespace cajeta {
     };
 
 
-    // Method reference: `Type::method`, `obj::method`, or `Type::new`.
+    // Method reference: `Type::method`, `obj::method`, or `Type::heap`.
     // Compiles to a function-typed value (same value-level shape as a
     // lambda) pointing at a synthesized thunk that adapts the underlying
     // method to the closure ABI (`ptr captures` as the first arg).
@@ -377,10 +377,10 @@ namespace cajeta {
             STATIC,            // Type::staticMethod
             BOUND_INSTANCE,    // obj::method
             UNBOUND_INSTANCE,  // Type::instanceMethod
-            CONSTRUCTOR        // Type::new
+            CONSTRUCTOR        // Type::heap
         };
     private:
-        // For `Type::id` / `Type::new`: the type appears literally in
+        // For `Type::id` / `Type::heap`: the type appears literally in
         // the source as a typeType and we resolve it eagerly at AST
         // build time (its name is in scope unconditionally).
         CajetaTypePtr receiverType;

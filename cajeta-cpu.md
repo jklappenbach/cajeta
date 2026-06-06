@@ -598,7 +598,7 @@ buffers are skipped, and a sync clears the borrow, so there are no false positiv
 - **Stale-stdlib gotcha (recorded).** The stdlib `.cajeta` sources are *embedded into the
   compiler binary at build time* (`cajeta::stdlib::g_files`), so editing
   `runtime/src/cajeta/**` requires rebuilding the compiler (`cmake --build build`) before the
-  change takes effect — testing against a stale binary mis-resolves new overloads (a 1-arg
+  change takes effect — testing against a stale binary mis-resolves heap overloads (a 1-arg
   ctor fell back to the 2-arg one, passing `n` as the device handle → a wild-pointer crash).
 
 ## 6. Backlog / known issues

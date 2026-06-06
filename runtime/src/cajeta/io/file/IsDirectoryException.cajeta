@@ -22,7 +22,7 @@ public class IsDirectoryException extends IoException {
      * that was a directory.
      *
      * ```cajeta
-     * throw new IsDirectoryException("expected a file: " + path);
+     * throw heap IsDirectoryException("expected a file: " + path);
      * ```
      */
     public IsDirectoryException(String message) {

@@ -127,7 +127,7 @@ public class BPlusTree<K, V> {
      */
     public V get(K key) {
         if (this.root == null) {
-            V[] missDefault = new V[1];
+            V[] missDefault = heap V[1];
             return missDefault[0];
         }
         BPlusTreeNode<K, V> leaf = this.findLeaf(key);
@@ -138,7 +138,7 @@ public class BPlusTree<K, V> {
             }
             i = i + 1;
         }
-        V[] missDefault = new V[1];
+        V[] missDefault = heap V[1];
         return missDefault[0];
     }
 
@@ -165,7 +165,7 @@ public class BPlusTree<K, V> {
      */
     public K min() {
         if (this.root == null) {
-            K[] missDefault = new K[1];
+            K[] missDefault = heap K[1];
             return missDefault[0];
         }
         BPlusTreeNode<K, V> node = this.root;

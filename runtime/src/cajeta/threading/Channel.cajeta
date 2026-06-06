@@ -18,7 +18,7 @@ import cajeta.lang.Optional;
  * ## Usage
  * ```cajeta
  * // Bounded capacity-2 channel of primitives.
- * Channel<int32> ch = new Channel<int32>(2);
+ * Channel<int32> ch = heap Channel<int32>(2);
  * ch.send(1);          // buffered
  * ch.send(2);          // buffered (full; a third send would block)
  * ch.close();          // one-way; a later send() raises
@@ -55,14 +55,14 @@ public class Channel<T> {
      * items before `send` blocks.
      *
      * ```cajeta
-     * Channel<int32> ch = new Channel<int32>(2);   // capacity-2 MPMC queue
+     * Channel<int32> ch = heap Channel<int32>(2);   // capacity-2 MPMC queue
      * ```
      */
     public Channel(int32 capacity) {
         this.handle = Cajeta.lockNew();
         this.cond = Cajeta.condvarNew();
         this.capacity = capacity;
-        this.buf = new T[capacity];
+        this.buf = heap T[capacity];
         this.head = 0;
         this.tail = 0;
         this.size = 0;

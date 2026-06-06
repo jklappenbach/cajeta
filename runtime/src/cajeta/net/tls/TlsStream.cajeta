@@ -29,7 +29,7 @@ public class TlsStream implements ByteChannel {
     private TlsStream(#TcpStream stream, #TlsConnection tls) {
         this.stream = #stream;
         this.tls = #tls;
-        this.buf = new int8[16384];
+        this.buf = heap int8[16384];
     }
 
     /**
@@ -201,7 +201,7 @@ public class TlsStream implements ByteChannel {
         if (off == 0) {
             return (int64) this.read(buf, len);
         }
-        int8[] tmp = new int8[len];
+        int8[] tmp = heap int8[len];
         int32 r = this.read(tmp, len);
         int32 i = 0;
         while (i < r) {
@@ -222,7 +222,7 @@ public class TlsStream implements ByteChannel {
             this.write(data, len);
             return;
         }
-        int8[] tmp = new int8[len];
+        int8[] tmp = heap int8[len];
         int32 i = 0;
         while (i < len) {
             tmp[i] = data[off + i];

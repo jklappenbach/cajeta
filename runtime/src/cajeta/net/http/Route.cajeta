@@ -75,7 +75,7 @@ public class Route {
      * normalization a request path receives in [`Router.dispatch`](Router.cajeta).
      */
     void splitPattern(String pattern) {
-        this.segments = new String[8];
+        this.segments = heap String[8];
         this.segmentCount = 0;
         int32 n = pattern.byteLength;
         int32 segStart = 0;
@@ -97,7 +97,7 @@ public class Route {
     void appendSegment(#String seg) {
         if (this.segmentCount >= this.segments.count()) {
             int32 newCap = this.segments.count() * 2;
-            String[] grown = new String[newCap];
+            String[] grown = heap String[newCap];
             int32 j = 0;
             while (j < this.segmentCount) {
                 grown[j] = this.segments[j];

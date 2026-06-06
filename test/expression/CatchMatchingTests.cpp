@@ -52,7 +52,7 @@ int32_t runBody(const std::string& body) {
 TEST(CatchMatchingTests, siblingCatchDoesNotMatch) {
     EXPECT_EQ(runBody(
         "try {\n"
-        "    throw new NotFound();\n"
+        "    throw heap NotFound();\n"
         "} catch (Denied d) {\n"
         "    return 2;\n"
         "} catch (NotFound n) {\n"
@@ -67,7 +67,7 @@ TEST(CatchMatchingTests, siblingCatchDoesNotMatch) {
 TEST(CatchMatchingTests, supertypeCatchMatches) {
     EXPECT_EQ(runBody(
         "try {\n"
-        "    throw new NotFound();\n"
+        "    throw heap NotFound();\n"
         "} catch (AppError e) {\n"
         "    return 3;\n"
         "}\n"
@@ -78,7 +78,7 @@ TEST(CatchMatchingTests, supertypeCatchMatches) {
 TEST(CatchMatchingTests, firstMatchingClauseWins) {
     EXPECT_EQ(runBody(
         "try {\n"
-        "    throw new NotFound();\n"
+        "    throw heap NotFound();\n"
         "} catch (NotFound n) {\n"
         "    return 1;\n"
         "} catch (AppError e) {\n"
@@ -91,7 +91,7 @@ TEST(CatchMatchingTests, firstMatchingClauseWins) {
 TEST(CatchMatchingTests, otherLeafRoutesToOwnClause) {
     EXPECT_EQ(runBody(
         "try {\n"
-        "    throw new Denied();\n"
+        "    throw heap Denied();\n"
         "} catch (NotFound n) {\n"
         "    return 1;\n"
         "} catch (Denied d) {\n"
@@ -105,7 +105,7 @@ TEST(CatchMatchingTests, noMatchPropagatesToOuter) {
     EXPECT_EQ(runBody(
         "try {\n"
         "    try {\n"
-        "        throw new NotFound();\n"
+        "        throw heap NotFound();\n"
         "    } catch (Denied d) {\n"
         "        return 2;\n"
         "    }\n"
@@ -119,7 +119,7 @@ TEST(CatchMatchingTests, noMatchPropagatesToOuter) {
 TEST(CatchMatchingTests, exactLeafBeatsSiblingThenSupertype) {
     EXPECT_EQ(runBody(
         "try {\n"
-        "    throw new Denied();\n"
+        "    throw heap Denied();\n"
         "} catch (NotFound n) {\n"
         "    return 1;\n"
         "} catch (AppError e) {\n"

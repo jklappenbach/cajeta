@@ -109,17 +109,17 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      */
     public AsyncReader(ByteChannel stream) {
         // Bind the static-final to a local before using it as an array
-        // dimension / ctor arg: a direct `new int8[AsyncReader.DEFAULT_BUFFER]`
+        // dimension / ctor arg: a direct `heap int8[AsyncReader.DEFAULT_BUFFER]`
         // mis-lowers the static-field read as the global's *address* (`ptr`),
         // which the array-size path `sext`s to i64 — an invalid-IR verify
         // failure ("SExt only operates on integer"). A named int32 local pins
         // the value load. (Compiler-gap workaround, same class as the
-        // documented `new T[this.field]` mistype.)
+        // documented `heap T[this.field]` mistype.)
         int32 c = AsyncReader.DEFAULT_BUFFER;
         this.stream = stream;
         this.cap = c;
         this.buf = heap RingBuffer(c, 0, c);
-        this.fill = new int8[c];
+        this.fill = heap int8[c];
         this.eof = false;
         this.chunkSize = c;
     }
@@ -138,7 +138,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
         this.stream = stream;
         this.cap = c;
         this.buf = heap RingBuffer(c, 0, c);
-        this.fill = new int8[c];
+        this.fill = heap int8[c];
         this.eof = false;
         this.chunkSize = c;
     }
@@ -351,10 +351,10 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * over-limit policy (the HTTP parser's `HeadersTooLarge` discipline).
      */
     public #int8[] readUntil(int8 delimiter, int32 maxBytes) {
-        int8[] acc = new int8[64];
+        int8[] acc = heap int8[64];
         int32 accLen = 0;
         int32 accCap = 64;
-        int8[] one = new int8[1];
+        int8[] one = heap int8[1];
         while (true) {
             int32 n = this.read(one, 0, 1);
             if (n == 0) {
@@ -362,7 +362,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
             }
             if (accLen >= accCap) {
                 int32 newCap = accCap * 2;
-                int8[] grown = new int8[newCap];
+                int8[] grown = heap int8[newCap];
                 int32 i = 0;
                 while (i < accLen) {
                     grown[i] = acc[i];
@@ -386,7 +386,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
 
     /** Trim a working buffer to exactly `len` bytes in a fresh owned array. */
     static #int8[] copyExact(int8[] src, int32 len) {
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
             out[i] = src[i];
@@ -409,10 +409,10 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * actually read (`<= chunkSize`).
      */
     public Optional<int8[]> next() {
-        // `new int8[this.chunkSize]` mis-lowers the field read as a pointer
-        // (the `new T[this.field]` mistype) → bind to a local int32 first.
+        // `heap int8[this.chunkSize]` mis-lowers the field read as a pointer
+        // (the `heap T[this.field]` mistype) → bind to a local int32 first.
         int32 sz = this.chunkSize;
-        int8[] chunk = new int8[sz];
+        int8[] chunk = heap int8[sz];
         int32 n = this.read(chunk, 0, sz);
         if (n == 0) {
             // `stack` (not `heap`) Optional: the AsyncIterator.next() contract

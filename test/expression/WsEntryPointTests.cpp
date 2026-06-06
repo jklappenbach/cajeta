@@ -142,7 +142,7 @@ TEST(WsEntryPointTests, clientServerEchoRoundTripOverLoopback) {
         "            AsyncWriter writer = heap AsyncWriter(sock);\n"
         "            Uri uri = Uri.builder().scheme(\"ws\").host(\"127.0.0.1\").port(port).path(\"/\").build();\n"
         "            WebSocket ws = WsUpgrade.connectClient(reader, writer, uri, 1234567);\n"
-        "            int8[] payload = new int8[4];\n"
+        "            int8[] payload = heap int8[4];\n"
         "            payload[0L]=(int8)112; payload[1L]=(int8)105; payload[2L]=(int8)110; payload[3L]=(int8)103;\n"
         "            ws.sendBinary(payload);\n"
         "            WsMessage m = ws.receive();\n"

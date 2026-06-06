@@ -110,7 +110,7 @@ Every socket type offers two surfaces:
 ```cajeta
 // Async TCP echo handler — reads block the fiber, never the carrier.
 async void handle(TcpStream conn) {
-    byte[] buf = new byte[4096];
+    byte[] buf = heap byte[4096];
     while (true) {
         int32 n = await conn.readAsync(buf);
         if (n == 0) { break; }            // peer closed

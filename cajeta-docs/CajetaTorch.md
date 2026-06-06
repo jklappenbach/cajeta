@@ -555,10 +555,10 @@ public class GradScaler {
 
 Same training-loop pattern as PyTorch:
 ```cajeta
-GradScaler scaler = new GradScaler();
+GradScaler scaler = heap GradScaler();
 for (Batch<...> batch : loader) {
     optimizer.zeroGrad();
-    try (autocast a = new autocast(DType.FLOAT16)) {
+    try (autocast a = heap autocast(DType.FLOAT16)) {
         Tensor output = model.forward(batch.input);
         Tensor loss = lossFn.forward(output, batch.target);
     }

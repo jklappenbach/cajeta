@@ -53,11 +53,11 @@ int32_t runI32(const std::string& body) {
     return fn();
 }
 
-// Emit Cajeta that declares `int8[] <name> = new int8[N];` and fills it
+// Emit Cajeta that declares `int8[] <name> = heap int8[N];` and fills it
 // from `bytes`. Each byte is written as a signed int8 cast (a value >127
 // becomes its two's-complement signed form, which `(int8) N` produces).
 std::string emitBytes(const std::string& name, const std::vector<uint8_t>& bytes) {
-    std::string s = "int8[] " + name + " = new int8[" +
+    std::string s = "int8[] " + name + " = heap int8[" +
                     std::to_string(bytes.size()) + "];\n";
     for (size_t i = 0; i < bytes.size(); i++) {
         s += name + "[" + std::to_string(i) + "] = (int8) " +
@@ -161,7 +161,7 @@ TEST(WsFrameCodecTests, encodeDecodeRoundTripUnmasked) {
         "int32 n = s.byteLength;\n"
         // Copy the string's bytes into a fresh array we can hand off (the
         // frame takes ownership of its payload; never steal s.bytes).
-        "int8[] p = new int8[n];\n"
+        "int8[] p = heap int8[n];\n"
         "int32 j = 0;\n"
         "while (j < n) { p[j] = s.bytes[j]; j = j + 1; }\n"
         "WsFrame f = WsFrame.of(true, WsOpcode.BINARY, false, #p);\n"
@@ -190,7 +190,7 @@ TEST(WsFrameCodecTests, encodeDecodeRoundTripUnmasked) {
 TEST(WsFrameCodecTests, maskedClientFrameUnmasksCorrectly) {
     // The RFC 6455 §5.7 masked "Hello": 81 85 37fa213d 7f9f4d5158.
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[11];\n"
+        "int8[] wire = heap int8[11];\n"
         "wire[0] = (int8) -127;\n"   // 0x81 FIN+text
         "wire[1] = (int8) -123;\n"   // 0x85 MASK + len 5
         "wire[2] = (int8) 55;\n"    // 0x37 mask
@@ -218,7 +218,7 @@ TEST(WsFrameCodecTests, maskedClientFrameUnmasksCorrectly) {
 TEST(WsFrameCodecTests, unmaskedClientFrameIsProtocolViolation) {
     // Unmasked "Hello" text frame fed to a SERVER decoder: must reject.
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[7];\n"
+        "int8[] wire = heap int8[7];\n"
         "wire[0] = (int8) -127;\n"   // 0x81
         "wire[1] = (int8) 5;\n"     // len 5, MASK clear
         "wire[2] = (int8) 72;\n"    // 'H'
@@ -239,7 +239,7 @@ TEST(WsFrameCodecTests, maskedServerFrameIsProtocolViolation) {
     // A masked frame fed to a CLIENT decoder (server->client must NOT be
     // masked) is a violation.
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[7];\n"
+        "int8[] wire = heap int8[7];\n"
         "wire[0] = (int8) -127;\n"
         "wire[1] = (int8) -126;\n"   // 0x82 MASK + len 2
         "wire[2] = (int8) 1;\n"     // mask key
@@ -263,7 +263,7 @@ TEST(WsFrameCodecTests, maskedServerFrameIsProtocolViolation) {
 // split (byte0, byte1, the 4 mask bytes, each payload byte).
 TEST(WsFrameCodecTests, splitFeedMatchesOneShot) {
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[11];\n"
+        "int8[] wire = heap int8[11];\n"
         "wire[0] = (int8) -127;\n"
         "wire[1] = (int8) -123;\n"
         "wire[2] = (int8) 55;\n"
@@ -277,7 +277,7 @@ TEST(WsFrameCodecTests, splitFeedMatchesOneShot) {
         "wire[10] = (int8) 88;\n"
         "WsFrameDecoder dec = WsFrameDecoder.forServer();\n"
         "int32 i = 0;\n"
-        "int8[] one = new int8[1];\n"
+        "int8[] one = heap int8[1];\n"
         "while (i < 11) {\n"
         "    one[0] = wire[i];\n"
         "    boolean had = dec.hasFrame();\n"
@@ -301,7 +301,7 @@ TEST(WsFrameCodecTests, splitFeedMatchesOneShot) {
 TEST(WsFrameCodecTests, multipleFramesInOneFeedDrainFifo) {
     // 0203414243  (FIN=0 binary "ABC") then 8003444546 (FIN=1 cont "DEF").
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[10];\n"
+        "int8[] wire = heap int8[10];\n"
         "wire[0] = (int8) 2;\n"     // 0x02 FIN=0 binary
         "wire[1] = (int8) 3;\n"     // len 3
         "wire[2] = (int8) 65;\n"    // 'A'
@@ -334,7 +334,7 @@ TEST(WsFrameCodecTests, multipleFramesInOneFeedDrainFifo) {
 // length (0x0100). Decoded payload length is 256.
 TEST(WsFrameCodecTests, sixteenBitLengthDecodes) {
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[260];\n"
+        "int8[] wire = heap int8[260];\n"
         "wire[0] = (int8) -127;\n"   // 0x81 FIN+text
         "wire[1] = (int8) 126;\n"   // 126 -> 16-bit length follows
         "wire[2] = (int8) 1;\n"     // 0x01 high byte
@@ -357,7 +357,7 @@ TEST(WsFrameCodecTests, sixteenBitLengthDecodes) {
 // A 256-byte payload encodes to the 126 form with a 0x0100 length.
 TEST(WsFrameCodecTests, sixteenBitLengthEncodes) {
     EXPECT_EQ(runI32(
-        "int8[] p = new int8[256];\n"
+        "int8[] p = heap int8[256];\n"
         "int32 i = 0;\n"
         "while (i < 256) { p[i] = (int8) 90; i = i + 1; }\n"   // 'Z'
         "WsFrame f = WsFrame.of(true, WsOpcode.TEXT, false, #p);\n"
@@ -377,7 +377,7 @@ TEST(WsFrameCodecTests, sixteenBitLengthEncodes) {
 // payload of 70000 bytes (> 65535) exercises the 64-bit path.
 TEST(WsFrameCodecTests, sixtyFourBitLengthRoundTrips) {
     EXPECT_EQ(runI32(
-        "int8[] p = new int8[70000];\n"
+        "int8[] p = heap int8[70000];\n"
         "int32 i = 0;\n"
         "while (i < 70000) { p[i] = (int8) 88; i = i + 1; }\n"   // 'X'
         "WsFrame f = WsFrame.of(true, WsOpcode.BINARY, false, #p);\n"
@@ -402,7 +402,7 @@ TEST(WsFrameCodecTests, sixtyFourBitLengthRoundTrips) {
 
 TEST(WsFrameCodecTests, reservedOpcodeRejected) {
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[2];\n"
+        "int8[] wire = heap int8[2];\n"
         "wire[0] = (int8) -125;\n"   // 0x83 FIN + reserved opcode 0x3
         "wire[1] = (int8) 0;\n"
         "WsFrameDecoder dec = WsFrameDecoder.forClient();\n"
@@ -416,7 +416,7 @@ TEST(WsFrameCodecTests, reservedOpcodeRejected) {
 
 TEST(WsFrameCodecTests, rsvBitSetRejected) {
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[2];\n"
+        "int8[] wire = heap int8[2];\n"
         "wire[0] = (int8) -63;\n"   // 0xC1 FIN + RSV1 + text
         "wire[1] = (int8) 0;\n"
         "WsFrameDecoder dec = WsFrameDecoder.forClient();\n"
@@ -431,7 +431,7 @@ TEST(WsFrameCodecTests, rsvBitSetRejected) {
 TEST(WsFrameCodecTests, fragmentedControlFrameRejected) {
     // FIN=0 on a ping (0x9) control opcode: 0x09 ... must reject.
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[2];\n"
+        "int8[] wire = heap int8[2];\n"
         "wire[0] = (int8) 9;\n"     // 0x09 FIN=0 + ping
         "wire[1] = (int8) 0;\n"
         "WsFrameDecoder dec = WsFrameDecoder.forClient();\n"
@@ -447,7 +447,7 @@ TEST(WsFrameCodecTests, oversizeControlFrameRejected) {
     // A ping (0x89) with the 126 extended-length form: control payload
     // > 125 is illegal regardless of the actual value.
     EXPECT_EQ(runI32(
-        "int8[] wire = new int8[4];\n"
+        "int8[] wire = heap int8[4];\n"
         "wire[0] = (int8) -119;\n"   // 0x89 FIN + ping
         "wire[1] = (int8) 126;\n"   // 126 -> would be a 16-bit length
         "wire[2] = (int8) 0;\n"
@@ -466,7 +466,7 @@ TEST(WsFrameCodecTests, oversizeControlFrameRejected) {
 TEST(WsFrameCodecTests, emptyPingPongAndCloseDecode) {
     EXPECT_EQ(runI32(
         // ping-empty 8900, pong-empty 8a00, close-normal 880203e8
-        "int8[] wire = new int8[8];\n"
+        "int8[] wire = heap int8[8];\n"
         "wire[0] = (int8) -119;\n"   // 0x89 ping
         "wire[1] = (int8) 0;\n"
         "wire[2] = (int8) -118;\n"   // 0x8a pong
@@ -500,7 +500,7 @@ TEST(WsFrameCodecTests, emptyPingPongAndCloseDecode) {
 TEST(WsFrameCodecTests, oversizeFrameExceedsCapRejected) {
     EXPECT_EQ(runI32(
         // 126 form with length 0x0100 = 256, cap set to 100.
-        "int8[] wire = new int8[4];\n"
+        "int8[] wire = heap int8[4];\n"
         "wire[0] = (int8) -127;\n"   // 0x81 text
         "wire[1] = (int8) 126;\n"   // 16-bit length
         "wire[2] = (int8) 1;\n"     // 0x0100 = 256

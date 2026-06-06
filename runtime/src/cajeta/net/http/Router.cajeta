@@ -89,7 +89,7 @@ public class Router {
 
     /** An empty router (no routes; everything 404s until registered). */
     public Router() {
-        this.routes = new Route[8];
+        this.routes = heap Route[8];
         this.routeCount = 0;
     }
 
@@ -114,7 +114,7 @@ public class Router {
     void append(#Route r) {
         if (this.routeCount >= this.routes.count()) {
             int32 newCap = this.routes.count() * 2;
-            Route[] grown = new Route[newCap];
+            Route[] grown = heap Route[newCap];
             int32 j = 0;
             while (j < this.routeCount) {
                 grown[j] = this.routes[j];
@@ -244,7 +244,7 @@ public class Router {
 
         // First pass: count non-empty segments.
         int32 count = Router.countSegments(target, pathEnd);
-        String[] out = new String[count];
+        String[] out = heap String[count];
 
         // Second pass: fill them.
         int32 idx = 0;
@@ -288,7 +288,7 @@ public class Router {
 
     /** A fresh empty `String`. */
     static #String emptyString() {
-        int8[] e = new int8[0];
+        int8[] e = heap int8[0];
         return heap String(#e, 0);
     }
 
@@ -303,7 +303,7 @@ public class Router {
             return heap String(token.bytes, tLen);
         }
         int32 total = aLen + 2 + tLen;      // acc + ", " + token
-        int8[] out = new int8[total];
+        int8[] out = heap int8[total];
         int32 dst = 0;
         int32 i = 0;
         while (i < aLen) {

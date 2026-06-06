@@ -31,7 +31,7 @@ import cajeta.lang.String;
  *
  * Streaming `Hasher`:
  * ```cajeta
- * MD5 m = new MD5();
+ * MD5 m = heap MD5();
  * m.writeInt32(record.id);
  * m.writeString(record.title);
  * m.update(record.payload, record.payload.count());
@@ -68,7 +68,7 @@ public final class MD5 implements Hasher {
      * 16-byte digest with `digest()`).
      *
      * ```cajeta
-     * MD5 m = new MD5();
+     * MD5 m = heap MD5();
      * m.writeInt32(record.id);
      * m.writeString(record.title);
      * int64 fingerprint = m.finish();
@@ -138,7 +138,7 @@ public final class MD5 implements Hasher {
      * ```
      */
     public static #int8[] hash(int8[] data, int64 len) {
-        int8[] out = new int8[16];
+        int8[] out = heap int8[16];
         MD5.oneshotInto(data, len, out);
         return #out;
     }
@@ -153,7 +153,7 @@ public final class MD5 implements Hasher {
      * ```
      */
     public static #String hashHex(int8[] data, int64 len) {
-        int8[] hex = new int8[32];
+        int8[] hex = heap int8[32];
         MD5.oneshotHexInto(data, len, hex);
         return heap String(#hex, 32);
     }
@@ -194,7 +194,7 @@ public final class MD5 implements Hasher {
      * subsequent updates produce undefined results until `reset()`.
      */
     public #int8[] digest() {
-        int8[] out = new int8[16];
+        int8[] out = heap int8[16];
         MD5.finalizeInto(this.state, out);
         return #out;
     }
@@ -258,7 +258,7 @@ public final class MD5 implements Hasher {
      * `digest()` first, and `reset()` to hash again.
      *
      * ```cajeta
-     * MD5 m = new MD5();
+     * MD5 m = heap MD5();
      * m.writeString(record.title);
      * int64 fingerprint = m.finish();
      * ```

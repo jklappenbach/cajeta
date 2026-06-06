@@ -39,7 +39,7 @@ TEST(SealedClassTests, sealedWithPermitsParses) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Square s = new Square();\n"
+        "        Square s = heap Square();\n"
         "        return s.sides();\n"
         "    }\n"
         "}\n";
@@ -58,7 +58,7 @@ TEST(SealedClassTests, nonSealedModifierParses) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Triangle t = new Triangle();\n"
+        "        Triangle t = heap Triangle();\n"
         "        return t.sides();\n"
         "    }\n"
         "}\n";

@@ -35,7 +35,7 @@ import cajeta.lang.Pair;
  *
  * ```cajeta
  * // entries: ArrayList<Pair<string, int32>>, already populated
- * ImmutableMap<string, int32> m = new ImmutableMap<string, int32>(entries);
+ * ImmutableMap<string, int32> m = heap ImmutableMap<string, int32>(entries);
  *
  * int32 one = m["one"];                // subscript -> get("one")
  * boolean has = m.containsKey("two");  // true
@@ -68,7 +68,7 @@ public class ImmutableMap<K, V> {
      *
      * ```cajeta
      * ArrayList<Pair<string, int32>> entries = ...;
-     * ImmutableMap<string, int32> m = new ImmutableMap<string, int32>(entries);
+     * ImmutableMap<string, int32> m = heap ImmutableMap<string, int32>(entries);
      * ```
      *
      * @Param src entries to snapshot, as `Pair``<key, value>`.
@@ -79,9 +79,9 @@ public class ImmutableMap<K, V> {
         while (cap < (int64) n * 2) {
             cap = cap * 2;
         }
-        K[] keys = new K[n];
-        V[] vals = new V[n];
-        int64[] tab = new int64[cap];
+        K[] keys = heap K[n];
+        V[] vals = heap V[n];
+        int64[] tab = heap int64[cap];
         int32 count = 0;
 
         int32 i = 0;
@@ -142,7 +142,7 @@ public class ImmutableMap<K, V> {
                 idx = (idx + 1) & (this.tableCap - 1);
             }
         }
-        V[] missDefault = new V[1];
+        V[] missDefault = heap V[1];
         return missDefault[0];
     }
 
@@ -187,7 +187,7 @@ public class ImmutableMap<K, V> {
     /** Key at dense index `i` (0-based, insertion order); zero value if out of range. */
     public K keyAt(int32 i) {
         if (i < 0 || i >= this.entryCount) {
-            K[] missDefault = new K[1];
+            K[] missDefault = heap K[1];
             return missDefault[0];
         }
         return this.keyArr[i];
@@ -196,7 +196,7 @@ public class ImmutableMap<K, V> {
     /** Value at dense index `i` (0-based, insertion order); zero value if out of range. */
     public V valAt(int32 i) {
         if (i < 0 || i >= this.entryCount) {
-            V[] missDefault = new V[1];
+            V[] missDefault = heap V[1];
             return missDefault[0];
         }
         return this.valArr[i];

@@ -81,17 +81,17 @@ public class Finding {
 
     public static Finding error(
         String rule, String file, int32 line, int32 column, String message) {
-        return #new Finding(rule, Severity.ERROR, file, line, column, message);
+        return #heap Finding(rule, Severity.ERROR, file, line, column, message);
     }
 
     public static Finding warning(
         String rule, String file, int32 line, int32 column, String message) {
-        return #new Finding(rule, Severity.WARNING, file, line, column, message);
+        return #heap Finding(rule, Severity.WARNING, file, line, column, message);
     }
 
     public static Finding info(
         String rule, String file, int32 line, int32 column, String message) {
-        return #new Finding(rule, Severity.INFO, file, line, column, message);
+        return #heap Finding(rule, Severity.INFO, file, line, column, message);
     }
 
     /**
@@ -103,6 +103,6 @@ public class Finding {
         String rule, String severityName,
         String file, int32 line, int32 column, String message) {
         Severity s = Severity.parse(severityName).orElse(Severity.WARNING);
-        return #new Finding(rule, s, file, line, column, message);
+        return #heap Finding(rule, s, file, line, column, message);
     }
 }

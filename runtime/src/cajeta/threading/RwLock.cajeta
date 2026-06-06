@@ -21,7 +21,7 @@ package cajeta.threading;
  *
  * ## Usage
  * ```cajeta
- * RwLock<i32> hits = new RwLock(0);
+ * RwLock<i32> hits = heap RwLock(0);
  *
  * i32 snapshot = hits.read();          // shared read lock, returns a copy
  * hits.withWrite((n) -> n + 1);        // exclusive write lock, store n + 1
@@ -34,7 +34,7 @@ public class RwLock<T> {
     /**
      * Wrap `initial` in a fresh lock, taking ownership of it (`#T`).
      * ```cajeta
-     * RwLock<i32> hits = new RwLock(0);
+     * RwLock<i32> hits = heap RwLock(0);
      * ```
      */
     public RwLock(#T initial) {
@@ -72,7 +72,7 @@ public class RwLock<T> {
      */
     public void withWrite((T) -> #T fn) {
         Cajeta.rwlockWrlock(this.handle);
-        WriteGuard g = new WriteGuard(this.handle);
+        WriteGuard g = heap WriteGuard(this.handle);
         this.value = fn(this.value);
     }
 }

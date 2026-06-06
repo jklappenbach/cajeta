@@ -107,8 +107,8 @@ public class JsonReader {
         this.current = JsonToken.END;
         this.currentBool = false;
         this.maxDepth = 1024;
-        this.depthStack = new int8[1024];
-        this.frameState = new int8[1024];
+        this.depthStack = heap int8[1024];
+        this.frameState = heap int8[1024];
         this.depth = 0;
         this.afterKey = false;
         this.peekedToken = JsonToken.END;
@@ -486,7 +486,7 @@ public class JsonReader {
      */
     public #int8[] currentBytes() {
         int32 len = (int32) (this.tokenEnd - this.tokenStart);
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
             out[i] = this.input[this.tokenStart + (int64) i];
@@ -529,7 +529,7 @@ public class JsonReader {
         int64 effStart = quoted ? (start - 1) : start;
         int64 effEnd = quoted ? (end + 1) : end;
         int32 len = (int32) (effEnd - effStart);
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
             out[i] = this.input[effStart + (int64) i];

@@ -184,17 +184,17 @@ public class Period {
      */
     public #String iso() {
         if (this.years == 0 && this.months == 0 && this.days == 0) {
-            int8[] z = new int8[2];
+            int8[] z = heap int8[2];
             z[0] = (int8) 80; // 'P'
             z[1] = (int8) 48; // '0'
-            int8[] z2 = new int8[3];
+            int8[] z2 = heap int8[3];
             z2[0] = (int8) 80; // 'P'
             z2[1] = (int8) 48; // '0'
             z2[2] = (int8) 68; // 'D'
             return heap String(#z2, 3);
         }
         // Worst case: 'P' + each of Y/M/D with a sign and up to 10 digits + letter.
-        int8[] buf = new int8[40];
+        int8[] buf = heap int8[40];
         int32 p = 0;
         p = Fmt.writeChar(buf, p, 80); // 'P'
         if (this.years != 0) {

@@ -89,7 +89,7 @@ public final class HttpSerializer {
     /** Start an empty serializer with a small growable buffer. */
     public HttpSerializer() {
         this.cap = 256;
-        this.buf = new int8[256];
+        this.buf = heap int8[256];
         this.size = 0;
     }
 
@@ -338,7 +338,7 @@ public final class HttpSerializer {
      */
     public #int8[] toBytes() {
         int32 n = this.size;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             out[i] = this.buf[i];
@@ -355,7 +355,7 @@ public final class HttpSerializer {
      */
     public #String toStringValue() {
         int32 n = this.size;
-        int8[] copy = new int8[n];
+        int8[] copy = heap int8[n];
         int32 i = 0;
         while (i < n) {
             copy[i] = this.buf[i];
@@ -403,7 +403,7 @@ public final class HttpSerializer {
             v = - v;
         }
         // Accumulate digits low-to-high into a scratch, then emit reversed.
-        int8[] tmp = new int8[12];
+        int8[] tmp = heap int8[12];
         int32 nd = 0;
         while (v > 0) {
             int32 d = v % 10;
@@ -431,7 +431,7 @@ public final class HttpSerializer {
         if (v < 0) {
             v = - v;
         }
-        int8[] tmp = new int8[8];
+        int8[] tmp = heap int8[8];
         int32 nd = 0;
         while (v > 0) {
             int32 d = v % 16;
@@ -462,7 +462,7 @@ public final class HttpSerializer {
     /** Double the buffer capacity, copying live bytes through. */
     void grow() {
         int32 newCap = this.cap * 2;
-        int8[] dst = new int8[newCap];
+        int8[] dst = heap int8[newCap];
         int32 i = 0;
         while (i < this.size) {
             dst[i] = this.buf[i];
@@ -481,7 +481,7 @@ public final class HttpSerializer {
      */
     static #String decimalString(int32 value) {
         if (value == 0) {
-            int8[] z = new int8[1];
+            int8[] z = heap int8[1];
             z[0] = (int8) 48;                   // '0'
             return heap String(#z, 1);
         }
@@ -491,7 +491,7 @@ public final class HttpSerializer {
             digits = digits + 1;
             t = t / 10;
         }
-        int8[] out = new int8[digits];
+        int8[] out = heap int8[digits];
         int32 i = digits - 1;
         int32 v = value;
         while (v > 0) {

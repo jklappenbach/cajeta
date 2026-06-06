@@ -54,7 +54,7 @@ int32_t runI32(const std::string& body) {
 
 TEST(WsControlFrameTests, pingCarriesPayloadAndIsControl) {
     EXPECT_EQ(runI32(
-        "int8[] data = new int8[3];\n"
+        "int8[] data = heap int8[3];\n"
         "data[0] = (int8) 1;\n"
         "data[1] = (int8) 2;\n"
         "data[2] = (int8) 3;\n"
@@ -70,7 +70,7 @@ TEST(WsControlFrameTests, pingCarriesPayloadAndIsControl) {
 // A bare heartbeat ping (empty payload).
 TEST(WsControlFrameTests, emptyPingIsValid) {
     EXPECT_EQ(runI32(
-        "WsFrame f = WsControlFrames.ping(new int8[0]);\n"
+        "WsFrame f = WsControlFrames.ping(heap int8[0]);\n"
         "if (f.getOpcode() != WsOpcode.PING) return -1;\n"
         "if (f.payloadLength() != 0) return -2;\n"
         "return 1;"), 1);
@@ -80,7 +80,7 @@ TEST(WsControlFrameTests, emptyPingIsValid) {
 TEST(WsControlFrameTests, oversizeControlPayloadRejected) {
     EXPECT_EQ(runI32(
         "try {\n"
-        "    WsFrame f = WsControlFrames.ping(new int8[126]);\n"
+        "    WsFrame f = WsControlFrames.ping(heap int8[126]);\n"
         "    return -1;\n"
         "} catch (ProtocolViolationException e) {\n"
         "    return 1;\n"
@@ -93,7 +93,7 @@ TEST(WsControlFrameTests, oversizeControlPayloadRejected) {
 // application data. pongFor copies the ping payload into a fresh pong.
 TEST(WsControlFrameTests, pongForEchoesPingPayload) {
     EXPECT_EQ(runI32(
-        "int8[] data = new int8[5];\n"
+        "int8[] data = heap int8[5];\n"
         "data[0] = (int8) 72;\n"    // 'H'
         "data[1] = (int8) 101;\n"   // 'e'
         "data[2] = (int8) 108;\n"   // 'l'
@@ -116,7 +116,7 @@ TEST(WsControlFrameTests, pongForEchoesPingPayload) {
 // An empty ping auto-pongs to an empty pong.
 TEST(WsControlFrameTests, pongForEmptyPing) {
     EXPECT_EQ(runI32(
-        "WsFrame ping = WsControlFrames.ping(new int8[0]);\n"
+        "WsFrame ping = WsControlFrames.ping(heap int8[0]);\n"
         "WsFrame pong = WsControlFrames.pongFor(ping);\n"
         "if (pong.getOpcode() != WsOpcode.PONG) return -1;\n"
         "if (pong.payloadLength() != 0) return -2;\n"
@@ -126,7 +126,7 @@ TEST(WsControlFrameTests, pongForEmptyPing) {
 // pongFor rejects a non-ping frame.
 TEST(WsControlFrameTests, pongForRejectsNonPing) {
     EXPECT_EQ(runI32(
-        "WsFrame notPing = WsControlFrames.pong(new int8[0]);\n"
+        "WsFrame notPing = WsControlFrames.pong(heap int8[0]);\n"
         "try {\n"
         "    WsFrame p = WsControlFrames.pongFor(notPing);\n"
         "    return -1;\n"
@@ -190,7 +190,7 @@ TEST(WsControlFrameTests, closeRejectsReservedCode) {
 TEST(WsControlFrameTests, closeRejectsOversizeReason) {
     EXPECT_EQ(runI32(
         // Build a 124-byte ASCII reason ('A' * 124) — 2 + 124 = 126 > 125.
-        "int8[] rb = new int8[124];\n"
+        "int8[] rb = heap int8[124];\n"
         "int32 i = 0;\n"
         "while (i < 124) { rb[i] = (int8) 65; i = i + 1; }\n"
         "String reason = heap String(#rb, 124);\n"
@@ -234,7 +234,7 @@ TEST(WsControlFrameTests, parseCloseEmptyIsNoStatus) {
 // A 1-byte close payload is malformed (a code must be a whole 2 bytes).
 TEST(WsControlFrameTests, parseCloseOneBytePayloadRejected) {
     EXPECT_EQ(runI32(
-        "int8[] one = new int8[1];\n"
+        "int8[] one = heap int8[1];\n"
         "one[0] = (int8) 3;\n"
         "WsFrame f = WsFrame.of(true, WsOpcode.CLOSE, false, #one);\n"
         "try {\n"
@@ -250,7 +250,7 @@ TEST(WsControlFrameTests, parseCloseOneBytePayloadRejected) {
 TEST(WsControlFrameTests, parseCloseRejectsForbiddenWireCode) {
     EXPECT_EQ(runI32(
         // payload 03ee = 1006 (ABNORMAL) — never legal on the wire.
-        "int8[] p = new int8[2];\n"
+        "int8[] p = heap int8[2];\n"
         "p[0] = (int8) 3;\n"
         "p[1] = (int8) -18;\n"   // 0xee -> 1006
         "WsFrame f = WsFrame.of(true, WsOpcode.CLOSE, false, #p);\n"
@@ -265,7 +265,7 @@ TEST(WsControlFrameTests, parseCloseRejectsForbiddenWireCode) {
 // parseClose rejects a non-close frame.
 TEST(WsControlFrameTests, parseCloseRejectsNonCloseFrame) {
     EXPECT_EQ(runI32(
-        "WsFrame ping = WsControlFrames.ping(new int8[0]);\n"
+        "WsFrame ping = WsControlFrames.ping(heap int8[0]);\n"
         "try {\n"
         "    WsCloseReason r = WsControlFrames.parseClose(ping);\n"
         "    return -1;\n"
@@ -312,7 +312,7 @@ TEST(WsControlFrameTests, reciprocalCloseForEmptyIsNormal) {
 // fragments and auto-pong it.
 TEST(WsControlFrameTests, builtPingRoundTripsThroughCodec) {
     EXPECT_EQ(runI32(
-        "int8[] data = new int8[4];\n"
+        "int8[] data = heap int8[4];\n"
         "data[0] = (int8) 222;\n"   // 0xde
         "data[1] = (int8) 173;\n"   // 0xad
         "data[2] = (int8) 190;\n"   // 0xbe

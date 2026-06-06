@@ -38,7 +38,7 @@ TEST(StringIndexingTests, byteAtAsciiIndex) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 'a';\n"   // 0x61
         "        b[1] = (int8) 'b';\n"   // 0x62
         "        b[2] = (int8) 'c';\n"   // 0x63
@@ -56,7 +56,7 @@ TEST(StringIndexingTests, codepointAtAscii) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 'a';\n"
         "        b[1] = (int8) 'b';\n"
         "        b[2] = (int8) 'c';\n"
@@ -75,7 +75,7 @@ TEST(StringIndexingTests, codepointAtMultibyte) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 0xC3;\n"
         "        b[1] = (int8) 0xA9;\n"
         "        b[2] = (int8) 0x21;\n"   // '!'
@@ -94,7 +94,7 @@ TEST(StringIndexingTests, codepointAtFourByte) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] b = new int8[4];\n"
+        "        int8[] b = heap int8[4];\n"
         "        b[0] = (int8) 0xF0;\n"
         "        b[1] = (int8) 0x9F;\n"
         "        b[2] = (int8) 0x98;\n"

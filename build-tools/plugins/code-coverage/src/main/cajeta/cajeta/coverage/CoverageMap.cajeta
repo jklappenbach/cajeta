@@ -37,7 +37,7 @@ public class CoverageMap {
             this.grain = grain;
             this.totalProbes = totalProbes;
             this.hitProbes = 0;
-            this.covered = #new boolean[totalProbes];
+            this.covered = #heap boolean[totalProbes];
         }
 
         public String  path()        { return this.path;        }
@@ -78,7 +78,7 @@ public class CoverageMap {
 
     public CoverageMap(Grain grain) {
         this.grain = grain;
-        this.files = #new HashMap<String, FileEntry>();
+        this.files = #heap HashMap<String, FileEntry>();
     }
 
     public Grain grain() { return this.grain; }
@@ -102,7 +102,7 @@ public class CoverageMap {
         if (existing.isPresent()) {
             return existing.get();
         }
-        FileEntry fresh = #new FileEntry(path, this.grain, totalProbes);
+        FileEntry fresh = #heap FileEntry(path, this.grain, totalProbes);
         this.files.put(path, #fresh);
         return fresh;
     }

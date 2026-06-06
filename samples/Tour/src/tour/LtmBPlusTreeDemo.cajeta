@@ -11,7 +11,7 @@ import cajeta.wire.Encoder;
 // against the file — the data set genuinely exceeds resident memory.
 //
 // Construction:
-//   new LtmBPlusTree(path, keyEnc, valEnc, order, poolCapacity)
+//   heap LtmBPlusTree(path, keyEnc, valEnc, order, poolCapacity)
 //
 // `flush()` writes dirty pages + header; `close()` flushes and
 // releases the fd. Reopening the same path recovers the tree from

@@ -50,7 +50,7 @@ view, method, constructor, field, or annotation type.
  *
  * String storage is UTF-8 internally, with a cached code-point
  * count for O(1) [count()](#count) queries. Construction is via
- * `new String(...)` for owned heap allocation, or via the
+ * `heap String(...)` for owned heap allocation, or via the
  * [viewOf](#viewof) factory family for borrowed views over
  * existing byte buffers.
  *

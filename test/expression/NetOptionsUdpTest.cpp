@@ -108,7 +108,7 @@ TEST(NetOptionsUdpTest, udpLoopbackDatagram) {
         // Datagram A -> B's bound port.
         "IpAddress dip = IpAddress.loopbackV4();\n"
         "SocketAddress dest = SocketAddress.of(#dip, bPort);\n"
-        "int8[] payload = new int8[4];\n"
+        "int8[] payload = heap int8[4];\n"
         "payload[0] = (int8) 100;\n"   // 'd'
         "payload[1] = (int8) 103;\n"   // 'g'
         "payload[2] = (int8) 114;\n"   // 'r'
@@ -116,7 +116,7 @@ TEST(NetOptionsUdpTest, udpLoopbackDatagram) {
         "int32 sent = a.sendTo(payload, 0, 4, dest);\n"
         "if (sent != 4) { return 0; }\n"
         // Receive on B.
-        "int8[] rbuf = new int8[8];\n"
+        "int8[] rbuf = heap int8[8];\n"
         "RecvResult rr = b.recvFrom(rbuf, 0, 8);\n"
         "int32 got = rr.getCount();\n"
         "a.close();\n"

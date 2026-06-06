@@ -61,7 +61,7 @@ TEST(PostVariableFieldTests, postVariableFixedFieldRead) {
         "}\n"
         "public final class V {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[3];\n"
+        "        int32[] bytes = heap int32[3];\n"
         "        bytes[0] = 4;\n"
         "        bytes[1] = 1684234849;\n"  // "abcd"
         "        bytes[2] = 99;\n"
@@ -86,7 +86,7 @@ TEST(PostVariableFieldTests, interleavedPreVarFixedPostVarFixed) {
         "}\n"
         "public final class V {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        bytes[0] = 10;\n"               // a
         "        bytes[1] = 4;\n"                 // s.length
         "        bytes[2] = 1684234849;\n"       // "abcd"
@@ -111,7 +111,7 @@ TEST(PostVariableFieldTests, multiplePostVariableFixedFields) {
         "}\n"
         "public final class V {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        bytes[0] = 4;\n"               // s.length
         "        bytes[1] = 1684234849;\n"     // "abcd"
         "        bytes[2] = 7;\n"                // a
@@ -140,7 +140,7 @@ TEST(PostVariableFieldTests, interleavedVarFixedVar) {
         "}\n"
         "public final class V {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[5];\n"
+        "        int32[] bytes = heap int32[5];\n"
         "        bytes[0] = 4;\n"               // s1.length
         "        bytes[1] = 1684234849;\n"     // "abcd"
         "        bytes[2] = 99;\n"               // marker
@@ -168,7 +168,7 @@ TEST(PostVariableFieldTests, intArrayVarSizeFieldRead) {
         "}\n"
         "public final class V {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        bytes[0] = 3;\n"
         "        bytes[1] = 7;\n"
         "        bytes[2] = 8;\n"
@@ -192,7 +192,7 @@ TEST(PostVariableFieldTests, intArrayElementsRoundTrip) {
         "}\n"
         "public final class V {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[6];\n"
+        "        int32[] bytes = heap int32[6];\n"
         "        bytes[0] = 5;\n"                // count
         "        bytes[1] = 100;\n"
         "        bytes[2] = 200;\n"
@@ -218,7 +218,7 @@ TEST(PostVariableFieldTests, intArrayCountFromViewMatches) {
         "}\n"
         "public final class V {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[6];\n"
+        "        int32[] bytes = heap int32[6];\n"
         "        bytes[0] = 5;\n"
         "        bytes[1] = 100;\n"
         "        bytes[2] = 200;\n"
