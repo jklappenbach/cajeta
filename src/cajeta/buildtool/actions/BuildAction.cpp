@@ -45,6 +45,8 @@
 #    define NOMINMAX
 #  endif
 #  include <windows.h>  // GetModuleFileNameA (running-exe path)
+#else
+#  include <unistd.h>   // readlink (/proc/self/exe running-exe path)
 #endif
 
 #ifndef CAJETA_VERSION

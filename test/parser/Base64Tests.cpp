@@ -97,9 +97,12 @@ std::string runDecode(const std::string& encoded) {
         "import cajeta.codec.Base64;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        // decode returns an owned `#int8[]`; the run() signature must carry
+        // the `#` and the return must use the transfer operator, else the
+        // borrow checker rejects it (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
+        "    public static #int8[] run() {\n"
         "        int8[] raw = Base64.decode(\"" + lit + "\");\n"
-        "        return raw;\n"
+        "        return #raw;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
