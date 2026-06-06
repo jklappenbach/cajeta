@@ -280,6 +280,71 @@ const char* kRotateSource =
     "    }\n"
     "}\n";
 
+// Exclusive prefix scans: Wave.prefixSum/prefixProduct lower to the native
+// OpGroupNonUniform{IAdd,IMul} with the ExclusiveScan group operation (the fork
+// spv_wave_prefix_{sum,product} intrinsics). GPU-free: asserts the ops emit and
+// the module is spirv-val-clean.
+const char* kScanSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class S {\n"
+    "    @Kernel\n"
+    "    public static void wavescan(Buffer<uint32> out) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        out[t] = Wave.prefixSum(t) + Wave.prefixProduct(t);\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuWaveEmitTests, spirvLowersPrefixScanAndValidates) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kScanSource);
+    auto k = findMethod(module->getStructures()["test.S"], "wavescan");
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+
+    llvm::LLVMContext irCtx;
+    llvm::Module irMod("xpu_scan_ir", irCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
+    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
+    std::string ir = printModule(irMod);
+    EXPECT_NE(ir.find("llvm.spv.wave.prefix.sum"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.wave.prefix.product"), std::string::npos) << ir;
+
+    llvm::LLVMContext txtCtx;
+    llvm::Module txtMod("xpu_scan_txt", txtCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(txtMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, txtMod);
+    std::string text = cajeta::xpu::vulkan::emitSpirvText(txtMod, *tm);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpGroupNonUniformIAdd"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpGroupNonUniformIMul"), std::string::npos) << text;
+    EXPECT_NE(text.find("ExclusiveScan"), std::string::npos) << text;
+
+    llvm::LLVMContext binCtx;
+    llvm::Module binMod("xpu_scan_bin", binCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, binMod);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
+    ASSERT_FALSE(spirv.empty());
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
+    static std::mt19937_64 rng(std::random_device{}());
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_scan_" + std::to_string(rng()) + ".spv");
+    { std::ofstream o(path, std::ios::binary);
+      o.write(reinterpret_cast<const char*>(spirv.data()),
+              (std::streamsize) spirv.size()); }
+    std::string fileStr = path.string();
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
+    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    EXPECT_EQ(rc, 0) << "spirv-val rejected the prefix-scan module";
+}
+
 // The reduction family beyond sum: Wave.reduce{Max,Min,And,Or,Xor} lower to the
 // GroupNonUniformArithmetic Reduce ops (already Shader-reachable — NOT the
 // OpenCL-only SPV_KHR_uniform_group_instructions). Unsigned min/max. GPU-free:

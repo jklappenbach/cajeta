@@ -388,6 +388,19 @@ public final class XpuTour {
         out[4 * n + t] = Wave.reduceXor(vxor);
     }
 
+    // wavePrefix: exclusive prefix sum across the wave. With every lane
+    // contributing 1, lane i receives the count of lanes before it = i, so the
+    // first lanes read 0,1,2,3,... Native OpGroupNonUniformIAdd ExclusiveScan on
+    // Vulkan; ds_bpermute / shfl Hillis-Steele on AMD/NVIDIA; VFABI scan on CPU.
+    // See cajeta-docs/WavePrefixScan.md.
+    @Kernel
+    public static void wavePrefix(Buffer<uint32> out, uint32 n) {
+        uint32 t = Thread.globalIdX();
+        if (t < n) {
+            out[t] = Wave.prefixSum(1);
+        }
+    }
+
     // Entry point. The C `main` shim (synthesized by --emit=obj with this
     // method as the entry) wires this up as the program's main.
     public static int32 run() {
@@ -408,6 +421,7 @@ public final class XpuTour {
         runWave();
         runWaveRotate();
         runWaveReduceOps();
+        runWavePrefix();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
         return 0;
@@ -803,5 +817,27 @@ public final class XpuTour {
                             + (int32) hout[n] + " " + (int32) hout[2 * n] + " "
                             + (int32) hout[3 * n] + " " + (int32) hout[4 * n]
                             + "  (expect 100 5 3 3 1)");
+    }
+
+    // Exclusive prefix sum across the wave: lane i gets the count of lanes
+    // before it. Native on every backend; the answer is the same at any wave
+    // width (>= 8). See cajeta-docs/WavePrefixScan.md.
+    static void runWavePrefix() {
+        System.stdout.println("");
+        System.stdout.println("-- wavePrefix: exclusive prefix sum of 1 across the wave --");
+        uint32 n = 256;
+        uint32[] hout = new uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        Buffer<uint32> out = stack Buffer<uint32>(n);
+        out.upload(hout);
+        Stream s = Stream.current();
+        wavePrefix.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  out[0..7] = " + (int32) hout[0] + " "
+                            + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + " " + (int32) hout[4] + " "
+                            + (int32) hout[5] + " " + (int32) hout[6] + " "
+                            + (int32) hout[7] + "  (expect 0 1 2 3 4 5 6 7)");
     }
 }

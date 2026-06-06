@@ -101,6 +101,26 @@ public final class Wave {
     public static uint32 reduceXor(uint32 value);
 
     /**
+     * EXCLUSIVE prefix sum across the lanes: lane `i` receives the sum of
+     * `value` from lanes `0..i-1`; lane 0 receives 0. The building block of
+     * stream compaction, per-wave offset assignment, and sorting.
+     *
+     *   Vulkan: OpGroupNonUniformIAdd (ExclusiveScan)
+     *   AMD:    ds_bpermute Hillis-Steele scan
+     *   NVPTX:  shfl Hillis-Steele scan
+     *   CPU:    in-lane VFABI scan
+     */
+    @Native("__cajeta_xpu_wave_prefix_sum_u32")
+    public static uint32 prefixSum(uint32 value);
+
+    /**
+     * EXCLUSIVE prefix product across the lanes: lane `i` receives the product
+     * of `value` from lanes `0..i-1`; lane 0 receives 1. See {@link #prefixSum}.
+     */
+    @Native("__cajeta_xpu_wave_prefix_product_u32")
+    public static uint32 prefixProduct(uint32 value);
+
+    /**
      * Wave rotate: read `value` from the lane `delta` positions ahead within
      * the wave, modulo the wave width — i.e. from lane
      * `(laneId() + delta) mod width()`. A wave-uniform cyclic shift of values

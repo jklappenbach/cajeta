@@ -243,6 +243,17 @@ public:
             b.CreateCall(lo, {allOnes, llvm::ConstantInt::get(i32, 0)}, "mbcnt.lo");
         return b.CreateCall(hi, {allOnes, lowCount}, "wave.laneid");
     }
+    llvm::Value* waveShuffleDivergent(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* value,
+                                      llvm::Value* srcLane) override {
+        // readlane (the uniform waveShuffle) can't take a per-lane source; use
+        // ds_bpermute, the divergent intra-wave gather (reads from lane at byte
+        // address src*4). The portable rotate/scan defaults route through here.
+        llvm::Value* byteAddr = b.CreateShl(srcLane, 2, "wave.gather.byte");
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_ds_bpermute);
+        return b.CreateCall(f, {byteAddr, value}, "wave.gather");
+    }
     llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* value, llvm::Value* delta) override {
         // The base default routes through waveShuffle = amdgcn.readlane, which

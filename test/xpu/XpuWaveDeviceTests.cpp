@@ -209,6 +209,32 @@ void expectReduceFamily(const std::vector<uint32_t>& out, unsigned n) {
     }
 }
 
+// Exclusive prefix scans. prefixSum(1): lane i = sum of (i) ones before it = i.
+// prefixProduct(2): lane i = product of (i) twos before it = 2^i. Both are
+// wave-width-agnostic over the first wave (lanes 0..31; 2^i fits uint32 there).
+const char* kScanSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wavescan(Buffer<uint32> out, uint32 n) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        out[t] = Wave.prefixSum(1);\n"
+    "        out[n + t] = Wave.prefixProduct(2);\n"
+    "    }\n"
+    "}\n";
+
+constexpr unsigned kScanBlock = 64;  // multiple of 32 and 64 ⇒ full occupancy
+
+void expectScans(const std::vector<uint32_t>& out, unsigned n) {
+    for (unsigned i = 0; i < 32; ++i) {
+        EXPECT_EQ(out[i], i) << "prefixSum lane " << i;
+        EXPECT_EQ(out[n + i], 1u << i) << "prefixProduct lane " << i;
+    }
+}
+
 // reduceSum(1) over a full wave == wave width; the only real wave sizes are 32
 // and 64, and every lane must agree (block is a multiple of both).
 void expectUniformWaveWidth(const std::vector<uint32_t>& out) {
@@ -676,4 +702,78 @@ TEST(XpuWaveDeviceTests, vulkanReduceFamilyRunsOnDevice) {
     ASSERT_TRUE(vk.download(out.data(), dOut, 5 * n * sizeof(uint32_t)));
     vk.free(dOut); vk.free(dN);
     expectReduceFamily(out, n);
+}
+
+TEST(XpuWaveDeviceTests, amdgpuPrefixScanRunsOnDevice) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kScanSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavescan");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_scan_amddevice", ctx);
+    cajeta::xpu::amd::configureDeviceModule(dev, *tm);
+    cajeta::xpu::amd::lowerKernel(k, dev);
+    std::vector<uint8_t> hsaco = cajeta::xpu::amd::assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    cajeta::xpu::amd::HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    auto mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = hip.getFunction(mod, "wavescan");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned n = kScanBlock;
+    auto dOut = hip.alloc(2 * n * sizeof(uint32_t));
+    ASSERT_NE(dOut, nullptr);
+    void* params[] = { &dOut, (void*) &n };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, kScanBlock, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<uint32_t> out(2 * n, 0);
+    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dOut, 2 * n * sizeof(uint32_t)));
+    hip.free(dOut);
+    expectScans(out, n);
+}
+
+TEST(XpuWaveDeviceTests, vulkanPrefixScanRunsOnDevice) {
+    if (!cajeta::xpu::vulkan::VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kScanSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavescan");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_scan_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    const unsigned n = cajeta::xpu::vulkan::kVulkanLocalSizeX;
+    cajeta::xpu::vulkan::VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dOut = vk.alloc(2 * n * sizeof(uint32_t));
+    auto dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u); ASSERT_NE(dN, 0u);
+    std::vector<uint32_t> zero(2 * n, 0);
+    ASSERT_TRUE(vk.upload(dOut, zero.data(), 2 * n * sizeof(uint32_t)));
+    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "wavescan",
+                          {dOut, dN}, /*groupCountX=*/1));
+
+    std::vector<uint32_t> out(2 * n, 0);
+    ASSERT_TRUE(vk.download(out.data(), dOut, 2 * n * sizeof(uint32_t)));
+    vk.free(dOut); vk.free(dN);
+    expectScans(out, n);
 }

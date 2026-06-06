@@ -250,6 +250,47 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
                                               masked->getArg(0), idv);
             b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, sel)));
         }
+    } else if (scalarName == "__cajeta_xpu_wave_prefix_sum_u32" ||
+               scalarName == "__cajeta_xpu_wave_prefix_product_u32") {
+        // Exclusive prefix scan: result[i] = op over lanes 0..i-1 (lane 0 = id).
+        // Unrolled across the W lanes — the running accumulator threads through.
+        tokens = "v";
+        auto* vTy = llvm::FixedVectorType::get(i32, W);
+        bool sum = scalarName == "__cajeta_xpu_wave_prefix_sum_u32";
+        uint32_t ident = sum ? 0u : 1u;
+        auto op = [&](llvm::IRBuilder<>& b, llvm::Value* a, llvm::Value* x) {
+            return sum ? b.CreateAdd(a, x) : b.CreateMul(a, x);
+        };
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            llvm::Value* x = unmasked->getArg(0);
+            llvm::Value* res = llvm::PoisonValue::get(vTy);
+            llvm::Value* acc = llvm::ConstantInt::get(i32, ident);
+            for (unsigned i = 0; i < W; ++i) {
+                res = b.CreateInsertElement(res, acc, b.getInt32(i));
+                acc = op(b, acc, b.CreateExtractElement(x, b.getInt32(i)));
+            }
+            b.CreateRet(res);
+        }
+        // masked: inactive lanes contribute the identity (no effect on the scan).
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* idv = b.CreateVectorSplat(
+                W, llvm::ConstantInt::get(i32, ident));
+            llvm::Value* x = b.CreateSelect(masked->getArg(1),
+                                            masked->getArg(0), idv);
+            llvm::Value* res = llvm::PoisonValue::get(vTy);
+            llvm::Value* acc = llvm::ConstantInt::get(i32, ident);
+            for (unsigned i = 0; i < W; ++i) {
+                res = b.CreateInsertElement(res, acc, b.getInt32(i));
+                acc = op(b, acc, b.CreateExtractElement(x, b.getInt32(i)));
+            }
+            b.CreateRet(res);
+        }
     } else {
         return;
     }
@@ -312,6 +353,8 @@ static const char* const kWaveOps[] = {
     "__cajeta_xpu_wave_reduce_and_u32",
     "__cajeta_xpu_wave_reduce_or_u32",
     "__cajeta_xpu_wave_reduce_xor_u32",
+    "__cajeta_xpu_wave_prefix_sum_u32",
+    "__cajeta_xpu_wave_prefix_product_u32",
     "__cajeta_xpu_wave_ballot_sync",
     "__cajeta_xpu_wave_shuffle_sync_u32",
 };
