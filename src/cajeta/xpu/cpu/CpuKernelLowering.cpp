@@ -208,6 +208,17 @@ public:
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         return pureCall(b, m, sym, i32, {value}, "wave.reduce");
     }
+    llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
+                          WaveScanOp op, llvm::Value* value) override {
+        // A pure runtime stub whose VFABI vector variant does the in-lane
+        // exclusive prefix scan when the kernel widens (the base Hillis-Steele
+        // default's shuffle loop doesn't vectorize on the CPU wave model).
+        const char* sym = op == WaveScanOp::Sum
+            ? "__cajeta_xpu_wave_prefix_sum_u32"
+            : "__cajeta_xpu_wave_prefix_product_u32";
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        return pureCall(b, m, sym, i32, {value}, "wave.scan");
+    }
     // Lane within the wave = the block-local work-item index modulo the wave
     // width. width() is rewritten to the constant W in a vectorized wave kernel,
     // so this folds to `tid.x % W`; vectorized, the W-aligned vector induction

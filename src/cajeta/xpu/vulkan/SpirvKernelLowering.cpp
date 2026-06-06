@@ -604,6 +604,17 @@ public:
             &m, id, {llvm::Type::getInt32Ty(m.getContext())});
         return b.CreateCall(f, {value}, "wavered");
     }
+    llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
+                          WaveScanOp op, llvm::Value* value) override {
+        // The native single-op exclusive scan: spv.wave.prefix.{sum,product} →
+        // OpGroupNonUniform{IAdd,IMul} with the ExclusiveScan group operation.
+        llvm::Intrinsic::ID id = op == WaveScanOp::Sum
+            ? llvm::Intrinsic::spv_wave_prefix_sum
+            : llvm::Intrinsic::spv_wave_prefix_product;
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, id, {llvm::Type::getInt32Ty(m.getContext())});
+        return b.CreateCall(f, {value}, "wavescan");
+    }
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         // SubgroupLocalInvocationId — this invocation's index within the
         // subgroup (→ OpLoad of the builtin).

@@ -1924,6 +1924,15 @@ private:
                                              lowerExpr(args[0].expression));
                 }
             }
+            if (name == "prefixSum" || name == "prefixProduct") {
+                if (args.size() != 1) unsupported("Wave.prefix arity");
+                usedSubgroupOp_ = true;
+                auto sop = name == "prefixSum"
+                    ? LoweringTarget::WaveScanOp::Sum
+                    : LoweringTarget::WaveScanOp::Product;
+                return target.waveScan(builder, mod, sop,
+                                       lowerExpr(args[0].expression));
+            }
         } else if (recv == "Bits") {
             // Per-invocation bit manipulation. No seam: these lower to
             // *generic* LLVM intrinsics that every backend (incl. the
@@ -3478,6 +3487,58 @@ llvm::Value* LoweringTarget::waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
     llvm::Value* src = b.CreateURem(
         b.CreateAdd(lane, delta), width, "wave.rotate.src");
     return waveShuffle(b, m, value, src);
+}
+
+// Base default for the exclusive prefix scan: a width-agnostic Hillis-Steele
+// scan over the existing wave seams, so NVPTX (and AMDGPU, once it overrides
+// waveShuffleDivergent → ds_bpermute) get the scan without a native op. Vulkan
+// overrides to OpGroupNonUniform ExclusiveScan; CPU to a VFABI variant.
+// Out-of-line because LoweringTarget.h only forward-declares IRBuilderBase.
+llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      WaveScanOp op, llvm::Value* value) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Value* lane = waveLaneId(b, m);
+    llvm::Value* width = waveWidth(b, m);
+    auto combine = [&](llvm::Value* x, llvm::Value* y) {
+        return op == WaveScanOp::Sum ? b.CreateAdd(x, y) : b.CreateMul(x, y);
+    };
+    // Inclusive Hillis-Steele: acc[i] op= acc[i-d] for d = 1,2,4,… < width.
+    // The loop trip count is log2(width); width folds to a constant on the
+    // backends that take this path (NVPTX warp size, CPU rewritten width).
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* preheader = b.GetInsertBlock();
+    llvm::BasicBlock* loop = llvm::BasicBlock::Create(ctx, "scan.loop", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "scan.done", fn);
+    b.CreateBr(loop);
+    b.SetInsertPoint(loop);
+    llvm::PHINode* accPhi = b.CreatePHI(i32, 2, "scan.acc");
+    llvm::PHINode* dPhi = b.CreatePHI(i32, 2, "scan.d");
+    accPhi->addIncoming(value, preheader);
+    dPhi->addIncoming(llvm::ConstantInt::get(i32, 1), preheader);
+    // pred = lane >= d; read acc from lane-d (clamped to a valid lane when
+    // pred is false — the result is discarded by the select).
+    llvm::Value* pred = b.CreateICmpUGE(lane, dPhi);
+    llvm::Value* srcRaw = b.CreateSub(lane, dPhi);
+    llvm::Value* src = b.CreateSelect(pred, srcRaw, lane);
+    llvm::Value* other = waveShuffleDivergent(b, m, accPhi, src);
+    llvm::Value* acc = b.CreateSelect(pred, combine(accPhi, other), accPhi);
+    llvm::Value* dNext = b.CreateShl(dPhi, 1);
+    accPhi->addIncoming(acc, loop);
+    dPhi->addIncoming(dNext, loop);
+    b.CreateCondBr(b.CreateICmpULT(dNext, width), loop, done);
+    b.SetInsertPoint(done);
+    llvm::PHINode* inc = b.CreatePHI(i32, 1, "scan.inclusive");
+    inc->addIncoming(acc, loop);
+    // Exclusive = inclusive shifted up one lane: exc[i] = inc[i-1], exc[0] = id.
+    llvm::Value* identity =
+        llvm::ConstantInt::get(i32, op == WaveScanOp::Sum ? 0 : 1);
+    llvm::Value* isFirst = b.CreateICmpEQ(
+        lane, llvm::ConstantInt::get(i32, 0));
+    llvm::Value* prevLane = b.CreateSelect(
+        isFirst, lane, b.CreateSub(lane, llvm::ConstantInt::get(i32, 1)));
+    llvm::Value* prev = waveShuffleDivergent(b, m, inc, prevLane);
+    return b.CreateSelect(isFirst, identity, prev);
 }
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,

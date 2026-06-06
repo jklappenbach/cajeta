@@ -369,6 +369,20 @@ namespace xpu {
         virtual llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
                                         llvm::Value* pred) = 0;
 
+        // Like waveShuffle, but `srcLane` may be DIVERGENT (per-lane different).
+        // waveShuffle is uniform-index on some backends (AMDGPU readlane needs an
+        // SGPR source), so cross-lane patterns with a computed per-lane source
+        // (rotate, scan) use this instead. Default = waveShuffle (correct where
+        // the native shuffle already takes a divergent index — NVPTX shfl, Vulkan
+        // OpGroupNonUniformShuffle, the CPU gather); AMDGPU overrides to
+        // ds_bpermute.
+        virtual llvm::Value* waveShuffleDivergent(llvm::IRBuilderBase& b,
+                                                  llvm::Module& m,
+                                                  llvm::Value* value,
+                                                  llvm::Value* srcLane) {
+            return waveShuffle(b, m, value, srcLane);
+        }
+
         // Wave-wide reduction (sum) over i32 across active lanes; returns i32.
         // The "comprehensiveness-inversion" probe found this maps 1:1 like
         // shuffle/ballot — a single hardware intrinsic on all three backends
@@ -391,6 +405,20 @@ namespace xpu {
         enum class WaveReduceOp { Max, Min, And, Or, Xor };
         virtual llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                                         WaveReduceOp op, llvm::Value* value) = 0;
+
+        // EXCLUSIVE prefix scan across the lanes: lane i receives the sum (or
+        // product) of lanes 0..i-1; lane 0 gets the identity (0 / 1). uint32.
+        // NOT pure-virtual: the default (out-of-line in KernelLowering.cpp) is a
+        // width-agnostic Hillis-Steele scan built on waveShuffleDivergent /
+        // waveLaneId / waveWidth — correct on any backend whose shuffle takes a
+        // divergent index (NVPTX shfl; AMDGPU once it overrides
+        // waveShuffleDivergent → ds_bpermute). Vulkan OVERRIDES to the single
+        // native OpGroupNonUniform{IAdd,IMul} with the ExclusiveScan group op
+        // (the fork spv_wave_prefix_{sum,product} intrinsics); CPU overrides to a
+        // VFABI scan variant.
+        enum class WaveScanOp { Sum, Product };
+        virtual llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      WaveScanOp op, llvm::Value* value);
 
         // The calling work-item's lane index within its wave: i32 in
         // [0, waveWidth). The other half of "interrogate your environment"

@@ -5837,6 +5837,10 @@ uint32_t __cajeta_xpu_wave_reduce_min_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_and_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_or_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
+// Exclusive prefix scan: width-1 fallback — lane 0's exclusive prefix is the
+// identity (0 for sum, 1 for product). The real scan runs in the VFABI variant.
+uint32_t __cajeta_xpu_wave_prefix_sum_u32(uint32_t value) { (void)value; return 0; }
+uint32_t __cajeta_xpu_wave_prefix_product_u32(uint32_t value) { (void)value; return 1; }
 
 // --- CPU backend kernel registry -------------------------------------------
 // The CPU backend (cajeta-cpu.md) lowers each @Kernel to a host function linked
