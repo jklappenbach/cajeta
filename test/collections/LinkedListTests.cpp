@@ -226,3 +226,119 @@ TEST(LinkedListTests, removeFromMiddleRelinksProperly) {
         "}\n";
     EXPECT_EQ(runI32(src), 4);
 }
+
+// --- Deque API: head/tail peek, addHead/addTail, popHead/popTail ---------
+
+TEST(LinkedListTests, headAndTailPeek) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        ll.addTail(10);\n"
+        "        ll.addTail(20);\n"
+        "        ll.addTail(30);\n"
+        "        if (ll.head() != 10) { return -1; }\n"
+        "        if (ll.tail() != 30) { return -2; }\n"
+        "        return (int32) ll.count();\n"  // peek doesn't shrink -> 3
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+TEST(LinkedListTests, addHeadAndAddTailOrder) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        ll.addTail(2);\n"
+        "        ll.addHead(1);\n"   // [1, 2]
+        "        ll.addTail(3);\n"   // [1, 2, 3]
+        "        if (ll.head() != 1) { return -1; }\n"
+        "        if (ll.tail() != 3) { return -2; }\n"
+        "        return ll.get(1);\n"  // 2
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+TEST(LinkedListTests, popHeadRemovesAndReturnsFront) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        ll.addTail(10);\n"
+        "        ll.addTail(20);\n"
+        "        ll.addTail(30);\n"
+        "        int32 f = ll.popHead();\n"  // 10 -> [20, 30]
+        "        if (f != 10) { return -1; }\n"
+        "        if (ll.head() != 20) { return -2; }\n"
+        "        return (int32) ll.count();\n"  // 2
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+TEST(LinkedListTests, popTailRemovesAndReturnsBack) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        ll.addTail(10);\n"
+        "        ll.addTail(20);\n"
+        "        ll.addTail(30);\n"
+        "        int32 b = ll.popTail();\n"  // 30 -> [10, 20]
+        "        if (b != 30) { return -1; }\n"
+        "        if (ll.tail() != 20) { return -2; }\n"
+        "        return (int32) ll.count();\n"  // 2
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+TEST(LinkedListTests, popDrainsToEmptyThenZero) {
+    // Pop the last element from both ends, then pop/peek an empty list.
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        ll.addHead(7);\n"
+        "        int32 a = ll.popTail();\n"   // 7 -> []
+        "        if (a != 7) { return -1; }\n"
+        "        if (ll.count() != 0) { return -2; }\n"
+        "        if (ll.head() != 0) { return -3; }\n"  // empty -> zero
+        "        if (ll.popHead() != 0) { return -4; }\n"  // empty -> zero, no change
+        "        return (int32) ll.count();\n"  // still 0
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+TEST(LinkedListTests, dequeRoundTripUsesBothEnds) {
+    // Use it as a deque: push both ends, pop both ends, verify order.
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        ll.addTail(2);\n"
+        "        ll.addHead(1);\n"
+        "        ll.addTail(3);\n"   // [1, 2, 3]
+        "        if (ll.popHead() != 1) { return -1; }\n"  // [2, 3]
+        "        if (ll.popTail() != 3) { return -2; }\n"  // [2]
+        "        if (ll.popHead() != 2) { return -3; }\n"  // []
+        "        return (int32) ll.count();\n"  // 0
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
