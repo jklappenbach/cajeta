@@ -29,6 +29,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/error/Exception.h"
 
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
@@ -741,6 +742,7 @@ TEST(XpuVulkanEmitTests, workgroupBarrierIsSpecValid) {
     std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
     ASSERT_FALSE(spirv.empty());
 
+    { std::ofstream o("/tmp/probe_shared_coop.spv", std::ios::binary); o.write((const char*)spirv.data(), (std::streamsize)spirv.size()); }
     auto valid = validateSpirv(spirv);
     if (!valid) {
         GTEST_SUCCEED() << "spirv-val not installed; barrier validity unchecked";
@@ -748,4 +750,92 @@ TEST(XpuVulkanEmitTests, workgroupBarrierIsSpecValid) {
     }
     EXPECT_TRUE(*valid) << "barrier kernel failed spirv-val — the OpControlBarrier "
                            "semantics fixup did not take effect";
+}
+
+// LDS-staged cooperative matrix on Vulkan is gated off (clean XPU-N04 diagnostic,
+// never invalid SPIR-V). The fork's SPIRVEmitIntrinsics array-global-type fix made
+// the Workgroup-array staging copy lower correctly, but a SECOND backend issue
+// remains: the constant-offset element access chain feeding OpCooperativeMatrixLoad
+// from Workgroup storage is collapsed to the bare array variable during selection.
+// Until that lands too, a Shared<T> coop-matrix source is a clean diagnostic.
+TEST(XpuVulkanEmitTests, sharedSourceCoopLoadIsCleanDiagnostic) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.CooperativeMatrix;\n"
+        "import cajeta.xpu.core.Barrier;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void shld(Buffer<float16> a, Buffer<float16> b,\n"
+        "                            Buffer<float32> c) {\n"
+        "        Shared<float16> sa = shared float16[16 * 16];\n"
+        "        sa[0] = a[0];\n"
+        "        Barrier.workgroup();\n"
+        "        CooperativeMatrix<float16,16,16,0> ma;\n"
+        "        ma.load(sa, 0, 0, 16);\n"
+        "        CooperativeMatrix<float16,16,16,1> mb;\n"
+        "        mb.load(b, 0, 0, 16);\n"
+        "        CooperativeMatrix<float32,16,16,2> mc;\n"
+        "        mc.splat(0.0f);\n"
+        "        mc.mma(ma, mb);\n"
+        "        mc.store(c, 0, 0, 16);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "shld");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module mod("xpu_sharedcoop_vulkan_neg", ctx);
+    configureDeviceModule(mod, *tm);
+    try {
+        lowerKernel(k, mod);
+        FAIL() << "expected a clean diagnostic for a Shared<T>-source "
+                  "cooperative-matrix load on Vulkan, got a lowered module";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "XPU-N04") << e.getMessage();
+    }
+}
+
+// Regression: a kernel that reads the workgroup size (Workgroup.dimX()) must emit
+// VALID Vulkan SPIR-V. The WorkgroupSize BuiltIn must decorate a CONSTANT in a
+// Vulkan shader; emitting it as a builtin *variable* (the old spv_workgroup_size
+// path) produced SPIR-V that spirv-val rejected ("BuiltIn WorkgroupSize must be a
+// constant"), silently breaking any kernel that strides by the block size (e.g.
+// the cooperative global→LDS staging copy). workgroupDim now returns the baked
+// LocalSize constant.
+TEST(XpuVulkanEmitTests, workgroupDimEmitsValidSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Workgroup;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<float32> c) {\n"
+        "        uint32 t = Thread.x();\n"
+        "        uint32 nthr = Workgroup.dimX();\n"
+        "        for (uint32 e = t; e < 256; e = e + nthr) { c[e] = (float32) e; }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "k");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module mod("xpu_wgdim_vulkan", ctx);
+    configureDeviceModule(mod, *tm);
+    lowerKernel(k, mod);
+    std::vector<uint8_t> spirv = emitSpirv(mod, *tm);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "Workgroup.dimX() kernel produced invalid SPIR-V";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped";
 }

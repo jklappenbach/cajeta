@@ -166,24 +166,32 @@ public:
                              unsigned dim) override {
         return readCoord(b, m, llvm::Intrinsic::spv_group_id, dim);
     }
-    llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m,
+    // Vulkan bakes the workgroup size as a compile-time constant (createKernel
+    // sets numthreads = kVulkanLocalSizeX,1,1). The `WorkgroupSize` BuiltIn must
+    // decorate a CONSTANT in a Vulkan shader — emitting it as a builtin *variable*
+    // (spv_workgroup_size) produces SPIR-V that spirv-val rejects ("BuiltIn
+    // WorkgroupSize must be a constant"), which is why any kernel that read the
+    // block dim (e.g. a cooperative global→LDS staging copy) mis-lowered. Return
+    // the baked constant directly — valid and exactly correct for this fixed size.
+    llvm::Value* workgroupDim(llvm::IRBuilderBase& /*b*/, llvm::Module& m,
                               unsigned dim) override {
-        return readCoord(b, m, llvm::Intrinsic::spv_workgroup_size, dim);
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()),
+                                      dim == 0 ? kVulkanLocalSizeX : 1);
     }
     // SPIR-V exposes GlobalInvocationId natively — override the computed default.
     llvm::Value* globalId(llvm::IRBuilderBase& b, llvm::Module& m,
                           unsigned dim) override {
         return readCoord(b, m, llvm::Intrinsic::spv_thread_id, dim);
     }
-    // Grid-stride stride = NumWorkgroups·WorkgroupSize. Both builtins are valid
-    // in the GLCompute execution model; GlobalSize would require the OpenCL
-    // Kernel capability (invalid in a Vulkan shader), so it's deliberately not used.
+    // Grid-stride stride = NumWorkgroups·WorkgroupSize. NumWorkgroups is a valid
+    // builtin; the WorkgroupSize factor is the baked LocalSize constant (the
+    // builtin-variable form is invalid Vulkan — see workgroupDim). GlobalSize
+    // would require the OpenCL Kernel capability, so it is deliberately not used.
     llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
                           unsigned dim) override {
         return b.CreateMul(
             readCoord(b, m, llvm::Intrinsic::spv_num_workgroups, dim),
-            readCoord(b, m, llvm::Intrinsic::spv_workgroup_size, dim),
-            "gridsize");
+            workgroupDim(b, m, dim), "gridsize");
     }
 
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
@@ -385,6 +393,28 @@ public:
 #endif
 
 #if CAJETA_HAS_SPV_COOP_MATRIX
+    // The fork's SPIRVEmitIntrinsics fix (undef non-constant array globals keep
+    // their array type) makes Workgroup-array dynamic indexing — and hence the
+    // cooperative global→LDS staging copy — lower correctly. A SECOND backend
+    // issue remains for the cooperative-matrix LOAD itself from a Workgroup tile
+    // at a CONSTANT element offset (e.g. offset 0): the element access chain
+    // `&sa[0]` is collapsed back to the bare `[N x T]` array variable during
+    // selection, and OpCooperativeMatrixLoadKHR requires a scalar/vector pointer.
+    // Until that is fixed too, gate the Shared<T> coop-matrix source off on Vulkan
+    // (a clean diagnostic, not invalid SPIR-V). AMD (HIP/WMMA) and CPU are
+    // unaffected and device-verified.
+    void requireStorageBufferSource(llvm::Value* ptr, const char* op) {
+        auto* pt = llvm::dyn_cast<llvm::PointerType>(ptr->getType());
+        if (!pt || pt->getAddressSpace() != kStorageBufferAS)
+            throw cajeta::Exception(
+                std::string("XPU kernel lowering: CooperativeMatrix.") + op +
+                "(Shared<T>) — LDS-staged cooperative matrix is not yet enabled on "
+                "the Vulkan backend (a remaining SPIR-V backend issue collapses the "
+                "constant-offset element access chain feeding "
+                "OpCooperativeMatrixLoadKHR from Workgroup storage). Use the global "
+                "Buffer<T> overload on Vulkan, or the AMD (HIP) / CPU backends for "
+                "LDS-staged GEMM.", "XPU-N04");
+    }
     // result = OpCooperativeMatrixLoadKHR ptr layout stride. The intrinsic is
     // overloaded on (result matrix type, pointer type), in signature order.
     llvm::Value* coopMatrixLoad(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -392,6 +422,7 @@ public:
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
                                 uint32_t /*use*/) override {
+        requireStorageBufferSource(ptr, "load");
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_load,
             {matrixType, ptr->getType()});
@@ -403,6 +434,7 @@ public:
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
                          uint32_t /*use*/) override {
+        requireStorageBufferSource(ptr, "store");
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_store,
             {ptr->getType(), matrixVal->getType()});
