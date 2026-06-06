@@ -185,7 +185,7 @@ else()
     llvm_map_components_to_libnames(LLVM_LIBS
             support core irreader option
             target mc passes analysis bitwriter bitreader
-            orcjit executionengine runtimedyld linker
+            orcjit orcdebugging jitlink executionengine runtimedyld linker
             AllTargetsAsmParsers
             AllTargetsCodeGens
             AllTargetsDescs
