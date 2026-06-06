@@ -4,14 +4,38 @@ import cajeta.codec.json.JsonToken;
 import cajeta.lang.String;
 
 /**
- * Pull tokenizer for RFC 8259 JSON. Walks an int8[] input buffer
- * once forward, emitting one JsonToken-ordinal per next() call.
+ * Pull tokenizer for RFC 8259 JSON. Walks an `int8[]` input buffer
+ * once forward, emitting one `JsonToken` ordinal per `next()` call.
  * String and number tokens are recorded as byte-offset spans into
- * the input buffer (tokenStart, tokenEnd) without materialization
+ * the input buffer (`tokenStart`, `tokenEnd`) without materialization
  * — the caller pays the parse/decode cost only when it asks for a
  * concrete value (Phase 2).
  *
  * See cajeta-docs/stdlib/codec/Json.md § Tier 2.
+ *
+ * ## Usage
+ *
+ * Drive `next()` to the `JsonToken`.`END` sentinel, materializing
+ * each value lazily:
+ * ```cajeta
+ * stack reader = JsonReader(buf, buf.count());
+ * JsonToken t = reader.next();
+ * while (t != JsonToken.END) {
+ *     if (t == JsonToken.NUMBER) {
+ *         int64 n = reader.currentNumberAsInt64();
+ *     } else if (t == JsonToken.STRING) {
+ *         #String s = reader.currentString();
+ *     }
+ *     t = reader.next();
+ * }
+ * ```
+ * Or expand the whole document into a `JsonValue` tree in one call:
+ * ```cajeta
+ * stack reader = JsonReader(buf, buf.count());
+ * #JsonValue root = reader.readValue();
+ * ```
+ * Any malformed input throws `JsonParseException` carrying the byte
+ * offset of the fault.
  *
  * v1 (Phase 1) scope:
  *  - Structural tokenization for objects, arrays, separators.
@@ -63,6 +87,17 @@ public class JsonReader {
     JsonToken peekedToken;
     boolean hasPeeked;
 
+    /**
+     * Wrap a UTF-8 byte buffer for tokenization. `byteCount` is the
+     * number of valid bytes in `input` (passed explicitly until
+     * primitive arrays expose `.count()`). The cursor starts before
+     * the first token; call `next()` to advance.
+     *
+     * ```cajeta
+     * stack reader = JsonReader(buf, buf.count());
+     * JsonToken first = reader.next();   // e.g. START_OBJECT
+     * ```
+     */
     public JsonReader(int8[] input, int64 byteCount) {
         this.input = input;
         this.byteCount = byteCount;
@@ -123,6 +158,23 @@ public class JsonReader {
         return this.currentBool;
     }
 
+    /**
+     * Advance to and return the next `JsonToken`. Reading a cached
+     * `peek()` returns that token without re-advancing; otherwise the
+     * cursor scans forward over whitespace, separators, and container
+     * brackets. Returns `JsonToken`.`END` at the top level once the
+     * buffer is exhausted. Throws `JsonParseException` on malformed
+     * structure (bad separator, unexpected character, truncated input,
+     * or unterminated container).
+     *
+     * ```cajeta
+     * JsonToken t = reader.next();
+     * while (t != JsonToken.END) {
+     *     // dispatch on t ...
+     *     t = reader.next();
+     * }
+     * ```
+     */
     public JsonToken next() {
         // Consume a cached peek if there is one — peek() already
         // advanced the buffer position past the underlying token.
@@ -235,6 +287,11 @@ public class JsonReader {
         throw heap JsonParseException("unexpected character", this.pos);
     }
 
+    /**
+     * Push a new container frame (`kind` 0 = array, 1 = object),
+     * record the bracket span, and emit `token`. Throws
+     * `JsonParseException` if the nesting depth limit is exceeded.
+     */
     JsonToken openContainer(int8 kind, JsonToken token) {
         if (this.depth >= this.maxDepth) {
             throw heap JsonParseException(
@@ -251,6 +308,11 @@ public class JsonReader {
         return token;
     }
 
+    /**
+     * Pop the current container frame, consume the closing bracket,
+     * and emit `token` (`END_ARRAY` / `END_OBJECT`). Marks the closed
+     * container as a produced value in its parent frame.
+     */
     JsonToken consumeClose(JsonToken token) {
         this.pos = this.pos + 1;
         this.depth = this.depth - 1;
@@ -261,6 +323,7 @@ public class JsonReader {
         return token;
     }
 
+    /** Advance the cursor past RFC 8259 whitespace (space, tab, LF, CR). */
     void skipWs() {
         while (this.pos < this.byteCount) {
             int8 c = this.input[this.pos];
@@ -275,6 +338,11 @@ public class JsonReader {
         }
     }
 
+    /**
+     * Scan an object key: a quoted string span followed by `:`. Emits
+     * `KEY` and arms the after-key state so the next `next()` yields the
+     * value. Throws `JsonParseException` if the `"` or `:` is missing.
+     */
     JsonToken scanKey() {
         if (this.input[this.pos] != (int8) 34) {
             throw heap JsonParseException(
@@ -294,6 +362,12 @@ public class JsonReader {
         return JsonToken.KEY;
     }
 
+    /**
+     * Record the span between the quotes of a string literal into
+     * (`tokenStart`, `tokenEnd`), skipping over `\`-escapes without
+     * decoding them. Throws `JsonParseException` on an unterminated
+     * string or a truncated escape sequence.
+     */
     void scanStringSpan() {
         this.pos = this.pos + 1;     // past opening '"'
         this.tokenStart = this.pos;
@@ -320,6 +394,11 @@ public class JsonReader {
             this.pos);
     }
 
+    /**
+     * Record the span of a number literal (digits, `.`, `e`/`E`, and
+     * signs) into (`tokenStart`, `tokenEnd`). Span only — the value is
+     * parsed lazily by the `currentNumberAs*` helpers.
+     */
     void scanNumberSpan() {
         this.tokenStart = this.pos;
         this.pos = this.pos + 1;
@@ -339,6 +418,11 @@ public class JsonReader {
         this.tokenEnd = this.pos;
     }
 
+    /**
+     * Match a fixed 4-byte literal (`true` / `null`) at the cursor and
+     * record its span. Throws `JsonParseException` if truncated or
+     * mismatched.
+     */
     void expectLiteral4(int8 b0, int8 b1, int8 b2, int8 b3) {
         if (this.pos + 4 > this.byteCount) {
             throw heap JsonParseException("truncated literal", this.pos);
@@ -354,6 +438,10 @@ public class JsonReader {
         this.tokenEnd = this.pos;
     }
 
+    /**
+     * Match a fixed 5-byte literal (`false`) at the cursor and record
+     * its span. Throws `JsonParseException` if truncated or mismatched.
+     */
     void expectLiteral5(int8 b0, int8 b1, int8 b2, int8 b3, int8 b4) {
         if (this.pos + 5 > this.byteCount) {
             throw heap JsonParseException("truncated literal", this.pos);
@@ -370,6 +458,10 @@ public class JsonReader {
         this.tokenEnd = this.pos;
     }
 
+    /**
+     * Flag the enclosing container frame as post-value, so the next
+     * `next()` requires a separator or close before another item.
+     */
     void markValueProduced() {
         if (this.depth > 0) {
             this.frameState[this.depth - 1] = (int8) 1;
@@ -378,11 +470,20 @@ public class JsonReader {
 
     // --- Phase 2: materialization helpers ---------------------------
 
-    // Copy the current token's bytes into a fresh int8[]. Works for
-    // KEY, STRING, NUMBER, and the literal-spanning tokens (BOOLEAN /
-    // NULL). For string tokens the escape sequences are NOT decoded
-    // — they appear verbatim (\n stays as the two bytes '\\','n').
-    // String-escape decoding lands when needed.
+    /**
+     * Copy the current token's bytes into a fresh `int8[]` (ownership
+     * transferred to the caller). Works for `KEY`, `STRING`, `NUMBER`,
+     * and the literal-spanning tokens (`BOOLEAN` / `NULL`). For string
+     * tokens the escape sequences are NOT decoded — they appear verbatim
+     * (`\n` stays as the two bytes `\\`, `n`). String-escape decoding
+     * lands when needed.
+     *
+     * ```cajeta
+     * if (reader.next() == JsonToken.STRING) {
+     *     #int8[] raw = reader.currentBytes();
+     * }
+     * ```
+     */
     public #int8[] currentBytes() {
         int32 len = (int32) (this.tokenEnd - this.tokenStart);
         int8[] out = new int8[len];
@@ -454,10 +555,19 @@ public class JsonReader {
         return heap String(#bytes, n);
     }
 
-    // Parse the current NUMBER token's integer span as int64. v1 only
-    // handles signed integers (leading '-' optional). Floats throw
-    // JsonParseException — proper float parsing lands when the
-    // runtime gains a strtod-equivalent helper.
+    /**
+     * Parse the current `NUMBER` token's span as `int64`. v1 only
+     * handles signed integers (leading `-` optional). A fractional or
+     * exponent form throws `JsonParseException`, as does a value
+     * outside the `int64` range. Proper float parsing lands when the
+     * runtime gains a strtod-equivalent helper.
+     *
+     * ```cajeta
+     * if (reader.next() == JsonToken.NUMBER) {
+     *     int64 n = reader.currentNumberAsInt64();
+     * }
+     * ```
+     */
     public int64 currentNumberAsInt64() {
         int64 i = this.tokenStart;
         int64 end = this.tokenEnd;
@@ -517,20 +627,26 @@ public class JsonReader {
         return (int64) acc;
     }
 
-    // Convenience: parse as int32 by delegating to int64 + downcast.
-    // Overflow check is responsibility of the caller for now (lands
-    // alongside JsonOverflowException in Phase 2.5).
+    /**
+     * Parse the current `NUMBER` token as `int32` by delegating to
+     * `currentNumberAsInt64()` and narrowing. Range checking on the
+     * narrowing is the caller's responsibility for now (lands alongside
+     * `JsonOverflowException` in Phase 2.5).
+     */
     public int32 currentNumberAsInt32() {
         return (int32) this.currentNumberAsInt64();
     }
 
-    // Parse the current NUMBER token's span as float64. Supports
-    // optional leading '-', integer part, optional '.' + fractional
-    // digits, and optional exponent (e/E with optional +/-). No
-    // strtod-class accuracy guarantees — naive digit accumulation
-    // with float64 arithmetic. For the typical JSON numbers users
-    // produce (32-bit doubles, small magnitudes), this round-trips
-    // cleanly with the writer's printf-%.17g formatting.
+    /**
+     * Parse the current `NUMBER` token's span as `float64`. Supports an
+     * optional leading `-`, integer part, optional `.` + fractional
+     * digits, and optional exponent (`e`/`E` with optional `+`/`-`). No
+     * strtod-class accuracy guarantees — naive digit accumulation in
+     * `float64`. For typical JSON numbers (32-bit doubles, small
+     * magnitudes) this round-trips cleanly with the writer's
+     * `printf`-`%.17g` formatting. Throws `JsonParseException` on an
+     * empty or bare-`-` token.
+     */
     public float64 currentNumberAsFloat64() {
         int64 i = this.tokenStart;
         int64 end = this.tokenEnd;
@@ -608,20 +724,29 @@ public class JsonReader {
 
     // --- Phase 3: JsonValue tree materialization --------------------
 
-    // Drive next() once and build a #JsonValue for whatever value
-    // appears at the current cursor position. Recursively expands
-    // arrays and objects into JsonArray / JsonObject. Returns the
-    // value with ownership transferred; the caller's drop chain
-    // reclaims the tree.
+    /**
+     * Drive `next()` once and build a `JsonValue` for whatever value
+     * sits at the current cursor position, recursively expanding arrays
+     * and objects into `JsonArray` / `JsonObject`. Ownership of the
+     * tree transfers to the caller, whose drop chain reclaims it.
+     *
+     * ```cajeta
+     * stack reader = JsonReader(buf, buf.count());
+     * #JsonValue root = reader.readValue();
+     * ```
+     */
     public #JsonValue readValue() {
         JsonToken t = this.next();
         return this.readValueAfter(t);
     }
 
-    // Same shape, but the caller has already pulled the leading
-    // token (e.g. inside an object loop where the parent dispatched
-    // on KEY → call next() for the value → call this). Lets the
-    // builder reuse the per-element token without double-advancing.
+    /**
+     * Build a `JsonValue` for an already-pulled leading token `t`
+     * (e.g. inside an object loop that dispatched on `KEY`, called
+     * `next()` for the value, then calls this). Lets the builder reuse
+     * the per-element token without double-advancing. Throws
+     * `JsonParseException` if `t` cannot begin a value.
+     */
     public #JsonValue readValueAfter(JsonToken t) {
         JsonValue v = heap JsonValue();
         if (t == JsonToken.START_OBJECT) {
@@ -650,10 +775,13 @@ public class JsonReader {
         return v;
     }
 
-    // Walk object key/value pairs until END_OBJECT. Each KEY is
-    // followed by exactly one value (which may be a sub-object /
-    // sub-array). On entry, the reader has already produced
-    // START_OBJECT; on exit, END_OBJECT has been consumed.
+    /**
+     * Walk object key/value pairs into `o` until `END_OBJECT`. Each
+     * `KEY` is followed by exactly one value (possibly a sub-object or
+     * sub-array). On entry `START_OBJECT` has already been produced; on
+     * exit `END_OBJECT` has been consumed. Throws `JsonParseException`
+     * if a non-`KEY` token appears where a key is expected.
+     */
     void readObjectBody(JsonObject o) {
         while (true) {
             JsonToken t = this.next();
@@ -673,6 +801,11 @@ public class JsonReader {
         }
     }
 
+    /**
+     * Append array elements into `a` until `END_ARRAY`. On entry
+     * `START_ARRAY` has already been produced; on exit `END_ARRAY` has
+     * been consumed. Each element is built via `readValueAfter`.
+     */
     void readArrayBody(JsonArray a) {
         while (true) {
             JsonToken t = this.next();

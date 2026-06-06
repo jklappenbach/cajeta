@@ -9,11 +9,11 @@ import cajeta.lang.String;
  *
  * | Tier | Entry point                    | Returns / takes    | When to use                              |
  * |------|--------------------------------|--------------------|------------------------------------------|
- * | 3    | `Json.parse(bytes, len)`       | `JsonValue` tree   | Ad-hoc inspection, schema-less, mutation |
- * | 3    | `Json.toBytes(value)`          | `JsonValue` → bytes| Symmetric write-back of a value tree     |
- * | 1    | `Json.parse<T>(bytes, len)`    | `T` direct-binding | Known shape, want zero JsonValue alloc   |
+ * | 3    | `Json.parse(bytes, len)`       | `JsonValue` tree | Ad-hoc inspection, schema-less, mutation |
+ * | 3    | `Json.toBytes(value)`          | `JsonValue` → bytes| Symmetric write-back of a value tree   |
+ * | 1    | `Json.parse<T>(bytes, len)`    | `T` direct-binding | Known shape, want zero `JsonValue` alloc |
  * | 1    | `Json.toBytes<T>(value: T)`    | `T` → bytes        | Symmetric                                |
- * | 2    | `JsonReader.next()` / `JsonWriter` | tokens          | Hot path; full control over allocation   |
+ * | 2    | `JsonReader`.next() / `JsonWriter` | tokens     | Hot path; full control over allocation   |
  *
  * Tier 1 is the **synthesizer**: the compiler walks T's declared
  * fields at the call site and emits a per-field key-dispatch
@@ -104,13 +104,13 @@ import cajeta.lang.String;
  *
  * ```cajeta
  * JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
- * int64 id = v.get("id").asInt64();         // 1
- * String name = v.get("name").asString();   // "alice"
+ * int64 id = v.asObject().get("id").asInt64();         // 1
+ * String name = v.asObject().get("name").asString();   // "alice"
  * ```
  *
  * ## Tier 2 — raw pull tokenizer
  *
- * When allocation matters: `JsonReader.next()` returns token codes
+ * When allocation matters: `JsonReader`.next() returns token codes
  * (`START_OBJECT` / `KEY` / `NUMBER` / etc.); accessor methods
  * (`currentNumberAsInt64()` / `currentBytes()` / ...) materialize
  * the just-read token. Symmetric writer surface is `JsonWriter`
@@ -120,6 +120,20 @@ import cajeta.lang.String;
  */
 public final class Json {
 
+    /**
+     * Tier-3 entry point — parse a JSON byte buffer into a mutable
+     * `JsonValue` tree. Use when the shape isn't known at compile
+     * time; for a known shape prefer the Tier-1 `Json.parse<T>` to
+     * skip the tree allocation.
+     *
+     * ```cajeta
+     * int8[] buf = ...;                              // raw UTF-8 JSON
+     * JsonValue v = Json.parse(buf, (int64) buf.count());
+     * int64 id = v.asObject().get("id").asInt64();
+     * ```
+     *
+     * Throws `JsonParseException` on malformed input.
+     */
     public static #JsonValue parse(int8[] bytes, int64 length) {
         JsonReader r = heap JsonReader(bytes, length);
         return r.readValue();
@@ -127,14 +141,27 @@ public final class Json {
 
     /**
      * Tier-3 String overload. Delegates to the byte-buffer entry
-     * point against the String's UTF-8 payload directly — no copy,
+     * point against the `String`'s UTF-8 payload directly — no copy,
      * no re-encoding, since `String` already stores
      * the bytes the parser wants.
+     *
+     * ```cajeta
+     * JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
+     * ```
      */
     public static #JsonValue parse(String s) {
         return Json.parse(s.bytes, (int64) s.byteLength);
     }
 
+    /**
+     * Tier-3 emit — serialize a `JsonValue` tree back to a fresh
+     * JSON byte buffer. Symmetric counterpart of `Json.parse`.
+     *
+     * ```cajeta
+     * JsonValue v = Json.parse("{\"id\":1}");
+     * int8[] out = Json.toBytes(v);                 // {"id":1}
+     * ```
+     */
     public static #int8[] toBytes(JsonValue value) {
         JsonWriter w = heap JsonWriter();
         w.writeValue(value);
@@ -153,6 +180,13 @@ public final class Json {
      * nested classes / arrays / annotation-driven naming. The synthesis
      * walks T's declared field list and emits a key-dispatch loop
      * against JsonReader.
+     *
+     * ```cajeta
+     * int8[] buf = Json.toBytes<User>(u);
+     * User v = Json.parse<User>(buf, (int64) buf.count());
+     * ```
+     *
+     * Throws `JsonParseException` if the synthesizer fails to engage.
      *
      * See cajeta-docs/stdlib/codec/Json.md § Tier 1.
      */
@@ -173,6 +207,10 @@ public final class Json {
      * signature; this overload's `(String)` shape does NOT match
      * `(int8[], int64)`, so the body below is preserved verbatim and
      * the user gets `Json.parse<T>(jsonString)` as a clean API.
+     *
+     * ```cajeta
+     * User u = Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
+     * ```
      */
     public static T parse<T>(String s) {
         return Json.parse<T>(s.bytes, (int64) s.byteLength);
@@ -197,6 +235,12 @@ public final class Json {
      * Tier 1 emit — symmetric counterpart of parse<T>. Coexists with
      * Tier-3 `toBytes(JsonValue)` via the same template-vs-overload
      * disambiguation as parse.
+     *
+     * ```cajeta
+     * User u = heap User();
+     * u.id = 7;
+     * int8[] bytes = Json.toBytes<User>(u);         // {"id":7,...}
+     * ```
      */
     public static int8[] toBytes<T>(T value) {
         throw heap JsonParseException(

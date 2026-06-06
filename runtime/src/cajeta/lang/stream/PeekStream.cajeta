@@ -1,23 +1,46 @@
 package cajeta.lang.stream;
 
 /**
- * Intermediate combinator: invokes `fn` as a side effect on each
- * element pulled, then passes the element through unchanged. Useful
- * for debugging stream pipelines — `s.peek(v -> printValue(v)).count()`
- * logs every element on the way past.
+ * Intermediate combinator: wraps another `Stream` and invokes `fn` as a
+ * side effect on each element pulled, then passes the element through
+ * unchanged. Useful for observing or debugging a pipeline without altering
+ * the values that flow through it.
  *
- * Lazy: fn is called once per pull, not eagerly. Empty stream
- * propagates without invoking fn.
+ * You rarely name `PeekStream` directly; it is produced by
+ * ``Stream`.peek(fn)` and consumed through the usual `Stream` protocol,
+ * with each `next()` returning an `Optional`.
+ *
+ * ```cajeta
+ * // log every element on the way past, then count them
+ * long n = source.peek((int v) -> printValue(v)).count();
+ * ```
+ *
+ * Lazy: `fn` is called once per pull, not eagerly over the whole source.
+ * An empty stream propagates without invoking `fn`.
  */
 public class PeekStream<T> extends Stream<T> {
     Stream<T> source;
     (T) -> void fn;
 
+    /**
+     * Takes ownership of `source` and retains `fn`. Prefer the
+     * ``Stream`.peek(fn)` factory over calling this directly.
+     *
+     * ```cajeta
+     * #Stream<string> traced =
+     *     heap PeekStream<string>(#source, (string s) -> printValue(s));
+     * ```
+     */
     public PeekStream(#Stream<T> source, (T) -> void fn) {
         this.source = source;
         this.fn = fn;
     }
 
+    /**
+     * Pulls the next element from the source; when present, invokes `fn` on
+     * it before returning it unchanged in the same `Optional`. An empty
+     * `Optional` (exhausted source) is forwarded without calling `fn`.
+     */
     public Optional<T> next() {
         Optional<T> o = this.source.next();
         if (o.isPresent()) {

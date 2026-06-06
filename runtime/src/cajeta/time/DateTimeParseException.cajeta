@@ -5,12 +5,31 @@ package cajeta.time;
  * that doesn't match the expected shape). `errorIndex` is the 0-based offset
  * into the input at which the parser noticed the problem, or -1 if not known.
  *
- * Extends `DateTimeException`, so it sits on the **recoverable** branch and is
- * catchable as either the specific type or as `DateTimeException`.
+ * Extends `DateTimeException`, so it sits on the **recoverable** branch and
+ * is catchable as either the specific type or as the `DateTimeException`
+ * supertype. A `DateTimeFormatter` raises it when text it is decoding into a
+ * `LocalDate`, `LocalTime`, or `ZonedDateTime` cannot be matched.
+ *
+ * ```cajeta
+ * try {
+ *     stack date = LocalDate.parse("2026-13-05");   // month 13 -> bad input
+ * } catch (DateTimeParseException e) {
+ *     // e.message describes the failure; e.errorIndex points at the offset
+ *     log(e.message);
+ * }
+ * ```
  */
 public class DateTimeParseException extends DateTimeException {
     public int64 errorIndex;
 
+    /**
+     * Build the exception with a human-readable `message` and the 0-based
+     * `errorIndex` at which the parse failed (`-1` when the offset is unknown).
+     *
+     * ```cajeta
+     * throw DateTimeParseException("Invalid value for MonthOfYear: 13", 5);
+     * ```
+     */
     public DateTimeParseException(String message, int64 errorIndex) {
         this.message = message;
         this.cause = 0;

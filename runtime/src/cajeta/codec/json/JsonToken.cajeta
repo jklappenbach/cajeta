@@ -1,12 +1,33 @@
 package cajeta.codec.json;
 
-// Pull-tokenizer token kinds. Returned from JsonReader.next().
-// See cajeta-docs/stdlib/codec/Json.md § Tier 2 for the protocol
-// (separator handling, container nesting, end-of-input semantics).
-//
-// BOOLEAN is one token; call currentBoolean() to learn true vs false
-// — avoids a token-set blowup for what is structurally a single
-// value position.
+/**
+ * Pull-tokenizer token kinds, returned one per `JsonReader` `next()`
+ * call. This is the Tier-2 (hot-path) view of a JSON document: instead
+ * of materializing a `JsonValue` tree, you drive the reader yourself
+ * and dispatch on the token at each position. See
+ * `cajeta-docs/stdlib/codec/Json.md` § Tier 2 for the full protocol
+ * (separator handling, container nesting, end-of-input semantics).
+ *
+ * `BOOLEAN` is a single token; call `currentBoolean()` on the reader to
+ * learn true vs false — this avoids a token-set blowup for what is
+ * structurally one value position.
+ *
+ * ```cajeta
+ * JsonReader r = heap JsonReader(bytes, length);
+ * JsonToken t = r.next();
+ * while (t != JsonToken.END) {
+ *     if (t == JsonToken.BOOLEAN) {
+ *         boolean b = r.currentBoolean();
+ *     } else if (t == JsonToken.START_OBJECT) {
+ *         // descend into object; KEY tokens precede each value
+ *     }
+ *     t = r.next();
+ * }
+ * ```
+ *
+ * For the convenience tree API instead, use `Json` `parse(...)` and
+ * walk the resulting `JsonValue`.
+ */
 public enum JsonToken {
     START_OBJECT,    // {
     END_OBJECT,      // }

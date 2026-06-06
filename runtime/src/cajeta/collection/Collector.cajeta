@@ -1,13 +1,13 @@
 package cajeta.collection;
 
 /**
- * Bundle of (supplier, accumulator, combiner) for `Stream<T>.collect<R>`.
- * A Collector<T, R> reduces a stream of T into a single R: call
- * `supplier()` for a fresh accumulator instance, then for each
+ * Bundle of (supplier, accumulator, combiner) for `Stream`'s
+ * `collect<R>`. A Collector<T, R> reduces a stream of T into a single
+ * R: call `supplier()` for a fresh accumulator instance, then for each
  * element apply `accumulator(acc, element)`.
  *
  * Under a parallel collect each worker fiber calls `supplier()` for
- * its own R partial — required for mutable R (e.g. ArrayList): a
+ * its own R partial — required for mutable R (e.g. an `ArrayList`): a
  * single shared seed instance would alias across workers and race
  * on `add` / drop. The orchestrator then merges partials pairwise
  * via `combiner(left, right)` (per StreamParallelism.md § Per-
@@ -16,23 +16,59 @@ package cajeta.collection;
  * into `.parallel()` without per-collector re-engineering.
  *
  * The class-level template parameters keep T (element type) and R
- * (result type) independent so the same Stream can feed any
- * compatible Collector. See cajeta.collection.Collectors for the
- * standard built-in collectors, and cajeta-docs/stdlib/Streams.md §
- * collect for the design.
+ * (result type) independent so the same `Stream` can feed any
+ * compatible Collector. See `Collectors` for the standard built-in
+ * collectors, and cajeta-docs/stdlib/Streams.md § collect for the
+ * design.
  *
  * Implementation note: the accumulator field is a function-typed
- * field (`(R, T) -> R`), invoked directly from
- * `Stream<T>.collect<R>` via `this.fold<R>(c.supplier(),
- * c.accumulator)`. All three callables are method-level-templated
- * and monomorphize per (T, R) tuple — see cajeta-docs/stdlib/
- * MethodLevelTemplate.md.
+ * field (`(R, T) -> R`), invoked directly from `Stream`'s
+ * `collect<R>` via `this.fold<R>(c.supplier(), c.accumulator)`. All
+ * three callables are method-level-templated and monomorphize per
+ * (T, R) tuple — see cajeta-docs/stdlib/MethodLevelTemplate.md.
+ *
+ * ## Usage
+ *
+ * ```cajeta
+ * #ArrayList<int32> xs = new ArrayList<int32>();
+ * xs.add(1);
+ * xs.add(2);
+ * xs.add(3);
+ *
+ * // A custom Collector that folds the stream back into an ArrayList<int32>.
+ * stack toList = Collector<int32, ArrayList<int32>>(
+ *     () -> new ArrayList<int32>(),                        // supplier: fresh partial
+ *     (acc, x) -> { acc.add(x); return acc; },           // accumulator: per-element
+ *     (left, right) -> { left.appendAll(right); return left; }); // combiner: merge partials
+ *
+ * #ArrayList<int32> out = xs.stream().collect<ArrayList<int32>>(toList);
+ *
+ * // Or reuse the ready-made factory from `Collectors`:
+ * #ArrayList<int32> same = xs.stream().collect(Collectors.toList<int32>());
+ * ```
  */
 public class Collector<T, R> {
     public () -> #R supplier;
     public (R, T) -> #R accumulator;
     public (R, R) -> #R combiner;
 
+    /**
+     * Builds a `Collector` from its three callables. Prefer the ready-made
+     * factories in `Collectors` for common cases; construct directly to
+     * define a custom reduction. All three callables are required so the
+     * resulting collector works under both sequential and `.parallel()`
+     * `Stream` pipelines.
+     *
+     * ```cajeta
+     * // Custom collector: fold a Stream<int32> into an ArrayList<int32>.
+     * stack toList = Collector<int32, ArrayList<int32>>(
+     *     () -> new ArrayList<int32>(),                   // supplier: fresh partial
+     *     (acc, x) -> { acc.add(x); return acc; },      // accumulator: per-element
+     *     (left, right) -> { left.appendAll(right); return left; }); // combiner: merge partials
+     *
+     * #ArrayList<int32> result = stream.collect<ArrayList<int32>>(toList);
+     * ```
+     */
     public Collector(() -> #R supplier, (R, T) -> #R accumulator, (R, R) -> #R combiner) {
         this.supplier = supplier;
         this.accumulator = accumulator;

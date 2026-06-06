@@ -24,6 +24,17 @@ public class RedBlackNode<K, V> {
     /** true = red, false = black. New nodes are born red. */
     public boolean red;
 
+    /**
+     * Creates a detached, newly-red node holding `key`/`value`, with
+     * `left`, `right`, and `parent` all `null`. Linking and recolouring
+     * are the `RedBlackTree`'s job — callers rarely construct nodes
+     * directly.
+     *
+     * ```cajeta
+     * heap node = new RedBlackNode<String, Int>("k", 1);
+     * // node.red == true && node.left == null && node.parent == null
+     * ```
+     */
     public RedBlackNode(K key, V value) {
         this.key = key;
         this.value = value;

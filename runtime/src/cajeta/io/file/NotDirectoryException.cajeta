@@ -3,12 +3,30 @@ package cajeta.io.file;
 import cajeta.lang.String;
 
 /**
- * Path is a non-directory where a directory was expected (e.g.
- * `Path.children()` on a regular file, or `mkdirs()` blocked by
- * a file-shaped intermediate). POSIX `ENOTDIR`. See
+ * A `Path` is a non-directory where a directory was expected — for
+ * example a `mkdirs()` whose chain runs through a file-shaped
+ * intermediate component. POSIX `ENOTDIR`. See
  * `cajeta-docs/stdlib/io/file/Errors.md`.
+ *
+ * Subclass of `IoException`; the counterpart to `IsDirectoryException`.
+ *
+ * ```cajeta
+ * try {
+ *     Path.of("/etc/passwd/child").mkdirs();
+ * } catch (NotDirectoryException e) {
+ *     log.warn(e.getMessage());
+ * }
+ * ```
  */
 public class NotDirectoryException extends IoException {
+    /**
+     * Wraps a human-readable `String` `message` describing the path
+     * component that was not a directory.
+     *
+     * ```cajeta
+     * throw new NotDirectoryException("not a directory: " + path.name());
+     * ```
+     */
     public NotDirectoryException(String message) {
         super(message);
     }

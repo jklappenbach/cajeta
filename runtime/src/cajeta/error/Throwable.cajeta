@@ -1,12 +1,34 @@
 package cajeta.error;
 
-// Root of the cajeta exception hierarchy. See cajeta-docs/stdlib/ErrorModel.md.
-// Constructors don't call super(...) — `super` is still
-// UnsupportedExpression. Inherited fields are written directly via
-// `this.message`. Each subclass repeats the field assignment.
+/**
+ * Root of the cajeta exception hierarchy — every throwable type derives
+ * from `Throwable`, carrying a human-readable `message`. Subtypes split the
+ * hierarchy into `Exception` (which adds a `cause` chain) and the
+ * recoverable/unrecoverable variants `RecoverableException` and
+ * `UnrecoverableException`.
+ *
+ * ```cajeta
+ * heap Throwable err = Throwable("disk is full");
+ * String why = err.message;
+ * ```
+ *
+ * ## Implementation note
+ *
+ * Constructors don't call `super(...)` — `super` is still
+ * UnsupportedExpression — so inherited fields are written directly via
+ * `this.message`, and each subclass repeats the field assignment.
+ * See cajeta-docs/stdlib/ErrorModel.md.
+ */
 public class Throwable {
     public String message;
 
+    /**
+     * Wrap a message into a throwable.
+     *
+     * ```cajeta
+     * heap Throwable err = Throwable("unexpected end of input");
+     * ```
+     */
     public Throwable(#String message) {
         this.message = message;
     }

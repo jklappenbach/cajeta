@@ -25,6 +25,26 @@ package cajeta.collection;
  * miss-path convention) rather than throwing; an exception-throwing
  * variant lands with the error model.
  *
+ * ## Usage
+ *
+ * Construct with `new Heap<T>()`, `push` elements in any order, then
+ * drain in ascending order with repeated `pop`:
+ *
+ * ```cajeta
+ * Heap<int32> h = new Heap<int32>();
+ * h.push(5);
+ * h.push(1);
+ * h.push(3);
+ * int32 lo = h.peek();       // 1  (smallest, not removed)
+ * int32 a = h.pop();         // 1
+ * int32 b = h.pop();         // 3
+ * int64 left = h.count();    // 1
+ * boolean done = h.isEmpty();// false
+ * ```
+ *
+ * Grows its backing array by doubling, the same strategy as
+ * `ArrayList`; ordering uses `<` on `T` exactly like `Math`.
+ *
  * @See cajeta.lang.Math
  * @See cajeta.collection.ArrayList
  */
@@ -34,6 +54,14 @@ public class Heap<T> {
     private int32 sizeCount;
     private int32 capacity;
 
+    /**
+     * Create an empty heap with an initial capacity of 16, growing on
+     * demand as elements are `push`ed.
+     *
+     * ```cajeta
+     * Heap<int32> h = new Heap<int32>();
+     * ```
+     */
     public Heap() {
         this.capacity = 16;
         this.data = new T[16];
@@ -47,6 +75,9 @@ public class Heap<T> {
         return (int64) this.sizeCount;
     }
 
+    /**
+     * @returns `true` when the heap holds no elements.
+     */
     public boolean isEmpty() {
         return this.sizeCount == 0;
     }
@@ -55,6 +86,12 @@ public class Heap<T> {
      * Insert `v`, restoring the heap invariant by sifting it up to
      * its ordered position. O(log n) amortized (O(n) on the rare
      * grow). Grows the backing array by doubling when full.
+     *
+     * ```cajeta
+     * Heap<int32> h = new Heap<int32>();
+     * h.push(3);
+     * h.push(1);   // peek() == 1 after each insert
+     * ```
      */
     public void push(T v) {
         if (this.sizeCount >= this.capacity) {

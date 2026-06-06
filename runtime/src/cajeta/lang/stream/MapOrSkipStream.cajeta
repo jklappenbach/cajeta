@@ -3,8 +3,8 @@ package cajeta.lang.stream;
 import cajeta.error.RecoverableException;
 
 /**
- * Intermediate recovery combinator: wraps another Stream<T> and
- * applies `fn: (T) -> R` to each element, yielding a Stream<R>.
+ * Intermediate recovery combinator: wraps another `Stream``<T>` and
+ * applies `fn: (T) -> R` to each element, yielding a `Stream``<R>`.
  * Elements whose `fn` invocation throws `RecoverableException` are
  * **dropped** — the output stream is shorter than the input.
  *
@@ -13,20 +13,44 @@ import cajeta.error.RecoverableException;
  * pipeline unchanged. See
  * `cajeta-docs/stdlib/StreamParallelism.ErrorHandling.md` § 3.3.
  *
- * Lazy — `fn` is invoked once per pull. Empty inner stream
- * propagates as empty. Same type-changing shape as MapStream<T, R>
- * — falls back to sequential under `.parallel()` (the wrapper-chain
- * walk stops at the type-flip; documented limitation).
+ * Lazy — `fn` is invoked once per pull, each pull returning an
+ * `Optional``<R>`. Empty inner stream propagates as empty. Same
+ * type-changing shape as `MapStream``<T, R>` — falls back to
+ * sequential under `.parallel()` (the wrapper-chain walk stops at the
+ * type-flip; documented limitation).
+ *
+ * Prefer the `Stream` pipeline factory over direct construction;
+ * use this wrapper when a mapping step may legitimately reject inputs:
+ *
+ * ```cajeta
+ * # parse the lines that are valid ints, silently skip the rest
+ * #Stream<i32> ints = heap MapOrSkipStream<string, i32>(#lines, (s) -> #i32.parse(s));
+ * Optional<i32> first = ints.next();
+ * ```
  */
 public class MapOrSkipStream<T, R> extends Stream<R> {
     Stream<T> source;
     (T) -> #R fn;
 
+    /**
+     * Wraps `source` so each element is transformed by `fn`, dropping any
+     * element whose `fn` call throws `RecoverableException`. Takes
+     * ownership of `source`.
+     *
+     * ```cajeta
+     * #Stream<i32> safe = heap MapOrSkipStream<Record, i32>(#records, (r) -> #r.score());
+     * ```
+     */
     public MapOrSkipStream(#Stream<T> source, (T) -> #R fn) {
         this.source = source;
         this.fn = fn;
     }
 
+    /**
+     * Pulls and maps the next element, skipping any that raise
+     * `RecoverableException`; returns an empty `Optional``<R>` once the
+     * source is exhausted. `UnrecoverableException` propagates.
+     */
     public Optional<R> next() {
         while (true) {
             Optional<T> o = this.source.next();
@@ -44,11 +68,12 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
         return stack Optional<R>(false, null);
     }
 
-    /** Type-changing wrapper unwind — see MapStream. (Step 5b.) */
+    /** Type-changing wrapper unwind — see `MapStream`. (Step 5b.) */
     public Stream<?> unwrap() {
         return this.source;
     }
 
+    /** Rebuilds this wrapper over a cloned `newRoot`, preserving `fn`; used to fork a pipeline. */
     public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
         return heap MapOrSkipStream<T, R>(this.source.cloneChainOver(#newRoot), this.fn);
     }

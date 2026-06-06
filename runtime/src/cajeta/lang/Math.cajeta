@@ -8,16 +8,26 @@ package cajeta.lang;
  * `Math.max(1.5, 2.5)` produces a `max<float64>`, both with zero
  * dispatch cost.
  *
- * v1 limitation: the bound on T (Comparable) isn't enforced yet —
+ * v1 limitation: the bound on T (`Comparable`) isn't enforced yet —
  * the body uses the `>` and `<` operators, which work for built-in
  * primitives but won't link cleanly for user classes until operator-
  * overloading flows through method-level template specializations.
  * For primitives this works today.
+ *
+ * ```cajeta
+ * stack hi = Math.max(3, 7);            // max<int32> -> 7
+ * stack lo = Math.min(1.5, 2.5);        // min<float64> -> 1.5
+ * stack v  = Math.clamp(120, 0, 100);   // clamp<int32> -> 100
+ * ```
  */
 public class Math {
     /**
      * Returns the larger of `a` and `b`. Per-T monomorphization;
      * non-virtual by virtue of being `static` and method-templated.
+     *
+     * ```cajeta
+     * stack n = Math.max(3, 7);   // 7
+     * ```
      */
     public static T max<T>(T a, T b) {
         if (a > b) { return a; }
@@ -26,6 +36,10 @@ public class Math {
 
     /**
      * Returns the smaller of `a` and `b`.
+     *
+     * ```cajeta
+     * stack n = Math.min(1.5, 2.5);   // 1.5
+     * ```
      */
     public static T min<T>(T a, T b) {
         if (a < b) { return a; }
@@ -35,7 +49,12 @@ public class Math {
     /**
      * Returns `x` clamped to `[lo, hi]`. Implemented via min + max
      * (themselves method-level-templated) so the single declaration
-     * specializes for every T the caller uses.
+     * specializes for every T the caller uses. `lo` must not exceed
+     * `hi`; the result is `lo` when `x < lo` and `hi` when `x > hi`.
+     *
+     * ```cajeta
+     * stack v = Math.clamp(120, 0, 100);   // 100
+     * ```
      */
     public static T clamp<T>(T x, T lo, T hi) {
         return Math.max(lo, Math.min(hi, x));

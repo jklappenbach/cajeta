@@ -7,6 +7,29 @@ package cajeta.lang;
  * file is the load-bearing data definition; method implementations land
  * in subsequent phases (Phase 2c+).
  *
+ * ## Usage
+ *
+ * Strings are read-only: every transformation (`substring`, `trim`,
+ * `toUpperCase`, `replace`, ...) returns a fresh heap `String` rather
+ * than mutating in place, so they hand back `#String` (ownership
+ * transfer). Query methods (`count`, `size`, `contains`, `indexOf`,
+ * `startsWith`, `codepointAt`, ...) read without allocating.
+ *
+ * ```cajeta
+ * heap String s = "  Hello, World  ";
+ * #String clean = s.trim();              // "Hello, World"
+ * if (clean.startsWith("Hello") && clean.contains("World")) {
+ *     #String loud = clean.toUpperCase(); // "HELLO, WORLD"
+ *     int64 codepoints = clean.count();   // 12 (codepoints, not bytes)
+ *     int64 firstComma = clean.indexOf(","); // 5
+ * }
+ * ```
+ *
+ * Equality is content-based: `Object`'s `==` dispatches through the
+ * `hash()` override below, and `equals(String)` is the explicit
+ * byte-for-byte check. Hashing keys cleanly into `HashMap` and
+ * `HashSet`.
+ *
  * ## Phase 2b-α scope
  *
  * What's here today:
@@ -52,6 +75,17 @@ public class String {
     public int32  mode;
     public int32  cachedCpLength;
 
+    /**
+     * Constructs the empty String — `bytes` null, `byteLength` 0,
+     * `mode` 0 (owned), `cachedCpLength` -1 (not yet computed). The
+     * empty literal `""` produces an equivalent value.
+     *
+     * ```cajeta
+     * heap String s = String();
+     * boolean blank = s.isEmpty();   // true
+     * int64 n = s.count();           // 0
+     * ```
+     */
     public String() {
         this.bytes = null;
         this.byteLength = 0;
@@ -73,6 +107,13 @@ public class String {
      *
      * `cachedCpLength` is initialized to -1 (not yet computed); the
      * first `count()` call walks `bytes` and caches the result.
+     *
+     * ```cajeta
+     * int8[] buf = new int8[3];
+     * buf[0] = (int8) 0x61;  buf[1] = (int8) 0x62;  buf[2] = (int8) 0x63;
+     * heap String s = String(#buf, 3);   // view over "abc"
+     * int64 bytes = s.size();             // 3
+     * ```
      */
     public String(#int8[] bytes, int32 byteLength) {
         this.bytes = bytes;

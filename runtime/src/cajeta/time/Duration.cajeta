@@ -7,56 +7,113 @@ import cajeta.lang.Comparable;
  * `java.time.Duration` but backed by a single `int64` nanosecond count, so the
  * representable range is approximately ±292 years.
  *
- * Negative durations are valid (they arise from `between(later, earlier)` and
- * `negated()`). All factories and arithmetic return fresh stack values; the
- * type carries no heap state.
+ * Negative durations are valid (they arise from `Instant``.between(start, end)`
+ * when `end` precedes `start`, and from `negated()`). All factories and
+ * arithmetic return fresh stack values; the type carries no heap state.
  *
  * Equality and ordering are by total nanoseconds. `compareTo` provides the
- * total order (see [[Comparable]]); `operator==` is structural.
+ * total order (see `Comparable`); `operator==` is structural.
+ *
+ * ```cajeta
+ * stack Duration d = Duration.ofSeconds(90);
+ * d.toMinutes();                                 // 1 (truncated)
+ * d.plus(Duration.ofMillis(500)).toMillis();     // 90500
+ * Duration.ofHours(2).compareTo(Duration.ofMinutes(90));  // 1 (longer)
+ * Duration.zero().isZero();                       // true
+ * ```
  */
 public class Duration implements Comparable<Duration> {
     int64 nanos;
 
+    /**
+     * Construct directly from a nanosecond count. Prefer the `ofX` factories
+     * for readability.
+     *
+     * ```cajeta
+     * stack Duration d = Duration(1500000000);  // 1.5 s
+     * ```
+     */
     public Duration(int64 nanos) {
         this.nanos = nanos;
     }
 
-    /** Construct from a raw nanosecond count. */
+    /**
+     * Construct from a raw nanosecond count.
+     *
+     * ```cajeta
+     * stack Duration d = Duration.ofNanos(500);
+     * ```
+     */
     public static Duration ofNanos(int64 nanos) {
         return stack Duration(nanos);
     }
 
-    /** Construct from milliseconds. 1 ms = 1000000 ns. */
+    /**
+     * Construct from milliseconds. 1 ms = 1000000 ns.
+     *
+     * ```cajeta
+     * stack Duration d = Duration.ofMillis(250);
+     * ```
+     */
     public static Duration ofMillis(int64 millis) {
         return stack Duration(millis * 1000000);
     }
 
-    /** Construct from seconds. 1 s = 1000000000 ns. */
+    /**
+     * Construct from seconds. 1 s = 1000000000 ns.
+     *
+     * ```cajeta
+     * stack Duration d = Duration.ofSeconds(30);
+     * ```
+     */
     public static Duration ofSeconds(int64 seconds) {
         return stack Duration(seconds * 1000000000);
     }
 
-    /** Construct from minutes. 1 min = 60 s. */
+    /**
+     * Construct from minutes. 1 min = 60 s.
+     *
+     * ```cajeta
+     * stack Duration d = Duration.ofMinutes(5);
+     * ```
+     */
     public static Duration ofMinutes(int64 minutes) {
         return stack Duration(minutes * 60000000000);
     }
 
-    /** Construct from hours. 1 h = 3600 s. */
+    /**
+     * Construct from hours. 1 h = 3600 s.
+     *
+     * ```cajeta
+     * stack Duration d = Duration.ofHours(2);
+     * ```
+     */
     public static Duration ofHours(int64 hours) {
         return stack Duration(hours * 3600000000000);
     }
 
-    /** Construct from days. 1 d = 86400 s (no calendar awareness). */
+    /**
+     * Construct from days. 1 d = 86400 s (no calendar awareness).
+     *
+     * ```cajeta
+     * stack Duration d = Duration.ofDays(1);
+     * ```
+     */
     public static Duration ofDays(int64 days) {
         return stack Duration(days * 86400000000000);
     }
 
-    /** The zero duration. */
+    /**
+     * The zero duration.
+     *
+     * ```cajeta
+     * Duration.zero().isZero();  // true
+     * ```
+     */
     public static Duration zero() {
         return stack Duration(0);
     }
 
-    /** Total nanoseconds. */
     public int64 toNanos() {
         return this.nanos;
     }
@@ -91,12 +148,18 @@ public class Duration implements Comparable<Duration> {
         return (int32) (this.nanos % 1000000000);
     }
 
-    /** Sum. */
+    /**
+     * The sum of this and `other`, as a new stack `Duration`. The result may be
+     * negative if the operands' signs differ.
+     */
     public Duration plus(Duration other) {
         return stack Duration(this.nanos + other.nanos);
     }
 
-    /** Difference. */
+    /**
+     * The difference `this - other`, as a new stack `Duration`. The result is
+     * negative whenever `other` is longer than this.
+     */
     public Duration minus(Duration other) {
         return stack Duration(this.nanos - other.nanos);
     }

@@ -5,7 +5,7 @@ package cajeta.time;
  * built so you never have to reverse-engineer a pattern letter:
  *
  *  1. **Standard formats** — `DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME)`,
- *     `FormatStyle.RFC_1123_DATE_TIME`, etc. (see [[FormatStyle]]).
+ *     `FormatStyle.RFC_1123_DATE_TIME`, etc. (see `FormatStyle`).
  *  2. **printf/strftime-style patterns** —
  *     `DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S")` — full control over the
  *     exact format with a one-liner (the codes are listed below).
@@ -15,7 +15,7 @@ package cajeta.time;
  * see plans/time. `ofPattern` covers the same need concisely.)
  *
  * Render with `formatDate` / `formatTime` / `formatDateTime` / `formatZoned`, or
- * `format(DateTimeFields)`. Output is an owned `#String`; text is English.
+ * `format(`DateTimeFields`)`. Output is an owned `#String`; text is English.
  *
  * The formatter is **immutable** — it holds only its strftime pattern string and
  * parses it on each `format` call. (Cajeta's borrow/ABI rules make a mutable
@@ -31,16 +31,40 @@ package cajeta.time;
 public final class DateTimeFormatter {
     String pattern;
 
+    /**
+     * Wraps a raw strftime `pattern`. Prefer the `FormatStyle`-aware
+     * `ofStandard` or the explicit `ofPattern` factory over calling this directly —
+     * they return an owned `#DateTimeFormatter`:
+     *
+     * ```cajeta
+     * #DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
+     * #DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
+     * ```
+     */
     public DateTimeFormatter(String pattern) {
         this.pattern = pattern;
     }
 
-    /** A formatter for a strftime-style pattern (see class docs for codes). */
+    /**
+     * A formatter for a strftime-style pattern (see class docs for codes).
+     *
+     * ```cajeta
+     * #DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%a, %d %b %Y %H:%M");
+     * #String out = fmt.formatDateTime(dt);   // "Fri, 05 Jun 2026 13:07"
+     * ```
+     */
     public static #DateTimeFormatter ofPattern(String pattern) {
         return heap DateTimeFormatter(pattern);
     }
 
-    /** A formatter for a standard [[FormatStyle]]. */
+    /**
+     * A formatter for a standard `FormatStyle`.
+     *
+     * ```cajeta
+     * #DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
+     * #String out = iso.formatDateTime(dt);    // "2026-06-05T13:07:00"
+     * ```
+     */
     public static #DateTimeFormatter ofStandard(FormatStyle style) {
         String p = "%Y-%m-%d";
         if (style == FormatStyle.ISO_LOCAL_TIME) {
@@ -65,12 +89,20 @@ public final class DateTimeFormatter {
         return heap DateTimeFormatter(p);
     }
 
-    /** The strftime pattern this formatter renders with. */
     public String getPattern() {
         return this.pattern;
     }
 
-    /** Render `f` by parsing this formatter's pattern. Returns an owned String. */
+    /**
+     * Render the `DateTimeFields` `f` by parsing this formatter's pattern.
+     * Returns an owned `#String`. Unknown `%` codes emit a literal `%` rather
+     * than throwing.
+     *
+     * ```cajeta
+     * #DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d");
+     * #String out = fmt.format(DateTimeFields.ofDate(d));
+     * ```
+     */
     public #String format(DateTimeFields f) {
         int32 n = this.pattern.byteLength;
         // Generous upper bound: each '%X' can expand to a name/year (<=16),
@@ -94,31 +126,55 @@ public final class DateTimeFormatter {
         return heap String(#buf, p);
     }
 
-    /** Format a date. */
+    /**
+     * Format a `LocalDate` (date fields only).
+     *
+     * ```cajeta
+     * #String out = DateTimeFormatter.ofStandard(FormatStyle.US_DATE).formatDate(d);
+     * ```
+     */
     public #String formatDate(LocalDate d) {
         DateTimeFields f = DateTimeFields.ofDate(d);
         return this.format(f);
     }
 
-    /** Format a time. */
+    /**
+     * Format a `LocalTime` (time-of-day fields only).
+     *
+     * ```cajeta
+     * #String out = DateTimeFormatter.ofPattern("%H:%M:%S").formatTime(t);
+     * ```
+     */
     public #String formatTime(LocalTime t) {
         DateTimeFields f = DateTimeFields.ofTime(t);
         return this.format(f);
     }
 
-    /** Format a zone-naive date-time. */
+    /**
+     * Format a zone-naive `LocalDateTime` (date and time fields, no offset).
+     *
+     * ```cajeta
+     * #String out = DateTimeFormatter.ofStandard(FormatStyle.SQL_TIMESTAMP).formatDateTime(t);
+     * ```
+     */
     public #String formatDateTime(LocalDateTime t) {
         DateTimeFields f = DateTimeFields.ofDateTime(t);
         return this.format(f);
     }
 
-    /** Format a zoned date-time (offset fields available). */
+    /**
+     * Format a `ZonedDateTime` — the offset codes `%z` / `%Z` become available.
+     *
+     * ```cajeta
+     * #String out = DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S%Z").formatZoned(z);
+     * ```
+     */
     public #String formatZoned(ZonedDateTime z) {
         DateTimeFields f = DateTimeFields.ofZoned(z);
         return this.format(f);
     }
 
-    // Render one strftime code into buf at p; returns the new position.
+    /** Render one strftime `code` into `buf` at `p`; returns the new write position. */
     static int32 emit(int8[] buf, int32 p, int32 code, DateTimeFields f) {
         if (code == 89) { // Y
             return DateTimeFormatter.writeYear(buf, p, f.year, 4);
@@ -207,6 +263,7 @@ public final class DateTimeFormatter {
         return Fmt.writeChar(buf, p, 37);
     }
 
+    /** Write `year` zero-padded to `width`, prefixing `-` for negative (proleptic) years. */
     static int32 writeYear(int8[] buf, int32 p, int32 year, int32 width) {
         int32 w = width;
         if (w < 1) {
@@ -221,6 +278,7 @@ public final class DateTimeFormatter {
         return Fmt.writeUint(buf, q, (int64) ay, w);
     }
 
+    /** Write the `nano` sub-second fraction truncated to `digits` (clamped to 1..9). */
     static int32 writeFraction(int8[] buf, int32 p, int32 nano, int32 digits) {
         int32 d = digits;
         if (d < 1) {
@@ -238,6 +296,10 @@ public final class DateTimeFormatter {
         return Fmt.writeUint(buf, p, (int64) nano / div, d);
     }
 
+    /**
+     * Write a UTC offset. `withColon` selects `±HH:MM` (and `Z` for zero) for `%Z`;
+     * otherwise `±HHMM` (zero renders `+0000`) for `%z`.
+     */
     static int32 writeOffset(int8[] buf, int32 p, int32 offsetSeconds, boolean withColon) {
         if (offsetSeconds == 0) {
             if (withColon) {
@@ -264,6 +326,7 @@ public final class DateTimeFormatter {
         return q;
     }
 
+    /** English 3-letter month name for `m` (1..12); `"???"` if out of range. */
     static String monthShort(int32 m) {
         if (m == 1) { return "Jan"; }
         if (m == 2) { return "Feb"; }
@@ -280,6 +343,7 @@ public final class DateTimeFormatter {
         return "???";
     }
 
+    /** Full English month name for `m` (1..12); `"???"` if out of range. */
     static String monthLong(int32 m) {
         if (m == 1) { return "January"; }
         if (m == 2) { return "February"; }
@@ -296,6 +360,7 @@ public final class DateTimeFormatter {
         return "???";
     }
 
+    /** English 3-letter weekday for `d` (1=Mon..7=Sun); `"???"` if out of range. */
     static String dowShort(int32 d) {
         if (d == 1) { return "Mon"; }
         if (d == 2) { return "Tue"; }
@@ -307,6 +372,7 @@ public final class DateTimeFormatter {
         return "???";
     }
 
+    /** Full English weekday name for `d` (1=Mon..7=Sun); `"???"` if out of range. */
     static String dowLong(int32 d) {
         if (d == 1) { return "Monday"; }
         if (d == 2) { return "Tuesday"; }

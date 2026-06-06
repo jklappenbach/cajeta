@@ -15,7 +15,7 @@ package cajeta.lang;
  * | Method      | Default                                                    |
  * |-------------|------------------------------------------------------------|
  * | `hash()`    | **pointer-identity**, mixed with the per-process seed     |
- * | `toString()`| `null` placeholder until the String surface stabilizes    |
+ * | `toString()`| `null` placeholder until the `String` surface stabilizes  |
  * | `clone()`   | `null` placeholder until ownership semantics stabilize    |
  *
  * **Identity, not structural.** `Object.hash()` returns the object's
@@ -23,7 +23,7 @@ package cajeta.lang;
  * matching Java's `Object.hashCode()` shape, not Rust's `derive(Hash)`.
  * Two distinct instances with identical field values produce different
  * hashes by default. Classes that need value-keyed semantics
- * (`HashMap<Point, V>` where `Point(1, 2)` should equal `Point(1, 2)`)
+ * (`HashMap``<Point, V>` where `Point(1, 2)` should equal `Point(1, 2)`)
  * **override `hash()` manually**, or opt into structural synthesis
  * via the `@AutoHash` annotation (planned — see §"Auto-hash opt-in"
  * in stdlib/Lang.md).
@@ -33,12 +33,30 @@ package cajeta.lang;
  * process but not across restarts. That kills hash-flooding attacks
  * against `HashMap` keyed on user-controlled input.
  *
+ * ## Example
+ *
+ * ```cajeta
+ * // Override hash() for value-keyed semantics instead of pointer identity.
+ * public class Point {
+ *     stack int64 x;
+ *     stack int64 y;
+ *
+ *     public int64 hash() {
+ *         return (x << 32) ^ y;   // structural, not heap-address derived
+ *     }
+ * }
+ *
+ * // operator== is inherited from Object as `this.hash() == other.hash()`,
+ * // so once hash() is value-keyed a `HashMap` treats Point(1, 2) as a
+ * // single bucket and the auto-derived `!=` follows for free.
+ * ```
+ *
  * ## Deferred items
  *
  * - `operator==(Object)` — needs the `@Native` bridge to handle
  *   boolean (`i1`) return-type coercion before its native stub can
  *   ship. Until then, identity equality on class references uses
- *   `Hash.identity` and manual override is the path for structural
+ *   `Hash``.identity` and manual override is the path for structural
  *   equality.
  * - `@AutoHash` annotation — opt-in structural-hash synthesis for
  *   value-keyed classes. Synthesizer-generated diagnostics must
@@ -46,8 +64,10 @@ package cajeta.lang;
  *   cycle, etc.) to the **annotated class + offending field name**
  *   so the user can fix it without sifting through generated code.
  *
- * @See cajeta.hash.Hash
- * @See cajeta.hash.DefaultHasher
+ * ## See also
+ *
+ * `Hash` — identity/combine helpers and the per-process seed.
+ * `DefaultHasher` — the streaming hasher value-keyed classes feed.
  */
 public class Object {
 
@@ -57,7 +77,7 @@ public class Object {
      * The default implementation is **pointer-identity** — the
      * object's heap address mixed through the SplitMix64 finalizer
      * with the per-process seed, same path as
-     * `cajeta.hash.Hash.identity(this)`. Two distinct instances with
+     * `Hash``.identity(this)`. Two distinct instances with
      * identical field values produce different hashes; this is the
      * `Object.hashCode()` shape, not `derive(Hash)`.
      *
@@ -70,7 +90,7 @@ public class Object {
      * "equal values hash equally" contract.
      *
      * @returns 64-bit identity hash, well-distributed for use as a
-     *          `HashMap<K, V>` / `HashSet<T>` bucket key.
+     *          `HashMap``<K, V>` / `HashSet``<T>` bucket key.
      * @Complexity O(1).
      */
     @Native("__cajeta_object_hash")
@@ -81,7 +101,7 @@ public class Object {
      * debug output.
      *
      * The default implementation returns `null` until both the
-     * structural synthesizer lands and the `cajeta.lang.String`
+     * structural synthesizer lands and the `String`
      * construction surface stabilizes. The synthesized form will
      * follow the `TypeName(field1=value1, field2=value2, ...)` shape —
      * close to Rust's `#[derive(Debug)]`, sufficient for `println(x)`
@@ -131,8 +151,8 @@ public class Object {
      *     splitmix64 — distinct pointers hash to distinct values
      *     (splitmix64 is bijective on the pointer ⊕ seed input), so
      *     `a == b` IS pointer identity in practice.
-     *   - String (content hash): UTF-8-derived hash via SipHash-1-3
-     *     (planned) — `a == b` IS value equality. String does NOT
+     *   - `String` (content hash): UTF-8-derived hash via SipHash-1-3
+     *     (planned) — `a == b` IS value equality. `String` does NOT
      *     override operator==; it only overrides hash(), and the
      *     virtual dispatch through this method body carries the
      *     semantic shift.

@@ -8,7 +8,23 @@ package cajeta.time;
  * measuring elapsed intervals; it is NOT wall-clock time and is not affected by
  * NTP or leap-second adjustments. `millisTime()` is wall-clock milliseconds
  * since the Unix epoch (`CLOCK_REALTIME`) and CAN jump if the system clock is
- * adjusted. `now()` reads the wall clock and returns it as an [[Instant]].
+ * adjusted. `now()` reads the wall clock and returns it as an `Instant`.
+ *
+ * All members are `static`; there is nothing to construct.
+ *
+ * ```cajeta
+ * // Time an operation with the monotonic counter.
+ * stack int64 start = Clock.nanoTime();
+ * doWork();
+ * stack int64 elapsedNanos = Clock.nanoTime() - start;
+ *
+ * // Capture the current moment as an Instant, then project it to a calendar.
+ * stack Instant moment = Clock.now();
+ * stack ZonedDateTime here = ZonedDateTime.ofInstant(moment, ZoneOffset.utc());
+ * ```
+ *
+ * Reach for `Instant` / `ZonedDateTime` / `ZoneOffset` for calendar work,
+ * and `Duration` for the spans you compute from `nanoTime()` deltas.
  */
 public final class Clock {
     /** Monotonic nanosecond counter for interval measurement (CLOCK_MONOTONIC). */
@@ -19,7 +35,13 @@ public final class Clock {
     @Native("__cajeta_currentTimeMillis")
     public static int64 millisTime();
 
-    /** The current instant from the system wall clock (millisecond resolution). */
+    /**
+     * The current instant from the system wall clock (millisecond resolution).
+     *
+     * ```cajeta
+     * stack Instant t = Clock.now();
+     * ```
+     */
     public static Instant now() {
         int64 ms = Clock.millisTime();
         int64 s = ms / 1000;

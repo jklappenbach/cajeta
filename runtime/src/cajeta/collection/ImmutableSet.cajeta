@@ -20,6 +20,19 @@ import cajeta.lang.stream.ArrayStream;
  * identity semantics (override `hash()` + `==` for value semantics);
  * primitive T lowers `.hash()` to the `__cajeta_hash_X` intrinsic.
  *
+ * ## Usage
+ *
+ * ```cajeta
+ * ArrayList<int32> src = heap ArrayList<int32>();
+ * src.add(1); src.add(2); src.add(2); src.add(3);
+ *
+ * ImmutableSet<int32> set = heap ImmutableSet<int32>(src);
+ * set.count();        // 3 — duplicate 2 dropped
+ * set.contains(2);    // true
+ * set.get(0);         // 1 — first-seen order preserved
+ * set.stream().forEach(v -> print(v));
+ * ```
+ *
  * @See cajeta.collection.HashSet
  * @See cajeta.collection.ArrayList
  */
@@ -45,6 +58,13 @@ public class ImmutableSet<T> {
      * Build a frozen, de-duplicated set from `src`. The first
      * occurrence of each `==`-equal value wins; later duplicates are
      * dropped. The source `ArrayList` is left untouched.
+     *
+     * ```cajeta
+     * ArrayList<string> names = heap ArrayList<string>();
+     * names.add("ann"); names.add("bo"); names.add("ann");
+     * ImmutableSet<string> set = heap ImmutableSet<string>(names);
+     * // set.count() == 2; names is unchanged
+     * ```
      *
      * @Param src the values to snapshot.
      */
@@ -145,7 +165,12 @@ public class ImmutableSet<T> {
     }
 
     /**
-     * Heap-allocated stream over the unique members, first-seen order.
+     * Heap-allocated `ArrayStream` over the unique members, first-seen
+     * order.
+     *
+     * ```cajeta
+     * set.stream().forEach(v -> print(v));
+     * ```
      */
     public #ArrayStream<T> stream() {
         return heap ArrayStream<T>(this.elements, this.elemCount);

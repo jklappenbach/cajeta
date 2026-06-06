@@ -30,6 +30,25 @@ package cajeta.collection;
  * insert/lookup ordered map — already the common case for a sorted
  * index.
  *
+ * ## Example
+ *
+ * ```cajeta
+ * #RedBlackTree<int32, string> idx = heap RedBlackTree<int32, string>();
+ * idx.put(42, "answer");
+ * idx.put(7, "lucky");
+ *
+ * string v = idx.get(42);           // "answer"
+ * boolean has = idx.containsKey(7);  // true
+ * int32 lo = idx.min();              // 7
+ * int32 hi = idx.max();              // 42
+ *
+ * // Ascending key walk, ownership transfers to the caller.
+ * #ArrayList<int32> keys = idx.keysInOrder();
+ * ```
+ *
+ * Each node is a `RedBlackNode`; ordering follows the same `<` / `>`
+ * convention as `Math`, and `ArrayList` backs `keysInOrder`.
+ *
  * @See cajeta.collection.RedBlackNode
  * @See cajeta.lang.Math
  */
@@ -38,6 +57,14 @@ public class RedBlackTree<K, V> {
     private RedBlackNode<K, V> root;
     private int64 sizeCount;
 
+    /**
+     * Create an empty ordered map.
+     *
+     * ```cajeta
+     * #RedBlackTree<string, int32> counts = heap RedBlackTree<string, int32>();
+     * counts.put("hits", 1);
+     * ```
+     */
     public RedBlackTree() {
         this.root = null;
         this.sizeCount = 0;

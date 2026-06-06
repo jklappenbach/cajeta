@@ -1,10 +1,24 @@
 package cajeta.lang.stream;
 
 /**
- * Walks a HashMap's slot arrays and yields each OCCUPIED value.
- * Snapshot semantics match HashMapKeyStream — the same caveat about
- * mutation-during-iteration applies. See HashMapKeyStream for the
- * iteration model + skip rules (EMPTY / TOMBSTONE / OCCUPIED).
+ * A `Stream` over a `HashMap`'s values — walks the slot arrays
+ * and yields each OCCUPIED value. As a `Splittable` root it can be
+ * split for parallel terminals (see `ParallelDriver`).
+ *
+ * You normally obtain one from `HashMap` rather than constructing
+ * it directly:
+ *
+ * ```cajeta
+ * HashMap<String, int32> ages = ...;
+ * int64 total = ages.values()
+ *     .map<int64>((v) -> (int64) v)
+ *     .reduce(0L, (a, b) -> a + b);
+ * ```
+ *
+ * Snapshot semantics match `HashMapKeyStream` — the same caveat
+ * about mutation-during-iteration applies. See `HashMapKeyStream`
+ * for the iteration model + skip rules (EMPTY / TOMBSTONE /
+ * OCCUPIED).
  */
 public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V> {
     V[] vals;
@@ -12,6 +26,17 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
     int64 cap;
     int64 idx;
 
+    /**
+     * Captures references to the value + state arrays and the slot
+     * capacity, with the cursor parked at the first slot. Snapshot
+     * point: see the class note. Prefer `HashMap`.`values()` over
+     * calling this directly — it wires the map's internal arrays in
+     * for you.
+     *
+     * ```cajeta
+     * #Stream<V> s = heap HashMapValueStream<K, V>(vals, state, cap);
+     * ```
+     */
     public HashMapValueStream(V[] vals, int8[] state, int64 cap) {
         this.vals = vals;
         this.state = state;
@@ -19,6 +44,11 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
         this.idx = 0;
     }
 
+    /**
+     * Advances the cursor to the next OCCUPIED slot and returns its
+     * value in a present `Optional`, skipping EMPTY/TOMBSTONE slots.
+     * Returns an empty `Optional` once the slot range is exhausted.
+     */
     public Optional<V> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
@@ -47,6 +77,12 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
         return upper;
     }
 
+    /**
+     * Conservative remaining-element estimate: counts remaining slot
+     * positions, not occupied entries, so it overshoots when EMPTY/
+     * TOMBSTONE slots are present. Robust for split-count math since
+     * every share applies the skip rules identically.
+     */
     public int64 estimateSize() {
         return this.cap - this.idx;
     }

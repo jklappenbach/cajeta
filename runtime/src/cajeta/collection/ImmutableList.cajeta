@@ -4,14 +4,14 @@ import cajeta.lang.stream.ArrayStream;
 
 /**
  * Immutable, array-backed list. A frozen snapshot of an
- * `ArrayList<T>`: the backing array is copied once at construction
+ * `ArrayList`: the backing array is copied once at construction
  * and never mutated, so reads are O(1) and the structure is safe to
  * share without defensive copies.
  *
  * Modeled on Guava's `RegularImmutableList` — a thin, dense array
  * wrapper with no per-element indirection. There are no mutators;
  * to "change" an `ImmutableList` you build a new one from a fresh
- * `ArrayList<T>`.
+ * `ArrayList`.
  *
  * ## v1 surface
  *
@@ -21,9 +21,29 @@ import cajeta.lang.stream.ArrayStream;
  * throwing — a bounds-checking variant lands with the error model.
  *
  * Sizes are tracked as `int32` to mirror `ArrayList` and feed
- * `ArrayStream(T[], int32 limit)` directly; `count()` widens to
+ * `ArrayStream``(T[], int32 limit)` directly; `count()` widens to
  * `int64` at the API boundary for parity with the hash-based
- * collections.
+ * collections like `HashMap`.
+ *
+ * ## Usage
+ *
+ * ```cajeta
+ * stack src = ArrayList<int32>();
+ * src.add(10);
+ * src.add(20);
+ * src.add(30);
+ *
+ * // Freeze it — `src` stays owned by the caller and is untouched.
+ * stack frozen = ImmutableList<int32>(src);
+ *
+ * frozen.count();        // 3 (int64)
+ * frozen.get(1);         // 20
+ * frozen.get(99);        // 0  — zero value, no throw
+ * frozen.indexOf(30);    // 2
+ * frozen.contains(40);   // false
+ *
+ * #ArrayStream<int32> s = frozen.stream();
+ * ```
  *
  * @See cajeta.collection.ArrayList
  */
@@ -37,6 +57,14 @@ public class ImmutableList<T> {
      * Build an immutable copy of `src`. Copies every element of
      * `src` (in order) into a right-sized owned array; the source
      * `ArrayList` is left untouched and still owned by the caller.
+     *
+     * ```cajeta
+     * stack src = ArrayList<string>();
+     * src.add("a");
+     * src.add("b");
+     * stack snapshot = ImmutableList<string>(src);
+     * // `src` may keep mutating — `snapshot` never changes.
+     * ```
      *
      * @Param src the list whose elements to snapshot.
      */
@@ -109,7 +137,11 @@ public class ImmutableList<T> {
     }
 
     /**
-     * Heap-allocated stream walking all elements in order.
+     * Heap-allocated `ArrayStream` walking all elements in order.
+     *
+     * ```cajeta
+     * #ArrayStream<int32> s = frozen.stream();
+     * ```
      */
     public #ArrayStream<T> stream() {
         return heap ArrayStream<T>(this.data, this.sizeCount);

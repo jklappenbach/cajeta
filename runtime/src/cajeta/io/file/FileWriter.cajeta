@@ -6,12 +6,21 @@ import cajeta.lang.String;
  * Streaming byte writer. See
  * `cajeta-docs/stdlib/io/file/FileWriter.md`.
  *
- * Returned by `File.openWrite(p, mode)`. The caller hands in
+ * Returned by `File``.openWrite(p, mode)`. The caller hands in
  * `(data, len)` per call; internal buffering hides OS-level
- * short writes and batches small writes.
+ * short writes and batches small writes. Write `String` payloads
+ * directly with `writeString`, raw bytes with `write`.
  *
  * The destructor flushes and closes the fd if `close()` wasn't
  * called.
+ *
+ * ```cajeta
+ * stack w = File.openWrite(path, mode);
+ * w.writeString("hello\n");
+ * w.write(bytes, len);
+ * w.flush();
+ * w.close();
+ * ```
  */
 public class FileWriter {
     /**
@@ -45,19 +54,27 @@ public class FileWriter {
      *
      * Phase A: intrinsic-lowered to
      * `__cajeta_file_write(this.fd, data, len)`.
+     *
+     * ```cajeta
+     * w.write(bytes, len);
+     * ```
      */
     public void write(int8[] data, int32 len) {
         return;
     }
 
     /**
-     * Write a String's UTF-8 bytes to the file. The String's
+     * Write a `String`'s UTF-8 bytes to the file. The String's
      * `bytes` field is the source of truth (mode-0 owned or
      * mode-1 view — doesn't matter; we just read the bytes).
      *
      * Intrinsic-lowered to
      * `__cajeta_file_write(this.fd, &s.bytes[8], s.byteLength)`.
      * `this.pos` advances by `s.byteLength`.
+     *
+     * ```cajeta
+     * w.writeString("line one\n");
+     * ```
      */
     public void writeString(String s) {
         return;

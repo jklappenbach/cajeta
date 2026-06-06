@@ -4,10 +4,30 @@ import cajeta.collection.ArrayList;
 import cajeta.lang.Optional;
 import cajeta.lang.String;
 
-// Minimal key/value store backing JsonValue.OBJECT. Parallel arrays
-// of int8[] keys + JsonValue values; v1 uses linear scan for get().
-// Insertion order is preserved. The keyLens array stores per-key
-// byte counts (since int8[].count() isn't exposed as a property yet).
+/**
+ * Minimal, insertion-ordered key/value store backing `JsonValue` objects
+ * (`JsonValue.OBJECT`). Keys are kept as raw `int8[]` byte buffers in a
+ * `keys` array alongside a parallel `keyLens` array (since `int8[].count()`
+ * isn't exposed as a property yet) and a parallel `JsonValue` array. `get`
+ * is a linear scan — v1 does no hashing.
+ *
+ * ## Two access tiers
+ * - The hot-path tokenizer uses the byte-buffer `get(bytes, len)` / `keyAt`
+ *   form and tolerates a `null` result on a miss.
+ * - Convenience / user code uses the typed `Optional`-returning accessors
+ *   (`getString`, `getInt`, `getArray`, ...), which return `Optional.empty()`
+ *   when the key is missing OR when the value's kind doesn't match.
+ *
+ * ## Usage
+ * ```cajeta
+ * JsonObject cfg = value.asObject();
+ * Optional<String> name = cfg.getString("name");
+ * if (name.isPresent()) {
+ *     String n = name.get();
+ * }
+ * #ArrayList<String> ks = cfg.keys();
+ * ```
+ */
 public class JsonObject {
     int8[][] keys;
     int32[] keyLens;
@@ -15,6 +35,15 @@ public class JsonObject {
     int32 cap;
     int32 sizeCount;
 
+    /**
+     * Create an empty object with a starting capacity of 8 entries; the
+     * backing arrays grow automatically as keys are added with `put`.
+     *
+     * ```cajeta
+     * JsonObject obj = new JsonObject();
+     * obj.put(#keyBytes, keyLen, #v);
+     * ```
+     */
     public JsonObject() {
         this.cap = 8;
         this.keys = new int8[8][];
@@ -39,18 +68,26 @@ public class JsonObject {
         return this.values[i];
     }
 
-    // String-typed get — convenience overload over `get(bytes, len)`.
-    // Preferred for hand-written user code; the byte-buffer form
-    // below is for the hot-path tokenizer that already has the
-    // bytes + length in hand.
+    /**
+     * Look up a value by `String` key — convenience overload over
+     * `get(bytes, len)`. Returns `null` when the key is absent. Preferred for
+     * hand-written user code; the byte-buffer form below is for the hot-path
+     * tokenizer that already has the bytes + length in hand.
+     *
+     * ```cajeta
+     * JsonValue v = cfg.get("name");
+     * if (v != null) { String s = v.asString(); }
+     * ```
+     */
     public JsonValue get(String key) {
         return this.get(key.bytes, key.byteLength);
     }
 
-    // Linear-scan get by key bytes. Returns null if absent. v1 keeps
-    // it dumb (no hashing) because the convenience tier doesn't run
-    // in the hot path — Tier 1 codegen handles the perf-sensitive
-    // paths field-by-field.
+    /**
+     * Linear-scan lookup by raw key bytes; returns `null` if absent. v1 keeps
+     * it un-hashed because the convenience tier doesn't run in the hot path —
+     * Tier 1 codegen handles the perf-sensitive paths field-by-field.
+     */
     public JsonValue get(int8[] key, int32 keyLen) {
         int32 i = 0;
         while (i < this.sizeCount) {
@@ -75,6 +112,16 @@ public class JsonObject {
         return null;
     }
 
+    /**
+     * Append a key/value entry, taking ownership of the `#int8[]` key buffer
+     * and the `#JsonValue` (heap transfer). Insertion order is preserved and
+     * the backing arrays grow when full. Does not deduplicate — re-putting an
+     * existing key appends a second entry that `get` will never reach.
+     *
+     * ```cajeta
+     * obj.put(#keyBytes, keyLen, #v);
+     * ```
+     */
     public void put(#int8[] key, int32 keyLen, #JsonValue v) {
         if (this.sizeCount >= this.cap) {
             this.grow();
@@ -85,6 +132,7 @@ public class JsonObject {
         this.sizeCount = this.sizeCount + 1;
     }
 
+    /** Double the backing-array capacity and copy existing entries over; called by `put` when full. */
     void grow() {
         int32 newCap = this.cap * 2;
         int8[][] dstK = new int8[newCap][];
@@ -120,6 +168,7 @@ public class JsonObject {
     // with its own message. The kind-check helpers `containsKey`
     // and `valueKindAt` are exposed for that branch.
 
+    /** `true` if `key` is present, regardless of its value's kind. */
     public boolean containsKey(String key) {
         return this.get(key) != null;
     }
@@ -140,6 +189,15 @@ public class JsonObject {
         return out;
     }
 
+    /**
+     * `String` value at `key`, or `Optional.empty()` if the key is missing
+     * or its value isn't a JSON string.
+     *
+     * ```cajeta
+     * Optional<String> name = cfg.getString("name");
+     * if (name.isPresent()) { String n = name.get(); }
+     * ```
+     */
     public Optional<String> getString(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 3) {
@@ -148,6 +206,7 @@ public class JsonObject {
         return stack Optional<String>(true, v.asString());
     }
 
+    /** Number value at `key` as `int32`, or empty if the key is missing / not a number. */
     public Optional<int32> getInt(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 2) {
@@ -156,6 +215,7 @@ public class JsonObject {
         return stack Optional<int32>(true, v.asInt32());
     }
 
+    /** Number value at `key` as `int64`, or empty if the key is missing / not a number. */
     public Optional<int64> getLong(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 2) {
@@ -164,6 +224,7 @@ public class JsonObject {
         return stack Optional<int64>(true, v.asInt64());
     }
 
+    /** Boolean value at `key`, or empty if the key is missing / not a boolean. */
     public Optional<boolean> getBoolean(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 1) {
@@ -172,6 +233,7 @@ public class JsonObject {
         return stack Optional<boolean>(true, v.asBoolean());
     }
 
+    /** `JsonArray` value at `key`, or empty if the key is missing / not an array. */
     public Optional<JsonArray> getArray(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 4) {
@@ -180,6 +242,7 @@ public class JsonObject {
         return stack Optional<JsonArray>(true, v.asArray());
     }
 
+    /** Nested `JsonObject` at `key`, or empty if the key is missing / not an object. */
     public Optional<JsonObject> getObject(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 5) {

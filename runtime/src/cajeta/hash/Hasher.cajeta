@@ -5,7 +5,7 @@ import cajeta.lang.String;
 /**
  * Uniform streaming-hash contract.
  *
- * Every algorithm class (`XXHash3`, `RapidHash`, `SipHash`, `MD5`,
+ * Every algorithm class (`XXHash3`, `SipHash`, `MD5`,
  * `DefaultHasher`) implements this interface so callers can write a
  * single hash-loop body that swaps algorithms by changing the
  * constructor. Per-type entry points are explicit width-named
@@ -34,24 +34,51 @@ import cajeta.lang.String;
  * with separate statements. Fluent chaining can be revisited once
  * class-to-interface upcast on return is exercised more broadly.
  *
- * @See cajeta.hash.Hash
+ * See `Hash` for the convenience facade over these algorithms.
+ *
  * @See [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public interface Hasher {
+    /** Feeds a single `boolean` into the digest as one byte. */
     public void writeBoolean(boolean v);
+    /** Feeds one signed `int8` byte into the digest. */
     public void writeInt8(int8 v);
+    /** Feeds a signed `int16` into the digest; the exact two-byte sequence is part of the contract — do not pass a widened value. */
     public void writeInt16(int16 v);
+    /** Feeds a signed `int32` into the digest; the exact four-byte sequence is fixed, so width matters (`writeInt32` and `writeInt16` produce different digests). */
     public void writeInt32(int32 v);
+    /** Feeds a signed `int64` into the digest as a fixed eight-byte sequence. */
     public void writeInt64(int64 v);
+    /** Feeds an unsigned `uint8` byte into the digest. */
     public void writeUInt8(uint8 v);
+    /** Feeds an unsigned `uint16` into the digest as a fixed two-byte sequence. */
     public void writeUInt16(uint16 v);
+    /** Feeds an unsigned `uint32` into the digest as a fixed four-byte sequence. */
     public void writeUInt32(uint32 v);
+    /** Feeds an unsigned `uint64` into the digest as a fixed eight-byte sequence. */
     public void writeUInt64(uint64 v);
+    /** Feeds a `float32` into the digest by its raw bit pattern. */
     public void writeFloat32(float32 v);
+    /** Feeds a `float64` into the digest by its raw bit pattern. */
     public void writeFloat64(float64 v);
+    /** Feeds the entire `int8[]` byte array into the digest. */
     public void writeBytes(int8[] data);
+    /** Feeds `length` bytes of `data` starting at `offset` into the digest. */
     public void writeBytesRange(int8[] data, int64 offset, int64 length);
+    /** Feeds a `String` into the digest, hashing its underlying byte content. */
     public void writeString(String s);
+    /** Feeds an arbitrary `Object` into the digest, hashing its byte representation. */
     public void writeObject(Object obj);
+    /**
+     * Terminates the stream and returns the 64-bit digest of everything written
+     * so far. Behavior after the first `finish()` call is algorithm-defined.
+     *
+     * ```cajeta
+     * Hasher h = new XXHash3();
+     * h.writeString(key);
+     * h.writeInt64(version);
+     * int64 digest = h.finish();
+     * ```
+     */
     public int64 finish();
 }

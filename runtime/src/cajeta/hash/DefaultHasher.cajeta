@@ -25,6 +25,23 @@ import cajeta.lang.String;
  * compiler couples to `DefaultHasher`, not to `XXHash3` directly,
  * so the underlying algorithm can swap if a faster one ships).
  *
+ * ## Usage
+ *
+ * ```cajeta
+ * // Compose a structural digest with extra context.
+ * DefaultHasher hasher = new DefaultHasher();
+ * hasher.writeObject(order);     // structural fold of the object
+ * hasher.writeString(tenantId);  // extra context: tenant
+ * hasher.writeInt64(epoch);      // extra context: deploy epoch
+ * int64 digest = hasher.finish();
+ *
+ * // Snapshot replay: rebuild with a shipped seed.
+ * DefaultHasher replay = new DefaultHasher(seed);
+ * ```
+ *
+ * Folds values through a backing `XXHash3` and satisfies the
+ * `Hasher` contract; the per-process seed is supplied by `Hash`.
+ *
  * @See cajeta.hash.XXHash3
  * @See cajeta.hash.Hasher
  * @See [stdlib/Hashing.md § DefaultHasher](../../../../../cajeta-docs/stdlib/Hashing.md)
@@ -39,14 +56,29 @@ public final class DefaultHasher implements Hasher {
 
     /**
      * Construct with the per-process seed (the compiler-default
-     * shape).
+     * shape) — digests match the compiler-synthesized `Object.hash()`.
+     *
+     * ```cajeta
+     * DefaultHasher hasher = new DefaultHasher();
+     * hasher.writeObject(payload);
+     * int64 digest = hasher.finish();
+     * ```
      */
     public DefaultHasher() {
         this.backing = new XXHash3();
     }
 
     /**
-     * Construct with an explicit seed (snapshot-replay shape).
+     * Construct with an explicit seed (snapshot-replay shape) — pass a
+     * seed captured from `Hash` in another process to reproduce its
+     * digest.
+     *
+     * ```cajeta
+     * int64 seed = Hash.processSeed();   // captured in the source process
+     * DefaultHasher replay = new DefaultHasher(seed);
+     * replay.writeObject(payload);
+     * int64 digest = replay.finish();
+     * ```
      */
     public DefaultHasher(int64 seedArg) {
         this.backing = new XXHash3(seedArg);
@@ -54,22 +86,48 @@ public final class DefaultHasher implements Hasher {
 
     // --- Hasher delegation ------------------------------------------
 
+    /** Folds `v` into the backing `XXHash3` as a single byte: `1` for true, `0` for false. */
     public void writeBoolean(boolean v)  { this.backing.writeBoolean(v); }
+    /** Folds the raw byte of `v` into the backing `XXHash3`. */
     public void writeInt8(int8 v)        { this.backing.writeInt8(v); }
+    /** Folds the 2 raw bytes of `v` into the backing `XXHash3`. */
     public void writeInt16(int16 v)      { this.backing.writeInt16(v); }
+    /** Folds the 4 raw bytes of `v` into the backing `XXHash3`. */
     public void writeInt32(int32 v)      { this.backing.writeInt32(v); }
+    /** Folds the 8 raw bytes of `v` into the backing `XXHash3`. */
     public void writeInt64(int64 v)      { this.backing.writeInt64(v); }
+    /** Folds the raw byte of `v` into the backing `XXHash3`. */
     public void writeUInt8(uint8 v)      { this.backing.writeUInt8(v); }
+    /** Folds the 2 raw bytes of `v` into the backing `XXHash3`. */
     public void writeUInt16(uint16 v)    { this.backing.writeUInt16(v); }
+    /** Folds the 4 raw bytes of `v` into the backing `XXHash3`. */
     public void writeUInt32(uint32 v)    { this.backing.writeUInt32(v); }
+    /** Folds the 8 raw bytes of `v` into the backing `XXHash3`. */
     public void writeUInt64(uint64 v)    { this.backing.writeUInt64(v); }
+    /** Folds the 4 raw bytes of `v` into the backing `XXHash3`. */
     public void writeFloat32(float32 v)  { this.backing.writeFloat32(v); }
+    /** Folds the 8 raw bytes of `v` into the backing `XXHash3`. */
     public void writeFloat64(float64 v)  { this.backing.writeFloat64(v); }
+    /** Folds every byte of `data` into the backing `XXHash3`. */
     public void writeBytes(int8[] data)  { this.backing.writeBytes(data); }
+    /**
+     * Folds `length` bytes of `data` into the backing `XXHash3`. Note: `offset`
+     * is currently ignored — hashing always starts at index `0`.
+     */
     public void writeBytesRange(int8[] data, int64 offset, int64 length) {
         this.backing.writeBytesRange(data, offset, length);
     }
+    /** Folds the UTF-8 content of the `String` (same shape as `String.hash()`). */
     public void writeString(String s)    { this.backing.writeString(s); }
+    /** Folds the structural hash of the `Object` — the `@AutoHash` field-folding shape. */
     public void writeObject(Object obj)  { this.backing.writeObject(obj); }
+    /**
+     * Closes the stream and returns the 64-bit digest of everything written so far.
+     *
+     * ```cajeta
+     * hasher.writeInt32(id);
+     * int64 digest = hasher.finish();
+     * ```
+     */
     public int64 finish()                { return this.backing.finish(); }
 }

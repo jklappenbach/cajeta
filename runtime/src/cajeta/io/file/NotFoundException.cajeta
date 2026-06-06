@@ -3,10 +3,34 @@ package cajeta.io.file;
 import cajeta.lang.String;
 
 /**
- * The named path does not exist. POSIX `ENOENT`. See
+ * Thrown when an operation names a path that does not exist —
+ * opening, reading, or stat-ing a missing file or a path whose
+ * parent directory is absent. Maps to POSIX `ENOENT`. See
  * `cajeta-docs/stdlib/io/file/Errors.md`.
+ *
+ * A recoverable subtype of `IoException`: catch it to create
+ * the file on demand or report a clean "not found" to the user,
+ * or let it propagate via your throws clause. Commonly raised by
+ * `File``.open`, `File``.openRead`, and `File``.readAllBytes`.
+ *
+ * ```cajeta
+ * try {
+ *     #FileReader r = File.openRead("/etc/config.toml");
+ *     // ... read it
+ * } catch (NotFoundException e) {
+ *     // file isn't there — fall back to defaults
+ * }
+ * ```
  */
 public class NotFoundException extends IoException {
+    /**
+     * Wrap an `ENOENT` failure with a human-readable `message`
+     * (see `String`).
+     *
+     * ```cajeta
+     * throw heap NotFoundException("/etc/config.toml not found");
+     * ```
+     */
     public NotFoundException(String message) {
         super(message);
     }

@@ -49,7 +49,13 @@ public final class XXHash3 implements Hasher {
     public int64 seed;
 
     /**
-     * Construct with the per-process random seed.
+     * Construct a streaming hasher seeded with the per-process random seed.
+     *
+     * ```cajeta
+     * XXHash3 h = new XXHash3();
+     * h.writeString(record.title);
+     * int64 digest = h.finish();
+     * ```
      */
     public XXHash3() {
         this.seed = Hash.processSeed();
@@ -57,7 +63,14 @@ public final class XXHash3 implements Hasher {
     }
 
     /**
-     * Construct with an explicit seed.
+     * Construct with an explicit seed — use when you need digests that
+     * reproduce across processes.
+     *
+     * ```cajeta
+     * XXHash3 h = new XXHash3(0xC0FFEEL);
+     * h.writeInt64(key);
+     * int64 digest = h.finish();
+     * ```
      */
     public XXHash3(int64 seedArg) {
         this.seed = seedArg;
@@ -108,64 +121,121 @@ public final class XXHash3 implements Hasher {
 
     // --- One-shot statics -------------------------------------------
 
+    /**
+     * One-shot 64-bit hash of `data[0..len)` under the per-process seed.
+     *
+     * ```cajeta
+     * int64 h = XXHash3.hash(bytes, bytes.count());
+     * ```
+     */
     public static int64 hash(int8[] data, int64 len) {
         return XXHash3.oneshot(data, len, Hash.processSeed());
     }
 
+    /**
+     * One-shot hash under an explicit `seedArg`, for reproducible digests.
+     *
+     * ```cajeta
+     * int64 h = XXHash3.hashSeeded(bytes, bytes.count(), 0xC0FFEEL);
+     * ```
+     */
     public static int64 hashSeeded(int8[] data, int64 len, int64 seedArg) {
         return XXHash3.oneshot(data, len, seedArg);
     }
 
+    /**
+     * One-shot hash of a `String`'s UTF-8 bytes under the per-process seed.
+     *
+     * ```cajeta
+     * int64 h = XXHash3.hashString("hello");
+     * ```
+     */
     public static int64 hashString(String s) {
         return XXHash3.oneshot(s.bytes, (int64) s.byteLength, Hash.processSeed());
     }
 
+    /**
+     * One-shot hash of a `String`'s UTF-8 bytes under an explicit `seedArg`.
+     *
+     * ```cajeta
+     * int64 h = XXHash3.hashStringSeeded("hello", 0xC0FFEEL);
+     * ```
+     */
     public static int64 hashStringSeeded(String s, int64 seedArg) {
         return XXHash3.oneshot(s.bytes, (int64) s.byteLength, seedArg);
     }
 
     // --- Streaming surface ------------------------------------------
 
+    /** Feed `data[0..len)` into the running hash state. */
     public void update(int8[] data, int64 len) {
         XXHash3.updateNative(this.state, data, len);
     }
 
+    /** Discard accumulated input and re-seed from the original seed, so the instance can be reused for a fresh digest. */
     public void reset() {
         XXHash3.resetNative(this.state, this.seed);
     }
 
     // --- Hasher streaming primitives --------------------------------
 
+    /** Feed `v` as a single byte: `1` for true, `0` for false. */
     public void writeBoolean(boolean v) {
         XXHash3.writeI8Native(this.state, (int8)(v ? 1 : 0));
     }
+    /** Append the raw byte of `v`. */
     public void writeInt8(int8 v)       { XXHash3.writeI8Native(this.state, v); }
+    /** Append the 2 raw bytes of `v`. */
     public void writeInt16(int16 v)     { XXHash3.writeI16Native(this.state, v); }
+    /** Append the 4 raw bytes of `v`. */
     public void writeInt32(int32 v)     { XXHash3.writeI32Native(this.state, v); }
+    /** Append the 8 raw bytes of `v`. */
     public void writeInt64(int64 v)     { XXHash3.writeI64Native(this.state, v); }
+    /** Append the raw byte of `v`. */
     public void writeUInt8(uint8 v)     { XXHash3.writeI8Native(this.state, (int8) v); }
+    /** Append the 2 raw bytes of `v`. */
     public void writeUInt16(uint16 v)   { XXHash3.writeI16Native(this.state, (int16) v); }
+    /** Append the 4 raw bytes of `v`. */
     public void writeUInt32(uint32 v)   { XXHash3.writeI32Native(this.state, (int32) v); }
+    /** Append the 8 raw bytes of `v`. */
     public void writeUInt64(uint64 v)   { XXHash3.writeI64Native(this.state, (int64) v); }
+    /** Append the 4 raw bytes of `v`. */
     public void writeFloat32(float32 v) { XXHash3.writeF32Native(this.state, v); }
+    /** Append the 8 raw bytes of `v`. */
     public void writeFloat64(float64 v) { XXHash3.writeF64Native(this.state, v); }
 
+    /** Feed every byte of `data` into the running hash. */
     public void writeBytes(int8[] data) {
         XXHash3.updateNative(this.state, data, data.count());
     }
 
+    /**
+     * Feed `length` bytes of `data` into the running hash. Note: `offset`
+     * is currently ignored — hashing always starts at index `0`.
+     */
     public void writeBytesRange(int8[] data, int64 offset, int64 length) {
         XXHash3.updateNative(this.state, data, length);
     }
 
+    /** Feed a `String`'s UTF-8 bytes into the running hash. */
     public void writeString(String s) {
         XXHash3.updateNative(this.state, s.bytes, (int64) s.byteLength);
     }
 
+    /** Mix in `obj` by feeding its `Object` `hash()` value as 8 bytes. */
     public void writeObject(Object obj) {
         XXHash3.writeI64Native(this.state, obj.hash());
     }
 
+    /**
+     * Finalize and return the 64-bit digest of everything written so far.
+     * The state is left intact; call `reset()` to start a new digest.
+     *
+     * ```cajeta
+     * h.writeInt32(record.id);
+     * int64 digest = h.finish();
+     * ```
+     */
     public int64 finish() {
         return XXHash3.finishNative(this.state);
     }
