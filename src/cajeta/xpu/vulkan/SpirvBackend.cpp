@@ -54,10 +54,13 @@ void enableSpirvExtensions() {
     // PackedVectorFormat4x8Bit) for Vector<int8,4>.dot — without it the backend
     // falls back to the portable bit-field expansion (correct, but not the
     // hardware dot-product unit).
+    // SPV_EXT_shader_atomic_float_add / _min_max give the float atomic-RMW ops
+    // (OpAtomicFAddEXT/FMinEXT/FMaxEXT) for Buffer<float32>.atomic{Add,Min,Max}.
     static const char* kExtensions =
         "+SPV_KHR_ray_query,+SPV_KHR_cooperative_matrix,"
         "+SPV_KHR_vulkan_memory_model,+SPV_KHR_bfloat16,"
-        "+SPV_KHR_integer_dot_product";
+        "+SPV_KHR_integer_dot_product,+SPV_EXT_shader_atomic_float_add,"
+        "+SPV_EXT_shader_atomic_float_min_max";
     auto& opts = llvm::cl::getRegisteredOptions();
     auto it = opts.find("spirv-ext");
     if (it != opts.end())

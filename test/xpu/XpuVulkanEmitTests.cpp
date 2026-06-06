@@ -700,6 +700,78 @@ TEST(XpuVulkanEmitTests, lowersIntegerDotToSpirv) {
     }
 }
 
+// Float atomics (SPV_EXT_shader_atomic_float_add / _min_max). `Buffer<float32>`
+// `.atomicAdd/atomicMin/atomicMax(i, v)` lower to atomicrmw fadd/fmin/fmax with
+// Device scope + AcquireRelease (the Vulkan-valid combination), which the SPIR-V
+// backend selects to OpAtomicFAddEXT / FMinEXT / FMaxEXT under the
+// AtomicFloat32AddEXT / AtomicFloat32MinMaxEXT capabilities. GPU-free: proves the
+// lowering and that the module is spirv-val-clean under Vulkan 1.3.
+TEST(XpuVulkanEmitTests, lowersFloatAtomicsToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class A {\n"
+        "    @Kernel\n"
+        "    public static void reduce(Buffer<float32> acc, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            acc.atomicAdd(0, 1.0f);\n"
+        "            acc.atomicMin(1, (float32) i);\n"
+        "            acc.atomicMax(2, (float32) i);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.A");
+    auto k = findMethod(module->getStructures()["test.A"], "reduce");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_fatomic_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("atomicrmw fadd"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("atomicrmw fmin"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("atomicrmw fmax"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("syncscope(\"device\") acq_rel"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_fatomic_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpCapability AtomicFloat32AddEXT"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpCapability AtomicFloat32MinMaxEXT"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpExtension \"SPV_EXT_shader_atomic_float_add\""),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpExtension \"SPV_EXT_shader_atomic_float_min_max\""),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicFAddEXT"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicFMinEXT"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicFMaxEXT"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_fatomic_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the float-atomics module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // CM5b — the device-realistic MIXED-PRECISION config: A and B are float16
 // (IEEE half) tiles, the accumulator C is float32. This is the only float
 // cooperative-matrix config the RADV STRIX_HALO WMMA path actually supports

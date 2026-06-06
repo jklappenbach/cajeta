@@ -183,6 +183,20 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
             llvm::Value* c, llvm::Value* acc, bool isSigned);
 
+        // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) ------
+        // `Buffer<float32>.atomic{Add,Min,Max}(i, v)`: an atomic read-modify-
+        // write on the element pointer, returning the OLD value. DEFAULT: a
+        // relaxed (monotonic), system-scope `atomicrmw` — selects the native
+        // global FP atomic on AMDGPU/NVPTX and a lock/cmpxchg on CPU. Vulkan
+        // OVERRIDES to AcquireRelease + Device scope and emits OpAtomicFAddEXT /
+        // FMinEXT / FMaxEXT (spirv-val rejects SequentiallyConsistent and
+        // relaxed-with-storage-class semantics on OpAtomicF*EXT, and CrossDevice
+        // scope, so the Vulkan path uses Device scope + AcquireRelease).
+        enum class AtomicFloatOp { Add, Min, Max };
+        virtual llvm::Value* atomicFloatRMW(
+            llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
+            llvm::Value* ptr, llvm::Value* value);
+
         // --- ray query (SPV_KHR_ray_query) — the Vulkan-only fork ------------
         //
         // A RayQuery kernel-body local is a function-local opaque object; its
