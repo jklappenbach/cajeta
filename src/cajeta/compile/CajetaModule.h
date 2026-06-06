@@ -190,6 +190,18 @@ namespace cajeta {
         // when an enclosing try would catch the throw.
         std::vector<std::vector<CajetaTypePtr>> tryCatchStack;
 
+        // Active exception-frame stack — one entry per `try` body whose
+        // `__cajeta_exc_push`ed frame is currently on the runtime exception
+        // chain (i.e. while codegen is inside that try body, before its
+        // fall-through/catch pop). A `return` (or other early exit) from inside
+        // one or more try bodies must emit a matching `__cajeta_exc_pop` for
+        // each, or the frame leaks on the chain — its stack slot is then reused
+        // and a later pop reads a garbage `prev` (the HttpsServer keep-alive
+        // crash: `dispatch`'s `return #r;` inside its try). Pushed/popped in
+        // lockstep with the try body in TryStatement::generateCode; read by
+        // ReturnStatement to pop the right count before `ret`.
+        std::vector<llvm::Value*> activeTryFrameStack;
+
         // Type-parameter substitution stack for template instantiation. Each
         // frame is a map from parameter name (T, K, V, ...) to the concrete
         // CajetaTypePtr it resolves to during the current instantiation walk.
@@ -511,6 +523,29 @@ namespace cajeta {
         }
         const std::vector<std::vector<CajetaTypePtr>>& getTryCatchStack() const {
             return tryCatchStack;
+        }
+
+        // Active exception-frame tracking (see activeTryFrameStack above).
+        void pushActiveTryFrame(llvm::Value* framePtr) {
+            activeTryFrameStack.push_back(framePtr);
+        }
+        void popActiveTryFrame() {
+            if (!activeTryFrameStack.empty()) activeTryFrameStack.pop_back();
+        }
+        size_t activeTryFrameCount() const { return activeTryFrameStack.size(); }
+        void clearActiveTryFrames() { activeTryFrameStack.clear(); }
+        // Detach the active-try-frame stack (and leave it empty) for the
+        // duration of a nested function body's codegen — lambda bodies are
+        // generated inline within the enclosing method's codegen, so the
+        // enclosing method's active try frames must not bleed into the
+        // lambda's `return` pop count. Restore the saved stack afterward.
+        std::vector<llvm::Value*> takeActiveTryFrames() {
+            std::vector<llvm::Value*> saved = std::move(activeTryFrameStack);
+            activeTryFrameStack.clear();
+            return saved;
+        }
+        void restoreActiveTryFrames(std::vector<llvm::Value*> saved) {
+            activeTryFrameStack = std::move(saved);
         }
 
         void processMetadata(CajetaClassPtr structure);
