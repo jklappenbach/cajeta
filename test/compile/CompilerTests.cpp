@@ -51,7 +51,10 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // cajeta.xpu.core.CooperativeMatrix (+1).
 // 2026-06-05: bumped 101 → 102 — B1 added the declared cajeta.math.Matrix
 // hybrid value type (+1; references resolve to the flat CajetaMatrix repr).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 102;
+// 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.core.Bits
+// (per-invocation bit ops: reverse/count/rotate) to the xpu.core prelude;
+// empirical modules.size() is 1 + 104 (the prior 102 had drifted one low).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 104;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

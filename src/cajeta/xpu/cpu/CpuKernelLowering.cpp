@@ -193,6 +193,21 @@ public:
         return pureCall(b, m, "__cajeta_xpu_wave_reduce_sum_u32", i32, {value},
                         "wave.reducesum");
     }
+    llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
+                            WaveReduceOp op, llvm::Value* value) override {
+        // Mirror reduceSum: a pure runtime wave stub whose VFABI vector variant
+        // (CpuRegistration) does the cross-lane reduce when the kernel widens.
+        const char* sym;
+        switch (op) {
+            case WaveReduceOp::Max: sym = "__cajeta_xpu_wave_reduce_max_u32"; break;
+            case WaveReduceOp::Min: sym = "__cajeta_xpu_wave_reduce_min_u32"; break;
+            case WaveReduceOp::And: sym = "__cajeta_xpu_wave_reduce_and_u32"; break;
+            case WaveReduceOp::Or:  sym = "__cajeta_xpu_wave_reduce_or_u32"; break;
+            case WaveReduceOp::Xor: sym = "__cajeta_xpu_wave_reduce_xor_u32"; break;
+        }
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        return pureCall(b, m, sym, i32, {value}, "wave.reduce");
+    }
     // Lane within the wave = the block-local work-item index modulo the wave
     // width. width() is rewritten to the constant W in a vectorized wave kernel,
     // so this folds to `tid.x % W`; vectorized, the W-aligned vector induction

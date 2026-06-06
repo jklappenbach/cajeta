@@ -80,6 +80,18 @@ namespace xpu {
         // AMDGPU: amdgpu_kernel CC, no metadata.
         virtual void decorateKernel(llvm::Function* fn, llvm::Module& m) = 0;
 
+        // Called once at kernel finalization IFF the body used a cross-lane
+        // subgroup op (Wave.shuffle/ballot/reduce). A hook for backends that can
+        // request maximal reconvergence — the guarantee that source-converged
+        // lanes stay converged, so the subgroup op sees the lanes the source
+        // implies. Vulkan sets the "enable-maximal-reconvergence" fn-attr
+        // (→ OpExecutionMode MaximallyReconvergesKHR, SPV_KHR_maximal_
+        // reconvergence). Default no-op: NVPTX/AMDGPU/CPU model wave-op
+        // convergence through their own ISA semantics + LLVM convergence, with
+        // no equivalent module-level mode to set.
+        virtual void onSubgroupOpsUsed(llvm::Function* /*fn*/,
+                                       llvm::Module& /*m*/) {}
+
         // --- kernel signature / parameter model (the Vulkan fork) -----------
         //
         // NVPTX/AMDGPU take kernel arguments as a flat parameter list: buffers
@@ -367,12 +379,38 @@ namespace xpu {
                                            llvm::Module& m,
                                            llvm::Value* value) = 0;
 
+        // The wave-reduction family beyond sum: a single i32 (unsigned) value
+        // reduced across the active lanes; every lane receives the same result.
+        // Max/Min are UNSIGNED (the uint32 surface). Native on every backend —
+        // Vulkan OpGroupNonUniform{UMax,UMin,BitwiseAnd,BitwiseOr,BitwiseXor}
+        // (the GroupNonUniformArithmetic family, already Shader-reachable — NOT
+        // the OpenCL-only SPV_KHR_uniform_group_instructions); AMDGPU
+        // wave.reduce.{umax,umin,and,or,xor}; NVPTX redux.sync.{...} (sm_80+);
+        // CPU a VFABI reduce variant. Product is intentionally absent (no AMD/
+        // NVPTX hardware reduce — a shuffle-tree follow-on).
+        enum class WaveReduceOp { Max, Min, And, Or, Xor };
+        virtual llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        WaveReduceOp op, llvm::Value* value) = 0;
+
         // The calling work-item's lane index within its wave: i32 in
         // [0, waveWidth). The other half of "interrogate your environment"
         // (with waveWidth) for width-agnostic kernels. NVPTX laneid sreg; AMDGPU
         // mbcnt; Vulkan SubgroupLocalInvocationId; CPU tid.x % width.
         virtual llvm::Value* waveLaneId(llvm::IRBuilderBase& b,
                                         llvm::Module& m) = 0;
+
+        // Wave rotate: read i32 `value` from the lane `delta` positions ahead,
+        // modulo the wave width — i.e. from lane `(laneId + delta) mod width`.
+        // NOT pure-virtual: the default (defined out-of-line in KernelLowering.cpp
+        // — the header only forward-declares IRBuilderBase) is a width-agnostic
+        // shuffle built on the existing waveShuffle/waveLaneId/waveWidth seams,
+        // so every backend gets it for free (the isFirstLane pattern). Vulkan
+        // OVERRIDES to the single native OpGroupNonUniformRotateKHR
+        // (SPV_KHR_subgroup_rotate), reached from the Shader flavor via the
+        // fork's llvm.spv.subgroup.rotate intrinsic. Cross-lane, so callers flag
+        // the kernel for maximal reconvergence (like shuffle/ballot/reduce).
+        virtual llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        llvm::Value* value, llvm::Value* delta);
 
         // A dynamic (runtime-sized) `shared T[n]` lowers to an external unsized
         // [0 x T] addrspace(3) global — the native extern-shared model on NVPTX

@@ -5827,9 +5827,16 @@ uint32_t __cajeta_xpu_wave_shuffle_sync_u32(uint32_t value, uint32_t srcLane) {
 uint64_t __cajeta_xpu_wave_ballot_sync(bool predicate) {
     return predicate ? 1ULL : 0ULL;
 }
-// Single-lane wave (width=1) on CPU emulation: the wave-wide sum of one lane's
-// value is just that value.
+// Single-lane wave (width=1) on CPU emulation: the wave-wide reduction of one
+// lane's value is just that value. The real cross-lane reduction happens in the
+// vectorized VFABI variant (CpuRegistration) when a wave kernel is widened;
+// these scalars are the width-1 fallback.
 uint32_t __cajeta_xpu_wave_reduce_sum_u32(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_wave_reduce_max_u32(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_wave_reduce_min_u32(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_wave_reduce_and_u32(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_wave_reduce_or_u32(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
 
 // --- CPU backend kernel registry -------------------------------------------
 // The CPU backend (cajeta-cpu.md) lowers each @Kernel to a host function linked

@@ -73,4 +73,43 @@ public final class Wave {
      */
     @Native("__cajeta_xpu_wave_reduce_sum_u32")
     public static uint32 reduceSum(uint32 value);
+
+    /**
+     * Wave-wide maximum of `value` across the active lanes (UNSIGNED); every
+     * lane receives the same result. Native on every backend:
+     *   NVPTX:  redux.sync.umax   (sm_80+)
+     *   AMDGPU: wave.reduce.umax
+     *   SPIR-V: OpGroupNonUniformUMax (Reduce)
+     */
+    @Native("__cajeta_xpu_wave_reduce_max_u32")
+    public static uint32 reduceMax(uint32 value);
+
+    /** Wave-wide minimum (UNSIGNED). See {@link #reduceMax}. */
+    @Native("__cajeta_xpu_wave_reduce_min_u32")
+    public static uint32 reduceMin(uint32 value);
+
+    /** Wave-wide bitwise AND across the active lanes. */
+    @Native("__cajeta_xpu_wave_reduce_and_u32")
+    public static uint32 reduceAnd(uint32 value);
+
+    /** Wave-wide bitwise OR across the active lanes. */
+    @Native("__cajeta_xpu_wave_reduce_or_u32")
+    public static uint32 reduceOr(uint32 value);
+
+    /** Wave-wide bitwise XOR across the active lanes. */
+    @Native("__cajeta_xpu_wave_reduce_xor_u32")
+    public static uint32 reduceXor(uint32 value);
+
+    /**
+     * Wave rotate: read `value` from the lane `delta` positions ahead within
+     * the wave, modulo the wave width — i.e. from lane
+     * `(laneId() + delta) mod width()`. A wave-uniform cyclic shift of values
+     * across lanes (the stencil / neighbour-exchange primitive).
+     *
+     * Vulkan lowers to a single OpGroupNonUniformRotateKHR at Subgroup scope
+     * (SPV_KHR_subgroup_rotate); NVIDIA/AMD/CPU get the width-agnostic shuffle
+     * form `shuffleSync(value, (laneId() + delta) mod width())` for free.
+     */
+    @Native("__cajeta_xpu_wave_rotate_u32")
+    public static uint32 rotate(uint32 value, uint32 delta);
 }

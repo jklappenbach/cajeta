@@ -4,6 +4,7 @@ import cajeta.xpu.core.Buffer;
 import cajeta.xpu.core.Stream;
 import cajeta.xpu.core.Thread;
 import cajeta.xpu.core.Wave;
+import cajeta.xpu.core.Bits;
 import cajeta.lang.Math;
 
 // Cajeta XPU tour — portable @Kernel programs run through the runtime
@@ -169,6 +170,27 @@ public final class XpuTour {
         }
     }
 
+    // bitOps: per-invocation bit manipulation — reverse / popcount / rotate.
+    // Core SPIR-V (OpBitReverse / OpBitCount + inline shift-rotate), no extension
+    // and no fork; native brev/popcnt on AMD/NVIDIA, the same on CPU. The hashing
+    // / bitset / Morton-code building blocks. See cajeta-docs/BitInstructions.md.
+    //   v = 0x12345678: popcount = 13; rotate and reverse are self-inverse, so
+    //   out[i] = 13*10 + (rotr(rotl)==v) + (reverse(reverse)==v) = 132.
+    @Kernel
+    public static void bitOps(Buffer<uint32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            uint32 v = 305419896;                  // 0x12345678
+            uint32 pc = Bits.count(v);             // 13
+            uint32 rr = Bits.rotateRight(Bits.rotateLeft(v, 7), 7);  // == v
+            uint32 rev = Bits.reverse(Bits.reverse(v));              // == v
+            uint32 ok = 0;
+            if (rr == v) { ok = ok + 1; }
+            if (rev == v) { ok = ok + 1; }
+            out[i] = pc * 10 + ok;
+        }
+    }
+
     // ---- Transforms: quaternions, determinant, inverse -----------------------
     // 3-D rotation algebra and small-matrix solves, the same source on every
     // backend. See cajeta-docs/Quaternions.md + MatrixDeterminantInverse.md.
@@ -329,6 +351,43 @@ public final class XpuTour {
         }
     }
 
+    // waveRotate: a cyclic shift of values across the wave's lanes. Lane L reads
+    // the laneId held `1` position ahead — (L+1) mod width — so the first lanes
+    // read 1,2,3,... Vulkan lowers to the native OpGroupNonUniformRotateKHR
+    // (SPV_KHR_subgroup_rotate); AMD uses ds_bpermute; NVIDIA/CPU a shuffle. See
+    // cajeta-docs/SubgroupRotate.md.
+    @Kernel
+    public static void waveRotate(Buffer<uint32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            out[i] = Wave.rotate(Wave.laneId(), 1);
+        }
+    }
+
+    // waveReduceOps: the reduction family beyond sum — max/min/and/or/xor across
+    // the wave. Lane 0 holds a distinguished value so every reduction has a
+    // wave-width-agnostic answer (100/5/3/3/1) on CPU (8/16), AMD/NVIDIA (32/64),
+    // and Vulkan alike. Native on every backend (GroupNonUniform* / wave.reduce.*
+    // / redux.sync.*). See cajeta-docs/WaveReductions.md.
+    @Kernel
+    public static void waveReduceOps(Buffer<uint32> out, uint32 n) {
+        uint32 t = Thread.globalIdX();
+        uint32 vmax = 5;   if (t == 0) { vmax = 100; }
+        uint32 vmin = 100; if (t == 0) { vmin = 5; }
+        uint32 vand = 7;   if (t == 0) { vand = 3; }
+        uint32 vor = 2;    if (t == 0) { vor = 1; }
+        uint32 vxor = 0;   if (t == 0) { vxor = 1; }
+        // EVERY lane stores its wave's reduction (per-lane output regions). The
+        // result must be consumed unconditionally — a wave op whose result is
+        // used only under divergent control flow would be predicated on the CPU
+        // VFABI path. The runner reads lane 0 (wave 0): out[0], out[n], out[2n]...
+        out[t] = Wave.reduceMax(vmax);
+        out[n + t] = Wave.reduceMin(vmin);
+        out[2 * n + t] = Wave.reduceAnd(vand);
+        out[3 * n + t] = Wave.reduceOr(vor);
+        out[4 * n + t] = Wave.reduceXor(vxor);
+    }
+
     // Entry point. The C `main` shim (synthesized by --emit=obj with this
     // method as the entry) wires this up as the program's main.
     public static int32 run() {
@@ -342,10 +401,13 @@ public final class XpuTour {
         runIntegerDot();
         runAtomics();
         runShaderClock();
+        runBitOps();
         runTransforms();
         runPrecision();
         runCoopMatrix();
         runWave();
+        runWaveRotate();
+        runWaveReduceOps();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
         return 0;
@@ -553,6 +615,25 @@ public final class XpuTour {
                             + " device cycles  (nonzero; varies run-to-run)");
     }
 
+    // Bit instructions: reverse / popcount / rotate, per invocation. Core SPIR-V,
+    // no extension, no fork; native bit ops on AMD/NVIDIA/CPU. See
+    // cajeta-docs/BitInstructions.md.
+    static void runBitOps() {
+        System.stdout.println("");
+        System.stdout.println("-- bit ops: reverse / popcount / rotate (per invocation) --");
+        uint32 n = 256;
+        uint32[] hout = new uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        Buffer<uint32> out = stack Buffer<uint32>(n);
+        out.upload(hout);
+        Stream s = Stream.current();
+        bitOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  popcount(0x12345678)*10 + rotate&reverse roundtrips:  out[0]="
+                            + (int32) hout[0] + "  (expect 132)");
+    }
+
     // Quaternion rotation algebra + small-matrix determinant/inverse/solve, run
     // per thread. Each output is a fixed checkable constant (the math is the same
     // on every lane); see the kernels for the breakdown.
@@ -680,5 +761,47 @@ public final class XpuTour {
                             + (int32) hsums[0]);
         System.stdout.println("  every lane of a wave agrees: sums[0]="
                             + (int32) hsums[0] + " sums[1]=" + (int32) hsums[1]);
+    }
+
+    // Subgroup rotate: cyclic neighbour-exchange across the wave. out[i] reads
+    // laneId from (laneId+1) mod width, so the first lanes read 1,2,3,...
+    static void runWaveRotate() {
+        System.stdout.println("");
+        System.stdout.println("-- waveRotate: rotate laneId by 1 across the wave --");
+        uint32 n = 256;
+        uint32[] hout = new uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        Buffer<uint32> out = stack Buffer<uint32>(n);
+        out.upload(hout);
+        Stream s = Stream.current();
+        waveRotate.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  out[0..3] = " + (int32) hout[0] + " "
+                            + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + "  (expect 1 2 3 4)");
+    }
+
+    // The wave-reduction family beyond sum: max/min/and/or/xor. Native on every
+    // backend; the answer is the same at any wave width. See
+    // cajeta-docs/WaveReductions.md.
+    static void runWaveReduceOps() {
+        System.stdout.println("");
+        System.stdout.println("-- waveReduceOps: max/min/and/or/xor across the wave --");
+        uint32 n = 256;
+        uint32[] hout = new uint32[5 * n];
+        for (uint32 i = 0; i < 5 * n; i = i + 1) { hout[i] = 0; }
+        Buffer<uint32> out = stack Buffer<uint32>(5 * n);
+        out.upload(hout);
+        Stream s = Stream.current();
+        waveReduceOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        // Lane 0 (wave 0): the distinguished lane makes each reduction the same
+        // at any wave width (CPU 8/16, GPU 32/64).
+        System.stdout.println("  max min and or xor = " + (int32) hout[0] + " "
+                            + (int32) hout[n] + " " + (int32) hout[2 * n] + " "
+                            + (int32) hout[3 * n] + " " + (int32) hout[4 * n]
+                            + "  (expect 100 5 3 3 1)");
     }
 }

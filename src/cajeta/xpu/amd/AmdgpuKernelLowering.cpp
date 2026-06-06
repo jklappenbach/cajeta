@@ -213,6 +213,22 @@ public:
             &m, llvm::Intrinsic::amdgcn_wave_reduce_add, {i32});
         return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)}, "wavered");
     }
+    llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
+                            WaveReduceOp op, llvm::Value* value) override {
+        // amdgcn.wave.reduce.{umax,umin,and,or,xor} over i32 (unsigned min/max
+        // for the uint32 surface); strategy operand 0 = default lowering.
+        llvm::Intrinsic::ID id;
+        switch (op) {
+            case WaveReduceOp::Max: id = llvm::Intrinsic::amdgcn_wave_reduce_umax; break;
+            case WaveReduceOp::Min: id = llvm::Intrinsic::amdgcn_wave_reduce_umin; break;
+            case WaveReduceOp::And: id = llvm::Intrinsic::amdgcn_wave_reduce_and; break;
+            case WaveReduceOp::Or:  id = llvm::Intrinsic::amdgcn_wave_reduce_or; break;
+            case WaveReduceOp::Xor: id = llvm::Intrinsic::amdgcn_wave_reduce_xor; break;
+        }
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id, {i32});
+        return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)}, "wavered");
+    }
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         // The canonical AMDGPU lane-id idiom: mbcnt counts set bits of the
         // exec-relative mask below this lane. hi(~0, lo(~0, 0)) = this lane's
@@ -226,6 +242,24 @@ public:
         llvm::Value* lowCount =
             b.CreateCall(lo, {allOnes, llvm::ConstantInt::get(i32, 0)}, "mbcnt.lo");
         return b.CreateCall(hi, {allOnes, lowCount}, "wave.laneid");
+    }
+    llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
+                            llvm::Value* value, llvm::Value* delta) override {
+        // The base default routes through waveShuffle = amdgcn.readlane, which
+        // requires a wave-UNIFORM source lane — but rotate's source
+        // (laneId + delta) mod width is per-lane DIVERGENT. Use ds_bpermute, the
+        // AMDGPU divergent-index intra-wave gather: each lane reads `value` from
+        // the lane at byte address src*4. (gfx11 wave32; covers the 32-lane
+        // window the rotate test verifies.)
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* lane = waveLaneId(b, m);
+        llvm::Value* width = waveWidth(b, m);
+        llvm::Value* src = b.CreateURem(
+            b.CreateAdd(lane, delta), width, "wave.rotate.src");
+        llvm::Value* byteAddr = b.CreateShl(src, 2, "wave.rotate.byte");
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_ds_bpermute);
+        return b.CreateCall(f, {byteAddr, value}, "wave.rotate");
     }
 
     // ---- Cooperative matrix: RDNA3 WMMA (matrix cores), CM7 ------------------

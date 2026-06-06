@@ -699,6 +699,18 @@ create. The same shape-validity check from §5.5 applies, but it runs
 at pipeline-create time, not compile time, because the supported
 shapes are not knowable from the SPIR-V binary alone.
 
+**Maximal reconvergence.** A cross-lane `Wave` op (`shuffleSync`,
+`ballotSync`, `reduceSum`) only sees the lanes the *source* structure implies
+if the implementation reconverges maximally. The Vulkan path requests this
+automatically: any kernel that lowers such an op gets
+`OpExecutionMode … MaximallyReconvergesKHR` (`SPV_KHR_maximal_reconvergence`,
+emitted from an `enable-maximal-reconvergence` function attribute — no fork).
+The request is **gated on use** — a kernel with only per-lane queries
+(`width`/`laneId`/`isFirstLane`) or no wave ops at all carries no extra device
+requirement. NVIDIA/AMD/CPU need no equivalent: their ISA + LLVM convergence
+already define wave-op convergence, so the seam (`onSubgroupOpsUsed`) is a
+Vulkan-only override.
+
 ### 6.4 Host integration
 
 ```cajeta
