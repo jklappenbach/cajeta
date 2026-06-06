@@ -752,24 +752,27 @@ TEST(XpuVulkanEmitTests, workgroupBarrierIsSpecValid) {
                            "semantics fixup did not take effect";
 }
 
-// LDS-staged cooperative matrix on Vulkan is gated off (clean XPU-N04 diagnostic,
-// never invalid SPIR-V). The fork's SPIRVEmitIntrinsics array-global-type fix made
-// the Workgroup-array staging copy lower correctly, but a SECOND backend issue
-// remains: the constant-offset element access chain feeding OpCooperativeMatrixLoad
-// from Workgroup storage is collapsed to the bare array variable during selection.
-// Until that lands too, a Shared<T> coop-matrix source is a clean diagnostic.
-TEST(XpuVulkanEmitTests, sharedSourceCoopLoadIsCleanDiagnostic) {
+// LDS-staged cooperative matrix on Vulkan: a CooperativeMatrix.load from a
+// Shared<T> (Workgroup-storage) tile, fed by a cooperative global->LDS staging
+// copy, lowers to VALID Vulkan SPIR-V. Exercises the two fork SPIR-V backend
+// fixes: (1) SPIRVEmitIntrinsics keeps the undef non-constant array global
+// correctly typed (the staged array indexed by a loop variable keeps its array
+// type + OpAccessChain index), and (2) the cooperative-matrix selection
+// access-chains the aggregate Workgroup pointer to its first element so
+// OpCooperativeMatrixLoadKHR gets the scalar pointer it requires.
+TEST(XpuVulkanEmitTests, ldsStagedCoopLoadEmitsValidSpirv) {
     auto src =
         "package test;\n"
         "import cajeta.xpu.core.Buffer;\n"
         "import cajeta.xpu.core.CooperativeMatrix;\n"
+        "import cajeta.xpu.core.CoopStage;\n"
         "import cajeta.xpu.core.Barrier;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void shld(Buffer<float16> a, Buffer<float16> b,\n"
-        "                            Buffer<float32> c) {\n"
+        "    public static void staged(Buffer<float16> a, Buffer<float16> b,\n"
+        "                              Buffer<float32> c) {\n"
         "        Shared<float16> sa = shared float16[16 * 16];\n"
-        "        sa[0] = a[0];\n"
+        "        CoopStage.panel(sa, a, 0, 0, 16, 16, 16);\n"
         "        Barrier.workgroup();\n"
         "        CooperativeMatrix<float16,16,16,0> ma;\n"
         "        ma.load(sa, 0, 0, 16);\n"
@@ -783,21 +786,22 @@ TEST(XpuVulkanEmitTests, sharedSourceCoopLoadIsCleanDiagnostic) {
         "}\n";
     Compiler compiler;
     auto module = compileForInspection(compiler, src, "test.M");
-    auto k = findMethod(module->getStructures()["test.M"], "shld");
+    auto k = findMethod(module->getStructures()["test.M"], "staged");
     ASSERT_NE(k, nullptr);
 
     auto tm = createSpirvTargetMachine("vulkan1.3");
     ASSERT_NE(tm, nullptr);
     llvm::LLVMContext ctx;
-    llvm::Module mod("xpu_sharedcoop_vulkan_neg", ctx);
+    llvm::Module mod("xpu_sharedcoop_vulkan", ctx);
     configureDeviceModule(mod, *tm);
-    try {
-        lowerKernel(k, mod);
-        FAIL() << "expected a clean diagnostic for a Shared<T>-source "
-                  "cooperative-matrix load on Vulkan, got a lowered module";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "XPU-N04") << e.getMessage();
-    }
+    ASSERT_NE(lowerKernel(k, mod), nullptr);
+    std::vector<uint8_t> spirv = emitSpirv(mod, *tm);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "LDS-staged cooperative-matrix load produced "
+                               "invalid SPIR-V";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped";
 }
 
 // Regression: a kernel that reads the workgroup size (Workgroup.dimX()) must emit

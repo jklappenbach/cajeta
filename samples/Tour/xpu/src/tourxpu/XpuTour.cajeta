@@ -224,6 +224,35 @@ public final class XpuTour {
         mc.store(c, 0, 0, 16);                 // store the 16x16 result tile
     }
 
+    // coopGemmStaged: the SAME tile matmul, but the A and B tiles are first STAGED
+    // into workgroup-shared memory (LDS) and read back through the cooperative-
+    // matrix load(Shared<T>) overload — the LDS-staged GEMM building block.
+    // CoopStage.panel is the cooperative global->LDS copy (the whole workgroup
+    // strides over the tile), a workgroup barrier publishes the writes, and the
+    // matrix cores consume their operands FROM LDS. In a real tiled GEMM the staged
+    // panel is reused across waves and K-steps, turning N redundant global reads
+    // into one global read + N cheap LDS reads. Portable: native LDS + matrix cores
+    // on the GPUs (the Vulkan path took two cajeta-llvm SPIR-V backend fixes), and
+    // on the CPU a per-block stack buffer + the software tile-matmul (the workgroup
+    // barrier lowers via CPU loop fission).
+    @Kernel
+    public static void coopGemmStaged(Buffer<float16> a, Buffer<float16> b,
+                                      Buffer<float32> c) {
+        Shared<float16> sa = shared float16[16 * 16];   // LDS A tile
+        Shared<float16> sb = shared float16[16 * 16];   // LDS B tile
+        CoopStage.panel(sa, a, 0, 0, 16, 16, 16);       // stage A: global -> LDS
+        CoopStage.panel(sb, b, 0, 0, 16, 16, 16);       // stage B: global -> LDS
+        Barrier.workgroup();                             // staged writes visible
+        CooperativeMatrix<float16,16,16,0> ma;
+        ma.load(sa, 0, 0, 16);                           // load A operand FROM LDS
+        CooperativeMatrix<float16,16,16,1> mb;
+        mb.load(sb, 0, 0, 16);                           // load B operand FROM LDS
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        mc.mma(ma, mb);
+        mc.store(c, 0, 0, 16);
+    }
+
     // waveReduce: out[i] = sum of in over i's wave. A wave-cooperative kernel —
     // the wave is the warp on a GPU, the SIMD vector on the CPU. Width-agnostic:
     // it queries the environment (Wave.reduceSum / width() / laneId()) rather
@@ -484,6 +513,19 @@ public final class XpuTour {
         // C = A*B with A,B all-ones -> every element is the inner dim K = 16.
         System.stdout.println("  C[0][0]=" + (int32) hc[0]
                             + " C[5][5]=" + (int32) hc[5 * 16 + 5]
+                            + "  (expect 16, 16)");
+
+        // Same matmul, but staged through LDS (CoopStage.panel + load(Shared)).
+        // Identical result — it exercises the workgroup-shared staging path.
+        float32[] hcs = new float32[tile];
+        for (uint32 i = 0; i < tile; i = i + 1) { hcs[i] = 0.0f; }
+        Buffer<float32> cs = stack Buffer<float32>(tile);
+        cs.upload(hcs);
+        coopGemmStaged.launch(s, grid: [1], block: [64])(a, b, cs);
+        s.sync();
+        cs.download(hcs);
+        System.stdout.println("  staged (via LDS): C[0][0]=" + (int32) hcs[0]
+                            + " C[5][5]=" + (int32) hcs[5 * 16 + 5]
                             + "  (expect 16, 16)");
     }
 

@@ -505,3 +505,98 @@ TEST(XpuCooperativeMatrixDeviceTests, bf16SoftwareMatmulOnDevice) {
             EXPECT_EQ(out[i * N + j], ref[i * N + j])
                 << "bf16 software tile mismatch at (" << i << "," << j << ")";
 }
+
+// LDS-staged GEMM on the Vulkan device: stage the A/B tiles into workgroup-shared
+// (Workgroup storage) via CoopStage.panel, barrier, then load the cooperative-
+// matrix operands FROM the shared tiles and mma. Exercises OpCooperativeMatrixLoad
+// from a Workgroup pointer end-to-end, relying on the two fork SPIR-V backend
+// fixes (array-global typing + cooperative-matrix aggregate-pointer access chain).
+// Same exact-integer non-uniform check as the global-source path.
+const char* kStagedSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.xpu.core.CoopStage;\n"
+    "import cajeta.xpu.core.Barrier;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void staged(Buffer<float16> a, Buffer<float16> b,\n"
+    "                              Buffer<float32> c) {\n"
+    "        Shared<float16> sa = shared float16[16 * 16];\n"
+    "        Shared<float16> sb = shared float16[16 * 16];\n"
+    "        CoopStage.panel(sa, a, 0, 0, 16, 16, 16);\n"
+    "        CoopStage.panel(sb, b, 0, 0, 16, 16, 16);\n"
+    "        Barrier.workgroup();\n"
+    "        CooperativeMatrix<float16,16,16,0> ma;\n"
+    "        ma.load(sa, 0, 0, 16);\n"
+    "        CooperativeMatrix<float16,16,16,1> mb;\n"
+    "        mb.load(sb, 0, 0, 16);\n"
+    "        CooperativeMatrix<float32,16,16,2> mc;\n"
+    "        mc.splat(0.0f);\n"
+    "        mc.mma(ma, mb);\n"
+    "        mc.store(c, 0, 0, 16);\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCooperativeMatrixDeviceTests, ldsStagedMatmulOnDevice) {
+    if (!VulkanDriver::coopMatrixAvailable()) {
+        GTEST_SKIP() << "no Vulkan device with a 16x16x16 f16/f16->f32 "
+                        "cooperative-matrix config";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kStagedSource);
+    auto k = findMethod(module->getStructures()["test.M"], "staged");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_coopmat_staged_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    std::vector<_Float16> hostA(TILE), hostB(TILE);
+    std::vector<float> ref(TILE, 0.0f);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned kk = 0; kk < N; ++kk)
+            hostA[i * N + kk] = (_Float16) ((i + 2 * kk) % 5);
+    for (unsigned kk = 0; kk < N; ++kk)
+        for (unsigned j = 0; j < N; ++j)
+            hostB[kk * N + j] = (_Float16) ((3 * kk + j) % 4);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j) {
+            float acc = 0.0f;
+            for (unsigned kk = 0; kk < N; ++kk)
+                acc += (float) hostA[i * N + kk] * (float) hostB[kk * N + j];
+            ref[i * N + j] = acc;
+        }
+
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dA = vk.alloc(TILE * sizeof(_Float16));
+    auto dB = vk.alloc(TILE * sizeof(_Float16));
+    auto dC = vk.alloc(TILE * sizeof(float));
+    ASSERT_NE(dA, 0u);
+    ASSERT_NE(dB, 0u);
+    ASSERT_NE(dC, 0u);
+    ASSERT_TRUE(vk.upload(dA, hostA.data(), TILE * sizeof(_Float16)));
+    ASSERT_TRUE(vk.upload(dB, hostB.data(), TILE * sizeof(_Float16)));
+    std::vector<float> seed(TILE, -1.0f);
+    ASSERT_TRUE(vk.upload(dC, seed.data(), TILE * sizeof(float)));
+
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "staged", {dA, dB, dC},
+                          /*groupCountX=*/1));
+
+    std::vector<float> out(TILE, -2.0f);
+    ASSERT_TRUE(vk.download(out.data(), dC, TILE * sizeof(float)));
+    vk.free(dA);
+    vk.free(dB);
+    vk.free(dC);
+
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j)
+            EXPECT_EQ(out[i * N + j], ref[i * N + j])
+                << "LDS-staged tile mismatch at (" << i << "," << j << ")";
+}
