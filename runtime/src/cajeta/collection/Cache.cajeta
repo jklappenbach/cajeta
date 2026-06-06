@@ -126,11 +126,15 @@ public class Cache<K, V> {
      * (the next `get`/`evict` reclaims it).
      */
     public boolean containsKey(K key) {
-        Optional<CacheNode<K, V>> n = this.entries.get(key);
-        if (n.isEmpty()) {
+        // HashMap.get returns the value directly (null on a miss for a
+        // class V), NOT an Optional — so null-check the node rather than
+        // wrapping it. (Treating the raw V as an Optional would dispatch
+        // Optional.isEmpty() on a possibly-null node pointer.)
+        CacheNode<K, V> n = this.entries.get(key);
+        if (n == null) {
             return false;
         }
-        return !this.isExpired(n.get(), Cajeta.currentTimeNanos());
+        return !this.isExpired(n, Cajeta.currentTimeNanos());
     }
 
     /**
@@ -147,11 +151,12 @@ public class Cache<K, V> {
      * ```
      */
     public Optional<V> get(K key) {
-        Optional<CacheNode<K, V>> existing = this.entries.get(key);
-        if (existing.isEmpty()) {
+        // HashMap.get returns the value directly (null on a miss for a
+        // class V), NOT an Optional — null-check the node before use.
+        CacheNode<K, V> node = this.entries.get(key);
+        if (node == null) {
             return stack Optional<V>(false, #null);
         }
-        CacheNode<K, V> node = existing.get();
         int64 now = Cajeta.currentTimeNanos();
         if (this.isExpired(node, now)) {
             this.removeNode(node);
@@ -174,9 +179,10 @@ public class Cache<K, V> {
      */
     public void put(K key, V value) {
         int64 now = Cajeta.currentTimeNanos();
-        Optional<CacheNode<K, V>> existing = this.entries.get(key);
-        if (existing.isPresent()) {
-            CacheNode<K, V> node = existing.get();
+        // HashMap.get returns the value directly (null on a miss for a
+        // class V), NOT an Optional — null-check rather than isPresent().
+        CacheNode<K, V> node = this.entries.get(key);
+        if (node != null) {
             node.value = value;
             node.accessedAt = now;
             this.moveToHead(node);
@@ -192,9 +198,11 @@ public class Cache<K, V> {
 
     /** Drop `key` and its LRU node if present; a no-op otherwise. */
     public void remove(K key) {
-        Optional<CacheNode<K, V>> existing = this.entries.get(key);
-        if (existing.isEmpty()) { return; }
-        this.removeNode(existing.get());
+        // HashMap.get returns the value directly (null on a miss for a
+        // class V), NOT an Optional — null-check rather than isEmpty().
+        CacheNode<K, V> existing = this.entries.get(key);
+        if (existing == null) { return; }
+        this.removeNode(existing);
         this.entries.remove(key);
     }
 
