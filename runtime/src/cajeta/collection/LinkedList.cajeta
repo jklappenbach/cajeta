@@ -6,6 +6,17 @@ package cajeta.collection;
  * only needs `==` for `remove` / `contains` — both primitive T
  * (using the built-in `==`) and class T (identity comparison) work.
  *
+ * ```cajeta
+ * LinkedList<int64> nums = new LinkedList<int64>();
+ * nums.add(10);          // tail:  [10]
+ * nums.add(20);          // tail:  [10, 20]
+ * nums.addFirst(5);      // head:  [5, 10, 20]
+ * int64 mid = nums.get(1);          // 10
+ * boolean had = nums.remove(10);    // true -> [5, 20]
+ * boolean has = nums.contains(20);  // true
+ * int64 n = nums.count();           // 2
+ * ```
+ *
  * ## v1 surface
  *
  * `add(T)` appends to the tail. `addFirst(T)` prepends. `get(int64)`
@@ -13,13 +24,13 @@ package cajeta.collection;
  * `==`-matching node and unlinks it. `count()` returns the live
  * node count. `contains(T)` is a boolean find.
  *
- * Stream views and Optional-returning methods (e.g. `first()`
+ * Stream views and `Optional`-returning methods (e.g. `first()`
  * returning `Optional<T>`) are deferred — they'd need the
- * Optional<class T> field-layout bug fixed first.
+ * `Optional<class T>` field-layout bug fixed first.
  *
  * ## Storage
  *
- * Heap-allocates one `LinkedListNode<T>` per `add`. The list owns
+ * Heap-allocates one `LinkedListNode`<T> per `add`. The list owns
  * the nodes; removed nodes fall off the drop chain at scope exit.
  * Values are NOT owned by the nodes — `remove(T)` returns whether
  * a node was unlinked, but doesn't drop the value.
@@ -30,6 +41,14 @@ public class LinkedList<T> {
     private LinkedListNode<T> tail;
     private int64 sizeCount;
 
+    /**
+     * Create an empty list.
+     *
+     * ```cajeta
+     * LinkedList<string> names = new LinkedList<string>();
+     * names.add("ada");
+     * ```
+     */
     public LinkedList() {
         this.head = null;
         this.tail = null;
@@ -139,9 +158,6 @@ public class LinkedList<T> {
         return false;
     }
 
-    /**
-     * @returns the number of values currently in the list.
-     */
     public int64 count() {
         return this.sizeCount;
     }

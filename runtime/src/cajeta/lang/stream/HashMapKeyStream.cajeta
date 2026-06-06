@@ -1,9 +1,12 @@
 package cajeta.lang.stream;
 
 /**
- * Walks a HashMap's slot arrays and yields each OCCUPIED key.
+ * A `Stream` that walks a `HashMap`'s slot arrays and yields each
+ * OCCUPIED key. Implements `Splittable`, so it can be partitioned for
+ * parallel traversal via `trySplit()`.
+ *
  * Snapshot semantics: the constructor captures references to the
- * keys + state arrays at the moment of call. If the source HashMap
+ * keys + state arrays at the moment of call. If the source `HashMap`
  * resizes (which swaps in fresh arrays) or mutates entries after
  * this stream is constructed, behavior is undefined — same
  * concurrent-modification rule as Java's non-snapshot iterators.
@@ -12,7 +15,17 @@ package cajeta.lang.stream;
  * positions; only OCCUPIED (state==1) yields. Pull complexity is
  * O(cap) total across the full iteration (linear scan), not
  * O(cap * size); the iterator state is a single int64 position
- * cursor advanced through each next() call.
+ * cursor advanced through each `next()` call. Keys are pulled one at a
+ * time as an `Optional`; an empty `Optional` marks exhaustion.
+ *
+ * ```cajeta
+ * #Stream<K> keys = heap HashMapKeyStream<K, V>(map.keys, map.state, map.cap);
+ * Optional<K> head = keys.next();
+ * while (head.isPresent()) {
+ *     process(head.get());
+ *     head = keys.next();
+ * }
+ * ```
  */
 public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
     K[] keys;
@@ -20,6 +33,17 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
     int64 cap;
     int64 idx;
 
+    /**
+     * Constructs a key stream over the given slot arrays, starting at
+     * position 0. `cap` bounds the scan; `state[i]` classifies slot `i`
+     * (0=EMPTY, 1=OCCUPIED, 2=TOMBSTONE) and `keys[i]` holds the key for
+     * OCCUPIED slots. Typically built by a `HashMap` over its own
+     * internal arrays rather than constructed directly.
+     *
+     * ```cajeta
+     * #Stream<K> s = heap HashMapKeyStream<K, V>(map.keys, map.state, map.cap);
+     * ```
+     */
     public HashMapKeyStream(K[] keys, int8[] state, int64 cap) {
         this.keys = keys;
         this.state = state;
@@ -27,6 +51,12 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
         this.idx = 0;
     }
 
+    /**
+     * Advances the cursor to the next OCCUPIED slot and returns its key
+     * wrapped in a present `Optional`, skipping EMPTY and TOMBSTONE
+     * positions. Returns an empty `Optional` once the cursor reaches
+     * `cap` (stream exhausted).
+     */
     public Optional<K> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
@@ -69,10 +99,12 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
         return this.cap - this.idx;
     }
 
+    /** Alias for `estimateSize()`; the `Splittable` view of the remaining work. */
     public int64 splittableSize() {
         return this.estimateSize();
     }
 
+    /** Root-level entry point for the `Splittable` framework; delegates to `trySplit()`. */
     public #Stream<?> trySplitRoot() {
         return this.trySplit();
     }

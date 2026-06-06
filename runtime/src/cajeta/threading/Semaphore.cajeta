@@ -4,11 +4,11 @@ package cajeta.threading;
  * Counting permit pool — cajeta-docs/stdlib/Thread.md § `Semaphore`. Bounds
  * the number of concurrent operations against an unbounded set of
  * consumers. Built directly on the lock + condition-variable intrinsics
- * (the same primitives `Mutex<T>` uses): `acquire` waits for a free permit
+ * (the same primitives `Mutex` uses): `acquire` waits for a free permit
  * then takes one, `release` returns one and wakes a waiter.
  *
- * (Conceptually this is a `Mutex<int32>` of the permit count; it's spelled
- * out over the intrinsics rather than holding a `Mutex<int32>` field
+ * (Conceptually this is a `Mutex``<int32>` of the permit count; it's spelled
+ * out over the intrinsics rather than holding a `Mutex``<int32>` field
  * because `Semaphore` itself is not generic and the lock/condvar handles
  * are exactly what it needs.)
  *
@@ -17,12 +17,40 @@ package cajeta.threading;
  * expresses the limit in the program's shape. Reach for `Semaphore` when
  * the consumers are unbounded and no scope can serve as the batching
  * boundary.
+ *
+ * ## Usage
+ *
+ * ```cajeta
+ * // Allow at most 4 fibers into the critical region at once.
+ * stack gate = Semaphore(4);
+ *
+ * // Preferred: scoped acquire/release that survives throws.
+ * gate.withPermit(() -> {
+ *     callRateLimitedApi();
+ * });
+ *
+ * // Or manage the permit by hand.
+ * gate.acquire();
+ * try {
+ *     callRateLimitedApi();
+ * } finally {
+ *     gate.release();
+ * }
+ * ```
  */
 public class Semaphore {
     pointer handle;
     pointer cond;
     int32 count;
 
+    /**
+     * Create a semaphore seeded with `initial` free permits — the cap on
+     * concurrent holders.
+     *
+     * ```cajeta
+     * stack pool = Semaphore(8);   // 8 permits available up front
+     * ```
+     */
     public Semaphore(int32 initial) {
         this.handle = Cajeta.lockNew();
         this.cond = Cajeta.condvarNew();
@@ -56,6 +84,11 @@ public class Semaphore {
      * Run `fn` while holding a permit, releasing it even if `fn` throws.
      * The permit is held for the whole of `fn` (the bounded operation),
      * not just the brief count updates.
+     *
+     * ```cajeta
+     * stack gate = Semaphore(2);
+     * gate.withPermit(() -> downloadChunk(url));
+     * ```
      */
     public void withPermit(() -> void fn) {
         this.acquire();

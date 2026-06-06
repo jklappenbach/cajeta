@@ -1,13 +1,44 @@
 package cajeta.codec.json;
 
-// Minimal JsonValue container backing JsonValue.ARRAY. Geometric-
-// growth JsonValue[] with count/get/add. v1 surface; Stream<JsonValue>
-// inheritance lands when JsonValue settles further.
+/**
+ * Growable, ordered container of `JsonValue` elements backing the
+ * `JsonValue.ARRAY` kind. A geometric-growth (`cap * 2`) backing
+ * `JsonValue[]` with the minimal `count` / `get` / `add` surface.
+ *
+ * This is the Tier 3 convenience representation of a JSON array: a
+ * built `JsonArray` is handed to a `JsonValue` via `setArray`,
+ * which takes ownership (`#JsonArray`).
+ *
+ * ## Usage
+ * ```cajeta
+ * #JsonArray arr = new JsonArray();
+ * arr.add(new JsonValue().setNumber(1));
+ * arr.add(new JsonValue().setString("two"));
+ *
+ * int32 n = arr.count();      // 2
+ * JsonValue first = arr.get(0);
+ *
+ * // wrap as a JsonValue of kind ARRAY
+ * JsonValue v = new JsonValue().setArray(arr);
+ * ```
+ *
+ * v1 surface; `Stream<JsonValue>` inheritance lands when
+ * `JsonValue` settles further.
+ */
 public class JsonArray {
     JsonValue[] data;
     int32 cap;
     int32 sizeCount;
 
+    /**
+     * Creates an empty array with an initial capacity of 8; it grows
+     * automatically on `add`.
+     *
+     * ```cajeta
+     * #JsonArray arr = new JsonArray();
+     * arr.add(new JsonValue().setNull());
+     * ```
+     */
     public JsonArray() {
         this.cap = 8;
         this.data = new JsonValue[8];
@@ -23,6 +54,17 @@ public class JsonArray {
         return this.data[i];
     }
 
+    /**
+     * Appends `v` to the end of the array, taking ownership of it
+     * (`#JsonValue`), and grows the backing store if the capacity is
+     * exhausted.
+     *
+     * ```cajeta
+     * #JsonArray arr = new JsonArray();
+     * arr.add(new JsonValue().setBoolean(true));
+     * arr.add(new JsonValue().setNumber(42));
+     * ```
+     */
     public void add(#JsonValue v) {
         if (this.sizeCount >= this.cap) {
             this.grow();
@@ -31,6 +73,7 @@ public class JsonArray {
         this.sizeCount = this.sizeCount + 1;
     }
 
+    /** Doubles the backing capacity and copies the live elements over. */
     void grow() {
         int32 newCap = this.cap * 2;
         JsonValue[] dst = new JsonValue[newCap];

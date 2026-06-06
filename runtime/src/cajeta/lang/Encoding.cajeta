@@ -1,33 +1,57 @@
 package cajeta.lang;
 
 /**
- * Text encoding identifiers for String byte-interchange.
+ * Text encoding identifiers for `String` byte-interchange.
  *
- * Used by String.fromBytes(byte[], int32, Encoding, ...) /
- * String.getBytes(Encoding, ...) and any other code that needs to
- * cross the bytes ↔ text boundary with explicit encoding choice.
- * No platform-default fallback (Java's FileReader trap) — every
- * conversion declares its encoding.
+ * Every conversion across the bytes ↔ text boundary names its `Encoding`
+ * explicitly — there is no platform-default fallback (Java's `FileReader`
+ * trap). Pass one of these constants whenever you serialize or decode text.
  *
- * v1 covers UTF + ASCII + Western (Latin-1, Windows-1252) + the
- * four most common CJK encodings. Arabic / Hebrew / additional ISO
- * code pages land in v2 if anybody asks. The cryptographic /
- * compression family is not part of Encoding — that's
- * cajeta.codec.* territory.
+ * ## Usage
+ * The byte ↔ text methods that consume these constants (`String.getBytes`,
+ * `String.fromBytes`, and the transcoding hooks on `FileReader`) are not
+ * yet implemented — see `String` for the phase plan. Until they land, an
+ * `Encoding` value is simply selected by name:
+ *
+ * ```cajeta
+ * Encoding wire = Encoding.UTF_8;
+ * ```
+ *
+ * Decode-error behaviour, once those methods exist, is governed separately
+ * by `EncodingErrorPolicy`.
+ *
+ * ## Coverage
+ * v1 covers UTF + ASCII + Western (`LATIN_1`, `WINDOWS_1252`) + the four
+ * most common CJK encodings. Arabic / Hebrew / additional ISO code pages
+ * land in v2 if anybody asks. The cryptographic / compression family is
+ * not part of `Encoding` — that lives under `cajeta.codec.*` (for example
+ * `Json`), a separate package with no concrete crypto type yet.
  *
  * See cajeta-docs/stdlib/lang/String.md § Encoding interchange.
  */
 public enum Encoding {
+    /** Variable-width Unicode, the default interchange encoding. */
     UTF_8,
+    /** UTF-16, little-endian byte order. */
     UTF_16_LE,
+    /** UTF-16, big-endian byte order. */
     UTF_16_BE,
+    /** UTF-32, little-endian byte order. */
     UTF_32_LE,
+    /** UTF-32, big-endian byte order. */
     UTF_32_BE,
+    /** 7-bit US-ASCII; bytes above `0x7F` are invalid. */
     ASCII,
-    LATIN_1,          // ISO-8859-1
-    WINDOWS_1252,     // Western European, Windows codepage 1252
-    GB18030,          // CJK Chinese (simplified, full Unicode range)
-    SHIFT_JIS,        // CJK Japanese
-    EUC_KR,           // CJK Korean
-    BIG_5             // CJK Chinese (traditional)
+    /** ISO-8859-1 Latin-1 Western European. */
+    LATIN_1,
+    /** Windows codepage 1252, Western European. */
+    WINDOWS_1252,
+    /** GB18030 Simplified Chinese, covering the full Unicode range. */
+    GB18030,
+    /** Shift JIS Japanese. */
+    SHIFT_JIS,
+    /** EUC-KR Korean. */
+    EUC_KR,
+    /** Big5 Traditional Chinese. */
+    BIG_5
 }

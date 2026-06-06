@@ -46,6 +46,21 @@ public class LtmBPlusTree<K, V> {
 
     private LtmPager<K, V> pager;
 
+    /**
+     * Open (or create) the disk index at `path`. A new file is laid out
+     * with branching factor `order`; an existing file is reopened from
+     * its header and the stored order wins. `keyEnc` / `valEnc` are the
+     * `Encoder`s that serialize keys and values; `capacity` caps the
+     * number of resident pages. Always `close()` to flush durably.
+     *
+     * ```cajeta
+     * heap LtmBPlusTree<int64, String> idx =
+     *     heap LtmBPlusTree<int64, String>("/data/users.idx", keyEnc, valEnc, 128, 256);
+     * idx.put(42, "alice");
+     * String name = idx.get(42);   // "alice"
+     * idx.close();                 // durable
+     * ```
+     */
     public LtmBPlusTree(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
                         int32 order, int32 capacity) {
         this.pager = heap LtmPager<K, V>(path, keyEnc, valEnc, order, 4096, capacity);
@@ -55,14 +70,17 @@ public class LtmBPlusTree<K, V> {
         return this.pager.getEntryCount();
     }
 
+    /** True when no entries have been inserted (the index has no root page yet). */
     public boolean isEmpty() {
         return this.pager.getRoot() == -1;
     }
 
+    /** Write all dirty resident pages to disk without closing the file. */
     public void flush() {
         this.pager.flush();
     }
 
+    /** Flush and release the underlying file; call before discarding the index. */
     public void close() {
         this.pager.close();
     }

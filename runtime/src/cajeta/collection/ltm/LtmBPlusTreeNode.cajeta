@@ -33,6 +33,18 @@ public class LtmBPlusTreeNode<K, V> {
     /** Set when the in-memory image diverges from disk; cleared on write. */
     public boolean dirty;
 
+    /**
+     * Allocates a fresh, `dirty` page image. `order` sizes the key array
+     * (over-allocated by one slot for in-place overflow); pass `leaf` to
+     * choose whether `values` or `childIds` is allocated. The `LtmPager`
+     * normally calls this when growing the tree or splitting a node.
+     *
+     * ```cajeta
+     * # newLeaf = new LtmBPlusTreeNode<int64, string>(pageId, true, order);
+     * newLeaf.nextLeafId = oldLeaf.pageId;
+     * # internal = new LtmBPlusTreeNode<int64, string>(rootId, false, order);
+     * ```
+     */
     public LtmBPlusTreeNode(int64 pageId, boolean leaf, int32 order) {
         this.pageId = pageId;
         this.leaf = leaf;

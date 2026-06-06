@@ -43,6 +43,18 @@ public class JsonValue {
     JsonArray arrVal;
     JsonObject objVal;
 
+    /**
+     * Construct an empty value of kind `NULL`. Populate it with one of
+     * the `setX` builders, each of which sets the discriminator and
+     * returns `this` so calls chain.
+     *
+     * ```cajeta
+     * JsonValue v = JsonValue().setNumber(42);
+     * if (v.kind() == JsonValue.NUMBER) {
+     *     int64 n = v.asInt64();
+     * }
+     * ```
+     */
     public JsonValue() {
         this.kind = 0;
         this.boolVal = false;
@@ -57,6 +69,7 @@ public class JsonValue {
         return this.kind;
     }
 
+    /** True when this value is JSON `null` (kind `NULL`). */
     public boolean isNull() {
         return this.kind == 0;
     }
@@ -69,6 +82,7 @@ public class JsonValue {
         return this.numVal;
     }
 
+    /** Narrowing view of the NUMBER payload — truncates the int64 to int32. */
     public int32 asInt32() {
         return (int32) this.numVal;
     }
@@ -90,6 +104,13 @@ public class JsonValue {
      * caller wants String ergonomics (equality, hashing,
      * concatenation). Returns null for non-STRING kinds — caller
      * gates on `kind()` first if that matters.
+     *
+     * ```cajeta
+     * #String s = v.asString();
+     * if (s != null) {
+     *     // owns the materialized `String`
+     * }
+     * ```
      */
     public #String asString() {
         if (this.kind != 3) {
@@ -137,8 +158,8 @@ public class JsonValue {
     /**
      * String-typed `setString` overload. The String's bytes are
      * stored as a BORROW — the String's lifetime must outlive this
-     * JsonValue. For ownership transfer use `setStringFromString(#s)`
-     * (the String moves into this JsonValue and the caller's local
+     * JsonValue. For ownership transfer use `setStringOwned(#bytes, len)`
+     * (the bytes move into this JsonValue and the caller's local
      * deactivates).
      */
     public JsonValue setString(String s) {
@@ -161,6 +182,12 @@ public class JsonValue {
         return this;
     }
 
+    /**
+     * STRING builder that TAKES OWNERSHIP of the byte slice (`#int8[]`).
+     * The caller's local deactivates and this JsonValue frees the bytes
+     * at its own scope exit. Contrast `setString(bytes, len)`, which only
+     * borrows and requires the bytes to outlive this value.
+     */
     public JsonValue setStringOwned(#int8[] bytes, int32 len) {
         this.kind = 3;
         this.strBytes = bytes;

@@ -2,51 +2,107 @@ package cajeta.time;
 
 /**
  * An immutable calendar-based amount of time — years, months, and days —
- * modeled on `java.time.Period`. Distinct from [[Duration]] because months and
- * years are not fixed-length. A pure stack value type.
+ * modeled on `java.time.Period`. Distinct from `Duration` (which measures a
+ * fixed number of seconds/nanos) because months and years are not fixed-length.
+ * A pure stack value type with copy semantics.
  *
  * Each field is independent and signed; `Period.of(1, 2, 3)` is "1 year, 2
  * months and 3 days". No automatic normalization between days and months (a
  * month is not a fixed number of days); `normalized()` only rolls months into
- * years.
+ * years. Build one with the `of*` factories, combine with `plus`/`minus`, and
+ * render to ISO-8601 with `iso`.
+ *
+ * ```cajeta
+ * stack Period p = Period.of(1, 2, 3);     // 1 year, 2 months, 3 days
+ * stack Period q = p.plus(Period.ofWeeks(2));
+ * #String text = q.normalized().iso();     // "P1Y2M17D"
+ * boolean none = Period.zero().isZero();   // true
+ * ```
+ *
+ * Pair with `LocalDate` to shift calendar dates, and contrast with
+ * `Duration` for machine-time amounts.
  */
 public class Period {
     int32 years;
     int32 months;
     int32 days;
 
+    /**
+     * Constructs a period directly from its three signed fields. Prefer the
+     * `of*` factories for readability.
+     *
+     * ```cajeta
+     * stack Period p = stack Period(2, 6, 0); // 2 years, 6 months
+     * ```
+     */
     public Period(int32 years, int32 months, int32 days) {
         this.years = years;
         this.months = months;
         this.days = days;
     }
 
-    /** A period of `years` years, `months` months and `days` days. */
+    /**
+     * A period of `years` years, `months` months and `days` days.
+     *
+     * ```cajeta
+     * stack Period p = Period.of(1, 2, 3); // 1 year, 2 months, 3 days
+     * ```
+     */
     public static Period of(int32 years, int32 months, int32 days) {
         return stack Period(years, months, days);
     }
 
-    /** A period of `years` years. */
+    /**
+     * A period of `years` years.
+     *
+     * ```cajeta
+     * stack Period decade = Period.ofYears(10);
+     * ```
+     */
     public static Period ofYears(int32 years) {
         return stack Period(years, 0, 0);
     }
 
-    /** A period of `months` months. */
+    /**
+     * A period of `months` months.
+     *
+     * ```cajeta
+     * stack Period quarter = Period.ofMonths(3);
+     * ```
+     */
     public static Period ofMonths(int32 months) {
         return stack Period(0, months, 0);
     }
 
-    /** A period of `weeks` weeks (stored as `weeks * 7` days). */
+    /**
+     * A period of `weeks` weeks (stored as `weeks * 7` days).
+     *
+     * ```cajeta
+     * stack Period fortnight = Period.ofWeeks(2); // 14 days
+     * ```
+     */
     public static Period ofWeeks(int32 weeks) {
         return stack Period(0, 0, weeks * 7);
     }
 
-    /** A period of `days` days. */
+    /**
+     * A period of `days` days.
+     *
+     * ```cajeta
+     * stack Period week = Period.ofDays(7);
+     * ```
+     */
     public static Period ofDays(int32 days) {
         return stack Period(0, 0, days);
     }
 
-    /** The zero period. */
+    /**
+     * The zero period (all fields `0`).
+     *
+     * ```cajeta
+     * stack Period empty = Period.zero(); // empty.isZero() == true
+     * ```
+     */
     public static Period zero() {
         return stack Period(0, 0, 0);
     }
@@ -116,7 +172,16 @@ public class Period {
         return h;
     }
 
-    /** ISO-8601 `PnYnMnD` (e.g. `P1Y2M3D`); `P0D` for the zero period. */
+    /**
+     * Formats this period as ISO-8601 `PnYnMnD` (e.g. `P1Y2M3D`); `P0D` for the
+     * zero period. Negative fields are emitted with a leading `-` (e.g.
+     * `P-1Y2M`). Returns a heap `String` whose ownership transfers to the
+     * caller.
+     *
+     * ```cajeta
+     * #String s = Period.of(1, 2, 3).iso(); // "P1Y2M3D"
+     * ```
+     */
     public #String iso() {
         if (this.years == 0 && this.months == 0 && this.days == 0) {
             int8[] z = new int8[2];

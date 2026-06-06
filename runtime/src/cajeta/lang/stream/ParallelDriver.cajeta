@@ -25,6 +25,21 @@ import cajeta.threading.AtomicInt32;
  * multi-carrier scheduler lands the same driver yields wall-clock
  * parallelism without a code change.
  *
+ * ## Usage
+ * ```cajeta
+ * // Reduce a Splittable source in parallel — `fn` MUST be associative
+ * // and `seed` its identity:
+ * int32 total = ParallelDriver.reduceParallel<int32>(src, 0, (a, b) -> a + b);
+ *
+ * // Over a whole Stream pipeline (wrapper-chain aware):
+ * boolean any = ParallelDriver.anyMatchParallelChain<int32>(stream, (x) -> x > 100);
+ * Optional<int32> hit = ParallelDriver.findAnyParallelChain<int32>(stream, (x) -> x % 2 == 0);
+ * ```
+ *
+ * Drives `Splittable` sources and `Stream` pipelines, returns
+ * single-element results as `Optional`, and coordinates short-circuit
+ * workers through a shared `AtomicInt32` cancel flag.
+ *
  * See cajeta-docs/stdlib/StreamParallelism.md.
  */
 public class ParallelDriver {
@@ -50,6 +65,10 @@ public class ParallelDriver {
      * v1 body walks the source sequentially. The split-count
      * decision is computed but unused — the driver records what
      * fan-out it WOULD have picked for future debug instrumentation.
+     *
+     * ```cajeta
+     * int32 n = ParallelDriver.countParallel<int32>(src);
+     * ```
      */
     public static int32 countParallel<T>(Splittable<T> source) {
         // Inline sequential walk. Avoids re-dispatching through
@@ -89,6 +108,10 @@ public class ParallelDriver {
      * and the orchestrator combines partials with `fn` again (legal
      * because `fn` is associative + identity-respecting per the
      * contract above).
+     *
+     * ```cajeta
+     * int32 sum = ParallelDriver.reduceParallel<int32>(src, 0, (a, b) -> a + b);
+     * ```
      */
     public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> #T fn) {
         int64 sz = source.estimateSize();
@@ -177,6 +200,10 @@ public class ParallelDriver {
      * top of its next loop iteration. The predicate must be side-
      * effect-free (Java's same contract) so the cooperative cancel
      * can't observe a half-committed state.
+     *
+     * ```cajeta
+     * boolean found = ParallelDriver.anyMatchParallel<int32>(src, (x) -> x > 100);
+     * ```
      */
     public static boolean anyMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
         int64 sz = source.estimateSize();
@@ -229,6 +256,10 @@ public class ParallelDriver {
      * satisfies `predicate`. Vacuously true on an empty source.
      * Uses findFailWorker, which signals on the first !predicate
      * element; sibling workers see the flag and bail.
+     *
+     * ```cajeta
+     * boolean ok = ParallelDriver.allMatchParallel<int32>(src, (x) -> x >= 0);
+     * ```
      */
     public static boolean allMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
         int64 sz = source.estimateSize();
@@ -280,6 +311,10 @@ public class ParallelDriver {
      * Parallel noneMatch. Returns true only if no element satisfies
      * `predicate`. Same shape as anyMatch — shares findHitWorker —
      * but inverts the return: a hit means the result is false.
+     *
+     * ```cajeta
+     * boolean none = ParallelDriver.noneMatchParallel<int32>(src, (x) -> x < 0);
+     * ```
      */
     public static boolean noneMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
         int64 sz = source.estimateSize();
@@ -418,6 +453,13 @@ public class ParallelDriver {
      * fallback. Lifting the type-changing case wants either
      * Object-erasure or wildcards (CajetaType.cpp:454 rejects
      * `<?>` today).
+     *
+     * Entry point for a `Stream` head; sibling chain links such as
+     * `MapStream` / `FlatMapStream` fall back to sequential here.
+     *
+     * ```cajeta
+     * int32 total = ParallelDriver.reduceParallelChain<int32>(stream, 0, (a, b) -> a + b);
+     * ```
      */
     public static #T reduceParallelChain<T>(Stream<T> head, T seed, (T, T) -> #T fn) {
         int32 depth = 0;
@@ -514,6 +556,12 @@ public class ParallelDriver {
      * Map/FlatMap nodes flip to a different element type that
      * Stream<T>.unwrap()=null hides. Lifting that wants either
      * Object-erasure or wildcard support (CajetaType.cpp:454).
+     *
+     * ```cajeta
+     * // Fold int32 elements into a wider int64 accumulator:
+     * int64 total = ParallelDriver.foldParallelChain<int32, int64>(
+     *     stream, 0L, (acc, x) -> acc + (int64) x, (a, b) -> a + b);
+     * ```
      */
     public static #R foldParallelChain<T, R>(Stream<T> head, R seed, (R, T) -> #R fn, (R, R) -> #R combiner) {
         int32 depth = 0;
@@ -607,6 +655,16 @@ public class ParallelDriver {
      * `add` / drop. Per-worker drain reuses `foldWorker<T, R>` —
      * the worker side is identical; only the partials[] seeding
      * differs.
+     *
+     * ```cajeta
+     * // Each worker gets its own `ArrayList` via the supplier, so
+     * // there's no aliasing/race on a shared mutable container:
+     * ArrayList<int32> out = ParallelDriver.collectParallelChain<int32, ArrayList<int32>>(
+     *     stream,
+     *     () -> heap ArrayList<int32>(),
+     *     (list, x) -> list.add(x),
+     *     (a, b) -> a.addAll(b));
+     * ```
      */
     public static #R collectParallelChain<T, R>(Stream<T> head, () -> #R supplier, (R, T) -> #R accumulator, (R, R) -> #R combiner) {
         int32 depth = 0;
@@ -680,6 +738,10 @@ public class ParallelDriver {
      * each share via `head.cloneChainOver(#piece)`, fork via
      * `scope { spawn findHitWorker<T> }`. Short-circuits via a
      * shared `boolean[1] hit` flag.
+     *
+     * ```cajeta
+     * boolean found = ParallelDriver.anyMatchParallelChain<int32>(stream, (x) -> x > 100);
+     * ```
      */
     public static boolean anyMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
@@ -745,6 +807,10 @@ public class ParallelDriver {
      * anyMatchParallelChain but uses findFailWorker — first worker
      * to find a non-matching element flips the shared `fail` flag;
      * siblings observe and bail.
+     *
+     * ```cajeta
+     * boolean ok = ParallelDriver.allMatchParallelChain<int32>(stream, (x) -> x >= 0);
+     * ```
      */
     public static boolean allMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
@@ -809,6 +875,10 @@ public class ParallelDriver {
      * Wrapper-chain-aware parallel noneMatch. Same shape as
      * anyMatchParallelChain — shares findHitWorker, but inverts the
      * return: a hit means the result is false.
+     *
+     * ```cajeta
+     * boolean none = ParallelDriver.noneMatchParallelChain<int32>(stream, (x) -> x < 0);
+     * ```
      */
     public static boolean noneMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
@@ -883,6 +953,13 @@ public class ParallelDriver {
      * unwrap, reject stateful, rebuild each share via
      * `head.cloneChainOver(#piece)`, fork via
      * `scope { spawn findAnyWorker<T> }`.
+     *
+     * ```cajeta
+     * Optional<int32> hit = ParallelDriver.findAnyParallelChain<int32>(stream, (x) -> x % 2 == 0);
+     * if (hit.isPresent()) {
+     *     int32 even = hit.get();
+     * }
+     * ```
      */
     public static Optional<T> findAnyParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
@@ -990,6 +1067,10 @@ public class ParallelDriver {
      * Order across workers is unspecified per
      * StreamParallelism.md § Per-terminal rules — `fn` must be
      * commutative AND thread-safe.
+     *
+     * ```cajeta
+     * ParallelDriver.forEachParallelChain<int32>(stream, (x) -> println(x));
+     * ```
      */
     public static void forEachParallelChain<T>(Stream<T> head, (T) -> void fn) {
         int32 depth = 0;

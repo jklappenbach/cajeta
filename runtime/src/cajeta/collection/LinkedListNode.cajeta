@@ -1,7 +1,7 @@
 package cajeta.collection;
 
 /**
- * Node in a doubly-linked list (`LinkedList<T>`). Holds the value
+ * Node in a doubly-linked list (`LinkedList``<T>`). Holds the value
  * plus prev/next pointers. v1 keeps this as a separate top-level
  * class (Cajeta doesn't have nested classes yet); future versions
  * may make it package-private or merge it into LinkedList's
@@ -25,6 +25,16 @@ public class LinkedListNode<T> {
     public LinkedListNode<T> prev;
     public LinkedListNode<T> next;
 
+    /**
+     * Creates a detached node wrapping `value`, with `prev` and `next`
+     * set to `null`. Linking is the `LinkedList`'s job — callers rarely
+     * construct nodes directly.
+     *
+     * ```cajeta
+     * heap node = new LinkedListNode<Int>(42);
+     * // node.prev == null && node.next == null
+     * ```
+     */
     public LinkedListNode(T value) {
         this.value = value;
         this.prev = null;

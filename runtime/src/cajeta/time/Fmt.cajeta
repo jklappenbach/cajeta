@@ -2,9 +2,24 @@ package cajeta.time;
 
 /**
  * Internal byte-level formatting helpers for `cajeta.time` `toString()` / ISO
- * output. The stdlib has no `StringBuilder` yet, so date/time types build an
- * owned `int8[]` of ASCII bytes and wrap it in a `String` (the same idiom
- * `String.substring` uses: `new int8[]` → `heap String(#bytes, len)`).
+ * output. The stdlib has no `StringBuilder` yet, so date/time types such as
+ * `LocalDate`, `LocalTime` and `ZonedDateTime` build an owned `int8[]`
+ * of ASCII bytes and wrap it in a `String` (the same idiom `String.substring`
+ * uses: `new int8[]` → `heap String(#bytes, len)`).
+ *
+ * Every `writeX` method takes the destination `buf` and a write cursor `pos`,
+ * and returns the position just past the bytes it wrote, so calls chain. Use
+ * `Fmt`.`width` to size the buffer up front.
+ *
+ * ```cajeta
+ * // Format the time 09:30 as "09:30"
+ * int8[] buf = new int8[5];
+ * int32 pos = 0;
+ * pos = Fmt.writeUint(buf, pos, 9, 2);    // "09"
+ * pos = Fmt.writeChar(buf, pos, 58);      // ':'  (ASCII 58)
+ * pos = Fmt.writeUint(buf, pos, 30, 2);   // "30"
+ * heap String text = new String(#buf, pos);
+ * ```
  *
  * Package-private: not part of the public `cajeta.time` surface.
  */
@@ -25,6 +40,11 @@ class Fmt {
      * on the left to at least `minWidth` digits. Returns the position just past
      * the last digit written. Digits are filled right-to-left, then any
      * remaining width to the left is padded with '0'.
+     *
+     * ```cajeta
+     * pos = Fmt.writeUint(buf, pos, 2026, 4);   // "2026"
+     * pos = Fmt.writeUint(buf, pos, 7, 2);      // "07"  (zero-padded)
+     * ```
      */
     static int32 writeUint(int8[] buf, int32 pos, int64 v, int32 minWidth) {
         int32 w = Fmt.width(v);
@@ -54,7 +74,13 @@ class Fmt {
         return pos + 1;
     }
 
-    /** Copy `len` bytes of `src` into `buf` at `pos`; returns the new position. */
+    /**
+     * Copy `len` bytes of `src` into `buf` at `pos`; returns the new position.
+     *
+     * ```cajeta
+     * pos = Fmt.writeBytes(buf, pos, monthName, 3);   // e.g. "Jun"
+     * ```
+     */
     static int32 writeBytes(int8[] buf, int32 pos, int8[] src, int32 len) {
         int32 p = pos;
         int32 i = 0;

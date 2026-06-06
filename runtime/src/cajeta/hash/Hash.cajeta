@@ -34,6 +34,24 @@ package cajeta.hash;
  * signature / KDF primitives live in the future `cajeta.crypto` peer
  * library — never inside `cajeta.hash`.
  *
+ * ## Usage
+ *
+ * All entry points are static — there is nothing to construct.
+ *
+ * ```cajeta
+ * // Same-heap-object identity, for an `IdentityHashMap` key
+ * stack int64 id = Hash.identity(obj);
+ *
+ * // Hand-written hash() override threading two field hashes through
+ * // the same mixer the structural synthesizer emits
+ * public int64 hash() {
+ *     return Hash.combine(this.name.hash(), this.value.hash());
+ * }
+ *
+ * // Process seed, e.g. to replay a hash-table snapshot elsewhere
+ * stack int64 seed = Hash.processSeed();
+ * ```
+ *
  * @See cajeta.lang.Object
  * @See [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
@@ -53,6 +71,10 @@ public final class Hash {
      * here without an explicit cast. The underlying runtime symbol
      * still takes a raw `void*`; the ABI is identical — only the
      * cajeta-side type widens for static type checking.
+     *
+     * ```cajeta
+     * stack int64 id = Hash.identity(obj);   // null-safe, O(1)
+     * ```
      *
      * @Param obj the object to hash; `null` is a valid input and
      *            hashes to the seed-mixed bit pattern of the zero
@@ -77,6 +99,11 @@ public final class Hash {
      * call between consecutive field hashes, so manual overrides and
      * synthesized bodies produce identical hashes for identical field
      * sets in identical order.
+     *
+     * ```cajeta
+     * stack int64 h = Hash.combine(first.hash(), second.hash());
+     * // order-sensitive: Hash.combine(a, b) != Hash.combine(b, a)
+     * ```
      *
      * @Param a first hash input.
      * @Param b second hash input.
@@ -116,6 +143,10 @@ public final class Hash {
      * compiler-synthesized `Object.hash()` — e.g. external hash-table
      * snapshot replay where the seed must be threaded through and
      * pinned to reproduce an in-process state on a separate machine.
+     *
+     * ```cajeta
+     * stack int64 seed = Hash.processSeed();   // stable per process, never zero
+     * ```
      *
      * @returns the process-wide seed; never zero (the OS entropy
      *          syscall is itself contractually non-zero).

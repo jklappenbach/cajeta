@@ -5,20 +5,47 @@ import cajeta.lang.Comparable;
 /**
  * A fixed offset from UTC, e.g. `+05:30`, `-08:00`, or `Z` (UTC). Modeled on
  * `java.time.ZoneOffset`. Stored as a single `int32` total-seconds value in
- * `[-64800, 64800]` (±18 hours). A pure stack value type.
+ * `[-64800, 64800]` (±18 hours). A pure stack value type: every factory returns
+ * a fresh `stack` value by copy.
  *
  * This is the v1 backbone for zoned date-times: region `ZoneId` lookups against
  * the system tz database are deferred, but fixed offsets fully support
- * `Instant` ↔ `ZonedDateTime` conversion.
+ * `Instant` ↔ `ZonedDateTime` conversion. Implements `Comparable`, so
+ * offsets sort by their second count.
+ *
+ * Build one through the `of*`/`utc` factories rather than the raw constructor;
+ * they range-check the result and throw `DateTimeException` on bad input.
+ *
+ * ```cajeta
+ * stack ZoneOffset ist = ZoneOffset.ofHoursMinutes(5, 30);  // +05:30
+ * stack ZoneOffset pst = ZoneOffset.ofHours(-8);            // -08:00
+ * boolean east = ist.compareTo(pst) > 0;                    // true
+ * #String id = ist.iso();                                   // "+05:30"
+ * ```
  */
 public class ZoneOffset implements Comparable<ZoneOffset> {
     int32 totalSeconds;
 
+    /**
+     * A raw offset from a `totalSeconds` value; performs no range check. Prefer
+     * the `of*`/`utc` factories, which validate the ±18h bound for you.
+     *
+     * ```cajeta
+     * stack ZoneOffset z = stack ZoneOffset(19800);  // +05:30
+     * ```
+     */
     public ZoneOffset(int32 totalSeconds) {
         this.totalSeconds = totalSeconds;
     }
 
-    /** Offset of `totalSeconds` seconds from UTC (±18h). */
+    /**
+     * Offset of `totalSeconds` seconds from UTC (±18h); throws
+     * `DateTimeException` outside `[-64800, 64800]`.
+     *
+     * ```cajeta
+     * stack ZoneOffset z = ZoneOffset.ofTotalSeconds(-28800);  // -08:00
+     * ```
+     */
     public static ZoneOffset ofTotalSeconds(int32 totalSeconds) {
         if (totalSeconds < -64800 || totalSeconds > 64800) {
             throw heap DateTimeException("ZoneOffset: out of range +/-18:00");
@@ -26,7 +53,14 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
         return stack ZoneOffset(totalSeconds);
     }
 
-    /** Offset of a whole number of hours from UTC. */
+    /**
+     * Offset of a whole number of hours from UTC; throws `DateTimeException`
+     * if `hours` is outside ±18.
+     *
+     * ```cajeta
+     * stack ZoneOffset z = ZoneOffset.ofHours(2);  // +02:00
+     * ```
+     */
     public static ZoneOffset ofHours(int32 hours) {
         if (hours < -18 || hours > 18) {
             throw heap DateTimeException("ZoneOffset: hours out of range +/-18");
@@ -34,7 +68,15 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
         return stack ZoneOffset(hours * 3600);
     }
 
-    /** Offset of hours and minutes; both parts must share the offset's sign. */
+    /**
+     * Offset of hours and minutes; both parts must share the offset's sign.
+     * Throws `DateTimeException` on out-of-range parts, a sign mismatch, or a
+     * total beyond ±18h.
+     *
+     * ```cajeta
+     * stack ZoneOffset z = ZoneOffset.ofHoursMinutes(-3, -30);  // -03:30
+     * ```
+     */
     public static ZoneOffset ofHoursMinutes(int32 hours, int32 minutes) {
         if (hours < -18 || hours > 18) {
             throw heap DateTimeException("ZoneOffset: hours out of range +/-18");
@@ -55,7 +97,13 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
         return stack ZoneOffset(total);
     }
 
-    /** The UTC offset (zero). */
+    /**
+     * The UTC offset (zero), the `Z` of `+00:00`.
+     *
+     * ```cajeta
+     * stack ZoneOffset z = ZoneOffset.utc();  // iso() == "Z"
+     * ```
+     */
     public static ZoneOffset utc() {
         return stack ZoneOffset(0);
     }
@@ -87,7 +135,14 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
         return (int64) this.totalSeconds;
     }
 
-    /** The ISO offset id: `Z` for UTC, else `+HH:mm` / `-HH:mm` (`:ss` if needed). */
+    /**
+     * The ISO offset id: `Z` for UTC, else `+HH:mm` / `-HH:mm` (`:ss` appended
+     * only when the offset has a nonzero seconds part).
+     *
+     * ```cajeta
+     * #String s = ZoneOffset.ofHoursMinutes(5, 30).iso();  // "+05:30"
+     * ```
+     */
     public #String iso() {
         if (this.totalSeconds == 0) {
             int8[] z = new int8[1];

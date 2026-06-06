@@ -4,10 +4,27 @@ import cajeta.lang.String;
 
 /**
  * Path is a directory where a regular file was expected (e.g.
- * `File.open` on a directory). POSIX `EISDIR`. See
- * `cajeta-docs/stdlib/io/file/Errors.md`.
+ * `File``.open` on a directory). POSIX `EISDIR`. A subtype of
+ * `IoException`, so it is caught by handlers that catch the broader
+ * I/O failure. See `cajeta-docs/stdlib/io/file/Errors.md`.
+ *
+ * ```cajeta
+ * try {
+ *     #File f = File.open(path, OpenMode.READ);
+ * } catch (IsDirectoryException e) {
+ *     log.warn(e.message);
+ * }
+ * ```
  */
 public class IsDirectoryException extends IoException {
+    /**
+     * Wraps a human-readable `String` `message` describing the path
+     * that was a directory.
+     *
+     * ```cajeta
+     * throw new IsDirectoryException("expected a file: " + path);
+     * ```
+     */
     public IsDirectoryException(String message) {
         super(message);
     }

@@ -4,36 +4,62 @@ import cajeta.error.Exception;
 import cajeta.error.RecoverableException;
 
 /**
- * Intermediate recovery combinator: wraps another Stream<T> and
- * applies `fn: (T) -> R` to each element, yielding a Stream<R>.
+ * Intermediate recovery combinator over `Stream`: wraps a `Stream<T>`
+ * and applies `fn: (T) -> R` to each element, yielding a `Stream<R>`.
+ *
  * Elements whose `fn` invocation throws `RecoverableException` are
- * passed to the user-supplied `logger: (T, Exception) -> void` and
- * then **dropped** — the output stream is shorter than the input.
+ * passed to the user-supplied `logger: (T, Exception) -> void` and then
+ * **dropped** — the output stream is shorter than the input. The logger
+ * receives both the offending element and the caught `Exception` so
+ * downstream tooling can attribute failures to the source value.
  *
- * Logger receives both the offending element and the caught
- * exception so downstream tooling can attribute failures to the
- * source value. `UnrecoverableException` is NOT caught.
+ * Any other throwable (e.g. an unrecoverable exception) is NOT caught
+ * and propagates out of `next`.
  *
- * Stdlib doesn't ship a canonical `Logger` type yet, so this
- * combinator takes a function-shaped callback. A typical use
- * funnels into a println / stderr writer:
+ * ## Usage
  *
- *   xs.stream().mapOrLog(
- *       (x) -> risky(x),
- *       (x, e) -> println("warn[" + x + "]: " + e.message))
- *     ...
+ * Stdlib doesn't ship a canonical `Logger` type yet, so this combinator
+ * takes a function-shaped callback. A typical use funnels into a
+ * println / stderr writer:
+ *
+ * ```cajeta
+ * #Stream<R> s = heap MapOrLogStream<T, R>(
+ *     #xs.stream(),
+ *     (x) -> risky(x),
+ *     (x, e) -> println("warn[" + x + "]: " + e.message));
+ * Optional<R> first = s.next();
+ * ```
+ *
+ * Failed elements vanish from the result, so the consumer only ever
+ * sees successfully mapped values via the returned `Optional`.
  */
 public class MapOrLogStream<T, R> extends Stream<R> {
     Stream<T> source;
     (T) -> #R fn;
     (T, Exception) -> void logger;
 
+    /**
+     * Wraps `source`, mapping each element with `fn` and routing any
+     * `RecoverableException` to `logger` before dropping that element.
+     *
+     * ```cajeta
+     * #Stream<R> s = heap MapOrLogStream<T, R>(
+     *     #source,
+     *     (x) -> risky(x),
+     *     (x, e) -> println(e.message));
+     * ```
+     */
     public MapOrLogStream(#Stream<T> source, (T) -> #R fn, (T, Exception) -> void logger) {
         this.source = source;
         this.fn = fn;
         this.logger = logger;
     }
 
+    /**
+     * Pulls and maps elements until one succeeds, logging-and-skipping any
+     * that raise `RecoverableException`. Returns an empty `Optional`
+     * once the underlying `Stream` is exhausted.
+     */
     public Optional<R> next() {
         while (true) {
             Optional<T> o = this.source.next();
@@ -52,11 +78,15 @@ public class MapOrLogStream<T, R> extends Stream<R> {
         return stack Optional<R>(false, null);
     }
 
-    /** Type-changing wrapper unwind — see MapStream. (Step 5b.) */
+    /** Type-changing wrapper unwind — see `MapStream`. (Step 5b.) */
     public Stream<?> unwrap() {
         return this.source;
     }
 
+    /**
+     * Rebuilds this combinator (and its `fn`/`logger`) atop a freshly
+     * cloned `newRoot` source, preserving the `Stream` chain.
+     */
     public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
         return heap MapOrLogStream<T, R>(this.source.cloneChainOver(#newRoot), this.fn, this.logger);
     }

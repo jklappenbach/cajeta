@@ -4,15 +4,39 @@ import cajeta.lang.stream.ArrayStream;
 import cajeta.lang.stream.Stream;
 
 /**
- * Dynamic array. Backed by a heap-allocated T[] that grows on demand.
- * v1 minimal surface: ctor, size, get/set, add, stream(). No bounds
- * checks yet (lands with the error model wiring); no insert/remove
- * yet.
+ * Growable, index-addressable sequence of `T`, backed by a
+ * heap-allocated `T[]` that doubles its capacity on demand. This is
+ * the workhorse list of the collections package and the default
+ * accumulator behind `Collectors.toList<T>()`.
  *
- * stream() lands a heap-allocated ArrayStream<T> walking the backing
- * array up to the current size. Stack-allocated variant follows when
- * `stack ArrayStream<T>` aggregate-init on a generic instantiation
- * is verified.
+ * Construct an empty list with the no-arg constructor, populate it
+ * with `add`, read/write slots with `get`/`set`, and walk the live
+ * elements as a `Stream` via `stream` (which yields an
+ * `ArrayStream`):
+ *
+ * ```cajeta
+ * ArrayList<int32> xs = new ArrayList<int32>();
+ * xs.add(10);
+ * xs.add(20);
+ * xs.add(30);
+ * int32 n = xs.count();        // 3
+ * int32 first = xs.get(0);     // 10
+ * xs.set(1, 25);               // [10, 25, 30]
+ * #ArrayStream<int32> s = xs.stream();
+ * ```
+ *
+ * Merge two lists with `appendAll`, the combiner used when partial
+ * lists from parallel workers are folded together.
+ *
+ * ## v1 surface
+ * Minimal by design: ctor, `count`/`isEmpty`, `get`/`set`, `add`,
+ * `appendAll`, and `stream`. No bounds checks yet (those land with
+ * the error-model wiring) and no `insert`/`remove` yet.
+ *
+ * `stream` currently lands a heap-allocated `ArrayStream` walking
+ * the backing array up to the current size. A stack-allocated variant
+ * follows once `stack ArrayStream<T>` aggregate-init on a generic
+ * instantiation is verified.
  */
 public class ArrayList<T> {
     T[] data;
@@ -22,6 +46,15 @@ public class ArrayList<T> {
     int32 sizeCount;
     int32 capacity;
 
+    /**
+     * Create an empty list with an initial backing capacity of 16;
+     * the array grows automatically as elements are added.
+     *
+     * ```cajeta
+     * ArrayList<int32> xs = new ArrayList<int32>();
+     * xs.add(42);
+     * ```
+     */
     public ArrayList() {
         this.capacity = 16;
         this.data = new T[16];
@@ -32,6 +65,7 @@ public class ArrayList<T> {
         return this.sizeCount;
     }
 
+    /** `true` when the list holds no elements (`count() == 0`). */
     public boolean isEmpty() {
         return this.sizeCount == 0;
     }
@@ -44,6 +78,16 @@ public class ArrayList<T> {
         this.data[i] = v;
     }
 
+    /**
+     * Append `v` to the end of the list, doubling the backing array's
+     * capacity first if it is full.
+     *
+     * ```cajeta
+     * ArrayList<int32> xs = new ArrayList<int32>();
+     * xs.add(1);
+     * xs.add(2);   // count() == 2
+     * ```
+     */
     public void add(T v) {
         if (this.sizeCount >= this.capacity) {
             int32 newCap = this.capacity * 2;
@@ -89,10 +133,19 @@ public class ArrayList<T> {
     }
 
     /**
-     * Heap-allocated stream walking the live elements
-     * (data[0..count-1]). Stack-allocated variant follows when
-     * `stack ArrayStream<T>` aggregate-init on a generic
-     * instantiation is verified.
+     * Open a heap-allocated `Stream` (an `ArrayStream`) over the
+     * live elements `data[0..count-1]`. Ownership of the stream
+     * transfers to the caller (`#ArrayStream<T>`).
+     *
+     * ```cajeta
+     * ArrayList<int32> xs = new ArrayList<int32>();
+     * xs.add(1);
+     * xs.add(2);
+     * #ArrayStream<int32> s = xs.stream();
+     * ```
+     *
+     * A stack-allocated variant follows once `stack ArrayStream<T>`
+     * aggregate-init on a generic instantiation is verified.
      */
     public #ArrayStream<T> stream() {
         return heap ArrayStream<T>(this.data, this.sizeCount);

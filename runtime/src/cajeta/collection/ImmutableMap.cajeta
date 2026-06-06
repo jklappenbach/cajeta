@@ -27,6 +27,22 @@ import cajeta.lang.Pair;
  * key equality. Class K defaults to identity (override `hash()` + `==`
  * for value keys); primitive K lowers `.hash()` to the intrinsic.
  *
+ * ## Usage
+ *
+ * Snapshot an `ArrayList` of `Pair` entries, then query it. Reads
+ * go through `get` / `operator[]`, presence through `containsKey`, and
+ * `keyAt` / `valAt` walk entries in insertion order.
+ *
+ * ```cajeta
+ * // entries: ArrayList<Pair<string, int32>>, already populated
+ * ImmutableMap<string, int32> m = new ImmutableMap<string, int32>(entries);
+ *
+ * int32 one = m["one"];                // subscript -> get("one")
+ * boolean has = m.containsKey("two");  // true
+ * int64 n = m.count();                 // entry count
+ * string firstKey = m.keyAt(0);        // dense, insertion order
+ * ```
+ *
  * @See cajeta.collection.HashMap
  * @See cajeta.lang.Pair
  */
@@ -50,7 +66,12 @@ public class ImmutableMap<K, V> {
      * a key already present has its value overwritten (last-wins),
      * otherwise a new entry is appended. The source list is untouched.
      *
-     * @Param src entries to snapshot, as `Pair<key, value>`.
+     * ```cajeta
+     * ArrayList<Pair<string, int32>> entries = ...;
+     * ImmutableMap<string, int32> m = new ImmutableMap<string, int32>(entries);
+     * ```
+     *
+     * @Param src entries to snapshot, as `Pair``<key, value>`.
      */
     public ImmutableMap(ArrayList<Pair<K, V>> src) {
         int32 n = src.count();
@@ -158,6 +179,7 @@ public class ImmutableMap<K, V> {
         return (int64) this.entryCount;
     }
 
+    /** @returns true iff the map holds no entries. */
     public boolean isEmpty() {
         return this.entryCount == 0;
     }

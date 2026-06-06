@@ -3,25 +3,48 @@ package cajeta.time;
 import cajeta.lang.Comparable;
 
 /**
- * An immutable date-time without a time-zone — a [[LocalDate]] paired with a
- * [[LocalTime]] (`yyyy-MM-ddTHH:mm:ss.nnnnnnnnn`), modeled on
+ * An immutable date-time without a time-zone — a `LocalDate` paired with a
+ * `LocalTime` (`yyyy-MM-ddTHH:mm:ss.nnnnnnnnn`), modeled on
  * `java.time.LocalDateTime`.
  *
  * Stored canonically as `int64 epochDay` + `int64 nanoOfDay`; a pure stack
  * value type. Arithmetic carries correctly between the time and date parts
- * (adding hours can roll the date forward). Combine with a [[ZoneOffset]] to
- * obtain an [[Instant]] / [[ZonedDateTime]].
+ * (adding hours can roll the date forward). Combine with a `ZoneOffset` to
+ * obtain an `Instant` / `ZonedDateTime`.
+ *
+ * ```cajeta
+ * stack dt = LocalDateTime.of(2026, 6, 5, 14, 30);
+ * stack next = dt.plusHours(12);            // rolls into 2026-06-06
+ * #String text = next.iso();                // "2026-06-06T02:30"
+ * Instant at = next.toInstant(ZoneOffset.UTC());
+ * if (dt.isBefore(next)) { /* ... */ }
+ * ```
  */
 public class LocalDateTime implements Comparable<LocalDateTime> {
     int64 epochDay;
     int64 nanoOfDay;
 
+    /**
+     * Low-level constructor from canonical fields. Prefer the `of*` factories;
+     * use this only when you already hold raw epoch-day / nano-of-day values.
+     *
+     * ```cajeta
+     * stack dt = stack LocalDateTime(20244, 52200000000000); // 2025-06-05T14:30
+     * ```
+     */
     public LocalDateTime(int64 epochDay, int64 nanoOfDay) {
         this.epochDay = epochDay;
         this.nanoOfDay = nanoOfDay;
     }
 
-    /** From date and time parts down to minutes. */
+    /**
+     * From date and time parts down to minutes (seconds and nanos zero).
+     * Throws `DateTimeException` if any field is out of range.
+     *
+     * ```cajeta
+     * stack dt = LocalDateTime.of(2026, 6, 5, 14, 30);
+     * ```
+     */
     public static LocalDateTime of(int32 year, int32 month, int32 day, int32 hour, int32 minute) {
         int64 ed = LocalDate.daysFromCivil(year, month, day);
         if (month < 1 || month > 12) {
@@ -40,7 +63,14 @@ public class LocalDateTime implements Comparable<LocalDateTime> {
         return stack LocalDateTime(ed, nod);
     }
 
-    /** From date and time parts down to nanoseconds. */
+    /**
+     * From date and time parts down to nanoseconds.
+     * Throws `DateTimeException` if any field is out of range.
+     *
+     * ```cajeta
+     * stack dt = LocalDateTime.ofFull(2026, 6, 5, 14, 30, 15, 500000000);
+     * ```
+     */
     public static LocalDateTime ofFull(int32 year, int32 month, int32 day,
                                        int32 hour, int32 minute, int32 second, int32 nano) {
         if (month < 1 || month > 12) {
@@ -69,7 +99,14 @@ public class LocalDateTime implements Comparable<LocalDateTime> {
         return stack LocalDateTime(ed, nod);
     }
 
-    /** Combine a date and a time. */
+    /**
+     * Combine a `LocalDate` and a `LocalTime` into a single date-time.
+     *
+     * ```cajeta
+     * stack dt = LocalDateTime.ofDateTime(LocalDate.of(2026, 6, 5),
+     *                                     LocalTime.of(14, 30));
+     * ```
+     */
     public static LocalDateTime ofDateTime(LocalDate date, LocalTime time) {
         return stack LocalDateTime(date.toEpochDay(), time.toNanoOfDay());
     }
@@ -111,12 +148,12 @@ public class LocalDateTime implements Comparable<LocalDateTime> {
         return (int32) (this.nanoOfDay % 1000000000);
     }
 
-    /** The date part. */
+    /** The date part as a `LocalDate`. */
     public LocalDate toLocalDate() {
         return stack LocalDate(this.epochDay);
     }
 
-    /** The time part. */
+    /** The time part as a `LocalTime`. */
     public LocalTime toLocalTime() {
         return stack LocalTime(this.nanoOfDay);
     }
@@ -178,13 +215,13 @@ public class LocalDateTime implements Comparable<LocalDateTime> {
         return stack LocalDateTime(this.epochDay + carry, nod);
     }
 
-    /** Seconds since the epoch when this local date-time is read at `offset`. */
+    /** Seconds since the epoch when this local date-time is read at a `ZoneOffset`. */
     public int64 toEpochSecond(ZoneOffset offset) {
         int64 secs = this.epochDay * 86400 + this.nanoOfDay / 1000000000;
         return secs - (int64) offset.getTotalSeconds();
     }
 
-    /** The [[Instant]] this local date-time denotes at `offset`. */
+    /** The `Instant` this local date-time denotes at the given `ZoneOffset`. */
     public Instant toInstant(ZoneOffset offset) {
         int64 es = this.toEpochSecond(offset);
         int32 n = (int32) (this.nanoOfDay % 1000000000);
@@ -233,6 +270,11 @@ public class LocalDateTime implements Comparable<LocalDateTime> {
     /**
      * ISO-8601 `yyyy-MM-ddTHH:mm:ss[.nnnnnnnnn]` — the date, a `T`, then the
      * time (seconds shown when present, 9 fractional digits when nanos present).
+     * Returns a freshly owned heap `String` (ownership transferred to caller).
+     *
+     * ```cajeta
+     * #String text = LocalDateTime.of(2026, 6, 5, 14, 30).iso(); // "2026-06-05T14:30"
+     * ```
      */
     public #String iso() {
         int32 y = LocalDate.civilYear(this.epochDay);

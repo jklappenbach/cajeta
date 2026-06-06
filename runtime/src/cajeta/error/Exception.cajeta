@@ -1,8 +1,37 @@
 package cajeta.error;
 
+/**
+ * General-purpose thrown error and the base of the catchable exception
+ * hierarchy. Extends `Throwable` (the hierarchy root, which carries the
+ * `message` field) and is itself the parent of `RecoverableException` and
+ * `UnrecoverableException` — the runtime walks that vtable chain on a throw
+ * to decide whether it propagates to abort.
+ *
+ * Beyond the inherited `message`, `Exception` adds a `cause` link so a wrapped
+ * lower-level failure can be carried along; it is `0` (none) when the throw has
+ * no underlying cause.
+ *
+ * ## Usage
+ *
+ * ```cajeta
+ * throw heap Exception("config file missing");
+ * ```
+ *
+ * Prefer the more specific `RecoverableException` for errors a caller can
+ * reasonably handle and proceed past, and `UnrecoverableException` for fatal
+ * conditions.
+ */
 public class Exception extends Throwable {
     public Throwable cause;
 
+    /**
+     * Construct an exception carrying `message`; `cause` is initialized to none
+     * (`0`).
+     *
+     * ```cajeta
+     * throw heap Exception("invalid argument");
+     * ```
+     */
     public Exception(#String message) {
         this.message = message;
         this.cause = 0;

@@ -1,23 +1,46 @@
 package cajeta.lang.stream;
 
 /**
- * Intermediate combinator: wraps another Stream<T> and applies
- * `fn: (T) -> R` to each element, yielding a Stream<R>. The element
+ * Intermediate combinator: wraps another `Stream``<T>` and applies
+ * `fn: (T) -> R` to each element, yielding a `Stream``<R>`. The element
  * type may change — exercises template multi-arg substitution
- * (MapStream<T,R> extends Stream<R>, not Stream<T>).
+ * (`MapStream<T,R>` extends `Stream<R>`, not `Stream<T>`).
  *
- * Lazy — fn is invoked on each pull, not eagerly. Empty inner stream
- * passes through.
+ * Lazy — `fn` is invoked on each pull, not eagerly. An empty inner
+ * stream passes through unchanged. Each pull returns an `Optional``<R>`.
+ *
+ * You rarely construct this directly; it is produced by
+ * `Stream``.map(fn)`. Wrap an `ArrayStream` source, then map it:
+ *
+ * ```cajeta
+ * #Stream<int> ids = heap ArrayStream<int>(rows, rows.length);
+ * #Stream<string> names = ids.map((id) -> #lookupName(id));
+ * names.forEach((n) -> print(n));
+ * ```
  */
 public class MapStream<T, R> extends Stream<R> {
     Stream<T> source;
     (T) -> #R fn;
 
+    /**
+     * Wrap `source`, applying `fn` to every element pulled through.
+     * Copies `source`'s parallel flag. Normally reached via
+     * `Stream``.map(fn)` rather than called directly.
+     *
+     * ```cajeta
+     * #Stream<int> lens = words.map((w) -> #w.length());
+     * ```
+     */
     public MapStream(#Stream<T> source, (T) -> #R fn) {
         this.source = source;
         this.fn = fn;
     }
 
+    /**
+     * Pull from the source and apply `fn`. Returns an empty
+     * `Optional``<R>` once the inner stream is exhausted; otherwise
+     * yields the mapped element (ownership transferred via `#`).
+     */
     public Optional<R> next() {
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {

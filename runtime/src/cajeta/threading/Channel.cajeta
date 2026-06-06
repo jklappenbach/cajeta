@@ -9,11 +9,28 @@ import cajeta.lang.Optional;
  * when full; `receive` blocks when empty. `close()` is one-way and
  * idempotent.
  *
- * `receive()` returns a **stack** `Optional<T>` (no per-item heap
+ * `receive()` returns a **stack** `Optional``<T>` (no per-item heap
  * allocation — the reason stack allocation was restored for small wrappers
  * like Optional): present while items remain (it drains buffered items even
  * after close), empty once the channel is closed AND drained. Sending to a
  * closed channel raises.
+ *
+ * ## Usage
+ * ```cajeta
+ * // Bounded capacity-2 channel of primitives.
+ * Channel<int32> ch = new Channel<int32>(2);
+ * ch.send(1);          // buffered
+ * ch.send(2);          // buffered (full; a third send would block)
+ * ch.close();          // one-way; a later send() raises
+ *
+ * stack Optional<int32> a   = ch.receive();   // present -> 1 (drains after close)
+ * stack Optional<int32> b   = ch.receive();   // present -> 2
+ * stack Optional<int32> end = ch.receive();   // empty   -> closed and drained
+ *
+ * // Non-blocking poll (e.g. inside a select loop):
+ * stack Optional<int32> maybe = ch.tryReceive();
+ * boolean done = maybe.isEmpty() && ch.isClosed();
+ * ```
  *
  * Tested across {1P/1C, 2P/2C} fiber configurations with capacity 2
  * (forces both full- and empty- side blocking). See ChannelTests.cpp.
@@ -33,6 +50,14 @@ public class Channel<T> {
     int32 size;
     boolean closed;
 
+    /**
+     * Create an open channel whose ring buffer holds at most `capacity`
+     * items before `send` blocks.
+     *
+     * ```cajeta
+     * Channel<int32> ch = new Channel<int32>(2);   // capacity-2 MPMC queue
+     * ```
+     */
     public Channel(int32 capacity) {
         this.handle = Cajeta.lockNew();
         this.cond = Cajeta.condvarNew();
@@ -44,6 +69,11 @@ public class Channel<T> {
         this.closed = false;
     }
 
+    /**
+     * Releases the underlying condition-variable and lock intrinsics. Does
+     * NOT drain buffered items — for a heap `T`, `receive()` until empty
+     * before drop (see class note).
+     */
     public ~Channel() {
         Cajeta.condvarDestroy(this.cond);
         Cajeta.lockDestroy(this.handle);

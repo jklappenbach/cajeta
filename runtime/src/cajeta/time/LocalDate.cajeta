@@ -11,13 +11,39 @@ import cajeta.lang.Comparable;
  * 1970-01-01; negative before it), so comparison and hashing are trivial and
  * the year/month/day parts are derived on access via the civil-from-days
  * algorithm. A pure stack value type (every return is an inline `stack`
- * literal). Out-of-range or non-existent dates throw [[DateTimeException]].
+ * literal). Out-of-range or non-existent dates throw `DateTimeException`.
  *
  * Day-of-week follows ISO-8601: Monday = 1 … Sunday = 7.
+ *
+ * Build one with the `of`/`ofEpochDay` static factories; never with the raw
+ * constructor unless you already hold an epoch-day. Implements
+ * `Comparable`, so dates order naturally; calendar arithmetic accepts a
+ * `Period`, and pairing a `LocalDate` with a `LocalTime` yields a
+ * `LocalDateTime` (add a zone for a `ZonedDateTime`).
+ *
+ * ```cajeta
+ * stack LocalDate d = LocalDate.of(2026, 6, 5);    // throws `DateTimeException` if invalid
+ * int32 y = d.getYear();                            // 2026
+ * boolean weekend = d.getDayOfWeek() >= 6;          // Sat (6) or Sun (7)?
+ *
+ * stack LocalDate due = d.plusMonths(1).plusDays(10);
+ * if (due.isAfter(d)) {
+ *     #String s = due.iso();                        // "2026-07-15"
+ * }
+ * ```
  */
 public class LocalDate implements Comparable<LocalDate> {
     int64 epochDay;
 
+    /**
+     * Wraps a raw epoch-day directly (no validation). Prefer the `of` /
+     * `ofEpochDay` factories; reach for this only when you already hold a
+     * days-since-1970 count.
+     *
+     * ```cajeta
+     * stack LocalDate epoch = LocalDate(0);   // 1970-01-01
+     * ```
+     */
     public LocalDate(int64 epochDay) {
         this.epochDay = epochDay;
     }
@@ -133,7 +159,15 @@ public class LocalDate implements Comparable<LocalDate> {
         return (int32) (doy - (153 * mp + 2) / 5 + 1);
     }
 
-    /** A validated date. Throws [[DateTimeException]] on a non-existent date. */
+    /**
+     * A validated date. Throws `DateTimeException` on an out-of-range month
+     * or a non-existent day (e.g. February 30).
+     *
+     * ```cajeta
+     * stack LocalDate d = LocalDate.of(2026, 2, 28);   // ok
+     * stack LocalDate bad = LocalDate.of(2026, 2, 30); // throws `DateTimeException`
+     * ```
+     */
     public static LocalDate of(int32 year, int32 month, int32 day) {
         if (month < 1 || month > 12) {
             throw heap DateTimeException("LocalDate: month out of range 1..12");
@@ -145,7 +179,14 @@ public class LocalDate implements Comparable<LocalDate> {
         return stack LocalDate(ed);
     }
 
-    /** The date `epochDay` days after 1970-01-01 (negative for earlier). */
+    /**
+     * The date `epochDay` days after 1970-01-01 (negative for earlier).
+     *
+     * ```cajeta
+     * stack LocalDate d = LocalDate.ofEpochDay(20609);   // 2026-06-05
+     * stack LocalDate epoch = LocalDate.ofEpochDay(0);    // 1970-01-01
+     * ```
+     */
     public static LocalDate ofEpochDay(int64 epochDay) {
         return stack LocalDate(epochDay);
     }
@@ -231,7 +272,7 @@ public class LocalDate implements Comparable<LocalDate> {
     }
 
     /**
-     * This date plus a calendar [[Period]]: years and months are applied
+     * This date plus a calendar `Period`: years and months are applied
      * together (clamping the day to the resulting month), then days are added.
      */
     public LocalDate plus(Period p) {
@@ -292,6 +333,10 @@ public class LocalDate implements Comparable<LocalDate> {
     /**
      * ISO-8601 `yyyy-MM-dd` (year padded to at least 4 digits; a leading `-`
      * for negative years). Returns an owned `#String`.
+     *
+     * ```cajeta
+     * #String s = LocalDate.of(2026, 6, 5).iso();   // "2026-06-05"
+     * ```
      */
     public #String iso() {
         int32 y = this.getYear();

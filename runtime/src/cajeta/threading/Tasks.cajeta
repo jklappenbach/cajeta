@@ -55,6 +55,20 @@ import cajeta.time.Duration;
  * primitive (`__cajeta_task_wait_timeout` waits without preempting).
  */
 public class Tasks {
+    /**
+     * `int32` specialization of `withTimeout` kept for callers already
+     * pinned to it; new code should prefer the templated form. Waits on the
+     * spawned `t` until `Duration` `d` elapses: returns a present
+     * `Optional` holding the result if the body finished in time, or
+     * empty on timeout (after signalling cooperative cancellation and
+     * draining the body).
+     *
+     * ```cajeta
+     * Task<int32> t = spawn compute();
+     * Optional<int32> r = Tasks.withTimeoutInt32(Duration.ofMillis(50), t);
+     * if (r.isPresent()) { use(r.get()); } else { handleTimeout(); }
+     * ```
+     */
     // Returns Optional<int32> by value (M3 sret/NRVO): the Optional is
     // constructed directly into the caller's slot, avoiding the heap
     // allocation a `#Optional<int32>` return would have required. The
@@ -85,6 +99,20 @@ public class Tasks {
         return stack Optional<int32>(false, val);
     }
 
+    /**
+     * Canonical timeout API: wait on an already-spawned `t` until `Duration`
+     * `d` elapses. Returns a present `Optional` holding the body's result
+     * if it completed inside the deadline, or empty on timeout — in which
+     * case the body is signalled for cooperative cancellation and drained,
+     * its cancellation sentinel consumed so the empty Optional is the only
+     * observable signal. `R` is inferred from the `Task<R>` argument.
+     *
+     * ```cajeta
+     * Task<int32> t = spawn compute();
+     * Optional<int32> r = Tasks.withTimeout(Duration.ofMillis(50), t);
+     * if (r.isPresent()) { use(r.get()); } else { handleTimeout(); }
+     * ```
+     */
     public static Optional<R> withTimeout<R>(Duration d, Task<R> t) {
         int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
         pointer done = Cajeta.taskDonePointer(t);
@@ -119,6 +147,11 @@ public class Tasks {
      * and wants to fan out sub-operations that share it (each
      * sub-operation passes the same absolute instant rather than
      * re-deriving a duration from "remaining budget").
+     *
+     * ```cajeta
+     * int64 deadline = Cajeta.currentTimeNanos() + Duration.ofMillis(50).toNanos();
+     * Optional<int32> r = Tasks.withDeadline(deadline, t);
+     * ```
      */
     public static Optional<R> withDeadline<R>(int64 deadlineNanos, Task<R> t) {
         pointer done = Cajeta.taskDonePointer(t);
@@ -149,6 +182,10 @@ public class Tasks {
      * ABI. Heap-class returns are not yet supported through this entry
      * point — `() -> #R` callers should keep using the explicit
      * `await spawn body()` pattern until the heap-form companion ships.
+     *
+     * ```cajeta
+     * int32 result = Tasks.runBlocking(() -> compute());
+     * ```
      */
     public static R runBlocking<R>(() -> R body) {
         Task<R> t = spawn body();
@@ -187,6 +224,15 @@ public class Tasks {
      * and the user passes `null`. Wrapping in `Optional` means the
      * "no value" branch is `heap Optional<SelectResult<T>>(false, null)`
      * — SelectResult<T> is a class so `null` is type-natural here.
+     *
+     * Operates over `Channel` inputs and reports the winner as a
+     * `SelectResult` wrapped in an `Optional`:
+     *
+     * ```cajeta
+     * Optional<SelectResult<int32>> r = Tasks.selectReceive(channels);
+     * if (r.isPresent()) { handle(r.get()); }
+     * else { ... every channel closed and drained ... }
+     * ```
      */
     public static Optional<SelectResult<T>> selectReceive<T>(Channel<T>[] channels) {
         int64 backoff = 100000;

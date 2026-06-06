@@ -7,7 +7,7 @@ import cajeta.io.file.OpenMode;
 
 /**
  * Fixed-size, file-backed buffer pool for the disk-backed
- * `cajeta.collection.ltm.BPlusTree`. This is the piece that makes the
+ * `BPlusTree`. This is the piece that makes the
  * tree **larger-than-memory**: at most `capacity` node pages are
  * resident at once, no matter how big the tree grows on disk.
  *
@@ -32,13 +32,32 @@ import cajeta.io.file.OpenMode;
  * ## Serialization
  *
  * Keys and values are turned into bytes by caller-supplied
- * `Encoder<K>` / `Encoder<V>`, length-prefixed so variable-width
+ * `Encoder``<K>` / `Encoder``<V>`, length-prefixed so variable-width
  * encodings round-trip. A node must serialize within one page; choose
  * `order` so `order + 1` max-size entries fit `pageSize`.
  *
- * @See cajeta.collection.ltm.BPlusTree
- * @See cajeta.collection.ltm.LtmBPlusTreeNode
- * @See cajeta.wire.Encoder
+ * ## Usage
+ *
+ * Open the page file, allocate a root node, descend through `fetch`, and
+ * `flush` to persist dirty frames plus the header. Each resident page is
+ * an `LtmBPlusTreeNode`.
+ *
+ * ```cajeta
+ * // String -> int64 index: order 128, 4 KB pages, 64 resident frames.
+ * LtmPager<String, int64> pager = heap LtmPager<String, int64>(
+ *         "/var/db/index.ltm", keyEnc, valEnc, 128, 4096, 64);
+ * LtmBPlusTreeNode<String, int64> root = pager.allocNode(true);
+ * pager.setRoot(root.pageId);
+ *
+ * // Re-read the root frame, mark it dirty, and persist everything.
+ * LtmBPlusTreeNode<String, int64> r = pager.fetch(pager.getRoot());
+ * pager.markDirty(r.pageId);
+ * pager.flush();
+ * ```
+ *
+ * ## See also
+ *
+ * `BPlusTree`, `LtmBPlusTreeNode`, `Encoder`.
  */
 public class LtmPager<K, V> {
 
@@ -63,6 +82,24 @@ public class LtmPager<K, V> {
     private int64[] frameUsed;
     private int64 clock;
 
+    /**
+     * Open (or create) the page file at `path` and bring up a buffer
+     * pool of `capacity` frames. An empty file is initialized with a
+     * fresh header; an existing file's header supplies the live
+     * `rootPageId`, `nextPageId`, and `entryCount`. Keys and values are
+     * (de)serialized through the caller-supplied `Encoder`s, and the
+     * opened `File` is moved into the pager so it stays open for the
+     * pager's lifetime.
+     *
+     * ```cajeta
+     * // String -> int64 index: order 128, 4 KB pages, 64 resident frames.
+     * LtmPager<String, int64> pager = heap LtmPager<String, int64>(
+     *         "/var/db/index.ltm", keyEnc, valEnc, 128, 4096, 64);
+     * LtmBPlusTreeNode<String, int64> root = pager.allocNode(true);
+     * pager.setRoot(root.pageId);
+     * pager.flush();
+     * ```
+     */
     public LtmPager(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
                     int32 order, int32 pageSize, int32 capacity) {
         this.keyEnc = keyEnc;
@@ -126,11 +163,25 @@ public class LtmPager<K, V> {
         return this.entryCount;
     }
 
+    /** Bump the live entry count by one (call after inserting a new key). */
     public void incEntryCount() {
         this.entryCount = this.entryCount + 1;
     }
 
-    /** Resident node for `pageId`, reading + deserializing on a miss. */
+    /**
+     * Resident `LtmBPlusTreeNode` for `pageId`, reading +
+     * deserializing on a miss (which may evict an unpinned LRU frame).
+     * The returned frame is unpinned — `pin` it first if a multi-step
+     * operation (a split) must keep it resident.
+     *
+     * ```cajeta
+     * LtmBPlusTreeNode<K, V> n = pager.fetch(pager.getRoot());
+     * pager.pin(n.pageId);
+     * // ... descend / mutate / split ...
+     * pager.markDirty(n.pageId);
+     * pager.unpin(n.pageId);
+     * ```
+     */
     public LtmBPlusTreeNode<K, V> fetch(int64 pageId) {
         int32 hit = this.findFrame(pageId);
         if (hit >= 0) {
@@ -158,7 +209,17 @@ public class LtmPager<K, V> {
         return ret;
     }
 
-    /** Allocate a brand-new page, resident and dirty, and return it. */
+    /**
+     * Allocate a brand-new page, resident and dirty, and return its
+     * `LtmBPlusTreeNode`. The new node's `pageId` is drawn from
+     * `nextPageId`; pass `true` for a leaf, `false` for an internal
+     * node. Call `setRoot` after creating the first node.
+     *
+     * ```cajeta
+     * LtmBPlusTreeNode<K, V> leaf = pager.allocNode(true);
+     * pager.setRoot(leaf.pageId);
+     * ```
+     */
     public LtmBPlusTreeNode<K, V> allocNode(boolean leaf) {
         int64 pageId = this.nextPageId;
         this.nextPageId = this.nextPageId + 1;
@@ -173,6 +234,7 @@ public class LtmPager<K, V> {
         return ret;
     }
 
+    /** Mark the frame for `pageId` dirty so it is written back on eviction or `flush`. No-op if not resident. */
     public void markDirty(int64 pageId) {
         int32 idx = this.findFrame(pageId);
         if (idx >= 0) {
@@ -180,6 +242,7 @@ public class LtmPager<K, V> {
         }
     }
 
+    /** Pin the frame for `pageId` so eviction will not choose it as a victim. No-op if not resident; balance each pin with `unpin`. */
     public void pin(int64 pageId) {
         int32 idx = this.findFrame(pageId);
         if (idx >= 0) {
@@ -187,6 +250,7 @@ public class LtmPager<K, V> {
         }
     }
 
+    /** Release one pin on the frame for `pageId`. No-op if not resident or already at zero pins. */
     public void unpin(int64 pageId) {
         int32 idx = this.findFrame(pageId);
         if (idx >= 0 && this.framePins[idx] > 0) {
@@ -207,6 +271,7 @@ public class LtmPager<K, V> {
         this.file.sync();
     }
 
+    /** Flush all dirty pages and the header, then close the backing `File`. */
     public void close() {
         this.flush();
         this.file.close();
@@ -214,6 +279,7 @@ public class LtmPager<K, V> {
 
     // ----- buffer-pool internals ---------------------------------------
 
+    /** Frame index currently holding `pageId`, or `-1` if not resident. */
     private int32 findFrame(int64 pageId) {
         int32 i = 0;
         while (i < this.capacity) {
@@ -225,14 +291,17 @@ public class LtmPager<K, V> {
         return -1;
     }
 
+    /** Stamp frame `idx` as most-recently-used for LRU eviction. */
     private void touchFrame(int32 idx) {
         this.clock = this.clock + 1;
         this.frameUsed[idx] = this.clock;
     }
 
-    // A free frame, or the LRU unpinned victim (written back if dirty).
-    // The victim's node image is released when fetch / allocNode
-    // reassigns frameNode[idx] to the replacement.
+    /**
+     * A free frame, or the LRU unpinned victim (written back if dirty).
+     * The victim's node image is released when `fetch` / `allocNode`
+     * reassigns `frameNode[idx]` to the replacement.
+     */
     private int32 acquireFrame() {
         int32 i = 0;
         while (i < this.capacity) {
@@ -263,6 +332,7 @@ public class LtmPager<K, V> {
         return victim;
     }
 
+    /** Serialize frame `idx`'s node to its page offset and clear the dirty flag. */
     private void writeFrame(int32 idx) {
         LtmBPlusTreeNode<K, V> node = this.frameNode[idx];
         int8[] buf = this.serializeNode(node);
@@ -276,6 +346,7 @@ public class LtmPager<K, V> {
 
     // ----- header ------------------------------------------------------
 
+    /** Write page 0: magic, `order`, root page id, next page id, and entry count. */
     private void writeHeader() {
         int32 psz = this.pageSize;
         int64 ps = (int64) psz;
@@ -289,6 +360,7 @@ public class LtmPager<K, V> {
         this.file.write(buf, 0, ps);
     }
 
+    /** Load `order`, root page id, next page id, and entry count from page 0. */
     private void readHeader() {
         int32 psz = this.pageSize;
         int64 ps = (int64) psz;
@@ -303,6 +375,12 @@ public class LtmPager<K, V> {
 
     // ----- node (de)serialization --------------------------------------
 
+    /**
+     * Pack `node` into one `pageSize` page: leaf byte, key count,
+     * next-leaf id, then length-prefixed keys, followed by length-prefixed
+     * values (leaf) or `numKeys + 1` child page ids (internal). Keys and
+     * values are encoded with the `Encoder`s; the node must fit one page.
+     */
     private #int8[] serializeNode(LtmBPlusTreeNode<K, V> node) {
         int32 psz = this.pageSize;
         int8[] buf = new int8[psz];
@@ -358,6 +436,7 @@ public class LtmPager<K, V> {
         return #buf;
     }
 
+    /** Rebuild the `LtmBPlusTreeNode` stored in `buf` for `pageId`, mirroring `serializeNode`; the result is marked clean. */
     private #LtmBPlusTreeNode<K, V> deserializeNode(int64 pageId, int8[] buf) {
         int32 leafByte = (int32) buf[0];
         boolean leaf = false;
@@ -417,6 +496,7 @@ public class LtmPager<K, V> {
 
     // ----- little-endian byte codec ------------------------------------
 
+    /** Write `v` little-endian into `b` at `off` (4 bytes). */
     private void putI32(int8[] b, int32 off, int32 v) {
         b[off] = (int8) (v & 0xFF);
         b[off + 1] = (int8) ((v >> 8) & 0xFF);
@@ -424,6 +504,7 @@ public class LtmPager<K, V> {
         b[off + 3] = (int8) ((v >> 24) & 0xFF);
     }
 
+    /** Read a 4-byte little-endian `int32` from `b` at `off`. */
     private int32 getI32(int8[] b, int32 off) {
         int32 b0 = ((int32) b[off]) & 0xFF;
         int32 b1 = ((int32) b[off + 1]) & 0xFF;
@@ -432,6 +513,7 @@ public class LtmPager<K, V> {
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
     }
 
+    /** Write `v` little-endian into `b` at `off` (8 bytes). */
     private void putI64(int8[] b, int32 off, int64 v) {
         b[off] = (int8) (v & 0xFF);
         b[off + 1] = (int8) ((v >> 8) & 0xFF);
@@ -443,6 +525,7 @@ public class LtmPager<K, V> {
         b[off + 7] = (int8) ((v >> 56) & 0xFF);
     }
 
+    /** Read an 8-byte little-endian `int64` from `b` at `off`. */
     private int64 getI64(int8[] b, int32 off) {
         int64 r = 0;
         r = r | (((int64) b[off]) & 0xFF);

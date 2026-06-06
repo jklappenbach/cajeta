@@ -27,8 +27,18 @@ package cajeta.collection;
  * with the error model + a test harness). This is an insert/lookup
  * ordered map — the common index case — until then.
  *
+ * ```cajeta
+ * BPlusTree<int32, String> index = heap BPlusTree<int32, String>();
+ * index.put(42, "answer");
+ * String hit = index.get(42);            // "answer"
+ * boolean known = index.containsKey(7);  // false, miss -> zero value
+ * int32 lo = index.min();                // smallest key, 42 here
+ * #ArrayList<int32> keys = index.keysInOrder();  // ascending, owned
+ * ```
+ *
  * @See cajeta.collection.BPlusTreeNode
  * @See cajeta.collection.RedBlackTree
+ * @See `ArrayList`
  */
 public class BPlusTree<K, V> {
 
@@ -37,6 +47,13 @@ public class BPlusTree<K, V> {
     /** Max keys per node; a node splits once it would hold order+1. */
     private int32 order;
 
+    /**
+     * Create an empty tree with a branching `order` of 32.
+     *
+     * ```cajeta
+     * BPlusTree<int64, String> index = heap BPlusTree<int64, String>();
+     * ```
+     */
     public BPlusTree() {
         this.root = null;
         this.sizeCount = 0;
@@ -50,6 +67,7 @@ public class BPlusTree<K, V> {
         return this.sizeCount;
     }
 
+    /** True when no entries have been inserted (no root leaf yet). */
     public boolean isEmpty() {
         return this.root == null;
     }
@@ -57,6 +75,12 @@ public class BPlusTree<K, V> {
     /**
      * Insert or update the entry for `key`. O(log n). Splits the leaf
      * (and cascades splits up to the root) when a node overflows.
+     *
+     * ```cajeta
+     * BPlusTree<int32, String> index = heap BPlusTree<int32, String>();
+     * index.put(1, "one");
+     * index.put(1, "uno");   // same key updates in place, count stays 1
+     * ```
      */
     public void put(K key, V value) {
         if (this.root == null) {

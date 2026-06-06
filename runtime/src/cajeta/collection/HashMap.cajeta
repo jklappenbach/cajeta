@@ -3,6 +3,32 @@ package cajeta.collection;
 /**
  * Hash-based map from keys to values.
  *
+ * ## Usage
+ *
+ * Construct on the heap with a power-of-2 initial capacity, then
+ * insert and look up. `K` may be a class type or a primitive; `V`
+ * likewise — no boxing either way.
+ *
+ * ```cajeta
+ * // K is a class type (Tag); V is the primitive int32.
+ * #HashMap<Tag, int32> counts = heap HashMap<Tag, int32>(16);
+ *
+ * counts.put(tag, 1);              // insert
+ * counts[tag] = counts[tag] + 1;   // subscript sugar over get / put
+ *
+ * if (counts.containsKey(tag)) {
+ *     int32 n = counts.get(tag);   // null/0 on miss — see get()
+ * }
+ *
+ * counts.remove(tag);              // leaves a reusable tombstone
+ *
+ * // Stream the live entries (snapshot; slot-walk order):
+ * #Stream<Pair<Tag, int32>> es = counts.entries();
+ * ```
+ *
+ * The stream views (`Stream` of keys, values, or `Pair` entries)
+ * are snapshots — see `keys()`, `values()`, `entries()`.
+ *
  * ## Hashing and equality
  *
  * `HashMap` uses two contracts on the key type `K`:
@@ -97,6 +123,11 @@ public class HashMap<K, V> {
 
     /**
      * Construct a new HashMap with the given initial capacity.
+     *
+     * ```cajeta
+     * // initialCapacity must be a power of 2:
+     * #HashMap<int32, Account> byId = heap HashMap<int32, Account>(64);
+     * ```
      *
      * @Param initialCapacity number of buckets to allocate; **must
      *        be a power of 2** (the mask-based index doesn't work
@@ -310,9 +341,6 @@ public class HashMap<K, V> {
         return false;
     }
 
-    /**
-     * @returns the number of (key, value) pairs stored.
-     */
     public int64 count() {
         return this.sizeCount;
     }
@@ -352,7 +380,7 @@ public class HashMap<K, V> {
      * resize / put / remove leaves behavior undefined on the returned
      * stream (same rule as Java's non-snapshot iterators).
      *
-     * @returns a HashMapKeyStream<K, V> exposed as Stream<K>.
+     * @returns a HashMapKeyStream<K, V> exposed as `Stream`<K>.
      */
     public #Stream<K> keys() {
         return heap HashMapKeyStream<K, V>(this.keys, this.state, this.cap);
@@ -362,7 +390,7 @@ public class HashMap<K, V> {
      * Yields a Stream over this map's values, slot-walk order. Same
      * snapshot caveat as `keys()`.
      *
-     * @returns a HashMapValueStream<K, V> exposed as Stream<V>.
+     * @returns a HashMapValueStream<K, V> exposed as `Stream`<V>.
      */
     public #Stream<V> values() {
         return heap HashMapValueStream<K, V>(this.vals, this.state, this.cap);
@@ -372,7 +400,7 @@ public class HashMap<K, V> {
      * Yields a Stream of (key, value) pairs, one fresh Pair per live
      * slot, slot-walk order. Same snapshot caveat as `keys()`.
      *
-     * @returns a HashMapEntryStream<K, V> exposed as Stream<Pair<K, V>>.
+     * @returns a HashMapEntryStream<K, V> exposed as `Stream`<`Pair`<K, V>>.
      */
     public #Stream<Pair<K, V>> entries() {
         return heap HashMapEntryStream<K, V>(

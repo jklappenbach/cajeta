@@ -1,18 +1,33 @@
 package cajeta.lang.stream;
 
 /**
- * Marker interface for sources that can be split into disjoint
+ * Marker interface for `Stream` sources that can be split into disjoint
  * sub-streams cheaply. The parallel driver only forks on sources that
- * implement Splittable; non-splittable parallel streams fall back to
+ * implement `Splittable`; non-splittable parallel streams fall back to
  * sequential transparently.
  *
  * See cajeta-docs/stdlib/StreamParallelism.md § Splittable.
  *
- * Implementers:
- *  - ArrayStream<T> — halves the index range.
- *  - ArrayList<T>.stream() — returns an ArrayStream over the backing
- *    buffer.
- *  - HashMap<K,V>.keys() / .values() / .entries() — halves the slot-
+ * ## Usage
+ * Treat a source as splittable, peel off a share for a worker, and keep
+ * traversing the remainder yourself:
+ * ```cajeta
+ * Splittable<int32> src = heap ArrayStream<int32>(data, 8);
+ *
+ * if (src.estimateSize() >= 2) {
+ *     #Stream<int32> share = src.trySplit();   // null if it won't split
+ *     if (share != null) {
+ *         // hand `share` to a worker fiber; it owns the upper half,
+ *         // `src` keeps the lower half — the two ranges are disjoint.
+ *     }
+ * }
+ * ```
+ *
+ * ## Implementers
+ *  - `ArrayStream`<T> — halves the index range.
+ *  - `ArrayList`<T>.stream() — returns an `ArrayStream` over the
+ *    backing buffer.
+ *  - `HashMap`<K,V>.keys() / .values() / .entries() — halves the slot-
  *    array index range. (Landing in P4.)
  *
  * Implementers must:
@@ -29,11 +44,18 @@ package cajeta.lang.stream;
  */
 public interface Splittable<T> extends Stream<T> {
     /**
-     * Take half of the remaining elements into a fresh stream;
-     * this stream now covers the other half. Returns null when the
+     * Take half of the remaining elements into a fresh `Stream`;
+     * this stream now covers the other half. Returns `null` when the
      * source can't / shouldn't split further (one element left,
      * no spatial locality, etc.). The returned stream transfers
-     * ownership — caller is the new owner.
+     * ownership (`#`) — the caller is the new owner.
+     *
+     * ```cajeta
+     * #Stream<T> share = src.trySplit();
+     * if (share != null) {
+     *     // `share` owns one half, `src` retains the other
+     * }
+     * ```
      */
     public #Stream<T> trySplit();
 

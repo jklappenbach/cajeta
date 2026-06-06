@@ -1,15 +1,35 @@
 package cajeta.lang.stream;
 
 /**
- * Walks a HashMap's slot arrays and yields each OCCUPIED entry as a
- * `Pair<K, V>`. Snapshot semantics match HashMapKeyStream — same
- * caveat about mutation-during-iteration applies. See
- * HashMapKeyStream for the iteration model + skip rules.
+ * A `Stream` of a HashMap's entries: walks the backing slot arrays
+ * and yields each OCCUPIED entry as a heap `Pair``<K, V>`. Implements
+ * `Splittable`, so it can be fanned out across workers for parallel
+ * terminal operations.
  *
- * Pairs are heap-allocated per yield (one fresh Pair per OCCUPIED
+ * Snapshot semantics match `HashMapKeyStream` — the constructor
+ * captures references to the keys/vals/state arrays at the moment of
+ * call. If the source HashMap resizes or mutates entries afterward,
+ * behavior is undefined (same concurrent-modification rule as Java's
+ * non-snapshot iterators). The slot walk skips EMPTY (`state==0`) and
+ * TOMBSTONE (`state==2`); only OCCUPIED (`state==1`) yields.
+ *
+ * Each yield surfaces through `Optional` — `next()` returns a present
+ * `Optional` per entry and an empty one once the scan is exhausted.
+ *
+ * ```cajeta
+ * Stream<Pair<K, V>> entries = map.entryStream();
+ * Optional<Pair<K, V>> first = entries.next();
+ * if (first.isPresent()) {
+ *     Pair<K, V> p = first.get();
+ *     // use p.key(), p.value()
+ * }
+ * ```
+ *
+ * Pairs are heap-allocated per yield (one fresh `Pair` per OCCUPIED
  * slot). For very-large maps where the pair object pressure matters,
- * stream the keys and values separately and zip on the consumer side
- * — the cost is paid once per terminal pull rather than per element.
+ * stream the keys and values separately (`HashMapKeyStream` /
+ * `HashMapValueStream`) and zip on the consumer side — the cost is
+ * paid once per terminal pull rather than per element.
  */
 public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Splittable<Pair<K, V>> {
     K[] keys;
@@ -18,6 +38,16 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
     int64 cap;
     int64 idx;
 
+    /**
+     * Wraps a HashMap's parallel `keys`/`vals`/`state` slot arrays plus
+     * its `cap` into a snapshot stream. Normally built by the source map
+     * rather than hand-constructed; the cursor starts at slot `0`.
+     *
+     * ```cajeta
+     * HashMapEntryStream<K, V> s =
+     *     heap HashMapEntryStream<K, V>(keys, vals, state, cap);
+     * ```
+     */
     public HashMapEntryStream(K[] keys, V[] vals, int8[] state, int64 cap) {
         this.keys = keys;
         this.vals = vals;
@@ -26,6 +56,19 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
         this.idx = 0;
     }
 
+    /**
+     * Advances the cursor to the next OCCUPIED slot and yields its
+     * entry as a heap `Pair` wrapped in a present `Optional`;
+     * returns an empty `Optional` once the slot range is exhausted.
+     *
+     * ```cajeta
+     * Optional<Pair<K, V>> e = entries.next();
+     * while (e.isPresent()) {
+     *     Pair<K, V> p = e.get();
+     *     e = entries.next();
+     * }
+     * ```
+     */
     public Optional<Pair<K, V>> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
@@ -40,6 +83,14 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
         return stack Optional<Pair<K, V>>(false, null);
     }
 
+    /**
+     * Splits the remaining slot range in half for parallel consumption.
+     * The returned `Stream` walks the upper half (midpoint to `cap`);
+     * this stream narrows its own `cap` to the midpoint so subsequent
+     * `next()` calls only see the lower half. Returns `null` when fewer
+     * than two slots remain. Both shares reference the same backing
+     * arrays — disjoint by index range, not by array identity.
+     */
     public #Stream<Pair<K, V>> trySplit() {
         int64 remaining = this.cap - this.idx;
         if (remaining < 2L) {
@@ -52,14 +103,22 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
         return upper;
     }
 
+    /**
+     * Conservative size hint — counts remaining slot positions, not
+     * occupied entries, so it overshoots by however many EMPTY/TOMBSTONE
+     * slots remain. The split-count math is robust to that since every
+     * share applies the same skip rules.
+     */
     public int64 estimateSize() {
         return this.cap - this.idx;
     }
 
+    /** `Splittable` size hint; delegates to `estimateSize()`. */
     public int64 splittableSize() {
         return this.estimateSize();
     }
 
+    /** `Splittable` root-split entry point; delegates to `trySplit()`. */
     public #Stream<?> trySplitRoot() {
         return this.trySplit();
     }

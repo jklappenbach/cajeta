@@ -2,10 +2,9 @@ package cajeta.lang;
 
 /**
  * Two-field generic value type. The foundation for stdlib APIs that
- * pair two values together — `HashMap.entries()` returning
- * `Stream<Pair<K,V>>`, `Stream.zip(other)` returning
- * `Stream<Pair<T,U>>`, key/value tuples in maps, source/target pairs
- * in graphs, etc.
+ * pair two values together — `HashMap`.entries() returning a
+ * `Stream` of `Pair<K,V>`, key/value tuples in maps, source/target
+ * pairs in graphs, etc.
  *
  * Lives in `cajeta.lang` (not `cajeta.util`) because it's used across
  * many stdlib types, not specifically a collection concern.
@@ -28,6 +27,15 @@ public class Pair<K, V> {
     K first;
     V second;
 
+    /**
+     * Builds a pair from its two components.
+     *
+     * ```cajeta
+     * stack Pair<String, int> p(name, age);
+     * String who = p.first();
+     * int    yrs = p.second();
+     * ```
+     */
     public Pair(K first, V second) {
         this.first = first;
         this.second = second;

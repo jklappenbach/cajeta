@@ -5,7 +5,7 @@ package cajeta.lang;
  * a codepoint in the target encoding (or vice versa — bytes don't
  * decode into the source encoding cleanly).
  *
- *  - FAIL   : throw EncodingException carrying enough detail to
+ *  - FAIL   : throw `EncodingException` carrying enough detail to
  *             pinpoint the bad codepoint / byte position. Default.
  *  - REPAIR : substitute with the encoding's standard replacement
  *             marker (U+FFFD for UTF targets, '?' for ASCII /
@@ -17,6 +17,17 @@ package cajeta.lang;
  * "I genuinely want characters dropped" case shows up, decode-
  * iterate + filter codepoints manually before re-encoding.
  *
+ * ## Usage
+ *
+ * Pair an `EncodingErrorPolicy` with an `Encoding` at every
+ * bytes ↔ text boundary: the `Encoding` selects the target byte
+ * representation, while this policy decides what happens to codepoints
+ * that representation can't carry. Under `FAIL` an unrepresentable
+ * codepoint raises `EncodingException`; under `REPAIR` it is swapped
+ * for that encoding's replacement marker and the conversion continues.
+ * The `String` conversion methods that accept this policy land in a
+ * later phase, so it is named in prose here rather than shown in a call.
+ *
  * Cajeta stdlib parsing-policy enums follow this { FAIL, REPAIR }
  * shape across all parsing APIs (encoding, JSON, number parsing,
  * etc.). The semantics of REPAIR differ per domain — substitute
@@ -25,6 +36,19 @@ package cajeta.lang;
  * Parsing convention.
  */
 public enum EncodingErrorPolicy {
+    /**
+     * Abort the conversion and throw `EncodingException` on the first
+     * codepoint/byte that can't be represented. The exception pinpoints
+     * the offending position so the caller can react. This is the default
+     * policy — bad data is surfaced, never silently mangled.
+     */
     FAIL,
+
+    /**
+     * Replace each unrepresentable codepoint/byte with the target
+     * encoding's standard replacement marker (`U+FFFD` for UTF targets,
+     * `'?'` for ASCII / Latin-1 / Windows-1252, codec-specified for CJK)
+     * and continue. Produces detectable output instead of throwing.
+     */
     REPAIR
 }

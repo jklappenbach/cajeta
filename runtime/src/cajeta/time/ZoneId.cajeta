@@ -3,14 +3,14 @@ package cajeta.time;
 /**
  * A geographical/region time-zone identifier (e.g. `America/Los_Angeles`,
  * `Europe/Paris`, `UTC`), modeled on the region subset of `java.time.ZoneId`.
- * Unlike a fixed [[ZoneOffset]], a `ZoneId` maps to *different* offsets at
+ * Unlike a fixed `ZoneOffset`, a `ZoneId` maps to *different* offsets at
  * different instants — it honours daylight-saving transitions.
  *
  * Offsets are resolved against the system tz database
  * (`/usr/share/zoneinfo`) via a native lookup that parses the IANA TZif files.
  * `UTC` / `GMT` / `Z` / `Etc/UTC` resolve to a zero offset without touching the
  * filesystem (so they work in static builds with no tz database); any other
- * unknown or unavailable zone causes `offsetAt` to throw [[DateTimeException]].
+ * unknown or unavailable zone causes `offsetAt` to throw `DateTimeException`.
  *
  * A `ZoneId` is a reference object (it holds the id `String`); unlike the value
  * types in this package it is created with `ZoneId.of(...)` returning ownership.
@@ -19,16 +19,40 @@ package cajeta.time;
 public class ZoneId {
     String id;
 
+    /**
+     * Wraps a raw IANA id. Prefer the `ZoneId.of(...)` factory, which returns
+     * ownership (`#ZoneId`) the way the rest of this package is constructed.
+     *
+     * ```cajeta
+     * #ZoneId la = ZoneId.of("America/Los_Angeles");
+     * ```
+     */
     public ZoneId(String id) {
         this.id = id;
     }
 
-    /** The zone with the given IANA id (e.g. `"America/Los_Angeles"`). */
+    /**
+     * The zone with the given IANA id (e.g. `"America/Los_Angeles"`). The id is
+     * not validated here; an unknown zone is only rejected when `offsetAt` runs
+     * the native lookup.
+     *
+     * ```cajeta
+     * #ZoneId paris = ZoneId.of("Europe/Paris");
+     * ZoneOffset off = paris.offsetAt(Instant.now());   // DST-aware
+     * ```
+     */
     public static #ZoneId of(String id) {
         return heap ZoneId(id);
     }
 
-    /** The UTC zone. */
+    /**
+     * The UTC zone, which always resolves to a zero `ZoneOffset` without
+     * touching the tz database.
+     *
+     * ```cajeta
+     * #ZoneId z = ZoneId.utc();
+     * ```
+     */
     public static #ZoneId utc() {
         return heap ZoneId("UTC");
     }
@@ -40,7 +64,7 @@ public class ZoneId {
 
     /**
      * The UTC offset in effect in this zone at `instant` (DST-aware). Throws
-     * [[DateTimeException]] if the zone is unknown or the tz database is
+     * `DateTimeException` if the zone is unknown or the tz database is
      * unavailable (UTC-equivalent ids always resolve).
      */
     public ZoneOffset offsetAt(Instant instant) {
@@ -54,7 +78,15 @@ public class ZoneId {
         return stack ZoneOffset(secs);
     }
 
-    /** The [[ZonedDateTime]] for `instant` observed in this zone. */
+    /**
+     * The `ZonedDateTime` for `instant` observed in this zone. Applies the
+     * DST-aware offset from `offsetAt`, so it throws `DateTimeException` on an
+     * unknown or unavailable zone.
+     *
+     * ```cajeta
+     * ZonedDateTime zdt = ZoneId.of("Asia/Tokyo").resolve(Instant.now());
+     * ```
+     */
     public ZonedDateTime resolve(Instant instant) {
         ZoneOffset off = this.offsetAt(instant);
         return stack ZonedDateTime(instant.getEpochSecond(), instant.getNano(),

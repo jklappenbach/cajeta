@@ -1,24 +1,47 @@
 package cajeta.threading;
 
 /**
- * Outcome of a `Tasks.selectReceive` multiplexed receive.
+ * Outcome of a `Tasks` `selectReceive` multiplexed receive over several
+ * `Channel`s — the index/value pair for the channel that won the race.
  *
- *   - `index` is the zero-based position of the channel that produced
- *     `value`, or `-1` when every channel handed to selectReceive was
- *     closed AND drained.
- *   - `value` carries the dequeued item when `index >= 0`; on the
- *     terminal `-1` reply the value field is unused (codegens as 0 for
- *     primitive T, null for class T — matches the same shape Channel.receive
- *     uses for its empty Optional).
+ * ## Fields
  *
- * Heap-allocated (the standard return form for utility-class results —
- * `Tasks.selectReceive` returns `#SelectResult<T>`); callers consume
- * via field access and let the surrounding scope's drop chain reclaim it.
+ *   - `index` is the zero-based position of the `Channel` that produced
+ *     `value`.
+ *   - `value` carries the dequeued item from that channel.
+ *
+ * ## Receive outcome
+ *
+ * `Tasks` `selectReceive` returns `Optional`<`SelectResult`<T>>, not a
+ * raw result. A win is reported as a present `Optional` wrapping a
+ * `SelectResult`; the "every channel closed AND drained" terminal case is
+ * reported as an empty `Optional` (`isPresent() == false`), so this class
+ * never needs a sentinel `index`.
+ *
+ * ```cajeta
+ * Optional<SelectResult<int32>> r = Tasks.selectReceive(chans);
+ * if (r.isPresent()) {
+ *     SelectResult<int32> hit = r.get();
+ *     int32 item = hit.value;          // item came from chans[hit.index]
+ * } else {
+ *     // every channel closed and drained
+ * }
+ * ```
  */
 public class SelectResult<T> {
     public int32 index;
     public T value;
 
+    /**
+     * Pairs a channel `index` with the `value` it yielded. Normally built by
+     * `Tasks` `selectReceive` for the winning channel; there is no
+     * sentinel form — the "no channel ready" case is carried by an empty
+     * `Optional` around this type, not by a special `index`.
+     *
+     * ```cajeta
+     * SelectResult<int32> hit = heap SelectResult<int32>(2, 42);  // chans[2] -> 42
+     * ```
+     */
     public SelectResult(int32 index, #T value) {
         this.index = index;
         this.value = value;

@@ -5,38 +5,81 @@ import cajeta.lang.Comparable;
 /**
  * A date-time with a fixed UTC offset — modeled on the offset-backed subset of
  * `java.time.ZonedDateTime` (region `ZoneId` lookups via the system tz database
- * are deferred; a [[ZoneOffset]] is the zone for now).
+ * are deferred; a `ZoneOffset` is the zone for now).
  *
  * Stored canonically as the underlying UTC instant (`int64 epochSecond` +
  * `int32 nano`) plus the `int32 offsetSeconds`, so it round-trips losslessly to
- * and from [[Instant]]. The wall-clock [[LocalDateTime]] is derived by shifting
+ * and from `Instant`. The wall-clock `LocalDateTime` is derived by shifting
  * the instant by the offset. A pure stack value type.
+ *
+ * Build one from an `Instant` or a `LocalDateTime` plus a `ZoneOffset`,
+ * read wall-clock fields off it, shift it by a `Duration`, and render ISO-8601:
+ *
+ * ```cajeta
+ * stack ZoneOffset off = ZoneOffset.ofHours(-5);
+ * stack LocalDateTime ldt = LocalDateTime.of(2026, 6, 5, 9, 30);
+ * stack ZonedDateTime zdt = ZonedDateTime.ofLocal(ldt, off);
+ * stack int32 hour = zdt.getHour();          // 9 (wall-clock, at -05:00)
+ * zdt = zdt.plus(Duration.ofHours(3));        // same offset, advanced 3h
+ * #String text = zdt.iso();                   // "2026-06-05T12:30-05:00"
+ * ```
  */
 public class ZonedDateTime implements Comparable<ZonedDateTime> {
     int64 epochSecond;
     int32 nano;
     int32 offsetSeconds;
 
+    /**
+     * Wrap a raw UTC instant (`epochSecond` + `nano`) at a fixed `offsetSeconds`.
+     * Prefer the `Instant`- or `LocalDateTime`-based factories below.
+     *
+     * ```cajeta
+     * stack ZonedDateTime zdt = stack ZonedDateTime(1780000000, 0, -18000);
+     * ```
+     */
     public ZonedDateTime(int64 epochSecond, int32 nano, int32 offsetSeconds) {
         this.epochSecond = epochSecond;
         this.nano = nano;
         this.offsetSeconds = offsetSeconds;
     }
 
-    /** The instant `instant` observed at `offset`. */
+    /**
+     * The `Instant` `instant` observed at `ZoneOffset` `offset`.
+     *
+     * ```cajeta
+     * stack ZonedDateTime zdt =
+     *     ZonedDateTime.ofInstant(Instant.ofEpochSecond(1780000000), ZoneOffset.utc());
+     * ```
+     */
     public static ZonedDateTime ofInstant(Instant instant, ZoneOffset offset) {
         return stack ZonedDateTime(instant.getEpochSecond(), instant.getNano(),
                                    offset.getTotalSeconds());
     }
 
-    /** The local date-time `ldt` interpreted as being at `offset`. */
+    /**
+     * The `LocalDateTime` `ldt` interpreted as being at `ZoneOffset` `offset`.
+     *
+     * ```cajeta
+     * stack ZonedDateTime zdt = ZonedDateTime.ofLocal(
+     *     LocalDateTime.of(2026, 6, 5, 9, 30), ZoneOffset.ofHoursMinutes(5, 30));
+     * ```
+     */
     public static ZonedDateTime ofLocal(LocalDateTime ldt, ZoneOffset offset) {
         return stack ZonedDateTime(ldt.toEpochSecond(offset), ldt.getNano(),
                                    offset.getTotalSeconds());
     }
 
-    // Floor-divide localSec by 86400 (seconds/day); 86400 > 0 so only a
-    // negative dividend needs the floor correction.
+    /**
+     * The wall-clock local epoch day at `offsetSeconds`: the count of days since
+     * 1970-01-01, computed by flooring `(epochSecond + offsetSeconds) / 86400`
+     * (the number of seconds in a day).
+     *
+     * ## Floor division
+     * `86400` is positive, so only a negative dividend needs the correction that
+     * truncating integer division would otherwise miss — when there is a non-zero
+     * remainder and `localSec` is negative, the quotient is nudged down by one so
+     * the result is the mathematical floor rather than a round-toward-zero value.
+     */
     static int64 localEpochDay(int64 epochSecond, int32 offsetSeconds) {
         int64 localSec = epochSecond + (int64) offsetSeconds;
         int64 q = localSec / 86400;
@@ -46,6 +89,7 @@ public class ZonedDateTime implements Comparable<ZonedDateTime> {
         return q;
     }
 
+    /** Nanosecond-of-day [0, 86_400_000_000_000) of the wall-clock time at `offsetSeconds`. */
     static int64 localNanoOfDay(int64 epochSecond, int32 nano, int32 offsetSeconds) {
         int64 localSec = epochSecond + (int64) offsetSeconds;
         int64 ed = ZonedDateTime.localEpochDay(epochSecond, offsetSeconds);
@@ -70,47 +114,51 @@ public class ZonedDateTime implements Comparable<ZonedDateTime> {
         return stack LocalDateTime(ed, nod);
     }
 
-    /** Seconds since the epoch of the underlying instant. */
     public int64 getEpochSecond() {
         return this.epochSecond;
     }
 
-    /** Nanosecond-of-second of the underlying instant. */
     public int32 getNano() {
         return this.nano;
     }
 
+    /** Wall-clock proleptic year (may be negative or zero) at this offset. */
     public int32 getYear() {
         return LocalDate.civilYear(
             ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds));
     }
 
+    /** Wall-clock month-of-year, `1` (January) through `12` (December), at this offset. */
     public int32 getMonthValue() {
         return LocalDate.civilMonth(
             ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds));
     }
 
+    /** Wall-clock day-of-month, `1` through `28`-`31`, at this offset. */
     public int32 getDayOfMonth() {
         return LocalDate.civilDay(
             ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds));
     }
 
+    /** Wall-clock hour-of-day, `0` through `23`, at this offset. */
     public int32 getHour() {
         int64 nod = ZonedDateTime.localNanoOfDay(this.epochSecond, this.nano, this.offsetSeconds);
         return (int32) (nod / 3600000000000);
     }
 
+    /** Wall-clock minute-of-hour, `0` through `59`, at this offset. */
     public int32 getMinute() {
         int64 nod = ZonedDateTime.localNanoOfDay(this.epochSecond, this.nano, this.offsetSeconds);
         return (int32) ((nod / 60000000000) % 60);
     }
 
+    /** Wall-clock second-of-minute, `0` through `59`, at this offset. */
     public int32 getSecond() {
         int64 nod = ZonedDateTime.localNanoOfDay(this.epochSecond, this.nano, this.offsetSeconds);
         return (int32) ((nod / 1000000000) % 60);
     }
 
-    /** This zoned date-time advanced by a [[Duration]] (keeps the same offset). */
+    /** This zoned date-time advanced by a `Duration` (keeps the same offset). */
     public ZonedDateTime plus(Duration d) {
         int64 total = (int64) this.nano + d.toNanos();
         int64 s = this.epochSecond + total / 1000000000;
@@ -168,7 +216,14 @@ public class ZonedDateTime implements Comparable<ZonedDateTime> {
 
     /**
      * ISO-8601 `yyyy-MM-ddTHH:mm:ss[.nnnnnnnnn]` followed by the offset
-     * (`Z` or `±HH:mm`). Returns an owned `#String`.
+     * (`Z` or `±HH:mm`). The seconds and fractional-seconds fields are omitted
+     * when zero. Returns an owned `#String`.
+     *
+     * ```cajeta
+     * stack ZonedDateTime zdt =
+     *     ZonedDateTime.ofLocal(LocalDateTime.of(2026, 6, 5, 12, 30), ZoneOffset.utc());
+     * #String text = zdt.iso();   // "2026-06-05T12:30Z"
+     * ```
      */
     public #String iso() {
         int64 led = ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds);

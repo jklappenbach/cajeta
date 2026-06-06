@@ -1,9 +1,9 @@
 package cajeta.collection;
 
 /**
- * One entry in a `Cache<K,V>`. Doubly-linked into the cache's LRU
+ * One entry in a `Cache``<K,V>`. Doubly-linked into the cache's LRU
  * list (head=most-recently-used, tail=least). The cache also keeps
- * a `HashMap<K, CacheNode<K,V>>` for O(1) lookup, so each access
+ * a `HashMap``<K, CacheNode<K,V>>` for O(1) lookup, so each access
  * resolves the node directly without scanning the list.
  *
  * Same v1 visibility posture as `LinkedListNode` — fields are
@@ -26,6 +26,15 @@ public class CacheNode<K, V> {
     public CacheNode<K, V> prev;
     public CacheNode<K, V> next;
 
+    /**
+     * Builds an unlinked node stamped with the current access time;
+     * `prev`/`next` start `null` and the owning `Cache` splices it
+     * into the LRU list. Allocate on the heap so the cache can own it.
+     *
+     * ```cajeta
+     * CacheNode<K, V> fresh = #new CacheNode<K, V>(key, value, Cajeta.currentTimeNanos());
+     * ```
+     */
     public CacheNode(K key, V value, int64 accessedAt) {
         this.key = key;
         this.value = value;

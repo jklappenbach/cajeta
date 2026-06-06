@@ -3,9 +3,29 @@ package cajeta.lang;
 import cajeta.error.RecoverableException;
 
 /**
- * Thrown by encoding conversions (String.fromBytes / String.getBytes /
- * any other text-bytes-bridge) when EncodingErrorPolicy.FAIL meets a
- * codepoint or byte sequence the conversion can't represent.
+ * Thrown by encoding conversions (`String`.fromBytes / `String`.getBytes /
+ * any other text-bytes-bridge) when `EncodingErrorPolicy`.FAIL meets a
+ * codepoint or byte sequence the conversion can't represent. A
+ * `RecoverableException` — catch it at the ingestion boundary and fall
+ * back, rather than aborting.
+ *
+ * `sourceEncoding` / `targetEncoding` hold `Encoding` ordinals (e.g.
+ * `Encoding.UTF_8`, `Encoding.ASCII`).
+ *
+ * ```cajeta
+ * try {
+ *     // A text → bytes conversion under EncodingErrorPolicy.FAIL meets a
+ *     // codepoint the target can't hold and raises:
+ *     throw EncodingException(
+ *         "codepoint U+00E9 not representable in ASCII",
+ *         3, 0x00E9, Encoding.UTF_8, Encoding.ASCII,
+ *         "codepoint U+00E9 not representable in ASCII");
+ * } catch (EncodingException e) {
+ *     log(e.reason);      // "codepoint U+00E9 not representable in ASCII"
+ *     log(e.offset);      // codepoint index of 'é' in the source String
+ *     log(e.codepoint);   // 0x00E9
+ * }
+ * ```
  *
  * Carries enough to fix the bug without sifting through the source:
  *
@@ -28,7 +48,7 @@ import cajeta.error.RecoverableException;
  * Python's UnicodeEncodeError is the model — pinpoint the bad data,
  * say what went wrong, leave the fix to the caller.
  *
- * The String message field is inherited from Throwable; reason is the
+ * The String message field is inherited from `Throwable`; reason is the
  * machine-friendly variant (for diagnostic surfaces that want to lay
  * out the failure as structured data rather than free text).
  */
@@ -39,6 +59,19 @@ public class EncodingException extends RecoverableException {
     public int32 targetEncoding;       // Encoding ordinal
     public String reason;
 
+    /**
+     * Build and throw a structured encoding failure. `cause` is left unset.
+     * `sourceEncoding` / `targetEncoding` are `Encoding` ordinals.
+     *
+     * ```cajeta
+     * // inside getBytes, target encoding can't represent this codepoint:
+     * throw EncodingException(
+     *     "codepoint U+1F600 not representable in ASCII",
+     *     offset, 0x1F600,
+     *     Encoding.UTF_8, Encoding.ASCII,
+     *     "codepoint U+1F600 not representable in ASCII");
+     * ```
+     */
     public EncodingException(String message, int64 offset, int32 codepoint,
                              int32 sourceEncoding, int32 targetEncoding,
                              String reason) {
