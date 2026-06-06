@@ -372,7 +372,12 @@ public class WsFrameDecoder {
             int32 op = this.curOpcode;
             boolean masked = this.curMasked;
             WsFrame f = WsFrame.of(fin, op, masked, #pay);
-            this.enqueue(f);
+            // TRANSFER the frame into the queue (`#f`) — without it the local
+            // `f` is still an active owner and its scope-exit drop reclaims the
+            // frame the queue now references, so nextFrame() later hands the
+            // caller a freed frame (a double-free / use-after-free that only
+            // surfaces under heap churn).
+            this.enqueue(#f);
             // Reset header accumulators for the next frame.
             this.payRead = (int64) 0;
             this.state = WsFrameDecoder.ST_B0;
@@ -398,22 +403,29 @@ public class WsFrameDecoder {
      * longer aliases the frame it just handed off — the
      * [`BufferPool.acquire`](../BufferPool.cajeta) hand-off discipline.
      */
-    public WsFrame nextFrame() {
+    public #WsFrame nextFrame() {
         if (this.qCount == 0) {
             return null;
         }
+        // TRANSFER ownership out of the queue: read the element, null the slot
+        // (so the decoder's queue-drop won't reclaim it), and `#`-return it to
+        // the caller. The signature is `#WsFrame` so the caller becomes the
+        // sole owner — the hand-off discipline the doc above describes.
         WsFrame f = this.queue[this.qHead];
         this.queue[this.qHead] = null;
         this.qHead = (this.qHead + 1) % this.qCap;
         this.qCount = this.qCount - 1;
-        return f;
+        return #f;
     }
 
-    void enqueue(WsFrame f) {
+    void enqueue(#WsFrame f) {
         if (this.qCount == this.qCap) {
             this.growQueue();
         }
-        this.queue[this.qTail] = f;
+        // `#f` transfers the frame into the queue slot so the caller
+        // (finishIfPayloadComplete) no longer owns/drops it — the queue is now
+        // the sole owner until nextFrame() hands it back out.
+        this.queue[this.qTail] = #f;
         this.qTail = (this.qTail + 1) % this.qCap;
         this.qCount = this.qCount + 1;
     }
