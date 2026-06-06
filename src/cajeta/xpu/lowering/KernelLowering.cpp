@@ -263,6 +263,10 @@ public:
     // — which on Vulkan would (wrongly) bind a fresh descriptor/SSBO per param.
     void setParamsAsArgs(bool b) { paramsAsArgs = b; }
 
+    // True iff the lowered body used a cross-lane subgroup op (shuffle/ballot/
+    // reduce). Drives the maximal-reconvergence request at finalization.
+    bool usedSubgroupOp() const { return usedSubgroupOp_; }
+
     void lowerBody(const MethodPtr& method) {
         if (!cls) cls = method->getParent();   // for @Device helper resolution
         builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -403,6 +407,10 @@ private:
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     bool paramsAsArgs = false;  // true for @Device helpers (params are fn args)
     std::map<std::string, bool> bufferElemSigned;  // buffer name -> elem signed?
+    // Set true when the body lowers a cross-lane subgroup op (shuffle/ballot/
+    // reduce). Read at kernel finalization to request maximal reconvergence on
+    // backends that support it (Vulkan). Per-kernel (DeviceLowerer is per-kernel).
+    bool usedSubgroupOp_ = false;
     // POD struct params (Item 7): the materialized aggregate SSA value per param
     // name, plus its field index/type/signedness map. A field read `name.field`
     // is an extractvalue from structValues[name] at the recorded index — no
@@ -1864,21 +1872,103 @@ private:
                     lane, llvm::ConstantInt::get(lane->getType(), 0),
                     "wave.isfirst");
             }
+            // The cross-lane ops (shuffle/ballot/reduce) read other lanes' data,
+            // so their result depends on which lanes are converged. Flag the
+            // kernel so finalization can request maximal reconvergence (Vulkan
+            // OpExecutionMode MaximallyReconvergesKHR) — the guarantee that
+            // source-converged lanes stay converged. The pure per-lane queries
+            // (width/laneId/isFirstLane) above don't need it.
             if (name == "shuffleSync") {
                 if (args.size() != 2) unsupported("Wave.shuffleSync arity");
+                usedSubgroupOp_ = true;
                 llvm::Value* value = lowerExpr(args[0].expression);
                 llvm::Value* srcLane = lowerExpr(args[1].expression);
                 return target.waveShuffle(builder, mod, value, srcLane);
             }
             if (name == "ballotSync") {
                 if (args.size() != 1) unsupported("Wave.ballotSync arity");
+                usedSubgroupOp_ = true;
                 llvm::Value* pred = toI1(lowerExpr(args[0].expression));
                 return target.waveBallot(builder, mod, pred);
             }
             if (name == "reduceSum") {
                 if (args.size() != 1) unsupported("Wave.reduceSum arity");
+                usedSubgroupOp_ = true;
                 return target.waveReduceSum(builder, mod,
                                             lowerExpr(args[0].expression));
+            }
+            if (name == "rotate") {
+                if (args.size() != 2) unsupported("Wave.rotate arity");
+                usedSubgroupOp_ = true;
+                llvm::Value* value = lowerExpr(args[0].expression);
+                llvm::Value* delta = lowerExpr(args[1].expression);
+                return target.waveRotate(builder, mod, value, delta);
+            }
+            {
+                // The reduction family beyond sum (Wave.reduce{Max,Min,And,Or,
+                // Xor}) — unsigned, uint32; native on every backend.
+                using WROp = LoweringTarget::WaveReduceOp;
+                const WROp* op = nullptr;
+                static const WROp kMax = WROp::Max, kMin = WROp::Min,
+                                  kAnd = WROp::And, kOr = WROp::Or,
+                                  kXor = WROp::Xor;
+                if (name == "reduceMax") op = &kMax;
+                else if (name == "reduceMin") op = &kMin;
+                else if (name == "reduceAnd") op = &kAnd;
+                else if (name == "reduceOr") op = &kOr;
+                else if (name == "reduceXor") op = &kXor;
+                if (op) {
+                    if (args.size() != 1) unsupported("Wave.reduce arity");
+                    usedSubgroupOp_ = true;
+                    return target.waveReduce(builder, mod, *op,
+                                             lowerExpr(args[0].expression));
+                }
+            }
+        } else if (recv == "Bits") {
+            // Per-invocation bit manipulation. No seam: these lower to
+            // *generic* LLVM intrinsics that every backend (incl. the
+            // Vulkan/Shader flavor) already selects to a single hardware
+            // bit op — so they are handled here, once, for all targets.
+            const auto& args = mc->getParameters();
+            auto* i32 = llvm::Type::getInt32Ty(ctx);
+            auto u32arg = [&](int i) {
+                return builder.CreateZExtOrTrunc(
+                    lowerExpr(args[i].expression), i32);
+            };
+            if (name == "reverse") {
+                if (args.size() != 1) unsupported("Bits.reverse arity");
+                return builder.CreateUnaryIntrinsic(
+                    llvm::Intrinsic::bitreverse, u32arg(0));
+            }
+            if (name == "count") {
+                if (args.size() != 1) unsupported("Bits.count arity");
+                return builder.CreateUnaryIntrinsic(
+                    llvm::Intrinsic::ctpop, u32arg(0));
+            }
+            if (name == "rotateLeft" || name == "rotateRight") {
+                if (args.size() != 2) unsupported("Bits.rotate arity");
+                llvm::Value* v = u32arg(0);
+                llvm::Value* amt = u32arg(1);
+                // Inline rotate: (v << s) | (v >> (32 - s)), s masked to
+                // [0,31]. Deliberately NOT llvm.fshl/fshr — the SPIR-V
+                // backend lowers those via a *generated helper function*
+                // (spirv.llvm_fsh?_i32) with external linkage, which pulls in
+                // OpCapability Linkage and is rejected under Vulkan. The
+                // shift/or expansion stays inline → core ops, spirv-val-clean.
+                auto* w = builder.getInt32(32);
+                auto* mask = builder.getInt32(31);
+                llvm::Value* s = builder.CreateAnd(amt, mask, "bits.rot.s");
+                // (32 - s) & 31 keeps the complementary shift in [0,31] so the
+                // s==0 case is a 0-shift (no undef shift-by-32) and rotate is
+                // identity.
+                llvm::Value* cs = builder.CreateAnd(
+                    builder.CreateSub(w, s), mask, "bits.rot.cs");
+                bool left = (name == "rotateLeft");
+                llvm::Value* a = left ? builder.CreateShl(v, s)
+                                      : builder.CreateLShr(v, s);
+                llvm::Value* b = left ? builder.CreateLShr(v, cs)
+                                      : builder.CreateShl(v, cs);
+                return builder.CreateOr(a, b, "bits.rot");
             }
         } else if (recv == "Math") {
             // Math.<fn>(...) inside a kernel — fully handled (returns a value or
@@ -3376,6 +3466,20 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
     return info;
 }
 
+// Base default for wave rotate: the width-agnostic shuffle form, built on the
+// other wave seams so NVPTX/AMD/CPU get rotate for free. Vulkan overrides to the
+// native OpGroupNonUniformRotateKHR. Out-of-line because LoweringTarget.h only
+// forward-declares IRBuilderBase. Keep the (laneId+delta) mod width semantics in
+// lock-step with the doc and the native op (the device test cross-checks both).
+llvm::Value* LoweringTarget::waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        llvm::Value* value, llvm::Value* delta) {
+    llvm::Value* lane = waveLaneId(b, m);
+    llvm::Value* width = waveWidth(b, m);
+    llvm::Value* src = b.CreateURem(
+        b.CreateAdd(lane, delta), width, "wave.rotate.src");
+    return waveShuffle(b, m, value, src);
+}
+
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                             LoweringTarget& target) {
     if (!method) unsupported("null kernel method");
@@ -3394,6 +3498,11 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     DeviceLowerer::DeviceFnCache deviceFns;
     lowerer.setDeviceContext(method->getParent(), &deviceFns);
     lowerer.lowerBody(method);
+    // If the kernel used a cross-lane subgroup op, ask the backend to request
+    // maximal reconvergence (a no-op on backends that don't model it). This is
+    // the correctness companion to Wave.shuffle/ballot/reduce.
+    if (lowerer.usedSubgroupOp())
+        target.onSubgroupOpsUsed(fn, deviceModule);
     return fn;
 }
 

@@ -209,6 +209,47 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
             }
             b.CreateRet(res);
         }
+    } else if (scalarName == "__cajeta_xpu_wave_reduce_max_u32" ||
+               scalarName == "__cajeta_xpu_wave_reduce_min_u32" ||
+               scalarName == "__cajeta_xpu_wave_reduce_and_u32" ||
+               scalarName == "__cajeta_xpu_wave_reduce_or_u32" ||
+               scalarName == "__cajeta_xpu_wave_reduce_xor_u32") {
+        // The reduce family beyond sum: broadcast(reduce_op(x)). Unsigned min/max
+        // (uint32 surface). The masked form folds inactive lanes to the op's
+        // identity so they don't perturb the reduction.
+        tokens = "v";
+        auto* vTy = llvm::FixedVectorType::get(i32, W);
+        // (reduce builder, identity for masked-out lanes).
+        auto reduceOf = [&](llvm::IRBuilder<>& b, llvm::Value* x) -> llvm::Value* {
+            if (scalarName == "__cajeta_xpu_wave_reduce_max_u32")
+                return b.CreateIntMaxReduce(x, /*IsSigned=*/false);
+            if (scalarName == "__cajeta_xpu_wave_reduce_min_u32")
+                return b.CreateIntMinReduce(x, /*IsSigned=*/false);
+            if (scalarName == "__cajeta_xpu_wave_reduce_and_u32")
+                return b.CreateAndReduce(x);
+            if (scalarName == "__cajeta_xpu_wave_reduce_or_u32")
+                return b.CreateOrReduce(x);
+            return b.CreateXorReduce(x);
+        };
+        uint32_t ident =  // AND identity = all-ones, MIN identity = UINT_MAX
+            (scalarName == "__cajeta_xpu_wave_reduce_and_u32" ||
+             scalarName == "__cajeta_xpu_wave_reduce_min_u32") ? 0xFFFFFFFFu : 0u;
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, unmasked->getArg(0))));
+        }
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* idv = b.CreateVectorSplat(
+                W, llvm::ConstantInt::get(i32, ident));
+            llvm::Value* sel = b.CreateSelect(masked->getArg(1),
+                                              masked->getArg(0), idv);
+            b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, sel)));
+        }
     } else {
         return;
     }
@@ -266,6 +307,11 @@ void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
 // separately (rewritten to the constant W), and lane_id/is_first_lane lower inline.
 static const char* const kWaveOps[] = {
     "__cajeta_xpu_wave_reduce_sum_u32",
+    "__cajeta_xpu_wave_reduce_max_u32",
+    "__cajeta_xpu_wave_reduce_min_u32",
+    "__cajeta_xpu_wave_reduce_and_u32",
+    "__cajeta_xpu_wave_reduce_or_u32",
+    "__cajeta_xpu_wave_reduce_xor_u32",
     "__cajeta_xpu_wave_ballot_sync",
     "__cajeta_xpu_wave_shuffle_sync_u32",
 };

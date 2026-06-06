@@ -832,6 +832,78 @@ TEST(XpuVulkanEmitTests, lowersShaderClockToSpirv) {
     }
 }
 
+// Bit instructions (no extension, no fork). Bits.reverse/count/rotateLeft/
+// rotateRight lower to the GENERIC llvm.bitreverse / ctpop / fshl / fshr
+// intrinsics, which the SPIR-V backend already selects to core OpBitReverse /
+// OpBitCount (+ funnel-shift expansion) under the plain Shader capability — they
+// reach the Vulkan/Shader flavor with no llvm.spv.* intrinsic. GPU-free: proves
+// the lowering and that the module is spirv-val-clean under Vulkan 1.3.
+TEST(XpuVulkanEmitTests, lowersBitInstructionsToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Bits;\n"
+        "public class B {\n"
+        "    @Kernel\n"
+        "    public static void bitops(Buffer<uint32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 v = i;\n"
+        "            v = Bits.reverse(v);\n"
+        "            v = v + Bits.count(i);\n"
+        "            v = v + Bits.rotateLeft(i, 3);\n"
+        "            v = v + Bits.rotateRight(i, 5);\n"
+        "            out[i] = v;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.B");
+    auto k = findMethod(module->getStructures()["test.B"], "bitops");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_bits_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("llvm.bitreverse.i32"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.ctpop.i32"), std::string::npos) << ir;
+    // Rotates are expanded inline (shl/lshr/or), NOT llvm.fshl/fshr — the
+    // funnel-shift intrinsics lower to an external-linkage helper that pulls in
+    // OpCapability Linkage (invalid under Vulkan). Assert they are absent.
+    EXPECT_EQ(ir.find("llvm.fshl"), std::string::npos) << ir;
+    EXPECT_EQ(ir.find("llvm.fshr"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_bits_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpBitReverse"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpBitCount"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_bits_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the bit-instructions module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // CM5b — the device-realistic MIXED-PRECISION config: A and B are float16
 // (IEEE half) tiles, the accumulator C is float32. This is the only float
 // cooperative-matrix config the RADV STRIX_HALO WMMA path actually supports

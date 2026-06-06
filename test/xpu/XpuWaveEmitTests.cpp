@@ -220,6 +220,176 @@ TEST(XpuWaveEmitTests, spirvLowersSubgroupOpsAndValidates) {
     EXPECT_EQ(rc, 0) << "spirv-val rejected the wave-ops module";
 }
 
+// --- Maximal reconvergence (SPV_KHR_maximal_reconvergence) ------------------
+// A kernel that uses a cross-lane Wave op requests maximal reconvergence so the
+// op sees the source-converged lanes: OpExecutionMode <entry> Maximally
+// ReconvergesKHR + OpExtension "SPV_KHR_maximal_reconvergence". No fork — the
+// backend turns the "enable-maximal-reconvergence" fn-attr into the mode. The
+// request is gated on wave-op use, so a non-wave kernel must NOT carry it.
+TEST(XpuWaveEmitTests, spirvWaveKernelRequestsMaximalReconvergence) {
+    Compiler compiler;
+    auto k = compileReduceKernel(compiler);   // uses Wave.reduceSum
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_reconv_text", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(m, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, m);
+    std::string text = cajeta::xpu::vulkan::emitSpirvText(m, *tm);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpExtension \"SPV_KHR_maximal_reconvergence\""),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("MaximallyReconvergesKHR"), std::string::npos) << text;
+}
+
+// The complement: a kernel with NO cross-lane wave op (Wave.laneId is a pure
+// per-lane query) must NOT pull in maximal reconvergence — wave kernels pay for
+// the device requirement, plain kernels don't.
+TEST(XpuWaveEmitTests, spirvNonWaveKernelOmitsMaximalReconvergence) {
+    Compiler compiler;
+    auto k = compileLaneKernel(compiler);     // Wave.laneId only — no cross-lane op
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_reconv_neg_text", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(m, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, m);
+    std::string text = cajeta::xpu::vulkan::emitSpirvText(m, *tm);
+    ASSERT_FALSE(text.empty());
+    EXPECT_EQ(text.find("MaximallyReconvergesKHR"), std::string::npos) << text;
+}
+
+// --- Subgroup rotate (SPV_KHR_subgroup_rotate) ------------------------------
+// Wave.rotate(value, delta) reads value from lane (laneId + delta) mod width.
+// Vulkan lowers to a single native OpGroupNonUniformRotateKHR at Subgroup scope
+// via the fork's llvm.spv.subgroup.rotate intrinsic (the __spirv builtin path is
+// OpenCL-only). NVIDIA/AMD/CPU inherit the base default (laneId+shuffle). The
+// kernel uses a cross-lane op, so it also requests maximal reconvergence.
+const char* kRotateSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class R {\n"
+    "    @Kernel\n"
+    "    public static void waverot(Buffer<uint32> out) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        out[t] = Wave.rotate(Wave.laneId(), 1);\n"
+    "    }\n"
+    "}\n";
+
+// The reduction family beyond sum: Wave.reduce{Max,Min,And,Or,Xor} lower to the
+// GroupNonUniformArithmetic Reduce ops (already Shader-reachable — NOT the
+// OpenCL-only SPV_KHR_uniform_group_instructions). Unsigned min/max. GPU-free:
+// asserts the five ops emit and the module is spirv-val-clean.
+const char* kReduceFamilySource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class F {\n"
+    "    @Kernel\n"
+    "    public static void wavereduceops(Buffer<uint32> out) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        uint32 a = Wave.reduceMax(t) + Wave.reduceMin(t);\n"
+    "        uint32 b = Wave.reduceAnd(t) + Wave.reduceOr(t) + Wave.reduceXor(t);\n"
+    "        out[t] = a + b;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuWaveEmitTests, spirvLowersReduceFamilyAndValidates) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kReduceFamilySource);
+    auto k = findMethod(module->getStructures()["test.F"], "wavereduceops");
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+
+    llvm::LLVMContext txtCtx;
+    llvm::Module txtMod("xpu_redfam_txt", txtCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(txtMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, txtMod);
+    std::string text = cajeta::xpu::vulkan::emitSpirvText(txtMod, *tm);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpGroupNonUniformUMax"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpGroupNonUniformUMin"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpGroupNonUniformBitwiseAnd"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpGroupNonUniformBitwiseOr"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpGroupNonUniformBitwiseXor"), std::string::npos) << text;
+
+    llvm::LLVMContext binCtx;
+    llvm::Module binMod("xpu_redfam_bin", binCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, binMod);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
+    ASSERT_FALSE(spirv.empty());
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
+    static std::mt19937_64 rng(std::random_device{}());
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_redfam_" + std::to_string(rng()) + ".spv");
+    { std::ofstream o(path, std::ios::binary);
+      o.write(reinterpret_cast<const char*>(spirv.data()),
+              (std::streamsize) spirv.size()); }
+    std::string fileStr = path.string();
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
+    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    EXPECT_EQ(rc, 0) << "spirv-val rejected the reduce-family module";
+}
+
+TEST(XpuWaveEmitTests, spirvLowersRotateToNativeOpAndValidates) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kRotateSource);
+    auto k = findMethod(module->getStructures()["test.R"], "waverot");
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+
+    llvm::LLVMContext irCtx;
+    llvm::Module irMod("xpu_rot_ir", irCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
+    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
+    std::string ir = printModule(irMod);
+    EXPECT_NE(ir.find("llvm.spv.subgroup.rotate"), std::string::npos) << ir;
+
+    llvm::LLVMContext txtCtx;
+    llvm::Module txtMod("xpu_rot_txt", txtCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(txtMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, txtMod);
+    std::string text = cajeta::xpu::vulkan::emitSpirvText(txtMod, *tm);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpCapability GroupNonUniformRotateKHR"),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpExtension \"SPV_KHR_subgroup_rotate\""),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpGroupNonUniformRotateKHR"), std::string::npos) << text;
+
+    llvm::LLVMContext binCtx;
+    llvm::Module binMod("xpu_rot_bin", binCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, binMod);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
+    ASSERT_FALSE(spirv.empty());
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
+    static std::mt19937_64 rng(std::random_device{}());
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_rot_" + std::to_string(rng()) + ".spv");
+    { std::ofstream o(path, std::ios::binary);
+      o.write(reinterpret_cast<const char*>(spirv.data()),
+              (std::streamsize) spirv.size()); }
+    std::string fileStr = path.string();
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
+    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    EXPECT_EQ(rc, 0) << "spirv-val rejected the subgroup-rotate module";
+}
+
 // --- Wave.reduce: a single hardware wave-reduce intrinsic on all three ------
 // The guessed comprehensiveness inversion (1 intrinsic on Vulkan vs. a
 // shuffle/DPP sequence on NV/AMD) did not hold — each backend lowers to one

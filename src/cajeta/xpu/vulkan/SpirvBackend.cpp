@@ -58,11 +58,16 @@ void enableSpirvExtensions() {
     // (OpAtomicFAddEXT/FMinEXT/FMaxEXT) for Buffer<float32>.atomic{Add,Min,Max}.
     // SPV_KHR_shader_clock gives OpReadClockKHR (Thread.clock()) — reached from
     // the Shader flavor via the fork's llvm.spv.read.clock intrinsic.
+    // SPV_KHR_maximal_reconvergence gives OpExecutionMode MaximallyReconvergesKHR
+    // — requested on kernels that use a cross-lane Wave op so the subgroup op
+    // sees the source-converged lanes (no fork; an "enable-maximal-
+    // reconvergence" fn-attr the backend turns into the execution mode).
     static const char* kExtensions =
         "+SPV_KHR_ray_query,+SPV_KHR_cooperative_matrix,"
         "+SPV_KHR_vulkan_memory_model,+SPV_KHR_bfloat16,"
         "+SPV_KHR_integer_dot_product,+SPV_EXT_shader_atomic_float_add,"
-        "+SPV_EXT_shader_atomic_float_min_max,+SPV_KHR_shader_clock";
+        "+SPV_EXT_shader_atomic_float_min_max,+SPV_KHR_shader_clock,"
+        "+SPV_KHR_maximal_reconvergence,+SPV_KHR_subgroup_rotate";
     auto& opts = llvm::cl::getRegisteredOptions();
     auto it = opts.find("spirv-ext");
     if (it != opts.end())

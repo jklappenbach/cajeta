@@ -124,6 +124,23 @@ public:
         return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0xFFFFFFFFu)},
                             "redux");
     }
+    llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
+                            WaveReduceOp op, llvm::Value* value) override {
+        // redux.sync.{umax,umin,and,or,xor}: full-warp membermask, sm_80+.
+        // Unsigned min/max for the uint32 surface. (Emit-only — no NV device.)
+        llvm::Intrinsic::ID id;
+        switch (op) {
+            case WaveReduceOp::Max: id = llvm::Intrinsic::nvvm_redux_sync_umax; break;
+            case WaveReduceOp::Min: id = llvm::Intrinsic::nvvm_redux_sync_umin; break;
+            case WaveReduceOp::And: id = llvm::Intrinsic::nvvm_redux_sync_and; break;
+            case WaveReduceOp::Or:  id = llvm::Intrinsic::nvvm_redux_sync_or; break;
+            case WaveReduceOp::Xor: id = llvm::Intrinsic::nvvm_redux_sync_xor; break;
+        }
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);
+        return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0xFFFFFFFFu)},
+                            "redux");
+    }
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_laneid);
     }

@@ -142,6 +142,73 @@ const char* kWidthSource =
     "    }\n"
     "}\n";
 
+// out[t] = Wave.rotate(laneId(), 1): lane L reads laneId from lane (L+1) mod W.
+// For lanes 0..30 (present at any wave width 32/64), (L+1) does not wrap, so the
+// value read is the neighbour's laneId = L+1. In the first wave laneId == t, so
+// out[t] == t+1 for t in [0,31) — wave-size-agnostic, and it cross-checks the
+// Vulkan NATIVE OpGroupNonUniformRotateKHR against the AMD shuffle-default: both
+// must agree on the (laneId + delta) mod width direction.
+const char* kRotateSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void waverot(Buffer<uint32> out) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        out[t] = Wave.rotate(Wave.laneId(), 1);\n"
+    "    }\n"
+    "}\n";
+
+constexpr unsigned kRotateVerify = 31;  // lanes 0..30: (L+1) never wraps
+
+void expectRotatedLaneId(const std::vector<uint32_t>& out) {
+    for (unsigned i = 0; i < kRotateVerify; ++i)
+        EXPECT_EQ(out[i], i + 1) << "lane " << i << " rotated value";
+}
+
+// The reduction family beyond sum (Max/Min/And/Or/Xor, unsigned). Per-lane
+// inputs are chosen so the wave reduction is the SAME for a 32- or 64-lane wave
+// (verified over the first wave, lanes 0..31, present at any width):
+//   bit = 1 << (laneId & 31)  -> distinct powers of two, repeating every 32 lanes
+//     reduceMax(bit) = 1<<31 = 0x80000000   (top bit present in both widths)
+//     reduceMin(bit) = 1<<0  = 1            (lane 0)
+//     reduceAnd(bit) = 0                    (distinct single bits -> no common bit)
+//     reduceOr(bit)  = 0xFFFFFFFF           (all 32 bits covered in either width)
+//   reduceXor(t) over lanes 0..W-1 = 0      (XOR of 0..31 and of 0..63 are both 0)
+const char* kReduceOpsSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wavereduceops(Buffer<uint32> out, uint32 n) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        uint32 bit = 1;\n"
+    "        bit = bit << (t & 31);\n"
+    "        out[t] = Wave.reduceMax(bit);\n"
+    "        out[n + t] = Wave.reduceMin(bit);\n"
+    "        out[2 * n + t] = Wave.reduceAnd(bit);\n"
+    "        out[3 * n + t] = Wave.reduceOr(bit);\n"
+    "        out[4 * n + t] = Wave.reduceXor(t);\n"
+    "    }\n"
+    "}\n";
+
+constexpr unsigned kReduceOpsBlock = 64;  // multiple of 32 and 64 ⇒ full occupancy
+
+// Check the first-wave window of each reduction region (n = threads per region).
+void expectReduceFamily(const std::vector<uint32_t>& out, unsigned n) {
+    for (unsigned i = 0; i < 32; ++i) {
+        EXPECT_EQ(out[0 * n + i], 0x80000000u) << "reduceMax lane " << i;
+        EXPECT_EQ(out[1 * n + i], 1u)          << "reduceMin lane " << i;
+        EXPECT_EQ(out[2 * n + i], 0u)          << "reduceAnd lane " << i;
+        EXPECT_EQ(out[3 * n + i], 0xFFFFFFFFu) << "reduceOr lane " << i;
+        EXPECT_EQ(out[4 * n + i], 0u)          << "reduceXor lane " << i;
+    }
+}
+
 // reduceSum(1) over a full wave == wave width; the only real wave sizes are 32
 // and 64, and every lane must agree (block is a multiple of both).
 void expectUniformWaveWidth(const std::vector<uint32_t>& out) {
@@ -463,4 +530,150 @@ TEST(XpuWaveDeviceTests, vulkanWaveWidthRunsOnDevice) {
     ASSERT_TRUE(vk.download(out.data(), dOut, threads * sizeof(uint32_t)));
     vk.free(dOut);
     expectUniformWaveWidth(out);
+}
+
+TEST(XpuWaveDeviceTests, amdgpuRotateRunsOnDevice) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kRotateSource);
+    auto k = findMethod(module->getStructures()["test.M"], "waverot");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_rotate_amddevice", ctx);
+    cajeta::xpu::amd::configureDeviceModule(dev, *tm);
+    cajeta::xpu::amd::lowerKernel(k, dev);
+    std::vector<uint8_t> hsaco = cajeta::xpu::amd::assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    cajeta::xpu::amd::HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    auto mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = hip.getFunction(mod, "waverot");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned block = 32;  // one wave window
+    auto dOut = hip.alloc(block * sizeof(uint32_t));
+    ASSERT_NE(dOut, nullptr);
+    void* params[] = { &dOut };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, block, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<uint32_t> out(block, 0);
+    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dOut, block * sizeof(uint32_t)));
+    hip.free(dOut);
+    expectRotatedLaneId(out);
+}
+
+TEST(XpuWaveDeviceTests, vulkanRotateRunsOnDevice) {
+    if (!cajeta::xpu::vulkan::VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kRotateSource);
+    auto k = findMethod(module->getStructures()["test.M"], "waverot");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_rotate_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    const unsigned threads = cajeta::xpu::vulkan::kVulkanLocalSizeX;
+    cajeta::xpu::vulkan::VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dOut = vk.alloc(threads * sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    std::vector<uint32_t> zero(threads, 0);
+    ASSERT_TRUE(vk.upload(dOut, zero.data(), threads * sizeof(uint32_t)));
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "waverot", {dOut},
+                          /*groupCountX=*/1));
+
+    std::vector<uint32_t> out(threads, 0);
+    ASSERT_TRUE(vk.download(out.data(), dOut, threads * sizeof(uint32_t)));
+    vk.free(dOut);
+    expectRotatedLaneId(out);
+}
+
+TEST(XpuWaveDeviceTests, amdgpuReduceFamilyRunsOnDevice) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kReduceOpsSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavereduceops");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_reduceops_amddevice", ctx);
+    cajeta::xpu::amd::configureDeviceModule(dev, *tm);
+    cajeta::xpu::amd::lowerKernel(k, dev);
+    std::vector<uint8_t> hsaco = cajeta::xpu::amd::assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    cajeta::xpu::amd::HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    auto mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = hip.getFunction(mod, "wavereduceops");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned n = kReduceOpsBlock;  // threads per region
+    auto dOut = hip.alloc(5 * n * sizeof(uint32_t));
+    ASSERT_NE(dOut, nullptr);
+    void* params[] = { &dOut, (void*) &n };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, kReduceOpsBlock, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<uint32_t> out(5 * n, 0);
+    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dOut, 5 * n * sizeof(uint32_t)));
+    hip.free(dOut);
+    expectReduceFamily(out, n);
+}
+
+TEST(XpuWaveDeviceTests, vulkanReduceFamilyRunsOnDevice) {
+    if (!cajeta::xpu::vulkan::VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kReduceOpsSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavereduceops");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_reduceops_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    const unsigned n = cajeta::xpu::vulkan::kVulkanLocalSizeX;  // threads per region
+    cajeta::xpu::vulkan::VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dOut = vk.alloc(5 * n * sizeof(uint32_t));
+    auto dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u); ASSERT_NE(dN, 0u);
+    std::vector<uint32_t> zero(5 * n, 0);
+    ASSERT_TRUE(vk.upload(dOut, zero.data(), 5 * n * sizeof(uint32_t)));
+    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "wavereduceops",
+                          {dOut, dN}, /*groupCountX=*/1));
+
+    std::vector<uint32_t> out(5 * n, 0);
+    ASSERT_TRUE(vk.download(out.data(), dOut, 5 * n * sizeof(uint32_t)));
+    vk.free(dOut); vk.free(dN);
+    expectReduceFamily(out, n);
 }

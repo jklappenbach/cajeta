@@ -205,6 +205,15 @@ public:
     // Vulkan marks the entry via createKernel's attributes, not a CC here.
     void decorateKernel(llvm::Function* /*fn*/, llvm::Module& /*m*/) override {}
 
+    // Cross-lane subgroup ops (Wave.shuffle/ballot/reduce) only behave as the
+    // source structure implies under maximal reconvergence. Request it: the
+    // backend turns this fn-attr into OpExecutionMode MaximallyReconvergesKHR
+    // (SPV_KHR_maximal_reconvergence, enabled in SpirvBackend). Emitted ONLY for
+    // wave kernels, so non-wave kernels carry no extra device requirement.
+    void onSubgroupOpsUsed(llvm::Function* fn, llvm::Module& /*m*/) override {
+        fn->addFnAttr("enable-maximal-reconvergence", "true");
+    }
+
     // The Vulkan compute entry takes NO parameters: `void main()`-style, with
     // the HLSL compute markers. LocalSize is baked in (Vulkan fixes workgroup
     // size at SPIR-V compile time). Args arrive via descriptors (materializeParam).
@@ -580,12 +589,37 @@ public:
             {llvm::Type::getInt32Ty(m.getContext())});
         return b.CreateCall(f, {value}, "wavered");
     }
+    llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
+                            WaveReduceOp op, llvm::Value* value) override {
+        // The GroupNonUniformArithmetic Reduce family (already Shader-reachable).
+        llvm::Intrinsic::ID id;
+        switch (op) {
+            case WaveReduceOp::Max: id = llvm::Intrinsic::spv_wave_reduce_umax; break;
+            case WaveReduceOp::Min: id = llvm::Intrinsic::spv_wave_reduce_umin; break;
+            case WaveReduceOp::And: id = llvm::Intrinsic::spv_wave_reduce_and; break;
+            case WaveReduceOp::Or:  id = llvm::Intrinsic::spv_wave_reduce_or; break;
+            case WaveReduceOp::Xor: id = llvm::Intrinsic::spv_wave_reduce_xor; break;
+        }
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, id, {llvm::Type::getInt32Ty(m.getContext())});
+        return b.CreateCall(f, {value}, "wavered");
+    }
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         // SubgroupLocalInvocationId — this invocation's index within the
         // subgroup (→ OpLoad of the builtin).
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_subgroup_local_invocation_id);
         return b.CreateCall(f, {}, "laneid");
+    }
+    llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
+                            llvm::Value* value, llvm::Value* delta) override {
+        // The native single-instruction rotate: spv.subgroup.rotate (the fork
+        // intrinsic) → OpGroupNonUniformRotateKHR at Subgroup scope. Replaces
+        // the base default's laneId+shuffle arithmetic with the hardware op.
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_subgroup_rotate,
+            {llvm::Type::getInt32Ty(m.getContext())});
+        return b.CreateCall(f, {value, delta}, "waverotate");
     }
 
     // Vulkan workgroup arrays need a concrete length and can't be external
