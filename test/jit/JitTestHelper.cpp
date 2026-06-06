@@ -23,6 +23,7 @@
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
+#include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
@@ -421,6 +422,20 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         throw std::runtime_error("LLJIT create failed");
     }
     jitState->jit = std::move(*jitOrErr);
+
+    // Opt-in GDB JIT symbolization (CAJETA_JIT_GDB=1): registers each JIT'd
+    // object with the GDB JIT interface so a debugger can name JIT frames
+    // instead of showing bare addresses. Requires the JITLink ObjectLinkingLayer
+    // (the LLVM 22 default on x86-64 ELF); on RTDyld it returns an Error which
+    // we surface and continue. Unset (the normal case) → behavior unchanged.
+    if (std::getenv("CAJETA_JIT_GDB")) {
+        if (auto err = llvm::orc::enableDebuggerSupport(*jitState->jit)) {
+            llvm::errs() << "[jit-gdb] enableDebuggerSupport failed: "
+                         << cajeta::jittest::toString(std::move(err)) << "\n";
+        } else {
+            llvm::errs() << "[jit-gdb] GDB JIT symbolization enabled\n";
+        }
+    }
 
     if (auto err = jitState->jit->addIRModule(std::move(tsModule))) {
         throw std::runtime_error("LLJIT addIRModule failed");
