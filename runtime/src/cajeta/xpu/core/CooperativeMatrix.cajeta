@@ -49,9 +49,13 @@ import cajeta.xpu.core.Buffer;
  *
  * Note the A stride (32) is the full row width of the wider matrix, NOT the tile
  * width — that is what makes `load` gather a 16x16 window out of a larger
- * row-major matrix. This multi-tile K-loop GEMM is device-verified on the native
- * matrix cores (gfx1151 WMMA); tiling the M/N *output* dimensions across multiple
- * waves (a grid of output tiles) is the next step.
+ * row-major matrix. The M/N *output* dimensions tile the same way: launch one
+ * workgroup (one wave) per 16x16 output tile, read `Workgroup.x()` to decode the
+ * tile this wave owns (`ti = block / nTilesN`, `tj = block % nTilesN` — every
+ * lane of the wave agrees), and offset that wave's A row-band / B col-band / C
+ * tile accordingly. A full `C[32x32] = A[32x32] · B[32x32]` is then a 2x2 grid of
+ * waves, each running the K-loop above. The complete M/N/K-tiled GEMM is
+ * device-verified on the native matrix cores (gfx1151 WMMA).
  *
  * `load`/`store` move the tile to/from a global `Buffer<T>` (a StorageBuffer);
  * the matrix VALUE never leaves the register file. (Staging the load through a
