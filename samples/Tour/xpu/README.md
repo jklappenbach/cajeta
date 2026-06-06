@@ -56,6 +56,7 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
   fp16+bf16 (h2.w+b2.y): [0]=48 [10]=58  (expect 48, 58)
 -- coopGemm: 16x16x16 tile matmul on the matrix cores --
   C[0][0]=16 C[5][5]=16  (expect 16, 16)
+  staged (via LDS): C[0][0]=16 C[5][5]=16  (expect 16, 16)
 -- waveReduce: sum across each wave, in[i]=1 --
   wave width (queried, not hardcoded) = 16        # 64 on an AMD GPU, 32 on NVIDIA
   every lane of a wave agrees: sums[0]=16 sums[1]=16
@@ -146,20 +147,21 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   without dissuading use, and the path auto-promotes to the cores where the
   hardware exposes the config, e.g. bf16 WMMA on AMD). Walkthrough:
   `cajeta.xpu.core.CooperativeMatrix` + `cajeta-docs/LintRules.md` § Notes.
-  <br>**Beyond one tile:** the `offset`/`stride` arguments select sub-tiles of a
-  wider matrix, so a K-loop of `load`+`mma` is a real tiled GEMM, and tiling the
-  M/N output across waves (one workgroup per output-tile grid) gives a full
-  `C[32×32]=A·B`. For bandwidth, the **LDS-staged** form stages A/B panels into
-  workgroup-shared memory once via `CoopStage.panel` and reads operands back
-  through the `CooperativeMatrix.load(Shared<T>)` overload (reuse → fewer global
-  reads). These are device-verified on **AMD (WMMA) and the CPU**
-  (`test/xpu/XpuCooperativeMatrixAmdDeviceTests.cpp`); they are not wired into
-  this portable tour because the LDS-staged path is not yet usable on Vulkan — a
-  downstream LLVM-SPIR-V/RADV bug miscompiles loop-variant Workgroup-memory
-  indexing (the cooperative global→LDS staging copy), so `load(Shared<T>)` on
-  Vulkan is a clean `XPU-N04` diagnostic rather than a silent miscompile. (Note:
-  fixing this also required correcting `Workgroup.dimX()` codegen, which had been
-  emitting the `WorkgroupSize` BuiltIn as a variable — invalid Vulkan SPIR-V.)
+- `coopGemmStaged` — **the LDS-staged variant**. The same 16×16 tile matmul, but
+  the A and B tiles are first staged into workgroup-shared memory (LDS) by the
+  whole workgroup via `CoopStage.panel`, published with a `Barrier.workgroup`, and
+  read back through the `CooperativeMatrix.load(Shared<T>)` overload — the building
+  block of a bandwidth-efficient GEMM (a staged panel is reused across waves /
+  K-steps, turning N redundant global reads into one global read + N cheap LDS
+  reads). Portable: native LDS + matrix cores on the GPUs, a per-block stack buffer
+  + the software tile-matmul on the CPU (barrier via loop fission). Making this
+  work on Vulkan/RADV took three fixes: correcting `Workgroup.dimX()` codegen (it
+  emitted the `WorkgroupSize` BuiltIn as a variable — invalid Vulkan SPIR-V), and
+  two SPIR-V backend fixes in the cajeta-llvm fork (array-global typing +
+  access-chaining an aggregate cooperative-matrix pointer to element 0; see
+  `cajeta-llvm/UPSTREAM-PRS.md`). Larger tiled forms (K-loop, M/N output tiling
+  across waves) are device-verified in
+  `test/xpu/XpuCooperativeMatrixAmdDeviceTests.cpp`.
 - `fastMath` / `vecMath` / `floatTypes` — **the device math surface**. `fastMath`
   is a `@FastMath` kernel (relaxed IEEE FP: FMA fusion, approximate
   transcendentals). `vecMath` applies `Math.sqrt` **elementwise** over a

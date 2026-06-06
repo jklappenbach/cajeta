@@ -66,15 +66,13 @@ import cajeta.xpu.core.Buffer;
  * inside the LDS tile exactly as the `Buffer<T>` overload does for global; the
  * matrix VALUE still never leaves the register file. The full staged GEMM
  * (`CoopStage.panel` → `Barrier.workgroup` → `load(Shared)` → `mma`, multiple
- * waves sharing the panels) is device-verified on AMD (gfx1151 WMMA) and on the
- * CPU (software tile-matmul over a per-block buffer; the barrier lowers via CPU
- * loop fission). **Vulkan caveat:** the `Shared<T>` overload is a clean `XPU-N04`
- * diagnostic on Vulkan — not because of the cooperative-matrix op (loading from a
- * Workgroup pointer is spec-legal and the emitted SPIR-V is valid), but because a
- * downstream LLVM-SPIR-V/RADV bug miscompiles *loop-variant* indexing into a
- * Workgroup array, which the cooperative global→LDS staging copy relies on
- * (verified on Mesa 26.0.3: direct `shared[t]` works, strided-loop `shared[e]`
- * corrupts). Use the global `Buffer<T>` overload on Vulkan until that is fixed.
+ * waves sharing the panels) is device-verified on **all three GPU-capable
+ * backends** — AMD (gfx1151 WMMA), the CPU (software tile-matmul over a per-block
+ * buffer; the barrier lowers via CPU loop fission), and **Vulkan** (RADV
+ * cooperative-matrix loading from Workgroup storage). The Vulkan path required two
+ * SPIR-V backend fixes in the cajeta-llvm fork — keeping undef non-constant array
+ * globals correctly typed, and access-chaining an aggregate cooperative-matrix
+ * pointer to its first element (see cajeta-llvm/UPSTREAM-PRS.md, PR 4 + PR 5).
  * Double-
  * buffering (a second LDS panel staged while the current one computes) is a
  * kernel-authoring pattern on top of these same verbs; a fully-managed tiled-GEMM
