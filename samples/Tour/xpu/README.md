@@ -50,6 +50,10 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
 -- transforms: quaternions + determinant/inverse --
   quaternion (rotate+compose+conjugate+length) sum = 4   (expect 4)
   matrix (det + g*g^-1 diag + solve x) sum = 15   (expect 15)
+-- precision & dtypes: @FastMath / vectorized math / fp16+bf16 --
+  @FastMath  2*i+1:   [10]=21 [100]=201  (expect 21, 201)
+  vectorized sqrt sum: [0]=14 [10]=24  (expect 14, 24)
+  fp16+bf16 (h2.w+b2.y): [0]=48 [10]=58  (expect 48, 58)
 -- waveReduce: sum across each wave, in[i]=1 --
   wave width (queried, not hardcoded) = 16        # 64 on an AMD GPU, 32 on NVIDIA
   every lane of a wave agrees: sums[0]=16 sums[1]=16
@@ -124,6 +128,12 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   and an inverse-based solve `g⁻¹ · rhs`. Both are bit-exact on CPU, Vulkan, and
   AMD. Walkthroughs: `cajeta-docs/Quaternions.md`,
   `cajeta-docs/MatrixDeterminantInverse.md`.
+- `fastMath` / `vecMath` / `floatTypes` — **the device math surface**. `fastMath`
+  is a `@FastMath` kernel (relaxed IEEE FP: FMA fusion, approximate
+  transcendentals). `vecMath` applies `Math.sqrt` **elementwise** over a
+  `Vector<float32,4>`. `floatTypes` does `float16` and `bfloat16` vector
+  arithmetic — the 16-bit ML dtypes, both portable (bf16 is a storage format
+  computed in f32, so it runs on RADV too). Surface: `cajeta.lang.Math`.
 - `waveReduce(sums, in, n)` — `sums[i] =` the sum of `in` across `i`'s **wave**
   (the warp/wavefront/subgroup on a GPU; the SIMD vector on the CPU — Inc 5C).
   Written **width-agnostically**: it queries the environment (`Wave.reduceSum`,

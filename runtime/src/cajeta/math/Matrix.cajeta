@@ -28,11 +28,33 @@ package cajeta.math;
  *     `Matrix * scalar` / `scalar * Matrix` -> element-wise scale. Hadamard
  *     (element-wise product) is the `hadamard(b)` method, not `*`.
  *   - `m[r]` -> `Vector<T,C>` row; `m[r][c]` -> element; `m[r][c] = v` -> assign.
- *   - `a == b` : element-wise equality -> boolean.
+ *   - comparisons (`== != < <= > >=`) : a **per-lane mask** `Matrix<boolean,R,C>`
+ *     (the value-type comparison rule — NOT a reduced boolean). Whole-matrix
+ *     equality is `(a == b).all()`; blend with `mask.select(a, b)`. A scalar RHS
+ *     broadcasts. See cajeta-docs/MaskSelect.md.
  *
  * The matrix-multiply and matrix*vector forms are shape/K-generic and so are
  * handled purely by codegen interception (they cannot be expressed as a single
  * non-templated operator declaration); only the scalar-scale `*` is declared.
+ *
+ * ## Methods (compiler intrinsics; float-element where noted)
+ *
+ * `transpose()`, `identity()` (square), `row(i)`, `col(j)`, `hadamard(b)`
+ * (element-wise product); for square 2x2/3x3/4x4 — `determinant()` (scalar) and
+ * `inverse()` (`Matrix<T,N,N>`). A comparison mask adds `all()`/`any()`/`select`.
+ *
+ * ```
+ * Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);
+ * Matrix<float32,2,2> b = stack Matrix<float32,2,2>(5.0f, 6.0f, 7.0f, 8.0f);
+ * Matrix<float32,2,2> c = a * b;             // matrix multiply -> [19 22; 43 50]
+ * float32 d = a.determinant();               // -2
+ * Matrix<float32,2,2> x = a.inverse() * b;   // solve a*x = b
+ * boolean same = (a == a).all();             // whole-matrix equality
+ * Matrix<float32,2,2> kept = (a > 1.0f).select(a, b);   // per-lane blend
+ * ```
+ *
+ * Runs identically on CPU, Vulkan, and AMD — see samples/Tour (LinearAlgebraDemo
+ * + the XPU `linalgk` kernel) and cajeta-docs/MatrixDeterminantInverse.md.
  */
 public final class Matrix<T, uint32 R, uint32 C> {
     // Placeholder field. A Matrix reference resolves to the flat CajetaMatrix
@@ -71,7 +93,11 @@ public final class Matrix<T, uint32 R, uint32 C> {
         return a;
     }
 
-    /** Element-wise equality -> boolean. Intercepted. */
+    /**
+     * Comparison. Intercepted — the real result is a per-lane mask
+     * `Matrix<boolean,R,C>` (the value-type comparison rule), NOT the boolean
+     * this placeholder signature shows. Whole-matrix equality is `(a==b).all()`.
+     */
     public static boolean operator== (Matrix<T, R, C> a, Matrix<T, R, C> b) {
         return true;
     }
