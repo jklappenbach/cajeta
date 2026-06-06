@@ -144,6 +144,10 @@ public:
         return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
     }
 
+    // (Shader clock uses the base default: llvm.readcyclecounter, which the
+    // AMDGPU backend lowers to s_getreg HW_REG_SHADER_CYCLES on RDNA — the GCN/
+    // CDNA s_memrealtime/s_memtime intrinsics are not selectable on gfx11+.)
+
     // Transcendentals via the ROCm OpenCL math library (ocml): `__ocml_<fn>_f32`
     // (or `_f64`). AMDGPU mis-lowers `llvm.sin`/etc. (no range reduction), so we
     // emit the ocml call directly; AmdgpuBackend links ocml.bc when these

@@ -1835,6 +1835,10 @@ private:
             if (name == "globalIdX") return target.globalId(builder, mod, 0);
             if (name == "globalIdY") return target.globalId(builder, mod, 1);
             if (name == "globalIdZ") return target.globalId(builder, mod, 2);
+            // Thread.clock() — a free-running hardware counter (uint64) for
+            // in-kernel timing (SPV_KHR_shader_clock on Vulkan; native clock on
+            // AMD/NVIDIA/CPU). Ticks are for relative measurement, not seconds.
+            if (name == "clock") return target.readClock(builder, mod);
         } else if (recv == "Workgroup") {
             if (name == "x") return target.workgroupId(builder, mod, 0);
             if (name == "y") return target.workgroupId(builder, mod, 1);
@@ -3145,6 +3149,15 @@ llvm::Value* LoweringTarget::atomicFloatRMW(
                                  : llvm::AtomicRMWInst::FMax;
     return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
                              llvm::AtomicOrdering::Monotonic);
+}
+
+// Default shader clock: llvm.readcyclecounter (CPU rdtsc). AMD/NVPTX/Vulkan
+// override with their native device clock.
+llvm::Value* LoweringTarget::readClock(llvm::IRBuilderBase& b,
+                                       llvm::Module& m) {
+    llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+        &m, llvm::Intrinsic::readcyclecounter);
+    return b.CreateCall(f, {}, "clock");
 }
 
 // Ray query (SPV_KHR_ray_query) is Vulkan-only — only SpirvTarget overrides

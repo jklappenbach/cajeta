@@ -330,6 +330,17 @@ public:
                                  llvm::AtomicOrdering::AcquireRelease, dev);
     }
 
+    // --- shader clock (SPV_KHR_shader_clock) ----------------------------------
+    // OpReadClockKHR at Subgroup scope (3), via the fork's llvm.spv.read.clock
+    // intrinsic — the Shader flavor's only reach to the op (the OpReadClockKHR
+    // builtin path is OpenCL-only). The SPIR-V backend injects the ShaderClockKHR
+    // capability + SPV_KHR_shader_clock extension.
+    llvm::Value* readClock(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_read_clock);
+        return b.CreateCall(f, {b.getInt32(3)}, "clock");
+    }
+
     // --- ray query (SPV_KHR_ray_query) ----------------------------------------
     // The ops lower to the llvm.spv.ray.query.* intrinsics + GlobalISel
     // selection (cajeta-gpu Part C increments 1/2/2c, in the cajeta-llvm fork).

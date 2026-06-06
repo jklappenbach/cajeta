@@ -149,6 +149,26 @@ public final class XpuTour {
         }
     }
 
+    // ---- Shader clock: in-kernel timing --------------------------------------
+    // clockProbe: each thread brackets a small compute loop with Thread.clock()
+    // and stores the elapsed DEVICE cycles. The clock is a free-running hardware
+    // counter — Vulkan OpReadClockKHR (Subgroup scope), s_getreg shader-cycles on
+    // AMD, rdtsc on CPU. Non-deterministic by nature: ticks for *relative*
+    // measurement, not wall-clock seconds.
+    @Kernel
+    public static void clockProbe(Buffer<uint64> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            uint64 t0 = Thread.clock();
+            uint32 acc = i;
+            for (uint32 k = 0; k < 256; k = k + 1) {
+                acc = acc * 1664525 + 1013904223;   // a little dependent work
+            }
+            uint64 t1 = Thread.clock();
+            out[i] = (t1 - t0) + (uint64) (acc & 0); // acc&0=0 keeps the loop live
+        }
+    }
+
     // ---- Transforms: quaternions, determinant, inverse -----------------------
     // 3-D rotation algebra and small-matrix solves, the same source on every
     // backend. See cajeta-docs/Quaternions.md + MatrixDeterminantInverse.md.
@@ -321,6 +341,7 @@ public final class XpuTour {
         runMaskSelect();
         runIntegerDot();
         runAtomics();
+        runShaderClock();
         runTransforms();
         runPrecision();
         runCoopMatrix();
@@ -511,6 +532,25 @@ public final class XpuTour {
         System.stdout.println("  sum=" + (int32) hout[0] + " max=" + (int32) hout[1]
                             + " min=" + (int32) hout[2]
                             + "  (expect 32640, 255, 0)");
+    }
+
+    // Shader clock: read a free-running hardware counter inside the kernel for
+    // in-kernel timing. Vulkan -> OpReadClockKHR; AMD/NVIDIA/CPU the native clock.
+    // The elapsed-cycle value is non-deterministic. See cajeta-docs/ShaderClock.md.
+    static void runShaderClock() {
+        System.stdout.println("");
+        System.stdout.println("-- shader clock: in-kernel timing (device cycles) --");
+        uint32 n = 256;
+        uint64[] hout = new uint64[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        Buffer<uint64> out = stack Buffer<uint64>(n);
+        out.upload(hout);
+        Stream s = Stream.current();
+        clockProbe.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  256-iter loop elapsed (thread 0): " + (int64) hout[0]
+                            + " device cycles  (nonzero; varies run-to-run)");
     }
 
     // Quaternion rotation algebra + small-matrix determinant/inverse/solve, run

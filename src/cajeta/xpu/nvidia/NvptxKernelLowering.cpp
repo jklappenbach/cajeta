@@ -145,6 +145,14 @@ public:
         return b.CreateExtractValue(rgba, {0}, "tex.sample");
     }
 
+    // Shader clock: the 64-bit SM clock (clock64) — the NVIDIA analogue of
+    // OpReadClockKHR for Thread.clock(). Emit-only until the NVIDIA runner (B5).
+    llvm::Value* readClock(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_read_ptx_sreg_clock64);
+        return b.CreateCall(f, {}, "clock");
+    }
+
     // Transcendentals via NVIDIA libdevice: `__nv_<fn>f` (f32) / `__nv_<fn>`
     // (f64). NVPTX, like AMDGPU, has no IEEE transcendental instructions; the
     // libdevice call is the canonical path (linked at cubin time). Emit-only
