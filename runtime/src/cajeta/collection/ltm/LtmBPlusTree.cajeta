@@ -11,7 +11,7 @@ import cajeta.wire.Encoder;
  *
  * ## Construction
  *
- * `new LtmBPlusTree(path, keyEnc, valEnc, order, capacity)` opens (or
+ * `heap LtmBPlusTree(path, keyEnc, valEnc, order, capacity)` opens (or
  * creates) the index file at `path`. A fresh file is initialized with
  * the given `order`; an existing one is reopened from its header (the
  * stored order wins). `keyEnc` / `valEnc` turn keys and values into
@@ -104,7 +104,7 @@ public class LtmBPlusTree<K, V> {
 
         // Descend to the target leaf, pinning each page on the path so a
         // later allocNode (split) can't evict the working set.
-        int64[] path = new int64[64];
+        int64[] path = heap int64[64];
         int32 depth = 0;
         int64 cur = rootId;
         boolean atLeaf = false;
@@ -174,7 +174,7 @@ public class LtmBPlusTree<K, V> {
     public V get(K key) {
         int64 rootId = this.pager.getRoot();
         if (rootId == -1) {
-            V[] miss = new V[1];
+            V[] miss = heap V[1];
             return miss[0];
         }
         int64 cur = rootId;
@@ -195,7 +195,7 @@ public class LtmBPlusTree<K, V> {
             }
             i = i + 1;
         }
-        V[] miss = new V[1];
+        V[] miss = heap V[1];
         return miss[0];
     }
 
@@ -233,7 +233,7 @@ public class LtmBPlusTree<K, V> {
     public K min() {
         int64 rootId = this.pager.getRoot();
         if (rootId == -1) {
-            K[] miss = new K[1];
+            K[] miss = heap K[1];
             return miss[0];
         }
         int64 cur = rootId;

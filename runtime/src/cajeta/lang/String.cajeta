@@ -109,7 +109,7 @@ public class String {
      * first `count()` call walks `bytes` and caches the result.
      *
      * ```cajeta
-     * int8[] buf = new int8[3];
+     * int8[] buf = heap int8[3];
      * buf[0] = (int8) 0x61;  buf[1] = (int8) 0x62;  buf[2] = (int8) 0x63;
      * heap String s = String(#buf, 3);   // view over "abc"
      * int64 bytes = s.size();             // 3
@@ -407,7 +407,7 @@ public class String {
             end = begin;
         }
         int32 len = end - begin;
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
             out[i] = this.bytes[begin + i];
@@ -424,7 +424,7 @@ public class String {
      */
     public #String toUpperCase() {
         int32 n = this.byteLength;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             int32 b = ((int32) this.bytes[i]) & 0xff;
@@ -445,7 +445,7 @@ public class String {
      */
     public #String toLowerCase() {
         int32 n = this.byteLength;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             int32 b = ((int32) this.bytes[i]) & 0xff;
@@ -476,7 +476,7 @@ public class String {
             end = end - 1;
         }
         int32 len = end - start;
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
             out[i] = this.bytes[start + i];
@@ -521,7 +521,7 @@ public class String {
             }
         }
         int32 outLen = this.byteLength + occurrences * (tlen - flen);
-        int8[] out = new int8[outLen];
+        int8[] out = heap int8[outLen];
         int32 src = 0;
         int32 dst = 0;
         while (src <= limit) {

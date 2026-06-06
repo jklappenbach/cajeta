@@ -160,7 +160,7 @@ file + reversible).
 1. Capture baselines (§6.1) — debug suite, plugin suite, full-suite failing set.
 2. Apply the one-line `~Object()` edit.
 3. Rebuild compiler + stdlib; confirm clean build.
-4. Run C++ debug suite (112) + write the 4 new tests (TDD: write first, watch them fail
+4. Run C++ debug suite (112) + write the 4 heap tests (TDD: write first, watch them fail
    for the right reason, then they pass with the change in place).
 5. Run full suite serially; diff against baseline.
 6. Update docs (Debugging.md, FR-1 table); leave MemoryModel.md to the memory thread.

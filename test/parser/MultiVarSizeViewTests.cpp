@@ -72,7 +72,7 @@ TEST(MultiVarSizeViewTests, firstStringReadCorrectly) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[5];\n"
+        "        int32[] bytes = heap int32[5];\n"
         "        bytes[0] = 7;\n"
         "        bytes[1] = 4;\n"
         "        bytes[2] = 1684234849;\n"  // "abcd"
@@ -100,7 +100,7 @@ TEST(MultiVarSizeViewTests, secondStringReadByWalkingFirstPrefix) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[5];\n"
+        "        int32[] bytes = heap int32[5];\n"
         "        bytes[0] = 7;\n"
         "        bytes[1] = 4;\n"
         "        bytes[2] = 1684234849;\n"  // "abcd"
@@ -133,7 +133,7 @@ TEST(MultiVarSizeViewTests, threeTrailingStrings) {
         //   b.len(4) = 4, b.data(4) = "BBBB"
         //   c.len(4) = 4, c.data(4) = "CCCC"
         // 24 bytes total = int32[6].
-        "        int32[] bytes = new int32[6];\n"
+        "        int32[] bytes = heap int32[6];\n"
         "        bytes[0] = 4;\n"
         "        bytes[1] = 1094795585;\n"  // "AAAA" = 0x41414141
         "        bytes[2] = 4;\n"
@@ -161,7 +161,7 @@ TEST(MultiVarSizeViewTests, oversizeLengthPrefixThrowsAtConstruction) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[3];\n"  // 12 bytes total
+        "        int32[] bytes = heap int32[3];\n"  // 12 bytes total
         "        bytes[0] = 7;\n"
         "        bytes[1] = 1000000;\n"              // way too big
         "        try {\n"
@@ -185,7 +185,7 @@ TEST(MultiVarSizeViewTests, exactFitLengthAccepted) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[3];\n"   // exactly 12 bytes
+        "        int32[] bytes = heap int32[3];\n"   // exactly 12 bytes
         "        bytes[0] = 7;\n"
         "        bytes[1] = 4;\n"                     // length = 4 fills trailing 4 bytes
         "        bytes[2] = 1684234849;\n"           // "abcd"
@@ -207,7 +207,7 @@ TEST(MultiVarSizeViewTests, oneByteShortRejected) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[3];\n"   // 12 bytes
+        "        int32[] bytes = heap int32[3];\n"   // 12 bytes
         "        bytes[0] = 7;\n"
         "        bytes[1] = 5;\n"                     // length = 5, needs 13 bytes
         "        try {\n"
@@ -233,7 +233,7 @@ TEST(MultiVarSizeViewTests, secondVarSizePrefixValidatedToo) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"   // 16 bytes
+        "        int32[] bytes = heap int32[4];\n"   // 16 bytes
         "        bytes[0] = 4;\n"                     // a.length = 4 (offsets 4..8)
         "        bytes[1] = 0;\n"                     // a.data = 4 bytes
         "        bytes[2] = 100;\n"                   // b.length = 100 (overrun)

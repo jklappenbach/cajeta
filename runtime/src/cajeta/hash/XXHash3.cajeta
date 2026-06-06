@@ -25,7 +25,7 @@ import cajeta.lang.String;
  *
  * Streaming `Hasher`:
  * ```cajeta
- * XXHash3 h = new XXHash3();                              // process-seeded
+ * XXHash3 h = heap XXHash3();                              // process-seeded
  * h.writeInt32(record.id);
  * h.writeString(record.title);
  * int64 digest = h.finish();
@@ -52,7 +52,7 @@ public final class XXHash3 implements Hasher {
      * Construct a streaming hasher seeded with the per-process random seed.
      *
      * ```cajeta
-     * XXHash3 h = new XXHash3();
+     * XXHash3 h = heap XXHash3();
      * h.writeString(record.title);
      * int64 digest = h.finish();
      * ```
@@ -67,7 +67,7 @@ public final class XXHash3 implements Hasher {
      * reproduce across processes.
      *
      * ```cajeta
-     * XXHash3 h = new XXHash3(0xC0FFEEL);
+     * XXHash3 h = heap XXHash3(0xC0FFEEL);
      * h.writeInt64(key);
      * int64 digest = h.finish();
      * ```

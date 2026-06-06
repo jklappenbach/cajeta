@@ -16,7 +16,7 @@ import cajeta.lang.String;
  * ## Usage
  *
  * ```cajeta
- * Hasher h = new XXHash3();
+ * Hasher h = heap XXHash3();
  * h.writeInt32(point.x);
  * h.writeInt32(point.y);
  * h.writeString(point.label);
@@ -74,7 +74,7 @@ public interface Hasher {
      * so far. Behavior after the first `finish()` call is algorithm-defined.
      *
      * ```cajeta
-     * Hasher h = new XXHash3();
+     * Hasher h = heap XXHash3();
      * h.writeString(key);
      * h.writeInt64(version);
      * int64 digest = h.finish();

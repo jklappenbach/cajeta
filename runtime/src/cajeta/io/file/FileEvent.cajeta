@@ -12,7 +12,7 @@ package cajeta.io.file;
  * dispatch on `kind`:
  *
  * ```cajeta
- * FileEvent event = new FileEvent(path, kind, timestampNanos, renameTarget);
+ * FileEvent event = heap FileEvent(path, kind, timestampNanos, renameTarget);
  * if (event.kind == WatchKind.RENAME) {
  *     // renameTarget holds the new Path; null for every other kind
  *     moveIndexEntry(event.path, event.renameTarget);
@@ -36,7 +36,7 @@ public class FileEvent {
      * rename.
      *
      * ```cajeta
-     * FileEvent e = new FileEvent(path, WatchKind.MODIFY, timestampNanos, null);
+     * FileEvent e = heap FileEvent(path, WatchKind.MODIFY, timestampNanos, null);
      * ```
      */
     public FileEvent(Path path, int32 kind, int64 timestampNanos, Path renameTarget) {

@@ -11,15 +11,15 @@ package cajeta.codec.json;
  *
  * ## Usage
  * ```cajeta
- * #JsonArray arr = new JsonArray();
- * arr.add(new JsonValue().setNumber(1));
- * arr.add(new JsonValue().setString("two"));
+ * #JsonArray arr = heap JsonArray();
+ * arr.add(heap JsonValue().setNumber(1));
+ * arr.add(heap JsonValue().setString("two"));
  *
  * int32 n = arr.count();      // 2
  * JsonValue first = arr.get(0);
  *
  * // wrap as a JsonValue of kind ARRAY
- * JsonValue v = new JsonValue().setArray(arr);
+ * JsonValue v = heap JsonValue().setArray(arr);
  * ```
  *
  * v1 surface; `Stream<JsonValue>` inheritance lands when
@@ -35,13 +35,13 @@ public class JsonArray {
      * automatically on `add`.
      *
      * ```cajeta
-     * #JsonArray arr = new JsonArray();
-     * arr.add(new JsonValue().setNull());
+     * #JsonArray arr = heap JsonArray();
+     * arr.add(heap JsonValue().setNull());
      * ```
      */
     public JsonArray() {
         this.cap = 8;
-        this.data = new JsonValue[8];
+        this.data = heap JsonValue[8];
         this.sizeCount = 0;
     }
 
@@ -60,9 +60,9 @@ public class JsonArray {
      * exhausted.
      *
      * ```cajeta
-     * #JsonArray arr = new JsonArray();
-     * arr.add(new JsonValue().setBoolean(true));
-     * arr.add(new JsonValue().setNumber(42));
+     * #JsonArray arr = heap JsonArray();
+     * arr.add(heap JsonValue().setBoolean(true));
+     * arr.add(heap JsonValue().setNumber(42));
      * ```
      */
     public void add(#JsonValue v) {
@@ -76,7 +76,7 @@ public class JsonArray {
     /** Doubles the backing capacity and copies the live elements over. */
     void grow() {
         int32 newCap = this.cap * 2;
-        JsonValue[] dst = new JsonValue[newCap];
+        JsonValue[] dst = heap JsonValue[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
             dst[i] = this.data[i];

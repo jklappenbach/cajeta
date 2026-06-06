@@ -46,7 +46,7 @@ public class ProbeDataReader {
 
         Grain   grain     = parseGrainLine(lines[1], path);
         String  emittedBy = parseEmittedByLine(lines[2], path);
-        ProbeData dump = #new ProbeData(grain, emittedBy);
+        ProbeData dump = #heap ProbeData(grain, emittedBy);
 
         // Probe rows. The current-file pointer advances on every
         // "file:" line so subsequent rows attribute correctly.

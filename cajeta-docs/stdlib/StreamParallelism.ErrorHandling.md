@@ -210,8 +210,8 @@ class Outcome<T> {
     public Outcome(Exception e) { this.value = null; this.ok = false; this.error = e; }
 
     public static <T> Outcome<T> tryRun(() -> T fn) {
-        try { return new Outcome<T>(fn()); }
-        catch (Exception e) { return new Outcome<T>(e); }
+        try { return heap Outcome<T>(fn()); }
+        catch (Exception e) { return heap Outcome<T>(e); }
     }
 }
 
@@ -295,7 +295,7 @@ as `mapOr{Skip,Fallback,Log}*`.
 counter inside the lambda:
 
 ```cajeta
-int32[] failCount = new int32[1];
+int32[] failCount = heap int32[1];
 int32 threshold = 5;
 
 int32 sum;
@@ -307,7 +307,7 @@ try {
                   catch (IOException e) {
                       failCount[0] = failCount[0] + 1;
                       if (failCount[0] > threshold) {
-                          throw new TooManyFailuresException(failCount[0], threshold);
+                          throw heap TooManyFailuresException(failCount[0], threshold);
                       }
                       return 0;
                   }

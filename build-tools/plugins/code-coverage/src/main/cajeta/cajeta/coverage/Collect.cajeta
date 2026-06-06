@@ -63,7 +63,7 @@ public class Collect {
             ProbeData dump = ProbeDataReader.read(dumps.get(i));
             if (agreedGrain.isEmpty()) {
                 agreedGrain = stack Optional<Grain>(true, dump.getGrain());
-                map = #new CoverageMap(dump.getGrain());
+                map = #heap CoverageMap(dump.getGrain());
             } else if (agreedGrain.get() != dump.getGrain()) {
                 return ActionResult.error(
                     "cajeta.coverage.collect: probe dump " +
@@ -81,7 +81,7 @@ public class Collect {
         CoverageMapWriter.write(outputPath, map);
 
         // ── Result ───────────────────────────────────────────────
-        ActionResult r = #new ActionResult();
+        ActionResult r = #heap ActionResult();
         r.output("path",  outputPath.toString());
         r.output("files", String.valueOf(map.count()));
         r.output("grain", agreedGrain.get().toName());

@@ -99,7 +99,7 @@ public class WsUpgrade {
      */
     static #HttpRequest readRequest(AsyncReader reader) {
         HttpParser parser = HttpParser.forRequest();
-        int8[] one = new int8[1];
+        int8[] one = heap int8[1];
         while (!parser.isComplete()) {
             int32 n = reader.read(one, 0, 1);
             if (n == 0) {
@@ -125,7 +125,7 @@ public class WsUpgrade {
      */
     static #HttpResponse readResponse(AsyncReader reader) {
         HttpParser parser = HttpParser.forResponse();
-        int8[] one = new int8[1];
+        int8[] one = heap int8[1];
         while (!parser.isComplete()) {
             int32 n = reader.read(one, 0, 1);
             if (n == 0) {

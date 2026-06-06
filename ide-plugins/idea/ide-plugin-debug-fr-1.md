@@ -75,7 +75,7 @@ Terms are normative in `MemoryModel.md`; summarized here so the requirements are
 self-contained.
 
 - **Allocation class** — **stack** (default; frame-local value, `StackField`),
-  **heap** (`new T(...)` / class instances & array references, `HeapField`;
+  **heap** (`heap T(...)` / class instances & array references, `HeapField`;
   sole-pointer owner frees on drop), **shared** (CajetaXPU `shared`; lifetime is
   the enclosing kernel launch).
 - **Owner** — the single binding responsible for dropping a heap/shared value.

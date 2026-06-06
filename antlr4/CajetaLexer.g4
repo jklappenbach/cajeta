@@ -82,7 +82,6 @@ IMPORT:             'import';
 INSTANCEOF:         'instanceof';
 INTERFACE:          'interface';
 NATIVE:             'native';
-NEW:                'new';
 OPERATOR:           'operator';
 PACKAGE:            'package';
 PRIVATE:            'private';

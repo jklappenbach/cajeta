@@ -24,7 +24,7 @@ public class BottomN {
     public static ArrayList<CoverageMap.FileEntry> select(
         CoverageMap map, int32 n) {
         ArrayList<CoverageMap.FileEntry> result =
-            #new ArrayList<CoverageMap.FileEntry>();
+            #heap ArrayList<CoverageMap.FileEntry>();
         ArrayList<String> paths = map.files().keys();
         // Insertion-sorted accumulator. For BOTTOM_N == 5 this is
         // effectively linear and the simplest correct shape until
@@ -45,7 +45,7 @@ public class BottomN {
     public static ArrayList<CoverageMap.FileEntry> filesBelow(
         CoverageMap map, int32 floorPercent) {
         ArrayList<CoverageMap.FileEntry> result =
-            #new ArrayList<CoverageMap.FileEntry>();
+            #heap ArrayList<CoverageMap.FileEntry>();
         ArrayList<String> paths = map.files().keys();
         int32 i = 0;
         while (i < paths.count()) {

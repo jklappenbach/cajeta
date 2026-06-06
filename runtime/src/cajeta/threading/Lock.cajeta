@@ -12,7 +12,7 @@ package cajeta.threading;
  * one piece of data to fuse the lock with.
  *
  * ```cajeta
- * Lock gate = new Lock();
+ * Lock gate = heap Lock();
  * {
  *     #LockGuard g = gate.acquire();   // held for this block
  *     // ... critical section ...
@@ -35,7 +35,7 @@ public class Lock {
      * Create a fresh, unheld lock.
      *
      * ```cajeta
-     * Lock gate = new Lock();
+     * Lock gate = heap Lock();
      * ```
      */
     public Lock() { this.handle = Cajeta.lockNew(); }
@@ -54,7 +54,7 @@ public class Lock {
      */
     public #LockGuard acquire() {
         Cajeta.lockAcquire(this.handle);
-        return new LockGuard(this.handle);
+        return heap LockGuard(this.handle);
     }
     /**
      * Non-blocking acquire. Returns `1` if the lock was taken (the caller

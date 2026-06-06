@@ -44,7 +44,7 @@ public class MyAction {
         // ...
 
         // 3. Publish outputs + findings.
-        ActionResult r = #new ActionResult();
+        ActionResult r = #heap ActionResult();
         r.output("result", "...");
         r.findings(#findings);
         return #r;

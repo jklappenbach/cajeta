@@ -35,7 +35,7 @@ public class ProbeData {
     public ProbeData(Grain grain, String emittedBy) {
         this.grain = grain;
         this.emittedBy = emittedBy;
-        this.hits = #new HashMap<String, HashMap<int32, int64>>();
+        this.hits = #heap HashMap<String, HashMap<int32, int64>>();
     }
 
     public Grain getGrain() { return this.grain; }
@@ -52,7 +52,7 @@ public class ProbeData {
     public void addHit(String file, int32 probeId, int64 count) {
         Optional<HashMap<int32, int64>> existing = this.hits.get(file);
         if (existing.isEmpty()) {
-            HashMap<int32, int64> fresh = #new HashMap<int32, int64>();
+            HashMap<int32, int64> fresh = #heap HashMap<int32, int64>();
             fresh.put(probeId, count);
             this.hits.put(file, #fresh);
             return;

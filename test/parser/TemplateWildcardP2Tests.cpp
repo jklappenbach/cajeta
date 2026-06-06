@@ -73,7 +73,7 @@ TEST(TemplateWildcardP2Tests, wildcardDropDispatchesToUserDestructor) {
         "    T value;\n"
         "    public Box(T v) { this.value = v; }\n"
         "    public void drop() {\n"
-        "        int32[] junk = new int32[1];\n"
+        "        int32[] junk = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public final class D {\n"

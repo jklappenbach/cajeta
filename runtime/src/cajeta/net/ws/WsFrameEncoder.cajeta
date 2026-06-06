@@ -78,7 +78,7 @@ public class WsFrameEncoder {
         int32 headerLen = 1 + lenBytes + maskBytes;
         int32 total = headerLen + payLen;
 
-        int8[] out = new int8[total];
+        int8[] out = heap int8[total];
         int32 w = 0;
 
         // --- byte 0: FIN + RSV(000) + opcode ---

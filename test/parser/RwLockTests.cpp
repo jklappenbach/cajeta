@@ -35,7 +35,7 @@ int32_t runI32(const std::string& dBody) {
 TEST(RwLockTests, constructAndDestroy) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        RwLock<int32> rw = new RwLock<int32>(7);\n"
+        "        RwLock<int32> rw = heap RwLock<int32>(7);\n"
         "        return 1;\n"
         "    }\n"
     ), 1);
@@ -44,7 +44,7 @@ TEST(RwLockTests, constructAndDestroy) {
 TEST(RwLockTests, readReturnsInitial) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        RwLock<int32> rw = new RwLock<int32>(42);\n"
+        "        RwLock<int32> rw = heap RwLock<int32>(42);\n"
         "        return rw.read();\n"
         "    }\n"
     ), 42);
@@ -53,7 +53,7 @@ TEST(RwLockTests, readReturnsInitial) {
 TEST(RwLockTests, withWriteMutatesThenRead) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        RwLock<int32> rw = new RwLock<int32>(0);\n"
+        "        RwLock<int32> rw = heap RwLock<int32>(0);\n"
         "        rw.withWrite((int32 v) -> v + 9);\n"
         "        return rw.read();\n"
         "    }\n"
@@ -63,7 +63,7 @@ TEST(RwLockTests, withWriteMutatesThenRead) {
 TEST(RwLockTests, repeatedWritesAccumulate) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        RwLock<int32> rw = new RwLock<int32>(0);\n"
+        "        RwLock<int32> rw = heap RwLock<int32>(0);\n"
         "        rw.withWrite((int32 v) -> v + 1);\n"
         "        rw.withWrite((int32 v) -> v + 2);\n"
         "        rw.withWrite((int32 v) -> v + 4);\n"
@@ -81,7 +81,7 @@ TEST(RwLockTests, fiberWriter) {
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        RwLock<int32> rw = new RwLock<int32>(0);\n"
+        "        RwLock<int32> rw = heap RwLock<int32>(0);\n"
         "        scope {\n"
         "            spawn writer(rw);\n"
         "        }\n"
@@ -100,8 +100,8 @@ TEST(RwLockTests, concurrentReaders) {
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        RwLock<int32> rw = new RwLock<int32>(5);\n"
-        "        int32[] outArr = new int32[2];\n"
+        "        RwLock<int32> rw = heap RwLock<int32>(5);\n"
+        "        int32[] outArr = heap int32[2];\n"
         "        scope {\n"
         "            spawn readInto(rw, outArr, 0);\n"
         "            spawn readInto(rw, outArr, 1);\n"

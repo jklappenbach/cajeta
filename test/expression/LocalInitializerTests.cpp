@@ -50,7 +50,7 @@ TEST(LocalInitializerTests, copyFromArrayIndex) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        arr[1] = 17;\n"
         "        int32 v = arr[1];\n"
         "        return v;\n"

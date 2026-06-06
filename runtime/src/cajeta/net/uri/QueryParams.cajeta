@@ -70,8 +70,8 @@ public class QueryParams {
     /** An empty multi-map in form-encoded (`+`-is-space) mode. */
     public QueryParams() {
         this.cap = 8;
-        this.keys = new String[8];
-        this.values = new String[8];
+        this.keys = heap String[8];
+        this.values = heap String[8];
         this.sizeCount = 0;
         this.formEncoded = true;
     }
@@ -167,7 +167,7 @@ public class QueryParams {
         String rawVal;
         if (eq < 0) {
             rawKey = query.substring(start, end);
-            int8[] empty = new int8[0];
+            int8[] empty = heap int8[0];
             rawVal = heap String(#empty, 0);
         } else {
             rawKey = query.substring(start, eq);
@@ -265,7 +265,7 @@ public class QueryParams {
      */
     public #String[] getAll(String key) {
         int32 c = this.countFor(key);
-        String[] out = new String[c];
+        String[] out = heap String[c];
         int32 w = 0;
         int32 i = 0;
         while (i < this.sizeCount) {
@@ -387,7 +387,7 @@ public class QueryParams {
             }
             i = i + 1;
         }
-        int8[] out = new int8[total];
+        int8[] out = heap int8[total];
         int32 dst = 0;
         i = 0;
         while (i < count) {
@@ -458,7 +458,7 @@ public class QueryParams {
     private static #String plusToSpace(String s) {
         int32 n = s.byteLength;
         int8[] in = s.bytes;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             int32 c = QueryParams.byteAt(in, i);
@@ -485,7 +485,7 @@ public class QueryParams {
     private static #String percent20ToPlus(String s) {
         int32 n = s.byteLength;
         int8[] in = s.bytes;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 w = 0;
         int32 i = 0;
         while (i < n) {
@@ -502,7 +502,7 @@ public class QueryParams {
                 i = i + 1;
             }
         }
-        int8[] exact = new int8[w];
+        int8[] exact = heap int8[w];
         int32 k = 0;
         while (k < w) {
             exact[k] = out[k];
@@ -520,8 +520,8 @@ public class QueryParams {
      */
     void grow() {
         int32 newCap = this.cap * 2;
-        String[] dstK = new String[newCap];
-        String[] dstV = new String[newCap];
+        String[] dstK = heap String[newCap];
+        String[] dstV = heap String[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
             dstK[i] = this.keys[i];

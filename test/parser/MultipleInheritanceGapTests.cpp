@@ -59,7 +59,7 @@ TEST(MultipleInheritanceGapTests, twoParentsBothCtorsRun) {
         "public class C extends A, B { public C() { return; } }\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return Tally.count;\n"   // 30 if both A() and B() ran
         "  }\n"
         "}\n";
@@ -85,7 +85,7 @@ TEST(MultipleInheritanceGapTests, twoParentsFieldReadBackThroughChildWrite) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.a + c.b;\n"  // 18 if both slots are distinct and the
                                    //  ctor writes land on the right ones
         "  }\n"
@@ -122,7 +122,7 @@ TEST(MultipleInheritanceGapTests, diamondCommonAncestorFieldShared) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    E e = new E();\n"
+        "    E e = heap E();\n"
         "    e.setA(42);\n"
         "    return e.getA();\n"   // 42 if A's field has exactly one slot;
                                   //  0 or garbage if setA and getA bind to
@@ -163,7 +163,7 @@ TEST(MultipleInheritanceGapTests, unimplementedAbstractMethodRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Bad b = new Bad();\n"
+        "    Bad b = heap Bad();\n"
         "    return b.must();\n"
         "  }\n"
         "}\n";
@@ -193,7 +193,7 @@ TEST(MultipleInheritanceGapTests, abstractMethodWithOverrideCompilesAndDispatche
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Good g = new Good();\n"
+        "    Good g = heap Good();\n"
         "    return g.must();\n"
         "  }\n"
         "}\n";
@@ -217,7 +217,7 @@ TEST(MultipleInheritanceGapTests, superMethodCallReachesParent) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Dog d = new Dog();\n"
+        "    Dog d = heap Dog();\n"
         "    return d.speak();\n"   // 42 — Dog::speak adds 32 to Animal::speak
         "  }\n"
         "}\n";
@@ -242,7 +242,7 @@ TEST(MultipleInheritanceGapTests, explicitSuperCtorWithArgs) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.seeded;\n"   // 99
         "  }\n"
         "}\n";
@@ -268,7 +268,7 @@ TEST(MultipleInheritanceGapTests, explicitSuperCtorWithParameterArg) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C(3, 7);\n"
+        "    C c = heap C(3, 7);\n"
         "    return c.seeded * 10 + c.c;\n"
         "  }\n"
         "}\n";
@@ -295,7 +295,7 @@ TEST(MultipleInheritanceGapTests, unimplementedInterfaceMethodRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Mute m = new Mute();\n"
+        "    Mute m = heap Mute();\n"
         "    return 0;\n"
         "  }\n"
         "}\n";
@@ -324,7 +324,7 @@ TEST(MultipleInheritanceGapTests, twoParentsBothInstanceFieldsFromParentCtors) {
         "public class C extends A, B { public C() { return; } }\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.a + c.b;\n"   // 30 if both parent ctors wrote
                                     // to the correct sub-object slot
         "  }\n"
@@ -354,7 +354,7 @@ TEST(MultipleInheritanceGapTests, parentMethodReadsOwnFieldOnSubclassInstance) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.getA() + c.getB();\n"   // 42 if each parent method
                                               // receives the correctly
                                               // adjusted sub-object ptr
@@ -381,7 +381,7 @@ TEST(MultipleInheritanceGapTests, twoParentsMultipleFieldsEach) {
         "public class C extends A, B { public C() { return; } }\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.a1 + c.a2 + c.b1 + c.b2;\n"   // 15
         "  }\n"
         "}\n";
@@ -425,7 +425,7 @@ TEST(MultipleInheritanceGapTests, dispatchThroughNonFirstParentTypedBinding) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    B b = c;\n"          // upcast to non-first parent
         "    return b.getB();\n"  // 13 — B's getB sees B's sub-object's `b` slot
         "  }\n"
@@ -451,7 +451,7 @@ TEST(MultipleInheritanceGapTests, overrideThroughNonFirstParentTypedBinding) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    B b = c;\n"             // upcast to second parent
         "    return b.kind();\n"     // 99 — override fires through secondary vtable
         "  }\n"
@@ -481,7 +481,7 @@ TEST(MultipleInheritanceGapTests, dispatchThroughFirstParentTypedBindingUnchange
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    A a = c;\n"           // upcast to FIRST parent; offset 0
         "    return a.getA();\n"   // 7 — primary vtable, no adjustment
         "  }\n"

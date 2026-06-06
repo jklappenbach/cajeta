@@ -57,7 +57,7 @@ bool makeSelfSigned(const char* cn, std::string& certPem, std::string& keyPem) {
 
 // Emit Cajeta source declaring `int8[] name` initialized to `data`'s bytes.
 std::string emitBytes(const std::string& name, const std::string& data) {
-    std::string s = "        int8[] " + name + " = new int8["
+    std::string s = "        int8[] " + name + " = heap int8["
                   + std::to_string(data.size()) + "];\n";
     for (size_t i = 0; i < data.size(); i++) {
         s += "        " + name + "[" + std::to_string(i) + "L] = (int8) "
@@ -72,7 +72,7 @@ std::string verifyBody(const std::string& cert, const std::string& key, bool tru
     std::string b =
         emitBytes("cert", cert) +
         emitBytes("key", key) +
-        "        int8[] host = new int8[9];\n"                       // "localhost"
+        "        int8[] host = heap int8[9];\n"                       // "localhost"
         "        host[0L]=(int8)108; host[1L]=(int8)111; host[2L]=(int8)99;\n"
         "        host[3L]=(int8)97; host[4L]=(int8)108; host[5L]=(int8)104;\n"
         "        host[6L]=(int8)111; host[7L]=(int8)115; host[8L]=(int8)116;\n"
@@ -84,7 +84,7 @@ std::string verifyBody(const std::string& cert, const std::string& key, bool tru
         "        client.setVerifyHost(host, 9);\n"
         "        TlsConnection server = TlsConnection.server(cert, " + std::to_string(cert.size()) +
         ", key, " + std::to_string(key.size()) + ");\n"
-        "        int8[] buf = new int8[16384];\n"
+        "        int8[] buf = heap int8[16384];\n"
         "        int32 round = 0;\n"
         "        boolean stop = false;\n"
         "        while (round < 64 && !stop) {\n"
@@ -131,7 +131,7 @@ TEST(TlsConnectionTests, handshakeAndPlaintextThroughCajetaSurface) {
         "        TlsConnection server = TlsConnection.server(cert, " + std::to_string(cert.size()) +
         ", key, " + std::to_string(key.size()) + ");\n"
         // pump the handshake
-        "        int8[] buf = new int8[16384];\n"
+        "        int8[] buf = heap int8[16384];\n"
         "        int32 round = 0;\n"
         "        boolean done = false;\n"
         "        while (round < 64 && !done) {\n"
@@ -148,14 +148,14 @@ TEST(TlsConnectionTests, handshakeAndPlaintextThroughCajetaSurface) {
         "        }\n"
         "        if (!done) { return -4; }\n"
         // plaintext round-trip: client -> server
-        "        int8[] msg = new int8[2];\n"
+        "        int8[] msg = heap int8[2];\n"
         "        msg[0L] = (int8) 104;\n"   // 'h'
         "        msg[1L] = (int8) 105;\n"   // 'i'
         "        int32 wn = client.write(msg, 2);\n"
         "        if (wn != 2) { return -5; }\n"
         "        int32 m = client.pull(buf, 16384);\n"
         "        while (m > 0) { server.feed(buf, m); m = client.pull(buf, 16384); }\n"
-        "        int8[] got = new int8[256];\n"
+        "        int8[] got = heap int8[256];\n"
         "        int32 rn = server.read(got, 256);\n"
         "        if (rn != 2) { return -6; }\n"
         "        if (got[0L] != (int8) 104) { return -7; }\n"

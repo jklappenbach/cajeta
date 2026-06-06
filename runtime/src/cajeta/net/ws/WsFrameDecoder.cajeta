@@ -135,13 +135,13 @@ public class WsFrameDecoder {
         this.lenCode = 0;
         this.lenBytesRead = 0;
         this.payloadLen = (int64) 0;
-        this.maskKey = new int8[4];
+        this.maskKey = heap int8[4];
         this.maskBytesRead = 0;
-        this.payBuf = new int8[0];
+        this.payBuf = heap int8[0];
         this.payRead = (int64) 0;
         this.streamPos = (int64) 0;
         this.qCap = 8;
-        this.queue = new WsFrame[8];
+        this.queue = heap WsFrame[8];
         this.qHead = 0;
         this.qTail = 0;
         this.qCount = 0;
@@ -321,7 +321,7 @@ public class WsFrameDecoder {
                 this.streamPos - ((int64) 1));
         }
         int32 n = (int32) this.payloadLen;
-        this.payBuf = new int8[n];
+        this.payBuf = heap int8[n];
         this.payRead = (int64) 0;
         if (this.curMasked) {
             this.maskBytesRead = 0;
@@ -364,7 +364,7 @@ public class WsFrameDecoder {
             // aliases the bytes it is about to hand to the frame — the
             // BufferPool.acquire hand-off discipline.
             int8[] pay = this.payBuf;
-            this.payBuf = new int8[0];
+            this.payBuf = heap int8[0];
             // Bind the boolean/int header fields to named locals before the
             // call — a boolean field loaded directly into a call argument can
             // mistype (the same family as the array-element-as-arg bug).
@@ -432,7 +432,7 @@ public class WsFrameDecoder {
 
     void growQueue() {
         int32 newCap = this.qCap * 2;
-        WsFrame[] grown = new WsFrame[newCap];
+        WsFrame[] grown = heap WsFrame[newCap];
         int32 i = 0;
         while (i < this.qCount) {
             grown[i] = this.queue[(this.qHead + i) % this.qCap];

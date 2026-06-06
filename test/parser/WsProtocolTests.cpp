@@ -52,10 +52,10 @@ int32_t runI32(const std::string& body) {
     return fn();
 }
 
-// Emit Cajeta that declares `int8[] <name> = new int8[N];` filled from an
+// Emit Cajeta that declares `int8[] <name> = heap int8[N];` filled from an
 // ASCII string literal's bytes (single-byte chars only).
 std::string emitAscii(const std::string& name, const std::string& text) {
-    std::string s = "int8[] " + name + " = new int8[" +
+    std::string s = "int8[] " + name + " = heap int8[" +
                     std::to_string(text.size()) + "];\n";
     for (size_t i = 0; i < text.size(); i++) {
         s += name + "[" + std::to_string(i) + "] = (int8) " +
@@ -118,7 +118,7 @@ TEST(WsProtocolTests, pingAutoPongsAndPreservesFragment) {
     EXPECT_EQ(runI32(
         emitAscii("a", "Hel") +
         emitAscii("c", "lo") +
-        "int8[] pingPay = new int8[2];\n"
+        "int8[] pingPay = heap int8[2];\n"
         "pingPay[0] = (int8) 1;\n"
         "pingPay[1] = (int8) 2;\n"
         "WsProtocol proto = WsProtocol.create();\n"
@@ -146,7 +146,7 @@ TEST(WsProtocolTests, pingAutoPongsAndPreservesFragment) {
 // --- auto-pong disabled: an inbound ping surfaces as a PING action -------
 TEST(WsProtocolTests, autoPongOffSurfacesPing) {
     EXPECT_EQ(runI32(
-        "int8[] pp = new int8[1];\n"
+        "int8[] pp = heap int8[1];\n"
         "pp[0] = (int8) 9;\n"
         "WsProtocol proto = WsProtocol.create();\n"
         "proto.withAutoPong(false);\n"
@@ -160,7 +160,7 @@ TEST(WsProtocolTests, autoPongOffSurfacesPing) {
 // --- an inbound pong is swallowed (NONE) --------------------------------
 TEST(WsProtocolTests, pongIsSwallowed) {
     EXPECT_EQ(runI32(
-        "WsFrame pong = WsControlFrames.pong(new int8[0]);\n"
+        "WsFrame pong = WsControlFrames.pong(heap int8[0]);\n"
         "WsProtocol proto = WsProtocol.create();\n"
         "WsReadAction a = proto.onFrame(pong);\n"
         "if (a.getKind() != WsReadAction.NONE) return -1;\n"
@@ -244,7 +244,7 @@ TEST(WsProtocolTests, terminalAfterClose) {
 // --- a malformed close payload (1 byte) propagates ProtocolViolation -----
 TEST(WsProtocolTests, malformedCloseIsProtocolViolation) {
     EXPECT_EQ(runI32(
-        "int8[] one = new int8[1];\n"
+        "int8[] one = heap int8[1];\n"
         "one[0] = (int8) 3;\n"
         "WsFrame bad = WsFrame.of(true, WsOpcode.CLOSE, false, #one);\n"
         "WsProtocol proto = WsProtocol.create();\n"
@@ -273,7 +273,7 @@ TEST(WsProtocolTests, orphanContinuationIsProtocolViolation) {
 // --- the per-message cap is enforced through the engine -----------------
 TEST(WsProtocolTests, maxMessageLengthEnforced) {
     EXPECT_EQ(runI32(
-        "int8[] big = new int8[10];\n"
+        "int8[] big = heap int8[10];\n"
         "int32 i = 0;\n"
         "while (i < 10) { big[i] = (int8) 65; i = i + 1; }\n"
         "WsProtocol proto = WsProtocol.create();\n"

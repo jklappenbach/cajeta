@@ -147,7 +147,7 @@ public final class Base64 {
             outLen = outLen + (pad ? 4 : 3);
         }
 
-        int8[] out = new int8[outLen];
+        int8[] out = heap int8[outLen];
         int32 i = 0;
         int32 o = 0;
 
@@ -233,7 +233,7 @@ public final class Base64 {
 
         // Decoded byte count = floor(stripped * 6 / 8).
         int32 outLen = (stripped * 6) / 8;
-        int8[] out = new int8[outLen];
+        int8[] out = heap int8[outLen];
 
         int32 acc = 0;
         int32 bits = 0;

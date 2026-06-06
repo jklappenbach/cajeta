@@ -293,7 +293,7 @@ public class LocalTime implements Comparable<LocalTime> {
                 len = 8;
             }
         }
-        int8[] buf = new int8[len];
+        int8[] buf = heap int8[len];
         int32 p = 0;
         p = Fmt.writeUint(buf, p, (int64) h, 2);
         p = Fmt.writeChar(buf, p, 58); // ':'

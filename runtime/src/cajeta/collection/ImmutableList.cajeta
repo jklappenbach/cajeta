@@ -70,7 +70,7 @@ public class ImmutableList<T> {
      */
     public ImmutableList(ArrayList<T> src) {
         int32 n = src.count();
-        T[] copy = new T[n];
+        T[] copy = heap T[n];
         int32 i = 0;
         while (i < n) {
             copy[i] = src.get(i);
@@ -101,7 +101,7 @@ public class ImmutableList<T> {
      */
     public T get(int32 i) {
         if (i < 0 || i >= this.sizeCount) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         return this.data[i];

@@ -40,7 +40,7 @@ TEST(StructViewBoundsTests, sufficientBufferConstructs) {
         "}\n"
         "public final class B {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"     // 16 bytes
+        "        int32[] bytes = heap int32[4];\n"     // 16 bytes
         "        Hdr h = Hdr(bytes);\n"
         "        h.a = 1;\n"
         "        h.c = 3;\n"
@@ -66,7 +66,7 @@ TEST(StructViewBoundsTests, undersizeBufferThrows) {
         "}\n"
         "public final class B {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[2];\n"     // only 8 bytes — too small
+        "        int32[] bytes = heap int32[2];\n"     // only 8 bytes — too small
         "        try {\n"
         "            Hdr h = Hdr(bytes);\n"           // bounds check fires here
         "            return 99;\n"
@@ -89,7 +89,7 @@ TEST(StructViewBoundsTests, exactSizeBufferConstructs) {
         "}\n"
         "public final class B {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[2];\n"     // 8 bytes, struct is 8
+        "        int32[] bytes = heap int32[2];\n"     // 8 bytes, struct is 8
         "        Pair p = Pair(bytes);\n"
         "        p.a = 11;\n"
         "        p.b = 22;\n"
@@ -113,7 +113,7 @@ TEST(StructViewBoundsTests, oneByteShortStillThrows) {
         "}\n"
         "public final class B {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[1];\n"
+        "        int32[] bytes = heap int32[1];\n"
         "        try {\n"
         "            Pair p = Pair(bytes);\n"
         "            return 0;\n"

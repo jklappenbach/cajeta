@@ -69,7 +69,7 @@ public class ViewsDemo extends DemoClass {
 
         // 1. @BigEndian fixed-size header.
         // 12 bytes: i32 magic, i16 version, i16 flags, i32 length.
-        int32[] hdrBuf = new int32[3];
+        int32[] hdrBuf = heap int32[3];
         PacketHeader hdr = PacketHeader(hdrBuf);
         hdr.magic = 51966;          // 0xCAFE
         hdr.version = 1;
@@ -80,7 +80,7 @@ public class ViewsDemo extends DemoClass {
         System.stdout.println("  @BigEndian PacketHeader.payload  = " + hdr.payloadLength);
 
         // 2. @HostEndian fixed-size cache entry.
-        int32[] cacheBuf = new int32[4];   // i64 + i32 + i32 = 16 bytes
+        int32[] cacheBuf = heap int32[4];   // i64 + i32 + i32 = 16 bytes
         CacheEntry e = CacheEntry(cacheBuf);
         e.key = 100L;
         e.hits = 7;
@@ -96,7 +96,7 @@ public class ViewsDemo extends DemoClass {
         //    bytes[3] = email.length    (i32, value=4)
         //    bytes[4] = "a@e."          ('a'=0x61, '@'=0x40, 'e'=0x65, '.'=0x2E
         //                                → LE i32 = 0x2E654061 = 778387553)
-        int32[] userBuf = new int32[5];
+        int32[] userBuf = heap int32[5];
         userBuf[0] = 9001;             // id
         userBuf[1] = 4;                // name length
         userBuf[2] = 2019912769;       // "Alex"  little-endian
@@ -109,7 +109,7 @@ public class ViewsDemo extends DemoClass {
 
         // 4. Nested views. Line composes two Points inline — total
         // 16 bytes, no indirection.
-        int32[] lineBuf = new int32[4];
+        int32[] lineBuf = heap int32[4];
         Line ln = Line(lineBuf);
         ln.a.x = 1;
         ln.a.y = 2;

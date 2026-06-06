@@ -31,7 +31,7 @@ public class LinkedListNode<T> {
      * construct nodes directly.
      *
      * ```cajeta
-     * heap node = new LinkedListNode<Int>(42);
+     * heap node = heap LinkedListNode<Int>(42);
      * // node.prev == null && node.next == null
      * ```
      */

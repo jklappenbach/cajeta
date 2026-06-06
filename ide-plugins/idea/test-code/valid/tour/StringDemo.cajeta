@@ -1,7 +1,7 @@
 package tour;
 
 // String surface: equals, contains, substring, trim, replace, length-
-// like ops. Methods that return a new String (substring / trim /
+// like ops. Methods that return a heap String (substring / trim /
 // replace) return an owned `#String` — bind to a local to take it.
 public class StringDemo extends DemoClass {
     public void execute() {

@@ -25,7 +25,7 @@ int64_t runHashKeyed(const std::string& bytes,
         "import cajeta.hash.SipHash;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        int8[] data = new int8[" + std::to_string(bytes.size()) + "];\n";
+        "        int8[] data = heap int8[" + std::to_string(bytes.size()) + "];\n";
     for (size_t i = 0; i < bytes.size(); i++) {
         src += "        data[" + std::to_string(i) + "L] = (int8) "
              + std::to_string((int)(signed char) bytes[i]) + ";\n";
@@ -93,16 +93,16 @@ TEST(SipHashTests, streamingMatchesOneShot) {
         "import cajeta.hash.SipHash;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] piece1 = new int8[3];\n"
+        "        int8[] piece1 = heap int8[3];\n"
         "        piece1[0L] = (int8) 1; piece1[1L] = (int8) 2; piece1[2L] = (int8) 3;\n"
-        "        int8[] piece2 = new int8[4];\n"
+        "        int8[] piece2 = heap int8[4];\n"
         "        piece2[0L] = (int8) 4; piece2[1L] = (int8) 5;\n"
         "        piece2[2L] = (int8) 6; piece2[3L] = (int8) 7;\n"
-        "        int8[] full = new int8[7];\n"
+        "        int8[] full = heap int8[7];\n"
         "        full[0L] = (int8) 1; full[1L] = (int8) 2; full[2L] = (int8) 3;\n"
         "        full[3L] = (int8) 4; full[4L] = (int8) 5;\n"
         "        full[5L] = (int8) 6; full[6L] = (int8) 7;\n"
-        "        SipHash h = new SipHash(7L, 9L);\n"
+        "        SipHash h = heap SipHash(7L, 9L);\n"
         "        h.update(piece1, 3L);\n"
         "        h.update(piece2, 4L);\n"
         "        int64 streamed = h.finish();\n"
@@ -123,7 +123,7 @@ TEST(SipHashTests, keySensitivity) {
         "import cajeta.hash.SipHash;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] data = new int8[5];\n"
+        "        int8[] data = heap int8[5];\n"
         "        data[0L] = (int8) 65; data[1L] = (int8) 66;\n"
         "        data[2L] = (int8) 67; data[3L] = (int8) 68; data[4L] = (int8) 69;\n"
         "        int64 h1 = SipHash.hashKeyed(data, 5L, 1L, 2L);\n"

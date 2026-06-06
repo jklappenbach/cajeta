@@ -19,7 +19,7 @@ import cajeta.lang.String;
  *
  * ## Usage
  * ```cajeta
- * #JsonWriter w = new JsonWriter();
+ * #JsonWriter w = heap JsonWriter();
  * w.beginObject()
  *  .key("name").writeString("Ada")
  *  .key("age").writeNumber((int64) 36)
@@ -42,17 +42,17 @@ public final class JsonWriter {
      * Create an empty writer with a 64-byte buffer that grows on demand.
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.beginArray().writeNumber((int64) 1).writeNumber((int64) 2).endArray();
      * #int8[] json = w.toBytes();   // [1,2]
      * ```
      */
     public JsonWriter() {
         this.cap = 64;
-        this.buf = new int8[64];
+        this.buf = heap int8[64];
         this.size = 0;
-        this.depthStack = new int8[1024];
-        this.sibling = new boolean[1024];
+        this.depthStack = heap int8[1024];
+        this.sibling = heap boolean[1024];
         this.depth = 0;
         this.afterKey = false;
     }
@@ -66,7 +66,7 @@ public final class JsonWriter {
      * call with `endObject` and emit members as `key`/value pairs.
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.beginObject().key("ok").writeBoolean(true).endObject();   // {"ok":true}
      * ```
      */
@@ -90,7 +90,7 @@ public final class JsonWriter {
      * call with `endArray`; separators between elements are automatic.
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.beginArray().writeString("a").writeString("b").endArray();   // ["a","b"]
      * ```
      */
@@ -143,7 +143,7 @@ public final class JsonWriter {
      * Emit a signed integer in base-10 (e.g. `-42`).
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.writeNumber((int64) -42);   // -42
      * ```
      */
@@ -159,7 +159,7 @@ public final class JsonWriter {
             negative = true;
             v = - v;
         }
-        int8[] tmp = new int8[20];
+        int8[] tmp = heap int8[20];
         int32 nd = 0;
         while (v > (int64) 0) {
             int64 d = v % (int64) 10;
@@ -183,7 +183,7 @@ public final class JsonWriter {
      * round-trips as a float (not an int) through any JSON parser.
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.writeNumber(3.5);   // 3.5
      * ```
      *
@@ -214,7 +214,7 @@ public final class JsonWriter {
         if (intPart == (int64) 0) {
             this.append((int32) 48);
         } else {
-            int8[] tmp = new int8[20];
+            int8[] tmp = heap int8[20];
             int32 nd = 0;
             while (intPart > (int64) 0) {
                 int64 d = intPart % (int64) 10;
@@ -264,7 +264,7 @@ public final class JsonWriter {
      * Preferred for hand-written user code.
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.writeString("hi \"there\"");   // "hi \"there\""
      * ```
      */
@@ -292,7 +292,7 @@ public final class JsonWriter {
      * `String` `writeString` overload.
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.beginObject().key("id").writeNumber((int64) 7).endObject();   // {"id":7}
      * ```
      */
@@ -354,7 +354,7 @@ public final class JsonWriter {
      * forgiving.
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.writeValue(parsed);            // re-emits the tree as JSON
      * #int8[] json = w.toBytes();
      * ```
@@ -407,14 +407,14 @@ public final class JsonWriter {
      * transfers to the caller.
      *
      * ```cajeta
-     * #JsonWriter w = new JsonWriter();
+     * #JsonWriter w = heap JsonWriter();
      * w.beginArray().writeBoolean(true).endArray();
      * #int8[] json = w.toBytes();   // [true]  — w is now empty again
      * ```
      */
     public #int8[] toBytes() {
         int32 n = this.size;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             out[i] = this.buf[i];
@@ -469,7 +469,7 @@ public final class JsonWriter {
     /** Double the buffer capacity and copy the existing bytes across. */
     void grow() {
         int32 newCap = this.cap * 2;
-        int8[] dst = new int8[newCap];
+        int8[] dst = heap int8[newCap];
         int32 i = 0;
         while (i < this.size) {
             dst[i] = this.buf[i];

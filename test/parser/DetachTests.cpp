@@ -14,7 +14,7 @@
 //     ownership move).
 //   - detach with a bare class-typed identifier (borrow capture) is
 //     rejected at compile time with CAJETA_ERROR_DETACH_BORROW_CAPTURE.
-//   - detach with a fresh `new T(...)` capture works (auto-promotion).
+//   - detach with a fresh `heap T(...)` capture works (auto-promotion).
 //
 
 #include "gtest/gtest.h"
@@ -87,7 +87,7 @@ TEST(DetachTests, hashCaptureDetachAccepted) {
         "public final class D {\n"
         "    public static async void consume(Payload p) { return; }\n"
         "    public static int32 run() {\n"
-        "        Payload p = new Payload();\n"
+        "        Payload p = heap Payload();\n"
         "        detach consume(#p);\n"
         "        return 1;\n"
         "    }\n"
@@ -95,12 +95,12 @@ TEST(DetachTests, hashCaptureDetachAccepted) {
     EXPECT_EQ(runI32(src), 1);
 }
 
-// Fresh allocator capture: a bare `new T(...)` is auto-promoted in
+// Fresh allocator capture: a bare `heap T(...)` is auto-promoted in
 // transfer position (MemoryModel.md § Borrow / transfer rules), so it
 // counts as a transfer for detach's captures rule — no explicit `#`
 // needed. Now testable since NewExpression sets its resolvedType
 // during the resolve pass (previously left null, which made every
-// inline `f(new T())` call segfault in ReturnStatement on a null val).
+// inline `f(heap T())` call segfault in ReturnStatement on a null val).
 TEST(DetachTests, freshAllocatorCaptureDetachAccepted) {
     auto src =
         "package test;\n"
@@ -111,7 +111,7 @@ TEST(DetachTests, freshAllocatorCaptureDetachAccepted) {
         "public final class D {\n"
         "    public static async void consume(Payload p) { return; }\n"
         "    public static int32 run() {\n"
-        "        detach consume(new Payload());\n"
+        "        detach consume(heap Payload());\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -133,7 +133,7 @@ TEST(DetachTests, borrowCaptureRejected) {
         "public final class D {\n"
         "    public static async void consume(Payload p) { return; }\n"
         "    public static int32 run() {\n"
-        "        Payload p = new Payload();\n"
+        "        Payload p = heap Payload();\n"
         "        detach consume(p);\n"
         "        return 1;\n"
         "    }\n"

@@ -89,7 +89,7 @@ detach backgroundWork();   // explicit opt-out of scope; rare
 **Captures rule.** Every argument to the immediate call must be one of:
 - A `#`-transferred value (`MoveExpression`) — explicit ownership transfer.
 - A primitive-typed value (int/float/bool family) — value semantics, no aliasing concern.
-- A fresh allocator that's auto-promoted in transfer position (a bare `new T(...)` whose result has no prior identity, per *MemoryModel.md* § Borrow / transfer rules).
+- A fresh allocator that's auto-promoted in transfer position (a bare `heap T(...)` whose result has no prior identity, per *MemoryModel.md* § Borrow / transfer rules).
 
 A class-typed identifier without `#`, or any expression whose resolved type is a heap class without an explicit transfer marker, is rejected at codegen with `CAJETA_ERROR_DETACH_BORROW_CAPTURE`. The check fires before the trampoline is synthesized; a violation never reaches IR generation.
 
@@ -139,7 +139,7 @@ Implementation today (R4): each lock holds a pthread mutex (protecting its own `
 `Mutex<T>` owns the protected value. The only way to read or write it is through a guard obtained from `lock()` or `tryLock()`:
 
 ```
-Mutex<int32> counter = new Mutex<int32>(0);
+Mutex<int32> counter = heap Mutex<int32>(0);
 
 scope {
     spawn () -> async void {
@@ -165,7 +165,7 @@ The guard exposes the protected value via a single `value` field; reads and writ
 When the section to gate is *not* tied to a single piece of data — sequencing two independent things, gating a side-effect-only block — `Lock` provides the same RAII shape without forcing a fake `Unit` wrapper:
 
 ```
-Lock gate = new Lock();
+Lock gate = heap Lock();
 
 public void doWork() {
     LockGuard g = await gate.acquire();
@@ -189,7 +189,7 @@ API:
 Many readers can hold a read guard concurrently; writers wait for outstanding reads to drain, then proceed exclusively:
 
 ```
-RwLock<Config> cfg = new RwLock<Config>(loadInitial());
+RwLock<Config> cfg = heap RwLock<Config>(loadInitial());
 
 async Response handle(Request r) {
     ReadGuard<Config> g = await cfg.read();
@@ -220,8 +220,8 @@ API:
 Pairs with a `Mutex<T>` (or `Lock`) for the classic wait-for-condition pattern. `wait()` atomically unlocks the guard and suspends the task; `notify()` / `notifyAll()` wakes waiters, which then re-acquire before resuming:
 
 ```
-Mutex<Queue<Item>> q = new Mutex<Queue<Item>>(new Queue<Item>());
-ConditionVariable notEmpty = new ConditionVariable();
+Mutex<Queue<Item>> q = heap Mutex<Queue<Item>>(heap Queue<Item>());
+ConditionVariable notEmpty = heap ConditionVariable();
 
 // Producer:
 async void produce(Item item) {
@@ -272,7 +272,7 @@ The threading core stops at the four sync primitives above. The standard library
 ### `Channel<T>` — bounded MPMC queue
 
 ```
-Channel<int32> ch = new Channel<int32>(capacity: 8);
+Channel<int32> ch = heap Channel<int32>(capacity: 8);
 
 scope {
     spawn () -> async void {
@@ -295,7 +295,7 @@ A `Channel<T>` is internally a `Mutex<Queue<T>>` plus two `ConditionVariable`s (
 ### `Semaphore` — counting permit pool
 
 ```
-Semaphore s = new Semaphore(permits: 5);
+Semaphore s = heap Semaphore(permits: 5);
 
 async Result useResource() {
     SemaphorePermit p = await s.acquire();
@@ -316,7 +316,7 @@ An earlier draft of this spec had `actor` as a third core primitive — a type k
 
 ```
 class Counter {
-    private Mutex<int32> value = new Mutex<int32>(0);
+    private Mutex<int32> value = heap Mutex<int32>(0);
 
     public async int32 next() {
         MutexGuard<int32> g = await value.lock();
@@ -352,7 +352,7 @@ async int32 main() {
 
 ```
 async int32 sumScores(List<Url> urls) {
-    Mutex<int32> total = new Mutex<int32>(0);
+    Mutex<int32> total = heap Mutex<int32>(0);
     scope {
         for (Url u in urls) {
             spawn () -> async void {
@@ -371,7 +371,7 @@ async int32 sumScores(List<Url> urls) {
 
 ```
 async void pipeline(Source src, Sink sink) {
-    Channel<Record> ch = new Channel<Record>(capacity: 64);
+    Channel<Record> ch = heap Channel<Record>(capacity: 64);
     scope {
         spawn () -> async void {
             while (Record r = await src.next()) {

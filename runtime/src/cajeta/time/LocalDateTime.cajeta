@@ -307,7 +307,7 @@ public class LocalDateTime implements Comparable<LocalDateTime> {
             }
         }
         int32 len = dateLen + 1 + timeLen;
-        int8[] buf = new int8[len];
+        int8[] buf = heap int8[len];
         int32 p = 0;
         if (neg) {
             p = Fmt.writeChar(buf, p, 45); // '-'

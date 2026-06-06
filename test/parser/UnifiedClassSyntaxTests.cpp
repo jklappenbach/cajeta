@@ -2,7 +2,7 @@
 // Phase 1a — heap/stack expression prefixes for class allocation.
 //
 // First sub-phase of the unified-class rollout (cajeta-docs/stdlib/UnifiedClasses.md):
-//   - `heap MyClass(args)` parses and behaves as today's `new MyClass(args)`
+//   - `heap MyClass(args)` parses and behaves as today's `heap MyClass(args)`
 //     (malloc + ctor call, returns a heap reference).
 //   - `stack MyClass { ... }` parses and behaves as today's bare
 //     aggregate-init `MyClass { ... }` (stack-allocated body, per-field
@@ -13,7 +13,7 @@
 //     (heap aggregate-init; stack alloca + ctor call) land alongside the
 //     CajetaStruct collapse.
 //
-// `new MyClass(args)` continues to work unchanged during the deprecation
+// `heap MyClass(args)` continues to work unchanged during the deprecation
 // cycle; bare `MyClass(args)` rejection is deferred until the deprecation
 // alias for `new` retires.
 //
@@ -38,7 +38,7 @@ int32_t runI32(const std::string& src) {
 } // namespace
 
 // ---------------------------------------------------------------------
-// `heap MyClass(args)` — synonym for today's `new MyClass(args)`.
+// `heap MyClass(args)` — synonym for today's `heap MyClass(args)`.
 // ---------------------------------------------------------------------
 
 TEST(UnifiedClassSyntaxTests, heapConstructorCallAllocates) {
@@ -60,29 +60,6 @@ TEST(UnifiedClassSyntaxTests, heapConstructorCallAllocates) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 20);
-}
-
-TEST(UnifiedClassSyntaxTests, heapAndNewProduceEquivalentBehavior) {
-    // `heap` is a synonym for `new` in Phase 1a — same allocation, same
-    // ctor invocation. Both pass through NewExpression at codegen.
-    auto src =
-        "package test;\n"
-        "public class Counter {\n"
-        "    int32 n;\n"
-        "    public Counter() { this.n = 0; }\n"
-        "    public void increment() { this.n = this.n + 1; }\n"
-        "    public int32 value() { return this.n; }\n"
-        "}\n"
-        "public final class S {\n"
-        "    public static int32 run() {\n"
-        "        Counter a = new  Counter();\n"
-        "        Counter b = heap Counter();\n"
-        "        a.increment(); a.increment(); a.increment();\n"
-        "        b.increment(); b.increment();\n"
-        "        return a.value() + b.value();\n"  // 3 + 2 = 5
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
 }
 
 // ---------------------------------------------------------------------
@@ -292,7 +269,7 @@ TEST(UnifiedClassSyntaxTests, stackAggregateInitInitializesVtable) {
 TEST(UnifiedClassSyntaxTests, heapAggregateInitOnClassVtableDispatches) {
     // The heap path also writes the class's vtable into slot 0. Method
     // calls on the aggregate-init'd instance dispatch normally — same
-    // vtable layout as `new Counter()` / `heap Counter()`.
+    // vtable layout as `heap Counter()` / `heap Counter()`.
     auto src =
         "package test;\n"
         "public class Counter {\n"
@@ -641,29 +618,11 @@ TEST(UnifiedClassSyntaxTests, viewConstructionStillWorks) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] buf = new int32[4];\n"
+        "        int32[] buf = heap int32[4];\n"
         "        Header h = Header(buf);\n"  // ← legacy view-construction
         "        h.version = 42;\n"
         "        return h.version;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 42);
-}
-
-TEST(UnifiedClassSyntaxTests, newKeywordStillWorks) {
-    // `new` continues to work during the deprecation cycle. No warning
-    // emitted yet — warnings land when the alias retires.
-    auto src =
-        "package test;\n"
-        "public class Holder {\n"
-        "    int32 value;\n"
-        "    public Holder(int32 v) { this.value = v; }\n"
-        "}\n"
-        "public final class S {\n"
-        "    public static int32 run() {\n"
-        "        Holder h = new Holder(99);\n"
-        "        return h.value;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 99);
 }

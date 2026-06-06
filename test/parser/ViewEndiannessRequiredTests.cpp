@@ -27,7 +27,7 @@ std::string viewWithAnnotation(const std::string& annotation) {
            "}\n"
            "public final class S {\n"
            "    public static int32 run() {\n"
-           "        int32[] bytes = new int32[1];\n"
+           "        int32[] bytes = heap int32[1];\n"
            "        V v = V(bytes);\n"
            "        v.a = 100;\n"
            "        return v.a;\n"

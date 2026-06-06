@@ -30,7 +30,7 @@ std::string makeSource(const std::string& returnType, const std::string& body) {
 TEST(ArrayTests, allocateAndReadDefault) {
     // calloc-backed new means the buffer starts zeroed.
     auto jit = CajetaJit::compile(makeSource("int32",
-        "int32[] arr = new int32[5];\n"
+        "int32[] arr = heap int32[5];\n"
         "return arr[0];"), "test.A");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -39,7 +39,7 @@ TEST(ArrayTests, allocateAndReadDefault) {
 
 TEST(ArrayTests, writeThenRead) {
     auto jit = CajetaJit::compile(makeSource("int32",
-        "int32[] arr = new int32[5];\n"
+        "int32[] arr = heap int32[5];\n"
         "arr[2] = 42;\n"
         "return arr[2];"), "test.A");
     auto fn = jit->lookup<int32_t (*)()>("run");
@@ -48,7 +48,7 @@ TEST(ArrayTests, writeThenRead) {
 
 TEST(ArrayTests, multipleSlotsIndependent) {
     auto jit = CajetaJit::compile(makeSource("int32",
-        "int32[] arr = new int32[3];\n"
+        "int32[] arr = heap int32[3];\n"
         "arr[0] = 10;\n"
         "arr[1] = 20;\n"
         "arr[2] = 30;\n"
@@ -59,7 +59,7 @@ TEST(ArrayTests, multipleSlotsIndependent) {
 
 TEST(ArrayTests, indexFromVariable) {
     auto jit = CajetaJit::compile(makeSource("int32",
-        "int32[] arr = new int32[10];\n"
+        "int32[] arr = heap int32[10];\n"
         "int32 idx = 7;\n"
         "arr[idx] = 99;\n"
         "return arr[idx];"), "test.A");
@@ -69,7 +69,7 @@ TEST(ArrayTests, indexFromVariable) {
 
 TEST(ArrayTests, doubleElement) {
     auto jit = CajetaJit::compile(makeSource("float64",
-        "float64[] arr = new float64[3];\n"
+        "float64[] arr = heap float64[3];\n"
         "arr[0] = 1.5;\n"
         "arr[1] = 2.5;\n"
         "arr[2] = 4.25;\n"
@@ -82,7 +82,7 @@ TEST(ArrayTests, doubleElement) {
 
 TEST(ArrayTests, sizeMatchesAllocation) {
     auto jit = CajetaJit::compile(makeSource("int64",
-        "int32[] arr = new int32[42];\n"
+        "int32[] arr = heap int32[42];\n"
         "return arr.count();"), "test.A");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 42);
@@ -90,7 +90,7 @@ TEST(ArrayTests, sizeMatchesAllocation) {
 
 TEST(ArrayTests, sizeOfDifferentElementType) {
     auto jit = CajetaJit::compile(makeSource("int64",
-        "float64[] arr = new float64[7];\n"
+        "float64[] arr = heap float64[7];\n"
         "return arr.count();"), "test.A");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 7);
@@ -100,7 +100,7 @@ TEST(ArrayTests, sizeUsedInComparison) {
     // WhileStatement codegen is still a stub (separate from array work); verify
     // count() in expression position without a loop.
     auto jit = CajetaJit::compile(makeSource("boolean",
-        "int32[] arr = new int32[5];\n"
+        "int32[] arr = heap int32[5];\n"
         "int64 expected = 5;\n"
         "return arr.count() == expected;"), "test.A");
     auto fn = jit->lookup<bool (*)()>("run");
@@ -114,7 +114,7 @@ TEST(ArrayTests, sizeUsedInComparison) {
 
 TEST(ArrayTests, boundsCheckFiresOnOutOfRange) {
     auto jit = CajetaJit::compile(makeSource("int32",
-        "int32[] arr = new int32[3];\n"
+        "int32[] arr = heap int32[3];\n"
         "return arr[5];"), "test.A");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -124,7 +124,7 @@ TEST(ArrayTests, boundsCheckFiresOnOutOfRange) {
 
 TEST(ArrayTests, boundsCheckFiresOnNegativeIndex) {
     auto jit = CajetaJit::compile(makeSource("int32",
-        "int32[] arr = new int32[3];\n"
+        "int32[] arr = heap int32[3];\n"
         "int32 idx = -1;\n"
         "return arr[idx];"), "test.A");
     auto fn = jit->lookup<int32_t (*)()>("run");
@@ -133,12 +133,12 @@ TEST(ArrayTests, boundsCheckFiresOnNegativeIndex) {
 
 // --- nested arrays (multi-dim) ------------------------------------------------
 //
-// `int32[][]` is `array-of-array-references`. `new int32[2][3]` allocates the
+// `int32[][]` is `array-of-array-references`. `heap int32[2][3]` allocates the
 // outer of 2 inner-array refs, then each of 2 inners of 3 ints each.
 
 TEST(ArrayTests, twoDimAllocateAndRead) {
     auto jit = CajetaJit::compile(makeSource("int32",
-        "int32[][] arr = new int32[2][3];\n"
+        "int32[][] arr = heap int32[2][3];\n"
         "arr[1][2] = 77;\n"
         "return arr[1][2];"), "test.A");
     auto fn = jit->lookup<int32_t (*)()>("run");
@@ -147,7 +147,7 @@ TEST(ArrayTests, twoDimAllocateAndRead) {
 
 TEST(ArrayTests, twoDimRowsIndependent) {
     auto jit = CajetaJit::compile(makeSource("int32",
-        "int32[][] arr = new int32[2][3];\n"
+        "int32[][] arr = heap int32[2][3];\n"
         "arr[0][0] = 1;\n"
         "arr[0][1] = 2;\n"
         "arr[1][0] = 10;\n"
@@ -159,7 +159,7 @@ TEST(ArrayTests, twoDimRowsIndependent) {
 
 TEST(ArrayTests, twoDimSizeOfOuter) {
     auto jit = CajetaJit::compile(makeSource("int64",
-        "int32[][] arr = new int32[5][3];\n"
+        "int32[][] arr = heap int32[5][3];\n"
         "return arr.count();"), "test.A");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 5);
@@ -167,21 +167,21 @@ TEST(ArrayTests, twoDimSizeOfOuter) {
 
 TEST(ArrayTests, twoDimSizeOfInner) {
     auto jit = CajetaJit::compile(makeSource("int64",
-        "int32[][] arr = new int32[5][3];\n"
+        "int32[][] arr = heap int32[5][3];\n"
         "return arr[0].count();"), "test.A");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 3);
 }
 
 // --- field-read as array dimension (l-value → r-value coercion) ----------------
-// Regression: `new T[Klass.STATIC]` / `new T[this.field]` mis-lowered the
+// Regression: `heap T[Klass.STATIC]` / `heap T[this.field]` mis-lowered the
 // dimension. A static-final field read returns the GlobalVariable, an instance
 // field read returns a struct GEP — neither is an AllocaInst, so the old
 // alloca-only load in ArrayCreatorRest left the dimension a `ptr`, and the
 // CreateIntCast below it sext'd a pointer → "SExt only operates on integer"
 // IR-verify failure. Now routed through loadIfLValue, mirroring the same fix
 // ArrayIndexExpression needed (Expression.cpp). Surfaced by AsyncWriter's
-// `new int8[AsyncWriter.DEFAULT_BUFFER]` and AsyncReader's `new int8[this.chunkSize]`.
+// `heap int8[AsyncWriter.DEFAULT_BUFFER]` and AsyncReader's `heap int8[this.chunkSize]`.
 
 TEST(ArrayTests, staticFinalFieldAsArrayDimension) {
     auto src =
@@ -191,7 +191,7 @@ TEST(ArrayTests, staticFinalFieldAsArrayDimension) {
         "}\n"
         "public final class A {\n"
         "    public static int64 run() {\n"
-        "        int32[] arr = new int32[Cfg.CAP];\n"
+        "        int32[] arr = heap int32[Cfg.CAP];\n"
         "        return arr.count();\n"
         "    }\n"
         "}\n";
@@ -208,14 +208,14 @@ TEST(ArrayTests, instanceFieldAsArrayDimension) {
         "    public int32 chunkSize;\n"
         "    public Buf(int32 n) { this.chunkSize = n; }\n"
         "    public int32 make() {\n"
-        "        int32[] arr = new int32[this.chunkSize];\n"
+        "        int32[] arr = heap int32[this.chunkSize];\n"
         "        arr[this.chunkSize - 1] = 7;\n"
         "        return arr[this.chunkSize - 1];\n"
         "    }\n"
         "}\n"
         "public final class A {\n"
         "    public static int32 run() {\n"
-        "        Buf b = new Buf(4);\n"
+        "        Buf b = heap Buf(4);\n"
         "        return b.make();\n"
         "    }\n"
         "}\n";

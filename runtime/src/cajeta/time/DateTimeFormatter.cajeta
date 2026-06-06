@@ -108,7 +108,7 @@ public final class DateTimeFormatter {
         // Generous upper bound: each '%X' can expand to a name/year (<=16),
         // each literal byte is itself. Oversized; the String length is exact.
         int32 cap = n * 16 + 16;
-        int8[] buf = new int8[cap];
+        int8[] buf = heap int8[cap];
         int32 p = 0;
         int32 i = 0;
         while (i < n) {

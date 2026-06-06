@@ -76,8 +76,8 @@ public class ImmutableSet<T> {
         while (cap < (int64) n * 2) {
             cap = cap * 2;
         }
-        T[] elems = new T[n];
-        int64[] tab = new int64[cap];
+        T[] elems = heap T[n];
+        int64[] tab = heap int64[cap];
         int32 count = 0;
 
         int32 i = 0;
@@ -158,7 +158,7 @@ public class ImmutableSet<T> {
      */
     public T get(int32 i) {
         if (i < 0 || i >= this.elemCount) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         return this.elements[i];

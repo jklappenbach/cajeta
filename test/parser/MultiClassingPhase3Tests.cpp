@@ -96,7 +96,7 @@ TEST(MultiClassingPhase3Tests, dCodeWritesAndReadsSharedAncestorViaThis) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.setAndRead();\n"
         "  }\n"
         "}\n";
@@ -124,7 +124,7 @@ TEST(MultiClassingPhase3Tests, dCodeWritesViaThisBracketAReadsViaThis) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.viaBracketThenViaPlain();\n"
         "  }\n"
         "}\n";
@@ -157,7 +157,7 @@ TEST(MultiClassingPhase3Tests, firstParentInheritedMethodReachesSharedA) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.useInheritedSetter();\n"
         "  }\n"
         "}\n";
@@ -184,7 +184,7 @@ TEST(MultiClassingPhase3Tests, diamondFieldDoesNotFireAmbiguityCheck) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.readX();\n"  // 0 (field uninitialized by default)
         "  }\n"
         "}\n";
@@ -208,7 +208,7 @@ TEST(MultiClassingPhase3Tests, diamondFieldSurvivesMultipleAccesses) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.first() + d.second();\n"  // 200
         "  }\n"
         "}\n";
@@ -244,7 +244,7 @@ TEST(MultiClassingPhase3Tests,
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.readViaC();\n"
         "  }\n"
         "}\n";
@@ -270,7 +270,7 @@ TEST(MultiClassingPhase3Tests,
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.writeViaCReadViaThis();\n"
         "  }\n"
         "}\n";
@@ -299,7 +299,7 @@ TEST(MultiClassingPhase3Tests,
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.crossPathRoundTrip();\n"
         "  }\n"
         "}\n";
@@ -322,7 +322,7 @@ TEST(MultiClassingPhase3Tests, thisBracketFirstParentNoDiamondStillWorks) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.read();\n"  // 42
         "  }\n"
         "}\n";
@@ -366,7 +366,7 @@ TEST(MultiClassingPhase3Tests,
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.setViaCReadViaThis();\n"
         "  }\n"
         "}\n";
@@ -409,7 +409,7 @@ TEST(MultiClassingPhase3Tests,
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.callCThenReadShared();\n"
         "  }\n"
         "}\n";
@@ -446,7 +446,7 @@ TEST(MultiClassingPhase3Tests,
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.callCThenReadShared();\n"
         "  }\n"
         "}\n";
@@ -481,7 +481,7 @@ TEST(MultiClassingPhase3Tests,
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Diamond d = new Diamond();\n"
+        "    Diamond d = heap Diamond();\n"
         "    return d.callCThenReadShared();\n"
         "  }\n"
         "}\n";

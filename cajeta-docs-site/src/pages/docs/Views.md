@@ -429,7 +429,7 @@ ProtoVersion v = ProtoVersion(frame);
 match v.version {
     1 => handleV1(RequestHeaderV1(frame)),
     2 => handleV2(RequestHeaderV2(frame)),
-    _ => throw new UnsupportedProtocolException(v.version),
+    _ => throw heap UnsupportedProtocolException(v.version),
 }
 ```
 
@@ -537,7 +537,7 @@ view RpcHeader {
 
 byte[] frame = network.read();
 RpcHeader h = RpcHeader(frame);
-if (h.magic != 0xDEADBEEF) throw new ProtocolException();
+if (h.magic != 0xDEADBEEF) throw heap ProtocolException();
 dispatch(h.messageType, frame.subarray(20, 20 + h.payloadLen));
 ```
 

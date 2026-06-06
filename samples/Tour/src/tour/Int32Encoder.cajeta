@@ -11,7 +11,7 @@ public final class Int32Encoder implements Encoder<int32> {
     public Int32Encoder() { }
 
     public #int8[] encode(int32 value) {
-        int8[] b = new int8[4];
+        int8[] b = heap int8[4];
         b[0] = (int8) (value & 0xFF);
         b[1] = (int8) ((value >> 8) & 0xFF);
         b[2] = (int8) ((value >> 16) & 0xFF);

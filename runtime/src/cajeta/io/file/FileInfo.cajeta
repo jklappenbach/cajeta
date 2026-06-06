@@ -9,7 +9,7 @@ package cajeta.io.file;
  * Read the populated fields directly off an instance:
  *
  * ```cajeta
- * #FileInfo meta = new FileInfo();
+ * #FileInfo meta = heap FileInfo();
  * if (meta.isFile) {
  *     int64 bytes = meta.size;
  *     int64 mtime = meta.modifiedNanos;   // Unix nanoseconds
@@ -50,7 +50,7 @@ public class FileInfo {
      * construct one directly as a blank to fill in:
      *
      * ```cajeta
-     * #FileInfo meta = new FileInfo();
+     * #FileInfo meta = heap FileInfo();
      * meta.isDir = true;
      * meta.permissions = 0o755;
      * ```

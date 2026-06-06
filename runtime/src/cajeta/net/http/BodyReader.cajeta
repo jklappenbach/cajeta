@@ -152,10 +152,10 @@ public class BodyReader {
         this.chInExtension = false;
         this.chTrailerLineLen = 0;
         this.outCap = 0;
-        this.out = new int8[0];
+        this.out = heap int8[0];
         this.outLen = 0;
         this.tailCap = 0;
-        this.tail = new int8[0];
+        this.tail = heap int8[0];
         this.tailLen = 0;
     }
 
@@ -456,7 +456,7 @@ public class BodyReader {
      */
     public #int8[] drain() {
         int32 n = this.outLen;
-        int8[] piece = new int8[n];
+        int8[] piece = heap int8[n];
         int32 i = 0;
         while (i < n) {
             piece[i] = this.out[i];
@@ -475,7 +475,7 @@ public class BodyReader {
      */
     public #int8[] leftover() {
         int32 n = this.tailLen;
-        int8[] lo = new int8[n];
+        int8[] lo = heap int8[n];
         int32 i = 0;
         while (i < n) {
             lo[i] = this.tail[i];
@@ -501,7 +501,7 @@ public class BodyReader {
 
     void growOut() {
         int32 newCap = this.outCap == 0 ? 64 : this.outCap * 2;
-        int8[] dst = new int8[newCap];
+        int8[] dst = heap int8[newCap];
         int32 i = 0;
         while (i < this.outLen) {
             dst[i] = this.out[i];
@@ -521,7 +521,7 @@ public class BodyReader {
 
     void growTail() {
         int32 newCap = this.tailCap == 0 ? 32 : this.tailCap * 2;
-        int8[] dst = new int8[newCap];
+        int8[] dst = heap int8[newCap];
         int32 i = 0;
         while (i < this.tailLen) {
             dst[i] = this.tail[i];

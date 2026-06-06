@@ -74,7 +74,7 @@ public class HttpClient {
 
     /** A client trusting the OS CA store (the default public-PKI path). */
     public HttpClient() {
-        int8[] e = new int8[0];
+        int8[] e = heap int8[0];
         this.trustPem = #e;
         this.trustLen = 0;
         this.hasTrustAnchor = false;
@@ -86,7 +86,7 @@ public class HttpClient {
      * path. A fresh owned copy of `pem[0..len)` is kept. Returns `this`.
      */
     public HttpClient trustAnchor(int8[] pem, int32 len) {
-        int8[] copy = new int8[len];
+        int8[] copy = heap int8[len];
         int32 i = 0;
         while (i < len) {
             copy[i] = pem[i];
@@ -196,7 +196,7 @@ public class HttpClient {
      */
     static #HttpResponse readResponse(ByteChannel ch) {
         HttpParser parser = HttpParser.forResponse();
-        int8[] scratch = new int8[8192];
+        int8[] scratch = heap int8[8192];
         while (!parser.isComplete()) {
             int64 n = ch.readAsync(scratch, (int64) 0, (int64) 8192);
             int32 got = (int32) n;
@@ -307,7 +307,7 @@ public class HttpClient {
      * `\x08http/1.1` (a one-byte length `8` then the 8 token bytes). 9 bytes.
      */
     static #int8[] alpnHttp11() {
-        int8[] a = new int8[9];
+        int8[] a = heap int8[9];
         a[0] = (int8) 8;
         a[1] = (int8) 104;   // 'h'
         a[2] = (int8) 116;   // 't'

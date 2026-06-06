@@ -53,7 +53,7 @@ TEST(JsonSynthesizerTests, parseSingleInt32Field) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // JSON bytes for `{"id":42}` — 10 bytes total
-        "        int8[] buf = new int8[10];\n"
+        "        int8[] buf = heap int8[10];\n"
         "        buf[0] = (int8) 0x7B;\n"   // '{'
         "        buf[1] = (int8) 0x22;\n"   // '"'
         "        buf[2] = (int8) 0x69;\n"   // 'i'
@@ -82,7 +82,7 @@ TEST(JsonSynthesizerTests, parseInt64Field) {
         "}\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        int8[] buf = new int8[19];\n"
+        "        int8[] buf = heap int8[19];\n"
         "        buf[0] = (int8) 0x7B;\n"   // '{'
         "        buf[1] = (int8) 0x22;\n"   // '"'
         "        buf[2] = (int8) 0x6E;\n"   // 'n'
@@ -120,7 +120,7 @@ TEST(JsonSynthesizerTests, parseBooleanTrueField) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // {"flag":true}
-        "        int8[] buf = new int8[13];\n"
+        "        int8[] buf = heap int8[13];\n"
         "        buf[0] = (int8) 0x7B;\n"   // '{'
         "        buf[1] = (int8) 0x22;\n"   // '"'
         "        buf[2] = (int8) 0x66;\n"   // 'f'
@@ -153,7 +153,7 @@ TEST(JsonSynthesizerTests, parseBooleanFalseField) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // {"flag":false}
-        "        int8[] buf = new int8[14];\n"
+        "        int8[] buf = heap int8[14];\n"
         "        buf[0] = (int8) 0x7B;\n"
         "        buf[1] = (int8) 0x22;\n"
         "        buf[2] = (int8) 0x66;\n"   // 'f'
@@ -190,7 +190,7 @@ TEST(JsonSynthesizerTests, parseStringField) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // {"name":"hi"} → 13 bytes
-        "        int8[] buf = new int8[13];\n"
+        "        int8[] buf = heap int8[13];\n"
         "        buf[0]  = (int8) 0x7B;\n"   // '{'
         "        buf[1]  = (int8) 0x22;\n"   // '"'
         "        buf[2]  = (int8) 0x6E;\n"   // 'n'
@@ -225,7 +225,7 @@ TEST(JsonSynthesizerTests, parseNestedClass) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // {"point":{"x":7}} → 17 bytes
-        "        int8[] buf = new int8[17];\n"
+        "        int8[] buf = heap int8[17];\n"
         "        buf[0]  = (int8) 0x7B;\n"  // '{'
         "        buf[1]  = (int8) 0x22;\n"  // '"'
         "        buf[2]  = (int8) 0x70;\n"  // 'p'
@@ -283,7 +283,7 @@ TEST(JsonSynthesizerTests, parseFloat64Field) {
         "public final class D {\n"
         "    public static float64 run() {\n"
         // {"x":3.14} = 10 bytes
-        "        int8[] buf = new int8[10];\n"
+        "        int8[] buf = heap int8[10];\n"
         "        buf[0] = (int8) 0x7B;\n"   // '{'
         "        buf[1] = (int8) 0x22;\n"   // '"'
         "        buf[2] = (int8) 0x78;\n"   // 'x'
@@ -387,7 +387,7 @@ TEST(JsonSynthesizerTests, parseInt32ArrayField) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // {"ids":[1,2,3]} → 15 bytes
-        "        int8[] buf = new int8[15];\n"
+        "        int8[] buf = heap int8[15];\n"
         "        buf[0]  = (int8) 0x7B;\n"  // '{'
         "        buf[1]  = (int8) 0x22;\n"  // '"'
         "        buf[2]  = (int8) 0x69;\n"  // 'i'
@@ -422,7 +422,7 @@ TEST(JsonSynthesizerTests, parseEmptyInt32ArrayField) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // {"ids":[]} → 10 bytes
-        "        int8[] buf = new int8[10];\n"
+        "        int8[] buf = heap int8[10];\n"
         "        buf[0] = (int8) 0x7B;\n"  // '{'
         "        buf[1] = (int8) 0x22;\n"  // '"'
         "        buf[2] = (int8) 0x69;\n"  // 'i'
@@ -451,7 +451,7 @@ TEST(JsonSynthesizerTests, roundTripInt32Array) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Bag a = heap Bag();\n"
-        "        a.ids = new int32[3];\n"
+        "        a.ids = heap int32[3];\n"
         "        a.ids[0] = 4;\n"
         "        a.ids[1] = 5;\n"
         "        a.ids[2] = 6;\n"
@@ -475,7 +475,7 @@ TEST(JsonSynthesizerTests, roundTripInt64Array) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        Bag a = heap Bag();\n"
-        "        a.ns = new int64[2];\n"
+        "        a.ns = heap int64[2];\n"
         "        a.ns[0] = (int64) 100000000000;\n"
         "        a.ns[1] = (int64) 200000000000;\n"
         "        int8[] bytes = Json.toBytes<Bag>(a);\n"
@@ -498,7 +498,7 @@ TEST(JsonSynthesizerTests, roundTripBooleanArray) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Bag a = heap Bag();\n"
-        "        a.flags = new boolean[3];\n"
+        "        a.flags = heap boolean[3];\n"
         "        a.flags[0] = true;\n"
         "        a.flags[1] = false;\n"
         "        a.flags[2] = true;\n"
@@ -526,7 +526,7 @@ TEST(JsonSynthesizerTests, roundTripFloat64Array) {
         "public final class D {\n"
         "    public static float64 run() {\n"
         "        Bag a = heap Bag();\n"
-        "        a.xs = new float64[2];\n"
+        "        a.xs = heap float64[2];\n"
         "        a.xs[0] = 1.5;\n"
         "        a.xs[1] = 2.25;\n"
         "        int8[] bytes = Json.toBytes<Bag>(a);\n"
@@ -554,7 +554,7 @@ TEST(JsonSynthesizerTests, roundTripMixedWithArray) {
         "    public static int32 run() {\n"
         "        Mix a = heap Mix();\n"
         "        a.id = 9;\n"
-        "        a.ids = new int32[2];\n"
+        "        a.ids = heap int32[2];\n"
         "        a.ids[0] = 7;\n"
         "        a.ids[1] = 8;\n"
         "        a.flag = true;\n"
@@ -1130,7 +1130,7 @@ TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         // {"id":7,"n":99,"flag":true} — 26 bytes
-        "        int8[] buf = new int8[26];\n"
+        "        int8[] buf = heap int8[26];\n"
         "        buf[0]  = (int8) 0x7B;\n"  // '{'
         "        buf[1]  = (int8) 0x22;\n"  // '"'
         "        buf[2]  = (int8) 0x69;\n"  // 'i'
@@ -1159,7 +1159,7 @@ TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {
         "        buf[25] = (int8) 0x65;\n"  // 'e' -- }
         // Actually we need '}' but we used 26 bytes — fix the length:
         // {"id":7,"n":99,"flag":true} is 27 bytes. Adjust:
-        "        int8[] buf2 = new int8[27];\n"
+        "        int8[] buf2 = heap int8[27];\n"
         "        int32 i = 0;\n"
         "        while (i < 26) { buf2[i] = buf[i]; i = i + 1; }\n"
         "        buf2[26] = (int8) 0x7D;\n"  // '}'
@@ -1240,7 +1240,7 @@ TEST(JsonSynthesizerTests, roundTripNestedClassArray) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Wrap a = heap Wrap();\n"
-        "        a.items = new Inner[2];\n"
+        "        a.items = heap Inner[2];\n"
         "        a.items[0] = heap Inner();\n"
         "        a.items[0].x = 7;\n"
         "        a.items[1] = heap Inner();\n"

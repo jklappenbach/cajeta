@@ -27,11 +27,11 @@ package cajeta.collection;
  *
  * ## Usage
  *
- * Construct with `new Heap<T>()`, `push` elements in any order, then
+ * Construct with `heap Heap<T>()`, `push` elements in any order, then
  * drain in ascending order with repeated `pop`:
  *
  * ```cajeta
- * Heap<int32> h = new Heap<int32>();
+ * Heap<int32> h = heap Heap<int32>();
  * h.push(5);
  * h.push(1);
  * h.push(3);
@@ -59,12 +59,12 @@ public class Heap<T> {
      * demand as elements are `push`ed.
      *
      * ```cajeta
-     * Heap<int32> h = new Heap<int32>();
+     * Heap<int32> h = heap Heap<int32>();
      * ```
      */
     public Heap() {
         this.capacity = 16;
-        this.data = new T[16];
+        this.data = heap T[16];
         this.sizeCount = 0;
     }
 
@@ -88,7 +88,7 @@ public class Heap<T> {
      * grow). Grows the backing array by doubling when full.
      *
      * ```cajeta
-     * Heap<int32> h = new Heap<int32>();
+     * Heap<int32> h = heap Heap<int32>();
      * h.push(3);
      * h.push(1);   // peek() == 1 after each insert
      * ```
@@ -96,7 +96,7 @@ public class Heap<T> {
     public void push(T v) {
         if (this.sizeCount >= this.capacity) {
             int32 newCap = this.capacity * 2;
-            T[] grown = new T[newCap];
+            T[] grown = heap T[newCap];
             int32 i = 0;
             while (i < this.sizeCount) {
                 grown[i] = this.data[i];
@@ -135,7 +135,7 @@ public class Heap<T> {
      */
     public T peek() {
         if (this.sizeCount == 0) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         return this.data[0];
@@ -148,7 +148,7 @@ public class Heap<T> {
      */
     public T pop() {
         if (this.sizeCount == 0) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         T top = this.data[0];

@@ -145,7 +145,7 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
      */
     public #String iso() {
         if (this.totalSeconds == 0) {
-            int8[] z = new int8[1];
+            int8[] z = heap int8[1];
             z[0] = (int8) 90; // 'Z'
             return heap String(#z, 1);
         }
@@ -162,7 +162,7 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
         if (ss > 0) {
             len = 9;
         }
-        int8[] buf = new int8[len];
+        int8[] buf = heap int8[len];
         int32 p = 0;
         p = Fmt.writeChar(buf, p, sign);
         p = Fmt.writeUint(buf, p, (int64) hh, 2);

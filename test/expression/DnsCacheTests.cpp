@@ -62,7 +62,7 @@ std::string withCounting(const std::string& body) {
            "    public static int32 calls = 0;\n"
            "    public #SocketAddress[] resolve(String host, ResolveFamily family) {\n"
            "        CountingResolver.calls = CountingResolver.calls + 1;\n"
-           "        SocketAddress[] out = new SocketAddress[1];\n"
+           "        SocketAddress[] out = heap SocketAddress[1];\n"
            "        IpAddress ip = IpAddress.loopbackV4();\n"
            "        out[0] = SocketAddress.of(#ip, 0);\n"
            "        return #out;\n"

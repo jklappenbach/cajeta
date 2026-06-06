@@ -72,7 +72,7 @@ TEST(OwnedStringDropTests, concatResultDoesNotDrop_neverDropRule) {
 }
 
 // substring (and toUpperCase / trim / replace below) now route through
-// the class-String stdlib body: an `int8[] out = new int8[len]` then
+// the class-String stdlib body: an `int8[] out = heap int8[len]` then
 // `return heap String(#out, len)`. The `#out` transfer hands the
 // freshly-allocated buffer to the returned String, which the never-drop
 // rule keeps alive for the rest of the process. The local `out`'s drop

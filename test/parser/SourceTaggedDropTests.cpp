@@ -59,7 +59,7 @@ TEST(SourceTaggedDropTests, heapArrayLocalCarriesAllocLine) {
         "package test;\n"                                              // 1
         "public final class D {\n"                                     // 2
         "    public static int32 run() {\n"                            // 3
-        "        int32[] xs = new int32[8];\n"                         // 4
+        "        int32[] xs = heap int32[8];\n"                         // 4
         "        return Cajeta.dropChainHeadAllocLine();\n"            // 5
         "    }\n"
         "}\n";

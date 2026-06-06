@@ -196,7 +196,7 @@ TEST(HttpParserTests, splitFeedMatchesOneShot) {
         // Feed byte-by-byte: the hardest split (every boundary exercised).
         "HttpParser p = HttpParser.forRequest();\n"
         "int32 i = 0;\n"
-        "int8[] one = new int8[1];\n"
+        "int8[] one = heap int8[1];\n"
         "while (i < n) {\n"
         "    one[0] = b[i];\n"
         "    p.feed(one, 1);\n"

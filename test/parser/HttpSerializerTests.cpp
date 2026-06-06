@@ -97,7 +97,7 @@ TEST(HttpSerializerTests, postContentLengthAutoFramed) {
         "HttpRequest r = HttpRequest.post(\"/submit\");\n"
         "r.header(\"Host\", \"api.example.test\");\n"
         "r.header(\"Content-Type\", \"application/json\");\n"
-        "int8[] payload = new int8[17];\n"
+        "int8[] payload = heap int8[17];\n"
         // {"name":"cajeta"}
         "String json = \"{\\\"name\\\":\\\"cajeta\\\"}\";\n"
         "int32 k = 0;\n"
@@ -119,7 +119,7 @@ TEST(HttpSerializerTests, explicitContentLengthNotDuplicated) {
     EXPECT_EQ(runI32(
         "HttpRequest r = HttpRequest.post(\"/x\");\n"
         "r.setHeader(\"Content-Length\", \"3\");\n"
-        "int8[] payload = new int8[3];\n"
+        "int8[] payload = heap int8[3];\n"
         "payload[0] = (int8) 97; payload[1] = (int8) 98; payload[2] = (int8) 99;\n"
         "r.body(payload, 3);\n"
         "int8[] wire = HttpSerializer.request(r);\n"
@@ -144,7 +144,7 @@ TEST(HttpSerializerTests, bodylessRequestHasNoLengthHeader) {
 TEST(HttpSerializerTests, presentEmptyBodyFramesZeroLength) {
     EXPECT_EQ(runI32(
         "HttpRequest r = HttpRequest.post(\"/empty\");\n"
-        "int8[] payload = new int8[0];\n"
+        "int8[] payload = heap int8[0];\n"
         "r.body(payload, 0);\n"
         "int8[] wire = HttpSerializer.request(r);\n"
         "String expect = \"POST /empty HTTP/1.1\\r\\n\"\n"
@@ -164,7 +164,7 @@ TEST(HttpSerializerTests, response200GoldenVector) {
         "r.header(\"Content-Type\", \"text/plain\");\n"
         "r.header(\"Content-Length\", \"13\");\n"
         "r.header(\"Connection\", \"keep-alive\");\n"
-        "int8[] payload = new int8[13];\n"
+        "int8[] payload = heap int8[13];\n"
         "String b = \"Hello, world!\";\n"
         "int32 k = 0;\n"
         "while (k < 13) { payload[k] = b.byteAt(k); k = k + 1; }\n"
@@ -207,7 +207,7 @@ TEST(HttpSerializerTests, unknownStatusEmptyReasonKeepsSpace) {
 TEST(HttpSerializerTests, chunkedSingleChunkGoldenVector) {
     EXPECT_EQ(runI32(
         "HttpResponse r = HttpResponse.ok();\n"
-        "int8[] payload = new int8[5];\n"
+        "int8[] payload = heap int8[5];\n"
         "String b = \"hello\";\n"
         "int32 k = 0;\n"
         "while (k < 5) { payload[k] = b.byteAt(k); k = k + 1; }\n"
@@ -226,7 +226,7 @@ TEST(HttpSerializerTests, chunkedSingleChunkGoldenVector) {
 TEST(HttpSerializerTests, chunkedHexSizeIsLowercaseNoLeadingZero) {
     EXPECT_EQ(runI32(
         "HttpResponse r = HttpResponse.ok();\n"
-        "int8[] payload = new int8[16];\n"
+        "int8[] payload = heap int8[16];\n"
         "int32 k = 0;\n"
         "while (k < 16) { payload[k] = (int8) 88; k = k + 1; }\n"   // 'X' * 16
         "r.body(payload, 16);\n"
@@ -245,7 +245,7 @@ TEST(HttpSerializerTests, chunkedHexSizeIsLowercaseNoLeadingZero) {
 TEST(HttpSerializerTests, chunkedEmptyBodyIsTerminatorOnly) {
     EXPECT_EQ(runI32(
         "HttpRequest r = HttpRequest.post(\"/stream\");\n"
-        "int8[] payload = new int8[0];\n"
+        "int8[] payload = heap int8[0];\n"
         "r.body(payload, 0);\n"
         "int8[] wire = HttpSerializer.requestChunked(r);\n"
         "String expect = \"POST /stream HTTP/1.1\\r\\n\"\n"
@@ -260,7 +260,7 @@ TEST(HttpSerializerTests, explicitTransferEncodingNotDuplicated) {
     EXPECT_EQ(runI32(
         "HttpResponse r = HttpResponse.ok();\n"
         "r.setHeader(\"Transfer-Encoding\", \"chunked\");\n"
-        "int8[] payload = new int8[1];\n"
+        "int8[] payload = heap int8[1];\n"
         "payload[0] = (int8) 90;\n"   // 'Z'
         "r.body(payload, 1);\n"
         "int8[] wire = HttpSerializer.responseChunked(r);\n"
@@ -279,7 +279,7 @@ TEST(HttpSerializerTests, transferEncodingSuppressesAutoLength) {
     EXPECT_EQ(runI32(
         "HttpResponse r = HttpResponse.ok();\n"
         "r.setHeader(\"Transfer-Encoding\", \"chunked\");\n"
-        "int8[] payload = new int8[3];\n"
+        "int8[] payload = heap int8[3];\n"
         "payload[0] = (int8) 97; payload[1] = (int8) 98; payload[2] = (int8) 99;\n"
         "r.body(payload, 3);\n"
         // length-framed writeResponse: must NOT inject content-length.

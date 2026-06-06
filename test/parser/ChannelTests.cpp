@@ -37,7 +37,7 @@ int32_t runI32(const std::string& dBody) {
 TEST(ChannelTests, constructAndDestroy) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(4);\n"
+        "        Channel<int32> ch = heap Channel<int32>(4);\n"
         "        return 1;\n"
         "    }\n"
     ), 1);
@@ -47,7 +47,7 @@ TEST(ChannelTests, constructAndDestroy) {
 TEST(ChannelTests, sendThenReceive) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(4);\n"
+        "        Channel<int32> ch = heap Channel<int32>(4);\n"
         "        ch.send(7);\n"
         "        Optional<int32> o = ch.receive();\n"
         "        return o.get();\n"
@@ -59,7 +59,7 @@ TEST(ChannelTests, sendThenReceive) {
 TEST(ChannelTests, receiveOnClosedEmptyIsEmpty) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(2);\n"
+        "        Channel<int32> ch = heap Channel<int32>(2);\n"
         "        ch.close();\n"
         "        Optional<int32> o = ch.receive();\n"
         "        if (o.isPresent()) { return 1; }\n"
@@ -72,7 +72,7 @@ TEST(ChannelTests, receiveOnClosedEmptyIsEmpty) {
 TEST(ChannelTests, drainAfterClose) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(4);\n"
+        "        Channel<int32> ch = heap Channel<int32>(4);\n"
         "        ch.send(1);\n"
         "        ch.send(2);\n"
         "        ch.send(4);\n"
@@ -111,8 +111,8 @@ TEST(ChannelTests, boundedProducerConsumer) {
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(2);\n"
-        "        int32[] out = new int32[1];\n"
+        "        Channel<int32> ch = heap Channel<int32>(2);\n"
+        "        int32[] out = heap int32[1];\n"
         "        scope {\n"
         "            spawn producer(ch);\n"
         "            spawn consumer(ch, out);\n"
@@ -164,8 +164,8 @@ TEST(ChannelTests, multiProducerMultiConsumer) {
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(2);\n"
-        "        int32[] out = new int32[2];\n"
+        "        Channel<int32> ch = heap Channel<int32>(2);\n"
+        "        int32[] out = heap int32[2];\n"
         "        scope {\n"
         "            spawn consumer(ch, out, 0);\n"
         "            spawn consumer(ch, out, 1);\n"
@@ -185,7 +185,7 @@ TEST(ChannelTests, multiProducerMultiConsumer) {
 TEST(ChannelTests, receiveOrElseOnEmpty) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(2);\n"
+        "        Channel<int32> ch = heap Channel<int32>(2);\n"
         "        ch.close();\n"
         "        Optional<int32> oc = ch.receive();\n"
         "        return oc.orElse(-1);\n"
@@ -201,7 +201,7 @@ TEST(ChannelTests, receiveOrElseOnEmpty) {
 TEST(ChannelTests, sequentialReceivesIsPresent) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(2);\n"
+        "        Channel<int32> ch = heap Channel<int32>(2);\n"
         "        ch.send(11);\n"
         "        ch.send(22);\n"
         "        ch.close();\n"

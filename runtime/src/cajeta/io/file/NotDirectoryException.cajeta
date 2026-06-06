@@ -24,7 +24,7 @@ public class NotDirectoryException extends IoException {
      * component that was not a directory.
      *
      * ```cajeta
-     * throw new NotDirectoryException("not a directory: " + path.name());
+     * throw heap NotDirectoryException("not a directory: " + path.name());
      * ```
      */
     public NotDirectoryException(String message) {

@@ -69,13 +69,13 @@ public class Report {
         // and friends. Parse it once into a typed list and build a
         // matcher we can probe per-file / per-symbol below.
         Optional<JsonArray> excludeRaw = params.getArray("exclude");
-        ArrayList<Exclude> excludes = #new ArrayList<Exclude>();
+        ArrayList<Exclude> excludes = #heap ArrayList<Exclude>();
         if (excludeRaw.isPresent()) {
             // Parsing throws on bad entries; let the exception
             // surface so the action result carries the parse error.
             excludes = ExcludeParser.parse(ctx, excludeRaw.get());
         }
-        ExcludeMatcher matcher = #new ExcludeMatcher(excludes);
+        ExcludeMatcher matcher = #heap ExcludeMatcher(excludes);
 
         // ── Load ─────────────────────────────────────────────────
         CoverageMap map = CoverageMapReader.read(inputPath);
@@ -86,9 +86,9 @@ public class Report {
         // sidecar lookup also resolves the package + symbol so the
         // exclude matcher can apply package/symbol-kind filters
         // alongside the file-kind ones.
-        ArrayList<Finding> findings = #new ArrayList<Finding>();
+        ArrayList<Finding> findings = #heap ArrayList<Finding>();
         PositionLookup posMap = PositionLookup.load(ctx, map);
-        FilteredCounts counts = #new FilteredCounts();
+        FilteredCounts counts = #heap FilteredCounts();
         ArrayList<String> filePaths = map.files().keys();
         int32 fi = 0;
         while (fi < filePaths.count()) {
@@ -159,7 +159,7 @@ public class Report {
         if (minPercent.isPresent() && overall < minPercent.get()) {
             ArrayList<FilteredCounts.FileEntry> bottom =
                 counts.bottomN(BOTTOM_N);
-            ActionResult r = #new ActionResult();
+            ActionResult r = #heap ActionResult();
             r.output("percent", FloatFormat.oneDecimal(overall));
             r.output("html-path",  htmlPath);
             r.output("sarif-path", sarifPath);
@@ -176,7 +176,7 @@ public class Report {
             ArrayList<FilteredCounts.FileEntry> belowFloor =
                 counts.filesBelow(minPerFile.get());
             if (belowFloor.count() > 0) {
-                ActionResult r = #new ActionResult();
+                ActionResult r = #heap ActionResult();
                 r.output("percent", FloatFormat.oneDecimal(overall));
                 r.findings(#findings);
                 return r.error(
@@ -189,7 +189,7 @@ public class Report {
         }
 
         // ── Success ──────────────────────────────────────────────
-        ActionResult r = #new ActionResult();
+        ActionResult r = #heap ActionResult();
         r.output("percent",    FloatFormat.oneDecimal(overall));
         r.output("html-path",  htmlPath);
         r.output("sarif-path", sarifPath);

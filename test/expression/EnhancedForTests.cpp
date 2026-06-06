@@ -30,7 +30,7 @@ int32_t runI32(const std::string& body) {
 
 TEST(EnhancedForTests, sumIntArray) {
     EXPECT_EQ(runI32(
-        "int32[] xs = new int32[5];\n"
+        "int32[] xs = heap int32[5];\n"
         "xs[0] = 1;\n"
         "xs[1] = 2;\n"
         "xs[2] = 3;\n"
@@ -45,7 +45,7 @@ TEST(EnhancedForTests, sumIntArray) {
 
 TEST(EnhancedForTests, emptyArrayLeavesAccumUnchanged) {
     EXPECT_EQ(runI32(
-        "int32[] xs = new int32[0];\n"
+        "int32[] xs = heap int32[0];\n"
         "int32 total = 99;\n"
         "for (int32 x : xs) {\n"
         "    total = 0;\n"
@@ -56,7 +56,7 @@ TEST(EnhancedForTests, emptyArrayLeavesAccumUnchanged) {
 TEST(EnhancedForTests, iteratorBindingExposesIndex) {
     // Cajeta extension: `int i, T x` form pairs the index with the element binding.
     EXPECT_EQ(runI32(
-        "int32[] xs = new int32[4];\n"
+        "int32[] xs = heap int32[4];\n"
         "xs[0] = 10;\n"
         "xs[1] = 20;\n"
         "xs[2] = 30;\n"
@@ -71,7 +71,7 @@ TEST(EnhancedForTests, iteratorBindingExposesIndex) {
 
 TEST(EnhancedForTests, breakStopsIteration) {
     EXPECT_EQ(runI32(
-        "int32[] xs = new int32[10];\n"
+        "int32[] xs = heap int32[10];\n"
         "for (int32 i = 0; i < 10; i = i + 1) { xs[i] = i; }\n"
         "int32 sum = 0;\n"
         "for (int32 x : xs) {\n"
@@ -84,7 +84,7 @@ TEST(EnhancedForTests, breakStopsIteration) {
 
 TEST(EnhancedForTests, continueSkipsElement) {
     EXPECT_EQ(runI32(
-        "int32[] xs = new int32[5];\n"
+        "int32[] xs = heap int32[5];\n"
         "xs[0] = 1;\n"
         "xs[1] = 2;\n"
         "xs[2] = 3;\n"
@@ -101,7 +101,7 @@ TEST(EnhancedForTests, continueSkipsElement) {
 
 TEST(EnhancedForTests, iterateStringArray) {
     EXPECT_EQ(runI32(
-        "String[] names = new String[3];\n"
+        "String[] names = heap String[3];\n"
         "names[0] = \"a\";\n"
         "names[1] = \"bb\";\n"
         "names[2] = \"ccc\";\n"

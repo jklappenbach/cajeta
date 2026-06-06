@@ -93,7 +93,7 @@ public final class RequestBodyStream {
     RequestBodyStream(BodyReader body, AsyncReader reader) {
         this.body = body;
         this.reader = reader;
-        this.pull = new int8[RequestBodyStream.PULL];
+        this.pull = heap int8[RequestBodyStream.PULL];
         this.complete = body.isComplete();
         this.drained = false;
     }
@@ -152,7 +152,7 @@ public final class RequestBodyStream {
         }
         if (this.complete) {
             this.afterFeed();
-            return new int8[0];             // terminal: body consumed
+            return heap int8[0];             // terminal: body consumed
         }
         // Pull one socket read worth and decode it.
         int32 n = this.reader.read(this.pull, 0, RequestBodyStream.PULL);

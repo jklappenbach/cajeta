@@ -105,7 +105,7 @@ public class SocketAddress {
         if (len < 0) {
             len = 0;
         }
-        int8[] out = new int8[len];
+        int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
             out[i] = b[begin + i];
@@ -247,7 +247,7 @@ public class SocketAddress {
             return pos + 1;
         }
         // Collect digits least-significant first, then reverse.
-        int8[] tmp = new int8[5];
+        int8[] tmp = heap int8[5];
         int32 count = 0;
         int32 v = value;
         while (v > 0) {
@@ -280,7 +280,7 @@ public class SocketAddress {
         if (v6) {
             cap = cap + 2;
         }
-        int8[] out = new int8[cap];
+        int8[] out = heap int8[cap];
         int32 pos = 0;
 
         if (v6) {
@@ -301,7 +301,7 @@ public class SocketAddress {
         pos = pos + 1;
         pos = SocketAddress.writePort(out, pos, this.port);
 
-        int8[] exact = new int8[pos];
+        int8[] exact = heap int8[pos];
         i = 0;
         while (i < pos) {
             exact[i] = out[i];

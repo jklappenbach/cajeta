@@ -208,7 +208,7 @@ because they manipulate manifest/lockfile/cache state directly
 rather than invoking tasks from the manifest:
 
 ```
-cajeta init <name>           Scaffold a new project (writes a starter cajeta.json
+cajeta init <name>           Scaffold a heap project (writes a starter cajeta.json
                                 with a default "tasks" block — see "Default
                                 cajeta init manifest")
 cajeta tasks                 List task names from cajeta.json's "tasks" block

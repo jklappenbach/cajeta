@@ -51,7 +51,7 @@ TEST(BlockScopedDropTests, innerBlockArrayDropsAtClosingBrace) {
         "    public static int32 run() {\n"
         "        Cajeta.dropCountReset();\n"
         "        {\n"
-        "            int32[] tmp = new int32[2];\n"
+        "            int32[] tmp = heap int32[2];\n"
         "        }\n"  // tmp's drop fires HERE
         "        int64 mid = Cajeta.dropCount();\n"
         "        return (int32) mid;\n"
@@ -69,10 +69,10 @@ TEST(BlockScopedDropTests, sequentialBlocksEachDropOnExit) {
         "    public static int32 run() {\n"
         "        Cajeta.dropCountReset();\n"
         "        {\n"
-        "            int32[] a = new int32[1];\n"
+        "            int32[] a = heap int32[1];\n"
         "        }\n"
         "        {\n"
-        "            int32[] b = new int32[1];\n"
+        "            int32[] b = heap int32[1];\n"
         "        }\n"
         "        int64 c = Cajeta.dropCount();\n"
         "        return (int32) c;\n"
@@ -92,9 +92,9 @@ TEST(BlockScopedDropTests, nestedBlocksFireInnerFirstThenOuter) {
         "        Cajeta.dropCountReset();\n"
         "        int64 afterInner = 0;\n"
         "        {\n"
-        "            int32[] outer = new int32[1];\n"
+        "            int32[] outer = heap int32[1];\n"
         "            {\n"
-        "                int32[] inner = new int32[1];\n"
+        "                int32[] inner = heap int32[1];\n"
         "            }\n"  // inner fires HERE → count = 1
         "            afterInner = Cajeta.dropCount();\n"
         "        }\n"  // outer fires HERE → count = 2
@@ -110,7 +110,7 @@ TEST(BlockScopedDropTests, nestedBlocksFireInnerFirstThenOuter) {
 // to read().
 TEST(BlockScopedDropTests, methodBodyLocalDropsAtMethodExit) {
     EXPECT_EQ(observeDrops(
-        "int32[] arr = new int32[1];"
+        "int32[] arr = heap int32[1];"
     ), 1);
 }
 
@@ -133,12 +133,12 @@ TEST(BlockScopedDropTests, twoBackToBackCriticalSections) {
         "    public ~Lock() { Cajeta.lockDestroy(this.handle); }\n"
         "    public #LockGuard acquire() {\n"
         "        Cajeta.lockAcquire(this.handle);\n"
-        "        return new LockGuard(this.handle);\n"
+        "        return heap LockGuard(this.handle);\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        int32 step1 = 0;\n"
         "        int32 step2 = 0;\n"
         "        {\n"
@@ -164,9 +164,9 @@ TEST(BlockScopedDropTests, earlyReturnFiresAllEnclosingFrames) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 worker() {\n"
-        "        int32[] outer = new int32[1];\n"
+        "        int32[] outer = heap int32[1];\n"
         "        {\n"
-        "            int32[] inner = new int32[1];\n"
+        "            int32[] inner = heap int32[1];\n"
         "            return 0;\n"  // fires inner + outer before ret
         "        }\n"
         "    }\n"

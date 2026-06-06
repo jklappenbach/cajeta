@@ -38,17 +38,17 @@ namespace cajeta {
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
         } else if (ctx->COLONCOLON()) {
-            // Method reference: `expr::id`, `Type::id`, or `Type::new`.
-            // Check before NEW and identifier so we don't mis-route
-            // those token-bearing forms. Detect the LHS shape:
-            //   - typeType form (`Type::id` / `Type::new`): grammar
+            // Method reference: `expr::id`, `Type::id`, or `Type::heap`
+            // (constructor reference). Check before the identifier form so we
+            // don't mis-route the token-bearing ctor form. Detect the LHS:
+            //   - typeType form (`Type::id` / `Type::heap`): grammar
             //     captured a typeType in front of the COLONCOLON.
             //   - expression form (`obj::id`): grammar captured an
             //     expression in front.
             CajetaTypePtr methodRefRecvType;
             ExpressionPtr methodRefRecvExpr;
             std::string methodRefName;
-            bool methodRefIsCtor = ctx->NEW() != nullptr;
+            bool methodRefIsCtor = ctx->HEAP() != nullptr;
             if (!ctx->typeType().empty()) {
                 methodRefRecvType = CajetaType::fromContext(
                     ctx->typeType(0), nullptr);
@@ -70,7 +70,7 @@ namespace cajeta {
                 result = make_shared<UnsupportedExpression>("super call", token);
             } else if (ctx->innerCreator()) {
                 result = make_shared<UnsupportedExpression>(
-                    "inner-class instantiation (obj.new Inner())", token);
+                    "inner-class instantiation (obj.heap Inner())", token);
             } else if (ctx->methodCall()) {
                 // `obj.foo(args)` — method invocation on a receiver. The receiver is the
                 // lhs expression captured by the children-add loop at the bottom of this
@@ -83,8 +83,6 @@ namespace cajeta {
             // Bare standalone call `foo(...)` (no DOT). With-DOT calls are routed by the
             // branch above.
             result = make_shared<MethodCallExpression>(ctx->methodCall(), token);
-        } else if (ctx->NEW()) {
-            result = make_shared<NewExpression>(ctx->creator(), token);
         } else if (ctx->HEAP()) {
             // Unified-class allocation prefix (cajeta-docs/stdlib/UnifiedClasses.md). Phase 2a:
             // both forms codegen.
@@ -2599,7 +2597,7 @@ namespace cajeta {
             if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
                 if (!expectedFn->isReturnsOwnership() && expectedFn->usesSret()) {
                     throw Exception(
-                        "method reference '::new' returns a heap-owned "
+                        "method reference '::heap' returns a heap-owned "
                         "instance; cannot assign to an sret-form function "
                         "type (would leak the allocation)",
                         "CAJETA_ERROR_TYPE_MISMATCH");

@@ -12,7 +12,7 @@ package cajeta.threading;
  * drop:
  *
  * ```cajeta
- * stack lock = new Lock();
+ * stack lock = heap Lock();
  * {
  *     #LockGuard guard = lock.acquire();   // locked here
  *     // ... critical section ...

@@ -121,7 +121,7 @@ public class HtmlFormat {
         // Build a fast "is line uncovered?" lookup from the findings
         // list — the findings already carry the probe-id → line
         // resolution from PositionLookup.
-        HashSet<int32> uncoveredLines = #new HashSet<int32>();
+        HashSet<int32> uncoveredLines = #heap HashSet<int32>();
         int32 fi = 0;
         while (fi < findings.count()) {
             Finding f = findings.get(fi);

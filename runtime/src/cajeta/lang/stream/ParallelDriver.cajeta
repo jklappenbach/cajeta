@@ -125,7 +125,7 @@ public class ParallelDriver {
             }
             return acc;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -137,7 +137,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        T[] partials = new T[shareCount + 1];
+        T[] partials = heap T[shareCount + 1];
         int32 pi = 0;
         while (pi < shareCount + 1) {
             partials[pi] = seed;
@@ -218,7 +218,7 @@ public class ParallelDriver {
             }
             return false;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -274,7 +274,7 @@ public class ParallelDriver {
             }
             return true;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -329,7 +329,7 @@ public class ParallelDriver {
             }
             return true;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -466,7 +466,7 @@ public class ParallelDriver {
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -495,7 +495,7 @@ public class ParallelDriver {
         // the share. For depth>0, each wrapper level wraps the
         // recursive result so the worker sees the same chain over
         // its slice.
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -507,7 +507,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        T[] partials = new T[shareCount + 1];
+        T[] partials = heap T[shareCount + 1];
         int32 pi = 0;
         while (pi < shareCount + 1) {
             partials[pi] = seed;
@@ -568,7 +568,7 @@ public class ParallelDriver {
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -588,7 +588,7 @@ public class ParallelDriver {
             }
             return accY;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -600,7 +600,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        R[] partials = new R[shareCount + 1];
+        R[] partials = heap R[shareCount + 1];
         int32 pi = 0;
         while (pi < shareCount + 1) {
             partials[pi] = seed;
@@ -671,7 +671,7 @@ public class ParallelDriver {
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -691,7 +691,7 @@ public class ParallelDriver {
             }
             return accY;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -703,7 +703,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        R[] partials = new R[shareCount + 1];
+        R[] partials = heap R[shareCount + 1];
         int32 pi = 0;
         while (pi < shareCount + 1) {
             partials[pi] = supplier();
@@ -748,7 +748,7 @@ public class ParallelDriver {
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -769,7 +769,7 @@ public class ParallelDriver {
             }
             return false;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -817,7 +817,7 @@ public class ParallelDriver {
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -838,7 +838,7 @@ public class ParallelDriver {
             }
             return true;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -885,7 +885,7 @@ public class ParallelDriver {
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -906,7 +906,7 @@ public class ParallelDriver {
             }
             return true;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -966,7 +966,7 @@ public class ParallelDriver {
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -987,7 +987,7 @@ public class ParallelDriver {
             }
             return stack Optional<T>(false, null);
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -1008,13 +1008,13 @@ public class ParallelDriver {
         // History: pre-Task-#46 this used a T[1] + boolean[1] pair
         // with the orchestrator constructing the Optional after
         // scope-join, working around a compile-time crash in
-        // `new Optional<T>[1]` when T is a method-template parameter
+        // `heap Optional<T>[1]` when T is a method-template parameter
         // (CajetaArray ctor's elementType->getLlvmType() returned
         // null for a bare-template Optional and crashed
         // llvm::ArrayType::get). Fixed by extending
         // CajetaClass::getLlvmType to return ptr for bare templates
         // — same fallback the placeholder and wildcard cases use.
-        Optional<T>[] result = new Optional<T>[1];
+        Optional<T>[] result = heap Optional<T>[1];
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -1077,7 +1077,7 @@ public class ParallelDriver {
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -1096,7 +1096,7 @@ public class ParallelDriver {
             }
             return;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {

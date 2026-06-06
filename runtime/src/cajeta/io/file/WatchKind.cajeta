@@ -10,7 +10,7 @@ package cajeta.io.file;
  * against the named constants:
  *
  * ```cajeta
- * FileEvent event = new FileEvent(path, WatchKind.RENAME, timestampNanos, renameTarget);
+ * FileEvent event = heap FileEvent(path, WatchKind.RENAME, timestampNanos, renameTarget);
  * if (event.kind == WatchKind.RENAME) {
  *     // event.renameTarget holds the destination Path
  *     reindex(event.path, event.renameTarget);

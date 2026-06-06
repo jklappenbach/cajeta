@@ -76,7 +76,7 @@ int32_t runI32Direct(const std::string& body) {
 TEST(StackOptionalOrElseProbe, threeLocalsThirdIsPresentGet) {
     int32_t v = runI32(
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(2);\n"
+        "        Channel<int32> ch = heap Channel<int32>(2);\n"
         "        ch.send(11);\n"
         "        ch.send(22);\n"
         "        ch.close();\n"
@@ -183,7 +183,7 @@ TEST(StackOptionalOrElseProbe, threeStackOptionalsThirdOrElseLiteral) {
 TEST(StackOptionalOrElseProbe, threeLocalsThirdOrElseLiteral) {
     int32_t v = runI32(
         "    public static int32 run() {\n"
-        "        Channel<int32> ch = new Channel<int32>(2);\n"
+        "        Channel<int32> ch = heap Channel<int32>(2);\n"
         "        ch.send(11);\n"
         "        ch.send(22);\n"
         "        ch.close();\n"

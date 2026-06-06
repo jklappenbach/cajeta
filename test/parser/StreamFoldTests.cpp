@@ -90,7 +90,7 @@ TEST(StreamFoldTests, foldClassTToPrimitiveR) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] cs = { new Counter(1), new Counter(2), new Counter(3) };\n"
+        "        Counter[] cs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(cs, 3);\n"
         "        return s.fold(0, (int32 acc, Counter c) -> acc + c.v);\n"
         "    }\n"

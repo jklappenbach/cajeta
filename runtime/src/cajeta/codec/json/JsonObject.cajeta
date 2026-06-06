@@ -40,15 +40,15 @@ public class JsonObject {
      * backing arrays grow automatically as keys are added with `put`.
      *
      * ```cajeta
-     * JsonObject obj = new JsonObject();
+     * JsonObject obj = heap JsonObject();
      * obj.put(#keyBytes, keyLen, #v);
      * ```
      */
     public JsonObject() {
         this.cap = 8;
-        this.keys = new int8[8][];
-        this.keyLens = new int32[8];
-        this.values = new JsonValue[8];
+        this.keys = heap int8[8][];
+        this.keyLens = heap int32[8];
+        this.values = heap JsonValue[8];
         this.sizeCount = 0;
     }
 
@@ -135,9 +135,9 @@ public class JsonObject {
     /** Double the backing-array capacity and copy existing entries over; called by `put` when full. */
     void grow() {
         int32 newCap = this.cap * 2;
-        int8[][] dstK = new int8[newCap][];
-        int32[] dstL = new int32[newCap];
-        JsonValue[] dstV = new JsonValue[newCap];
+        int8[][] dstK = heap int8[newCap][];
+        int32[] dstL = heap int32[newCap];
+        JsonValue[] dstV = heap JsonValue[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
             dstK[i] = this.keys[i];
@@ -180,7 +180,7 @@ public class JsonObject {
      * objects; the hot-path tokenizer should keep using `keyAt`.
      */
     public #ArrayList<String> keys() {
-        ArrayList<String> out = #new ArrayList<String>();
+        ArrayList<String> out = #heap ArrayList<String>();
         int32 i = 0;
         while (i < this.sizeCount) {
             out.add(#heap String(this.keys[i], this.keyLens[i]));
@@ -261,7 +261,7 @@ public class JsonObject {
      * stricter behavior is needed).
      */
     public #ArrayList<String> getStringArray(String key) {
-        ArrayList<String> out = #new ArrayList<String>();
+        ArrayList<String> out = #heap ArrayList<String>();
         Optional<JsonArray> arr = this.getArray(key);
         if (arr.isEmpty()) { return out; }
         JsonArray a = arr.get();

@@ -30,7 +30,7 @@ import cajeta.lang.String;
  *
  * Streaming `Hasher`:
  * ```cajeta
- * SipHash h = new SipHash(k0, k1);
+ * SipHash h = heap SipHash(k0, k1);
  * h.writeString(user.name);
  * h.writeInt32(user.id);
  * int64 digest = h.finish();
@@ -63,7 +63,7 @@ public final class SipHash implements Hasher {
      * call `finish()`.
      *
      * ```cajeta
-     * SipHash h = new SipHash(k0, k1);
+     * SipHash h = heap SipHash(k0, k1);
      * h.writeString(user.name);
      * h.writeInt32(user.id);
      * int64 digest = h.finish();

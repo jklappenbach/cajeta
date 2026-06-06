@@ -55,9 +55,9 @@ public class Regex {
      */
     public static Optional<Regex> compile(String pattern) {
         // TODO: Thompson NFA construction. Returns
-        //   Optional.of(new Regex(<compiled-states>))
+        //   Optional.of(heap Regex(<compiled-states>))
         // on success, Optional.empty() on syntax error.
-        return stack Optional<Regex>(true, #new Regex());
+        return stack Optional<Regex>(true, #heap Regex());
     }
 
     /**
@@ -69,7 +69,7 @@ public class Regex {
     public Optional<Match> find(String input) {
         // TODO: NFA simulation. v1 stub returns empty so callers
         // can iterate the plumbing without false hits.
-        return stack Optional<Match>(false, #new Match(0, 0));
+        return stack Optional<Match>(false, #heap Match(0, 0));
     }
 
     /**
@@ -78,13 +78,13 @@ public class Regex {
      * Default impl loops `find` + advances past each match.
      */
     public ArrayList<Match> findAll(String input) {
-        ArrayList<Match> out = #new ArrayList<Match>();
+        ArrayList<Match> out = #heap ArrayList<Match>();
         int32 cursor = 0;
         while (cursor < input.count()) {
             String tail = input.substring(cursor);
             Optional<Match> m = this.find(tail);
             if (m.isEmpty()) { break; }
-            out.add(#new Match(cursor + m.get().start(),
+            out.add(#heap Match(cursor + m.get().start(),
                                cursor + m.get().end()));
             cursor = cursor + m.get().end();
             if (m.get().end() == m.get().start()) {

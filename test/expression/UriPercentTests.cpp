@@ -109,7 +109,7 @@ TEST(UriPercentTests, colonRawInUserinfoEncodedInHost) {
 
 TEST(UriPercentTests, utf8MultibyteEncodesEachByte) {
     EXPECT_EQ(runI32(makeSource(
-        "int8[] b = new int8[2];\n"
+        "int8[] b = heap int8[2];\n"
         "b[0] = (int8) 0xC3;\n"
         "b[1] = (int8) 0xA9;\n"
         "String raw = heap String(#b, 2);\n"
@@ -156,7 +156,7 @@ TEST(UriPercentTests, encodeDecodeRoundTripReservedAndUtf8) {
     // A corpus mixing ASCII delimiters and raw UTF-8 bytes built
     // explicitly (0xC3 0xA9 = 'é'), avoiding \u string-literal reliance.
     EXPECT_EQ(runI32(makeSource(
-        "int8[] b = new int8[12];\n"
+        "int8[] b = heap int8[12];\n"
         "b[0]=(int8)97; b[1]=(int8)32; b[2]=(int8)47; b[3]=(int8)63;\n"   // 'a',' ','/','?'
         "b[4]=(int8)35; b[5]=(int8)38; b[6]=(int8)61; b[7]=(int8)43;\n"   // '#','&','=','+'
         "b[8]=(int8)0xC3; b[9]=(int8)0xA9;\n"                             // UTF-8 'é'

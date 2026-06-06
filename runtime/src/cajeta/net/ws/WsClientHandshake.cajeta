@@ -111,7 +111,7 @@ public class WsClientHandshake {
      * varies it per connection.
      */
     public static #String placeholderKey(int32 seed) {
-        int8[] raw = new int8[16];
+        int8[] raw = heap int8[16];
         int32 x = seed;
         int32 i = 0;
         while (i < 16) {

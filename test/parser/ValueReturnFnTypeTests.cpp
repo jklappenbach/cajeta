@@ -131,7 +131,7 @@ TEST(ValueReturnFnTypeTests, ownershipFormConstructorRefStillWorks) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        () -> #Counter ctor = Counter::new;\n"
+        "        () -> #Counter ctor = Counter::heap;\n"
         "        Counter c = ctor();\n"
         "        return c.v;\n"
         "    }\n"

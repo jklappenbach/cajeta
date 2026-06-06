@@ -45,7 +45,7 @@ TEST(LambdaL3Tests, transferCaptureRunsWithinScope) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[5];\n"
+        "        int32[] arr = heap int32[5];\n"
         "        () -> int64 fn = () -> #arr.count();\n"
         "        return (int32) fn();\n"
         "    }\n"
@@ -62,7 +62,7 @@ TEST(LambdaL3Tests, outerUseAfterTransferIsCompileError) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        () -> int64 fn = () -> #arr.count();\n"
         "        int64 size = arr.count();\n"  // use-after-move
         "        return (int32) size;\n"
@@ -103,8 +103,8 @@ TEST(LambdaL3Tests, transferAndBorrowCoexist) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] taken = new int32[2];\n"
-        "        int32[] kept = new int32[7];\n"
+        "        int32[] taken = heap int32[2];\n"
+        "        int32[] kept = heap int32[7];\n"
         "        () -> int64 fn = () -> #taken.count() + kept.count();\n"
         "        int64 keptSize = kept.count();\n"  // still readable
         "        return (int32) fn() + (int32) keptSize;\n"
@@ -143,7 +143,7 @@ TEST(LambdaL3Tests, returnClosureWithBorrowCaptureIsError) {
         "package test;\n"
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        () -> int64 fn = () -> arr.count();\n"
         "        return fn;\n"
         "    }\n"
@@ -160,7 +160,7 @@ TEST(LambdaL3Tests, returnFreshLambdaWithBorrowCaptureIsError) {
         "package test;\n"
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        return () -> arr.count();\n"
         "    }\n"
         "    public static int32 run() { return 0; }\n"
@@ -200,7 +200,7 @@ TEST(LambdaL3Tests, returnClosureWithOnlyTransferCapturesAllowed) {
         "package test;\n"
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
-        "        int32[] arr = new int32[4];\n"
+        "        int32[] arr = heap int32[4];\n"
         "        () -> int64 fn = () -> #arr.count();\n"
         "        return fn;\n"
         "    }\n"
@@ -265,7 +265,7 @@ int64_t observeDrops(const std::string& body) {
 // record. The drop chain registers one increment for the active entry.
 TEST(LambdaL3Tests, transferCaptureClosureDropsOnce) {
     EXPECT_EQ(observeDrops(
-        "int32[] arr = new int32[3];\n"
+        "int32[] arr = heap int32[3];\n"
         "        () -> int64 fn = () -> #arr.count();"), 1);
 }
 
@@ -275,7 +275,7 @@ TEST(LambdaL3Tests, transferCaptureClosureDropsOnce) {
 // not the borrowed array) and one for the outer's array.
 TEST(LambdaL3Tests, borrowCaptureClosureDropsBothEntries) {
     EXPECT_EQ(observeDrops(
-        "int32[] arr = new int32[3];\n"
+        "int32[] arr = heap int32[3];\n"
         "        () -> int64 fn = () -> arr.count();"), 2);
 }
 
@@ -308,7 +308,7 @@ TEST(LambdaL3Tests, returnedTransferCaptureClosureCallable) {
         "package test;\n"
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
-        "        int32[] arr = new int32[5];\n"
+        "        int32[] arr = heap int32[5];\n"
         "        () -> int64 fn = () -> #arr.count();\n"
         "        return fn;\n"
         "    }\n"
@@ -368,7 +368,7 @@ TEST(LambdaL3Tests, escapedClosureDropFiresInCaller) {
         "package test;\n"
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
-        "        int32[] arr = new int32[4];\n"
+        "        int32[] arr = heap int32[4];\n"
         "        () -> int64 fn = () -> #arr.count();\n"
         "        return fn;\n"
         "    }\n"
@@ -415,7 +415,7 @@ TEST(LambdaL3Tests, transferInsideIfBranchOfLambdaMovesOuter) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        (boolean) -> int64 fn = (b) -> {\n"
         "            if (b) {\n"
         "                return #arr.count();\n"
@@ -441,7 +441,7 @@ TEST(LambdaL3Tests, transferInsideForBodyOfLambdaMovesOuter) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[3];\n"
+        "        int32[] arr = heap int32[3];\n"
         "        (int32) -> int64 fn = (n) -> {\n"
         "            int64 acc = 0L;\n"
         "            for (int32 i = 0; i < n; i = i + 1) {\n"
@@ -470,7 +470,7 @@ TEST(LambdaL3Tests, transferInsideIfBranchOfLambdaRunsWhenNoOuterUse) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = new int32[6];\n"
+        "        int32[] arr = heap int32[6];\n"
         "        (boolean) -> int64 fn = (b) -> {\n"
         "            if (b) {\n"
         "                return #arr.count();\n"

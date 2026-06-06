@@ -98,7 +98,7 @@ public class WsMessageAssembler {
         this.maxMessage = WsMessageAssembler.DEFAULT_MAX_MESSAGE;
         this.inProgress = false;
         this.msgOpcode = 0;
-        this.buf = new int8[0];
+        this.buf = heap int8[0];
         this.bufLen = 0;
     }
 
@@ -198,7 +198,7 @@ public class WsMessageAssembler {
             // emit directly, copying the payload so the message owns its
             // own bytes (the frame's payload is dropped with the frame).
             this.checkLimit((int64) payLen);
-            int8[] out = new int8[payLen];
+            int8[] out = heap int8[payLen];
             int32 i = 0;
             while (i < payLen) {
                 out[i] = pay[i];
@@ -211,7 +211,7 @@ public class WsMessageAssembler {
         this.inProgress = true;
         this.msgOpcode = op;
         this.bufLen = 0;
-        this.buf = new int8[0];
+        this.buf = heap int8[0];
         this.appendPayload(pay, payLen);
         return null;
     }
@@ -259,7 +259,7 @@ public class WsMessageAssembler {
         while (newCap < need) {
             newCap = newCap * 2;
         }
-        int8[] grown = new int8[newCap];
+        int8[] grown = heap int8[newCap];
         int32 i = 0;
         while (i < this.bufLen) {
             grown[i] = this.buf[i];
@@ -278,7 +278,7 @@ public class WsMessageAssembler {
      */
     WsMessage finishMessage() {
         int32 n = this.bufLen;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             out[i] = this.buf[i];
@@ -289,7 +289,7 @@ public class WsMessageAssembler {
         this.inProgress = false;
         this.msgOpcode = 0;
         this.bufLen = 0;
-        this.buf = new int8[0];
+        this.buf = heap int8[0];
         return WsMessage.of(op, #out);
     }
 }

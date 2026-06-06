@@ -498,7 +498,7 @@ public static int32 main() {
     var wsServer = HttpServer.builder()
         .mode(ServerMode.EVENT_DRIVEN)
         .reactorThreads(4)
-        .route(Method.GET, "/feed", WebSocket.asyncHandler(new FanoutHandler()))
+        .route(Method.GET, "/feed", WebSocket.asyncHandler(heap FanoutHandler()))
         .tls(serverTls)
         .build();
     wsServer.bind(InetAddress.ANY, 9443);
@@ -799,8 +799,8 @@ Wiring into the HTTP server:
 
 ```cajeta
 Router router = Router.builder()
-    .GET("/api/users", new UserListHandler())
-    .GET("/ws/chat", WebSocket.handler(new ChatHandler()));   // one endpoint, dual mode
+    .GET("/api/users", heap UserListHandler())
+    .GET("/ws/chat", WebSocket.handler(heap ChatHandler()));   // one endpoint, dual mode
 
 HttpServer server = HttpServer.builder()
     .router(router)

@@ -109,7 +109,7 @@ public final class DnsCache {
      * @param resolver   the miss backend (takes ownership).
      */
     public DnsCache(int32 maxEntries, Duration ttl, #Resolver resolver) {
-        this.store = #new Cache<String, DnsCacheEntry>(maxEntries);
+        this.store = heap Cache<String, DnsCacheEntry>(maxEntries);
         this.store.setMaxAge(ttl);
         this.resolver = resolver;
         this.cacheFailures = true;
@@ -245,7 +245,7 @@ public final class DnsCache {
         int8[] hostBytes = host.bytes;
         int32 hostLen = host.byteLength;
         int32 total = hostLen + 1;
-        int8[] keyBytes = new int8[total];
+        int8[] keyBytes = heap int8[total];
         keyBytes[0] = (int8) tag;
         int32 i = 0;
         while (i < hostLen) {
@@ -267,7 +267,7 @@ public final class DnsCache {
     private static #SocketAddress[] bakePort(SocketAddress[] cached,
                                              int32 port) {
         int32 n = cached.count();
-        SocketAddress[] out = new SocketAddress[n];
+        SocketAddress[] out = heap SocketAddress[n];
         int32 i = 0;
         while (i < n) {
             IpAddress srcIp = cached[i].getIp();
@@ -291,7 +291,7 @@ public final class DnsCache {
      * owned `String` (the v1 `String` has no `concat`).
      */
     private static #String failureMessage(String host) {
-        int8[] prefix = new int8[18];
+        int8[] prefix = heap int8[18];
         prefix[0] = (int8) 102;   // 'f'
         prefix[1] = (int8) 97;    // 'a'
         prefix[2] = (int8) 105;   // 'i'
@@ -314,7 +314,7 @@ public final class DnsCache {
         int8[] hostBytes = host.bytes;
         int32 hostLen = host.byteLength;
         int32 total = 18 + hostLen;
-        int8[] msg = new int8[total];
+        int8[] msg = heap int8[total];
         int32 i = 0;
         while (i < 18) {
             msg[i] = prefix[i];

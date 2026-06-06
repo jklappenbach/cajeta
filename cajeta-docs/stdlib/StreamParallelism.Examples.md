@@ -17,7 +17,7 @@ treat the example as the source of truth.
 ### 1.1 — Parallel count
 
 ```cajeta
-int32[] xs = new int32[10_000];
+int32[] xs = heap int32[10_000];
 for (int32 i = 0; i < 10_000; i = i + 1) { xs[i] = i; }
 
 int32 n = xs.stream().parallel().count();
@@ -642,7 +642,7 @@ pool (v2).
 
 ```cajeta
 async void caller() {
-    int32[] xs = new int32[1000];
+    int32[] xs = heap int32[1000];
     detach xs.stream().parallel().forEach((x) -> process(x));
     // ^ rejected: detach + parallel = no scope to anchor xs's borrow
 }
@@ -676,7 +676,7 @@ error[detach-borrow-capture]: cannot detach a parallel stream
 ### 4.1 — Zero-element source
 
 ```cajeta
-int32[] empty = new int32[0];
+int32[] empty = heap int32[0];
 int32 n = empty.stream().parallel().count();   // n == 0
 ```
 
@@ -1240,7 +1240,7 @@ Touches:
   - `ParallelDriver.foldParallelChain` — call `supplier()` once
     per worker partial-slot init instead of storing `seed`.
   - `cajeta.collection.Collectors.toList<T>` — supply
-    `() -> new ArrayList<T>()` alongside the existing accumulator
+    `() -> heap ArrayList<T>()` alongside the existing accumulator
     and combiner.
   - `Stream<T>.collect<R>` — pass `c.supplier` through to the
     parallel driver; sequential path stays on the seed-or-first

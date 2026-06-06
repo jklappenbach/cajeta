@@ -347,7 +347,7 @@ public view PacketHeader {
 
 public void parse(byte[] buf) {
     PacketHeader h = stack PacketHeader(buf);   // borrow; buf still owned by caller
-    if (h.magic != 0xCAFE) throw new ProtocolException(...);
+    if (h.magic != 0xCAFE) throw heap ProtocolException(...);
     process(h.payloadLength);
 }
 ```
@@ -451,7 +451,7 @@ Structured concurrency in the style of Rust's `tokio::scope` / Kotlin's `corouti
 
 ```cajeta
 public static async int32 fetchAll(String[] urls) {
-    int32[] sizes = new int32[urls.length];
+    int32[] sizes = heap int32[urls.length];
     scope {
         for (int32 i = 0; i < urls.length; i = i + 1) {
             spawn fetchOne(urls[i], sizes, i);   // scope joins all spawned before continuing

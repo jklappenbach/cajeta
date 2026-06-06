@@ -36,7 +36,7 @@ import cajeta.lang.String;
  *
  * Streaming (the download path):
  * ```cajeta
- * Sha256 sum = new Sha256();
+ * Sha256 sum = heap Sha256();
  * sum.update(chunk1, chunk1.count());
  * sum.update(chunk2, chunk2.count());
  * String hex = sum.hex();      // finalize → 64-char lowercase hex
@@ -135,7 +135,7 @@ public final class Sha256 implements Hasher {
      * `int8[32]` and transfers ownership to the caller.
      */
     public static #int8[] hash(int8[] data, int64 len) {
-        int8[] out = new int8[32];
+        int8[] out = heap int8[32];
         Sha256.oneshotInto(data, len, out);
         return #out;
     }
@@ -145,7 +145,7 @@ public final class Sha256 implements Hasher {
      * common shape for checksum comparison against a published string.
      */
     public static #String hashHex(int8[] data, int64 len) {
-        int8[] hex = new int8[64];
+        int8[] hex = heap int8[64];
         Sha256.oneshotHexInto(data, len, hex);
         return heap String(#hex, 64);
     }
@@ -180,7 +180,7 @@ public final class Sha256 implements Hasher {
      * subsequent updates produce undefined results until `reset()`.
      */
     public #int8[] digest() {
-        int8[] out = new int8[32];
+        int8[] out = heap int8[32];
         Sha256.finalizeInto(this.state, out);
         return #out;
     }
@@ -192,7 +192,7 @@ public final class Sha256 implements Hasher {
      * against the manifest value.
      */
     public #String hex() {
-        int8[] out = new int8[64];
+        int8[] out = heap int8[64];
         Sha256.finalizeHexInto(this.state, out);
         return heap String(#out, 64);
     }

@@ -23,13 +23,13 @@ using cajeta_test::CajetaJit;
 namespace {
 
 // Emit Cajeta statements that materialize `input` into an int8[] named
-// `data` of length max(N,1) (a zero-length `new int8[0]` is avoided to
+// `data` of length max(N,1) (a zero-length `heap int8[0]` is avoided to
 // keep the snippet uniform; the codec is always called with the true
 // length).
 std::string emitDataArray(const std::string& input) {
     size_t n = input.size();
     std::string src =
-        "        int8[] data = new int8["
+        "        int8[] data = heap int8["
         + std::to_string(n ? n : 1) + "];\n";
     for (size_t i = 0; i < n; i++) {
         src += "        data[" + std::to_string(i) + "L] = (int8) "
@@ -186,7 +186,7 @@ TEST(Base64Tests, roundTripAllByteValues) {
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] data = new int8[256];\n"
+        "        int8[] data = heap int8[256];\n"
         "        int32 i = 0;\n"
         "        while (i < 256) { data[(int64) i] = (int8) i; i = i + 1; }\n"
         "        String enc = Base64.encode(data, 256L);\n"
@@ -226,7 +226,7 @@ TEST(Base64Tests, roundTripStdAndUrlSafe) {
         "    public static int32 run() {\n"
         "        int32 len = 0;\n"
         "        while (len <= 96) {\n"
-        "            int8[] data = new int8[len];\n"
+        "            int8[] data = heap int8[len];\n"
         "            int32 j = 0;\n"
         "            while (j < len) {\n"
         "                data[(int64) j] = (int8) ((j * 7 + 3) & 0xff);\n"

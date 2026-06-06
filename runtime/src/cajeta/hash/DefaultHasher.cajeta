@@ -29,14 +29,14 @@ import cajeta.lang.String;
  *
  * ```cajeta
  * // Compose a structural digest with extra context.
- * DefaultHasher hasher = new DefaultHasher();
+ * DefaultHasher hasher = heap DefaultHasher();
  * hasher.writeObject(order);     // structural fold of the object
  * hasher.writeString(tenantId);  // extra context: tenant
  * hasher.writeInt64(epoch);      // extra context: deploy epoch
  * int64 digest = hasher.finish();
  *
  * // Snapshot replay: rebuild with a shipped seed.
- * DefaultHasher replay = new DefaultHasher(seed);
+ * DefaultHasher replay = heap DefaultHasher(seed);
  * ```
  *
  * Folds values through a backing `XXHash3` and satisfies the
@@ -59,13 +59,13 @@ public final class DefaultHasher implements Hasher {
      * shape) — digests match the compiler-synthesized `Object.hash()`.
      *
      * ```cajeta
-     * DefaultHasher hasher = new DefaultHasher();
+     * DefaultHasher hasher = heap DefaultHasher();
      * hasher.writeObject(payload);
      * int64 digest = hasher.finish();
      * ```
      */
     public DefaultHasher() {
-        this.backing = new XXHash3();
+        this.backing = heap XXHash3();
     }
 
     /**
@@ -75,13 +75,13 @@ public final class DefaultHasher implements Hasher {
      *
      * ```cajeta
      * int64 seed = Hash.processSeed();   // captured in the source process
-     * DefaultHasher replay = new DefaultHasher(seed);
+     * DefaultHasher replay = heap DefaultHasher(seed);
      * replay.writeObject(payload);
      * int64 digest = replay.finish();
      * ```
      */
     public DefaultHasher(int64 seedArg) {
-        this.backing = new XXHash3(seedArg);
+        this.backing = heap XXHash3(seedArg);
     }
 
     // --- Hasher delegation ------------------------------------------

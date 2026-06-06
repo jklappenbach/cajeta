@@ -61,7 +61,7 @@ public class RingBuffer {
      * means "only resume when fully drained".
      */
     public RingBuffer(int32 capacity, int32 low, int32 high) {
-        this.data = new int8[capacity];
+        this.data = heap int8[capacity];
         this.cap = capacity;
         this.head = 0;
         this.tail = 0;

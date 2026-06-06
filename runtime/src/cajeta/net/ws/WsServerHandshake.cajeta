@@ -104,7 +104,7 @@ public class WsServerHandshake {
      */
     public static #String acceptKey(String key) {
         String g = WsServerHandshake.guid();
-        Sha1 h = new Sha1();
+        Sha1 h = heap Sha1();
         h.update(key.bytes, (int64) key.byteLength);
         h.update(g.bytes, (int64) g.byteLength);
         int8[] digest = h.digest();                 // 20 bytes

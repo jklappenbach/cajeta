@@ -47,7 +47,7 @@ public class WsMessage {
      */
     public WsMessage() {
         this.opcode = 2;            // WsOpcode.BINARY
-        this.payload = new int8[0];
+        this.payload = heap int8[0];
     }
 
     /**

@@ -125,11 +125,11 @@ public class LtmPager<K, V> {
             this.readHeader();
         }
 
-        this.framePageId = new int64[capacity];
-        this.frameNode = new LtmBPlusTreeNode<K, V>[capacity];
-        this.frameDirty = new boolean[capacity];
-        this.framePins = new int32[capacity];
-        this.frameUsed = new int64[capacity];
+        this.framePageId = heap int64[capacity];
+        this.frameNode = heap LtmBPlusTreeNode<K, V>[capacity];
+        this.frameDirty = heap boolean[capacity];
+        this.framePins = heap int32[capacity];
+        this.frameUsed = heap int64[capacity];
         int32 i = 0;
         while (i < capacity) {
             this.framePageId[i] = -1;
@@ -195,7 +195,7 @@ public class LtmPager<K, V> {
         // which lowers to `sext ptr` and fails verification.
         int32 psz = this.pageSize;
         int64 ps = (int64) psz;
-        int8[] buf = new int8[psz];
+        int8[] buf = heap int8[psz];
         int64 off = pageId * ps;
         this.file.seek(off);
         this.file.read(buf, 0, ps);
@@ -350,7 +350,7 @@ public class LtmPager<K, V> {
     private void writeHeader() {
         int32 psz = this.pageSize;
         int64 ps = (int64) psz;
-        int8[] buf = new int8[psz];
+        int8[] buf = heap int8[psz];
         this.putI32(buf, 0, 0x42504C54);
         this.putI32(buf, 4, this.order);
         this.putI64(buf, 8, this.rootPageId);
@@ -364,7 +364,7 @@ public class LtmPager<K, V> {
     private void readHeader() {
         int32 psz = this.pageSize;
         int64 ps = (int64) psz;
-        int8[] buf = new int8[psz];
+        int8[] buf = heap int8[psz];
         this.file.seek(0);
         this.file.read(buf, 0, ps);
         this.order = this.getI32(buf, 4);
@@ -383,7 +383,7 @@ public class LtmPager<K, V> {
      */
     private #int8[] serializeNode(LtmBPlusTreeNode<K, V> node) {
         int32 psz = this.pageSize;
-        int8[] buf = new int8[psz];
+        int8[] buf = heap int8[psz];
         int32 leafByte = 0;
         if (node.leaf) {
             leafByte = 1;
@@ -453,7 +453,7 @@ public class LtmPager<K, V> {
         while (i < numKeys) {
             int32 klen = this.getI32(buf, p);
             p = p + 4;
-            int8[] kslice = new int8[klen];
+            int8[] kslice = heap int8[klen];
             int32 j = 0;
             while (j < klen) {
                 kslice[j] = buf[p + j];
@@ -469,7 +469,7 @@ public class LtmPager<K, V> {
             while (i < numKeys) {
                 int32 vlen = this.getI32(buf, p);
                 p = p + 4;
-                int8[] vslice = new int8[vlen];
+                int8[] vslice = heap int8[vlen];
                 int32 j = 0;
                 while (j < vlen) {
                     vslice[j] = buf[p + j];

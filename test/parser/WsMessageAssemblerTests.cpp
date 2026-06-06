@@ -50,10 +50,10 @@ int32_t runI32(const std::string& body) {
     return fn();
 }
 
-// Emit Cajeta that declares `int8[] <name> = new int8[N];` filled from an
+// Emit Cajeta that declares `int8[] <name> = heap int8[N];` filled from an
 // ASCII string literal's bytes (single-byte chars only).
 std::string emitAscii(const std::string& name, const std::string& text) {
-    std::string s = "int8[] " + name + " = new int8[" +
+    std::string s = "int8[] " + name + " = heap int8[" +
                     std::to_string(text.size()) + "];\n";
     for (size_t i = 0; i < text.size(); i++) {
         s += name + "[" + std::to_string(i) + "] = (int8) " +
@@ -175,7 +175,7 @@ TEST(WsMessageAssemblerTests, interleavedControlFrameDoesNotCorruptMessage) {
         // wire: 0102 4142  (FIN=0 text "AB")
         //       8900       (ping, empty)
         //       8002 4344  (FIN=1 continuation "CD")
-        "int8[] wire = new int8[10];\n"
+        "int8[] wire = heap int8[10];\n"
         "wire[0] = (int8) 1;\n"     // 0x01 FIN=0 text
         "wire[1] = (int8) 2;\n"     // len 2
         "wire[2] = (int8) 65;\n"    // 'A'
@@ -257,7 +257,7 @@ TEST(WsMessageAssemblerTests, interleavedDataFrameRejected) {
 // A lone frame whose payload exceeds the cap is MessageTooLarge.
 TEST(WsMessageAssemblerTests, oversizeSingleFrameRejected) {
     EXPECT_EQ(runI32(
-        "int8[] p = new int8[200];\n"
+        "int8[] p = heap int8[200];\n"
         "int32 i = 0;\n"
         "while (i < 200) { p[i] = (int8) 90; i = i + 1; }\n"
         "WsFrame f = WsFrame.of(true, WsOpcode.BINARY, false, #p);\n"
@@ -279,15 +279,15 @@ TEST(WsMessageAssemblerTests, oversizeSingleFrameRejected) {
 // distinct from the per-frame guard).
 TEST(WsMessageAssemblerTests, accumulatedFragmentsExceedLimit) {
     EXPECT_EQ(runI32(
-        "int8[] chunk = new int8[40];\n"
+        "int8[] chunk = heap int8[40];\n"
         "int32 i = 0;\n"
         "while (i < 40) { chunk[i] = (int8) 65; i = i + 1; }\n"
         "WsMessageAssembler asm = WsMessageAssembler.create();\n"
         "asm.withMaxMessageLength((int64) 100);\n"
         // 40 + 40 = 80 (ok), + 40 = 120 (> 100) -> reject on the 3rd.
-        "int8[] c0 = new int8[40];\n"
-        "int8[] c1 = new int8[40];\n"
-        "int8[] c2 = new int8[40];\n"
+        "int8[] c0 = heap int8[40];\n"
+        "int8[] c1 = heap int8[40];\n"
+        "int8[] c2 = heap int8[40];\n"
         "int32 j = 0;\n"
         "while (j < 40) { c0[j] = (int8) 65; c1[j] = (int8) 65; c2[j] = (int8) 65; j = j + 1; }\n"
         "WsFrame f0 = WsFrame.of(false, WsOpcode.BINARY, false, #c0);\n"
@@ -309,7 +309,7 @@ TEST(WsMessageAssemblerTests, accumulatedFragmentsExceedLimit) {
 // ceiling, not a strict-less-than).
 TEST(WsMessageAssemblerTests, exactlyAtLimitAccepted) {
     EXPECT_EQ(runI32(
-        "int8[] p = new int8[100];\n"
+        "int8[] p = heap int8[100];\n"
         "int32 i = 0;\n"
         "while (i < 100) { p[i] = (int8) 88; i = i + 1; }\n"
         "WsFrame f = WsFrame.of(true, WsOpcode.BINARY, false, #p);\n"

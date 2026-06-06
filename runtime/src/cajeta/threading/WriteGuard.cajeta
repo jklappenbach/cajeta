@@ -14,7 +14,7 @@ package cajeta.threading;
  *
  * ```cajeta
  * void scope() {
- *     WriteGuard g = new WriteGuard(handle);   // write lock held here
+ *     WriteGuard g = heap WriteGuard(handle);   // write lock held here
  *     // ... exclusive critical section ...
  * }                                            // g drops -> write lock released
  * ```

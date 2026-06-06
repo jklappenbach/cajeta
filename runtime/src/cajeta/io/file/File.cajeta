@@ -24,7 +24,7 @@ import cajeta.lang.String;
  * // Seekable random-access handle.
  * #File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
  * f.seek(4096);
- * int8[] page = new int8[512];
+ * int8[] page = heap int8[512];
  * f.read(page, 0, 512);
  * f.close();
  * ```
@@ -72,7 +72,7 @@ public class File {
      * ```
      */
     public static #int8[] readAllBytes(String path) {
-        int8[] empty = new int8[0];
+        int8[] empty = heap int8[0];
         return empty;
     }
 
@@ -82,7 +82,7 @@ public class File {
      * `__cajeta_file_write_all(path, data, len)`.
      *
      * ```cajeta
-     * int8[] data = new int8[3];
+     * int8[] data = heap int8[3];
      * File.writeAllBytes("/tmp/out.bin", data, 3);
      * ```
      */
@@ -129,7 +129,7 @@ public class File {
      * ```cajeta
      * #File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
      * f.seek(1024);
-     * int8[] buf = new int8[64];
+     * int8[] buf = heap int8[64];
      * f.read(buf, 0, 64);
      * f.close();
      * ```

@@ -625,7 +625,7 @@ class Cache extends ArrayList<int32>, Histogram {
     // ArrayList.count() returns element count
     // Histogram.count() returns bucket count
 }
-Cache c = new Cache();
+Cache c = heap Cache();
 int32 n = c.count();    // ERROR — CAJETA_ERROR_AMBIGUOUS_METHOD_DISPATCH
 ```
 
@@ -648,7 +648,7 @@ class A extends Hashable { ... }
 class B extends Hashable { ... }
 class C extends A, B { }       // Hashable is shared (P-4 default)
 
-C c = new C();
+C c = heap C();
 c[A].seed = 99;
 int64 viaA = c[A].seed;        // 99
 int64 viaB = c[B].seed;        // 99 — shared Hashable

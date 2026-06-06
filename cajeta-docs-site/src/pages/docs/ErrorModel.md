@@ -55,7 +55,7 @@ A method that can throw a `RecoverableException` subtype declares it in its `thr
 ```cajeta
 public int32 readPort(int32 port) throws IOException {
     if (port < 0) {
-        throw new IOException("invalid port: " + port);
+        throw heap IOException("invalid port: " + port);
     }
     return 42;
 }
@@ -132,7 +132,7 @@ Catches by-type are dispatched in source order; the first arm whose type is a su
 ## Throwing
 
 ```cajeta
-throw new IOException("disk full");
+throw heap IOException("disk full");
 ```
 
 `throw` is a statement (like `return`). The exception value must be an instance of `Throwable` (or subtype). The drop chain unwinds owned locals on the way up.
@@ -157,7 +157,7 @@ Stack-trace capture is **opt-out for `UnrecoverableException`** (default: captur
 Rationale: unrecoverables are rare and worth debugging — paying the stack-walk cost is fine. Recoverables can be thrown in hot loops (parser fast-fail, retry idioms) where the per-throw cost matters. Devs who want the trace on a specific recoverable can request it at construction:
 
 ```cajeta
-throw new IOException("disk full", captureTrace: true);
+throw heap IOException("disk full", captureTrace: true);
 ```
 
 If no trace was captured, the printed exception just shows type + message + cause chain.
@@ -301,7 +301,7 @@ public int32 vtableLookup(VTable v, int64 hash) {
         if (mhash < hash) lo = mid + 1;
         else hi = mid - 1;
     }
-    throw new AssertionError("vtable hash not found — caller invoked a method not in this vtable");
+    throw heap AssertionError("vtable hash not found — caller invoked a method not in this vtable");
 }
 ```
 

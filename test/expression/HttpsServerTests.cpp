@@ -60,7 +60,7 @@ bool makeSelfSigned(const char* cn, std::string& certPem, std::string& keyPem) {
 }
 
 std::string emitBytes(const std::string& name, const std::string& data) {
-    std::string s = "        int8[] " + name + " = new int8["
+    std::string s = "        int8[] " + name + " = heap int8["
                   + std::to_string(data.size()) + "];\n";
     for (size_t i = 0; i < data.size(); i++) {
         s += "        " + name + "[" + std::to_string(i) + "L] = (int8) "

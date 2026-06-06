@@ -350,7 +350,7 @@ viable.
 
 `MemoryModel.md`:
 
-- Line ~41 / ~102 — change `new T(...)` references to `heap T(...)` (the
+- Line ~41 / ~102 — change `heap T(...)` references to `heap T(...)` (the
   `new` keyword was retired in Phase 7).
 - Line ~102 — remove "Plain `p.field = y` where `y` is a named borrow
   is a static error." Replace with: "Borrows may be stored in fields.

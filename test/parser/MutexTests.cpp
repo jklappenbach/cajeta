@@ -41,7 +41,7 @@ int32_t runI32(const std::string& dBody) {
 TEST(MutexTests, constructAndDestroy) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Mutex<int32> m = new Mutex<int32>(7);\n"
+        "        Mutex<int32> m = heap Mutex<int32>(7);\n"
         "        return 1;\n"
         "    }\n"
     ), 1);
@@ -51,7 +51,7 @@ TEST(MutexTests, constructAndDestroy) {
 TEST(MutexTests, getReturnsInitial) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Mutex<int32> m = new Mutex<int32>(42);\n"
+        "        Mutex<int32> m = heap Mutex<int32>(42);\n"
         "        return m.get();\n"
         "    }\n"
     ), 42);
@@ -62,7 +62,7 @@ TEST(MutexTests, getReturnsInitial) {
 TEST(MutexTests, withLockMutatesProtectedValue) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Mutex<int32> m = new Mutex<int32>(0);\n"
+        "        Mutex<int32> m = heap Mutex<int32>(0);\n"
         "        m.withLock((int32 v) -> v + 5);\n"
         "        return m.get();\n"
         "    }\n"
@@ -74,7 +74,7 @@ TEST(MutexTests, withLockMutatesProtectedValue) {
 TEST(MutexTests, repeatedWithLockAccumulates) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Mutex<int32> m = new Mutex<int32>(0);\n"
+        "        Mutex<int32> m = heap Mutex<int32>(0);\n"
         "        m.withLock((int32 v) -> v + 5);\n"
         "        m.withLock((int32 v) -> v + 10);\n"
         "        m.withLock((int32 v) -> v * 2);\n"
@@ -87,8 +87,8 @@ TEST(MutexTests, repeatedWithLockAccumulates) {
 TEST(MutexTests, twoIndependentMutexes) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Mutex<int32> a = new Mutex<int32>(1);\n"
-        "        Mutex<int32> b = new Mutex<int32>(100);\n"
+        "        Mutex<int32> a = heap Mutex<int32>(1);\n"
+        "        Mutex<int32> b = heap Mutex<int32>(100);\n"
         "        a.withLock((int32 v) -> v + 1);\n"
         "        b.withLock((int32 v) -> v + 1);\n"
         "        return a.get() + b.get();\n"
@@ -101,7 +101,7 @@ TEST(MutexTests, twoIndependentMutexes) {
 TEST(MutexTests, withLockWhenConditionAlreadyTrue) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Mutex<int32> m = new Mutex<int32>(20);\n"
+        "        Mutex<int32> m = heap Mutex<int32>(20);\n"
         "        m.withLockWhen((int32 v) -> v >= 10, (int32 v) -> v + 1);\n"
         "        return m.get();\n"
         "    }\n"
@@ -124,7 +124,7 @@ TEST(MutexTests, withLockWhenProducerConsumer) {
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        Mutex<int32> m = new Mutex<int32>(0);\n"
+        "        Mutex<int32> m = heap Mutex<int32>(0);\n"
         "        scope {\n"
         "            spawn consumer(m);\n"
         "            spawn producer(m);\n"

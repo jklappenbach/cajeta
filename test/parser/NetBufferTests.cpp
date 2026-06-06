@@ -49,11 +49,11 @@ TEST(ByteBufferTests, writeThenReadRoundTrips) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(16);\n"
-        "        int8[] src = new int8[4];\n"
+        "        int8[] src = heap int8[4];\n"
         "        src[0] = (int8) 10; src[1] = (int8) 20;\n"
         "        src[2] = (int8) 30; src[3] = (int8) 40;\n"
         "        int32 w = b.write(src, 0, 4);\n"
-        "        int8[] dst = new int8[4];\n"
+        "        int8[] dst = heap int8[4];\n"
         "        int32 r = b.read(dst, 0, 4);\n"
         "        int32 sum = ((int32) dst[0]) + ((int32) dst[1])\n"
         "                  + ((int32) dst[2]) + ((int32) dst[3]);\n"
@@ -71,7 +71,7 @@ TEST(ByteBufferTests, writeStopsAtCapacityShortWrite) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(3);\n"
-        "        int8[] src = new int8[5];\n"
+        "        int8[] src = heap int8[5];\n"
         "        int32 i = 0;\n"
         "        while (i < 5) { src[i] = (int8) 1; i = i + 1; }\n"
         "        int32 w = b.write(src, 0, 5);\n"
@@ -121,7 +121,7 @@ TEST(ByteBufferTests, compactSlidesUnreadBytesToFront) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(8);\n"
-        "        int8[] src = new int8[6];\n"
+        "        int8[] src = heap int8[6];\n"
         "        src[0]=(int8)1; src[1]=(int8)2; src[2]=(int8)3;\n"
         "        src[3]=(int8)4; src[4]=(int8)5; src[5]=(int8)6;\n"
         "        b.write(src, 0, 6);\n"
@@ -161,7 +161,7 @@ TEST(ByteBufferTests, reserveGrowsBeyondCapacityPreservingContent) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(4);\n"
-        "        int8[] src = new int8[4];\n"
+        "        int8[] src = heap int8[4];\n"
         "        src[0]=(int8)7; src[1]=(int8)8; src[2]=(int8)9; src[3]=(int8)11;\n"
         "        b.write(src, 0, 4);\n"      // full
         "        b.reserve(8);\n"            // must grow: writable was 0
@@ -191,12 +191,12 @@ TEST(RingBufferTests, writeReadWrapsAround) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(4, 1, 3);\n"
-        "        int8[] a = new int8[3];\n"
+        "        int8[] a = heap int8[3];\n"
         "        a[0]=(int8)1; a[1]=(int8)2; a[2]=(int8)3;\n"
         "        r.write(a, 0, 3);\n"        // size 3, tail at 3
-        "        int8[] out = new int8[2];\n"
+        "        int8[] out = heap int8[2];\n"
         "        r.read(out, 0, 2);\n"       // drains 1,2 ; head at 2, size 1
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0]=(int8)4; b[1]=(int8)5; b[2]=(int8)6;\n"
         "        int32 w = r.write(b, 0, 3);\n"  // free=3 -> all fit, wraps
         "        return w * 100 + r.size();\n"
@@ -213,7 +213,7 @@ TEST(RingBufferTests, writeShortWhenFull) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(4, 1, 4);\n"
-        "        int8[] a = new int8[10];\n"
+        "        int8[] a = heap int8[10];\n"
         "        int32 i = 0;\n"
         "        while (i < 10) { a[i] = (int8) 1; i = i + 1; }\n"
         "        int32 w = r.write(a, 0, 10);\n"  // only 4 fit
@@ -233,13 +233,13 @@ TEST(RingBufferTests, highWatermarkTrips) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(10, 2, 7);\n"
-        "        int8[] a = new int8[6];\n"
+        "        int8[] a = heap int8[6];\n"
         "        int32 i = 0;\n"
         "        while (i < 6) { a[i] = (int8) 1; i = i + 1; }\n"
         "        r.write(a, 0, 6);\n"           // size 6 < high 7
         "        int32 before = 0;\n"
         "        if (r.isOverHighWatermark()) { before = 1; }\n"
-        "        int8[] one = new int8[1];\n"
+        "        int8[] one = heap int8[1];\n"
         "        one[0] = (int8) 9;\n"
         "        r.write(one, 0, 1);\n"          // size 7 == high
         "        int32 after = 0;\n"
@@ -258,13 +258,13 @@ TEST(RingBufferTests, lowWatermarkResumesAfterDrain) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(10, 2, 7);\n"
-        "        int8[] a = new int8[8];\n"
+        "        int8[] a = heap int8[8];\n"
         "        int32 i = 0;\n"
         "        while (i < 8) { a[i] = (int8) 1; i = i + 1; }\n"
         "        r.write(a, 0, 8);\n"            // size 8, over high
         "        int32 highNow = 0;\n"
         "        if (r.isUnderLowWatermark()) { highNow = 1; }\n"  // 8>2 -> 0
-        "        int8[] out = new int8[6];\n"
+        "        int8[] out = heap int8[6];\n"
         "        r.read(out, 0, 6);\n"           // size 2 == low
         "        int32 lowNow = 0;\n"
         "        if (r.isUnderLowWatermark()) { lowNow = 1; }\n"   // 2<=2 -> 1
@@ -282,7 +282,7 @@ TEST(RingBufferTests, peekDoesNotConsume) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(8, 1, 6);\n"
-        "        int8[] a = new int8[4];\n"
+        "        int8[] a = heap int8[4];\n"
         "        a[0]=(int8)11; a[1]=(int8)22; a[2]=(int8)33; a[3]=(int8)44;\n"
         "        r.write(a, 0, 4);\n"
         "        int32 p0 = (int32) r.peek(0);\n"
@@ -302,7 +302,7 @@ TEST(RingBufferTests, skipConsumesWithoutCopy) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(8, 1, 6);\n"
-        "        int8[] a = new int8[5];\n"
+        "        int8[] a = heap int8[5];\n"
         "        a[0]=(int8)1; a[1]=(int8)2; a[2]=(int8)3; a[3]=(int8)4; a[4]=(int8)5;\n"
         "        r.write(a, 0, 5);\n"
         "        int32 sk = r.skip(3);\n"     // drop 1,2,3

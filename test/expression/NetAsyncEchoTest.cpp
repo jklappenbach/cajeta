@@ -78,19 +78,19 @@ TEST(NetAsyncEchoTest, asyncLoopbackEchoRoundTrips) {
         "TcpStream client = TcpStream.connect(#connAddr);\n"
         "TcpStream server = listener.accept();\n"
         // client → server: async write "ping"
-        "int8[] ping = new int8[4];\n"
+        "int8[] ping = heap int8[4];\n"
         "ping[0] = (int8) 112;\n"   // 'p'
         "ping[1] = (int8) 105;\n"   // 'i'
         "ping[2] = (int8) 110;\n"   // 'n'
         "ping[3] = (int8) 103;\n"   // 'g'
         "client.writeAsync(ping, (int64) 0, (int64) 4);\n"
         // server: async read the 4 bytes, then async echo them back
-        "int8[] rbuf = new int8[4];\n"
+        "int8[] rbuf = heap int8[4];\n"
         "int64 got = server.readAsync(rbuf, (int64) 0, (int64) 4);\n"
         "if (got != 4) { return 0; }\n"
         "server.writeAllAsync(rbuf, (int64) 0, got);\n"
         // client: async read the echo back
-        "int8[] echo = new int8[4];\n"
+        "int8[] echo = heap int8[4];\n"
         "int64 echoGot = client.readAsync(echo, (int64) 0, (int64) 4);\n"
         "client.close();\n"
         "server.close();\n"
@@ -120,11 +120,11 @@ TEST(NetAsyncEchoTest, acceptAsyncReturnsPendingConnection) {
         "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
         "TcpStream client = TcpStream.connect(#connAddr);\n"
         "TcpStream server = listener.acceptAsync();\n"
-        "int8[] hi = new int8[2];\n"
+        "int8[] hi = heap int8[2];\n"
         "hi[0] = (int8) 72;\n"   // 'H'
         "hi[1] = (int8) 105;\n"  // 'i'
         "client.writeAsync(hi, (int64) 0, (int64) 2);\n"
-        "int8[] rbuf = new int8[2];\n"
+        "int8[] rbuf = heap int8[2];\n"
         "int64 got = server.readAsync(rbuf, (int64) 0, (int64) 2);\n"
         "client.close();\n"
         "server.close();\n"
@@ -165,15 +165,15 @@ TEST(NetAsyncEchoTest, bufferedReaderWriterRoundTrips) {
         "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
         "TcpStream client = TcpStream.connect(#connAddr);\n"
         "TcpStream server = listener.accept();\n"
-        "AsyncWriter w = new AsyncWriter(client);\n"
-        "int8[] msg = new int8[3];\n"
+        "AsyncWriter w = heap AsyncWriter(client);\n"
+        "int8[] msg = heap int8[3];\n"
         "msg[0] = (int8) 97;\n"   // 'a'
         "msg[1] = (int8) 98;\n"   // 'b'
         "msg[2] = (int8) 99;\n"   // 'c'
         "w.writeAll(msg, 0, 3);\n"
         "w.flush();\n"
-        "AsyncReader r = new AsyncReader(server);\n"
-        "int8[] dst = new int8[3];\n"
+        "AsyncReader r = heap AsyncReader(server);\n"
+        "int8[] dst = heap int8[3];\n"
         "r.readExact(dst, 0, 3);\n"
         "client.close();\n"
         "server.close();\n"
@@ -206,17 +206,17 @@ TEST(NetAsyncEchoTest, connectAsyncLoopbackEchoRoundTrips) {
         "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
         "TcpStream client = TcpStream.connectAsync(#connAddr);\n"
         "TcpStream server = listener.accept();\n"
-        "int8[] ping = new int8[4];\n"
+        "int8[] ping = heap int8[4];\n"
         "ping[0] = (int8) 112;\n"   // 'p'
         "ping[1] = (int8) 105;\n"   // 'i'
         "ping[2] = (int8) 110;\n"   // 'n'
         "ping[3] = (int8) 103;\n"   // 'g'
         "client.writeAsync(ping, (int64) 0, (int64) 4);\n"
-        "int8[] rbuf = new int8[4];\n"
+        "int8[] rbuf = heap int8[4];\n"
         "int64 got = server.readAsync(rbuf, (int64) 0, (int64) 4);\n"
         "if (got != 4) { return 0; }\n"
         "server.writeAllAsync(rbuf, (int64) 0, got);\n"
-        "int8[] echo = new int8[4];\n"
+        "int8[] echo = heap int8[4];\n"
         "int64 echoGot = client.readAsync(echo, (int64) 0, (int64) 4);\n"
         "client.close();\n"
         "server.close();\n"
