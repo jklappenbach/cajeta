@@ -236,14 +236,33 @@ public:
     //   C/D: <8 x float> per lane — lane L holds column (L & 15), rows
     //        { 2*e + (L >> 4) : e = 0..7 } (the wave32 interleaved-row layout).
     // bf16 A/B are carried as <16 x i16> (the same 16 bits) for the intrinsic.
-    // Only 16x16x16 with an f32 accumulator is native (the configs the hardware
-    // exposes that way); anything else falls to the portable Software tier (CM6).
+    //
+    // int8 (CM8) uses the iu8 WMMA — `v_wmma_i32_16x16x16_iu8`: the 16 K-values
+    // of each A row / B column are packed 4-per-i32 into a <4 x i32> fragment,
+    // and the accumulator is <8 x i32> (D = A·B + C in i32). The fragment row/col
+    // mapping across lanes is identical to the f16/bf16 path — only the per-lane
+    // packing and the intrinsic (signed operands, no clamp) differ.
+    //
+    // Native configs (16x16x16): f16/bf16 A·B → f32 accumulator, int8 A·B → i32
+    // accumulator. Anything else falls to the portable Software tier (CM6).
 
     CoopMatrixTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
-                                  uint32_t /*use*/) override {
-        if (rows == 16 && cols == 16 &&
-            (elem->isHalfTy() || elem->isBFloatTy() || elem->isFloatTy()))
-            return CoopMatrixTier::Native;
+                                  uint32_t use) override {
+        // Native 16x16x16 WMMA configs, by tile role:
+        //   A/B operands : f16, bf16, or int8 (the iu8 path).
+        //   accumulator  : f32 (for the f16/bf16 GEMMs) or int32 (for iu8).
+        // The role-awareness keeps an int32 *operand* (no WMMA) on the software
+        // tier while an int32 *accumulator* (the iu8 output) is native — the two
+        // share an LLVM type but not a config.
+        if (rows == 16 && cols == 16) {
+            if (use == 2) {
+                if (elem->isFloatTy() || elem->isIntegerTy(32))
+                    return CoopMatrixTier::Native;
+            } else if (elem->isHalfTy() || elem->isBFloatTy() ||
+                       elem->isIntegerTy(8)) {
+                return CoopMatrixTier::Native;
+            }
+        }
         return CoopMatrixTier::Software;
     }
 
@@ -257,9 +276,20 @@ public:
                                uint32_t /*rows*/, uint32_t /*cols*/,
                                uint32_t use) override {
         llvm::LLVMContext& ctx = m.getContext();
-        if (use == 2)  // accumulator fragment: 8 f32 per lane
-            return llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 8);
-        // A/B operand fragment: 16 elements per lane (bf16 as i16 for the intrinsic).
+        if (use == 2) {
+            // Accumulator fragment: 8 per lane — f32 for f16/bf16 GEMMs,
+            // i32 for the iu8 (int8) GEMM.
+            llvm::Type* ae = elem->isIntegerTy()
+                ? (llvm::Type*) llvm::Type::getInt32Ty(ctx)
+                : (llvm::Type*) llvm::Type::getFloatTy(ctx);
+            return llvm::FixedVectorType::get(ae, 8);
+        }
+        // int8 A/B operand: the 16 K-values are packed 4-per-i32 → <4 x i32>
+        // (the iu8 WMMA fragment encoding).
+        if (elem->isIntegerTy(8))
+            return llvm::FixedVectorType::get(llvm::Type::getInt32Ty(ctx), 4);
+        // f16/bf16 A/B operand fragment: 16 elements per lane (bf16 carried as
+        // i16 for the intrinsic).
         llvm::Type* fe = elem->isBFloatTy()
             ? (llvm::Type*) llvm::Type::getInt16Ty(ctx) : elem;
         return llvm::FixedVectorType::get(fe, 16);
@@ -274,6 +304,29 @@ public:
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
         llvm::Value* frag = llvm::UndefValue::get(vecTy);
+        // int8 A/B operand: an <4 x i32> fragment, each i32 packing 4 consecutive
+        // K-values (k = 4*w .. 4*w+3) as little-endian bytes — the iu8 WMMA
+        // encoding. (The accumulator, use==2, is <8 x i32> with one value per
+        // element and takes the generic per-element path below.)
+        if (use != 2 && fe->isIntegerTy(32)) {
+            llvm::LLVMContext& ctx = m.getContext();
+            llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+            for (unsigned w = 0; w < n; ++w) {
+                llvm::Value* word = llvm::ConstantInt::get(fe, 0);
+                for (unsigned s = 0; s < 4; ++s) {
+                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride);
+                    llvm::Value* p = b.CreateGEP(i8, ptr, rc, "cm.ld.ptr");
+                    llvm::Value* byte = b.CreateLoad(i8, p, "cm.ld");
+                    // zext keeps the raw 8 bits; shift into byte slot s and OR.
+                    llvm::Value* bits = b.CreateShl(
+                        b.CreateZExt(byte, fe),
+                        llvm::ConstantInt::get(fe, s * 8));
+                    word = b.CreateOr(word, bits);
+                }
+                frag = b.CreateInsertElement(frag, word, w);
+            }
+            return frag;
+        }
         for (unsigned e = 0; e < n; ++e) {
             auto rc = fragCoord(b, m, use, e, layout, stride);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.ld.ptr");
@@ -301,9 +354,21 @@ public:
                                   llvm::Value* c, llvm::Type* /*matrixType*/)
             override {
         // Pick the intrinsic by the A/B element type: <16 x half> -> f16 WMMA,
-        // <16 x i16> -> bf16 WMMA. Both accumulate into the <8 x float> C.
+        // <16 x i16> -> bf16 WMMA, <4 x i32> (packed int8) -> iu8 WMMA.
         llvm::Type* ae =
             llvm::cast<llvm::FixedVectorType>(a->getType())->getElementType();
+        if (ae->isIntegerTy(32)) {
+            // int8 GEMM: D[<8 x i32>] = A[<4 x i32>]·B + C, signed operands,
+            // no output clamp (the i32 accumulator can't overflow a 16-term
+            // sum of int8 products, matching the host int32 reference).
+            llvm::LLVMContext& ctx = m.getContext();
+            llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+                &m, llvm::Intrinsic::amdgcn_wmma_i32_16x16x16_iu8,
+                {c->getType(), a->getType()});
+            llvm::Value* tru = llvm::ConstantInt::getTrue(ctx);   // A/B signed
+            llvm::Value* fls = llvm::ConstantInt::getFalse(ctx);  // no clamp
+            return b.CreateCall(f, {tru, a, tru, bMat, c, fls}, "wmma.iu8");
+        }
         llvm::Intrinsic::ID id = ae->isHalfTy()
             ? llvm::Intrinsic::amdgcn_wmma_f32_16x16x16_f16
             : llvm::Intrinsic::amdgcn_wmma_f32_16x16x16_bf16;
@@ -318,9 +383,12 @@ public:
                                  llvm::Type* matrixType) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixType);
         llvm::Type* fe = vecTy->getElementType();
-        if (value->getType() != fe && value->getType()->isFloatingPointTy() &&
-            fe->isFloatingPointTy())
-            value = b.CreateFPCast(value, fe);
+        if (value->getType() != fe) {
+            if (value->getType()->isFloatingPointTy() && fe->isFloatingPointTy())
+                value = b.CreateFPCast(value, fe);
+            else if (value->getType()->isIntegerTy() && fe->isIntegerTy())
+                value = b.CreateIntCast(value, fe, /*isSigned=*/true);
+        }
         (void) m;
         return b.CreateVectorSplat(vecTy->getNumElements(), value, "cm.splat");
     }
