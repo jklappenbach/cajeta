@@ -53,3 +53,14 @@ test/cajeta_test*_tests.cmake
 
 # Generated cajetadoc API reference — regenerated on demand via `cajeta doc`
 /site/docs/cajetadocs/
+
+# Python bytecode cache (e.g. scripts/test-tui.py)
+__pycache__/
+*.pyc
+
+# Generated test-run results from scripts/test-tui.py (large, regenerated
+# every run — keep the runner script tracked, not its output).
+test/test-quality/runs/
+
+# Generated cajetadoc review dump (output of cajetadoc-pass.workflow.js)
+plans/cajetadoc/flagged.json
