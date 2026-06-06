@@ -2081,6 +2081,20 @@ private:
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
         }
+        // Image2D.load(x, y) (writable images): read the texel at INTEGER coords
+        // (x, y) → f32. The read twin of store; same STORAGE_IMAGE handle. Lowered
+        // to the backend image-read seam (Vulkan OpImageRead).
+        if (name == "load") {
+            auto ih = imageHandles.find(recv);
+            if (ih != imageHandles.end()) {
+                const auto& args = mc->getParameters();
+                if (args.size() != 2)
+                    unsupported("Image2D.load expects (x, y)");
+                llvm::Value* x = toI32(lowerExpr(args[0].expression));
+                llvm::Value* y = toI32(lowerExpr(args[1].expression));
+                return target.loadImage(builder, mod, ih->second, x, y);
+            }
+        }
 
         // A user-defined @Device helper call (resolved within the kernel's
         // class). Lower the helper to a device function (cached) and call it.
@@ -3231,6 +3245,18 @@ void LoweringTarget::storeImage(llvm::IRBuilderBase& /*b*/,
     // a backend that has not implemented writable images.
     throw cajeta::Exception(
         "XPU kernel lowering: storage-image write not supported on backend '" +
+        std::string(name()) + "'", "XPU-N01");
+}
+
+llvm::Value* LoweringTarget::loadImage(llvm::IRBuilderBase& /*b*/,
+                                       llvm::Module& /*m*/,
+                                       llvm::Value* /*imgHandle*/,
+                                       llvm::Value* /*x*/, llvm::Value* /*y*/) {
+    // Only backends with hardware storage-image read override this (Vulkan
+    // OpImageRead). The default rejects an img.load() in a kernel lowered for a
+    // backend that has not implemented writable images.
+    throw cajeta::Exception(
+        "XPU kernel lowering: storage-image read not supported on backend '" +
         std::string(name()) + "'", "XPU-N01");
 }
 

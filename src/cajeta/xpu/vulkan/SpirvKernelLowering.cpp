@@ -343,6 +343,28 @@ public:
                           {imgHandle, coord, texel});
     }
 
+    // Image2D.load(x, y) → a single OpImageRead, native via the fork intrinsic
+    // llvm.spv.resource.load.2d (cajeta-spirv): operands are the spirv.Image
+    // storage handle (Sampled=2) and the integer coord <x, y>. The result is
+    // requested as a scalar f32 — the SPIR-V backend reads the texel as a
+    // <4 x f32> (OpImageRead) and extracts component 0 (the R32f channel).
+    llvm::Value* loadImage(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Value* imgHandle, llvm::Value* x,
+                           llvm::Value* y) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v2i = llvm::FixedVectorType::get(i32, 2);
+        llvm::Value* coord = llvm::PoisonValue::get(v2i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1), "img.coord");
+        // Overload types: the scalar result (f32) and the image handle (any);
+        // the coord (v2i32) is a fixed operand, not overloaded.
+        return b.CreateIntrinsic(llvm::Intrinsic::spv_resource_load_2d,
+                                 {f32, imgHandle->getType()},
+                                 {imgHandle, coord}, nullptr, "img.load");
+    }
+
     // --- integer dot product (SPV_KHR_integer_dot_product, DP4a) --------------
     // Pack the four int8 lanes into an i32 (lane 0 -> low byte = the first
     // packed component, matching PackedVectorFormat4x8Bit on little-endian GPUs)

@@ -468,6 +468,67 @@ TEST(XpuVulkanDispatchDeviceTests, imageStoreOnDevice) {
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: stored texel != expected)";
 }
 
+// Image read (the read twin of imageStore): a storage image is filled by one
+// dispatch, then a SECOND dispatch does a read-modify-write — v = img.load(x, y)
+// then img.store(x, y, 2v + 1). This exercises OpImageRead (the cajeta-spirv
+// llvm.spv.resource.load.2d intrinsic) AND the read-after-write memory barrier
+// between consecutive dispatches on the same storage image. The readback must be
+// 2*idx + 1 per texel — bit-exact on the real Vulkan device (RADV / Strix Halo).
+TEST(XpuVulkanDispatchDeviceTests, imageLoadStoreRmwOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Image2D;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class ImgRmw {\n"
+        "    @Kernel\n"
+        "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) { img.store(i % w, i / w, (float32)(i / w * w + i % w)); }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void rmw(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) {\n"
+        "            uint32 x = i % w;\n"
+        "            uint32 y = i / w;\n"
+        "            float32 v = img.load(x, y);\n"
+        "            img.store(x, y, 2.0f * v + 1.0f);\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 4;\n"
+        "        uint32 h = 4;\n"
+        "        uint32 n = w * h;\n"
+        "        Image2D img = heap Image2D(w, h);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        rmw.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        float32[] out = new float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { out[i] = -1.0f; }\n"
+        "        img.download(out);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = out[i] - (float32)(2 * i + 1);\n"
+        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.ImgRmw", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: 2*loaded+1 != expected)";
+}
+
 // Bundle vulkan + cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU even
 // with the Vulkan device present — the canonical degrade-to-CPU bundle.
 TEST(XpuVulkanDispatchDeviceTests, bundledVulkanCpuForcedToCpu) {

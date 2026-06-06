@@ -464,6 +464,69 @@ TEST(XpuVulkanEmitTests, lowersImageStoreToSpirv) {
     }
 }
 
+// Image read (the read twin of imageStore): Image2D.load(x, y) lowers to a single
+// OpImageRead (the cajeta-spirv llvm.spv.resource.load.2d intrinsic) against the
+// same R32f STORAGE_IMAGE descriptor. The scalar result is read as a <4 x f32>
+// texel with component 0 extracted. GPU-free proof it is spirv-val-clean under
+// strict spirv-val --target-env vulkan1.3.
+TEST(XpuVulkanEmitTests, lowersImageLoadToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Image2D;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void rmwImg(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) {\n"
+        "            float32 v = img.load(i % w, i / w);\n"
+        "            img.store(i % w, i / w, v + 1.0f);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "rmwImg");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_imgload_vulkan_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    llvm::Function* fn = lowerKernel(k, irModule);
+    ASSERT_NE(fn, nullptr);
+
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("llvm.spv.resource.load.2d"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.resource.store.2d"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_imgload_vulkan_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpImageRead"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpImageWrite"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_imgload_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the image-load module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // cajeta-gpu Part C increment 3a: a kernel that traces a ray query against a
 // descriptor-bound AccelerationStructure lowers to the SPV_KHR_ray_query ops.
 // The AS binds an ACCELERATION_STRUCTURE_KHR descriptor (handlefrombinding — the
