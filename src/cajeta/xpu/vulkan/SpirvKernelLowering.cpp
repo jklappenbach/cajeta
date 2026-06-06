@@ -82,6 +82,21 @@ llvm::TargetExtType* vkImageType(llvm::LLVMContext& ctx, llvm::Type* texelTy) {
                                     {1, 2, 0, 0, 1, 0});
 }
 
+// The same OpTypeImage with Sampled=2 → a writable STORAGE image (no sampler) —
+// the handle type for a 2-D Image2D. Dim=1 → 2D, Depth=2, Arrayed=0, MS=0,
+// Sampled=2 → used WITHOUT a sampler (storage), Format=3 → R32f. The format is
+// KNOWN (not Unknown) for two reasons: (1) it matches the runtime image's actual
+// VK_FORMAT_R32_SFLOAT, and (2) Unknown would require StorageImageWriteWithoutFormat,
+// which the SPIR-V backend only makes available for SPIR-V ≥ 1.6 in the Shader env
+// — and cajeta's spirv-unknown-vulkan1.3-compute triple does not pin SPIR-V 1.6,
+// so the write would be unsatisfiable. R32f needs only the always-present Shader
+// capability. Written via llvm.spv.resource.store.2d (OpImageWrite).
+llvm::TargetExtType* vkStorageImageType(llvm::LLVMContext& ctx,
+                                        llvm::Type* texelTy) {
+    return llvm::TargetExtType::get(ctx, "spirv.Image", {texelTy},
+                                    {1, 2, 0, 0, 2, 3});
+}
+
 // target("spirv.Sampler") — the handle type for a Sampler descriptor (→
 // OpTypeSampler). No type/int params; combined with an image at the sample site.
 llvm::TargetExtType* vkSamplerType(llvm::LLVMContext& ctx) {
@@ -244,6 +259,12 @@ public:
             return bindResource(b, m, vkImageType(m.getContext(), p.type), idx,
                                 p.name);
         }
+        // Image2D (writable images): a STORAGE_IMAGE descriptor; the handle is
+        // consumed only by `img.store(...)` via storeImage. (set 0, binding = idx.)
+        if (p.isImage) {
+            return bindResource(b, m, vkStorageImageType(m.getContext(), p.type),
+                                idx, p.name);
+        }
         // Sampler (Item 8): a SAMPLER descriptor. The filter/address modes live
         // in the runtime VkSampler, not the SPIR-V — here it's just a handle.
         if (p.isSampler) {
@@ -295,6 +316,31 @@ public:
             v4f, llvm::Intrinsic::spv_resource_samplelevel,
             {texHandle, samplerHandle, coord, lod, offset});
         return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
+    }
+
+    // Image2D.store(x, y, value) → a single OpImageWrite, native via the fork
+    // intrinsic llvm.spv.resource.store.2d (cajeta-spirv): operands are the
+    // spirv.Image storage handle (Sampled=2), the integer coord <x, y>, and the
+    // texel. OpImageWrite requires a 4-component texel, so the scalar `value` is
+    // splatted into <value, 0, 0, 0> (the R32f image keeps lane 0).
+    void storeImage(llvm::IRBuilderBase& b, llvm::Module& m,
+                    llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
+                    llvm::Value* value) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v2i = llvm::FixedVectorType::get(i32, 2);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* coord = llvm::PoisonValue::get(v2i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1), "img.coord");
+        llvm::Value* texel = llvm::ConstantAggregateZero::get(v4f);
+        texel = b.CreateInsertElement(texel, value, uint64_t(0), "img.texel");
+        // Overload types: the image handle (any) and the texel vector (anyvector);
+        // the coord (v2i32) is a fixed operand, not overloaded.
+        b.CreateIntrinsic(llvm::Intrinsic::spv_resource_store_2d,
+                          {imgHandle->getType(), v4f},
+                          {imgHandle, coord, texel});
     }
 
     // --- integer dot product (SPV_KHR_integer_dot_product, DP4a) --------------

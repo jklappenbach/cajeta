@@ -4370,6 +4370,7 @@ static int cajeta_xpu_hip_init_locked(void) {
 #define CAJETA_KP_TEXTURE 2
 #define CAJETA_KP_SAMPLER 3
 #define CAJETA_KP_ACCEL   4   // AccelerationStructure -> descriptor-bound BVH
+#define CAJETA_KP_IMAGE   5   // Image2D (writable) -> STORAGE_IMAGE descriptor
 
 struct cajeta_kparams {
     char name[256];
@@ -4477,6 +4478,7 @@ struct cajeta_vk {
     PFN_vkCreateSampler vkCreateSampler;
     PFN_vkDestroySampler vkDestroySampler;
     PFN_vkCmdCopyBufferToImage vkCmdCopyBufferToImage;
+    PFN_vkCmdCopyImageToBuffer vkCmdCopyImageToBuffer;
     PFN_vkCmdPipelineBarrier vkCmdPipelineBarrier;
     PFN_vkCreateShaderModule vkCreateShaderModule;
     PFN_vkDestroyShaderModule vkDestroyShaderModule;
@@ -4790,6 +4792,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     CAJ_VKD(vkCreateSampler);
     CAJ_VKD(vkDestroySampler);
     CAJ_VKD(vkCmdCopyBufferToImage);
+    CAJ_VKD(vkCmdCopyImageToBuffer);
     CAJ_VKD(vkCmdPipelineBarrier);
     CAJ_VKD(vkCreateShaderModule);
     CAJ_VKD(vkDestroyShaderModule);
@@ -4964,6 +4967,8 @@ struct cajeta_vk_tex {
     VkImageView view;
     uint32_t w, h;
     int live;
+    int storage;            // 1 = writable STORAGE_IMAGE (Image2D), 0 = sampled
+    VkImageLayout layout;   // current layout (tracked for storage-image barriers)
 };
 #define CAJETA_VK_MAX_TEXTURES 256
 static struct cajeta_vk_tex g_vk_texs[CAJETA_VK_MAX_TEXTURES];
@@ -4978,9 +4983,12 @@ static struct cajeta_vk_tex* cajeta_xpu_vk_tex_rec(int64_t handle) {
     return t;
 }
 
-// Create a 2-D R32_SFLOAT sampled image + view; return a 1-based table handle
-// (0 on failure). Contents are undefined until cajeta_xpu_vk_tex_upload.
-static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
+// Create a 2-D R32_SFLOAT image + view; return a 1-based table handle (0 on
+// failure). `storage`=0 makes a SAMPLED image (Texture2D; contents undefined
+// until cajeta_xpu_vk_tex_upload). `storage`=1 makes a writable STORAGE_IMAGE
+// (Image2D) usable as an OpImageWrite target and readable back to the host
+// (TRANSFER_SRC) — its texels start undefined and are produced by a kernel.
+static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage) {
     if (w == 0 || h == 0) return 0;
     VkImageCreateInfo ici;
     memset(&ici, 0, sizeof(ici));
@@ -4991,7 +4999,10 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
     ici.mipLevels = 1; ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.usage = storage
+        ? (VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+           VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+        : (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImage img = VK_NULL_HANDLE;
@@ -5055,6 +5066,8 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
     g_vk_texs[slot].view = view;
     g_vk_texs[slot].w = w; g_vk_texs[slot].h = h;
     g_vk_texs[slot].live = 1;
+    g_vk_texs[slot].storage = storage;
+    g_vk_texs[slot].layout = VK_IMAGE_LAYOUT_UNDEFINED;
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return (int64_t) (slot + 1);
 }
@@ -5162,6 +5175,86 @@ static void cajeta_xpu_vk_tex_free(int64_t handle) {
         t->memory = VK_NULL_HANDLE;
     }
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+}
+
+// Read a storage image (Image2D) back to host memory: w*h row-major float32
+// texels into `data`. After a kernel's OpImageWrite the image is in GENERAL
+// layout; transition it to TRANSFER_SRC, copy to a host-visible staging buffer,
+// and memcpy out. Mirrors cajeta_xpu_vk_tex_upload in reverse (one-time command
+// buffer, serialized on the shared queue). The image is left in TRANSFER_SRC
+// (its tracked layout is updated, so a subsequent dispatch re-barriers to GENERAL).
+static void cajeta_xpu_vk_tex_download(int64_t handle, void* data,
+                                       uint32_t w, uint32_t h) {
+    struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
+    if (!t || !data || w != t->w || h != t->h) return;
+    uint64_t bytes = (uint64_t) w * h * sizeof(float);
+    int64_t staging = cajeta_xpu_vk_alloc(bytes);   // host-visible+coherent
+    if (!staging) return;
+    struct cajeta_vk_buf* sb = cajeta_xpu_vk_rec(staging);
+
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    VkCommandBufferAllocateInfo cbai;
+    memset(&cbai, 0, sizeof(cbai));
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = g_xpu_vk.cmdPool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    int copied = 0;
+    if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
+            == VK_SUCCESS && sb) {
+        copied = 1;
+        VkCommandBufferBeginInfo cbbi;
+        memset(&cbbi, 0, sizeof(cbbi));
+        cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+
+        VkImageMemoryBarrier toSrc;
+        memset(&toSrc, 0, sizeof(toSrc));
+        toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toSrc.oldLayout = t->layout;   // GENERAL after a write (or UNDEFINED)
+        toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.image = t->image;
+        toSrc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toSrc.subresourceRange.levelCount = 1;
+        toSrc.subresourceRange.layerCount = 1;
+        toSrc.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                      VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                      0, NULL, 0, NULL, 1, &toSrc);
+
+        VkBufferImageCopy region;
+        memset(&region, 0, sizeof(region));
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = w;
+        region.imageExtent.height = h;
+        region.imageExtent.depth = 1;
+        g_xpu_vk.vkCmdCopyImageToBuffer(cmd, t->image,
+                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                        sb->buffer, 1, &region);
+
+        g_xpu_vk.vkEndCommandBuffer(cmd);
+        VkSubmitInfo si;
+        memset(&si, 0, sizeof(si));
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE);
+        g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
+        g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1, &cmd);
+        t->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    }
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    if (copied) {
+        void* m = cajeta_xpu_vk_mapped(staging);
+        if (m) memcpy(data, m, (size_t) bytes);   // host-coherent: no flush
+    }
+    cajeta_xpu_vk_free(staging);
 }
 
 // Create a transient VkSampler from a cajeta Sampler's modes: filterMode 0 =
@@ -5475,9 +5568,11 @@ static void cajeta_xpu_vk_accel_free(int64_t handle) {
 #define CAJ_VKB_TEXTURE 1   // bindings[i] = texture-table handle -> SAMPLED_IMAGE
 #define CAJ_VKB_SAMPLER 2   // bindings[i] = (int64) VkSampler    -> SAMPLER
 #define CAJ_VKB_ACCEL   3   // bindings[i] = accel-table handle   -> ACCELERATION_STRUCTURE_KHR
+#define CAJ_VKB_STORAGE_IMAGE 4 // bindings[i] = texture-table handle (storage) -> STORAGE_IMAGE
 
 static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
     if (kind == CAJ_VKB_TEXTURE) return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    if (kind == CAJ_VKB_STORAGE_IMAGE) return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     if (kind == CAJ_VKB_SAMPLER) return VK_DESCRIPTOR_TYPE_SAMPLER;
     if (kind == CAJ_VKB_ACCEL) return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -5567,19 +5662,22 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
 
     // Pool sized by the distinct descriptor types actually used (storage
     // buffer / sampled image / sampler), one entry per non-empty class.
-    uint32_t nBuf = 0, nImg = 0, nSamp = 0, nAccel = 0;
+    uint32_t nBuf = 0, nImg = 0, nStor = 0, nSamp = 0, nAccel = 0;
     for (int i = 0; i < n; ++i) {
         if (kinds[i] == CAJ_VKB_TEXTURE) ++nImg;
+        else if (kinds[i] == CAJ_VKB_STORAGE_IMAGE) ++nStor;
         else if (kinds[i] == CAJ_VKB_SAMPLER) ++nSamp;
         else if (kinds[i] == CAJ_VKB_ACCEL) ++nAccel;
         else ++nBuf;
     }
-    VkDescriptorPoolSize poolSizes[4];
+    VkDescriptorPoolSize poolSizes[5];
     uint32_t nPool = 0;
     if (nBuf) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 poolSizes[nPool++].descriptorCount = nBuf; }
     if (nImg) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
                 poolSizes[nPool++].descriptorCount = nImg; }
+    if (nStor){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                poolSizes[nPool++].descriptorCount = nStor; }
     if (nSamp){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLER;
                 poolSizes[nPool++].descriptorCount = nSamp; }
     if (nAccel){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
@@ -5634,6 +5732,15 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
             imgInfos[i].imageView = t->view;
             imgInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             writes[i].pImageInfo = &imgInfos[i];
+        } else if (kinds[i] == CAJ_VKB_STORAGE_IMAGE) {
+            // Writable storage image (Image2D): bound in GENERAL layout, the only
+            // layout valid for an OpImageWrite descriptor. The pre-dispatch
+            // barrier below transitions the image into GENERAL.
+            struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
+            if (!t) goto done;
+            imgInfos[i].imageView = t->view;
+            imgInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            writes[i].pImageInfo = &imgInfos[i];
         } else if (kinds[i] == CAJ_VKB_SAMPLER) {
             imgInfos[i].sampler = (VkSampler) (uintptr_t) bindings[i];
             if (imgInfos[i].sampler == VK_NULL_HANDLE) goto done;
@@ -5664,6 +5771,31 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+    // Storage images (Image2D) must be in GENERAL layout for OpImageWrite.
+    // Transition each from its tracked layout (UNDEFINED on first use, else
+    // whatever a prior dispatch/readback left) before binding the pipeline.
+    for (int i = 0; i < n; ++i) {
+        if (kinds[i] != CAJ_VKB_STORAGE_IMAGE) continue;
+        struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
+        if (!t || t->layout == VK_IMAGE_LAYOUT_GENERAL) continue;
+        VkImageMemoryBarrier toGen;
+        memset(&toGen, 0, sizeof(toGen));
+        toGen.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toGen.oldLayout = t->layout;
+        toGen.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        toGen.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toGen.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toGen.image = t->image;
+        toGen.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toGen.subresourceRange.levelCount = 1;
+        toGen.subresourceRange.layerCount = 1;
+        toGen.srcAccessMask = 0;
+        toGen.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                      0, NULL, 0, NULL, 1, &toGen);
+        t->layout = VK_IMAGE_LAYOUT_GENERAL;
+    }
     g_xpu_vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     g_xpu_vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                      pipeLayout, 0, 1, &descSet, 0, NULL);
@@ -5700,11 +5832,15 @@ static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
-static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
-    (void) w; (void) h; return 0;
+static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage) {
+    (void) w; (void) h; (void) storage; return 0;
 }
 static void cajeta_xpu_vk_tex_upload(int64_t h, const void* d,
                                      uint32_t w, uint32_t ht) {
+    (void) h; (void) d; (void) w; (void) ht;
+}
+static void cajeta_xpu_vk_tex_download(int64_t h, void* d,
+                                       uint32_t w, uint32_t ht) {
     (void) h; (void) d; (void) w; (void) ht;
 }
 static void cajeta_xpu_vk_tex_free(int64_t h) { (void) h; }
@@ -5841,6 +5977,39 @@ uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
 // identity (0 for sum, 1 for product). The real scan runs in the VFABI variant.
 uint32_t __cajeta_xpu_wave_prefix_sum_u32(uint32_t value) { (void)value; return 0; }
 uint32_t __cajeta_xpu_wave_prefix_product_u32(uint32_t value) { (void)value; return 1; }
+// Width-1 wave rotate: a single-lane wave rotated by any delta is the lane
+// itself (the host @Native / scalar fallback; the device path is ds_bpermute /
+// OpGroupNonUniformRotateKHR). Matches the shuffle/reduce width-1 convention.
+uint32_t __cajeta_xpu_wave_rotate_u32(uint32_t value, uint32_t delta) {
+    (void)delta; return value;
+}
+
+// Per-invocation bit ops (Bits.*). Unlike the wave ops these are NOT cross-lane —
+// they are pure scalar functions of one u32, so the host @Native definition is
+// the exact same computation the device emits (OpBitReverse / OpBitCount / a
+// masked rotate). Provided so the host JIT (and any CPU @Device call) resolves
+// the Bits.cajeta forwarders; the device backends lower them inline.
+uint32_t __cajeta_xpu_bits_reverse_u32(uint32_t value) {
+    value = ((value & 0x55555555u) << 1)  | ((value >> 1)  & 0x55555555u);
+    value = ((value & 0x33333333u) << 2)  | ((value >> 2)  & 0x33333333u);
+    value = ((value & 0x0F0F0F0Fu) << 4)  | ((value >> 4)  & 0x0F0F0F0Fu);
+    value = ((value & 0x00FF00FFu) << 8)  | ((value >> 8)  & 0x00FF00FFu);
+    value = (value << 16) | (value >> 16);
+    return value;
+}
+uint32_t __cajeta_xpu_bits_count_u32(uint32_t value) {
+    uint32_t c = 0;
+    while (value) { value &= value - 1u; ++c; }
+    return c;
+}
+uint32_t __cajeta_xpu_bits_rotate_left_u32(uint32_t value, uint32_t amount) {
+    amount &= 31u;
+    return amount == 0u ? value : ((value << amount) | (value >> (32u - amount)));
+}
+uint32_t __cajeta_xpu_bits_rotate_right_u32(uint32_t value, uint32_t amount) {
+    amount &= 31u;
+    return amount == 0u ? value : ((value >> amount) | (value << (32u - amount)));
+}
 
 // --- CPU backend kernel registry -------------------------------------------
 // The CPU backend (cajeta-cpu.md) lowers each @Kernel to a host function linked
@@ -6351,7 +6520,7 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height) 
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height);  // sampled image (Stage B)
+            return cajeta_xpu_vk_tex_alloc(width, height, 0); // sampled image (Stage B)
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex_alloc(width, height); // hipArray (Stage C)
         // CUDA texture objects land in Stage D (emit-only).
@@ -6400,6 +6569,49 @@ void __cajeta_xpu_texture_free(void* self, int64_t handle) {
         }
         case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
         case CAJ_XPU_HIP:    cajeta_xpu_hip_tex_free(handle); return;
+        default: return;
+    }
+}
+
+// --- Image2D (writable storage images) --------------------------------------
+// Image2D is the writable twin of Texture2D: a 2-D R32_SFLOAT storage image a
+// kernel writes via `img.store(x, y, value)` (OpImageWrite), and the host reads
+// back with `img.download(out)`. Vulkan-only for v1 (the gfx bridge); other
+// backends return 0 / no-op so the cajeta drop chain still works. The handle is
+// a 1-based index into the same cajeta_vk_tex table as Texture2D (storage flag set).
+
+// __cajeta_xpu_image_alloc(this, width, height) -> int64 handle.
+int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
+    (void) self;
+    if (width == 0 || height == 0) return 0;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_VULKAN:
+            return cajeta_xpu_vk_tex_alloc(width, height, 1);  // storage image
+        default: return 0;
+    }
+}
+
+// __cajeta_xpu_image_download(this, handle, host, width, height).
+// `host` is a Cajeta float32[] header — { i64 count, [count x f32] data } — so
+// the texels land at offset 8 (matches __cajeta_xpu_texture_upload in reverse).
+void __cajeta_xpu_image_download(void* self, int64_t handle, void* host,
+                                 uint32_t width, uint32_t height) {
+    (void) self;
+    if (!handle || !host || width == 0 || height == 0) return;
+    void* data = (void*) ((char*) host + 8);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_VULKAN:
+            cajeta_xpu_vk_tex_download(handle, data, width, height);
+            return;
+        default: return;
+    }
+}
+
+void __cajeta_xpu_image_free(void* self, int64_t handle) {
+    (void) self;
+    if (!handle) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
         default: return;
     }
 }
@@ -6672,6 +6884,12 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 // argv slot holds the Texture2D deviceHandle = texture-table index.
                 bindings[i] = *(int64_t*) argv[i];
                 bkinds[i] = CAJ_VKB_TEXTURE;
+                break;
+            case CAJETA_KP_IMAGE:
+                // argv slot holds the Image2D deviceHandle = texture-table index
+                // (storage image). Bind it as a STORAGE_IMAGE (GENERAL layout).
+                bindings[i] = *(int64_t*) argv[i];
+                bkinds[i] = CAJ_VKB_STORAGE_IMAGE;
                 break;
             case CAJETA_KP_ACCEL:
                 // argv slot points at the AccelerationStructure POD; its first

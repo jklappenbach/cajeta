@@ -54,7 +54,9 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.core.Bits
 // (per-invocation bit ops: reverse/count/rotate) to the xpu.core prelude;
 // empirical modules.size() is 1 + 104 (the prior 102 had drifted one low).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 104;
+// 2026-06-06: bumped 104 → 105 — writable images added cajeta.xpu.core.Image2D
+// (the writable twin of Texture2D: img.store(x,y,v) / download) to the prelude.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 105;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

@@ -421,7 +421,10 @@ function and produces a borrow of element type. On host, you use
 `buf.upload(...)`, `buf.download(...)`, or `buf.map(...)`.
 
 `Texture<Format, Dim>` and `Sampler` are present in `xpu.core` for
-compute-side image sampling. Graphics-side texture work
+compute-side image sampling. The writable twin is `Image2D` — a
+`STORAGE_IMAGE` a kernel writes with `img.store(x, y, value)`
+(`OpImageWrite`) and reads back on the host with `img.download(...)`;
+see [`WritableImages.md`](WritableImages.md). Graphics-side texture work
 (framebuffers, render targets, attachments) lives in
 [`cajeta.render`](CajetaRender.md). Bindless textures are exposed via
 `BindlessTexture<Format>` on all three backends but with different

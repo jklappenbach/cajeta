@@ -413,6 +413,61 @@ TEST(XpuVulkanDispatchDeviceTests, textureSampleOnDevice) {
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
 }
 
+// Writable images: an Image2D bound as a STORAGE_IMAGE that a compute kernel
+// WRITES with img.store(x, y, value) (OpImageWrite), then the host reads back
+// with img.download(...). On the real Vulkan device (RADV / Strix Halo) the
+// Image2D binds a STORAGE_IMAGE descriptor in GENERAL layout; the store lowers
+// to a single OpImageWrite (the cajeta-spirv llvm.spv.resource.store.2d
+// intrinsic), and StorageImageWriteWithoutFormat is auto-added for the Unknown
+// R32 format. One thread per texel writes its linear index; the readback must
+// be the exact 0..w*h-1 ramp — bit-exact (integers held in f32).
+TEST(XpuVulkanDispatchDeviceTests, imageStoreOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Image2D;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class ImgStore {\n"
+        "    @Kernel\n"
+        "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) {\n"
+        "            uint32 x = i % w;\n"
+        "            uint32 y = i / w;\n"
+        "            img.store(x, y, (float32)(y * w + x));\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 4;\n"
+        "        uint32 h = 4;\n"
+        "        uint32 n = w * h;\n"
+        "        Image2D img = heap Image2D(w, h);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        float32[] out = new float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { out[i] = -1.0f; }\n"
+        "        img.download(out);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = out[i] - (float32) i;\n"
+        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.ImgStore", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: stored texel != expected)";
+}
+
 // Bundle vulkan + cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU even
 // with the Vulkan device present — the canonical degrade-to-CPU bundle.
 TEST(XpuVulkanDispatchDeviceTests, bundledVulkanCpuForcedToCpu) {
