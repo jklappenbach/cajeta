@@ -216,24 +216,50 @@ namespace xpu {
         // ops via the llvm.spv.cooperative.matrix.* intrinsics; every other
         // backend's default throws (XPU-N03). All matrices are at Subgroup scope.
 
+        // Which lowering a `CooperativeMatrix<T,Rows,Cols,Use>` gets on this
+        // backend for the given element/shape:
+        //   Native   — a hardware matrix-core path (Vulkan SPV_KHR_cooperative_
+        //              matrix for the dtype configs the driver advertises; AMD
+        //              amdgcn WMMA; NVIDIA wmma).
+        //   Software  — a portable flat-tile matmul (the DeviceLowerer emits a
+        //              `[Rows*Cols x T]` tile + a strided gather/scatter + an
+        //              f32/i32 triple-loop multiply-add). Correct on every
+        //              backend; not matrix-core accelerated.
+        // The choice is static per (backend, dtype, shape) — known at compile
+        // time, so no runtime branch is emitted. The default is Software, so a
+        // backend with no native MMA seam still RUNS cooperative matrix (it does
+        // not throw); a backend overrides this to claim Native where it can.
+        enum class CoopMatrixTier { Native, Software };
+        virtual CoopMatrixTier coopMatrixTier(llvm::Type* /*elem*/,
+                                              uint32_t /*rows*/, uint32_t /*cols*/,
+                                              uint32_t /*use*/) {
+            return CoopMatrixTier::Software;
+        }
+
         // The LLVM type to alloca for a `CooperativeMatrix<T,Rows,Cols,Use>`
         // local: target("spirv.CooperativeMatrixKHR", elem, 3, rows, cols, use).
+        // Only called for the Native tier; the Software tier uses a flat tile.
         virtual llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,
                                            uint32_t rows, uint32_t cols,
                                            uint32_t use);
 
         // m.load(src, layout, stride) → the loaded tile value (result type
         // `matrixType`). `ptr` is the Buffer<T> element-0 pointer; `layout`/
-        // `stride` are i32 (→ OpCooperativeMatrixLoadKHR).
+        // `stride` are i32. `rows`/`cols`/`use` describe the tile shape — the
+        // Vulkan seam ignores them (the opaque matrixType already carries them);
+        // a per-lane backend (AMD WMMA) needs them to gather the right fragment
+        // (→ OpCooperativeMatrixLoadKHR).
         virtual llvm::Value* coopMatrixLoad(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
-            llvm::Value* layout, llvm::Value* stride, llvm::Type* matrixType);
+            llvm::Value* layout, llvm::Value* stride, llvm::Type* matrixType,
+            uint32_t rows, uint32_t cols, uint32_t use);
 
-        // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Void op
-        // (→ OpCooperativeMatrixStoreKHR).
+        // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Void op.
+        // `rows`/`cols`/`use` as in coopMatrixLoad (→ OpCooperativeMatrixStoreKHR).
         virtual void coopMatrixStore(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
-            llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride);
+            llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride,
+            uint32_t rows, uint32_t cols, uint32_t use);
 
         // c.mma(a, b) → a*b+c (result type `matrixType`, the accumulator type)
         // (→ OpCooperativeMatrixMulAddKHR).
@@ -246,6 +272,12 @@ namespace xpu {
         virtual llvm::Value* coopMatrixSplat(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
             llvm::Type* matrixType);
+
+        // Called once on the enclosing kernel function the first time a NATIVE
+        // cooperative-matrix tile is allocated in its body. A backend whose
+        // matrix-core path has ABI requirements on the kernel (AMD RDNA3 WMMA is
+        // wave32-only) sets them here; the default is a no-op (Vulkan needs none).
+        virtual void prepareNativeCoopMatrix(llvm::Function* /*fn*/) {}
 
         // The LLVM type of a Buffer<T> when passed BY VALUE as a @Device helper
         // argument — i.e. the type of the buffer base held in bufferBases. A

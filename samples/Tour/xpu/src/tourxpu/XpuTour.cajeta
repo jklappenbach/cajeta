@@ -192,6 +192,38 @@ public final class XpuTour {
         }
     }
 
+    // ---- Matrix cores: cooperative-matrix MMA + the tiering fallback ---------
+    // CooperativeMatrix<T,R,C,Use> is a tile of a matrix multiply held across a
+    // subgroup, mapping to the hardware matrix/tensor cores: one `mma` is a
+    // full tile-sized fused multiply-add. See cajeta.xpu.core.CooperativeMatrix.
+
+    // coopGemm: one 16x16x16 tile matmul C = A*B through the cooperative-matrix
+    // verbs (load A and B tiles, zero the accumulator, one mma, store C). A and B
+    // are float16, the accumulator/result is float32 — the canonical mixed-
+    // precision ML config. With A and B all-ones, every C element is the inner
+    // dimension K = 16.
+    //
+    // TIERING (CM6): the SAME @Kernel takes the fastest path each backend offers.
+    // float16/float32 maps to the NATIVE cooperative-matrix cores on Vulkan; on
+    // the CPU (and any backend that exposes no matrix config for the dtype) it
+    // lowers to the PORTABLE software tile-matmul — a flat tile + a strided
+    // gather + an honest triple loop accumulated in f32 — and the compiler prints
+    // a sticky `note: [mma-tiering]` telling you which path you got (not a
+    // warning; the software path is correct, and it auto-promotes to the cores
+    // where the device exposes the config — e.g. bf16 WMMA on AMD).
+    @Kernel
+    public static void coopGemm(Buffer<float16> a, Buffer<float16> b,
+                                Buffer<float32> c) {
+        CooperativeMatrix<float16,16,16,0> ma;
+        ma.load(a, 0, 0, 16);                  // A tile: row-major, stride 16
+        CooperativeMatrix<float16,16,16,1> mb;
+        mb.load(b, 0, 0, 16);                  // B tile
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);                           // zero accumulator
+        mc.mma(ma, mb);                           // C = A*B + C  (one tile MMA)
+        mc.store(c, 0, 0, 16);                 // store the 16x16 result tile
+    }
+
     // waveReduce: out[i] = sum of in over i's wave. A wave-cooperative kernel —
     // the wave is the warp on a GPU, the SIMD vector on the CPU. Width-agnostic:
     // it queries the environment (Wave.reduceSum / width() / laneId()) rather
@@ -218,6 +250,7 @@ public final class XpuTour {
         runMaskSelect();
         runTransforms();
         runPrecision();
+        runCoopMatrix();
         runWave();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
@@ -418,6 +451,40 @@ public final class XpuTour {
                             + " [10]=" + (int32) hv[10] + "  (expect 14, 24)");
         System.stdout.println("  fp16+bf16 (h2.w+b2.y): [0]=" + (int32) hd[0]
                             + " [10]=" + (int32) hd[10] + "  (expect 48, 58)");
+    }
+
+    // One 16x16x16 cooperative-matrix tile matmul. A and B are all-ones float16,
+    // so the result tile is all K = 16. Runs on every backend — native matrix
+    // cores where the dtype config exists, the software tile-matmul otherwise
+    // (watch the compile step for the `note: [mma-tiering]` on the CPU build).
+    static void runCoopMatrix() {
+        System.stdout.println("");
+        System.stdout.println("-- coopGemm: 16x16x16 tile matmul on the matrix cores --");
+        uint32 tile = 256;                         // 16 x 16
+        float16[] ha = new float16[tile];
+        float16[] hb = new float16[tile];
+        float32[] hc = new float32[tile];
+        for (uint32 i = 0; i < tile; i = i + 1) {
+            ha[i] = 1.0f;
+            hb[i] = 1.0f;
+            hc[i] = 0.0f;
+        }
+        Buffer<float16> a = stack Buffer<float16>(tile);
+        Buffer<float16> b = stack Buffer<float16>(tile);
+        Buffer<float32> c = stack Buffer<float32>(tile);
+        a.upload(ha);
+        b.upload(hb);
+        c.upload(hc);
+        Stream s = Stream.current();
+        // One workgroup owns the single output tile (block 64 = the subgroup that
+        // cooperates on it natively; the software path computes it per-invocation).
+        coopGemm.launch(s, grid: [1], block: [64])(a, b, c);
+        s.sync();
+        c.download(hc);
+        // C = A*B with A,B all-ones -> every element is the inner dim K = 16.
+        System.stdout.println("  C[0][0]=" + (int32) hc[0]
+                            + " C[5][5]=" + (int32) hc[5 * 16 + 5]
+                            + "  (expect 16, 16)");
     }
 
     static void runWave() {

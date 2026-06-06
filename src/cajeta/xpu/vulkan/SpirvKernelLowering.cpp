@@ -292,6 +292,28 @@ public:
         return vkRayQueryType(m.getContext());
     }
 
+    // Tier: native SPV_KHR_cooperative_matrix only for the dtype configs RADV (and
+    // the conformant Vulkan coop-matrix set) actually advertise — f16 and 8-bit
+    // integer A/B operands. bfloat16 is deliberately Software: no Vulkan driver
+    // exposes a bf16 cooperative-matrix config (it needs SPV_INTEL_bfloat16_
+    // arithmetic, an Intel-CPU-only path), so a bf16 tile takes the portable
+    // flat-matmul fallback here — and lights up native WMMA on the AMD backend,
+    // which has a bf16 matrix-core path (llvm.amdgcn.wmma.*.bf16). Without the
+    // fork toolchain the ops can't be emitted at all, so everything is Software.
+    CoopMatrixTier coopMatrixTier(llvm::Type* elem, uint32_t /*rows*/,
+                                  uint32_t /*cols*/, uint32_t /*use*/) override {
+#if CAJETA_HAS_SPV_COOP_MATRIX
+        // bf16 has no Vulkan cooperative-matrix config — Software here (and its
+        // accumulator must be bf16 too, so the whole GEMM stays one tier).
+        if (elem->isBFloatTy()) return CoopMatrixTier::Software;
+        // f16/int8 multiplicands and their f32/i32 accumulators are the
+        // advertised native set; an integer accumulator is any width.
+        if (elem->isHalfTy() || elem->isFloatTy() || elem->isIntegerTy())
+            return CoopMatrixTier::Native;
+#endif
+        return CoopMatrixTier::Software;
+    }
+
     // A CooperativeMatrix local is an alloca of the opaque tile type. Like the
     // ray-query types, OpTypeCooperativeMatrixKHR lowers via the BuiltinType
     // machinery on stock LLVM too, so the TYPE builder is unguarded; only the
@@ -367,8 +389,9 @@ public:
     // overloaded on (result matrix type, pointer type), in signature order.
     llvm::Value* coopMatrixLoad(llvm::IRBuilderBase& b, llvm::Module& m,
                                 llvm::Value* ptr, llvm::Value* layout,
-                                llvm::Value* stride,
-                                llvm::Type* matrixType) override {
+                                llvm::Value* stride, llvm::Type* matrixType,
+                                uint32_t /*rows*/, uint32_t /*cols*/,
+                                uint32_t /*use*/) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_load,
             {matrixType, ptr->getType()});
@@ -378,7 +401,8 @@ public:
     // pointer type then matrix type).
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
-                         llvm::Value* stride) override {
+                         llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
+                         uint32_t /*use*/) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_store,
             {ptr->getType(), matrixVal->getType()});

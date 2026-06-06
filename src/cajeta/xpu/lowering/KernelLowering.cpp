@@ -42,7 +42,10 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 
+#include <functional>
+#include <iostream>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -379,11 +382,23 @@ private:
     // takes the alloca from rayQuerySlots.
     std::map<std::string, llvm::Value*> accelHandles;    // AS name -> descriptor
     std::map<std::string, llvm::Value*> rayQuerySlots;   // RayQuery name -> alloca
-    // CooperativeMatrix locals (CM4): the alloca slot holds the opaque tile
-    // value (an OpTypeCooperativeMatrixKHR loaded/stored as a whole object);
-    // matrixType is that device type, retained so ops can load/store the slot.
-    struct CoopMatrixSlot { llvm::Value* alloca; llvm::Type* matrixType; };
+    // CooperativeMatrix locals (CM4): the alloca slot holds the tile. For the
+    // NATIVE tier `matrixType` is the opaque OpTypeCooperativeMatrixKHR device
+    // type (loaded/stored as a whole object). For the SOFTWARE tier (CM6) it is
+    // a flat `[Rows*Cols x elem]` array and the ops are emitted as a strided
+    // gather/scatter + a triple-loop multiply-add; elem/rows/cols/use describe
+    // the tile shape for those loops.
+    struct CoopMatrixSlot {
+        llvm::Value* alloca = nullptr;
+        llvm::Type* matrixType = nullptr;   // opaque tile (native) or [N x elem] (software)
+        bool software = false;
+        llvm::Type* elemType = nullptr;     // device scalar (storage) element type
+        uint32_t rows = 0, cols = 0, use = 0;
+    };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
+    // (dtype,shape) keys already announced via a software-tier note, so the
+    // `note: [mma-tiering]` is emitted once per distinct tile, not per use.
+    std::set<std::string> notedCoopTiers;
 
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     bool paramsAsArgs = false;  // true for @Device helpers (params are fn args)
@@ -525,14 +540,14 @@ private:
                 rayQuerySlots[nm] = entryAlloca(target.rayQueryType(mod), nm);
                 continue;
             }
-            // CooperativeMatrix local (CM4): a device-only subgroup tile. The
-            // alloca holds the opaque OpTypeCooperativeMatrixKHR value; load/
-            // splat/mma write it, store/mma read it. Backend-gated: coopMatrixType
-            // throws on a non-Vulkan backend (XPU-N03). A `stack CooperativeMatrix
-            // <...>()` initializer is just the construction — no value to store.
+            // CooperativeMatrix local (CM4/CM6): a device-only matrix-core tile.
+            // buildCoopMatrixSlot picks the tier — NATIVE (the alloca holds the
+            // opaque OpTypeCooperativeMatrixKHR value, ops lower to the backend
+            // coop-matrix seams) or SOFTWARE (a flat `[R*C x elem]` tile, ops are
+            // a strided gather/scatter + a triple-loop matmul). A `stack
+            // CooperativeMatrix<...>()` initializer is just the construction.
             if (isCooperativeMatrixType(declType)) {
-                llvm::Type* matTy = buildCoopMatrixType(declType);
-                coopMatrixSlots[nm] = { entryAlloca(matTy, nm), matTy };
+                coopMatrixSlots[nm] = buildCoopMatrixSlot(declType, nm);
                 continue;
             }
             // S8: a @ValueType local holds a flat aggregate SSA value (NO alloca
@@ -1987,7 +2002,8 @@ private:
     // arguments: arg0 = element type, args 1-3 = the Rows/Cols/Use integer
     // constants. Delegates the actual type to the backend seam (Vulkan emits
     // OpTypeCooperativeMatrixKHR at Subgroup scope).
-    llvm::Type* buildCoopMatrixType(const CajetaTypePtr& declType) {
+    CoopMatrixSlot buildCoopMatrixSlot(const CajetaTypePtr& declType,
+                                       const std::string& nm) {
         auto cls = std::dynamic_pointer_cast<CajetaClass>(declType);
         if (!cls || cls->getTypeArguments().size() != 4)
             unsupported("CooperativeMatrix requires <T, Rows, Cols, Use>");
@@ -2000,9 +2016,112 @@ private:
         auto use  = std::dynamic_pointer_cast<CajetaConstantType>(targs[3]);
         if (!rows || !cols || !use)
             unsupported("CooperativeMatrix Rows/Cols/Use must be integer constants");
-        return target.coopMatrixType(mod, elem, (uint32_t) rows->getValue(),
-                                     (uint32_t) cols->getValue(),
-                                     (uint32_t) use->getValue());
+        CoopMatrixSlot s;
+        s.elemType = elem;
+        s.rows = (uint32_t) rows->getValue();
+        s.cols = (uint32_t) cols->getValue();
+        s.use  = (uint32_t) use->getValue();
+        auto tier = target.coopMatrixTier(elem, s.rows, s.cols, s.use);
+        if (tier == LoweringTarget::CoopMatrixTier::Software) {
+            // Portable flat tile: a `[Rows*Cols x elem]` array in Function
+            // storage. Dynamic-index GEP (gather/scatter/matmul) is well-formed
+            // on every backend including SPIR-V logical addressing.
+            s.software = true;
+            s.matrixType = llvm::ArrayType::get(elem, (uint64_t) s.rows * s.cols);
+            s.alloca = entryAlloca(s.matrixType, nm);
+            // One appraisal per GEMM: note the A operand (Use 0) — every matrix
+            // multiply has exactly one, so the B/accumulator tiles don't re-note.
+            if (s.use == 0) noteSoftwareCoopMatrix(elem, s.rows, s.cols);
+        } else {
+            s.software = false;
+            s.matrixType = target.coopMatrixType(mod, elem, s.rows, s.cols, s.use);
+            s.alloca = entryAlloca(s.matrixType, nm);
+            target.prepareNativeCoopMatrix(fn);   // e.g. AMD: mark the kernel wave32
+        }
+        return s;
+    }
+
+    // The cajeta dtype name for a device scalar type, for diagnostics.
+    std::string deviceScalarName(llvm::Type* t) {
+        if (t->isBFloatTy()) return "bfloat16";
+        if (t->isHalfTy())   return "float16";
+        if (t->isFloatTy())  return "float32";
+        if (t->isDoubleTy()) return "float64";
+        if (t->isIntegerTy()) return "int" + std::to_string(t->getIntegerBitWidth());
+        return "T";
+    }
+
+    // Sticky, non-dissuading appraisal (CM6): a `note:` — a severity BELOW
+    // `warning:` — that tells the author a CooperativeMatrix took the portable
+    // software path on this backend, without framing it as something to avoid.
+    // The wording is a capability statement (it runs correctly here and lights
+    // up hardware matrix cores automatically where the device exposes the dtype
+    // config), and it is forward-looking, not corrective. Emitted once per
+    // distinct (dtype, shape, backend).
+    void noteSoftwareCoopMatrix(llvm::Type* elem, uint32_t rows, uint32_t cols) {
+        std::string dt = deviceScalarName(elem);
+        std::string key = dt + ":" + std::to_string(rows) + "x" +
+                          std::to_string(cols) + "@" + target.name();
+        if (!notedCoopTiers.insert(key).second) return;
+        std::cerr << "note: [mma-tiering] CooperativeMatrix<" << dt << ","
+                  << rows << "," << cols << "> runs on the portable software "
+                     "tile-matmul on the " << target.name() << " backend (it "
+                     "exposes no native cooperative-matrix config for " << dt
+                  << "). The result is identical; it automatically uses the "
+                     "hardware matrix cores on backends that do expose the "
+                     "config (e.g. bf16 WMMA on AMD)." << std::endl;
+    }
+
+    // for (i32 iv = 0; iv < count; ++iv) body(iv) — a counted loop over a
+    // compile-time bound, used to gather/scatter/multiply a software coop tile
+    // without unrolling Rows*Cols (or Rows*Cols*K) ops. body() is emitted with
+    // the builder positioned in the loop body; on return the insert point is the
+    // loop exit. Nesting is fine (each call manages its own blocks).
+    void emitCountedLoop(uint32_t count,
+                         const std::function<void(llvm::Value*)>& body) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* iv = entryAlloca(i32, "cm.iv");
+        builder.CreateStore(llvm::ConstantInt::get(i32, 0), iv);
+        auto* head = llvm::BasicBlock::Create(ctx, "cm.head", fn);
+        auto* bodyBB = llvm::BasicBlock::Create(ctx, "cm.body", fn);
+        auto* exit = llvm::BasicBlock::Create(ctx, "cm.exit", fn);
+        builder.CreateBr(head);
+        builder.SetInsertPoint(head);
+        llvm::Value* cur = builder.CreateLoad(i32, iv, "cm.i");
+        builder.CreateCondBr(
+            builder.CreateICmpULT(cur, llvm::ConstantInt::get(i32, count)),
+            bodyBB, exit);
+        builder.SetInsertPoint(bodyBB);
+        body(cur);
+        builder.CreateStore(
+            builder.CreateAdd(cur, llvm::ConstantInt::get(i32, 1)), iv);
+        builder.CreateBr(head);
+        builder.SetInsertPoint(exit);
+    }
+
+    // &tile[linIdx] for a software coop slot (a `[N x elem]` array alloca).
+    llvm::Value* coopElemPtr(const CoopMatrixSlot& s, llvm::Value* linIdx) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        return builder.CreateInBoundsGEP(
+            s.matrixType, s.alloca,
+            {llvm::ConstantInt::get(i32, 0), linIdx}, "cm.elt");
+    }
+
+    // Resolve a Buffer kernel-param identifier to its base + element type, so a
+    // software tile can index it per element (target.bufferElementPtr). Mirrors
+    // resolveBufferTileArg but returns the base (not a pre-offset pointer).
+    bool resolveBufferBase(const ExpressionPtr& e, llvm::Value*& base,
+                           llvm::Type*& elemTy) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto bb = bufferBases.find(id->getTextValue());
+            if (bb != bufferBases.end()) {
+                base = bb->second;
+                auto be = bufferElems.find(id->getTextValue());
+                elemTy = be != bufferElems.end() ? be->second : nullptr;
+                return true;
+            }
+        }
+        return false;
     }
 
     // Resolve a CooperativeMatrix.load/store Buffer argument (a bare identifier
@@ -2046,6 +2165,7 @@ private:
             const std::shared_ptr<MethodCallExpression>& mc) {
         const auto& args = mc->getParameters();
         CoopMatrixSlot slot = coopMatrixSlots[recv];
+        if (slot.software) return lowerCoopMatrixMethodSoftware(recv, name, mc);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         if (name == "load" || name == "store") {
             if (args.size() != 4)
@@ -2056,13 +2176,15 @@ private:
             llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
             llvm::Value* stride = coerceTo(lowerExpr(args[3].expression), i32);
             if (name == "load") {
-                llvm::Value* v = target.coopMatrixLoad(builder, mod, ptr, layout,
-                                                       stride, slot.matrixType);
+                llvm::Value* v = target.coopMatrixLoad(
+                    builder, mod, ptr, layout, stride, slot.matrixType,
+                    slot.rows, slot.cols, slot.use);
                 builder.CreateStore(v, slot.alloca);
             } else {
                 llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca,
                                                     recv + ".val");
-                target.coopMatrixStore(builder, mod, ptr, v, layout, stride);
+                target.coopMatrixStore(builder, mod, ptr, v, layout, stride,
+                                       slot.rows, slot.cols, slot.use);
             }
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -2080,6 +2202,10 @@ private:
                 unsupported("CooperativeMatrix.mma expects (a, b)");
             CoopMatrixSlot a = resolveCoopMatrixArg(args[0].expression);
             CoopMatrixSlot b = resolveCoopMatrixArg(args[1].expression);
+            if (a.software || b.software)
+                unsupported("CooperativeMatrix.mma: a native accumulator cannot "
+                            "consume software-tier operands — give all three "
+                            "tiles the same dtype tier");
             llvm::Value* aVal = builder.CreateLoad(a.matrixType, a.alloca, "cm.a");
             llvm::Value* bVal = builder.CreateLoad(b.matrixType, b.alloca, "cm.b");
             llvm::Value* cVal =
@@ -2090,6 +2216,134 @@ private:
             return llvm::ConstantInt::get(i32, 0);
         }
         unsupported("CooperativeMatrix." + name + "()");
+    }
+
+    // Software cooperative-matrix ops (CM6): the slot is a flat `[R*C x elem]`
+    // tile. splat fills it, load/store gather/scatter it from a Buffer with the
+    // requested row/col-major layout + stride, and mma runs an honest triple
+    // loop `result = c + a·b`. Floating-point GEMMs accumulate in f32 (the
+    // bf16/f16 storage-plus-f32-compute model) and narrow to the accumulator's
+    // dtype on store; integer GEMMs accumulate in the accumulator's int type.
+    // Correct on every backend; the matrix cores are used instead wherever the
+    // backend reports the Native tier (see coopMatrixTier).
+    llvm::Value* lowerCoopMatrixMethodSoftware(
+            const std::string& recv, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        const auto& args = mc->getParameters();
+        CoopMatrixSlot slot = coopMatrixSlots[recv];
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* elem = slot.elemType;
+        const uint32_t R = slot.rows, C = slot.cols;
+
+        if (name == "splat") {
+            if (args.size() != 1)
+                unsupported("CooperativeMatrix.splat expects (value)");
+            llvm::Value* val = coerceTo(lowerExpr(args[0].expression), elem);
+            emitCountedLoop(R * C, [&](llvm::Value* lin) {
+                builder.CreateStore(val, coopElemPtr(slot, lin));
+            });
+            return llvm::ConstantInt::get(i32, 0);
+        }
+
+        if (name == "load" || name == "store") {
+            if (args.size() != 4)
+                unsupported("CooperativeMatrix." + name +
+                            " expects (Buffer, offset, layout, stride)");
+            llvm::Value* base = nullptr; llvm::Type* bElem = nullptr;
+            if (!resolveBufferBase(args[0].expression, base, bElem))
+                unsupported("CooperativeMatrix." + name +
+                            ": argument must be a Buffer kernel parameter");
+            llvm::Value* offset = coerceTo(lowerExpr(args[1].expression), i32);
+            llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
+            llvm::Value* stride = coerceTo(lowerExpr(args[3].expression), i32);
+            bool isLoad = (name == "load");
+            emitCountedLoop(R, [&](llvm::Value* r) {
+                emitCountedLoop(C, [&](llvm::Value* c) {
+                    // buffer index: row-major r*stride+c, column-major c*stride+r.
+                    llvm::Value* rm =
+                        builder.CreateAdd(builder.CreateMul(r, stride), c);
+                    llvm::Value* cm =
+                        builder.CreateAdd(builder.CreateMul(c, stride), r);
+                    llvm::Value* sel = builder.CreateSelect(
+                        builder.CreateICmpEQ(layout,
+                                             llvm::ConstantInt::get(i32, 0)),
+                        rm, cm);
+                    llvm::Value* bidx =
+                        builder.CreateZExt(builder.CreateAdd(offset, sel), i64);
+                    llvm::Value* bptr =
+                        target.bufferElementPtr(builder, mod, base, bElem, bidx);
+                    // tile linear index r*C + c.
+                    llvm::Value* lin = builder.CreateAdd(
+                        builder.CreateMul(r, llvm::ConstantInt::get(i32, C)), c);
+                    llvm::Value* tptr = coopElemPtr(slot, lin);
+                    if (isLoad) {
+                        llvm::Value* v = builder.CreateLoad(bElem, bptr, "cm.ld");
+                        builder.CreateStore(coerceTo(v, elem), tptr);
+                    } else {
+                        llvm::Value* v = builder.CreateLoad(elem, tptr, "cm.st");
+                        builder.CreateStore(coerceTo(v, bElem), bptr);
+                    }
+                });
+            });
+            return llvm::ConstantInt::get(i32, 0);
+        }
+
+        if (name == "mma") {
+            if (args.size() != 2)
+                unsupported("CooperativeMatrix.mma expects (a, b)");
+            CoopMatrixSlot a = resolveCoopMatrixArg(args[0].expression);
+            CoopMatrixSlot b = resolveCoopMatrixArg(args[1].expression);
+            if (!a.software || !b.software)
+                unsupported("CooperativeMatrix.mma: a software accumulator cannot "
+                            "consume native-tier operands — give all three tiles "
+                            "the same dtype tier");
+            // a is M x K, b is K x N, c/result (this slot) is M x N.
+            const uint32_t M = a.rows, K = a.cols, N = b.cols;
+            if (b.rows != K || slot.rows != M || slot.cols != N)
+                unsupported("CooperativeMatrix.mma: shape mismatch (A is MxK, "
+                            "B is KxN, accumulator is MxN)");
+            llvm::Type* acc = slot.elemType;
+            bool fp = acc->isFloatingPointTy();
+            // FP: accumulate in f32 then narrow to the accumulator dtype.
+            llvm::Type* compTy = fp ? llvm::Type::getFloatTy(ctx) : acc;
+            emitCountedLoop(M, [&](llvm::Value* m) {
+                emitCountedLoop(N, [&](llvm::Value* n) {
+                    llvm::Value* cLin = builder.CreateAdd(
+                        builder.CreateMul(m, llvm::ConstantInt::get(i32, N)), n);
+                    llvm::Value* sumPtr = entryAlloca(compTy, "cm.sum");
+                    builder.CreateStore(
+                        coerceTo(builder.CreateLoad(acc, coopElemPtr(slot, cLin)),
+                                 compTy),
+                        sumPtr);
+                    emitCountedLoop(K, [&](llvm::Value* k) {
+                        llvm::Value* aLin = builder.CreateAdd(
+                            builder.CreateMul(m, llvm::ConstantInt::get(i32, K)),
+                            k);
+                        llvm::Value* bLin = builder.CreateAdd(
+                            builder.CreateMul(k, llvm::ConstantInt::get(i32, N)),
+                            n);
+                        llvm::Value* av = coerceTo(
+                            builder.CreateLoad(a.elemType, coopElemPtr(a, aLin)),
+                            compTy);
+                        llvm::Value* bv = coerceTo(
+                            builder.CreateLoad(b.elemType, coopElemPtr(b, bLin)),
+                            compTy);
+                        llvm::Value* prod = fp ? builder.CreateFMul(av, bv)
+                                               : builder.CreateMul(av, bv);
+                        llvm::Value* cur = builder.CreateLoad(compTy, sumPtr);
+                        llvm::Value* nsum = fp ? builder.CreateFAdd(cur, prod)
+                                               : builder.CreateAdd(cur, prod);
+                        builder.CreateStore(nsum, sumPtr);
+                    });
+                    builder.CreateStore(
+                        coerceTo(builder.CreateLoad(compTy, sumPtr), acc),
+                        coopElemPtr(slot, cLin));
+                });
+            });
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        unsupported("CooperativeMatrix." + name + "() [software]");
     }
 
     // Assemble a <3 x float> from three scalar expressions (ray origin /
@@ -2813,13 +3067,15 @@ llvm::Type* LoweringTarget::coopMatrixType(llvm::Module& /*m*/, llvm::Type* /*el
 
 llvm::Value* LoweringTarget::coopMatrixLoad(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
-    llvm::Value* /*layout*/, llvm::Value* /*stride*/, llvm::Type* /*matrixType*/) {
+    llvm::Value* /*layout*/, llvm::Value* /*stride*/, llvm::Type* /*matrixType*/,
+    uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/) {
     throw coopMatrixUnsupported(name());
 }
 
 void LoweringTarget::coopMatrixStore(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
-    llvm::Value* /*matrixVal*/, llvm::Value* /*layout*/, llvm::Value* /*stride*/) {
+    llvm::Value* /*matrixVal*/, llvm::Value* /*layout*/, llvm::Value* /*stride*/,
+    uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/) {
     throw coopMatrixUnsupported(name());
 }
 

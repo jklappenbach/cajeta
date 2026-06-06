@@ -38,15 +38,52 @@ import cajeta.xpu.core.Buffer;
  * the square Rows == Cols == K tile (so A is `<...,0>` and B is `<...,1>` of the
  * same `<T,Rows,Cols>`).
  *
- * COOPERATIVE MATRIX IS VULKAN-ONLY here: `SPV_KHR_cooperative_matrix` lowers on
- * the Vulkan/SPIR-V backend (and forces the Vulkan memory model). On other
- * backends a CooperativeMatrix in a kernel is a clean "not supported" diagnostic.
+ * ## Runs on every backend — native cores or a portable fallback (CM6)
+ *
+ * A CooperativeMatrix is **not** Vulkan-only. The same `@Kernel` takes the
+ * fastest path each backend offers, chosen statically per `(backend, dtype)`:
+ *
+ *   - **Native** — the hardware matrix cores. On Vulkan that is
+ *     `SPV_KHR_cooperative_matrix` (`OpCooperativeMatrix*KHR`) for the dtype
+ *     configs the driver advertises: **float16** and **8-bit integer**
+ *     multiplicands (with f32 / i32 accumulators). On AMD it maps to RDNA3
+ *     **WMMA** — `v_wmma_f32_16x16x16_{f16,bf16}` for a 16x16x16 tile with an
+ *     f32 accumulator, device-verified on gfx1151/RDNA3.5 (the lowerer marshals
+ *     the per-lane fragment by hand and compiles the kernel wave32). So **bf16
+ *     matmul is native on AMD** even though it is the software tier on Vulkan.
+ *   - **Software** — a portable flat tile-matmul: a `[Rows*Cols x T]` tile, a
+ *     strided row/col-major gather, and an honest triple-loop `C = A·B`
+ *     accumulated in f32 (the bf16/f16 storage-plus-f32-compute model). Used on
+ *     the CPU, and on any backend that exposes no matrix config for the dtype —
+ *     most notably **bfloat16 on Vulkan** (no driver advertises a bf16
+ *     cooperative-matrix config; it would need Intel-only bf16 arithmetic). The
+ *     result is bit-identical; it just isn't matrix-core accelerated.
+ *
+ * The two tiers are interchangeable through the same `load`/`splat`/`mma`/`store`
+ * verbs, so a kernel is written once. **All three tiles of one `mma` must share a
+ * tier** (give a bf16 GEMM a bf16 accumulator, an f16 GEMM an f32 accumulator) —
+ * mixing native and software operands is a compile error.
+ *
+ * ### How you learn which tier you got — a sticky, non-dissuading `note`
+ *
+ * When a tile takes the **software** path the compiler emits, once per GEMM,
+ * a `note: [mma-tiering]` — a diagnostic severity **below** `warning` (a warning
+ * would wrongly read as "avoid this"). It is a capability statement, not a
+ * defect: the path is correct, and it auto-promotes to the matrix cores on
+ * hardware that exposes the config. Example (compiling a bf16 GEMM):
+ * ```
+ * note: [mma-tiering] CooperativeMatrix<bfloat16,16,16> runs on the portable
+ *   software tile-matmul on the vulkan backend (it exposes no native
+ *   cooperative-matrix config for bfloat16). The result is identical; it
+ *   automatically uses the hardware matrix cores on backends that do expose the
+ *   config (e.g. bf16 WMMA on AMD).
+ * ```
+ * See cajeta-docs/LintRules.md § Notes for the `note:` severity.
  *
  * The method bodies are resolution placeholders — never emitted as real calls.
- * Each is lowered at its `@Kernel` call site to the backend cooperative-matrix
- * op (`OpCooperativeMatrixLoadKHR` / `StoreKHR` / `MulAddKHR` / a splat
- * `OpCompositeConstruct`, via the `llvm.spv.cooperative.matrix.*` intrinsics).
- * Using a CooperativeMatrix on the host is unsupported.
+ * Each is lowered at its `@Kernel` call site to the chosen tier (the native
+ * backend cooperative-matrix op, or the software tile-matmul). Using a
+ * CooperativeMatrix on the host is unsupported.
  */
 public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     // Placeholder field. CooperativeMatrix is a device-only opaque (the device
