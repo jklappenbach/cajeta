@@ -57,16 +57,28 @@ import cajeta.xpu.core.Buffer;
  * waves, each running the K-loop above. The complete M/N/K-tiled GEMM is
  * device-verified on the native matrix cores (gfx1151 WMMA).
  *
- * `load`/`store` move the tile to/from a global `Buffer<T>` (a StorageBuffer);
- * the matrix VALUE never leaves the register file. (Staging the load through a
- * workgroup-shared tile — the classic LDS-staged GEMM optimization, where the
- * workgroup cooperatively loads a tile into LDS once and many waves re-read it —
- * is deferred pending a design discussion. The primitives exist (`shared`
- * placement / `Shared<T>` is workgroup memory, and `workgroupBarrier` is wired
- * per backend); what is unsettled is the *surface*: how a CooperativeMatrix load
- * consumes a `Shared<T>` tile, the staging/double-buffering strategy, and how it
- * composes with the M/N/K tiling above — a design choice, not just a lowering
- * tweak. The type and ops are already storage-class-agnostic.) For correctness
+ * `load`/`store` also have a **`Shared<T>` (LDS) overload** — the classic
+ * LDS-staged GEMM optimization: the workgroup stages a panel of A/B into
+ * workgroup-shared memory ONCE per K-step (see `CoopStage.panel`), barriers, and
+ * then every wave loads its operand tiles out of the shared panel — turning N
+ * redundant global reads into one global read plus N cheap LDS reads (the reuse
+ * that keeps the matrix cores fed). `load(Shared<T>, ...)` addresses a sub-tile
+ * inside the LDS tile exactly as the `Buffer<T>` overload does for global; the
+ * matrix VALUE still never leaves the register file. The full staged GEMM
+ * (`CoopStage.panel` → `Barrier.workgroup` → `load(Shared)` → `mma`, multiple
+ * waves sharing the panels) is device-verified on AMD (gfx1151 WMMA) and on the
+ * CPU (software tile-matmul over a per-block buffer; the barrier lowers via CPU
+ * loop fission). **Vulkan caveat:** the `Shared<T>` overload is a clean `XPU-N04`
+ * diagnostic on Vulkan — not because of the cooperative-matrix op (loading from a
+ * Workgroup pointer is spec-legal and the emitted SPIR-V is valid), but because a
+ * downstream LLVM-SPIR-V/RADV bug miscompiles *loop-variant* indexing into a
+ * Workgroup array, which the cooperative global→LDS staging copy relies on
+ * (verified on Mesa 26.0.3: direct `shared[t]` works, strided-loop `shared[e]`
+ * corrupts). Use the global `Buffer<T>` overload on Vulkan until that is fixed.
+ * Double-
+ * buffering (a second LDS panel staged while the current one computes) is a
+ * kernel-authoring pattern on top of these same verbs; a fully-managed tiled-GEMM
+ * block is a possible later convenience. For correctness
  * the A and B `Use`/shape must
  * form a valid product into this accumulator; v1 targets the square
  * Rows == Cols == K tile (so A is `<...,0>` and B is `<...,1>` of the same
@@ -144,6 +156,18 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
+     * Device-only intrinsic: load this tile from a workgroup-shared (`Shared<T>`,
+     * i.e. LDS) tile instead of a global `Buffer<T>` — the consume side of the
+     * LDS-staged GEMM. The workgroup stages a panel global→LDS once (see
+     * `CoopStage.panel`), barriers, and then every wave loads its operand tile out
+     * of that shared panel; `offset`/`layout`/`stride` address the sub-tile inside
+     * the LDS tile exactly as the `Buffer<T>` overload does for global memory.
+     * Same fragment layout and tier rules — only the source storage class differs.
+     */
+    public void load(Shared<T> src, uint32 offset, uint32 layout, uint32 stride) {
+    }
+
+    /**
      * Device-only intrinsic: broadcast `value` across every element of this tile
      * — the zero/initial accumulator (`OpCompositeConstruct` of a single scalar).
      */
@@ -165,5 +189,14 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * write-side counterpart of `load`'s sub-tile addressing.
      */
     public void store(Buffer<T> dst, uint32 offset, uint32 layout, uint32 stride) {
+    }
+
+    /**
+     * Device-only intrinsic: store this tile to a workgroup-shared (`Shared<T>`,
+     * i.e. LDS) tile — the write-side counterpart of the `Shared<T>` load. Useful
+     * for a coalesced epilogue (stage the accumulator tile to LDS, then have the
+     * workgroup flush it to global in a coalesced pattern).
+     */
+    public void store(Shared<T> dst, uint32 offset, uint32 layout, uint32 stride) {
     }
 }

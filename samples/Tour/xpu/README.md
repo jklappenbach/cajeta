@@ -146,6 +146,20 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   without dissuading use, and the path auto-promotes to the cores where the
   hardware exposes the config, e.g. bf16 WMMA on AMD). Walkthrough:
   `cajeta.xpu.core.CooperativeMatrix` + `cajeta-docs/LintRules.md` § Notes.
+  <br>**Beyond one tile:** the `offset`/`stride` arguments select sub-tiles of a
+  wider matrix, so a K-loop of `load`+`mma` is a real tiled GEMM, and tiling the
+  M/N output across waves (one workgroup per output-tile grid) gives a full
+  `C[32×32]=A·B`. For bandwidth, the **LDS-staged** form stages A/B panels into
+  workgroup-shared memory once via `CoopStage.panel` and reads operands back
+  through the `CooperativeMatrix.load(Shared<T>)` overload (reuse → fewer global
+  reads). These are device-verified on **AMD (WMMA) and the CPU**
+  (`test/xpu/XpuCooperativeMatrixAmdDeviceTests.cpp`); they are not wired into
+  this portable tour because the LDS-staged path is not yet usable on Vulkan — a
+  downstream LLVM-SPIR-V/RADV bug miscompiles loop-variant Workgroup-memory
+  indexing (the cooperative global→LDS staging copy), so `load(Shared<T>)` on
+  Vulkan is a clean `XPU-N04` diagnostic rather than a silent miscompile. (Note:
+  fixing this also required correcting `Workgroup.dimX()` codegen, which had been
+  emitting the `WorkgroupSize` BuiltIn as a variable — invalid Vulkan SPIR-V.)
 - `fastMath` / `vecMath` / `floatTypes` — **the device math surface**. `fastMath`
   is a `@FastMath` kernel (relaxed IEEE FP: FMA fusion, approximate
   transcendentals). `vecMath` applies `Math.sqrt` **elementwise** over a

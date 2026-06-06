@@ -587,3 +587,226 @@ TEST(XpuCooperativeMatrixAmdDeviceTests, gemmOutputTilesOnDevice) {
                               << ref[i * D + j];
     EXPECT_EQ(mismatches, 0u) << "tiled GEMM had " << mismatches << " mismatches";
 }
+
+// --- LDS staging (Option A): load a coop-matrix tile from a Shared<T> (LDS) tile.
+// One wave stages A and B tiles global->LDS with a hand-written cooperative copy
+// (NOT CoopStage — this isolates the Shared-source load), barriers, then runs the
+// single-tile matmul out of LDS. If load(Shared<T>) addressed the wrong storage
+// class the result would be garbage. Non-uniform, exact-integer check.
+const char* kSharedLoadSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Workgroup;\n"
+    "import cajeta.xpu.core.Barrier;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void shld(Buffer<float16> a, Buffer<float16> b,\n"
+    "                            Buffer<float32> c) {\n"
+    "        Shared<float16> sa = shared float16[16 * 16];\n"
+    "        Shared<float16> sb = shared float16[16 * 16];\n"
+    "        uint32 tid = Thread.x();\n"
+    "        uint32 nthr = Workgroup.dimX();\n"
+    "        for (uint32 e = tid; e < 256; e = e + nthr) {\n"
+    "            sa[e] = a[e];\n"
+    "            sb[e] = b[e];\n"
+    "        }\n"
+    "        Barrier.workgroup();\n"
+    "        CooperativeMatrix<float16,16,16,0> ma;\n"
+    "        ma.load(sa, 0, 0, 16);\n"
+    "        CooperativeMatrix<float16,16,16,1> mb;\n"
+    "        mb.load(sb, 0, 0, 16);\n"
+    "        CooperativeMatrix<float32,16,16,2> mc;\n"
+    "        mc.splat(0.0f);\n"
+    "        mc.mma(ma, mb);\n"
+    "        mc.store(c, 0, 0, 16);\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCooperativeMatrixAmdDeviceTests, sharedLoadMatmulOnDevice) {
+    if (!HipDriver::available()) GTEST_SKIP() << "no ROCm/HIP device available";
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kSharedLoadSource);
+    auto k = findMethod(module->getStructures()["test.M"], "shld");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_sharedload_amddevice", ctx);
+    configureDeviceModule(dev, *tm);
+    lowerKernel(k, dev);
+    std::vector<uint8_t> hsaco = assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
+
+    std::vector<_Float16> hostA(TILE), hostB(TILE);
+    std::vector<float> ref(TILE, 0.0f);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned kk = 0; kk < N; ++kk)
+            hostA[i * N + kk] = (_Float16) ((i + 2 * kk) % 5);
+    for (unsigned kk = 0; kk < N; ++kk)
+        for (unsigned j = 0; j < N; ++j)
+            hostB[kk * N + j] = (_Float16) ((3 * kk + j) % 4);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j) {
+            float acc = 0.0f;
+            for (unsigned kk = 0; kk < N; ++kk)
+                acc += (float) hostA[i * N + kk] * (float) hostB[kk * N + j];
+            ref[i * N + j] = acc;
+        }
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "shld");
+    ASSERT_NE(fn, nullptr);
+
+    HipDevicePtr dA = hip.alloc(TILE * sizeof(_Float16));
+    HipDevicePtr dB = hip.alloc(TILE * sizeof(_Float16));
+    HipDevicePtr dC = hip.alloc(TILE * sizeof(float));
+    ASSERT_NE(dA, nullptr);
+    ASSERT_NE(dB, nullptr);
+    ASSERT_NE(dC, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dA, hostA.data(), TILE * sizeof(_Float16)));
+    ASSERT_TRUE(hip.memcpyHtoD(dB, hostB.data(), TILE * sizeof(_Float16)));
+    std::vector<float> seed(TILE, -1.0f);
+    ASSERT_TRUE(hip.memcpyHtoD(dC, seed.data(), TILE * sizeof(float)));
+
+    void* params[] = { &dA, &dB, &dC };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, /*block=*/32, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<float> out(TILE, -2.0f);
+    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dC, TILE * sizeof(float)));
+    hip.free(dA);
+    hip.free(dB);
+    hip.free(dC);
+
+    size_t mismatches = 0;
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j)
+            if (out[i * N + j] != ref[i * N + j] && mismatches++ < 8)
+                ADD_FAILURE() << "Shared-load matmul mismatch at (" << i << ","
+                              << j << "): got " << out[i * N + j] << " want "
+                              << ref[i * N + j];
+    EXPECT_EQ(mismatches, 0u) << "Shared-load matmul had " << mismatches
+                              << " mismatches";
+}
+
+// --- Full LDS-staged GEMM (Options A + B together): C[32x32] = A[32x32].B[32x32].
+// One workgroup of 4 waves (block=128) computes the 2x2 output-tile grid. Each
+// K-step: CoopStage.panel stages the A row-panel (32x16) and B col-panel (16x32)
+// global->LDS ONCE, barrier, then every wave loads ITS operand tiles out of the
+// shared panels and accumulates — so each staged element is read by multiple
+// waves (the reuse that LDS staging buys). This is the headline of Option B.
+const char* kLdsStagedGemmSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.xpu.core.CoopStage;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Barrier;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void gemm(Buffer<float16> a, Buffer<float16> b,\n"
+    "                            Buffer<float32> c) {\n"
+    "        uint32 wave = Thread.x() / 32;\n"
+    "        uint32 ti = wave / 2;\n"
+    "        uint32 tj = wave % 2;\n"
+    "        Shared<float16> sa = shared float16[32 * 16];\n"
+    "        Shared<float16> sb = shared float16[16 * 32];\n"
+    "        CooperativeMatrix<float32,16,16,2> acc;\n"
+    "        acc.splat(0.0f);\n"
+    "        CooperativeMatrix<float16,16,16,0> wa;\n"
+    "        CooperativeMatrix<float16,16,16,1> wb;\n"
+    "        for (uint32 kt = 0; kt < 2; kt = kt + 1) {\n"
+    "            CoopStage.panel(sa, a, 0, kt * 16, 32, 16, 32);\n"
+    "            CoopStage.panel(sb, b, kt * 16, 0, 16, 32, 32);\n"
+    "            Barrier.workgroup();\n"
+    "            wa.load(sa, ti * 256, 0, 16);\n"
+    "            wb.load(sb, tj * 16, 0, 32);\n"
+    "            acc.mma(wa, wb);\n"
+    "            Barrier.workgroup();\n"
+    "        }\n"
+    "        acc.store(c, ti * 512 + tj * 16, 0, 32);\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCooperativeMatrixAmdDeviceTests, ldsStagedGemmOnDevice) {
+    if (!HipDriver::available()) GTEST_SKIP() << "no ROCm/HIP device available";
+
+    constexpr unsigned D = 32;
+    constexpr unsigned SZ = D * D;
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kLdsStagedGemmSource);
+    auto k = findMethod(module->getStructures()["test.M"], "gemm");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_lds_staged_gemm_amddevice", ctx);
+    configureDeviceModule(dev, *tm);
+    lowerKernel(k, dev);
+    std::vector<uint8_t> hsaco = assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
+
+    std::vector<_Float16> hostA(SZ), hostB(SZ);
+    std::vector<float> ref(SZ, 0.0f);
+    for (unsigned i = 0; i < D; ++i)
+        for (unsigned kk = 0; kk < D; ++kk)
+            hostA[i * D + kk] = (_Float16) ((i + 2 * kk) % 5);
+    for (unsigned kk = 0; kk < D; ++kk)
+        for (unsigned j = 0; j < D; ++j)
+            hostB[kk * D + j] = (_Float16) ((3 * kk + j) % 4);
+    for (unsigned i = 0; i < D; ++i)
+        for (unsigned j = 0; j < D; ++j) {
+            float acc = 0.0f;
+            for (unsigned kk = 0; kk < D; ++kk)
+                acc += (float) hostA[i * D + kk] * (float) hostB[kk * D + j];
+            ref[i * D + j] = acc;
+        }
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "gemm");
+    ASSERT_NE(fn, nullptr);
+
+    HipDevicePtr dA = hip.alloc(SZ * sizeof(_Float16));
+    HipDevicePtr dB = hip.alloc(SZ * sizeof(_Float16));
+    HipDevicePtr dC = hip.alloc(SZ * sizeof(float));
+    ASSERT_NE(dA, nullptr);
+    ASSERT_NE(dB, nullptr);
+    ASSERT_NE(dC, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dA, hostA.data(), SZ * sizeof(_Float16)));
+    ASSERT_TRUE(hip.memcpyHtoD(dB, hostB.data(), SZ * sizeof(_Float16)));
+    std::vector<float> seed(SZ, -1.0f);
+    ASSERT_TRUE(hip.memcpyHtoD(dC, seed.data(), SZ * sizeof(float)));
+
+    // One workgroup of 4 waves (128 threads); the waves share the staged panels.
+    void* params[] = { &dA, &dB, &dC };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, /*block=*/128, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<float> out(SZ, -2.0f);
+    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dC, SZ * sizeof(float)));
+    hip.free(dA);
+    hip.free(dB);
+    hip.free(dC);
+
+    size_t mismatches = 0;
+    for (unsigned i = 0; i < D; ++i)
+        for (unsigned j = 0; j < D; ++j)
+            if (out[i * D + j] != ref[i * D + j] && mismatches++ < 8)
+                ADD_FAILURE() << "LDS-staged GEMM mismatch at (" << i << "," << j
+                              << "): got " << out[i * D + j] << " want "
+                              << ref[i * D + j];
+    EXPECT_EQ(mismatches, 0u) << "LDS-staged GEMM had " << mismatches
+                              << " mismatches";
+}

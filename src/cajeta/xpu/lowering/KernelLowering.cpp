@@ -1859,6 +1859,10 @@ private:
             // Math.<fn>(...) inside a kernel — fully handled (returns a value or
             // a clean diagnostic). Mirrors the host Math lowering.
             return lowerMathCall(name, mc);
+        } else if (recv == "CoopStage") {
+            // CoopStage.panel(...) — the cooperative global→LDS staging copy for
+            // tiled GEMM (the consume side is CooperativeMatrix.load(Shared<T>)).
+            return lowerCoopStage(name, mc);
         }
         // Matrix<T,R,C> instance methods (B1): transpose/identity/row/col/
         // hadamard. Checked BEFORE the vector branch — a matrix local's slot is
@@ -2122,6 +2126,67 @@ private:
             }
         }
         return false;
+    }
+
+    // CoopStage.panel(dst, src, rowBase, colBase, rows, cols, ld) — the
+    // workgroup-cooperative global→LDS staging copy (Option B). Every thread of
+    // the workgroup strides over the rows*cols panel and copies it from a
+    // row-major source (leading dim `ld`) into the contiguous LDS tile `dst`
+    // (packed row-major, stride = cols). Both `dst` (a Shared<T> local) and `src`
+    // (a Buffer<T> param) resolve through the same buffer maps; LLVM tracks the
+    // address space on each base pointer, so the copy is backend-agnostic. The
+    // caller owns the surrounding Barrier.workgroup() calls.
+    llvm::Value* lowerCoopStage(const std::string& name,
+                                const std::shared_ptr<MethodCallExpression>& mc) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        if (name != "panel")
+            unsupported("CoopStage." + name + "()");
+        const auto& args = mc->getParameters();
+        if (args.size() != 7)
+            unsupported("CoopStage.panel expects (Shared dst, Buffer src, "
+                        "rowBase, colBase, rows, cols, ld)");
+        llvm::Value* dstBase = nullptr; llvm::Type* dstElem = nullptr;
+        llvm::Value* srcBase = nullptr; llvm::Type* srcElem = nullptr;
+        if (!resolveBufferBase(args[0].expression, dstBase, dstElem))
+            unsupported("CoopStage.panel: dst must be a Shared<T> kernel local");
+        if (!resolveBufferBase(args[1].expression, srcBase, srcElem))
+            unsupported("CoopStage.panel: src must be a Buffer<T> kernel parameter");
+        llvm::Value* rowBase = coerceTo(lowerExpr(args[2].expression), i32);
+        llvm::Value* colBase = coerceTo(lowerExpr(args[3].expression), i32);
+        llvm::Value* rows    = coerceTo(lowerExpr(args[4].expression), i32);
+        llvm::Value* cols    = coerceTo(lowerExpr(args[5].expression), i32);
+        llvm::Value* ld      = coerceTo(lowerExpr(args[6].expression), i32);
+        llvm::Value* total   = builder.CreateMul(rows, cols, "stage.total");
+        // for (e = Thread.x(); e < rows*cols; e += Workgroup.dimX())
+        //     dst[e] = src[(rowBase + e/cols)*ld + (colBase + e%cols)]
+        llvm::Value* tid  = coerceTo(target.threadId(builder, mod, 0), i32);
+        llvm::Value* nthr = coerceTo(target.workgroupDim(builder, mod, 0), i32);
+        llvm::Value* iv = entryAlloca(i32, "stage.e");
+        builder.CreateStore(tid, iv);
+        auto* head = llvm::BasicBlock::Create(ctx, "stage.head", fn);
+        auto* body = llvm::BasicBlock::Create(ctx, "stage.body", fn);
+        auto* exit = llvm::BasicBlock::Create(ctx, "stage.exit", fn);
+        builder.CreateBr(head);
+        builder.SetInsertPoint(head);
+        llvm::Value* e = builder.CreateLoad(i32, iv, "stage.e.cur");
+        builder.CreateCondBr(builder.CreateICmpULT(e, total), body, exit);
+        builder.SetInsertPoint(body);
+        llvm::Value* r = builder.CreateUDiv(e, cols);
+        llvm::Value* c = builder.CreateURem(e, cols);
+        llvm::Value* gIdx = builder.CreateAdd(
+            builder.CreateMul(builder.CreateAdd(rowBase, r), ld),
+            builder.CreateAdd(colBase, c), "stage.gidx");
+        llvm::Value* sPtr = target.bufferElementPtr(
+            builder, mod, srcBase, srcElem, builder.CreateZExt(gIdx, i64));
+        llvm::Value* val = builder.CreateLoad(srcElem, sPtr, "stage.ld");
+        llvm::Value* dPtr = target.bufferElementPtr(
+            builder, mod, dstBase, dstElem, builder.CreateZExt(e, i64));
+        builder.CreateStore(coerceTo(val, dstElem), dPtr);
+        builder.CreateStore(builder.CreateAdd(e, nthr), iv);
+        builder.CreateBr(head);
+        builder.SetInsertPoint(exit);
+        return llvm::ConstantInt::get(i32, 0);
     }
 
     // Resolve a CooperativeMatrix.load/store Buffer argument (a bare identifier
