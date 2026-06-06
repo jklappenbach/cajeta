@@ -190,6 +190,19 @@ namespace xpu {
             llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
             llvm::Value* value);
 
+        // Read the texel of the 2-D storage image `imgHandle` at INTEGER texel
+        // coordinate (x, y), returning it as an f32 — the lowering of
+        // `img.load(x, y)` (the read twin of storeImage; together they make
+        // Image2D read-modify-write and image->image passes possible). Same
+        // STORAGE_IMAGE descriptor as storeImage (no sampler; GENERAL layout).
+        // Default: unsupported (XPU-N01) — only backends with storage-image read
+        // override. Vulkan emits a single OpImageRead via
+        // llvm.spv.resource.load.2d (a scalar result is read as a <4 x f32> texel
+        // and component 0 extracted; the R32f image keeps lane 0).
+        virtual llvm::Value* loadImage(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y);
+
         // --- transcendental math (B2 increment 2) ---------------------------
         // sin/cos/tan/asin/acos/atan (unary), pow/atan2 (binary), rsqrt. The
         // DEFAULT emits the matching `llvm.*` intrinsic — correct on CPU (libm)

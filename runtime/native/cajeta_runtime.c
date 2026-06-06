@@ -5771,13 +5771,17 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
-    // Storage images (Image2D) must be in GENERAL layout for OpImageWrite.
-    // Transition each from its tracked layout (UNDEFINED on first use, else
-    // whatever a prior dispatch/readback left) before binding the pipeline.
+    // Storage images (Image2D) must be in GENERAL layout for OpImageWrite /
+    // OpImageRead. Barrier each before binding the pipeline. The barrier is
+    // emitted even when the image is ALREADY GENERAL (a prior dispatch): then it
+    // is not a layout transition but a read/write-after-write memory dependency,
+    // so a kernel that loads what an earlier dispatch stored sees the new texels
+    // (img.load reading a previous dispatch's img.store).
     for (int i = 0; i < n; ++i) {
         if (kinds[i] != CAJ_VKB_STORAGE_IMAGE) continue;
         struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
-        if (!t || t->layout == VK_IMAGE_LAYOUT_GENERAL) continue;
+        if (!t) continue;
+        int wasGeneral = (t->layout == VK_IMAGE_LAYOUT_GENERAL);
         VkImageMemoryBarrier toGen;
         memset(&toGen, 0, sizeof(toGen));
         toGen.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -5789,11 +5793,17 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
         toGen.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         toGen.subresourceRange.levelCount = 1;
         toGen.subresourceRange.layerCount = 1;
-        toGen.srcAccessMask = 0;
+        // From GENERAL: a prior dispatch's shader writes must be made available
+        // before this dispatch's shader read/write. From UNDEFINED/other: a plain
+        // transition with no prior shader access to wait on.
+        toGen.srcAccessMask = wasGeneral ? VK_ACCESS_SHADER_WRITE_BIT : 0;
         toGen.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-        g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                      0, NULL, 0, NULL, 1, &toGen);
+        g_xpu_vk.vkCmdPipelineBarrier(
+            cmd,
+            wasGeneral ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                       : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+            0, NULL, 0, NULL, 1, &toGen);
         t->layout = VK_IMAGE_LAYOUT_GENERAL;
     }
     g_xpu_vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);

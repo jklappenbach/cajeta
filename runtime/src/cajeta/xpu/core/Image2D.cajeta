@@ -81,6 +81,19 @@ public final class Image2D {
     }
 
     /**
+     * Device-only intrinsic: read the texel at INTEGER coordinate (x, y),
+     * returning it as a float32. The read twin of {@link #store} — together they
+     * make an Image2D read-modify-write (and image-to-image passes) possible.
+     * Lowered at the call site inside an @Kernel / @Device function to the
+     * backend's image-read op (Vulkan OpImageRead via llvm.spv.resource.load.2d).
+     * The body here is a resolution placeholder — it is never emitted as a real
+     * call. Reading on the host (outside a kernel) is unsupported.
+     */
+    public float32 load(uint32 x, uint32 y) {
+        return 0.0f;
+    }
+
+    /**
      * Host <- device transfer of `width`*`height` row-major float32 texels into
      * `out` (the texels a kernel wrote). `out` must hold at least width*height.
      */

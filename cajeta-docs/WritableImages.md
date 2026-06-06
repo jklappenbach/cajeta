@@ -17,7 +17,13 @@ img.download(out);                 // read the produced texels back to the host
 ```
 // inside the kernel
 img.store(x, y, value);            // x, y are INTEGER texel coords; value is f32
+float32 v = img.load(x, y);        // read a texel back (the read twin of store)
 ```
+
+`store` and `load` together make an `Image2D` **read-modify-write**: a kernel can
+read a texel an earlier dispatch wrote, transform it, and write it back — the
+basis of image-to-image compute passes (the runtime inserts a read-after-write
+barrier between dispatches on the same storage image).
 
 ## What it's for
 
@@ -36,8 +42,8 @@ normalized coords, filtered) with `Image2D.store` (write, integer coords, exact)
 
 | Backend | Lowering |
 |---|---|
-| **Vulkan** (RADV, etc.) | a `STORAGE_IMAGE` descriptor bound in `VK_IMAGE_LAYOUT_GENERAL`; `store` is a single **`OpImageWrite`** (the fork `llvm.spv.resource.store.2d` intrinsic). The image declares the **R32f** format (matching the runtime `VK_FORMAT_R32_SFLOAT`). |
-| **AMD / NVIDIA / CPU** | *not in v1* — `store` rejects at lowering (XPU-N01). Like `Texture2D`, writable images are a Vulkan-first capability. |
+| **Vulkan** (RADV, etc.) | a `STORAGE_IMAGE` descriptor bound in `VK_IMAGE_LAYOUT_GENERAL`; `store` is a single **`OpImageWrite`** and `load` a single **`OpImageRead`** (the fork `llvm.spv.resource.store.2d` / `load.2d` intrinsics). The image declares the **R32f** format (matching the runtime `VK_FORMAT_R32_SFLOAT`). |
+| **AMD / NVIDIA / CPU** | *not in v1* — `store` / `load` reject at lowering (XPU-N01). Like `Texture2D`, writable images are a Vulkan-first capability. |
 
 The host side allocates the image with `VK_IMAGE_USAGE_STORAGE_BIT |
 TRANSFER_SRC`, transitions it to `GENERAL` before the dispatch (a layout barrier
@@ -66,9 +72,9 @@ producer for a 2-D image store, so not an upstream PR).
 ## Caveats
 
 - **Single-channel `float32` (R32f), 2-D, v1.** `OpImageWrite` always takes a
-  4-component texel, so `store` splats `value` into `<value, 0, 0, 0>`; the R32f
-  image keeps lane 0. Generic `Image2D<T>`, multi-channel formats, 3-D, and
-  in-kernel image *reads* (load) are follow-ups.
+  4-component texel, so `store` splats `value` into `<value, 0, 0, 0>` and `load`
+  reads a `<4 x f32>` and extracts lane 0 (the R32f channel). Generic
+  `Image2D<T>`, multi-channel formats, and 3-D are follow-ups.
 - **Vulkan-only.** Like `Texture2D`, `Image2D` is not in the portable Tour (which
   must run on CPU) — it is exercised by the device test on a real Vulkan device.
 - **Texels start undefined.** There is no `upload`; the kernel produces the
@@ -76,10 +82,13 @@ producer for a 2-D image store, so not an upstream PR).
 
 ---
 
-**Rules.** `Image2D.store(uint32 x, uint32 y, float32 value)` is a device-only,
-Vulkan-only storage-image write (a single `OpImageWrite` via the `cajeta-spirv`
-`llvm.spv.resource.store.2d` intrinsic, R32f format, `GENERAL` layout). Allocate
-with `heap Image2D(w, h)`; read back on the host with `img.download(out)`.
-Device-verified bit-exact on RADV (`XpuVulkanDispatchDeviceTests.imageStoreOnDevice`)
-and spirv-val-clean (`XpuVulkanEmitTests.lowersImageStoreToSpirv`). See
-`Texture2D` (`runtime/.../core/Texture2D.cajeta`) for the read twin.
+**Rules.** `Image2D.store(uint32 x, uint32 y, float32 value)` and
+`Image2D.load(uint32 x, uint32 y) -> float32` are device-only, Vulkan-only
+storage-image write / read (a single `OpImageWrite` / `OpImageRead` via the
+`cajeta-spirv` `llvm.spv.resource.store.2d` / `load.2d` intrinsics, R32f format,
+`GENERAL` layout; a read-after-write barrier separates dispatches). Allocate with
+`heap Image2D(w, h)`; read back on the host with `img.download(out)`.
+Device-verified bit-exact on RADV
+(`XpuVulkanDispatchDeviceTests.{imageStoreOnDevice,imageLoadStoreRmwOnDevice}`)
+and spirv-val-clean (`XpuVulkanEmitTests.lowersImage{Store,Load}ToSpirv`). See
+`Texture2D` (`runtime/.../core/Texture2D.cajeta`) for the sampled read surface.
