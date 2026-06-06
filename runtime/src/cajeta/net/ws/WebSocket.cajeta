@@ -308,19 +308,6 @@ public class WebSocket {
             // the static-final read as the global's address (see the ctor
             // note); the bad length made `read` return a wrong count and the
             // decoder see an empty/garbled frame.
-            //
-            // KNOWN LIMITATION (live-socket only; tracked for a compiler fix):
-            // this method PARKS the fiber on the socket read, then builds a
-            // WsMessage (which owns an `int8[] payload`) and returns it. A fiber
-            // park taints the parked frame's scope-exit drop chain so it
-            // OVER-DROPS the message's payload array even though it was
-            // moved/returned out — the caller can read a freed (count()==0)
-            // payload (a use-after-free; passes in isolation, fails under heap
-            // churn). No stdlib restructuring avoids it (the message must be
-            // built in, or returned up through, a parked frame). The pure
-            // codec/protocol/assembler are correct; the proper fix is in the
-            // fiber park/resume + drop-chain machinery. See the WS live-echo
-            // investigation notes.
             int32 rc = WebSocket.READ_CHUNK;
             int32 got = this.reader.read(this.readScratch, 0, rc);
             if (got == 0) {

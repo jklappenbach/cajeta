@@ -6,37 +6,25 @@
 // client builds is accepted and that the client validates the server's
 // Sec-WebSocket-Accept.
 //
-// The full live round-trip (DISABLED below) drives a real loopback socket
-// through WsUpgrade -> WebSocket via AsyncReader/AsyncWriter. It was previously
-// disabled blaming the forward-referenced-interface codegen bug (Bug 2, now
-// FIXED). With Bug 2 fixed this row was bisected (diagnostic probes + a minimal
-// ladder, since removed) and found to be NOT a framing/codec defect -- the
-// codec/WsProtocol/reassembler produce a correct 4-byte message INSIDE the
-// server fiber. The fault is OWNERSHIP TRANSFER across a FIBER PARK, a
-// compiler/runtime defect (NOT stdlib-fixable):
+// The full live round-trip drives a real loopback socket through WsUpgrade ->
+// WebSocket via AsyncReader/AsyncWriter, echoing one binary message. It was
+// long disabled chasing a "0-length message" use-after-free that was wrongly
+// blamed first on the forward-referenced-interface codegen bug (Bug 2) and then
+// on a "fiber park x scope-exit drop" compiler defect. Both were red herrings.
 //
-//   WebSocket.receive() PARKS the fiber on the socket read, then builds a
-//   WsMessage (which owns an `int8[] payload`) and returns it. A fiber park
-//   TAINTS the parked frame's scope-exit drop chain so it OVER-DROPS the
-//   message's payload array even though it was moved/returned out -- the caller
-//   reads a freed (count()==0) payload. It is a use-after-free: it passes when
-//   the row runs ALONE (the freed array's memory still holds its old count) but
-//   fails when run after other tests churn the heap. Confirmed by a minimal
-//   ladder (a `#`-returned owned-array object through factory/holder/dispatch/
-//   receive, even across spawn+await, is correct WITHOUT a park -- all rungs
-//   pass; only the real socket park triggers it), and by field-handoff/borrow
-//   restructurings of receive() that pass alone but still fail under heap churn
-//   (the message must be built in, or returned up through, a frame that parked).
-//
-// Two genuinely-correct contributing fixes are KEPT in WebSocket.cajeta (they
-// reduce, but cannot eliminate, the failure): (1) READ_CHUNK static-final bound
-// to a local int32 (`new int8[WebSocket.READ_CHUNK]` / the read length both
-// mis-lower the static-final to the global's address -- the documented gap
-// AsyncReader/AsyncWriter work around); (2) WebSocket.dispatch `return #m;`
-// (was `return m;`, a missing ownership transfer from a `#WsMessage` method).
-// The proper fix is in the fiber park/resume + scope-exit drop-chain machinery;
-// re-enable this row once that lands. The plaintext HTTP client path (no live
-// WS) is green in HttpClientTests.
+// ROOT CAUSE (fixed): WsFrameDecoder double-freed every decoded frame.
+// finishIfPayloadComplete built `WsFrame f = WsFrame.of(...)` then called
+// `enqueue(f)` WITHOUT a `#` transfer, and nextFrame() returned a non-`#`
+// WsFrame. So the local `f` stayed an active owner and its scope-exit drop
+// reclaimed the frame the queue still referenced; nextFrame() then handed the
+// read loop a freed frame -> use-after-free on the frame's payload. It passed
+// in isolation (freed memory still readable) and failed under heap churn -- the
+// fiber park only ADDED churn, it was never the cause. Fix: WsFrameDecoder now
+// `#`-transfers frames into the queue (`enqueue(#f)` / `queue[t] = #f`) and out
+// of nextFrame (`#WsFrame` / `return #f`), so the frame has exactly one owner.
+// Verified deterministically with --poison-free (which turns the UAF into a
+// hard crash): both the pure decoder path and this live echo are green under
+// poison. The same bug also broke WsFrameCodecTests.decodeGoldenVectors.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -108,13 +96,11 @@ TEST(WsEntryPointTests, handshakeKeyBindingIsChecked) {
     EXPECT_EQ(runI32(src), 1);
 }
 
-// FULL LIVE ROUND-TRIP (DISABLED -- see file header): client + server
-// WebSockets over a loopback socket, echoing one binary message. Blocked by a
-// fiber-park x scope-exit-drop compiler/runtime defect (receive() parks then
-// returns an owned-array WsMessage whose payload the parked frame over-drops) --
-// NOT framing/codec, NOT Bug 2. Passes ALONE, fails under heap churn (use-after-
-// free). Two correct contributing fixes kept (READ_CHUNK + dispatch `return #m`).
-TEST(WsEntryPointTests, DISABLED_clientServerEchoRoundTripOverLoopback) {
+// FULL LIVE ROUND-TRIP: client + server WebSockets over a loopback socket,
+// echoing one binary message. Re-enabled after fixing the WsFrameDecoder
+// double-free (see file header) -- the bytes round-trip and the reassembled
+// message keeps its 4-byte payload through the read loop.
+TEST(WsEntryPointTests, clientServerEchoRoundTripOverLoopback) {
     std::string src =
         "package test;\n"
         "import cajeta.net.IpAddress;\n"
