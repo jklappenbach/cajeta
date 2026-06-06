@@ -3990,7 +3990,7 @@ namespace cajeta {
             string detail = t ? t->toCanonical() : string("<unresolved>");
             throw Exception(
                 "detach argument must be #-transferred, primitive, or a fresh "
-                "`new T(...)`; got an expression of type '" + detail + "' that "
+                "`heap T(...)`; got an expression of type '" + detail + "' that "
                 "would be captured as a borrow",
                 "CAJETA_ERROR_DETACH_BORROW_CAPTURE");
         }

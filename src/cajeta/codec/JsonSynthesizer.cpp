@@ -359,7 +359,7 @@ namespace cajeta {
     // `cajeta.collection.ArrayList<E>` is the accumulator. After the
     // END_ARRAY the entries are copied into a freshly-allocated
     // `E[]` sized to the accumulator's count(). For E=class, the
-    // generated `new E[sz]` allocates an array of pointers; each
+    // generated `heap E[sz]` allocates an array of pointers; each
     // pointer is set from the corresponding accumulator entry.
     std::string readArrayField(const std::string& fieldName,
                                 CajetaTypePtr elementType) {
@@ -439,7 +439,7 @@ namespace cajeta {
         // the class's auto-field-drop walk where it belongs.
         os << "            int32 sz_" << fieldName << " = tmp_"
            << fieldName << ".count();\n";
-        os << "            out." << fieldName << " = new " << etcanon
+        os << "            out." << fieldName << " = heap " << etcanon
            << "[sz_" << fieldName << "];\n";
         os << "            int32 ii_" << fieldName << " = 0;\n";
         os << "            while (ii_" << fieldName << " < sz_"
