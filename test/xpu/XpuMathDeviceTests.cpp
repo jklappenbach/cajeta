@@ -123,6 +123,36 @@ const char* kVectorMathSource =
 
 float vectorMathExpectedAt(uint32_t i) { return 17.0f + (float) i; }
 
+// @FastMath relaxes IEEE FP: the body's ops carry the LLVM fast-math flags
+// (contract/reassoc/arcp/afn/...) so the backend may fuse to FMA, use
+// reciprocals, and approximate transcendentals. out[i] = 2*i + 1 (exact).
+const char* kFastMathSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class F {\n"
+    "    @Kernel\n"
+    "    @FastMath\n"
+    "    public static void fastk(Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { out[i] = (float32) i * 2.0f + 1.0f; }\n"
+    "    }\n"
+    "}\n";
+// Same kernel without @FastMath — the FP ops are emitted IEEE-strict (no flags).
+const char* kPreciseSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class P {\n"
+    "    @Kernel\n"
+    "    public static void precisek(Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { out[i] = (float32) i * 2.0f + 1.0f; }\n"
+    "    }\n"
+    "}\n";
+
+float fastMathExpectedAt(uint32_t i) { return 2.0f * (float) i + 1.0f; }
+
 float expectedAt(uint32_t i) {
     float x = (float) i;
     return std::sqrt(x) + std::floor(x * 0.5f) + std::ceil(x * 0.25f)
@@ -637,4 +667,112 @@ TEST(XpuMathDeviceTests, vectorMathRunsOnAmdDevice) {
     hip.free(dOut);
     for (uint32_t i = 0; i < n; ++i)
         EXPECT_NEAR(result[i], vectorMathExpectedAt(i), 1e-2f) << "element " << i;
+}
+
+// @FastMath stamps the LLVM fast-math flags on the body's FP ops; the plain
+// kernel does not. (The flags appear as "fast" / "contract" on fmul/fadd.)
+TEST(XpuMathDeviceTests, fastMathFlagsEmitted) {
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr);
+
+    Compiler c1;
+    auto mf = compileForInspection(c1, kFastMathSource, "F");
+    auto kf = findMethod(mf->getStructures()["test.F"], "fastk");
+    ASSERT_NE(kf, nullptr);
+    llvm::LLVMContext ctxF;
+    llvm::Module hostF("xpu_fast_emit", ctxF);
+    cajeta::xpu::cpu::configureHostModule(hostF, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(kf, hostF), nullptr);
+    std::string irFast = printModule(hostF);
+
+    Compiler c2;
+    auto mp = compileForInspection(c2, kPreciseSource, "P");
+    auto kp = findMethod(mp->getStructures()["test.P"], "precisek");
+    ASSERT_NE(kp, nullptr);
+    llvm::LLVMContext ctxP;
+    llvm::Module hostP("xpu_precise_emit", ctxP);
+    cajeta::xpu::cpu::configureHostModule(hostP, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(kp, hostP), nullptr);
+    std::string irPrecise = printModule(hostP);
+
+    // The @FastMath body carries fast-math flags on its float ops; the plain one
+    // emits a strict `fmul float` / `fadd float` with no flags.
+    EXPECT_NE(irFast.find("fmul fast"), std::string::npos) << irFast;
+    EXPECT_NE(irFast.find("fadd fast"), std::string::npos) << irFast;
+    EXPECT_EQ(irPrecise.find("fmul fast"), std::string::npos) << irPrecise;
+    EXPECT_NE(irPrecise.find("fmul float"), std::string::npos) << irPrecise;
+}
+
+// A @FastMath kernel still computes correctly — out[i] = 2*i + 1 (CPU oracle).
+TEST(XpuMathDeviceTests, fastMathRunsOnCpu) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kFastMathSource, "F");
+    auto k = findMethod(module->getStructures()["test.F"], "fastk");
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr);
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("xpu_fast_exec", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
+    auto jit = std::move(*jitOrErr);
+    auto err = jit->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    auto sym = jit->lookup("fastk");
+    ASSERT_TRUE(static_cast<bool>(sym)) << llvm::toString(sym.takeError());
+    auto fastk = sym->toPtr<MathFn>();
+    const int32_t B = 64, G = 4;
+    const uint32_t N = (uint32_t) (B * G);
+    std::vector<float> out(N, -1.0f);
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            fastk(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+    for (uint32_t i = 0; i < N; ++i)
+        EXPECT_NEAR(out[i], fastMathExpectedAt(i), 1e-3f) << "element " << i;
+}
+
+// @FastMath on a real GPU via Vulkan — the flags ride into the SPIR-V and the
+// result is still correct.
+TEST(XpuMathDeviceTests, fastMathRunsOnVulkanDevice) {
+    using namespace cajeta::xpu::vulkan;
+    if (!VulkanDriver::available()) GTEST_SKIP() << "no Vulkan compute device";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kFastMathSource, "F");
+    auto k = findMethod(module->getStructures()["test.F"], "fastk");
+    ASSERT_NE(k, nullptr);
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_fast_vk", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
+    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
+    const uint32_t n = 1u << 16;
+    std::vector<float> out(n, -1.0f);
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    const std::size_t bytes = std::size_t(n) * sizeof(float);
+    VulkanDriver::Buffer dOut = vk.alloc(bytes);
+    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    ASSERT_NE(dN, 0u);
+    ASSERT_TRUE(vk.upload(dOut, out.data(), bytes));
+    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
+    const unsigned block = kVulkanLocalSizeX;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "fastk", {dOut, dN}, grid));
+    std::vector<float> result(n);
+    ASSERT_TRUE(vk.download(result.data(), dOut, bytes));
+    vk.free(dOut); vk.free(dN);
+    size_t mismatches = 0;
+    for (uint32_t i = 0; i < n; ++i)
+        if (std::abs(result[i] - fastMathExpectedAt(i)) > 1e-2f) {
+            if (mismatches < 5) ADD_FAILURE() << "i=" << i << " got " << result[i];
+            ++mismatches;
+        }
+    EXPECT_EQ(mismatches, 0u);
 }
