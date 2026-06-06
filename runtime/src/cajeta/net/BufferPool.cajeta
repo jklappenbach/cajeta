@@ -129,7 +129,13 @@ public class BufferPool {
      * would defeat the memory bound. They are dropped, and the next
      * `acquire` mints a fresh slab-sized one.
      */
-    public void release(ByteBuffer buf) {
+    public void release(#ByteBuffer buf) {
+        // Takes OWNERSHIP of `buf` (the pool retains it for reuse). The
+        // free-list slot owns the buffer until a later `acquire` hands it
+        // back out. Without the `#` transfer the caller's owned reference
+        // would drop at its scope exit while the pool still aliased it,
+        // leaving a dangling slot that the next `acquire` reuses — a
+        // use-after-free. A `null` argument is ignored.
         if (buf == null) {
             return;
         }
@@ -141,8 +147,9 @@ public class BufferPool {
                 return;
             }
         }
-        // Not retained — let the buffer drop at the caller's scope
-        // exit (its `int8[]` storage reclaims).
+        // Not retained (idle set full, or an oversized/grown buffer): the
+        // owned `buf` drops at this method's scope exit, reclaiming its
+        // `int8[]` storage and keeping the idle set bounded.
         return;
     }
 }
