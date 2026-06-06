@@ -1257,6 +1257,59 @@ namespace cajeta {
             }
         }
 
+        // MultiClassing Phase 3 v4 vbase init — INHERITED sub-objects.
+        // The block above initializes only SELF's own appended vbase
+        // slots — those are the slots an inherited-field access loads when
+        // the receiver's STATIC type is this most-derived class. But an
+        // inherited-field read through an UPCAST base static type loads the
+        // vbase pointer from the BASE sub-object's own vbase slot instead
+        // (e.g. `e.message` where `e` is statically `NetException` but the
+        // object is a `ConnectionRefusedException` subtype uses
+        // NetException's vbase-to-Throwable slot, NOT the subtype's). Those
+        // inherited sub-object vbase slots are normally initialized by each
+        // ancestor's own constructor — but only if it actually RUNS. A
+        // subtype whose parent has no no-arg constructor (so the auto
+        // super-ctor invoke below is skipped) and that does not chain an
+        // explicit `super(...)` would otherwise leave them null, and an
+        // upcast inherited-field read then dereferences a null vbase
+        // pointer and crashes. So initialize every first-parent-chain
+        // ancestor's own vbase slots here too, pointing at self's canonical
+        // sub-object positions. First-parent-chain ancestors all sit at
+        // byte offset 0 (they share self's primary layout prefix), so each
+        // ancestor's struct is a valid prefix of self and a StructGEP off
+        // the receiver lands on the right slot. Non-first (diamond) parents
+        // are still handled by the descendant fixup further below.
+        if (constructor && parent && bodyFn->arg_size() > 0) {
+            llvm::Value* receiver = bodyFn->getArg(0);
+            auto& vctx = *module->getLlvmContext();
+            llvm::Type* vi8Ty = llvm::Type::getInt8Ty(vctx);
+            llvm::Type* vi64Ty = llvm::Type::getInt64Ty(vctx);
+            CajetaClass* chain = parent->getSuperClasses().empty()
+                ? nullptr : parent->getSuperClasses().front().get();
+            while (chain) {
+                if (!chain->getVbaseAncestors().empty()) {
+                    llvm::Type* chainLlvm = chain->getLlvmType();
+                    for (auto& anc : chain->getVbaseAncestors()) {
+                        if (!anc) continue;
+                        int slotIdx = chain->getVbaseSlotIndex(anc.get());
+                        if (slotIdx < 0) continue;
+                        llvm::Value* slotPtr = builder->CreateStructGEP(
+                            chainLlvm, receiver, (unsigned) slotIdx,
+                            "vbase_init_inh_slot");
+                        uint64_t off = parent->getSubObjectByteOffset(anc.get());
+                        llvm::Value* ancPtr = (off == 0)
+                            ? receiver
+                            : builder->CreateInBoundsGEP(vi8Ty, receiver,
+                                llvm::ConstantInt::get(vi64Ty, off),
+                                "vbase_init_inh_target");
+                        builder->CreateStore(ancPtr, slotPtr);
+                    }
+                }
+                chain = chain->getSuperClasses().empty()
+                    ? nullptr : chain->getSuperClasses().front().get();
+            }
+        }
+
         if (constructor && parent && bodyFn->arg_size() > 0) {
             // MultiClassing R-2: pre-walk the ctor body's AST to detect
             // any explicit `super(args)` call. The warning condition
