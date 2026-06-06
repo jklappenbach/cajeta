@@ -224,7 +224,137 @@ public:
         return b.CreateCall(hi, {allOnes, lowCount}, "wave.laneid");
     }
 
+    // ---- Cooperative matrix: RDNA3 WMMA (matrix cores), CM7 ------------------
+    // gfx11/RDNA3.5 `v_wmma_*_16x16x16` (wave32): D[16x16] = A·B + C, with the
+    // tile held DISTRIBUTED across the 32 lanes of the wave. Unlike Vulkan (where
+    // the SPIR-V cooperative-matrix ops distribute implicitly), we marshal each
+    // fragment by hand from/to global memory in load/store, per the hardware
+    // layout:
+    //   A  : lane L holds row (L & 15) of A as <16 x elem>, k = 0..15 (the K
+    //        axis); replicated across the two 16-lane halves of the wave.
+    //   B  : lane L holds column (L & 15) of B as <16 x elem>, k = 0..15.
+    //   C/D: <8 x float> per lane — lane L holds column (L & 15), rows
+    //        { 2*e + (L >> 4) : e = 0..7 } (the wave32 interleaved-row layout).
+    // bf16 A/B are carried as <16 x i16> (the same 16 bits) for the intrinsic.
+    // Only 16x16x16 with an f32 accumulator is native (the configs the hardware
+    // exposes that way); anything else falls to the portable Software tier (CM6).
+
+    CoopMatrixTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
+                                  uint32_t /*use*/) override {
+        if (rows == 16 && cols == 16 &&
+            (elem->isHalfTy() || elem->isBFloatTy() || elem->isFloatTy()))
+            return CoopMatrixTier::Native;
+        return CoopMatrixTier::Software;
+    }
+
+    // RDNA3 WMMA exists only in the wave32 encoding — mark the kernel so the
+    // AMDGPU subtarget compiles this function at wavefront size 32.
+    void prepareNativeCoopMatrix(llvm::Function* fn) override {
+        fn->addFnAttr("target-features", "+wavefrontsize32");
+    }
+
+    llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,
+                               uint32_t /*rows*/, uint32_t /*cols*/,
+                               uint32_t use) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        if (use == 2)  // accumulator fragment: 8 f32 per lane
+            return llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 8);
+        // A/B operand fragment: 16 elements per lane (bf16 as i16 for the intrinsic).
+        llvm::Type* fe = elem->isBFloatTy()
+            ? (llvm::Type*) llvm::Type::getInt16Ty(ctx) : elem;
+        return llvm::FixedVectorType::get(fe, 16);
+    }
+
+    llvm::Value* coopMatrixLoad(llvm::IRBuilderBase& b, llvm::Module& m,
+                                llvm::Value* ptr, llvm::Value* layout,
+                                llvm::Value* stride, llvm::Type* matrixType,
+                                uint32_t /*rows*/, uint32_t /*cols*/,
+                                uint32_t use) override {
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixType);
+        llvm::Type* fe = vecTy->getElementType();
+        unsigned n = vecTy->getNumElements();
+        llvm::Value* frag = llvm::UndefValue::get(vecTy);
+        for (unsigned e = 0; e < n; ++e) {
+            auto rc = fragCoord(b, m, use, e, layout, stride);
+            llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.ld.ptr");
+            frag = b.CreateInsertElement(frag, b.CreateLoad(fe, p, "cm.ld"), e);
+        }
+        return frag;
+    }
+
+    void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+                         llvm::Value* matrixVal, llvm::Value* layout,
+                         llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
+                         uint32_t use) override {
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixVal->getType());
+        llvm::Type* fe = vecTy->getElementType();
+        unsigned n = vecTy->getNumElements();
+        for (unsigned e = 0; e < n; ++e) {
+            auto rc = fragCoord(b, m, use, e, layout, stride);
+            llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.st.ptr");
+            b.CreateStore(b.CreateExtractElement(matrixVal, e), p);
+        }
+    }
+
+    llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
+                                  llvm::Value* a, llvm::Value* bMat,
+                                  llvm::Value* c, llvm::Type* /*matrixType*/)
+            override {
+        // Pick the intrinsic by the A/B element type: <16 x half> -> f16 WMMA,
+        // <16 x i16> -> bf16 WMMA. Both accumulate into the <8 x float> C.
+        llvm::Type* ae =
+            llvm::cast<llvm::FixedVectorType>(a->getType())->getElementType();
+        llvm::Intrinsic::ID id = ae->isHalfTy()
+            ? llvm::Intrinsic::amdgcn_wmma_f32_16x16x16_f16
+            : llvm::Intrinsic::amdgcn_wmma_f32_16x16x16_bf16;
+        // Overloaded on (D/C type, A/B type), in first-appearance order.
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, id, {c->getType(), a->getType()});
+        return b.CreateCall(f, {a, bMat, c}, "wmma");
+    }
+
+    llvm::Value* coopMatrixSplat(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* value,
+                                 llvm::Type* matrixType) override {
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixType);
+        llvm::Type* fe = vecTy->getElementType();
+        if (value->getType() != fe && value->getType()->isFloatingPointTy() &&
+            fe->isFloatingPointTy())
+            value = b.CreateFPCast(value, fe);
+        (void) m;
+        return b.CreateVectorSplat(vecTy->getNumElements(), value, "cm.splat");
+    }
+
 private:
+    // The global linear index for fragment element `e` of a tile with the given
+    // `use`, on the current lane — the heart of the WMMA layout. Returns the
+    // element offset into the tile base (row-major `row*stride+col`, column-major
+    // `col*stride+row`).
+    llvm::Value* fragCoord(llvm::IRBuilderBase& b, llvm::Module& m, uint32_t use,
+                           unsigned e, llvm::Value* layout, llvm::Value* stride) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* lane = waveLaneId(b, m);
+        llvm::Value* lane16 = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
+        llvm::Value* half = b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4));
+        llvm::Value* row;
+        llvm::Value* col;
+        if (use == 0) {            // A: lane = row, e = K index
+            row = lane16;
+            col = llvm::ConstantInt::get(i32, e);
+        } else if (use == 1) {     // B: lane = col, e = K index
+            row = llvm::ConstantInt::get(i32, e);
+            col = lane16;
+        } else {                   // C/D accumulator: col = lane16, row = 2e+half
+            row = b.CreateAdd(llvm::ConstantInt::get(i32, 2 * e), half);
+            col = lane16;
+        }
+        llvm::Value* rowMajor = b.CreateAdd(b.CreateMul(row, stride), col);
+        llvm::Value* colMajor = b.CreateAdd(b.CreateMul(col, stride), row);
+        return b.CreateSelect(
+            b.CreateICmpEQ(layout, llvm::ConstantInt::get(i32, 0)),
+            rowMajor, colMajor, "cm.idx");
+    }
+
     static llvm::Value* readId(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Intrinsic::ID id) {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);

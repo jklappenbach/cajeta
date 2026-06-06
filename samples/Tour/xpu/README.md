@@ -54,6 +54,8 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
   @FastMath  2*i+1:   [10]=21 [100]=201  (expect 21, 201)
   vectorized sqrt sum: [0]=14 [10]=24  (expect 14, 24)
   fp16+bf16 (h2.w+b2.y): [0]=48 [10]=58  (expect 48, 58)
+-- coopGemm: 16x16x16 tile matmul on the matrix cores --
+  C[0][0]=16 C[5][5]=16  (expect 16, 16)
 -- waveReduce: sum across each wave, in[i]=1 --
   wave width (queried, not hardcoded) = 16        # 64 on an AMD GPU, 32 on NVIDIA
   every lane of a wave agrees: sums[0]=16 sums[1]=16
@@ -128,6 +130,22 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   and an inverse-based solve `g⁻¹ · rhs`. Both are bit-exact on CPU, Vulkan, and
   AMD. Walkthroughs: `cajeta-docs/Quaternions.md`,
   `cajeta-docs/MatrixDeterminantInverse.md`.
+- `coopGemm` — **the matrix cores + the tiering fallback**. One 16×16×16 tile
+  matmul `C = A·B` through the `CooperativeMatrix<T,R,C,Use>` verbs (load A and B
+  tiles, zero the accumulator, one `mma`, store C) — A,B are `float16`, the
+  accumulator/result `float32` (the mixed-precision ML config). With A,B all-ones
+  each C element is the inner dim K=16. The **same** `@Kernel` takes the fastest
+  path each backend offers: `float16`/`float32` lowers to the **native** matrix
+  cores on Vulkan (RADV cooperative-matrix) **and on AMD** (RDNA3
+  `v_wmma_f32_16x16x16_f16`, device-verified on gfx1151 — and `bfloat16` is
+  native WMMA there too, `v_wmma_f32_16x16x16_bf16`), and to a **portable
+  software tile-matmul** on the CPU (and any backend with no matrix config for
+  the dtype — e.g. `bfloat16` on Vulkan). The software path is
+  bit-identical; when it is taken the compile step prints a sticky
+  `note: [mma-tiering]` (a severity below *warning* — it tells you the tier
+  without dissuading use, and the path auto-promotes to the cores where the
+  hardware exposes the config, e.g. bf16 WMMA on AMD). Walkthrough:
+  `cajeta.xpu.core.CooperativeMatrix` + `cajeta-docs/LintRules.md` § Notes.
 - `fastMath` / `vecMath` / `floatTypes` — **the device math surface**. `fastMath`
   is a `@FastMath` kernel (relaxed IEEE FP: FMA fusion, approximate
   transcendentals). `vecMath` applies `Math.sqrt` **elementwise** over a

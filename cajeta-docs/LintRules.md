@@ -10,6 +10,37 @@ Lint rules are compile-time **warnings**, never errors. The compiler reports the
 - **No catch-all suppression.** There's no `@SuppressLint("*")` or bare `@SuppressLint()`. Suppression must name what you're suppressing — keeps grep'ability and forces conscious choice.
 - **The runtime is the safety net.** Lint warnings have no operational consequence. An uncaught exception at the top of a fiber or main thread is caught by the system default catch (`ErrorModel.md` § System default catch), logged, and the process or fiber exits cleanly. The lint exists to make the *path* visible at compile time; the runtime ensures the failure mode is well-defined regardless.
 
+## Notes — informational diagnostics (below `warning`)
+
+Alongside lint **warnings** the compiler emits a lighter severity, `note:`, for
+things the author should be *aware* of but that are neither a problem nor a code
+smell — there is nothing to fix. A note is **not** a lint warning:
+
+- It is emitted `note: [id] message` (vs. `warning: [id] message`). The severity
+  word is the signal: a warning invites action, a note simply informs.
+- It is **not suppressible** — `@SuppressLint` covers warnings. A note has no
+  remedy to opt out of; it is reporting a fact about how your code was compiled.
+- It is **sticky**: emitted every build (deduplicated per distinct subject), so
+  the information stays visible without ever nagging.
+
+Notes exist so a capability or path choice can "make itself known" without being
+framed as something to avoid — the deliberate middle ground between silence and a
+warning.
+
+### `mma-tiering`
+
+**What it reports:** a `CooperativeMatrix<T,…>` (the matrix-core tile-MMA type)
+took the **portable software tile-matmul** on a backend that exposes no native
+cooperative-matrix config for its dtype — e.g. `bfloat16` on Vulkan, or anything
+on the CPU. Emitted once per GEMM (on the A operand).
+
+**Why a note, not a warning:** the software path is *correct* and bit-identical;
+it just isn't matrix-core accelerated, and it **auto-promotes** to the hardware
+cores on a backend that does expose the config (f16/int8 on Vulkan, bf16 WMMA on
+AMD). Nothing is wrong and nothing should be "fixed" — the note simply tells you
+which tier you got so throughput is never a surprise. See
+`stdlib/xpu/core/CooperativeMatrix` § Runs on every backend.
+
 ## Suppression syntax
 
 ```cajeta
