@@ -77,14 +77,49 @@ TEST(UriResolveTests, rfc3986ReferenceResolutionVectors) {
     ASSERT_GE(vectors.size(), 40u)
         << "expected the full §5.4.1 + §5.4.2 normative table";
 
-    for (const auto& v : vectors) {
-        std::string body =
-            "Uri base = Uri.parse(" + lit(v.base) + ");\n"
-            "Uri r = Uri.resolve(base, " + lit(v.reference) + ");\n"
-            "return r.toString().equals(" + lit(v.resolved) + ") ? 1 : 0;";
-        EXPECT_EQ(runI32(makeSource(body)), 1)
-            << "resolve(" << v.base << ", '" << v.reference
-            << "') should be " << v.resolved;
+    // Compile ONCE for the whole table. Each JIT compile recompiles the full
+    // stdlib prelude (~8 s), so one-compile-per-vector made this a ~40 × 8 s
+    // ≈ 320 s test that tripped the per-test timeout and looked like a hang.
+    //
+    // We emit ONE module with a helper method per vector plus a run()
+    // dispatcher that returns the 1-based index of the first mismatch (0 = all
+    // pass) — so a failure still pinpoints the exact (base, reference). Each
+    // helper mirrors the function-scoped owned-local shape of the original
+    // per-vector source. (Running the full table this way also surfaced a real
+    // empty-reference bug in Uri.resolve that the old per-vector timeout hid.)
+    std::string methods;
+    std::string dispatch;
+    for (size_t i = 0; i < vectors.size(); i++) {
+        const auto& v = vectors[i];
+        std::string id = std::to_string(i);
+        methods +=
+            "    private static int32 check" + id + "() {\n"
+            "        Uri base = Uri.parse(" + lit(v.base) + ");\n"
+            "        Uri r = Uri.resolve(base, " + lit(v.reference) + ");\n"
+            "        return r.toString().equals(" + lit(v.resolved)
+            + ") ? 1 : 0;\n"
+            "    }\n";
+        dispatch +=
+            "        if (U.check" + id + "() == 0) { return "
+            + std::to_string(i + 1) + "; }\n";
+    }
+    std::string src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.net.uri.Uri;\n"
+        "public final class U {\n"
+        + methods +
+        "    public static int32 run() {\n"
+        + dispatch +
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+
+    int32_t rc = runI32(src);
+    if (rc != 0) {
+        const auto& v = vectors[rc - 1];
+        FAIL() << "resolve(" << v.base << ", '" << v.reference
+               << "') should be " << v.resolved << " (vector #" << rc << ")";
     }
 }
 

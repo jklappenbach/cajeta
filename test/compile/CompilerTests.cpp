@@ -63,7 +63,12 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // ArrayList<String> / `#ArrayList<String>` instantiations from
 // JsonObject::keys + getStringArray now that those returns are marked
 // for ownership transfer.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 123;
+// 2026-06-06: bumped 123 → 264 after the cajeta-net merge. The net stack
+// (cajeta.net.{tcp,udp,dns,http,tls,ws}, cajeta.net URI/buffer/reactor,
+// codec.Base64, plus their template monomorphizations) is loaded into the
+// implicitly-loaded prelude like the rest of runtime/src/cajeta/, adding
+// ~141 structures. Re-anchored to the live count (modules.size() == 265).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 264;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

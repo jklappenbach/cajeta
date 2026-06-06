@@ -842,7 +842,16 @@ public class Uri {
      * §5.4 examples all resolve against `http://a/b/c/d;p?q`.
      */
     public static #Uri resolve(Uri base, String reference) {
-        Uri ref = Uri.parse(reference);
+        // RFC 3986 §5.2: an empty (or absent) reference is a valid
+        // "same-document" reference whose components are all empty — it
+        // resolves to the base (minus fragment). `Uri.parse` rejects "" with
+        // MalformedUriException, so synthesize the empty reference directly
+        // (a default Uri() already has empty path and all flags false) rather
+        // than parsing it.
+        Uri ref = heap Uri();
+        if (reference != null && reference.byteLength > 0) {
+            ref = Uri.parse(reference);
+        }
         Uri t = heap Uri();
 
         if (ref.hasScheme) {
