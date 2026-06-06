@@ -3245,6 +3245,14 @@ namespace cajeta {
                         // `<P>` instantiation as matches, kicking us
                         // out of the matches==1 propagator path).
                         if (m->isMethodTemplateInstantiation()) continue;
+                        // A call written with explicit method type-args
+                        // (`foo<T>(...)`) selects a method TEMPLATE; a same-name,
+                        // same-arity NON-template overload is not a candidate.
+                        // Without this both match (matches==2) and the
+                        // matches==1 instantiation/lambda-inference path below is
+                        // skipped — the same overload collision that mis-pins a
+                        // templated call's return type (e.g. Json.parse<Box>).
+                        if (!explicitMethodTypeArgs.empty()) continue;
                         bool isStaticM = m->getModifiers().find(STATIC)
                             != m->getModifiers().end();
                         int declared = (int) m->getParameterList().size()
@@ -5435,8 +5443,19 @@ namespace cajeta {
             for (auto& e : entries) {
                 if (e.label.empty()) { callFloating = false; break; }
             }
+            // Thread the call's explicit method type-args (`parse<Box>`) into
+            // resolution, exactly as the invokeMethod call above (which drives
+            // codegen) already does. Without this, a templated call whose name
+            // collides with a same-arity NON-template overload (e.g.
+            // `Json.parse<T>(int8[],int64)` vs `Json.parse(int8[],int64)`)
+            // re-resolves here to the non-template overload and pins the wrong
+            // static return type (`JsonValue` instead of the instantiated `T` =
+            // `Box`). resolveMethod routes a non-empty arg list through the
+            // method-template resolver + instantiateMethodTemplate, so the
+            // returned method's getReturnType() is the substituted `Box`.
             MethodPtr resolved = targetClass->resolveMethod(
-                methodCallName, entries, /*isConstructor=*/false, callFloating);
+                methodCallName, entries, /*isConstructor=*/false, callFloating,
+                /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
             if (resolved && resolved->getReturnType()) {
                 // Capture conversion (P2-2 item 1): when the receiver
                 // is a bounded-wildcard instantiation, the method's
