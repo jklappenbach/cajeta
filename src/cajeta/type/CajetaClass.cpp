@@ -3364,9 +3364,20 @@ namespace cajeta {
             // classes, interfaces, function types, and unbound type
             // parameters (wildcard `?`) which arise when the ctor was
             // registered on a template's open form (e.g. Optional<?>'s
-            // `value:?` formal during stream-pipeline lowering).
+            // `value:?` formal during stream-pipeline lowering), AND arrays.
+            // An array is a REFERENCE type that accepts null, but its
+            // composite type-id (ARRAY_TYPE_ID = STRUCT_ID | PRIMITIVE_FLAG)
+            // carries the PRIMITIVE_FLAG bit, so a bare flag test would
+            // wrongly reject `null` against an array formal (e.g.
+            // `WsFrameEncoder.encode(frame, null)` where the param is
+            // `int8[]`) — the call then fails to resolve and mis-lowers to a
+            // non-null garbage pointer. Only a true SCALAR primitive (int32,
+            // boolean, …) rejects a null arg.
+            bool declIsArray =
+                dynamic_pointer_cast<CajetaArray>(declaredType) != nullptr;
             bool declIsPrimitive =
-                (declaredType->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+                (declaredType->getTypeFlags() & PRIMITIVE_FLAG) != 0
+                && !declIsArray;
             if (declIsPrimitive) return -1;
             return 1000;
         }
