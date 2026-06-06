@@ -34,6 +34,10 @@ namespace xpu {
         static constexpr const char* Wave         = "Wave";          // @Wave(width = 32)
         static constexpr const char* Backend      = "Backend";       // @Backend("nvidia"), or list
         static constexpr const char* PushConstant = "PushConstant";  // Vulkan-only
+        // @FastMath on a @Kernel: relax IEEE FP for the whole body — the backend
+        // may fuse (FMA), reassociate, use reciprocals, and pick approximate
+        // transcendentals (the LLVM fast-math flags). Opt-in (precision-trading).
+        static constexpr const char* FastMath     = "FastMath";
 
         // KernelArg trait marker (v1 simulates the trait via this
         // annotation; full structural-trait check lands later).
@@ -48,6 +52,10 @@ namespace xpu {
     }
     inline bool isDevice(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::Device) != nullptr;
+    }
+    // @FastMath kernel: relax FP (fast-math flags) for the whole body.
+    inline bool isFastMath(const Annotatable& a) {
+        return a.findAnnotation(XpuAttr::FastMath) != nullptr;
     }
     inline bool isHost(const Annotatable& a) {
         // @Host is the default — present-or-absent is the same to the

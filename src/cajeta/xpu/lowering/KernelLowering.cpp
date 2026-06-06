@@ -263,6 +263,15 @@ public:
     void lowerBody(const MethodPtr& method) {
         if (!cls) cls = method->getParent();   // for @Device helper resolution
         builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
+        // @FastMath: relax IEEE FP for every op the body emits — the backend may
+        // contract to FMA, reassociate, use reciprocals, and pick approximate
+        // transcendentals. Set on the IRBuilder so all subsequently-created FP
+        // instructions (and the transcendental seam's intrinsic calls) carry it.
+        if (method && isFastMath(*method)) {
+            llvm::FastMathFlags fmf;
+            fmf.setFast();   // contract + reassoc + arcp + afn + nnan/ninf/nsz
+            builder.setFastMathFlags(fmf);
+        }
         // Materialize params now that the entry block exists. Scalars get a
         // mutable alloca slot (so they can be reassigned / serve as loop
         // counters); buffers keep their base/handle. HOW a param's runtime
