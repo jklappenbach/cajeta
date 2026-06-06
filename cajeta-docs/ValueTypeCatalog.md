@@ -323,6 +323,7 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 
 **Methods:**
 - geometry/math: `dot(other)`, `length()`, `normalize()`; `cross(other)` (3-D), `reflect(n)`, `refract(n, eta)`, `distance(other)`; `min(b)`, `max(b)`, `clamp(lo, hi)`, `lerp(b, t)` — *float element, v1; integer min/max deferred*.
+- integer dot (DP4a): on `Vector<int8,4>` / `Vector<uint8,4>`, `dot(other)` → `int32` and the fused `dot(other, acc)` → `acc + dot`. Signedness is the element type (`OpSDot`/`OpUDot`); Vulkan emits the `SPV_KHR_integer_dot_product` hardware unit, other backends a portable widening reduce (bit-exact). *4-lane 8-bit only, v1.* See `IntegerDotProduct.md`.
 - **mask** (on a `Vector<boolean,N>` from a comparison): `all()`/`any()` → `boolean`, `select(whenTrue, whenFalse)` → per-lane blend. **Masks are register-only** — `Buffer<Vector<boolean,N>>` / bool-vector kernel args stay ABI-rejected.
 
 ## BFloat16

@@ -1874,15 +1874,53 @@ namespace cajeta {
                         "CAJETA_ERROR_VECTOR_METHOD");
                 }
                 if (methodCallName == "dot") {
-                    if (parameters.size() != 1) {
-                        throw Exception("Vector.dot expects 1 argument",
-                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    if (isFloat) {
+                        if (parameters.size() != 1) {
+                            throw Exception("Vector.dot expects 1 argument",
+                                            "CAJETA_ERROR_VECTOR_METHOD");
+                        }
+                        llvm::Value* other = loadIfLValue(module,
+                            parameters[0].expression->generateCode(module),
+                            parameters[0].expression);
+                        resolvedType = vecT->getElementType();
+                        return vecops::dot(*builder, self, other, true);
+                    }
+                    // Integer dot (DP4a): Vector<int8,4>/<uint8,4> -> int32 with
+                    // an optional int32 accumulator. The host accumulates via the
+                    // portable widening reduce; the device Vulkan path uses the
+                    // hardware DP4a op (results are identical).
+                    auto* ivt = llvm::cast<llvm::FixedVectorType>(self->getType());
+                    if (ivt->getNumElements() != 4 ||
+                        ivt->getElementType()->getIntegerBitWidth() != 8) {
+                        throw Exception(
+                            "integer Vector.dot currently supports 4-lane 8-bit "
+                            "vectors (DP4a): Vector<int8,4> / Vector<uint8,4>",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (parameters.size() != 1 && parameters.size() != 2) {
+                        throw Exception(
+                            "Vector.dot expects (other) or (other, acc)",
+                            "CAJETA_ERROR_VECTOR_METHOD");
                     }
                     llvm::Value* other = loadIfLValue(module,
                         parameters[0].expression->generateCode(module),
                         parameters[0].expression);
-                    resolvedType = vecT->getElementType();
-                    return vecops::dot(*builder, self, other, isFloat);
+                    llvm::Type* i32 =
+                        llvm::Type::getInt32Ty(builder->getContext());
+                    llvm::Value* acc;
+                    if (parameters.size() == 2) {
+                        llvm::Value* a2 = loadIfLValue(module,
+                            parameters[1].expression->generateCode(module),
+                            parameters[1].expression);
+                        acc = builder->CreateIntCast(a2, i32, /*isSigned=*/true,
+                                                     "dot.acc");
+                    } else {
+                        acc = llvm::ConstantInt::get(i32, 0);
+                    }
+                    bool sgn = (vecT->getElementType()->getTypeFlags()
+                                & SIGNED_FLAG) != 0;
+                    resolvedType = CajetaType::of("int32");
+                    return vecops::idotWiden(*builder, self, other, acc, sgn);
                 }
                 if (methodCallName == "length") {
                     if (!isFloat) {

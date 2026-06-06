@@ -288,6 +288,28 @@ public:
         return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
     }
 
+    // --- integer dot product (SPV_KHR_integer_dot_product, DP4a) --------------
+    // Pack the four int8 lanes into an i32 (lane 0 -> low byte = the first
+    // packed component, matching PackedVectorFormat4x8Bit on little-endian GPUs)
+    // and emit llvm.spv.dot4add.{i8,u8}packed(acc, x, y) -> i32. The SPIR-V
+    // backend selects OpSDot/OpUDot ... PackedVectorFormat4x8Bit + OpIAdd, and
+    // injects the DotProduct / DotProductInput4x8BitPacked capabilities + the
+    // SPV_KHR_integer_dot_product extension (or the 1.5/1.6 bit-field expansion
+    // when they are unavailable). Unlike coop-matrix/ray-query, dot4add is a
+    // stock-LLVM intrinsic (the HLSL path), so no fork guard is needed.
+    llvm::Value* integerDot4x8(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* a, llvm::Value* c, llvm::Value* acc,
+                               bool isSigned) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* x = b.CreateBitCast(a, i32, "dp4a.x");
+        llvm::Value* y = b.CreateBitCast(c, i32, "dp4a.y");
+        llvm::Intrinsic::ID id = isSigned
+            ? llvm::Intrinsic::spv_dot4add_i8packed
+            : llvm::Intrinsic::spv_dot4add_u8packed;
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);
+        return b.CreateCall(f, {acc, x, y}, "dp4a");
+    }
+
     // --- ray query (SPV_KHR_ray_query) ----------------------------------------
     // The ops lower to the llvm.spv.ray.query.* intrinsics + GlobalISel
     // selection (cajeta-gpu Part C increments 1/2/2c, in the cajeta-llvm fork).

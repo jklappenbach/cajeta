@@ -989,3 +989,167 @@ static void runHalfOnAmd(const char* src, const char* cls, const char* kern) {
 
 TEST(XpuVectorDeviceTests, float16RunsOnAmdDevice)  { runHalfOnAmd(kF16Source, "HF", "f16k"); }
 TEST(XpuVectorDeviceTests, bfloat16RunsOnAmdDevice) { runHalfOnAmd(kBf16Source, "HB", "bf16k"); }
+
+// --- integer dot product (DP4a, SPV_KHR_integer_dot_product) --------------
+// `Vector<int8,4>` / `Vector<uint8,4>` `.dot()` -> int32, with the optional
+// int32 accumulator (fused dot-add). Signed and unsigned in one kernel:
+//   a=(1,2,3,4) b=(5,6,7,8): a.dot(b)      = 5+12+21+32      =  70 (signed)
+//                            a.dot(b, 100) = 100 + 70        = 170 (fused)
+//   u=(200,100,50,25) w=(2,3,4,5): u.dot(w) = 400+300+200+125 = 1025 (UNsigned:
+//     the signed reading of 200/100 would be negative — proves OpUDot vs OpSDot)
+//   out[i] = 70 + 170 + 1025 = 1265, for every i.
+// On Vulkan this lowers to OpSDot/OpUDot PackedVectorFormat4x8Bit (the hardware
+// dot-product unit); on CPU/AMD to the portable widening reduce. Both bit-exact.
+const char* kDp4aSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class DP {\n"
+    "    @Kernel\n"
+    "    public static void dp4a(Buffer<int32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);\n"
+    "            Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);\n"
+    "            int32 d = a.dot(b);\n"
+    "            int32 e = a.dot(b, 100);\n"
+    "            Vector<uint8,4> u = new Vector<uint8,4>(200, 100, 50, 25);\n"
+    "            Vector<uint8,4> w = new Vector<uint8,4>(2, 3, 4, 5);\n"
+    "            int32 f = u.dot(w);\n"
+    "            out[i] = d + e + f;\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+const int32_t kDp4aExpected = 1265;
+
+using IDotFn = void (*)(int32_t*, uint32_t,
+                        int32_t, int32_t, int32_t,
+                        int32_t, int32_t, int32_t,
+                        int32_t, int32_t, int32_t,
+                        int32_t, int32_t, int32_t);
+
+TEST(XpuVectorDeviceTests, integerDotRunsOnCpu) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kDp4aSource);
+    auto k = findMethod(module->getStructures()["test.DP"], "dp4a");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr) << "host target not registered";
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("xpu_dp4a_exec", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    ASSERT_TRUE(static_cast<bool>(jitOrErr))
+        << llvm::toString(jitOrErr.takeError());
+    auto jit = std::move(*jitOrErr);
+    auto err = jit->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    auto symOrErr = jit->lookup("dp4a");
+    ASSERT_TRUE(static_cast<bool>(symOrErr))
+        << llvm::toString(symOrErr.takeError());
+    auto dp4a = symOrErr->toPtr<IDotFn>();
+
+    const int32_t B = 64, G = 4;
+    const uint32_t N = (uint32_t) (B * G);
+    std::vector<int32_t> out(N, -1);
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            dp4a(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+
+    for (uint32_t i = 0; i < N; ++i)
+        EXPECT_EQ(out[i], kDp4aExpected) << "element " << i;
+}
+
+TEST(XpuVectorDeviceTests, integerDotRunsOnVulkanDevice) {
+    using namespace cajeta::xpu::vulkan;
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kDp4aSource);
+    auto k = findMethod(module->getStructures()["test.DP"], "dp4a");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_dp4a_vkdevice", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
+    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
+
+    const uint32_t n = 1u << 16;
+    std::vector<int32_t> out(n, -1);
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    const std::size_t bytes = std::size_t(n) * sizeof(int32_t);
+    VulkanDriver::Buffer dOut = vk.alloc(bytes);
+    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    ASSERT_NE(dN, 0u);
+    ASSERT_TRUE(vk.upload(dOut, out.data(), bytes));
+    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
+
+    const unsigned block = kVulkanLocalSizeX;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "dp4a", {dOut, dN}, grid));
+
+    std::vector<int32_t> result(n);
+    ASSERT_TRUE(vk.download(result.data(), dOut, bytes));
+    vk.free(dOut);
+    vk.free(dN);
+
+    size_t mismatches = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (result[i] != kDp4aExpected) {
+            if (mismatches < 5)
+                ADD_FAILURE() << "i=" << i << " got " << result[i]
+                              << " expected " << kDp4aExpected;
+            ++mismatches;
+        }
+    }
+    EXPECT_EQ(mismatches, 0u);
+}
+
+TEST(XpuVectorDeviceTests, integerDotRunsOnAmdDevice) {
+    using namespace cajeta::xpu::amd;
+    if (!HipDriver::available()) GTEST_SKIP() << "no AMD HIP device available";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kDp4aSource);
+    auto k = findMethod(module->getStructures()["test.DP"], "dp4a");
+    ASSERT_NE(k, nullptr);
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_dp4a_amd", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
+    const uint32_t n = 1u << 12;
+    std::vector<int32_t> out(n, -1);
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "dp4a");
+    ASSERT_NE(fn, nullptr);
+    const std::size_t bytes = std::size_t(n) * sizeof(int32_t);
+    HipDevicePtr dOut = hip.alloc(bytes);
+    ASSERT_NE(dOut, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), bytes));
+    void* params[] = {&dOut, (void*) &n};
+    ASSERT_TRUE(hip.launch(fn, (n + 63) / 64, 64, params));
+    ASSERT_TRUE(hip.synchronize());
+    std::vector<int32_t> result(n);
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, bytes));
+    hip.free(dOut);
+    for (uint32_t i = 0; i < n; ++i)
+        EXPECT_EQ(result[i], kDp4aExpected) << "element " << i;
+}

@@ -107,6 +107,30 @@ public final class XpuTour {
         }
     }
 
+    // ---- Quantized: int8 dot product (DP4a) ----------------------------------
+    // dp4aReg: int8/uint8 dot products per thread — the quantized-inference lever.
+    // `Vector<int8,4>.dot(b)` -> int32; the optional 2nd arg is the int32
+    // accumulator (fused dot-add). On Vulkan this lowers to the OpSDot/OpUDot
+    // PackedVectorFormat4x8Bit hardware unit (SPV_KHR_integer_dot_product); on the
+    // other backends to a portable widening reduce — bit-exact either way.
+    //   a=(1,2,3,4) b=(5,6,7,8): a.dot(b) = 70; a.dot(b,100) = 170 (fused)
+    //   u=(200,100,50,25) w=(2,3,4,5): u.dot(w) = 400+300+200+125 = 1025
+    //     (unsigned: the signed reading of 200/100 would be negative)
+    //   out[i] = 70 + 170 + 1025 = 1265
+    @Kernel
+    public static void dp4aReg(Buffer<int32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);
+            Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);
+            int32 d = a.dot(b);            // signed dot                = 70
+            int32 e = a.dot(b, 100);       // fused dot-add: 100 + 70   = 170
+            Vector<uint8,4> u = new Vector<uint8,4>(200, 100, 50, 25);
+            Vector<uint8,4> w = new Vector<uint8,4>(2, 3, 4, 5);
+            out[i] = d + e + u.dot(w);     // 70 + 170 + 1025           = 1265
+        }
+    }
+
     // ---- Transforms: quaternions, determinant, inverse -----------------------
     // 3-D rotation algebra and small-matrix solves, the same source on every
     // backend. See cajeta-docs/Quaternions.md + MatrixDeterminantInverse.md.
@@ -277,6 +301,7 @@ public final class XpuTour {
         runVecAdd();
         runTransform();
         runMaskSelect();
+        runIntegerDot();
         runTransforms();
         runPrecision();
         runCoopMatrix();
@@ -422,6 +447,25 @@ public final class XpuTour {
                             + " sum[i=10]=" + (int32) hrelu[10] + "  (expect 3, 11)");
         System.stdout.println("  prune (w>1).select(w,0):  sum[i=0]=" + (int32) hprune[0]
                             + " sum[i=10]=" + (int32) hprune[10] + "  (expect 0, 10)");
+    }
+
+    // Quantized int8 dot product (DP4a): the same source lowers to the OpSDot/
+    // OpUDot hardware dot-product unit on Vulkan and a portable widening reduce
+    // elsewhere — bit-exact. See cajeta-docs/IntegerDotProduct.md.
+    static void runIntegerDot() {
+        System.stdout.println("");
+        System.stdout.println("-- DP4a: int8/uint8 dot product (quantized inner product) --");
+        uint32 n = 256;
+        int32[] hout = new int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        Buffer<int32> out = stack Buffer<int32>(n);
+        out.upload(hout);
+        Stream s = Stream.current();
+        dp4aReg.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  int8 a.dot(b) + a.dot(b,100) + uint8 u.dot(w):  out[0]="
+                            + hout[0] + "  (expect 1265)");
     }
 
     // Quaternion rotation algebra + small-matrix determinant/inverse/solve, run

@@ -127,6 +127,31 @@ TEST(VectorTests, dotProduct) {
         "        return (int32) a.dot(b);\n"), 32);  // 4 + 10 + 18
 }
 
+// Integer dot (DP4a): Vector<int8,4> -> int32. 1*5+2*6+3*7+4*8 = 70.
+TEST(VectorTests, integerDotProduct) {
+    EXPECT_EQ(runI32(
+        "        Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);\n"
+        "        Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);\n"
+        "        return a.dot(b);\n"), 70);
+}
+
+// Fused integer dot-add: a.dot(b, acc) = acc + dot(a,b) = 100 + 70 = 170.
+TEST(VectorTests, integerDotAccumulate) {
+    EXPECT_EQ(runI32(
+        "        Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);\n"
+        "        Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);\n"
+        "        return a.dot(b, 100);\n"), 170);
+}
+
+// Unsigned dot reads the bytes as uint8 (no sign extension): the signed reading
+// of 200/100 would be negative. 200*2+100*3+50*4+25*5 = 1025.
+TEST(VectorTests, unsignedIntegerDotProduct) {
+    EXPECT_EQ(runI32(
+        "        Vector<uint8,4> u = new Vector<uint8,4>(200, 100, 50, 25);\n"
+        "        Vector<uint8,4> w = new Vector<uint8,4>(2, 3, 4, 5);\n"
+        "        return u.dot(w);\n"), 1025);
+}
+
 // length((3,4)) == 5.
 TEST(VectorTests, lengthHelper) {
     EXPECT_EQ(runI32(

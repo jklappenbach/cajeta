@@ -169,6 +169,20 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, const std::string& name,
             llvm::ArrayRef<llvm::Value*> args);
 
+        // --- integer dot product (SPV_KHR_integer_dot_product, DP4a) ---------
+        // `Vector<int8,4>` / `Vector<uint8,4>` dot -> int32, with int32
+        // accumulation. `a`/`c` are <4 x i8> vectors; `acc` is the i32
+        // accumulator (i32 0 for a plain dot, the third method arg for the
+        // `a.dot(b, acc)` fused form). DEFAULT: a portable widening reduce
+        // (vecops::idotWiden — sext/zext each lane to i32, mul, sum, + acc),
+        // correct on CPU/AMD/NVIDIA. Vulkan OVERRIDES to pack the four lanes
+        // into an i32 and emit llvm.spv.dot4add.{i8,u8}packed (the DP4a op:
+        // OpSDot/OpUDot PackedVectorFormat4x8Bit + OpIAdd). `isSigned` picks
+        // signed vs unsigned.
+        virtual llvm::Value* integerDot4x8(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
+            llvm::Value* c, llvm::Value* acc, bool isSigned);
+
         // --- ray query (SPV_KHR_ray_query) — the Vulkan-only fork ------------
         //
         // A RayQuery kernel-body local is a function-local opaque object; its

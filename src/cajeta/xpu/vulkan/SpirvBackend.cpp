@@ -50,9 +50,14 @@ void enableSpirvExtensions() {
     // never emit native bfloat *arithmetic* (that is Intel-only) — the device
     // lowerer computes bfloat in f32 (widen / op / narrow), the standard GPU
     // "bf16 is a storage format" model.
+    // SPV_KHR_integer_dot_product gives the DP4a op (OpSDot/OpUDot
+    // PackedVectorFormat4x8Bit) for Vector<int8,4>.dot — without it the backend
+    // falls back to the portable bit-field expansion (correct, but not the
+    // hardware dot-product unit).
     static const char* kExtensions =
         "+SPV_KHR_ray_query,+SPV_KHR_cooperative_matrix,"
-        "+SPV_KHR_vulkan_memory_model,+SPV_KHR_bfloat16";
+        "+SPV_KHR_vulkan_memory_model,+SPV_KHR_bfloat16,"
+        "+SPV_KHR_integer_dot_product";
     auto& opts = llvm::cl::getRegisteredOptions();
     auto it = opts.find("spirv-ext");
     if (it != opts.end())

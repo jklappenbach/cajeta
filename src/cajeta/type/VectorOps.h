@@ -150,6 +150,29 @@ namespace vecops {
         return acc;
     }
 
+    // idotWiden(a, b, acc, isSigned) -> i32. Integer dot product with int32
+    // accumulation: each lane is widened to i32 (sext if signed, zext if
+    // unsigned), multiplied, and summed into `acc`. The portable form of DP4a,
+    // correct on every backend; the Vulkan backend overrides the lowering seam
+    // (LoweringTarget::integerDot4x8) to emit llvm.spv.dot4add.* instead. `a`/`c`
+    // are <N x iK> vectors; `acc` is i32 (pass i32 0 for a plain dot).
+    inline llvm::Value* idotWiden(llvm::IRBuilderBase& b, llvm::Value* a,
+                                  llvm::Value* c, llvm::Value* acc,
+                                  bool isSigned) {
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(a->getType());
+        unsigned n = vecTy->getNumElements();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(b.getContext());
+        llvm::Value* sum = acc;
+        for (unsigned i = 0; i < n; ++i) {
+            llvm::Value* ai = b.CreateIntCast(extractLane(b, a, i), i32,
+                                              isSigned, "idot.a");
+            llvm::Value* ci = b.CreateIntCast(extractLane(b, c, i), i32,
+                                              isSigned, "idot.b");
+            sum = b.CreateAdd(sum, b.CreateMul(ai, ci, "idot.mul"), "idot.acc");
+        }
+        return sum;
+    }
+
     // length(v) -> scalar = sqrt(dot(v, v)). Float element only.
     inline llvm::Value* length(llvm::IRBuilderBase& b, llvm::Value* v) {
         llvm::Value* d = dot(b, v, v, /*isFloat=*/true);
