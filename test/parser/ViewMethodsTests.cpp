@@ -30,7 +30,7 @@ TEST(ViewMethodsTests, readOnlyMethodReturnsPrimitive) {
     auto src =
         "package test;\n"
         "@HostEndian\n"
-        "public view Pair {\n"
+        "public view Duo {\n"
         "    int32 a;\n"
         "    int32 b;\n"
         "    public int32 sum() {\n"
@@ -40,7 +40,7 @@ TEST(ViewMethodsTests, readOnlyMethodReturnsPrimitive) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] bytes = heap int32[2];\n"
-        "        Pair p = Pair(bytes);\n"
+        "        Duo p = Duo(bytes);\n"
         "        p.a = 19;\n"
         "        p.b = 23;\n"
         "        return p.sum();\n"

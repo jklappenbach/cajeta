@@ -53,6 +53,27 @@ int32_t runI32(const std::string& body) {
     return fn();
 }
 
+// Compile-once form for the golden-vector batches: takes a class body that
+// already declares its own methods + `run()`, compiles the whole corpus in a
+// SINGLE stdlib JIT pass (instead of one ~8-15s compile per vector — the
+// difference between ~120s and ~8s), and invokes run(). Mirrors the
+// per-vector-helper-method shape UriResolveTests adopted (each vector in its
+// own method so the JIT lowers them cleanly).
+int32_t runFull(const std::string& classBody) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.net.ws.WsOpcode;\n"
+        "import cajeta.net.ws.WsFrame;\n"
+        "import cajeta.net.ws.WsFrameDecoder;\n"
+        "import cajeta.net.ws.WsFrameEncoder;\n"
+        "import cajeta.net.ws.ProtocolViolationException;\n"
+        "public final class M {\n" + classBody + "}\n";
+    auto jit = CajetaJit::compile(src, "test.M");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+
 // Emit Cajeta that declares `int8[] <name> = heap int8[N];` and fills it
 // from `bytes`. Each byte is written as a signed int8 cast (a value >127
 // becomes its two's-complement signed form, which `(int8) N` produces).
@@ -89,7 +110,9 @@ TEST(WsFrameCodecTests, decodeGoldenVectors) {
     auto vectors = cajeta_golden::wsFrameVectors();
     ASSERT_GE(vectors.size(), 8u) << "expected the RFC 6455 §5.7 corpus";
 
-    for (const auto& v : vectors) {
+    std::string methods, dispatch;
+    for (size_t vi = 0; vi < vectors.size(); vi++) {
+        const auto& v = vectors[vi];
         std::string body = emitBytes("wire", v.wire);
         body += std::string("WsFrameDecoder dec = WsFrameDecoder.") +
                 (v.masked ? "forServer();\n" : "forClient();\n");
@@ -112,8 +135,19 @@ TEST(WsFrameCodecTests, decodeGoldenVectors) {
         }
         body += "if (dec.hasFrame()) return -7;\n";   // exactly one frame
         body += "return 1;";
-        EXPECT_EQ(runI32(body), 1) << "decode failed for vector " << v.name;
+        // One helper method per vector (the JIT lowers per-method bodies
+        // cleanly); run() dispatches and returns the 0-based index of the
+        // first failing vector, or -1 when every vector passed.
+        methods += "    static int32 d" + std::to_string(vi) + "() {\n" + body +
+                   "\n    }\n";
+        dispatch += "        if (M.d" + std::to_string(vi) + "() != 1) return " +
+                    std::to_string((int) vi) + ";\n";
     }
+    std::string cls = methods +
+        "    public static int32 run() {\n" + dispatch +
+        "        return -1;\n    }\n";
+    EXPECT_EQ(runFull(cls), -1)
+        << "a WS decode golden vector failed (run() returned its 0-based index)";
 }
 
 // --- encode: every golden vector re-serializes to its exact wire bytes -
@@ -126,7 +160,9 @@ TEST(WsFrameCodecTests, encodeGoldenVectors) {
     auto vectors = cajeta_golden::wsFrameVectors();
     ASSERT_GE(vectors.size(), 8u);
 
-    for (const auto& v : vectors) {
+    std::string methods, dispatch;
+    for (size_t vi = 0; vi < vectors.size(); vi++) {
+        const auto& v = vectors[vi];
         std::string body = emitBytes("payload", v.payload);
         body += std::string("WsFrame f = WsFrame.of(") +
                 (v.fin ? "true" : "false") + ", " + opcodeConst(v.opcode) +
@@ -146,8 +182,16 @@ TEST(WsFrameCodecTests, encodeGoldenVectors) {
                     std::to_string((int)(int8_t)v.wire[i]) + ") return -2;\n";
         }
         body += "return 1;";
-        EXPECT_EQ(runI32(body), 1) << "encode failed for vector " << v.name;
+        methods += "    static int32 e" + std::to_string(vi) + "() {\n" + body +
+                   "\n    }\n";
+        dispatch += "        if (M.e" + std::to_string(vi) + "() != 1) return " +
+                    std::to_string((int) vi) + ";\n";
     }
+    std::string cls = methods +
+        "    public static int32 run() {\n" + dispatch +
+        "        return -1;\n    }\n";
+    EXPECT_EQ(runFull(cls), -1)
+        << "a WS encode golden vector failed (run() returned its 0-based index)";
 }
 
 // --- encode/decode round-trip (unmasked) -------------------------------
