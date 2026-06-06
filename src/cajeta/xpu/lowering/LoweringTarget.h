@@ -197,6 +197,15 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
             llvm::Value* ptr, llvm::Value* value);
 
+        // --- shader clock (SPV_KHR_shader_clock) -----------------------------
+        // `Thread.clock()` — read a free-running hardware counter for in-kernel
+        // timing/profiling, returning the 64-bit tick. DEFAULT: llvm.readcycle-
+        // counter (CPU rdtsc). Vulkan emits OpReadClockKHR at Subgroup scope via
+        // the fork's llvm.spv.read.clock intrinsic; AMD uses s_memrealtime;
+        // NVPTX uses clock64. Ticks are for *relative* measurement (diff two
+        // reads), not wall-clock seconds.
+        virtual llvm::Value* readClock(llvm::IRBuilderBase& b, llvm::Module& m);
+
         // --- ray query (SPV_KHR_ray_query) — the Vulkan-only fork ------------
         //
         // A RayQuery kernel-body local is a function-local opaque object; its

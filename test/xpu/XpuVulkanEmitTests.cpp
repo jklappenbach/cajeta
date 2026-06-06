@@ -772,6 +772,66 @@ TEST(XpuVulkanEmitTests, lowersFloatAtomicsToSpirv) {
     }
 }
 
+// Shader clock (SPV_KHR_shader_clock). `Thread.clock()` lowers to the fork's
+// llvm.spv.read.clock intrinsic, which the SPIR-V backend selects to
+// OpReadClockKHR at Subgroup scope under the ShaderClockKHR capability. GPU-free:
+// proves the lowering and that the module is spirv-val-clean under Vulkan 1.3.
+TEST(XpuVulkanEmitTests, lowersShaderClockToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class C {\n"
+        "    @Kernel\n"
+        "    public static void stamp(Buffer<uint64> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            out[i] = Thread.clock();\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.C");
+    auto k = findMethod(module->getStructures()["test.C"], "stamp");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_clock_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("llvm.spv.read.clock"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_clock_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpCapability ShaderClockKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpExtension \"SPV_KHR_shader_clock\""),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpReadClockKHR"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_clock_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the shader-clock module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // CM5b — the device-realistic MIXED-PRECISION config: A and B are float16
 // (IEEE half) tiles, the accumulator C is float32. This is the only float
 // cooperative-matrix config the RADV STRIX_HALO WMMA path actually supports
