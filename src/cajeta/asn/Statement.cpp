@@ -900,7 +900,13 @@ namespace cajeta {
             }
             module->pushTryCatchContext(std::move(catchTypes));
         }
+        // Track this frame as live on the runtime exception chain for the
+        // duration of the try body, so a `return` inside the body emits a
+        // matching __cajeta_exc_pop (the fall-through pop below is skipped
+        // when the body ends in a terminator like `return`).
+        module->pushActiveTryFrame(framePtr);
         if (tryBlock) tryBlock->generateCode(module);
+        module->popActiveTryFrame();
         module->popTryCatchContext();
         std::set<std::string> postTryNYA = preTryNYA;
         if (daScope) postTryNYA = daScope->snapshotNotYetAssigned();
@@ -1202,6 +1208,28 @@ namespace cajeta {
         return nullptr;
     }
 
+    // Pop the runtime exception frame of every enclosing `try` body the
+    // return is escaping. TryStatement only emits its `__cajeta_exc_pop` on
+    // the fall-through path (the catch path pops its own frame); a `return`
+    // inside a try body terminates the block before that pop, so without this
+    // the frame leaks on the per-fiber exception chain. Its stack slot is then
+    // reused by later calls and a subsequent pop reads a garbage `prev` — the
+    // HttpsServer keep-alive crash (`dispatch`'s `return #r;` inside its try
+    // leaked a frame that `serveLoopWithLimits`'s try-exit pop later read).
+    // Must run AFTER the return expression is evaluated (the expression is
+    // still inside the try and may throw to be caught here) and BEFORE the
+    // `ret`. The frames are popped innermost-first, matching LIFO unwinding.
+    static void emitActiveTryPops(CajetaModulePtr module) {
+        size_t n = module->activeTryFrameCount();
+        if (n == 0) return;
+        llvm::Function* pop = module->getRuntimeFunction("__cajeta_exc_pop");
+        if (!pop) return;
+        auto* builder = module->getBuilder();
+        for (size_t i = 0; i < n; ++i) {
+            builder->CreateCall(pop, {});
+        }
+    }
+
     // R5-A': pop every scope frame this method pushed via the watermark
     // captured at function entry, waiting on each registered task. Called
     // before BOTH the void-return path and the typed-return path so an
@@ -1243,6 +1271,7 @@ namespace cajeta {
             }
             // Pop any open scope frames before the value-less return so
             // every pending child task is joined first.
+            emitActiveTryPops(module);
             emitScopeExitToWatermark(module);
             // Fire drops before the value-less return.
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
@@ -1352,6 +1381,7 @@ namespace cajeta {
                 m->emitAfterReturningAdvice(module);
                 m->emitAfterThrowingTryPop(module);
             }
+            emitActiveTryPops(module);
             emitScopeExitToWatermark(module);
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
@@ -1664,6 +1694,7 @@ namespace cajeta {
                                 curM->emitAfterReturningAdvice(module);
                                 curM->emitAfterThrowingTryPop(module);
                             }
+                            emitActiveTryPops(module);
                             emitScopeExitToWatermark(module);
                             if (auto curM = module->getCurrentMethod())
                                 curM->emitOwnerDrops(module);
@@ -1835,6 +1866,7 @@ namespace cajeta {
         // Pop any open scope frames before the typed return — joins every
         // pending child task (function-body scope + any explicit scope
         // the return is lexically inside of).
+        emitActiveTryPops(module);
         emitScopeExitToWatermark(module);
         // Fire drops before the typed return so all owned locals are released.
         if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);

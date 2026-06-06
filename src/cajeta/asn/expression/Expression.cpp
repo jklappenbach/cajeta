@@ -2256,6 +2256,10 @@ namespace cajeta {
                 if (nx->getStackAlloc()) nx->setNrvoTarget(fn->getArg(0));
             }
         }
+        // Isolate the enclosing method's active-try-frame stack: this lambda
+        // body is codegen'd inline, but its `return`s must only pop frames the
+        // lambda itself pushed, not the enclosing method's open try frames.
+        std::vector<llvm::Value*> savedTryFrames = module->takeActiveTryFrames();
         llvm::Value* bodyVal = body->generateCode(module);
 
         if (blockBody) {
@@ -2372,6 +2376,7 @@ namespace cajeta {
         }
 
         // Restore outer state.
+        module->restoreActiveTryFrames(std::move(savedTryFrames));
         module->getScopeStack().pop();
         delete lambdaBuilder;
         module->setBuilder(outerBuilder);
