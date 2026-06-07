@@ -7,13 +7,12 @@ legible: where all three have a native primitive, where one lacks it but Cajeta
 supplies an abstraction, and where an abstraction is not cleanly possible (with
 the reason).
 
-This is a companion to the "NVIDIA∩AMD overlap reckoning" in
-[`cajeta-xpu.md`](cajeta-xpu.md) and the AMD bring-up log
-[`cajeta-amd.md`](cajeta-amd.md). It extends that two-backend reckoning with the
-Vulkan/SPIR-V column.
+This is a companion to the backend-variance discipline in
+[`CajetaXPU-Variance.md`](CajetaXPU-Variance.md); it extends the original
+NVIDIA∩AMD two-backend reckoning with the Vulkan/SPIR-V column.
 
 > **A fourth backend — CPU — and a runtime dispatcher now exist** (see
-> [`cajeta-cpu.md`](cajeta-cpu.md)). The CPU is deliberately *not* given a
+> [`CajetaCPU.md`](CajetaCPU.md)). The CPU is deliberately *not* given a
 > column here: the three columns below measure the **GPU** variance surface, and
 > the CPU is a different shape — it has no hardware grid or coordinate
 > intrinsics, so its sole seam fork is the *coordinate source* (the kernel gains
@@ -44,7 +43,7 @@ matrix says so explicitly rather than pretending otherwise:
 |--------|--------|-------|
 | **NVIDIA** | **Emit-only** — on-device pending B5 (WSL2 + CUDA runner) | NVPTX → cubin; emit tests green. The 5 CUDA-gated exec tests are **skipped** on this box (AMD-only, no NV hardware) — promote to "on-device measured" once the B5 runner lands. |
 | **AMD** | **Measured** — live backend, on-device | AMDGPU → hsaco, runs on gfx1151 (Strix Halo) via HIP. Emit + on-device tests green. |
-| **Vulkan** | **Measured** — live backend, on-device | SPIR-V (descriptor-set SSBOs) → `vkCmdDispatch`. Built 2026-05-30 (see [`cajeta-vulkan.md`](cajeta-vulkan.md)); SAXPY + static-shared tree reduction run on the Strix Halo APU via the radeon (RADV) ICD, and the emitted modules pass strict `spirv-val`. One build-discovered finding shaped the design: **BDA is unavailable**, so the buffer model is descriptor sets (§3). (LLVM 22's barrier emits Vulkan-invalid semantics; a post-emit fixup corrects it — §1.) |
+| **Vulkan** | **Measured** — live backend, on-device | SPIR-V (descriptor-set SSBOs) → `vkCmdDispatch`. Built 2026-05-30; SAXPY + static-shared tree reduction run on the Strix Halo APU via the radeon (RADV) ICD, and the emitted modules pass strict `spirv-val`. One build-discovered finding shaped the design: **BDA is unavailable**, so the buffer model is descriptor sets (§3). (LLVM 22's barrier emits Vulkan-invalid semantics; a post-emit fixup corrects it — §1.) |
 
 > **Build-discovered correction (2026-05-30).** An earlier draft of this matrix
 > projected the Vulkan column on the assumption that **Buffer Device Address**
@@ -266,7 +265,7 @@ check is width-agnostic — sum of 1s over a full wave == wave width ∈ {32, 64
 ## 10. Deferred / not-yet capabilities (no backend has these)
 
 Tracked here so the matrix is honest about the frontier, not just the floor.
-These are backend-neutral gaps from `cajeta-xpu.md`, unaffected by the Vulkan column.
+These are backend-neutral gaps, unaffected by the Vulkan column.
 
 | Capability | Status |
 |------------|--------|
@@ -311,8 +310,8 @@ SPIR-V, a non-fork), the name-keyed registration symbol, and the whole frontend.
 ## Status — Vulkan column now *measured*
 
 The Vulkan backend was built 2026-05-30 by threading SPIR-V through the same
-`LoweringTarget` seam AMD uses (full log: [`cajeta-vulkan.md`](cajeta-vulkan.md)).
-All increments landed; the on-device tests run on the Strix Halo APU via RADV.
+`LoweringTarget` seam AMD uses. All increments landed; the on-device tests run
+on the Strix Halo APU via RADV.
 
 | Increment | Delivered | Tier | Tests |
 |-----------|-----------|------|-------|
@@ -350,6 +349,6 @@ paths for these are not yet wired.
 *Generated 2026-05-30; updated 2026-06-04 with Part C cooperative-matrix (CM1–CM5 +
 GEMM) and ray-query (Inc 1–3c) on-device landings, and an emit-only-vs-on-device
 correction to the NVIDIA column. AMD + Vulkan are on-device-measured; **NVIDIA is
-emit-only** pending the B5 WSL2+CUDA runner. See [`cajeta-xpu.md`](cajeta-xpu.md)
-§"The NVIDIA∩AMD overlap reckoning", [`cajeta-amd.md`](cajeta-amd.md), and
-[`cajeta-gpu-plan.md`](plans/cajeta-gpu-plan.md) Part C.*
+emit-only** pending the B5 WSL2+CUDA runner. See
+[`CajetaXPU-Variance.md`](CajetaXPU-Variance.md) for the NVIDIA∩AMD variance
+discipline and [`cajeta-gpu-plan.md`](../../../plans/gpu/cajeta-gpu-plan.md) Part C.*

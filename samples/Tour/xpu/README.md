@@ -191,5 +191,5 @@ error (XPU-K02) for either form.
 CUDA / HIP / CPU accept it too. Workgroup barriers on the CPU are a later
 increment, so demos that need them aren't included here yet.
 
-See `cajeta-cpu.md`, `cajeta-xpu.md`, and `cajeta-docs/CajetaXPU.md` for the
-backend/dispatcher design.
+See `cajeta-docs/gpu/xpu/CajetaCPU.md` and `cajeta-docs/gpu/xpu/CajetaXPU.md`
+for the backend/dispatcher design.

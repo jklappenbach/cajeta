@@ -404,8 +404,8 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
 
 ### Docs
 - This file (the log). The matrix gains a **CPU column** (today: emit + grid→threads
-  measured; wave width 1; barrier deferred). `cajeta-xpu.md` reckoning extends to four
-  backends.
+  measured; wave width 1; barrier deferred). The NVIDIA∩AMD variance reckoning
+  (see [`CajetaXPU-Variance.md`](CajetaXPU-Variance.md)) extends to four backends.
 
 ## 3. Findings & limitations
 

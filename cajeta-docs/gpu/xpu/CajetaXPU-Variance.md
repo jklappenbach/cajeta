@@ -10,7 +10,7 @@ The rule statement and pointer back to this doc live in
 [`CajetaXPU.md`](CajetaXPU.md) §3.0.
 
 > **A fourth backend — CPU — has since landed on the same seam** (the
-> `LoweringTarget` vtable; see [`cajeta-cpu.md`](../cajeta-cpu.md)). It held the
+> `LoweringTarget` vtable; see [`CajetaCPU.md`](CajetaCPU.md)). It held the
 > three-column discipline with a single new fork: the **coordinate source**. A
 > CPU has no hardware grid or coordinate intrinsics, so its kernel gains 9
 > trailing `i32` coordinate params and `Thread`/`Workgroup` reads pull from those
