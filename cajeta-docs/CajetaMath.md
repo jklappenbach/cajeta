@@ -157,7 +157,7 @@ ergonomics.
 ```cajeta
 public final class Float8E4M3 implements Comparable<Float8E4M3> {
     // The wrapped value. Public so the unboxing path is a single
-    // field access; the compiler can fold (new Float8E4M3(x)).value
+    // field access; the compiler can fold (heap Float8E4M3(x)).value
     // into a no-op.
     public float8e4m3 value;
 

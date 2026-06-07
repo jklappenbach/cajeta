@@ -73,7 +73,7 @@ TEST(ErrorModelTests, stdlibThrowableInstantiable) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Throwable t = new Throwable(\"oops\");\n"
+        "        Throwable t = heap Throwable(\"oops\");\n"
         "        return 42;\n"
         "    }\n"
         "}\n";
@@ -87,7 +87,7 @@ TEST(ErrorModelTests, stdlibRecoverableExtendsThrowable) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        IOException e = new IOException();\n"
+        "        IOException e = heap IOException();\n"
         "        return 7;\n"
         "    }\n"
         "}\n";
@@ -245,7 +245,7 @@ TEST(ErrorModelTests, returnInTryRunsFinally) {
         "        }\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        Box b = new Box();\n"
+        "        Box b = heap Box();\n"
         "        int32 r = produce(b);\n"
         "        return r + b.v;\n"
         "    }\n"
@@ -261,7 +261,7 @@ TEST(ErrorModelTests, breakOutOfTryRunsFinally) {
         "public class Box { public int32 v; public Box() { this.v = 0; } }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box b = new Box();\n"
+        "        Box b = heap Box();\n"
         "        uint32 i = 0;\n"
         "        while (i < 3) {\n"
         "            try {\n"
@@ -295,7 +295,7 @@ TEST(ErrorModelTests, throwOutOfScopeJoinsChild) {
         "        return 7;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        Box b = new Box();\n"
+        "        Box b = heap Box();\n"
         "        try {\n"
         "            scope {\n"
         "                spawn child(b);\n"
@@ -422,7 +422,7 @@ TEST(ErrorModelTests, subclassWritesInheritedField) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Child c = new Child(73);\n"
+        "        Child c = heap Child(73);\n"
         "        int32 r = c.marker;\n"
         "        return r;\n"
         "    }\n"
@@ -451,7 +451,7 @@ TEST(ErrorModelTests, subclassWritesOwnFieldAfterInherited) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Child c = new Child(40, 2);\n"
+        "        Child c = heap Child(40, 2);\n"
         "        int32 a = c.a;\n"
         "        int32 b = c.b;\n"
         "        return a + b;\n"
@@ -488,7 +488,7 @@ TEST(ErrorModelTests, threeLevelInheritedFieldReadWrite) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Child obj = new Child(100, 20, 3);\n"
+        "        Child obj = heap Child(100, 20, 3);\n"
         "        return obj.g + obj.p + obj.c;\n"
         "    }\n"
         "}\n";
@@ -518,7 +518,7 @@ TEST(ErrorModelTests, twoLevelMixedFieldWidths) {
         "}\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        Child c = new Child();\n"
+        "        Child c = heap Child();\n"
         "        return c.q + (int64) c.a;\n"
         "    }\n"
         "}\n";
@@ -541,7 +541,7 @@ TEST(ErrorModelTests, int8FieldOnClass) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Holder h = new Holder();\n"
+        "        Holder h = heap Holder();\n"
         "        return (int32) h.b;\n"
         "    }\n"
         "}\n";
@@ -575,7 +575,7 @@ TEST(ErrorModelTests, threeLevelMixedFieldWidthsWithInt8) {
         "}\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        Child obj = new Child();\n"
+        "        Child obj = heap Child();\n"
         "        int64 g = (int64) obj.gByte;\n"
         "        int64 c = (int64) obj.cInt;\n"
         "        return obj.pLong + g + c;\n"
@@ -602,7 +602,7 @@ TEST(ErrorModelTests, unknownFieldTypeThrowsCleanError) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Holder h = new Holder();\n"
+        "        Holder h = heap Holder();\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -638,7 +638,7 @@ TEST(ErrorModelTests, unknownInheritedFieldTypeThrowsCleanError) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Child ch = new Child();\n"
+        "        Child ch = heap Child();\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -650,6 +650,40 @@ TEST(ErrorModelTests, unknownInheritedFieldTypeThrowsCleanError) {
         EXPECT_NE(e.getMessage().find("flot32"), std::string::npos)
             << "exception message '" << e.getMessage()
             << "' did not contain the unresolved field type name";
+    } catch (std::exception& e) {
+        FAIL() << "expected cajeta::Exception, got std::exception: " << e.what();
+    }
+}
+
+// A class carrying an @Native method is prototyped during prelude codegen —
+// *before* visitFieldDeclaration's unknown-type guard would run on the embed
+// path — so an unresolved field type on such a class reached struct-layout
+// assembly (CajetaClass::generatePrototype's fieldLayoutType) with a null
+// CajetaType and segfaulted at `t->getLlvmType()`. The b3 net bring-up hit this
+// exact shape with a `bool` field (the canonical primitive name is `boolean`;
+// `bool` resolves to no type). The layout-site guard now turns the crash into
+// the same clean CAJETA_ERROR_UNKNOWN_TYPE diagnostic, naming the field.
+TEST(ErrorModelTests, nativeMethodClassUnknownFieldTypeThrowsCleanError) {
+    auto src =
+        "package test;\n"
+        "public final class Bridge {\n"
+        "    public bool flag;\n"
+        "    @Native(\"__cajeta_hash_seed\")\n"
+        "    public static int64 seed() { }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected cajeta::Exception (unknown type) but compile succeeded";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_UNKNOWN_TYPE");
+        EXPECT_NE(e.getMessage().find("flag"), std::string::npos)
+            << "exception message '" << e.getMessage()
+            << "' did not name the offending field";
     } catch (std::exception& e) {
         FAIL() << "expected cajeta::Exception, got std::exception: " << e.what();
     }
@@ -669,7 +703,7 @@ TEST(ErrorModelTests, classWithStringField) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Holder h = new Holder(\"hi\");\n"
+        "        Holder h = heap Holder(\"hi\");\n"
         "        return 42;\n"
         "    }\n"
         "}\n";
@@ -718,7 +752,7 @@ TEST(ErrorModelTests, uncaughtUnrecoverableAborts) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        UnrecoverableException u = new UnrecoverableException(\"contract failure\");\n"
+        "        UnrecoverableException u = heap UnrecoverableException(\"contract failure\");\n"
         "        throw u;\n"
         "        return 0;\n"
         "    }\n"
@@ -742,7 +776,7 @@ TEST(ErrorModelTests, uncaughtRecoverableExitsClean) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        RecoverableException r = new RecoverableException(\"io failure\");\n"
+        "        RecoverableException r = heap RecoverableException(\"io failure\");\n"
         "        throw r;\n"
         "        return 0;\n"
         "    }\n"
@@ -865,7 +899,7 @@ TEST(ErrorModelTests, constructorThrowsParses) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Resource r = new Resource();\n"
+        "        Resource r = heap Resource();\n"
         "        return 11;\n"
         "    }\n"
         "}\n";

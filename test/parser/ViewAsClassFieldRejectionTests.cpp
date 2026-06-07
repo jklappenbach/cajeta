@@ -64,7 +64,7 @@ TEST(ViewAsClassFieldRejectionTests, hashMapWithViewValueRejected) {
         "@BigEndian view Pt { int32 x; int32 y; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<int32, Pt> m = new HashMap<int32, Pt>(16);\n"
+        "        HashMap<int32, Pt> m = heap HashMap<int32, Pt>(16);\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -84,7 +84,7 @@ TEST(ViewAsClassFieldRejectionTests, hashMapWithViewKeyRejected) {
         "@BigEndian view Pt { int32 x; int32 y; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<Pt, int32> m = new HashMap<Pt, int32>(16);\n"
+        "        HashMap<Pt, int32> m = heap HashMap<Pt, int32>(16);\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -104,7 +104,7 @@ TEST(ViewAsClassFieldRejectionTests, arrayListOfViewRejected) {
         "@BigEndian view Pt { int32 x; int32 y; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        ArrayList<Pt> a = new ArrayList<Pt>(16);\n"
+        "        ArrayList<Pt> a = heap ArrayList<Pt>(16);\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -124,7 +124,7 @@ TEST(ViewAsClassFieldRejectionTests, hashSetOfViewRejected) {
         "@BigEndian view Pt { int32 x; int32 y; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashSet<Pt> s = new HashSet<Pt>(16);\n"
+        "        HashSet<Pt> s = heap HashSet<Pt>(16);\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -167,7 +167,7 @@ TEST(ViewAsClassFieldRejectionTests, nestedViewsAllowed) {
         "@HostEndian public view Line { Pt start; Pt end; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        Line l = Line(bytes);\n"
         "        l.start.x = 7;\n"
         "        return l.start.x;\n"

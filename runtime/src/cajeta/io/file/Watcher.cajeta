@@ -1,17 +1,27 @@
 package cajeta.io.file;
 
 /**
- * Filesystem-change notifier. See
- * `cajeta-docs/stdlib/io/file/Watcher.md`.
+ * Filesystem-change notifier: watches a `Path` or `File` and surfaces
+ * `FileEvent`s (created / modified / deleted, filtered by `WatchKind`) as
+ * they happen.
  *
- * Phase deferred — placeholder so file structure mirrors the
- * spec. The full Watcher needs:
- *   - inotify (Linux) / FSEvents (mac) / ReadDirectoryChangesW
- *     (Windows) backing in cajeta_runtime.c
+ * ## Status
+ * Phase deferred — this is a placeholder so the file structure mirrors the
+ * spec. The full `Watcher` still needs:
+ *   - inotify (Linux) / FSEvents (mac) / ReadDirectoryChangesW (Windows)
+ *     backing in `cajeta_runtime.c`
  *   - fiber-park integration with the async runtime
- *   - Stream<FileEvent> wiring
+ *   - `Stream<FileEvent>` wiring
  *
- * None of which is in v1.
+ * None of which is in v1, so today a `Watcher` only opens, holds a backing
+ * `handle`, and closes.
+ *
+ * ## Usage
+ * ```cajeta
+ * stack watcher = Watcher();
+ * // ... future: drain a Stream<FileEvent> here ...
+ * watcher.close();
+ * ```
  */
 public class Watcher {
     /**
@@ -20,10 +30,18 @@ public class Watcher {
      */
     public int64 handle;
 
+    /**
+     * Creates a `Watcher` with no active backing handle.
+     *
+     * ```cajeta
+     * stack watcher = Watcher();
+     * ```
+     */
     public Watcher() {
         this.handle = 0;
     }
 
+    /** Releases the backing handle (inotify fd / event stream). No-op while the watcher is inactive. */
     public void close() {
         return;
     }

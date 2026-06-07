@@ -1,0 +1,134 @@
+package cajeta.coverage.internal;
+
+import cajeta.buildtool.plugin.ActionContext;
+import cajeta.collection.HashMap;
+import cajeta.coverage.CoverageMap;
+import cajeta.io.file.Path;
+
+/**
+ * Maps `(file, probe-id) → SourcePosition` by reading the compiler-
+ * emitted coverage-map sidecars.
+ *
+ * One sidecar per source file, written next to the artifact at
+ * `<artifact>.coverage-map/<source-path-encoded>.cmap`. Format
+ * (binary, big-endian):
+ *
+ *   magic    : "CJCM"        (4 bytes)
+ *   version  : u16           (currently 1)
+ *   grain    : u8            (0=line, 1=branch, 2=region)
+ *   reserved : u8
+ *   nProbes  : u32
+ *   for each probe:
+ *       probe_id     : u32
+ *       start_line   : u32
+ *       start_column : u32
+ *       end_line     : u32
+ *       end_column   : u32
+ *
+ * Loaded lazily per-file: the report action's hot path is "for every
+ * probe in this file, look up its position" — sequential, so we read
+ * the whole file's table on first touch and cache it.
+ */
+public class PositionLookup {
+
+    // path → (probe-id → position).
+    HashMap<String, HashMap<int32, SourcePosition>> tables;
+    ActionContext ctx;
+
+    PositionLookup(ActionContext ctx) {
+        this.ctx = ctx;
+        this.tables =
+            #heap HashMap<String, HashMap<int32, SourcePosition>>();
+    }
+
+    /**
+     * Build an empty lookup. Sidecars are loaded lazily on the first
+     * `.lookup(file, probe)` per file.
+     */
+    public static PositionLookup load(ActionContext ctx, CoverageMap map) {
+        return #heap PositionLookup(ctx);
+    }
+
+    /**
+     * Position for `(file, probeId)`. Returns a sentinel
+     * `SourcePosition(0, 0, 0, 0)` when the sidecar is missing —
+     * findings still surface, they just lack a position citation
+     * (which the Report action acknowledges with "no source map"
+     * notes in the rendered output).
+     */
+    public SourcePosition lookup(String file, int32 probeId) {
+        Optional<HashMap<int32, SourcePosition>> existing =
+            this.tables.get(file);
+        HashMap<int32, SourcePosition> table = #null;
+        if (existing.isPresent()) {
+            table = existing.get();
+        } else {
+            table = loadSidecar(file);
+            this.tables.put(file, #table);
+        }
+        Optional<SourcePosition> pos = table.get(probeId);
+        if (pos.isPresent()) {
+            return pos.get();
+        }
+        return #heap SourcePosition(0, 0, 0, 0);
+    }
+
+    HashMap<int32, SourcePosition> loadSidecar(String file) {
+        HashMap<int32, SourcePosition> out =
+            #heap HashMap<int32, SourcePosition>();
+        Path sidecar = sidecarPathFor(file);
+        if (!sidecar.exists()) {
+            return out;
+        }
+        // TODO: structured binary reader. The plugin's IO surface
+        // for this is `cajeta.io.file.FileReader.readBytes(int32)`
+        // + endian helpers from `cajeta.codec.binary`. Stub keeps
+        // the shape correct so the rest of Report compiles; real
+        // parsing lands once the codec.binary big-endian helpers
+        // are imported.
+        return out;
+    }
+
+    Path sidecarPathFor(String file) {
+        // Same encoding the compiler uses: source-path with `/` and
+        // `:` replaced by `_`, suffixed `.cmap`. See compile-side
+        // `CoverageMapEmitter::sidecarPathFor`.
+        String encoded = file.replace("/", "_").replace(":", "_");
+        return Path.of(this.ctx.workdir() + "/build/archive/" +
+                       this.ctx.projectName() + "-" +
+                       this.ctx.projectVersion() + ".cja.coverage-map/" +
+                       encoded + ".cmap");
+    }
+
+    /**
+     * Package name for a file (e.g. `com.example.foo` for
+     * `src/main/cajeta/com/example/foo/Bar.cajeta`). Read from the
+     * sidecar's header; falls back to the empty string when the
+     * sidecar is missing, in which case package-kind excludes
+     * simply don't match for this file.
+     */
+    public String packageFor(String file) {
+        // TODO: read from the sidecar's header block. The sidecar
+        // format documented on PositionLookup grows a `package`
+        // string between `nProbes` and the first probe record;
+        // returning empty until that field is wired keeps the
+        // ExcludeMatcher's package kind a no-op rather than a
+        // wrong-match.
+        return "";
+    }
+
+    /**
+     * Qualified symbol name for `(file, probeId)` — the
+     * fully-qualified declaration the probe lives inside (e.g.
+     * `com.example.foo.Bar.baz`). Read from the per-probe record
+     * in the sidecar; falls back to the empty string when the
+     * sidecar is missing or doesn't carry symbol info, in which
+     * case symbol-kind excludes don't match.
+     */
+    public String symbolFor(String file, int32 probeId) {
+        // TODO: read from the sidecar's per-probe record. Same
+        // posture as packageFor — empty string until the format
+        // catches up.
+        return "";
+    }
+}

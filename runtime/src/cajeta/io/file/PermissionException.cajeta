@@ -3,10 +3,35 @@ package cajeta.io.file;
 import cajeta.lang.String;
 
 /**
- * Operation denied by filesystem permissions. POSIX `EACCES`. See
+ * Thrown when the filesystem denies an operation for lack of
+ * permission — opening, reading, writing, or stat-ing a path the
+ * process is not allowed to touch. Maps to POSIX `EACCES`. See
  * `cajeta-docs/stdlib/io/file/Errors.md`.
+ *
+ * A recoverable subtype of `IoException`: catch it to retry with
+ * elevated privileges, fall back to a writable location, or report
+ * a clean "permission denied" to the user, or let it propagate via
+ * your throws clause. Commonly raised by `File``.open`,
+ * `File``.openWrite`, and `File``.readAllBytes`.
+ *
+ * ```cajeta
+ * try {
+ *     #FileWriter w = File.openWrite("/etc/hosts");
+ *     // ... write to it
+ * } catch (PermissionException e) {
+ *     // not allowed — fall back to a user-writable path
+ * }
+ * ```
  */
 public class PermissionException extends IoException {
+    /**
+     * Wrap an `EACCES` failure with a human-readable `message`
+     * (see `String`).
+     *
+     * ```cajeta
+     * throw heap PermissionException("/etc/hosts: permission denied");
+     * ```
+     */
     public PermissionException(String message) {
         super(message);
     }

@@ -82,7 +82,6 @@ IMPORT:             'import';
 INSTANCEOF:         'instanceof';
 INTERFACE:          'interface';
 NATIVE:             'native';
-NEW:                'new';
 OPERATOR:           'operator';
 PACKAGE:            'package';
 PRIVATE:            'private';
@@ -230,7 +229,11 @@ ELLIPSIS:           '...';
 // Whitespace and comments
 
 WS:                 [ \t\r\n\u000C]+ -> channel(HIDDEN);
-COMMENT:            '/*' .*? '*/'    -> channel(HIDDEN);
+// Block comments nest: a `/* ... */` inside a `/** ... */` doc comment (e.g. a
+// fenced cajeta example that shows an empty body `{ /* ... */ }`) must not
+// terminate the outer comment early. The recursive `COMMENT` reference is the
+// standard ANTLR idiom for balanced nested block comments.
+COMMENT:            '/*' (COMMENT | .)*? '*/'    -> channel(HIDDEN);
 LINE_COMMENT:       '//' ~[\r\n]*    -> channel(HIDDEN);
 
 // Identifiers

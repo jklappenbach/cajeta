@@ -1,0 +1,200 @@
+package cajeta.coverage;
+
+import cajeta.buildtool.plugin.ActionContext;
+import cajeta.buildtool.plugin.ActionResult;
+import cajeta.buildtool.plugin.Finding;
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
+import cajeta.collection.ArrayList;
+import cajeta.coverage.format.ConsoleFormat;
+import cajeta.coverage.format.HtmlFormat;
+import cajeta.coverage.format.LcovFormat;
+import cajeta.coverage.format.SarifFormat;
+import cajeta.coverage.internal.BottomN;
+import cajeta.coverage.internal.FilteredCounts;
+import cajeta.coverage.internal.FloatFormat;
+import cajeta.coverage.internal.PositionLookup;
+import cajeta.coverage.internal.SourcePosition;
+import cajeta.io.file.Path;
+
+/**
+ * `cajeta.coverage.report` — emit configured reports, gate on
+ * thresholds, return a structured findings stream.
+ *
+ * Threshold logic:
+ *  - `min`          (overall percent). Action fails if `overall < min`.
+ *  - `min-per-file` (per-file floor). Action fails if any file is below.
+ *
+ * Failure messages cite the bottom-N files so the developer doesn't
+ * have to chase numbers — same motivation as Rust's `--show-missing`.
+ *
+ * Findings: one Finding per uncovered line/branch/region with
+ * `severity=info` (uncovered code isn't an error, it's a signal).
+ *
+ * Required capability: `filesystem`.
+ */
+public class Report {
+
+    /** How many low-coverage files to cite in failure / console output. */
+    static final int32 BOTTOM_N = 5;
+
+    /**
+     * @capability filesystem
+     */
+    public static ActionResult run(ActionContext ctx, JsonObject params) {
+        // ── Param parsing ────────────────────────────────────────
+        Optional<String> maybeInput = params.getString("input");
+        if (maybeInput.isEmpty()) {
+            return ActionResult.error(
+                "cajeta.coverage.report: missing required 'input' " +
+                "(path to merged coverage map)");
+        }
+        Path inputPath = Path.of(maybeInput.get());
+        if (!inputPath.exists()) {
+            return ActionResult.error(
+                "cajeta.coverage.report: 'input' (" + inputPath.toString() +
+                ") does not exist");
+        }
+
+        Optional<int32> minPercent      = params.getInt("min");
+        Optional<int32> minPerFile      = params.getInt("min-per-file");
+        ArrayList<String> formats       = params.getStringArray("report");
+        Path outputDir = Path.of(
+            params.getString("output-dir").orElse(
+                ctx.workdir() + "/build/coverage"));
+
+        // ── Resolve exclude list ────────────────────────────────
+        // The plugin's `config.exclude` array is merged into `params`
+        // by the build tool before dispatch — same path as `min`
+        // and friends. Parse it once into a typed list and build a
+        // matcher we can probe per-file / per-symbol below.
+        Optional<JsonArray> excludeRaw = params.getArray("exclude");
+        ArrayList<Exclude> excludes = #heap ArrayList<Exclude>();
+        if (excludeRaw.isPresent()) {
+            // Parsing throws on bad entries; let the exception
+            // surface so the action result carries the parse error.
+            excludes = ExcludeParser.parse(ctx, excludeRaw.get());
+        }
+        ExcludeMatcher matcher = #heap ExcludeMatcher(excludes);
+
+        // ── Load ─────────────────────────────────────────────────
+        CoverageMap map = CoverageMapReader.read(inputPath);
+
+        // ── Findings + filtered counts in one pass ───────────────
+        // The coverage map carries probe IDs only; positions come
+        // from the compiler-emitted sidecar (loaded lazily). The
+        // sidecar lookup also resolves the package + symbol so the
+        // exclude matcher can apply package/symbol-kind filters
+        // alongside the file-kind ones.
+        ArrayList<Finding> findings = #heap ArrayList<Finding>();
+        PositionLookup posMap = PositionLookup.load(ctx, map);
+        FilteredCounts counts = #heap FilteredCounts();
+        ArrayList<String> filePaths = map.files().keys();
+        int32 fi = 0;
+        while (fi < filePaths.count()) {
+            String fpath = filePaths.get(fi);
+            CoverageMap.FileEntry entry = map.files().get(fpath).get();
+            // File-kind exclude drops the whole file from numerator
+            // AND denominator — `cajeta.coverage.report` treats opt-
+            // out as "this file was never expected to be tested,"
+            // not "this file got tested and is fine."
+            if (matcher.matchesFile(fpath)) {
+                fi = fi + 1;
+                continue;
+            }
+            int32 pid = 0;
+            while (pid < entry.totalProbes()) {
+                String pkg    = posMap.packageFor(fpath);
+                String symbol = posMap.symbolFor(fpath, pid);
+                if (matcher.matchesPackage(pkg) ||
+                    matcher.matchesSymbol(symbol)) {
+                    pid = pid + 1;
+                    continue;
+                }
+                counts.recordProbe(fpath, entry.wasHit(pid));
+                if (!entry.wasHit(pid)) {
+                    SourcePosition pos = posMap.lookup(fpath, pid);
+                    findings.add(#Finding.info(
+                        "uncovered",
+                        fpath, pos.line(), pos.column(),
+                        "line not exercised by tests"));
+                }
+                pid = pid + 1;
+            }
+            fi = fi + 1;
+        }
+        float overall = counts.overallPercent();
+
+        // ── Emit each requested format ───────────────────────────
+        outputDir.createDirectories();
+        String htmlPath   = "";
+        String sarifPath  = "";
+        String lcovPath   = "";
+        String consoleSummary = "";
+        int32 si = 0;
+        while (si < formats.count()) {
+            String fmt = formats.get(si);
+            if (fmt == "html") {
+                htmlPath = HtmlFormat.emit(outputDir, map, findings);
+            } else if (fmt == "sarif") {
+                sarifPath = SarifFormat.emit(outputDir, map, findings);
+            } else if (fmt == "lcov") {
+                lcovPath = LcovFormat.emit(outputDir, map);
+            } else if (fmt == "console") {
+                consoleSummary = ConsoleFormat.render(map, counts, BOTTOM_N);
+                ctx.write(consoleSummary);
+            } else {
+                return ActionResult.error(
+                    "cajeta.coverage.report: unknown report format '" +
+                    fmt + "' (expected: html, sarif, lcov, console)");
+            }
+            si = si + 1;
+        }
+
+        // ── Threshold gates ──────────────────────────────────────
+        // Bottom-N citation is computed once from the FILTERED
+        // counts so the failure message and the console summary
+        // agree on which files dragged the percentage down — and
+        // both reflect the report's exclusion config.
+        if (minPercent.isPresent() && overall < minPercent.get()) {
+            ArrayList<FilteredCounts.FileEntry> bottom =
+                counts.bottomN(BOTTOM_N);
+            ActionResult r = #heap ActionResult();
+            r.output("percent", FloatFormat.oneDecimal(overall));
+            r.output("html-path",  htmlPath);
+            r.output("sarif-path", sarifPath);
+            r.output("lcov-path",  lcovPath);
+            r.findings(#findings);
+            return r.error(
+                "cajeta.coverage.report: coverage " +
+                FloatFormat.oneDecimal(overall) +
+                "% < min " + String.valueOf(minPercent.get()) + "%; " +
+                "bottom " + String.valueOf(bottom.count()) +
+                " files:\n" + FilteredCounts.cite(bottom));
+        }
+        if (minPerFile.isPresent()) {
+            ArrayList<FilteredCounts.FileEntry> belowFloor =
+                counts.filesBelow(minPerFile.get());
+            if (belowFloor.count() > 0) {
+                ActionResult r = #heap ActionResult();
+                r.output("percent", FloatFormat.oneDecimal(overall));
+                r.findings(#findings);
+                return r.error(
+                    "cajeta.coverage.report: " +
+                    String.valueOf(belowFloor.count()) +
+                    " files below min-per-file " +
+                    String.valueOf(minPerFile.get()) + "%:\n" +
+                    FilteredCounts.cite(belowFloor));
+            }
+        }
+
+        // ── Success ──────────────────────────────────────────────
+        ActionResult r = #heap ActionResult();
+        r.output("percent",    FloatFormat.oneDecimal(overall));
+        r.output("html-path",  htmlPath);
+        r.output("sarif-path", sarifPath);
+        r.output("lcov-path",  lcovPath);
+        r.findings(#findings);
+        return #r;
+    }
+}

@@ -30,7 +30,18 @@ import cajeta.collection.HashMap;
  * `operator==()` for value semantics. Primitive `==` is the
  * built-in numeric equality.
  *
- * @see cajeta.collection.HashMap
+ * ## Usage
+ *
+ * ```cajeta
+ * HashSet<int32> seen = heap HashSet<int32>(16);
+ * seen.add(7);
+ * seen.add(7);                    // already a member — no-op
+ * boolean has = seen.contains(7); // true
+ * seen.remove(7);
+ * int64 n = seen.count();         // 0
+ * ```
+ *
+ * @See `HashMap`
  */
 public class HashSet<T> {
 
@@ -46,12 +57,16 @@ public class HashSet<T> {
     /**
      * Construct a HashSet with the given initial bucket capacity.
      *
-     * @param initialCapacity number of buckets to allocate; **must
-     *        be a power of 2** (passed through to HashMap, which
+     * ```cajeta
+     * HashSet<Tag> tags = heap HashSet<Tag>(64);
+     * ```
+     *
+     * @Param initialCapacity number of buckets to allocate; **must
+     *        be a power of 2** (passed through to `HashMap`, which
      *        mask-indexes on the value).
      */
     public HashSet(int64 initialCapacity) {
-        this.map = new HashMap<T, int8>(initialCapacity);
+        this.map = heap HashMap<T, int8>(initialCapacity);
     }
 
     /**
@@ -59,7 +74,7 @@ public class HashSet<T> {
      * (`==`-equal to an existing entry), the call replaces the
      * presence sentinel (still 1) — semantically a no-op.
      *
-     * @param value the member to add.
+     * @Param value the member to add.
      */
     public void add(T value) {
         this.map.put(value, 1);
@@ -68,7 +83,7 @@ public class HashSet<T> {
     /**
      * Test whether `value` is currently a member of the set.
      *
-     * @param value the value to test.
+     * @Param value the value to test.
      * @returns true iff `value` was previously `add`ed and not
      *          subsequently `remove`d.
      */
@@ -79,7 +94,7 @@ public class HashSet<T> {
     /**
      * Remove `value` from the set.
      *
-     * @param value the member to remove.
+     * @Param value the member to remove.
      * @returns true iff `value` was present and removed; false if
      *          it wasn't a member.
      */

@@ -13,7 +13,7 @@ package cajeta.collection;
  * A null child link is an implicit black leaf (the classic
  * RB-tree convention — no explicit sentinel node).
  *
- * @see cajeta.collection.RedBlackTree
+ * @See cajeta.collection.RedBlackTree
  */
 public class RedBlackNode<K, V> {
     public K key;
@@ -24,6 +24,17 @@ public class RedBlackNode<K, V> {
     /** true = red, false = black. New nodes are born red. */
     public boolean red;
 
+    /**
+     * Creates a detached, newly-red node holding `key`/`value`, with
+     * `left`, `right`, and `parent` all `null`. Linking and recolouring
+     * are the `RedBlackTree`'s job — callers rarely construct nodes
+     * directly.
+     *
+     * ```cajeta
+     * heap node = heap RedBlackNode<String, Int>("k", 1);
+     * // node.red == true && node.left == null && node.parent == null
+     * ```
+     */
     public RedBlackNode(K key, V value) {
         this.key = key;
         this.value = value;

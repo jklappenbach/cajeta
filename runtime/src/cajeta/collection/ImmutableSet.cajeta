@@ -20,8 +20,21 @@ import cajeta.lang.stream.ArrayStream;
  * identity semantics (override `hash()` + `==` for value semantics);
  * primitive T lowers `.hash()` to the `__cajeta_hash_X` intrinsic.
  *
- * @see cajeta.collection.HashSet
- * @see cajeta.collection.ArrayList
+ * ## Usage
+ *
+ * ```cajeta
+ * ArrayList<int32> src = heap ArrayList<int32>();
+ * src.add(1); src.add(2); src.add(2); src.add(3);
+ *
+ * ImmutableSet<int32> set = heap ImmutableSet<int32>(src);
+ * set.count();        // 3 — duplicate 2 dropped
+ * set.contains(2);    // true
+ * set.get(0);         // 1 — first-seen order preserved
+ * set.stream().forEach(v -> print(v));
+ * ```
+ *
+ * @See cajeta.collection.HashSet
+ * @See cajeta.collection.ArrayList
  */
 public class ImmutableSet<T> {
 
@@ -46,7 +59,14 @@ public class ImmutableSet<T> {
      * occurrence of each `==`-equal value wins; later duplicates are
      * dropped. The source `ArrayList` is left untouched.
      *
-     * @param src the values to snapshot.
+     * ```cajeta
+     * ArrayList<string> names = heap ArrayList<string>();
+     * names.add("ann"); names.add("bo"); names.add("ann");
+     * ImmutableSet<string> set = heap ImmutableSet<string>(names);
+     * // set.count() == 2; names is unchanged
+     * ```
+     *
+     * @Param src the values to snapshot.
      */
     public ImmutableSet(ArrayList<T> src) {
         int32 n = src.count();
@@ -56,8 +76,8 @@ public class ImmutableSet<T> {
         while (cap < (int64) n * 2) {
             cap = cap * 2;
         }
-        T[] elems = new T[n];
-        int64[] tab = new int64[cap];
+        T[] elems = heap T[n];
+        int64[] tab = heap int64[cap];
         int32 count = 0;
 
         int32 i = 0;
@@ -138,14 +158,19 @@ public class ImmutableSet<T> {
      */
     public T get(int32 i) {
         if (i < 0 || i >= this.elemCount) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         return this.elements[i];
     }
 
     /**
-     * Heap-allocated stream over the unique members, first-seen order.
+     * Heap-allocated `ArrayStream` over the unique members, first-seen
+     * order.
+     *
+     * ```cajeta
+     * set.stream().forEach(v -> print(v));
+     * ```
      */
     public #ArrayStream<T> stream() {
         return heap ArrayStream<T>(this.elements, this.elemCount);

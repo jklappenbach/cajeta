@@ -15,10 +15,16 @@ namespace cajeta {
         // For ClassCreatorRest this is the struct type; for ArrayCreatorRest the
         // element type.
         CajetaTypePtr targetType;
+        // NRVO target: when set, ClassCreatorRest constructs the instance
+        // directly into this caller-provided slot (the sret return pointer)
+        // instead of allocating its own — zero-copy value returns. See
+        // cajeta-docs/stdlib/ValueReturns.md.
+        llvm::Value* nrvoTarget = nullptr;
     public:
         CreatorRest(antlr4::Token* token) : AbstractSyntaxNode(token) { }
 
         void setTargetType(CajetaTypePtr t) { targetType = t; }
+        void setNrvoTarget(llvm::Value* t) { nrvoTarget = t; }
 
         static shared_ptr<CreatorRest> fromContext(CajetaParser::CreatorContext* ctx, antlr4::Token* token);
     };
@@ -45,6 +51,10 @@ namespace cajeta {
                     // — silently failing the lookup.
                     if (ctxParameterEntry->parameterLabel()) {
                         entry.label = ctxParameterEntry->parameterLabel()->getText();
+                    }
+                    // Caller-side `#x` transfer (Phase 1 of #68).
+                    if (ctxParameterEntry->REFERENCE()) {
+                        entry.callerTransferred = true;
                     }
                     parameters.push_back(entry);
                 }

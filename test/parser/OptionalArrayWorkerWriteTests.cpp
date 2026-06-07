@@ -44,7 +44,7 @@ TEST(OptionalArrayWorkerWriteTests, classArrayWorkerWrite) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box[] out = new Box[1];\n"
+        "        Box[] out = heap Box[1];\n"
         "        scope {\n"
         "            spawn writer(out);\n"
         "        }\n"
@@ -65,7 +65,7 @@ TEST(OptionalArrayWorkerWriteTests, optionalIntArrayWorkerWrite) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Optional<int32>[] out = new Optional<int32>[1];\n"
+        "        Optional<int32>[] out = heap Optional<int32>[1];\n"
         "        scope {\n"
         "            spawn writer(out);\n"
         "        }\n"
@@ -82,7 +82,7 @@ TEST(OptionalArrayWorkerWriteTests, optionalIntArrayWorkerWrite) {
     EXPECT_EQ(runI32(src), 42);
 }
 
-// Task #46 — `new Optional<T>[1]` in method-template context.
+// Task #46 — `heap Optional<T>[1]` in method-template context.
 // CajetaArray's ctor calls elementType->getLlvmType() during
 // construction; for a bare-template Optional (returned by
 // CajetaClass::instantiate's placeholder short-circuit when T is a
@@ -96,7 +96,7 @@ TEST(OptionalArrayWorkerWriteTests, genericClassArrayInMethodTemplate) {
         "package test;\n"
         "public final class D {\n"
         "    public static final int32 allocAndDrop<T>(T seed) {\n"
-        "        Optional<T>[] arr = new Optional<T>[1];\n"
+        "        Optional<T>[] arr = heap Optional<T>[1];\n"
         "        arr[0] = heap Optional<T>(true, seed);\n"
         "        if (arr[0].isPresent()) {\n"
         "            return 7;\n"
@@ -124,7 +124,7 @@ TEST(OptionalArrayWorkerWriteTests, genericClassArrayParamInMethodTemplate) {
         "        return 0;\n"
         "    }\n"
         "    public static final int32 orchestrator<T>(T seed) {\n"
-        "        Optional<T>[] arr = new Optional<T>[1];\n"
+        "        Optional<T>[] arr = heap Optional<T>[1];\n"
         "        writer<T>(arr, seed);\n"
         "        if (arr[0].isPresent()) {\n"
         "            return 13;\n"
@@ -148,7 +148,7 @@ TEST(OptionalArrayWorkerWriteTests, optionalIntArrayMultiWorkerRace) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Optional<int32>[] out = new Optional<int32>[1];\n"
+        "        Optional<int32>[] out = heap Optional<int32>[1];\n"
         "        scope {\n"
         "            spawn writer(out, 1);\n"
         "            spawn writer(out, 2);\n"

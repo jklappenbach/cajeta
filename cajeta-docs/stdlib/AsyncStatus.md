@@ -2,11 +2,37 @@
 
 Tracks the R1–R5 rollout of the async runtime described in `cajeta-docs/stdlib/Thread.md`. Counterpart to `history/ImplementationStatus.md` (which covers the now-complete MemoryModel rollout).
 
+<!-- SYNC NOTE: this file is mirrored at cajeta-docs-site/src/pages/docs/AsyncStatus.md
+     (the published-site copy, which adds Astro frontmatter and uses bare doc names).
+     Keep the body content of the two in sync when editing either. -->
+
+
 ---
 
 ## Current status
 
-**Phases R1 through R5-D + error-model v1 complete.** Full structured-concurrency story functional end-to-end: stackful fibers, scope joins, cancellation, exception escalation. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`, with `cause` chaining), `throws` clause grammar + advisory lint with try/catch coverage awareness, runtime exception path on `void*`, Task<T> exception slot with await re-raise, and stack-trace capture at throw sites with auto-print on uncaught.
+**Phases R1 through R9 + error-model v1 complete.** Full structured-concurrency
+story functional end-to-end: stackful fibers on a multi-carrier work-stealing
+pool, scope joins, cancellation, exception escalation, atomics, timers, async
+I/O reactor. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`,
+with `cause` chaining), `throws` clause grammar + advisory lint with try/catch
+coverage awareness, runtime exception path on `void*`, Task<T> exception slot
+with await re-raise, and stack-trace capture at throw sites with auto-print on
+uncaught.
+
+> **Scheduler reality (authoritative — this doc is the source of truth).** The
+> executor is a **multi-carrier work-stealing pool** (Chase–Lev deques per
+> carrier). Default carrier count is `min(nproc, 4)`; `CAJETA_CARRIERS=N`
+> overrides for deterministic-order debug runs (set to 1 for the
+> single-carrier model the early releases shipped). Timer wheel ships
+> (`__cajeta_task_wait_timeout` + a sorted-list timer thread), backing
+> `cajeta.time.Duration`, `Tasks.withTimeout<R>`, and `Tasks.withDeadline<R>`.
+> Async I/O reactor ships (Linux epoll), with `Cajeta.io*` intrinsics for
+> non-blocking fd registration / wait. Atomics ship as `cajeta.threading.AtomicInt32/64` (R8.1).
+
+**R5-C / R5-D — shipped (named here precisely, since `Features.md` S-805 long read "designed"):**
+- [x] R5-C cooperative cancellation — `CancellationException extends RecoverableException`; scope sets each child fiber's `cancel_with`; `__cajeta_task_wait` re-raises it on the next park-resume (commit `fa7c7f8`).
+- [x] R5-D scope exception-escalation — `scope_exit`/`scope_exit_to` join children, cancel surviving siblings on the first non-null exception slot, then re-raise the first throw into the containing frame.
 
 **Post-v1 polish items — all shipped:**
 - [x] Recoverable/Unrecoverable distinction via vtable type-check (#210) — commit `ea5ca6e`.
@@ -53,7 +79,7 @@ New test `SpawnDropTests.carrierDropsAccountedSeparately`: a spawned method decl
 
 `DetachExpression::generateCode` was previously a sync passthrough — it just `inner->generateCode(module)`'d the call, so `detach foo();` ran inline on the caller's thread, indistinguishable from a bare call. The fire-and-forget semantics `cajeta-docs/stdlib/Thread.md` describes weren't actually implemented.
 
-Spec tightened first (`cajeta-docs/stdlib/Thread.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `new T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
+Spec tightened first (`cajeta-docs/stdlib/Thread.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `heap T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
 
 Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue lowering — a new `detachMode` flag on `SpawnExpression` gates the two pieces detach skips:
 
@@ -64,7 +90,7 @@ Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue loweri
 
 Auxiliary fix: `SpawnExpression`'s value-store path now skips when the inner returns void (`isVoidTy()` check) and `CajetaTask::CajetaTask` substitutes an `i8` placeholder for the value slot when `elementType` is void — LLVM forbids storing void or putting it in an aggregate field. Previously latent because all spawn tests used int-returning inner functions; surfaced when `detach foo();` runs an `async void foo()`.
 
-New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediately; primitive captures work; `#`-transferred class captures work; bare class-typed identifier (borrow capture) is rejected at compile time. Fresh-allocator (`new T()` inline as arg) is documented as a Known gap rather than tested directly — the underlying NewExpression-as-method-call-argument codegen path is broken even for non-detach calls (`consume(new Payload())` crashes), so the detach-specific check accepting `NewExpression` will light up the moment that gap is fixed.
+New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediately; primitive captures work; `#`-transferred class captures work; bare class-typed identifier (borrow capture) is rejected at compile time. Fresh-allocator (`heap T()` inline as arg) is documented as a Known gap rather than tested directly — the underlying NewExpression-as-method-call-argument codegen path is broken even for non-detach calls (`consume(heap Payload())` crashes), so the detach-specific check accepting `NewExpression` will light up the moment that gap is fixed.
 
 ### Out of scope for this rollout
 
@@ -75,7 +101,7 @@ New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediatel
 
 ### Ownership-transfer model — why option (a)
 
-`MemoryModel.md` § Borrow / transfer rules: *"Auto-promotion for fresh `new`. An anonymous `new T(...)` expression in transfer position promotes implicitly. ... The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk."* Spawn is a fresh allocator with no prior identity — same rule applies. The drop-chain primitive `__cajeta_drop_mark_inactive` already exists for `#`-move; we're invoking it from a new call site, not inventing a mechanism.
+`MemoryModel.md` § Borrow / transfer rules: *"Auto-promotion for fresh `new`. An anonymous `heap T(...)` expression in transfer position promotes implicitly. ... The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk."* Spawn is a fresh allocator with no prior identity — same rule applies. The drop-chain primitive `__cajeta_drop_mark_inactive` already exists for `#`-move; we're invoking it from a new call site, not inventing a mechanism.
 
 Two alternatives considered and rejected:
 - *(b) Local skips its own drop when the initializer is a Spawn.* Localized but breaks `#`-move-out of Task locals — with no entry to deactivate, ownership can't be transferred out of the local later. Makes Task a second-class citizen for the move syntax.
@@ -156,13 +182,45 @@ Two alternatives considered and rejected:
 
 ---
 
+## R7 — Sync primitives ✅ complete
+
+Beyond R4's Lock, the threading package ships:
+
+- `cajeta.threading.Mutex` — closure/scoped `withLock(() -> body)` API; no lvalue guard. R7-A..E.
+- `cajeta.threading.RwLock` — multi-reader / exclusive-writer; closure forms.
+- `cajeta.threading.Semaphore` — counting; `withPermit(() -> body)`.
+- `cajeta.threading.CondVar` — paired with Mutex.
+- `cajeta.threading.Channel<T>` — bounded MPMC ring buffer (capacity at construction). `send` blocks while full; `receive` returns a stack `Optional<T>` (present while items remain, empty once closed+drained). v1 targets primitive/value T; heap-class T items buffered-but-unreceived aren't dropped on Channel destroy (drain explicitly via `receive()` loop before drop). R7-F.
+
+## R8 — Multi-carrier scheduler + atomics ✅ complete
+
+- **R8.1** — `cajeta.threading.AtomicInt32` / `AtomicInt64` value types with `get`, `set`, `add`, `sub`, `compareAndSet`, and fixed-ordering variants (acquire/release/relaxed).
+- **R8.2** — Chase–Lev work-stealing deques per carrier replace the single shared ready queue. Local push/pop is wait-free for the owner; other carriers steal from the public end.
+- **R8.3** — Multi-carrier pool: `CAJETA_CARRIERS=N` (1 ≤ N ≤ 16) sets the pool size; default is `min(_SC_NPROCESSORS_ONLN, 4)`. Per-fiber drop and exception chain heads (TLS-promoted) keep the unwind walks per-carrier.
+
+## R9 — Timers + async I/O ✅ complete
+
+- **R9.1** — `__cajeta_task_wait_timeout(done_addr, deadline_ns)` runtime primitive: parks the calling fiber on a sorted timer list; wakes at the deadline OR when done flips, honoring R5-C cancellation on wake.
+- **R9.2** — `cajeta.time.Duration` value type with `ofNanos`/`ofMillis`/`ofSeconds`/`ofMinutes` factories and `toNanos` accessor.
+- **R9.3** — `cajeta.threading.Tasks.withTimeout<R>(Duration, Task<R>) -> Optional<R>` and `withDeadline<R>(int64 deadlineNanos, Task<R>) -> Optional<R>`. Optional reports present-or-timeout; on timeout the body is cooperatively cancelled (`Cajeta.taskCancel` → `__cajeta_fiber_cancel`), bodies that yield short-circuit on next park, bodies without yield points run to natural completion. A legacy `withTimeoutInt32` specialization remains for callers already pinned to it.
+- **R9.4** — Linux epoll-based I/O reactor: `Cajeta.epollCreate`, `Cajeta.epollAdd`, `Cajeta.epollWait`, `Cajeta.eventfdCreate`, `Cajeta.eventfdSignal`, `Cajeta.eventfdConsume`, `Cajeta.fdClose` intrinsics. Carrier hosts the reactor thread; fibers park on fd-readiness events.
+- **R9.5** — `cajeta.threading.Tasks.runBlocking<R>(() -> R body) -> R`: sync→async bridge. Spawns `body` on the carrier pool, blocks the calling OS thread on the body's done flag, returns its result. The runtime's `__cajeta_task_wait` already condvar-waits when there is no current fiber, so a plain non-async `main` can drive async work without itself being `async`. v1 covers primitive / value-return R via the spawn-of-lambda ABI; heap-class return callers keep using the explicit `await spawn body()` form. Also surfaces `Cajeta.fiberSleepNanos(int64)` (atop `__cajeta_task_wait_timeout` against a sentinel done-flag) as the underlying cooperative-sleep primitive.
+- **R9.6** — `cajeta.threading.Tasks.selectReceive<T>(Channel<T>[]) -> Optional<SelectResult<T>>`: Go-style `select`-receive across multiple channels. Returns `present(SelectResult{index, value})` when one of the channels produces; `empty` once every channel has been closed AND drained. Lowest-index-wins on simultaneous readiness (deterministic). v1 implementation polls each channel via `Channel.tryReceive()` / `Channel.isClosed()` and backs off between passes via `Cajeta.fiberSleepNanos` (100us → 10ms cap exponential) — the fiber parks on the timer wheel rather than spinning, so the carrier is free to run other fibers. A future revision can park on per-channel waiter lists for zero-poll-cost wake.
+- **R9.7** — `cajeta.threading.AsyncIterator<T>` interface: minimal iteration contract — `Optional<T> next()` returning present until the source is exhausted, empty thereafter. User-side loop is explicit (`while ((opt = iter.next()).isPresent()) ...`); a `for (T x in iter) { ... }` desugaring is the planned v2.1 surface. Multi-call iteration is sound through both concrete-typed and interface-typed receivers — the interface decl's prototype adopts the sret ABI when its return type is a value-shape class (matches the impls' sret signature) and the dispatch site swaps the iface body for the data pointer at the `this` slot (after sret), not blindly at position 0.
+
+## Language surface for async-driving stdlib ✅ complete
+
+- **spawn-of-lambda** — `SpawnExpression` accepts a function-typed scope field (local, parameter, or capture) as the inner call. Lets `Tasks.runWith(...)` (or anything that takes a `() -> R body` parameter) spawn the lambda body internally. v1 restricts to heap-ownership / primitive return; sret value-return closures rejected with a clear error (slot would need to outlive the worker frame).
+
+---
+
 ## Known gaps surfaced by the rollout
 
-_(None active. Earlier entries — TLS-promote, `detach` fire-and-forget, inline `new T(...)` as method-call argument — have all shipped.)_
+- **Multi-receiver Optional chained sret call.** Three sequential stack `Optional<T>` locals from sret-return calls where the third's terminal is `.orElse(literal)` SIGSEGVs; two locals or three locals with isPresent/get is fine. Channel-side workaround in the tests is to guard with `isPresent`. Tracked separately as a stack-Optional codegen edge case.
+- **Channel<T> heap-class drop refinement.** Items buffered in the ring buffer at Channel destruction time don't run their per-element drop (the array frees, not its elements). Workaround: drain via `receive()` loop before drop. v2.
 
 ---
 
 ## Notes / open questions
 
-- **Worker thread pool.** Today's executor is a single carrier OS thread. A pool would let multiple fibers run truly in parallel, but raises new questions: the global drop-chain head needs TLS promotion (above); the wake-all-parked policy in `__cajeta_task_complete` would scale badly with many concurrent awaits; the lock and scope code already takes the right per-object locks but hasn't been audited under concurrent carriers. Probably a v2 concern.
 - **Function-body implicit scope: cost.** Each method call now pays one malloc + one free for its scope frame, even if the method never spawns. Profiling will tell if this matters; the optimization is straightforward (lazy frame alloc on first scope_register) and can land when measured.

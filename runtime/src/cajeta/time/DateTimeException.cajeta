@@ -1,0 +1,40 @@
+package cajeta.time;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Thrown when a date/time operation fails on otherwise well-formed input —
+ * an out-of-range field (month 13, hour 24, day 30 in February), an
+ * unsupported combination, or an arithmetic result that escapes the
+ * representable range.
+ *
+ * On the **recoverable** branch (extends `RecoverableException`): these
+ * signal bad data a caller can catch and recover from, not an invariant
+ * violation. The runtime's recoverable/unrecoverable chain-walk therefore lets
+ * user `catch` handlers see it rather than aborting.
+ *
+ * Stdlib factories such as `LocalDate``.of`, `LocalTime``.of`, and
+ * `LocalDateTime``.of` throw this when a field is out of range or an
+ * arithmetic result overflows the representable span:
+ *
+ * ```cajeta
+ * try {
+ *     stack d = LocalDate.of(2026, 13, 1);   // month 13 is invalid
+ * } catch (DateTimeException e) {
+ *     log(e.message);                        // recover and keep going
+ * }
+ * ```
+ */
+public class DateTimeException extends RecoverableException {
+    /**
+     * Build a recoverable date/time error carrying a human-readable `message`.
+     *
+     * ```cajeta
+     * throw DateTimeException("hour must be 0..23");
+     * ```
+     */
+    public DateTimeException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

@@ -1,6 +1,42 @@
 package cajeta.wire;
 
+/**
+ * Bidirectional wire codec for values of type `T`: turns a `T` into a
+ * heap-owned byte buffer and reconstructs a `T` from one. Implement this
+ * interface once per serialization format (e.g. a JSON, CBOR, or
+ * length-prefixed binary encoder) and hand instances around wherever a value
+ * needs to cross a process, file, or socket boundary.
+ *
+ * The two halves are inverses: `decode(encode(value))` must yield a value
+ * equal to the original. Both directions transfer ownership of their heap
+ * result (`#`) to the caller.
+ *
+ * ## Usage
+ *
+ * ```cajeta
+ * Encoder<Order> codec = JsonEncoder<Order>();
+ *
+ * #int8[] bytes = codec.encode(order);   // T -> owned bytes
+ * #Order  back  = codec.decode(bytes);   // owned bytes -> T
+ * ```
+ */
 public interface Encoder<T> {
+    /**
+     * Serializes `value` into a freshly allocated, caller-owned byte buffer.
+     *
+     * ```cajeta
+     * #int8[] bytes = codec.encode(order);
+     * ```
+     */
     #int8[] encode(T value);
+
+    /**
+     * Reconstructs a `T` from its encoded `bytes`, returning a caller-owned
+     * heap instance. Inverse of `encode`.
+     *
+     * ```cajeta
+     * #Order order = codec.decode(bytes);
+     * ```
+     */
     #T decode(int8[] bytes);
 }

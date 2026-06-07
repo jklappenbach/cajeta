@@ -226,32 +226,55 @@ namespace cajeta {
             if (args[i] && args[i]->isWildcard()) continue;
             auto argClass = dynamic_pointer_cast<CajetaClass>(args[i]);
             for (auto& bound : param.bounds) {
-                // Numeric category markers — Numeric / Floating / Integral —
-                // are satisfied by a primitive's FLAGS, not a CajetaClass
-                // parent-chain. They are the only way to bound a type
-                // parameter to primitives (which carry no class ancestry, so
-                // the class-bound path below rejects them outright). Used by
-                // the built-in `Vector<T extends Numeric, N>`. Bool carries
-                // NUMBER_FLAG|INT_FLAG so it is admitted here; element types
-                // that forbid bool (Vector) reject it at their own interception.
-                const std::string& markerName = bound->getTypeName();
-                if (markerName == "Numeric" || markerName == "Floating"
-                        || markerName == "Integral") {
-                    CajetaTypeFlags f = args[i] ? args[i]->getTypeFlags() : 0;
-                    bool ok = (markerName == "Numeric"  && (f & NUMBER_FLAG))
-                           || (markerName == "Floating" && (f & FLOAT_FLAG))
-                           || (markerName == "Integral" && (f & INT_FLAG));
-                    if (!ok) {
+                // Numerics for Bounded Templates. `T extends Numeric`,
+                // `T extends Integral`, `T extends Floating` are three
+                // built-in pseudo-bounds that admit primitive numeric
+                // type arguments — the bound isn't a class on the
+                // canonical chain, it's a category check against the
+                // primitive flag bits set in CajetaType.h. Boolean is
+                // explicitly excluded from Numeric/Integral even though
+                // it carries INT_FLAG | NUMBER_FLAG (its flags are for
+                // legacy zero/one storage, not arithmetic).
+                const std::string& bname = bound->getTypeName();
+                if (bname == "Numeric" || bname == "Integral" || bname == "Floating") {
+                    if (!args[i]) {
                         throw Exception(
-                            "template " + qName->toCanonical() + ": argument '"
-                                + (args[i] ? args[i]->getQName()->toCanonical()
-                                           : std::string("<null>"))
-                                + "' does not satisfy numeric bound '"
-                                + markerName + "' on parameter '" + param.name
-                                + "'",
+                            "template " + qName->toCanonical() + ": parameter '"
+                                + param.name + "' bound " + bname
+                                + " requires a primitive numeric type argument",
                             "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
                     }
-                    continue;
+                    int aflags = args[i]->getTypeFlags();
+                    bool isPrim = (aflags & PRIMITIVE_FLAG) != 0;
+                    bool isBool = args[i]->getQName()
+                        && args[i]->getQName()->getTypeName() == "boolean";
+                    bool satisfies = false;
+                    if (bname == "Numeric") {
+                        satisfies = isPrim && (aflags & NUMBER_FLAG) && !isBool;
+                    } else if (bname == "Integral") {
+                        satisfies = isPrim && (aflags & INT_FLAG) && !isBool;
+                    } else {
+                        // Floating
+                        satisfies = isPrim && (aflags & FLOAT_FLAG);
+                    }
+                    if (!satisfies) {
+                        std::string argName = args[i]->getQName()
+                            ? args[i]->getQName()->toCanonical()
+                            : std::string("?");
+                        throw Exception(
+                            "template " + qName->toCanonical() + ": argument '"
+                                + argName + "' does not satisfy bound "
+                                + bname + " on parameter '" + param.name
+                                + "' — " + bname + " admits only primitive "
+                                + (bname == "Floating"
+                                    ? "float32/float64"
+                                    : (bname == "Integral"
+                                        ? "signed/unsigned int8..int64"
+                                        : "numeric (int8..int64, uint8..uint64, float32, float64)"))
+                                + " arguments",
+                            "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
+                    }
+                    continue;  // bound satisfied — skip class-resolve path
                 }
                 // Resolve the bound: try the bound's full canonical first,
                 // then fall back to its short name (matches how `extends`

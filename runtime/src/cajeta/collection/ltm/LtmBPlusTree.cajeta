@@ -11,7 +11,7 @@ import cajeta.wire.Encoder;
  *
  * ## Construction
  *
- * `new LtmBPlusTree(path, keyEnc, valEnc, order, capacity)` opens (or
+ * `heap LtmBPlusTree(path, keyEnc, valEnc, order, capacity)` opens (or
  * creates) the index file at `path`. A fresh file is initialized with
  * the given `order`; an existing one is reopened from its header (the
  * stored order wins). `keyEnc` / `valEnc` turn keys and values into
@@ -39,13 +39,28 @@ import cajeta.wire.Encoder;
  * no pinning. Eviction "frees" a page by reassigning its frame slot —
  * Cajeta's drop-by-assignment, no `delete`/`free`.
  *
- * @see cajeta.collection.ltm.LtmPager
- * @see cajeta.collection.BPlusTree
+ * @See cajeta.collection.ltm.LtmPager
+ * @See cajeta.collection.BPlusTree
  */
 public class LtmBPlusTree<K, V> {
 
     private LtmPager<K, V> pager;
 
+    /**
+     * Open (or create) the disk index at `path`. A new file is laid out
+     * with branching factor `order`; an existing file is reopened from
+     * its header and the stored order wins. `keyEnc` / `valEnc` are the
+     * `Encoder`s that serialize keys and values; `capacity` caps the
+     * number of resident pages. Always `close()` to flush durably.
+     *
+     * ```cajeta
+     * heap LtmBPlusTree<int64, String> idx =
+     *     heap LtmBPlusTree<int64, String>("/data/users.idx", keyEnc, valEnc, 128, 256);
+     * idx.put(42, "alice");
+     * String name = idx.get(42);   // "alice"
+     * idx.close();                 // durable
+     * ```
+     */
     public LtmBPlusTree(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
                         int32 order, int32 capacity) {
         this.pager = heap LtmPager<K, V>(path, keyEnc, valEnc, order, 4096, capacity);
@@ -55,14 +70,17 @@ public class LtmBPlusTree<K, V> {
         return this.pager.getEntryCount();
     }
 
+    /** True when no entries have been inserted (the index has no root page yet). */
     public boolean isEmpty() {
         return this.pager.getRoot() == -1;
     }
 
+    /** Write all dirty resident pages to disk without closing the file. */
     public void flush() {
         this.pager.flush();
     }
 
+    /** Flush and release the underlying file; call before discarding the index. */
     public void close() {
         this.pager.close();
     }
@@ -86,7 +104,7 @@ public class LtmBPlusTree<K, V> {
 
         // Descend to the target leaf, pinning each page on the path so a
         // later allocNode (split) can't evict the working set.
-        int64[] path = new int64[64];
+        int64[] path = heap int64[64];
         int32 depth = 0;
         int64 cur = rootId;
         boolean atLeaf = false;
@@ -156,7 +174,7 @@ public class LtmBPlusTree<K, V> {
     public V get(K key) {
         int64 rootId = this.pager.getRoot();
         if (rootId == -1) {
-            V[] miss = new V[1];
+            V[] miss = heap V[1];
             return miss[0];
         }
         int64 cur = rootId;
@@ -177,7 +195,7 @@ public class LtmBPlusTree<K, V> {
             }
             i = i + 1;
         }
-        V[] miss = new V[1];
+        V[] miss = heap V[1];
         return miss[0];
     }
 
@@ -215,7 +233,7 @@ public class LtmBPlusTree<K, V> {
     public K min() {
         int64 rootId = this.pager.getRoot();
         if (rootId == -1) {
-            K[] miss = new K[1];
+            K[] miss = heap K[1];
             return miss[0];
         }
         int64 cur = rootId;

@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <string>
+
 namespace cajeta {
 
     enum class CompilerMode {
@@ -86,6 +88,25 @@ namespace cajeta {
 
         // ----- optimization -----
         OptLevel        opt                 = OptLevel::O0;  // IR opt for --emit=obj/exe
+
+        // ----- debugging -----
+        // Emit __cajeta_dbg_safepoint(loc_id) at each statement boundary so the
+        // in-process debugger (`cajeta dap`) can park the executing fiber at a
+        // breakpoint. Opt-in via --debug-info / -g; OFF for every mode by
+        // default (it changes codegen and only matters under a debugger), so
+        // ordinary builds and the existing test suite are unaffected.
+        bool            debugInfo           = false;
+
+        // ----- reproducible builds -----
+        // Accepted from the build tool's reproducibility flag set
+        // (Reproducibility.cpp). Stored so the emit stage can honor them where
+        // it embeds timestamps / source paths / RNG salt; harmless when empty.
+        //   --source-date-epoch=<unix-ts>   fixed build timestamp (SOURCE_DATE_EPOCH).
+        //   --debug-prefix-map=<from>=<to>  remap source paths in debug info.
+        //   --seed=<hex>                    deterministic salt for any build RNG.
+        std::string     sourceDateEpoch;
+        std::string     debugPrefixMap;
+        std::string     seed;
 
         // Compute the default flag set for a given mode. CLI per-feature
         // flags override after this expansion.

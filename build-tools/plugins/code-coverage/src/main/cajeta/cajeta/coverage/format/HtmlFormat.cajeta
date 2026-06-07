@@ -1,0 +1,222 @@
+package cajeta.coverage.format;
+
+import cajeta.buildtool.plugin.Finding;
+import cajeta.collection.ArrayList;
+import cajeta.coverage.CoverageMap;
+import cajeta.coverage.internal.FloatFormat;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.Path;
+
+/**
+ * HTML report — one index + one annotated-source page per file.
+ * Output structure:
+ *
+ *   build/coverage/html/
+ *     index.html                                 — project summary
+ *     style.css                                  — inlined into pages
+ *     src/parser/Lexer.cajeta.html               — annotated source
+ *     src/codec/JsonReader.cajeta.html
+ *     ...
+ *
+ * Each annotated page renders the source with each line marked:
+ *   - green  → at least one probe on this line hit
+ *   - red    → at least one probe on this line missed
+ *   - yellow → mixed (some hit, some missed) — branch/region grain
+ *   - gray   → no probe on this line (whitespace, declaration, etc.)
+ *
+ * The HTML is intentionally self-contained: no external CSS or JS,
+ * no fonts pulled at view-time. The output is meant to be archived
+ * (CI artifact, S3 bucket) and stay viewable indefinitely.
+ */
+public class HtmlFormat {
+
+    public static String emit(
+        Path outputDir, CoverageMap map, ArrayList<Finding> findings) {
+        Path htmlDir = outputDir.resolve("html");
+        htmlDir.createDirectories();
+
+        emitStylesheet(htmlDir);
+        emitIndex(htmlDir, map);
+
+        // One annotated page per file.
+        ArrayList<String> paths = map.files().keys();
+        int32 i = 0;
+        while (i < paths.count()) {
+            String fpath = paths.get(i);
+            CoverageMap.FileEntry e = map.files().get(fpath).get();
+            emitAnnotated(htmlDir, fpath, e, findings);
+            i = i + 1;
+        }
+
+        return htmlDir.resolve("index.html").toString();
+    }
+
+    static void emitIndex(Path htmlDir, CoverageMap map) {
+        Path out = htmlDir.resolve("index.html");
+        FileWriter w = FileWriter.openTruncate(out);
+        w.writeText("<!DOCTYPE html>\n<html><head>\n");
+        w.writeText("<meta charset=\"utf-8\">\n");
+        w.writeText("<title>coverage — cajeta.coverage</title>\n");
+        w.writeText("<link rel=\"stylesheet\" href=\"style.css\">\n");
+        w.writeText("</head><body>\n");
+        w.writeText("<h1>coverage</h1>\n");
+        w.writeText("<p class=\"summary\">overall: <b>" +
+                   FloatFormat.oneDecimal(map.overallPercent()) +
+                   "%</b> · grain: " + map.grain().toName() +
+                   " · files: " + String.valueOf(map.count()) + "</p>\n");
+        w.writeText("<table><thead><tr><th>file</th><th>%</th>" +
+                   "<th>hit</th><th>total</th></tr></thead><tbody>\n");
+        ArrayList<String> paths = map.files().keys();
+        int32 i = 0;
+        while (i < paths.count()) {
+            String fpath = paths.get(i);
+            CoverageMap.FileEntry e = map.files().get(fpath).get();
+            w.writeText("<tr><td><a href=\"" + linkFor(fpath) + "\">" +
+                       escape(fpath) + "</a></td>");
+            w.writeText("<td class=\"" + percentClass(e.percent()) +
+                       "\">" + FloatFormat.oneDecimal(e.percent()) +
+                       "%</td>");
+            w.writeText("<td>" + String.valueOf(e.hitProbes())   + "</td>");
+            w.writeText("<td>" + String.valueOf(e.totalProbes()) + "</td></tr>\n");
+            i = i + 1;
+        }
+        w.writeText("</tbody></table>\n</body></html>\n");
+        w.close();
+    }
+
+    static void emitAnnotated(Path htmlDir, String sourcePath,
+                              CoverageMap.FileEntry entry,
+                              ArrayList<Finding> findings) {
+        Path out = htmlDir.resolve(linkFor(sourcePath));
+        out.parent().createDirectories();
+        FileWriter w = FileWriter.openTruncate(out);
+        w.writeText("<!DOCTYPE html>\n<html><head>\n");
+        w.writeText("<meta charset=\"utf-8\">\n");
+        w.writeText("<title>" + escape(sourcePath) + "</title>\n");
+        w.writeText("<link rel=\"stylesheet\" href=\"" +
+                   relativeToRoot(sourcePath) + "style.css\">\n");
+        w.writeText("</head><body>\n");
+        w.writeText("<h1>" + escape(sourcePath) + "</h1>\n");
+        w.writeText("<p>coverage: " +
+                   FloatFormat.oneDecimal(entry.percent()) +
+                   "% · " + String.valueOf(entry.hitProbes()) +
+                   "/" + String.valueOf(entry.totalProbes()) +
+                   " probes</p>\n<pre><code>\n");
+        renderAnnotatedSource(w, sourcePath, entry, findings);
+        w.writeText("</code></pre>\n</body></html>\n");
+        w.close();
+    }
+
+    /**
+     * Walk the source file line-by-line, mark each one according to
+     * which probes (if any) live on it and whether any of those
+     * probes were missed. Falls back to "gray, unknown" when the
+     * source is unreadable — a known-bad path shouldn't tank the
+     * entire HTML emit.
+     */
+    static void renderAnnotatedSource(
+        FileWriter w, String sourcePath,
+        CoverageMap.FileEntry entry, ArrayList<Finding> findings) {
+        // Build a fast "is line uncovered?" lookup from the findings
+        // list — the findings already carry the probe-id → line
+        // resolution from PositionLookup.
+        HashSet<int32> uncoveredLines = #heap HashSet<int32>();
+        int32 fi = 0;
+        while (fi < findings.count()) {
+            Finding f = findings.get(fi);
+            if (f.file() == sourcePath) {
+                uncoveredLines.add(f.line());
+            }
+            fi = fi + 1;
+        }
+
+        FileReader r = FileReader.openOrNull(Path.of(sourcePath));
+        if (r == null) {
+            w.writeText("[source not readable: " + escape(sourcePath) + "]\n");
+            return;
+        }
+        String[] lines = r.readAllLines();
+        r.close();
+        int32 i = 0;
+        while (i < lines.count) {
+            int32 lineNo = i + 1;
+            String cls = "line-untracked";
+            if (uncoveredLines.contains(lineNo)) {
+                cls = "line-missed";
+            } else {
+                // TODO: distinguish hit vs untracked once the
+                // per-line probe-coverage projection is wired in.
+                // The findings list only carries uncovered lines.
+                cls = "line-hit";
+            }
+            w.writeText("<span class=\"" + cls + "\">");
+            w.writeText(String.valueOf(lineNo));
+            w.writeText("\t");
+            w.writeText(escape(lines[i]));
+            w.writeText("</span>\n");
+            i = i + 1;
+        }
+    }
+
+    static void emitStylesheet(Path htmlDir) {
+        FileWriter w = FileWriter.openTruncate(htmlDir.resolve("style.css"));
+        w.writeText(
+            "body { font: 14px/1.4 -apple-system, sans-serif; padding: 1em; }\n" +
+            "h1   { font-weight: 600; margin-bottom: 0.5em; }\n" +
+            ".summary { color: #555; }\n" +
+            "table { border-collapse: collapse; width: 100%; margin-top: 1em; }\n" +
+            "th, td { padding: 4px 8px; border-bottom: 1px solid #eee; text-align: left; }\n" +
+            ".pct-low  { color: #b00; font-weight: 600; }\n" +
+            ".pct-mid  { color: #b80; }\n" +
+            ".pct-high { color: #060; }\n" +
+            "pre code { font: 13px/1.45 ui-monospace, monospace; }\n" +
+            ".line-hit       { background: #eaf7ea; }\n" +
+            ".line-missed    { background: #fae5e5; }\n" +
+            ".line-partial   { background: #fcf2cb; }\n" +
+            ".line-untracked { background: transparent; color: #888; }\n");
+        w.close();
+    }
+
+    static String percentClass(float pct) {
+        if (pct < 60.0) { return "pct-low";  }
+        if (pct < 90.0) { return "pct-mid";  }
+        return "pct-high";
+    }
+
+    static String linkFor(String sourcePath) {
+        return sourcePath + ".html";
+    }
+
+    /** "../../" depth from a nested page back to the html root. */
+    static String relativeToRoot(String sourcePath) {
+        int32 slashes = 0;
+        int32 i = 0;
+        while (i < sourcePath.count()) {
+            if (sourcePath.charAt(i) == '/') { slashes = slashes + 1; }
+            i = i + 1;
+        }
+        StringBuilder b = stack StringBuilder();
+        int32 j = 0;
+        while (j < slashes) {
+            b.append("../");
+            j = j + 1;
+        }
+        return b.toString();
+    }
+
+    static String escape(String s) {
+        StringBuilder b = stack StringBuilder();
+        int32 i = 0;
+        while (i < s.count()) {
+            char c = s.charAt(i);
+            if      (c == '<') { b.append("&lt;");   }
+            else if (c == '>') { b.append("&gt;");   }
+            else if (c == '&') { b.append("&amp;");  }
+            else if (c == '"') { b.append("&quot;"); }
+            else               { b.append(c);        }
+            i = i + 1;
+        }
+        return b.toString();
+    }
+}

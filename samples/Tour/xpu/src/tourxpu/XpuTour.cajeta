@@ -218,9 +218,9 @@ public final class XpuTour {
         uint32 i = Thread.globalIdX();
         if (i < n) {
             Vector<float32,3> x = new Vector<float32,3>(1.0f, 0.0f, 0.0f);
-            Quaternion<float32> qz90 = new Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);
+            Quaternion<float32> qz90 = heap Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);
             Vector<float32,3> rot = qz90 * x;                 // (0,1,0)
-            Quaternion<float32> q45 = new Quaternion<float32>(0.92387953f, 0.0f, 0.0f, 0.38268343f);
+            Quaternion<float32> q45 = heap Quaternion<float32>(0.92387953f, 0.0f, 0.0f, 0.38268343f);
             Quaternion<float32> comp = q45 * q45;             // == qz90
             Vector<float32,3> comprot = comp * x;             // (0,1,0)
             Quaternion<float32> qinv = qz90.conjugate();      // inverse rotation
@@ -448,8 +448,8 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- SAXPY: y = 2*x + y, x[i]=i, y[i]=1 --");
         uint32 n = 256;
-        float32[] hx = new float32[n];
-        float32[] hy = new float32[n];
+        float32[] hx = heap float32[n];
+        float32[] hy = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) {
             hx[i] = (float32) i;
             hy[i] = 1.0f;
@@ -480,9 +480,9 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- vecAdd: c = a + b, a[i]=i, b[i]=2*i --");
         uint32 n = 256;
-        float32[] ha = new float32[n];
-        float32[] hb = new float32[n];
-        float32[] hc = new float32[n];
+        float32[] ha = heap float32[n];
+        float32[] hb = heap float32[n];
+        float32[] hc = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) {
             ha[i] = (float32) i;
             hb[i] = (float32) (2 * i);
@@ -519,10 +519,10 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- transform: out = M*p + t, M=rot90, p[i]=(i,1), t=(100,200) --");
         uint32 n = 256;
-        float32[] hpx = new float32[n];
-        float32[] hpy = new float32[n];
-        float32[] hox = new float32[n];
-        float32[] hoy = new float32[n];
+        float32[] hpx = heap float32[n];
+        float32[] hpy = heap float32[n];
+        float32[] hox = heap float32[n];
+        float32[] hoy = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) {
             hpx[i] = (float32) i;
             hpy[i] = 1.0f;
@@ -559,8 +559,8 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- mask/select: branchless per-lane conditionals --");
         uint32 n = 256;
-        float32[] hrelu = new float32[n];
-        float32[] hprune = new float32[n];
+        float32[] hrelu = heap float32[n];
+        float32[] hprune = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hrelu[i] = 0.0f; hprune[i] = 0.0f; }
         Buffer<float32> relu = stack Buffer<float32>(n);
         Buffer<float32> prune = stack Buffer<float32>(n);
@@ -587,7 +587,7 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- DP4a: int8/uint8 dot product (quantized inner product) --");
         uint32 n = 256;
-        int32[] hout = new int32[n];
+        int32[] hout = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         Buffer<int32> out = stack Buffer<int32>(n);
         out.upload(hout);
@@ -607,9 +607,9 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- float atomics: lock-free parallel reduction --");
         uint32 n = 256;
-        float32[] hin = new float32[n];
+        float32[] hin = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (float32) i; }
-        float32[] hout = new float32[3];
+        float32[] hout = heap float32[3];
         hout[0] = 0.0f; hout[1] = 0.0f; hout[2] = 1.0e9f;
         Buffer<float32> in = stack Buffer<float32>(n);
         Buffer<float32> out = stack Buffer<float32>(3);
@@ -633,9 +633,9 @@ public final class XpuTour {
         System.stdout.println("-- integer atomics: lock-free histogram --");
         uint32 n = 256;
         uint32 nb = 8;
-        uint32[] hdata = new uint32[n];
+        uint32[] hdata = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hdata[i] = i % nb; }
-        uint32[] hbins = new uint32[nb];
+        uint32[] hbins = heap uint32[nb];
         for (uint32 i = 0; i < nb; i = i + 1) { hbins[i] = 0; }
         Buffer<uint32> data = stack Buffer<uint32>(n);
         Buffer<uint32> bins = stack Buffer<uint32>(nb);
@@ -660,7 +660,7 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- shader clock: in-kernel timing (device cycles) --");
         uint32 n = 256;
-        uint64[] hout = new uint64[n];
+        uint64[] hout = heap uint64[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         Buffer<uint64> out = stack Buffer<uint64>(n);
         out.upload(hout);
@@ -679,7 +679,7 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- bit ops: reverse / popcount / rotate (per invocation) --");
         uint32 n = 256;
-        uint32[] hout = new uint32[n];
+        uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         Buffer<uint32> out = stack Buffer<uint32>(n);
         out.upload(hout);
@@ -698,8 +698,8 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- transforms: quaternions + determinant/inverse --");
         uint32 n = 256;
-        float32[] hq = new float32[n];
-        float32[] hl = new float32[n];
+        float32[] hq = heap float32[n];
+        float32[] hl = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hq[i] = 0.0f; hl[i] = 0.0f; }
         Buffer<float32> q = stack Buffer<float32>(n);
         Buffer<float32> l = stack Buffer<float32>(n);
@@ -723,9 +723,9 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- precision & dtypes: @FastMath / vectorized math / fp16+bf16 --");
         uint32 n = 256;
-        float32[] hf = new float32[n];
-        float32[] hv = new float32[n];
-        float32[] hd = new float32[n];
+        float32[] hf = heap float32[n];
+        float32[] hv = heap float32[n];
+        float32[] hd = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hf[i] = 0.0f; hv[i] = 0.0f; hd[i] = 0.0f; }
         Buffer<float32> f = stack Buffer<float32>(n);
         Buffer<float32> v = stack Buffer<float32>(n);
@@ -757,9 +757,9 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- coopGemm: 16x16x16 tile matmul on the matrix cores --");
         uint32 tile = 256;                         // 16 x 16
-        float16[] ha = new float16[tile];
-        float16[] hb = new float16[tile];
-        float32[] hc = new float32[tile];
+        float16[] ha = heap float16[tile];
+        float16[] hb = heap float16[tile];
+        float32[] hc = heap float32[tile];
         for (uint32 i = 0; i < tile; i = i + 1) {
             ha[i] = 1.0f;
             hb[i] = 1.0f;
@@ -784,7 +784,7 @@ public final class XpuTour {
 
         // Same matmul, but staged through LDS (CoopStage.panel + load(Shared)).
         // Identical result — it exercises the workgroup-shared staging path.
-        float32[] hcs = new float32[tile];
+        float32[] hcs = heap float32[tile];
         for (uint32 i = 0; i < tile; i = i + 1) { hcs[i] = 0.0f; }
         Buffer<float32> cs = stack Buffer<float32>(tile);
         cs.upload(hcs);
@@ -800,8 +800,8 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- waveReduce: sum across each wave, in[i]=1 --");
         uint32 n = 256;
-        uint32[] hin = new uint32[n];
-        uint32[] hsums = new uint32[n];
+        uint32[] hin = heap uint32[n];
+        uint32[] hsums = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hsums[i] = 0; }
         Buffer<uint32> in = stack Buffer<uint32>(n);
         Buffer<uint32> sums = stack Buffer<uint32>(n);
@@ -826,7 +826,7 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- waveRotate: rotate laneId by 1 across the wave --");
         uint32 n = 256;
-        uint32[] hout = new uint32[n];
+        uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         Buffer<uint32> out = stack Buffer<uint32>(n);
         out.upload(hout);
@@ -846,7 +846,7 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- waveReduceOps: max/min/and/or/xor across the wave --");
         uint32 n = 256;
-        uint32[] hout = new uint32[5 * n];
+        uint32[] hout = heap uint32[5 * n];
         for (uint32 i = 0; i < 5 * n; i = i + 1) { hout[i] = 0; }
         Buffer<uint32> out = stack Buffer<uint32>(5 * n);
         out.upload(hout);
@@ -869,7 +869,7 @@ public final class XpuTour {
         System.stdout.println("");
         System.stdout.println("-- wavePrefix: exclusive prefix sum of 1 across the wave --");
         uint32 n = 256;
-        uint32[] hout = new uint32[n];
+        uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         Buffer<uint32> out = stack Buffer<uint32>(n);
         out.upload(hout);

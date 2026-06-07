@@ -12,6 +12,7 @@
 #include "cajeta/type/CajetaQuaternion.h"
 #include "cajeta/type/QuaternionOps.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaTask.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
@@ -21,8 +22,10 @@
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
+#include "NewExpression.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
+#include "cajeta/field/ParameterField.h"
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Intrinsics.h>
 
@@ -170,6 +173,10 @@ namespace cajeta {
                 if (ctxParameterEntry->parameterLabel()) {
                     entry.label = ctxParameterEntry->parameterLabel()->getText();
                 }
+                // Caller-side `#x` transfer (Phase 1 of #68).
+                if (ctxParameterEntry->REFERENCE()) {
+                    entry.callerTransferred = true;
+                }
                 parameters.push_back(entry);
             }
         }
@@ -265,7 +272,22 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         auto& llvmCtx = *module->getLlvmContext();
         llvm::Value* v = argNode->generateCode(module);
-        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+        auto argExpr = std::dynamic_pointer_cast<Expression>(argNode);
+        CajetaTypePtr argTy = argExpr ? argExpr->getResolvedType() : nullptr;
+        if (!argTy && argExpr) {
+            argExpr->resolveTypes(module);
+            argTy = argExpr->getResolvedType();
+        }
+        // Load through l-values to the r-value: a String passed as a local
+        // (alloca), an array element (`args[i]` — an ArrayIndex GEP whose slot
+        // holds the heap `String*`), or a class field (a DotExpression GEP)
+        // must become the heap String pointer, not the slot address.
+        // loadIfLValue uses the AST's resolved type to load reference elements
+        // as `ptr`; it leaves literal globals / r-values untouched. (The old
+        // alloca-only load mishandled array elements and fields.)
+        if (argExpr) {
+            v = loadIfLValue(module, v, argExpr);
+        } else if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(a->getAllocatedType(), a);
         }
         // Post Phase 2b-β: a "String" arg is now a class
@@ -278,12 +300,6 @@ namespace cajeta {
         // pointer, then GEP past its 8-byte count to land on the
         // first data byte. The literal codegen guarantees null
         // termination so any strlen-reader sees the right end.
-        auto argExpr = std::dynamic_pointer_cast<Expression>(argNode);
-        CajetaTypePtr argTy = argExpr ? argExpr->getResolvedType() : nullptr;
-        if (!argTy && argExpr) {
-            argExpr->resolveTypes(module);
-            argTy = argExpr->getResolvedType();
-        }
         if (argTy) {
             auto cls = std::dynamic_pointer_cast<CajetaClass>(argTy);
             if (cls && cls->getQName()
@@ -498,8 +514,25 @@ namespace cajeta {
                     llvm::Value* captures = builder->CreateLoad(
                         ptrTy, capSlot, "captures_ptr");
 
+                    // M5(b) — sret form: caller allocates the result slot
+                    // in its own frame and threads it as the closure's
+                    // hidden arg 0. The call returns void; MCE's value is
+                    // the slot pointer (callers chain into it like any
+                    // class instance pointer).
+                    llvm::Value* sretSlot = nullptr;
+                    auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+                    if (fnType->usesSret() && retClass) {
+                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                        llvm::IRBuilder<> entryBuilder(
+                            &curFn->getEntryBlock(),
+                            curFn->getEntryBlock().begin());
+                        sretSlot = entryBuilder.CreateAlloca(
+                            retClass->getLlvmType(), nullptr, "fn_sret");
+                    }
                     vector<llvm::Value*> args;
-                    args.push_back(captures);  // implicit first arg per L2 ABI
+                    if (sretSlot) args.push_back(sretSlot);
+                    args.push_back(captures);  // implicit captures arg per L2 ABI
+                    size_t baseIdx = sretSlot ? 2 : 1;
                     llvm::FunctionType* sig = fnType->getLlvmFunctionType();
                     for (size_t i = 0; i < parameters.size(); ++i) {
                         if (parameters[i].expression
@@ -518,9 +551,9 @@ namespace cajeta {
                         v = loadIfLValue(module, v, exprAst);
                         // Width-coerce to the function signature's expected
                         // param type (matches the coercion invokeMethod does
-                        // for ordinary calls). Signature index is i + 1 to
-                        // skip the captures slot.
-                        size_t sigIdx = i + 1;
+                        // for ordinary calls). Signature index is baseIdx + i
+                        // (sret-shifted when applicable).
+                        size_t sigIdx = baseIdx + i;
                         if (sig && sigIdx < sig->getNumParams() && v
                                 && v->getType() != sig->getParamType(sigIdx)) {
                             llvm::Type* expected = sig->getParamType(sigIdx);
@@ -533,7 +566,19 @@ namespace cajeta {
                         }
                         args.push_back(v);
                     }
-                    return builder->CreateCall(sig, callee, args);
+                    llvm::CallInst* call = builder->CreateCall(sig, callee, args);
+                    if (sretSlot && retClass) {
+                        call->addParamAttr(0, llvm::Attribute::get(
+                            llvmCtx, llvm::Attribute::StructRet,
+                            retClass->getLlvmType()));
+                        // Pin resolvedType so chained `.field` / `.method()`
+                        // see the value-typed result the sret slot holds.
+                        if (fnType->getReturnType()) {
+                            resolvedType = fnType->getReturnType();
+                        }
+                        return sretSlot;
+                    }
+                    return call;
                 }
             }
         }
@@ -683,6 +728,31 @@ namespace cajeta {
                         builder->SetInsertPoint(okBB2);
                         offset = afterField;
                         diagIdx++;
+                    }
+                }
+
+                // Caller-side `#bytes` transfer (Phase 1 of #68). The
+                // inline view-construction path returns before the
+                // general transfer block below, so handle the
+                // caller-side acknowledgement here. The owning-vs-borrow
+                // view distinction itself is decided downstream by
+                // LocalVariableDeclaration (which also reads
+                // callerTransferred); this block just deactivates the
+                // bytes local's drop entry when the caller wrote `#`.
+                if (parameters[0].callerTransferred) {
+                    if (auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                            parameters[0].expression)) {
+                        if (auto scope = module->getScopeStack().peek()) {
+                            FieldPtr field = scope->getField(idExpr->getTextValue());
+                            if (field) {
+                                if (llvm::Value* entry = field->getDropEntry()) {
+                                    if (llvm::Function* mark = module->getRuntimeFunction(
+                                            "__cajeta_drop_mark_inactive")) {
+                                        builder->CreateCall(mark, {entry});
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1408,6 +1478,323 @@ namespace cajeta {
             }
         }
 
+        // ----- TcpStream.connect / TcpListener.bind static intrinsic (NET-1.3 / NET-1.4 / b1) -----
+        //
+        // Mirrors the File.<static> lowering above. We detect the receiver
+        // identifier ("TcpStream" / "TcpListener") resolving to the canonical
+        // class, pack the SocketAddress arg into a sockaddr scratch buffer via
+        // __cajeta_net_sockaddr_pack, run the socket()+connect()/bind()+listen()
+        // syscall sequence, and (on success) malloc + initialize the returned
+        // object exactly the way File.open allocates+returns its handle.
+        //
+        // SocketAddress layout: { vtable@0, ip@1 (IpAddress*), port@2 (i32) }.
+        // IpAddress layout:     { vtable@0, family@1 (i32 ordinal), octets@2 (int8[]*) }.
+        // The family ordinal (0=V4,1=V6) is the cajeta-portable value the pack
+        // intrinsic switches on; the native socket() family is selected here
+        // (AF_INET=2 everywhere; AF_INET6=23 on Windows — b1 exercises V4).
+        if (!children.empty()) {
+            auto netId = dynamic_pointer_cast<IdentifierExpression>(children[0]);
+            std::string netName = netId ? netId->getTextValue() : "";
+            bool wantStream   = (netName == "TcpStream");
+            bool wantListener = (netName == "TcpListener");
+            // ----- UdpSocket / socket-option intrinsic (b2) -----
+            // UdpSocket.bind reuses the b1 connect/bind static path: same
+            // sockaddr_pack + socket + bind sequence, but SOCK_DGRAM (no
+            // listen, no reuseaddr).
+            bool wantUdp      = (netName == "UdpSocket");
+            if (wantStream || wantListener || wantUdp) {
+                auto& cmapN = CajetaType::getCanonicalMap();
+                std::string canonKey = wantStream ? "cajeta.net.TcpStream"
+                                     : wantListener ? "cajeta.net.TcpListener"
+                                                    : "cajeta.net.UdpSocket";
+                auto itN = cmapN.find(netName);
+                if (itN == cmapN.end()) itN = cmapN.find(canonKey);
+                CajetaClassPtr netCls;
+                if (itN != cmapN.end()) {
+                    netCls = std::dynamic_pointer_cast<CajetaClass>(itN->second);
+                }
+                bool isOurNet = netCls && netCls->getQName()
+                    && netCls->getQName()->toCanonical() == canonKey;
+                bool isConnect = wantStream && methodCallName == "connect"
+                                 && parameters.size() == 1;
+                // NET-3.3 connectAsync: same sockaddr_pack + socket prologue as
+                // the blocking connect, but the socket is made non-blocking and
+                // an in-progress connect parks the fiber on the reactor's
+                // writable readiness, then reads SO_ERROR — a distinct control
+                // shape lowered below.
+                bool isConnectAsync = wantStream && methodCallName == "connectAsync"
+                                 && parameters.size() == 1;
+                bool isBind    = wantListener && methodCallName == "bind"
+                                 && parameters.size() == 1;
+                bool isUdpBind = wantUdp && methodCallName == "bind"
+                                 && parameters.size() == 1;
+                if (isOurNet && (isConnect || isConnectAsync || isBind || isUdpBind)) {
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                    llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+
+                    llvm::Function* sockFn = module->getRuntimeFunction("__cajeta_net_socket");
+                    llvm::Function* packFn = module->getRuntimeFunction("__cajeta_net_sockaddr_pack");
+                    llvm::Function* connFn = module->getRuntimeFunction("__cajeta_net_connect");
+                    llvm::Function* bindFn = module->getRuntimeFunction("__cajeta_net_bind");
+                    llvm::Function* listenFn = module->getRuntimeFunction("__cajeta_net_listen");
+                    llvm::Function* reuseFn = module->getRuntimeFunction("__cajeta_net_set_reuseaddr");
+                    llvm::Function* closeFn = module->getRuntimeFunction("__cajeta_net_close");
+                    llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+                    // connectAsync (NET-3.3) intrinsics: toggle non-blocking,
+                    // classify the in-progress connect, park on writability,
+                    // and read the SO_ERROR outcome.
+                    llvm::Function* setNbFn   = module->getRuntimeFunction("__cajeta_net_set_nonblocking");
+                    llvm::Function* inProgFn  = module->getRuntimeFunction("__cajeta_net_is_in_progress");
+                    llvm::Function* awaitWrFn = module->getRuntimeFunction("__cajeta_net_await_writable");
+                    llvm::Function* connResFn = module->getRuntimeFunction("__cajeta_net_connect_result");
+
+                    // Resolve the SocketAddress / IpAddress llvm struct types
+                    // so we can GEP the ip / family / octets / port fields.
+                    CajetaClassPtr saCls;
+                    CajetaClassPtr ipCls;
+                    {
+                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
+                        if (sIt != cmapN.end())
+                            saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
+                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
+                        if (iIt != cmapN.end())
+                            ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
+                    }
+
+                    if (sockFn && packFn
+                            && (isConnect ? (connFn != nullptr)
+                                : isConnectAsync ? (connFn && setNbFn && inProgFn
+                                                    && awaitWrFn && connResFn)
+                                : isUdpBind ? (bindFn != nullptr)
+                                            : (bindFn && listenFn))
+                            && saCls && ipCls
+                            && llvm::isa<llvm::StructType>(saCls->getLlvmType())
+                            && llvm::isa<llvm::StructType>(ipCls->getLlvmType())) {
+                        auto* saTy = llvm::cast<llvm::StructType>(saCls->getLlvmType());
+                        auto* ipTy = llvm::cast<llvm::StructType>(ipCls->getLlvmType());
+
+                        // Generate the SocketAddress arg pointer.
+                        llvm::Value* sa = parameters[0].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(sa)) {
+                            sa = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        // ip = sa.ip (field 1); port = sa.port (field 2).
+                        llvm::Value* ipSlot = builder->CreateStructGEP(saTy, sa, 1, "na.ip_slot");
+                        llvm::Value* ip = builder->CreateLoad(ptrTy, ipSlot, "na.ip");
+                        llvm::Value* portSlot = builder->CreateStructGEP(saTy, sa, 2, "na.port_slot");
+                        llvm::Value* port = builder->CreateLoad(i32Ty, portSlot, "na.port");
+                        // family = ip.family (field 1, i32 ordinal); octets = ip.octets (field 2).
+                        llvm::Value* famSlot = builder->CreateStructGEP(ipTy, ip, 1, "na.fam_slot");
+                        llvm::Value* family = builder->CreateLoad(i32Ty, famSlot, "na.family");
+                        llvm::Value* octSlot = builder->CreateStructGEP(ipTy, ip, 2, "na.oct_slot");
+                        llvm::Value* octArr = builder->CreateLoad(ptrTy, octSlot, "na.octets_arr");
+                        llvm::Value* octData = builder->CreateInBoundsGEP(
+                            i8Ty, octArr, llvm::ConstantInt::get(i64Ty, 8), "na.octets");
+
+                        // Pack into a sockaddr scratch buffer.
+                        llvm::Value* scratch = builder->CreateAlloca(
+                            llvm::ArrayType::get(i8Ty, 128), nullptr, "na.scratch");
+                        llvm::Value* addrlen = builder->CreateCall(packFn,
+                            {family, octData, port, scratch,
+                             llvm::ConstantInt::get(i32Ty, 128)}, "na.addrlen");
+
+                        // Native socket() family: AF_INET(2) for V4, AF_INET6
+                        // (23 on Windows) for V6. SOCK_STREAM(1), proto 0.
+                        llvm::Value* isV4 = builder->CreateICmpEQ(family,
+                            llvm::ConstantInt::get(i32Ty, 0), "na.isV4");
+                        llvm::Value* nativeFamily = builder->CreateSelect(isV4,
+                            llvm::ConstantInt::get(i32Ty, 2),
+                            llvm::ConstantInt::get(i32Ty, 23), "na.nativeFamily");
+                        // SOCK_STREAM(1) for TCP, SOCK_DGRAM(2) for UDP — the
+                        // portable values __cajeta_net_socket maps. (b2)
+                        int32_t sockType = isUdpBind ? 2 : 1;
+                        llvm::Value* fd = builder->CreateCall(sockFn,
+                            {nativeFamily, llvm::ConstantInt::get(i32Ty, sockType),
+                             llvm::ConstantInt::get(i32Ty, 0)}, "na.fd");
+
+                        // Failure-sentinel check helper: if `cond` is true, throw
+                        // an informational tag and unreachable.
+                        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                        auto throwIf = [&](llvm::Value* cond, uint64_t tag,
+                                           llvm::Value* fdToClose) {
+                            llvm::BasicBlock* failBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.fail", parentFn);
+                            llvm::BasicBlock* okBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.ok", parentFn);
+                            builder->CreateCondBr(cond, failBB, okBB);
+                            builder->SetInsertPoint(failBB);
+                            if (fdToClose && closeFn) {
+                                builder->CreateCall(closeFn, {fdToClose});
+                            }
+                            if (throwFn) {
+                                llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                    llvm::ConstantInt::get(i64Ty, tag), ptrTy);
+                                builder->CreateCall(throwFn, {tagPtr});
+                            }
+                            builder->CreateUnreachable();
+                            builder->SetInsertPoint(okBB);
+                        };
+
+                        // sockaddr_pack failure: addrlen <= 0.
+                        throwIf(builder->CreateICmpSLE(addrlen,
+                            llvm::ConstantInt::get(i32Ty, 0)), 0x100, nullptr);
+
+                        // socket() failure: fd < 0.
+                        // NOTE (b1): the failure path throws a small integer
+                        // sentinel (< the zero-page boundary __cajeta_throw
+                        // guards on), so an uncaught socket failure exits
+                        // cleanly (exit 1) rather than dereferencing a bogus
+                        // pointer. Constructing a proper NetException subtype
+                        // (so callers can `catch (NetException)`) is a later
+                        // increment; b1's success path is what the loopback
+                        // echo exercises.
+                        throwIf(builder->CreateICmpSLT(fd,
+                            llvm::ConstantInt::get(i32Ty, 0)), 0x101, nullptr);
+
+                        if (isConnect) {
+                            llvm::Value* rc = builder->CreateCall(connFn,
+                                {fd, scratch, addrlen}, "na.connect_rc");
+                            // connect failure: rc != 0 → close fd then throw.
+                            throwIf(builder->CreateICmpNE(rc,
+                                llvm::ConstantInt::get(i32Ty, 0)), 0x102, fd);
+                        } else if (isConnectAsync) {
+                            // ----- non-blocking connect (NET-3.3 connectAsync) -----
+                            // Mirrors the C dance documented above
+                            // __cajeta_net_connect: make the socket non-blocking,
+                            // issue connect; rc==0 means it completed immediately
+                            // (loopback usually does). Otherwise distinguish the
+                            // in-progress case (EINPROGRESS / WSAEWOULDBLOCK) — for
+                            // which we park the fiber on reactor writability then
+                            // read SO_ERROR — from a hard connect failure.
+                            // is_in_progress() reads the errno set by connect, so
+                            // nothing may syscall between the two calls (only the
+                            // icmp/branch below).
+                            builder->CreateCall(setNbFn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 1)});
+                            llvm::Value* rc = builder->CreateCall(connFn,
+                                {fd, scratch, addrlen}, "na.aconnect_rc");
+                            llvm::Value* immediate = builder->CreateICmpEQ(rc,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_now");
+                            llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_done", parentFn);
+                            llvm::BasicBlock* pendingBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_pending", parentFn);
+                            builder->CreateCondBr(immediate, doneBB, pendingBB);
+
+                            // pending: connect returned -1; is it in-flight or a
+                            // hard error?
+                            builder->SetInsertPoint(pendingBB);
+                            llvm::Value* inProg = builder->CreateCall(inProgFn,
+                                {}, "na.aconnect_inprog");
+                            llvm::Value* isInProg = builder->CreateICmpNE(inProg,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_isinprog");
+                            llvm::BasicBlock* awaitBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_await", parentFn);
+                            llvm::BasicBlock* hardFailBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_hardfail", parentFn);
+                            builder->CreateCondBr(isInProg, awaitBB, hardFailBB);
+
+                            // hard connect failure (e.g. ECONNREFUSED returned
+                            // synchronously): close + throw.
+                            builder->SetInsertPoint(hardFailBB);
+                            if (closeFn) builder->CreateCall(closeFn, {fd});
+                            if (throwFn) {
+                                llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                    llvm::ConstantInt::get(i64Ty, 0x106), ptrTy);
+                                builder->CreateCall(throwFn, {tagPtr});
+                            }
+                            builder->CreateUnreachable();
+
+                            // in-progress: park the fiber until the socket is
+                            // writable, then read SO_ERROR to learn the outcome.
+                            builder->SetInsertPoint(awaitBB);
+                            builder->CreateCall(awaitWrFn, {fd});
+                            llvm::Value* soerr = builder->CreateCall(connResFn,
+                                {fd}, "na.aconnect_soerr");
+                            llvm::Value* soOk = builder->CreateICmpEQ(soerr,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_sook");
+                            llvm::BasicBlock* soFailBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_sofail", parentFn);
+                            builder->CreateCondBr(soOk, doneBB, soFailBB);
+
+                            // SO_ERROR != 0 → the connect failed after readiness.
+                            builder->SetInsertPoint(soFailBB);
+                            if (closeFn) builder->CreateCall(closeFn, {fd});
+                            if (throwFn) {
+                                llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                    llvm::ConstantInt::get(i64Ty, 0x107), ptrTy);
+                                builder->CreateCall(throwFn, {tagPtr});
+                            }
+                            builder->CreateUnreachable();
+
+                            // converge: the socket is connected (non-blocking).
+                            // Fall through to the shared wrap code below.
+                            builder->SetInsertPoint(doneBB);
+                        } else if (isUdpBind) {
+                            // ----- UdpSocket.bind (b2): bind only, no listen.
+                            // SO_REUSEADDR best-effort (multicast group sharing).
+                            if (reuseFn) {
+                                builder->CreateCall(reuseFn,
+                                    {fd, llvm::ConstantInt::get(i32Ty, 1)});
+                            }
+                            llvm::Value* brc = builder->CreateCall(bindFn,
+                                {fd, scratch, addrlen}, "na.udp_bind_rc");
+                            throwIf(builder->CreateICmpNE(brc,
+                                llvm::ConstantInt::get(i32Ty, 0)), 0x105, fd);
+                        } else {
+                            // bind: set SO_REUSEADDR (best-effort), bind, listen.
+                            if (reuseFn) {
+                                builder->CreateCall(reuseFn,
+                                    {fd, llvm::ConstantInt::get(i32Ty, 1)});
+                            }
+                            llvm::Value* brc = builder->CreateCall(bindFn,
+                                {fd, scratch, addrlen}, "na.bind_rc");
+                            throwIf(builder->CreateICmpNE(brc,
+                                llvm::ConstantInt::get(i32Ty, 0)), 0x103, fd);
+                            llvm::Value* lrc = builder->CreateCall(listenFn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 128)}, "na.listen_rc");
+                            throwIf(builder->CreateICmpNE(lrc,
+                                llvm::ConstantInt::get(i32Ty, 0)), 0x104, fd);
+                        }
+
+                        // Allocate + init the returned TcpStream / TcpListener
+                        // wrapping `fd` (mirror File.open's malloc+memset+vtable+fd).
+                        if (netCls->getLlvmType()
+                                && llvm::isa<llvm::StructType>(netCls->getLlvmType())) {
+                            auto* outTy = llvm::cast<llvm::StructType>(netCls->getLlvmType());
+                            const llvm::DataLayout& dl =
+                                module->getLlvmModule()->getDataLayout();
+                            llvm::Constant* size = llvm::ConstantInt::get(
+                                i64Ty, dl.getTypeAllocSize(outTy));
+                            llvm::Value* inst = MemoryManager::createMallocInstruction(
+                                module, size, builder->GetInsertBlock());
+                            builder->CreateMemSet(inst,
+                                llvm::ConstantInt::get(i8Ty, 0),
+                                size, llvm::MaybeAlign(8));
+                            llvm::Constant* vtableRef =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            if (auto* vt = netCls->getVirtualTableGlobal()) {
+                                vtableRef = CajetaModule::ensureGlobalInModule(
+                                    module->getLlvmModule(), vt);
+                            }
+                            builder->CreateStore(vtableRef,
+                                builder->CreateStructGEP(outTy, inst, 0, "na.vtable_slot"));
+                            // fd at field index 1.
+                            builder->CreateStore(fd,
+                                builder->CreateStructGEP(outTy, inst, 1, "na.fd_slot"));
+                            resolvedType = netCls;
+                            return inst;
+                        }
+                    }
+                }
+            }
+        }
+
         // ----- Math.<fn>(...) intrinsic -----
         // Math acts as a static-only namespace today (no instance, no class file). We
         // recognize the literal identifier `Math` as receiver and lower each call to a
@@ -1634,6 +2021,398 @@ namespace cajeta {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_destroy");
                     llvm::Value* h = loadValue(0);
                     return builder->CreateCall(fn, {h});
+                }
+                // Condition-variable intrinsics (R7-B). Fiber-aware, paired
+                // with a lock handle; `Mutex<T>.withLockWhen` builds on them.
+                // condvarWait(cv, lock) atomically releases `lock`, parks the
+                // fiber (or cond_waits on the main thread), and reacquires
+                // `lock` on wake. condvarNotifyAll wakes every waiter (which
+                // re-checks its own predicate). See cajeta-docs/stdlib/Thread.md.
+                if (ns == "Cajeta" && methodCallName == "condvarNew" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_new");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarWait" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_wait");
+                    llvm::Value* cv = loadValue(0);
+                    llvm::Value* lock = loadValue(1);
+                    return builder->CreateCall(fn, {cv, lock});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarNotifyAll" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_notify_all");
+                    llvm::Value* cv = loadValue(0);
+                    return builder->CreateCall(fn, {cv});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarDestroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_destroy");
+                    llvm::Value* cv = loadValue(0);
+                    return builder->CreateCall(fn, {cv});
+                }
+                // Reader-writer lock intrinsics (R7-D). Fiber-aware; back
+                // `RwLock<T>`. Many readers share; a writer is exclusive.
+                if (ns == "Cajeta" && methodCallName == "rwlockNew" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_new");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockRdlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_rdlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockWrlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_wrlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockRdunlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_rdunlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockWrunlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_wrunlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockDestroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                // Atomic<T> intrinsics (R8 Slice 1). The new/destroy pair is
+                // a small runtime helper (malloc/free of the underlying
+                // word). The load/store/fetch_add/compareAndSet are emitted
+                // INLINE as LLVM atomic instructions — a runtime-call would
+                // defeat atomicity's whole purpose and block the optimizer
+                // from reasoning about ordering. All seq_cst for v1;
+                // memory-order parameterization is R8 Slice 1b.
+                // See cajeta-docs/stdlib/Thread.md and the AtomicInt32 /
+                // AtomicInt64 wrapper classes in cajeta.threading.
+                if (ns == "Cajeta" && methodCallName == "atomicI32New" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_new");
+                    llvm::Value* v = loadValue(0);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    return builder->CreateCall(fn, {v});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Destroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Load" && parameters.size() == 1) {
+                    auto* load = builder->CreateLoad(i32Ty, loadValue(0), "atomic.i32.load");
+                    load->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    load->setAlignment(llvm::Align(4));
+                    return load;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Store" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    store->setAlignment(llvm::Align(4));
+                    return store;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32FetchAdd" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(4),
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32CompareAndSet"
+                        && parameters.size() == 3) {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != i32Ty) expected = builder->CreateIntCast(expected, i32Ty, true);
+                    if (desired->getType() != i32Ty) desired = builder->CreateIntCast(desired, i32Ty, true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(4),
+                        llvm::AtomicOrdering::SequentiallyConsistent,
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                    // The cmpxchg result is `{ T old, i1 success }`; we
+                    // surface the boolean success flag (matches Java's
+                    // compareAndSet shape).
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64New" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i64_new");
+                    llvm::Value* v = loadValue(0);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    return builder->CreateCall(fn, {v});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Destroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i64_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Load" && parameters.size() == 1) {
+                    auto* load = builder->CreateLoad(i64Ty, loadValue(0), "atomic.i64.load");
+                    load->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    load->setAlignment(llvm::Align(8));
+                    return load;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Store" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    store->setAlignment(llvm::Align(8));
+                    return store;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64FetchAdd" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(8),
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64CompareAndSet"
+                        && parameters.size() == 3) {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != i64Ty) expected = builder->CreateIntCast(expected, i64Ty, true);
+                    if (desired->getType() != i64Ty) desired = builder->CreateIntCast(desired, i64Ty, true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(8),
+                        llvm::AtomicOrdering::SequentiallyConsistent,
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                }
+                // Fixed-ordering atomic intrinsics (R8.1b). LLVM atomic IR
+                // bakes the ordering at instruction construction; a runtime-
+                // variable ordering would force a per-op switch (collapsed
+                // only via the inliner, perf-unpredictable at -O0). So each
+                // (op, ordering) combo is its own intrinsic + class method,
+                // matching the named-method approach in cajeta.threading.
+                // AtomicInt32 / AtomicInt64. The orderings shipped now are
+                // the ones the work-stealing deque (R8.2) needs; add more
+                // when a concrete consumer surfaces.
+                //
+                // Pattern below: small lambda factories for the four atomic
+                // shapes (load / store / fetchAdd / casExpectedOK) keyed on
+                // type width + ordering; each named intrinsic delegates to
+                // them with its fixed ordering.
+                auto atomicLoadOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                          llvm::AtomicOrdering ord,
+                                          const char* nameHint) -> llvm::Value* {
+                    auto* load = builder->CreateLoad(ty, loadValue(0), nameHint);
+                    load->setAtomic(ord);
+                    load->setAlignment(llvm::Align(alignBytes));
+                    return load;
+                };
+                auto atomicStoreOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                           llvm::AtomicOrdering ord) -> llvm::Value* {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != ty) v = builder->CreateIntCast(v, ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(ord);
+                    store->setAlignment(llvm::Align(alignBytes));
+                    return store;
+                };
+                auto atomicFetchAddOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                              llvm::AtomicOrdering ord) -> llvm::Value* {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != ty) v = builder->CreateIntCast(v, ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(alignBytes), ord);
+                };
+                auto atomicCasOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                         llvm::AtomicOrdering succ,
+                                         llvm::AtomicOrdering fail) -> llvm::Value* {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != ty) expected = builder->CreateIntCast(expected, ty, /*isSigned=*/true);
+                    if (desired->getType() != ty) desired = builder->CreateIntCast(desired, ty, /*isSigned=*/true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(alignBytes), succ, fail);
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                };
+                // ---- i32 ----
+                if (ns == "Cajeta" && methodCallName == "atomicI32LoadRelaxed" && parameters.size() == 1) {
+                    return atomicLoadOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic, "atomic.i32.load.rlx");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32LoadAcquire" && parameters.size() == 1) {
+                    return atomicLoadOrd(i32Ty, 4, llvm::AtomicOrdering::Acquire, "atomic.i32.load.acq");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32StoreRelaxed" && parameters.size() == 2) {
+                    return atomicStoreOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32StoreRelease" && parameters.size() == 2) {
+                    return atomicStoreOrd(i32Ty, 4, llvm::AtomicOrdering::Release);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32FetchAddRelaxed" && parameters.size() == 2) {
+                    return atomicFetchAddOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32CompareAndSetAcquire" && parameters.size() == 3) {
+                    return atomicCasOrd(i32Ty, 4,
+                        llvm::AtomicOrdering::Acquire,
+                        llvm::AtomicOrdering::Acquire);
+                }
+                // ---- i64 ----
+                if (ns == "Cajeta" && methodCallName == "atomicI64LoadRelaxed" && parameters.size() == 1) {
+                    return atomicLoadOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic, "atomic.i64.load.rlx");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64LoadAcquire" && parameters.size() == 1) {
+                    return atomicLoadOrd(i64Ty, 8, llvm::AtomicOrdering::Acquire, "atomic.i64.load.acq");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64StoreRelaxed" && parameters.size() == 2) {
+                    return atomicStoreOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64StoreRelease" && parameters.size() == 2) {
+                    return atomicStoreOrd(i64Ty, 8, llvm::AtomicOrdering::Release);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64FetchAddRelaxed" && parameters.size() == 2) {
+                    return atomicFetchAddOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64CompareAndSetAcquire" && parameters.size() == 3) {
+                    return atomicCasOrd(i64Ty, 8,
+                        llvm::AtomicOrdering::Acquire,
+                        llvm::AtomicOrdering::Acquire);
+                }
+                // R9.1 — cooperative timeout. taskWaitTimeout(done_addr,
+                // deadline_ns) returns 1 if *done_addr flipped before the
+                // deadline, 0 if the deadline expired first. deadline_ns
+                // is a CLOCK_MONOTONIC absolute timestamp; compute one via
+                // currentTimeNanos() + a duration in nanos. See R9 plan
+                // and Thread.md § withTimeout for the eventual stdlib API.
+                if (ns == "Cajeta" && methodCallName == "taskWaitTimeout"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_task_wait_timeout");
+                    llvm::Value* doneAddr = loadValue(0);
+                    llvm::Value* deadline = loadValue(1);
+                    if (deadline->getType() != i64Ty) {
+                        deadline = builder->CreateIntCast(deadline, i64Ty, /*isSigned=*/true);
+                    }
+                    return builder->CreateCall(fn, {doneAddr, deadline});
+                }
+                if (ns == "Cajeta" && methodCallName == "currentTimeNanos"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_currentTimeNanos");
+                    return builder->CreateCall(fn, {});
+                }
+                // R9.3 — surface the Task<T>'s done-flag address as a raw
+                // pointer so user-level withTimeout (cajeta.threading.Tasks)
+                // can feed it to taskWaitTimeout. The Task is heap-allocated
+                // and the call arg is the pointer to it; we GEP at the
+                // DONE_FIELD_INDEX defined in CajetaTask.h. The argument
+                // type must resolve to a CajetaTask (Task<T>) — anything
+                // else is a compile error.
+                // R9.4 — I/O reactor surface. ioWait blocks the calling
+                // fiber (or main thread, via direct epoll_wait) until the
+                // requested event bitmask fires on fd. eventfd helpers
+                // and fdClose round out the minimal Linux fd surface used
+                // by R9.4's bring-up tests; they're documented as Linux-
+                // only (the runtime stubs them on macOS / Windows pending
+                // kqueue / IOCP).
+                if (ns == "Cajeta" && methodCallName == "ioWait"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_io_wait");
+                    llvm::Value* fdv = loadValue(0);
+                    llvm::Value* evv = loadValue(1);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    if (evv->getType() != i32Ty) evv = builder->CreateIntCast(evv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv, evv});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdCreate"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_create");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdSignal"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_signal");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdConsume"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_consume");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
+                if (ns == "Cajeta" && methodCallName == "fdClose"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fd_close");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
+                if (ns == "Cajeta" && methodCallName == "taskDonePointer"
+                        && parameters.size() == 1) {
+                    auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                    if (argExpr && !argExpr->getResolvedType()) {
+                        argExpr->resolveTypes(module);
+                    }
+                    auto argType = argExpr ? argExpr->getResolvedType() : nullptr;
+                    auto task = dynamic_pointer_cast<CajetaTask>(argType);
+                    if (!task) {
+                        throw Exception(
+                            "Cajeta.taskDonePointer requires a Task<T> argument",
+                            "CAJETA_ERROR_TYPE_MISMATCH");
+                    }
+                    llvm::Value* taskPtr = loadValue(0);
+                    return builder->CreateStructGEP(
+                        task->getLlvmType(), taskPtr,
+                        CajetaTask::DONE_FIELD_INDEX, "task_done_ptr");
+                }
+                // R5-C / R9.3 — cooperative task cancellation. Loads the
+                // task's fiber pointer and signals cancellation via
+                // __cajeta_fiber_cancel with a sentinel (void*)1 throwable.
+                // The body sees the cancellation at its next park/wake
+                // boundary (i.e., next await) — bodies without yield
+                // points run to completion regardless. The trampoline
+                // catches the cancellation throw and stores it on
+                // task->exception; a subsequent `await` will re-raise,
+                // letting callers wrap it in try/catch. Used by
+                // cajeta.threading.Tasks.withTimeout to terminate slow
+                // bodies on deadline rather than letting them run to
+                // natural completion.
+                if (ns == "Cajeta" && methodCallName == "taskCancel"
+                        && parameters.size() == 1) {
+                    auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                    if (argExpr && !argExpr->getResolvedType()) {
+                        argExpr->resolveTypes(module);
+                    }
+                    auto argType = argExpr ? argExpr->getResolvedType() : nullptr;
+                    auto task = dynamic_pointer_cast<CajetaTask>(argType);
+                    if (!task) {
+                        throw Exception(
+                            "Cajeta.taskCancel requires a Task<T> argument",
+                            "CAJETA_ERROR_TYPE_MISMATCH");
+                    }
+                    llvm::Value* taskPtr = loadValue(0);
+                    llvm::Type* ptrTy2 = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Value* fiberSlot = builder->CreateStructGEP(
+                        task->getLlvmType(), taskPtr,
+                        CajetaTask::FIBER_FIELD_INDEX, "task_fiber_slot");
+                    llvm::Value* fiberPtr = builder->CreateLoad(
+                        ptrTy2, fiberSlot, "task_fiber");
+                    llvm::Function* cancelFn = module->getRuntimeFunction(
+                        "__cajeta_fiber_cancel");
+                    // Sentinel (void*)1 — same shape as `throw 1` produces,
+                    // catches with `catch (Exception e)` reading `(int32) e`.
+                    llvm::Value* sentinel = builder->CreateIntToPtr(
+                        llvm::ConstantInt::get(
+                            llvm::Type::getInt64Ty(llvmCtx), 1), ptrTy2);
+                    return builder->CreateCall(cancelFn, {fiberPtr, sentinel});
+                }
+                // R9.5 — cooperative fiber sleep. Parks the running fiber
+                // on the timer wheel for `nanos` nanoseconds (built atop
+                // __cajeta_task_wait_timeout against a sentinel done flag
+                // that never flips, so the deadline is the only wake).
+                // Used by Channel.select's poll-and-backoff loop and
+                // available to any caller wanting a cooperative sleep
+                // without burning CPU.
+                if (ns == "Cajeta" && methodCallName == "fiberSleepNanos"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_sleep_nanos");
+                    llvm::Value* nanos = loadValue(0);
+                    if (nanos->getType() != i64Ty) {
+                        nanos = builder->CreateIntCast(nanos, i64Ty, /*isSigned=*/true);
+                    }
+                    return builder->CreateCall(fn, {nanos});
                 }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
@@ -2275,20 +3054,33 @@ namespace cajeta {
             // static-dispatch path picks up targetClass.
             if (receiver) {
                 if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(receiver)) {
-                    // A @ValueType receiver's slot holds the aggregate INLINE
-                    // (alloca %VtPoint, not alloca ptr). Its instance methods take
-                    // `this` BY POINTER (the slot address), so loading here would
-                    // pass the aggregate by value and mismatch the `this:pointer`
-                    // signature — the JIT-verify failure. Pass the slot address
-                    // instead. Mirrors the value-type guards in the operator[]
-                    // dispatch (Expression.cpp) and DotExpression (S2). A non-
-                    // value receiver's alloca holds a `ptr` to the instance — load
-                    // that pointer as before.
+                    // Three alloca shapes can show up here:
+                    //   * ptr / primitive slot — a StackField for a class
+                    //     local stores the heap (or sret-slot) pointer in a
+                    //     `ptr`-typed slot; load-through materializes the
+                    //     instance pointer for dispatch.
+                    //   * struct slot — an sret slot from a chained
+                    //     value-returning MCE (e.g. `Duration.ofMillis(3)
+                    //     .toNanos()`). The alloca IS the in-place value's
+                    //     address; load-through would yield the struct value
+                    //     and the downstream vtable load / `this` pass would
+                    //     receive a non-pointer (task #46, M5(b) chained-sret
+                    //     gap). Skip the load — the slot pointer is the address.
+                    //   * @ValueType receiver — its slot holds the aggregate
+                    //     INLINE (alloca %VtPoint — struct OR vector, not
+                    //     alloca ptr). Its instance methods take `this` BY
+                    //     POINTER (the slot address), so loading would pass the
+                    //     aggregate by value and mismatch the `this:pointer`
+                    //     signature (the JIT-verify failure). Pass the slot
+                    //     address. Mirrors the value-type guards in operator[]
+                    //     dispatch (Expression.cpp) and DotExpression (S2).
                     auto recvCls = dynamic_pointer_cast<CajetaClass>(receiverType);
                     bool valueTypeReceiver = recvCls && recvCls->isValueType()
                         && !a->getAllocatedType()->isPointerTy();
-                    if (!valueTypeReceiver)
+                    bool sretStructSlot = a->getAllocatedType()->isStructTy();
+                    if (!valueTypeReceiver && !sretStructSlot) {
                         receiver = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
                 } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
                     receiver = builder->CreateLoad(
                         llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
@@ -2354,7 +3146,34 @@ namespace cajeta {
         // wrong-answer bug rather than a hard error.
         if (receiver && receiverType) {
             auto recvClass = dynamic_pointer_cast<CajetaClass>(receiverType);
+            // A real METHOD named `methodCallName` takes precedence over a
+            // same-named function-typed FIELD. The builder idiom declares both
+            // — a `handler` closure field AND a `handler(fn)` setter — and
+            // `b.handler(fn)` must call the SETTER, not try to invoke the
+            // (often null) field-closure. Without this guard the field path
+            // below greedily wins: it evaluates the arg eagerly (a bare-param
+            // lambda then fails inference before the method's expectedType
+            // propagator runs) and, at runtime, calls through the null field
+            // slot. Only fall into field-invocation when no method shadows it.
+            bool sameNamedMethod = false;
             if (recvClass) {
+                std::function<bool(const CajetaClassPtr&)> hasMethod =
+                    [&](const CajetaClassPtr& cls) -> bool {
+                        for (auto& mEntry : cls->getMethods()) {
+                            if (mEntry.second
+                                    && mEntry.second->getName() == methodCallName
+                                    && !mEntry.second->isConstructor()) {
+                                return true;
+                            }
+                        }
+                        for (auto& parent : cls->getSuperClasses()) {
+                            if (hasMethod(parent)) return true;
+                        }
+                        return false;
+                    };
+                sameNamedMethod = hasMethod(recvClass);
+            }
+            if (recvClass && !sameNamedMethod) {
                 StructurePropertyPtr fnField;
                 CajetaClassPtr fieldOwner;
                 std::function<bool(const CajetaClassPtr&)> findFnField =
@@ -2394,15 +3213,30 @@ namespace cajeta {
                         closureTy, closurePtr, 1, "closure.captures");
                     llvm::Value* captures = builder->CreateLoad(
                         ptrTy, capSlot, "captures_ptr");
+                    // M5(b) — sret form: allocate the caller-owned result
+                    // slot and thread it as the closure's hidden arg 0;
+                    // call returns void, MCE value is the slot pointer.
+                    llvm::Value* sretSlot = nullptr;
+                    auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+                    if (fnType->usesSret() && retClass) {
+                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                        llvm::IRBuilder<> entryBuilder(
+                            &curFn->getEntryBlock(),
+                            curFn->getEntryBlock().begin());
+                        sretSlot = entryBuilder.CreateAlloca(
+                            retClass->getLlvmType(), nullptr, "fn_sret");
+                    }
                     vector<llvm::Value*> args;
+                    if (sretSlot) args.push_back(sretSlot);
                     args.push_back(captures);
+                    size_t baseIdx = sretSlot ? 2 : 1;
                     llvm::FunctionType* sig = fnType->getLlvmFunctionType();
                     for (size_t i = 0; i < parameters.size(); ++i) {
                         llvm::Value* v = parameters[i].expression->generateCode(module);
                         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
                             v = builder->CreateLoad(a->getAllocatedType(), a);
                         }
-                        size_t sigIdx = i + 1;
+                        size_t sigIdx = baseIdx + i;
                         if (sig && sigIdx < sig->getNumParams() && v
                                 && v->getType() != sig->getParamType(sigIdx)) {
                             llvm::Type* expected = sig->getParamType(sigIdx);
@@ -2422,7 +3256,14 @@ namespace cajeta {
                     if (fnType->getReturnType()) {
                         resolvedType = fnType->getReturnType();
                     }
-                    return builder->CreateCall(sig, callee, args);
+                    llvm::CallInst* call = builder->CreateCall(sig, callee, args);
+                    if (sretSlot && retClass) {
+                        call->addParamAttr(0, llvm::Attribute::get(
+                            llvmCtx, llvm::Attribute::StructRet,
+                            retClass->getLlvmType()));
+                        return sretSlot;
+                    }
+                    return call;
                 }
             }
         }
@@ -2860,6 +3701,14 @@ namespace cajeta {
                         // `<P>` instantiation as matches, kicking us
                         // out of the matches==1 propagator path).
                         if (m->isMethodTemplateInstantiation()) continue;
+                        // A call written with explicit method type-args
+                        // (`foo<T>(...)`) selects a method TEMPLATE; a same-name,
+                        // same-arity NON-template overload is not a candidate.
+                        // Without this both match (matches==2) and the
+                        // matches==1 instantiation/lambda-inference path below is
+                        // skipped — the same overload collision that mis-pins a
+                        // templated call's return type (e.g. Json.parse<Box>).
+                        if (!explicitMethodTypeArgs.empty()) continue;
                         bool isStaticM = m->getModifiers().find(STATIC)
                             != m->getModifiers().end();
                         int declared = (int) m->getParameterList().size()
@@ -4014,6 +4863,714 @@ namespace cajeta {
             }
         }
 
+        // ----- TcpStream / TcpListener instance-method intrinsic (NET-1.3 / NET-1.4 / b1) -----
+        //
+        // Mirrors the File instance lowering above: the cajeta-side bodies are
+        // stubs; we lower calls to the `__cajeta_net_*` runtime helpers via the
+        // receiver's `fd` field (struct index 1, after the vtable — the same
+        // index File.fd uses). For a byte-buffer arg we GEP past the array's
+        // 8-byte count header then add the caller offset (`&buf[8 + off]`).
+        if (thisValue && targetClass && targetClass->getQName()) {
+            const std::string netCanonical = targetClass->getQName()->toCanonical();
+            bool isTcpStream   = netCanonical == "cajeta.net.TcpStream";
+            bool isTcpListener = netCanonical == "cajeta.net.TcpListener";
+            // ----- UdpSocket / socket-option intrinsic (b2) -----
+            bool isUdpSocket   = netCanonical == "cajeta.net.UdpSocket";
+            if (isTcpStream || isTcpListener || isUdpSocket) {
+                auto* netStructTy =
+                    llvm::cast<llvm::StructType>(targetClass->getLlvmType());
+                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+                // fd is the first declared field → struct index 1 (vtable@0).
+                auto loadNetFd = [&]() -> llvm::Value* {
+                    llvm::Value* fdSlot = builder->CreateStructGEP(
+                        netStructTy, thisValue, 1, "net.fd_slot");
+                    return builder->CreateLoad(i32Ty, fdSlot, "net.fd");
+                };
+                // &buf[8 + offset]: skip the array header, add the offset.
+                auto bufPtrAtOffset = [&](size_t argIdx, llvm::Value* offV) -> llvm::Value* {
+                    llvm::Value* arr = parameters[argIdx].expression->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
+                        arr = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
+                    llvm::Value* dataStart = builder->CreateInBoundsGEP(
+                        i8Ty, arr, llvm::ConstantInt::get(i64Ty, 8),
+                        "net.buf_start");
+                    return builder->CreateInBoundsGEP(
+                        i8Ty, dataStart, offV, "net.buf_off");
+                };
+                auto loadI64Arg = [&](size_t argIdx) -> llvm::Value* {
+                    llvm::Value* v = parameters[argIdx].expression->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+                        v = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
+                    if (v && v->getType() != i64Ty && v->getType()->isIntegerTy()) {
+                        v = builder->CreateIntCast(v, i64Ty, true);
+                    }
+                    return v;
+                };
+
+                // --- TcpStream.read(dst, offset, length) -> int64 (recv) ---
+                if (isTcpStream && methodCallName == "read"
+                        && parameters.size() == 3) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_recv");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* off = loadI64Arg(1);
+                        llvm::Value* len = loadI64Arg(2);
+                        llvm::Value* buf = bufPtrAtOffset(0, off);
+                        llvm::Value* n = builder->CreateCall(fn,
+                            {fd, buf, len, llvm::ConstantInt::get(i32Ty, 0)},
+                            "net.recv");
+                        resolvedType = CajetaType::of("int64");
+                        return n;
+                    }
+                }
+                // --- TcpStream.write(data, offset, length) -> int64 (send) ---
+                if (isTcpStream && methodCallName == "write"
+                        && parameters.size() == 3) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_send");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* off = loadI64Arg(1);
+                        llvm::Value* len = loadI64Arg(2);
+                        llvm::Value* buf = bufPtrAtOffset(0, off);
+                        llvm::Value* n = builder->CreateCall(fn,
+                            {fd, buf, len, llvm::ConstantInt::get(i32Ty, 0)},
+                            "net.send");
+                        resolvedType = CajetaType::of("int64");
+                        return n;
+                    }
+                }
+                // --- TcpStream.shutdown(how) -> void ---
+                if (isTcpStream && methodCallName == "shutdown"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_shutdown");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* how = parameters[0].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(how)) {
+                            how = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        if (how && how->getType() != i32Ty
+                                && how->getType()->isIntegerTy()) {
+                            how = builder->CreateIntCast(how, i32Ty, true);
+                        }
+                        builder->CreateCall(fn, {fd, how});
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
+                // --- TcpStream.close() / TcpListener.close() -> void ---
+                if ((isTcpStream || isTcpListener) && methodCallName == "close"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_close");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        builder->CreateCall(fn, {fd});
+                        // this.fd = -1 (idempotency: close(-1) is a no-op).
+                        llvm::Value* fdSlot = builder->CreateStructGEP(
+                            netStructTy, thisValue, 1, "net.fd_slot");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, -1), fdSlot);
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
+                // --- TcpListener.acceptFd() -> int32 (accept, discard peer) ---
+                if (isTcpListener && methodCallName == "acceptFd"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_net_accept");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* nullPtr =
+                            llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(ptrTy));
+                        llvm::Value* connFd = builder->CreateCall(fn,
+                            {fd, nullPtr, nullPtr}, "net.accept");
+                        resolvedType = CajetaType::of("int32");
+                        return connFd;
+                    }
+                }
+                // --- TcpListener.boundPort() -> int32 (getsockname+unpack) ---
+                if (isTcpListener && methodCallName == "boundPort"
+                        && parameters.empty()) {
+                    llvm::Function* nameFn = module->getRuntimeFunction(
+                        "__cajeta_net_getsockname");
+                    llvm::Function* unpackFn = module->getRuntimeFunction(
+                        "__cajeta_net_sockaddr_unpack");
+                    if (nameFn && unpackFn) {
+                        llvm::Value* fd = loadNetFd();
+                        // sockaddr scratch (128 = sockaddr_storage upper bound),
+                        // a len in/out i32, an octets[16] out, a port i32 out.
+                        llvm::Value* scratch = builder->CreateAlloca(
+                            llvm::ArrayType::get(i8Ty, 128), nullptr, "net.scratch");
+                        llvm::Value* lenSlot = builder->CreateAlloca(
+                            i32Ty, nullptr, "net.addrlen");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, 128), lenSlot);
+                        llvm::Value* octets = builder->CreateAlloca(
+                            llvm::ArrayType::get(i8Ty, 16), nullptr, "net.octets");
+                        llvm::Value* portSlot = builder->CreateAlloca(
+                            i32Ty, nullptr, "net.port");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, 0), portSlot);
+                        builder->CreateCall(nameFn, {fd, scratch, lenSlot});
+                        llvm::Value* addrlen = builder->CreateLoad(
+                            i32Ty, lenSlot, "net.addrlen.v");
+                        builder->CreateCall(unpackFn,
+                            {scratch, addrlen, octets, portSlot});
+                        resolvedType = CajetaType::of("int32");
+                        return builder->CreateLoad(i32Ty, portSlot, "net.boundPort");
+                    }
+                }
+
+                // ----- UdpSocket / socket-option intrinsic (b2) -----
+                //
+                // Typed socket-option pairs (NET-1.6) on TcpStream + UdpSocket.
+                // Each lowers to its dedicated get/set intrinsic via this.fd.
+                // Boolean setters bind the param to a local i32 (`on ? 1 : 0`);
+                // boolean getters compare the int32 intrinsic result `!= 0`.
+
+                // Coerce a boolean/int arg to a clean i32, binding via a local
+                // alloca first so a field/param-as-arg can't mistype (b1 rule).
+                auto loadI32Arg = [&](size_t argIdx) -> llvm::Value* {
+                    llvm::Value* v =
+                        parameters[argIdx].expression->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+                        v = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
+                    if (v && v->getType() != i32Ty && v->getType()->isIntegerTy()) {
+                        v = builder->CreateIntCast(v, i32Ty, true);
+                    }
+                    return v;
+                };
+                // `on ? 1 : 0`: normalize a boolean (i1/i32) arg to 0/1.
+                auto boolArgAsOnOff = [&](size_t argIdx) -> llvm::Value* {
+                    llvm::Value* v = loadI32Arg(argIdx);
+                    llvm::Value* nz = builder->CreateICmpNE(
+                        v, llvm::ConstantInt::get(v->getType(), 0), "opt.nz");
+                    return builder->CreateSelect(nz,
+                        llvm::ConstantInt::get(i32Ty, 1),
+                        llvm::ConstantInt::get(i32Ty, 0), "opt.onoff");
+                };
+                // A boolean-option setter: __cajeta_net_set_<opt>(fd, on?1:0).
+                auto lowerBoolSetter = [&](const char* sym) -> bool {
+                    llvm::Function* fn = module->getRuntimeFunction(sym);
+                    if (!fn) return false;
+                    llvm::Value* fd = loadNetFd();
+                    llvm::Value* on = boolArgAsOnOff(0);
+                    builder->CreateCall(fn, {fd, on});
+                    resolvedType = CajetaType::of("void");
+                    return true;
+                };
+                // A boolean-option getter: __cajeta_net_get_<opt>(fd) != 0.
+                // (returns nullptr-on-miss via the `out` ref so callers can
+                // distinguish "no such intrinsic" from a real i1 result.)
+                auto lowerBoolGetter = [&](const char* sym,
+                                           llvm::Value*& out) -> bool {
+                    llvm::Function* fn = module->getRuntimeFunction(sym);
+                    if (!fn) return false;
+                    llvm::Value* fd = loadNetFd();
+                    llvm::Value* r = builder->CreateCall(fn, {fd}, "opt.get");
+                    out = builder->CreateICmpNE(
+                        r, llvm::ConstantInt::get(i32Ty, 0), "opt.bool");
+                    resolvedType = CajetaType::of("boolean");
+                    return true;
+                };
+                // An int-option setter: __cajeta_net_set_<opt>(fd, value).
+                auto lowerIntSetter = [&](const char* sym) -> bool {
+                    llvm::Function* fn = module->getRuntimeFunction(sym);
+                    if (!fn) return false;
+                    llvm::Value* fd = loadNetFd();
+                    llvm::Value* val = loadI32Arg(0);
+                    builder->CreateCall(fn, {fd, val});
+                    resolvedType = CajetaType::of("void");
+                    return true;
+                };
+                // An int-option getter: __cajeta_net_get_<opt>(fd) -> int32.
+                auto lowerIntGetter = [&](const char* sym,
+                                          llvm::Value*& out) -> bool {
+                    llvm::Function* fn = module->getRuntimeFunction(sym);
+                    if (!fn) return false;
+                    llvm::Value* fd = loadNetFd();
+                    out = builder->CreateCall(fn, {fd}, "opt.iget");
+                    resolvedType = CajetaType::of("int32");
+                    return true;
+                };
+
+                bool isOptHolder = isTcpStream || isUdpSocket;
+                if (isOptHolder) {
+                    // Boolean option pairs (TcpStream NoDelay/KeepAlive;
+                    // UdpSocket Broadcast). One-arg setter / zero-arg getter.
+                    struct BoolOpt { const char* m; const char* setSym;
+                                     const char* getSym; bool tcp; bool udp; };
+                    static const BoolOpt boolOpts[] = {
+                        {"NoDelay",   "__cajeta_net_set_nodelay",
+                                      "__cajeta_net_get_nodelay",   true,  false},
+                        {"KeepAlive", "__cajeta_net_set_keepalive",
+                                      "__cajeta_net_get_keepalive", true,  false},
+                        {"Broadcast", "__cajeta_net_set_broadcast",
+                                      "__cajeta_net_get_broadcast", false, true},
+                    };
+                    for (const auto& o : boolOpts) {
+                        bool applies = (isTcpStream && o.tcp)
+                                    || (isUdpSocket && o.udp);
+                        if (!applies) continue;
+                        if (methodCallName == std::string("set") + o.m
+                                && parameters.size() == 1) {
+                            if (lowerBoolSetter(o.setSym)) return nullptr;
+                        }
+                        if (methodCallName == std::string("get") + o.m
+                                && parameters.empty()) {
+                            llvm::Value* out = nullptr;
+                            if (lowerBoolGetter(o.getSym, out)) return out;
+                        }
+                    }
+                    // Int option pairs: Recv/Send buffer sizes (both types).
+                    struct IntOpt { const char* m; const char* setSym;
+                                    const char* getSym; };
+                    static const IntOpt intOpts[] = {
+                        {"RecvBufferSize", "__cajeta_net_set_recvbuf",
+                                           "__cajeta_net_get_recvbuf"},
+                        {"SendBufferSize", "__cajeta_net_set_sendbuf",
+                                           "__cajeta_net_get_sendbuf"},
+                    };
+                    for (const auto& o : intOpts) {
+                        if (methodCallName == std::string("set") + o.m
+                                && parameters.size() == 1) {
+                            if (lowerIntSetter(o.setSym)) return nullptr;
+                        }
+                        if (methodCallName == std::string("get") + o.m
+                                && parameters.empty()) {
+                            llvm::Value* out = nullptr;
+                            if (lowerIntGetter(o.getSym, out)) return out;
+                        }
+                    }
+                    // TTL: the native helper takes an extra `is_v6` flag. The
+                    // socket family isn't stored on the wrapper (b2 exercises
+                    // V4), so pass is_v6 = 0. setTtl(int32) / getTtl().
+                    if (methodCallName == "setTtl" && parameters.size() == 1) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_net_set_ttl");
+                        if (fn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* ttl = loadI32Arg(0);
+                            builder->CreateCall(fn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 0), ttl});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (methodCallName == "getTtl" && parameters.empty()) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_net_get_ttl");
+                        if (fn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* r = builder->CreateCall(fn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 0)},
+                                "opt.ttl");
+                            resolvedType = CajetaType::of("int32");
+                            return r;
+                        }
+                    }
+                }
+                // Linger is TcpStream-only here (setLinger(bool,int32) /
+                // getLinger()->bool reading the on-flag via the out pointers).
+                if (isTcpStream && methodCallName == "setLinger"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn =
+                        module->getRuntimeFunction("__cajeta_net_set_linger");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* on = boolArgAsOnOff(0);
+                        llvm::Value* secs = loadI32Arg(1);
+                        builder->CreateCall(fn, {fd, on, secs});
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
+                if (isTcpStream && methodCallName == "getLinger"
+                        && parameters.empty()) {
+                    llvm::Function* fn =
+                        module->getRuntimeFunction("__cajeta_net_get_linger");
+                    if (fn) {
+                        llvm::Value* fd = loadNetFd();
+                        llvm::Value* onOut = builder->CreateAlloca(
+                            i32Ty, nullptr, "linger.on");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, 0), onOut);
+                        llvm::Value* secsOut = builder->CreateAlloca(
+                            i32Ty, nullptr, "linger.secs");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, 0), secsOut);
+                        builder->CreateCall(fn, {fd, onOut, secsOut});
+                        llvm::Value* onV = builder->CreateLoad(
+                            i32Ty, onOut, "linger.on.v");
+                        resolvedType = CajetaType::of("boolean");
+                        return builder->CreateICmpNE(onV,
+                            llvm::ConstantInt::get(i32Ty, 0), "linger.bool");
+                    }
+                }
+
+                // ----- UdpSocket datagram I/O (b2) -----
+                //
+                // sendTo/recvFrom pack/unpack the SocketAddress like the b1
+                // static connect/bind path; send/recv/connect/close mirror the
+                // TcpStream forms. localAddress + recvFrom's `from` build a
+                // SocketAddress from the unpacked sockaddr.
+                if (isUdpSocket) {
+                    // Pack a SocketAddress arg into a 128-byte sockaddr scratch.
+                    // Returns {scratch, addrlen}; mirrors the b1 connect path.
+                    auto packSockAddrArg =
+                        [&](size_t argIdx, llvm::Value*& scratchOut,
+                            llvm::Value*& addrlenOut) -> bool {
+                        auto& cmapN = CajetaType::getCanonicalMap();
+                        CajetaClassPtr saCls, ipCls;
+                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
+                        if (sIt != cmapN.end())
+                            saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
+                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
+                        if (iIt != cmapN.end())
+                            ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
+                        llvm::Function* packFn = module->getRuntimeFunction(
+                            "__cajeta_net_sockaddr_pack");
+                        if (!packFn || !saCls || !ipCls
+                                || !llvm::isa<llvm::StructType>(saCls->getLlvmType())
+                                || !llvm::isa<llvm::StructType>(ipCls->getLlvmType()))
+                            return false;
+                        auto* saTy = llvm::cast<llvm::StructType>(saCls->getLlvmType());
+                        auto* ipTy = llvm::cast<llvm::StructType>(ipCls->getLlvmType());
+                        llvm::Value* sa =
+                            parameters[argIdx].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(sa)) {
+                            sa = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        // sa.ip @1, sa.port @2 (vtable@0).
+                        llvm::Value* ip = builder->CreateLoad(ptrTy,
+                            builder->CreateStructGEP(saTy, sa, 1, "udp.ip_slot"),
+                            "udp.ip");
+                        llvm::Value* port = builder->CreateLoad(i32Ty,
+                            builder->CreateStructGEP(saTy, sa, 2, "udp.port_slot"),
+                            "udp.port");
+                        // ip.family @1, ip.octets @2.
+                        llvm::Value* family = builder->CreateLoad(i32Ty,
+                            builder->CreateStructGEP(ipTy, ip, 1, "udp.fam_slot"),
+                            "udp.family");
+                        llvm::Value* octArr = builder->CreateLoad(ptrTy,
+                            builder->CreateStructGEP(ipTy, ip, 2, "udp.oct_slot"),
+                            "udp.octets_arr");
+                        llvm::Value* octData = builder->CreateInBoundsGEP(
+                            i8Ty, octArr, llvm::ConstantInt::get(i64Ty, 8),
+                            "udp.octets");
+                        scratchOut = builder->CreateAlloca(
+                            llvm::ArrayType::get(i8Ty, 128), nullptr, "udp.sa");
+                        addrlenOut = builder->CreateCall(packFn,
+                            {family, octData, port, scratchOut,
+                             llvm::ConstantInt::get(i32Ty, 128)}, "udp.addrlen");
+                        return true;
+                    };
+
+                    // Build a heap SocketAddress from an unpacked octets[16] +
+                    // host-order port + family. Allocates a fresh octet array
+                    // (header'd, like `new int8[16]`) for the IpAddress so the
+                    // result owns its storage. Returns the SocketAddress* (or
+                    // null on a missing dependency).
+                    auto buildSockAddr =
+                        [&](llvm::Value* octets16, llvm::Value* portV,
+                            llvm::Value* familyV) -> llvm::Value* {
+                        auto& cmapN = CajetaType::getCanonicalMap();
+                        CajetaClassPtr saCls, ipCls;
+                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
+                        if (sIt != cmapN.end())
+                            saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
+                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
+                        if (iIt != cmapN.end())
+                            ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
+                        llvm::Function* newArr = module->getRuntimeFunction(
+                            "__cajeta_new_array_header");
+                        if (!saCls || !ipCls || !newArr
+                                || !llvm::isa<llvm::StructType>(saCls->getLlvmType())
+                                || !llvm::isa<llvm::StructType>(ipCls->getLlvmType()))
+                            return nullptr;
+                        auto* saTy = llvm::cast<llvm::StructType>(saCls->getLlvmType());
+                        auto* ipTy = llvm::cast<llvm::StructType>(ipCls->getLlvmType());
+                        const llvm::DataLayout& dl =
+                            module->getLlvmModule()->getDataLayout();
+                        auto allocObj = [&](CajetaClassPtr cls,
+                                            llvm::StructType* ty) -> llvm::Value* {
+                            llvm::Constant* size = llvm::ConstantInt::get(
+                                i64Ty, dl.getTypeAllocSize(ty));
+                            llvm::Value* inst =
+                                MemoryManager::createMallocInstruction(
+                                    module, size, builder->GetInsertBlock());
+                            builder->CreateMemSet(inst,
+                                llvm::ConstantInt::get(i8Ty, 0), size,
+                                llvm::MaybeAlign(8));
+                            llvm::Constant* vt =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            if (auto* g = cls->getVirtualTableGlobal()) {
+                                vt = CajetaModule::ensureGlobalInModule(
+                                    module->getLlvmModule(), g);
+                            }
+                            builder->CreateStore(vt,
+                                builder->CreateStructGEP(ty, inst, 0, "sa.vt"));
+                            return inst;
+                        };
+                        // Fresh 16-byte octet array (8-byte header + 16 bytes).
+                        llvm::Value* arr = builder->CreateCall(newArr,
+                            {llvm::ConstantInt::get(i64Ty, 8),
+                             llvm::ConstantInt::get(i64Ty, 1),
+                             llvm::ConstantInt::get(i64Ty, 16)}, "sa.octarr");
+                        llvm::Value* arrData = builder->CreateInBoundsGEP(
+                            i8Ty, arr, llvm::ConstantInt::get(i64Ty, 8),
+                            "sa.octdata");
+                        builder->CreateMemCpy(arrData, llvm::MaybeAlign(1),
+                            octets16, llvm::MaybeAlign(1),
+                            llvm::ConstantInt::get(i64Ty, 16));
+                        // IpAddress { vtable@0, family@1, octets@2 }.
+                        llvm::Value* ipInst = allocObj(ipCls, ipTy);
+                        builder->CreateStore(familyV,
+                            builder->CreateStructGEP(ipTy, ipInst, 1, "ip.fam"));
+                        builder->CreateStore(arr,
+                            builder->CreateStructGEP(ipTy, ipInst, 2, "ip.oct"));
+                        // SocketAddress { vtable@0, ip@1, port@2 }.
+                        llvm::Value* saInst = allocObj(saCls, saTy);
+                        builder->CreateStore(ipInst,
+                            builder->CreateStructGEP(saTy, saInst, 1, "sa.ip"));
+                        builder->CreateStore(portV,
+                            builder->CreateStructGEP(saTy, saInst, 2, "sa.port"));
+                        return saInst;
+                    };
+
+                    // --- UdpSocket.sendTo(data, offset, length, dest) -> i32 ---
+                    if (methodCallName == "sendTo" && parameters.size() == 4) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_sendto");
+                        llvm::Value* scratch = nullptr;
+                        llvm::Value* addrlen = nullptr;
+                        if (fn && packSockAddrArg(3, scratch, addrlen)) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* off = loadI64Arg(1);
+                            llvm::Value* len = loadI64Arg(2);
+                            llvm::Value* buf = bufPtrAtOffset(0, off);
+                            llvm::Value* n = builder->CreateCall(fn,
+                                {fd, buf, len,
+                                 llvm::ConstantInt::get(i32Ty, 0),
+                                 scratch, addrlen}, "udp.sendto");
+                            // sendto returns int64; the surface is int32.
+                            resolvedType = CajetaType::of("int32");
+                            return builder->CreateIntCast(n, i32Ty, true);
+                        }
+                    }
+                    // --- UdpSocket.recvFrom(dst, offset, capacity) -> RecvResult ---
+                    if (methodCallName == "recvFrom" && parameters.size() == 3) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_recvfrom");
+                        llvm::Function* unpackFn = module->getRuntimeFunction(
+                            "__cajeta_net_sockaddr_unpack");
+                        auto& cmapN = CajetaType::getCanonicalMap();
+                        auto rrIt = cmapN.find("cajeta.net.RecvResult");
+                        if (rrIt == cmapN.end()) rrIt = cmapN.find("RecvResult");
+                        CajetaClassPtr rrCls = rrIt != cmapN.end()
+                            ? std::dynamic_pointer_cast<CajetaClass>(rrIt->second)
+                            : nullptr;
+                        if (fn && unpackFn && rrCls
+                                && llvm::isa<llvm::StructType>(rrCls->getLlvmType())) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* off = loadI64Arg(1);
+                            llvm::Value* cap = loadI64Arg(2);
+                            llvm::Value* buf = bufPtrAtOffset(0, off);
+                            // sockaddr out + len in/out.
+                            llvm::Value* scratch = builder->CreateAlloca(
+                                llvm::ArrayType::get(i8Ty, 128), nullptr,
+                                "udp.rf.sa");
+                            llvm::Value* lenSlot = builder->CreateAlloca(
+                                i32Ty, nullptr, "udp.rf.len");
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 128), lenSlot);
+                            llvm::Value* n = builder->CreateCall(fn,
+                                {fd, buf, cap,
+                                 llvm::ConstantInt::get(i32Ty, 0),
+                                 scratch, lenSlot}, "udp.recvfrom");
+                            llvm::Value* count =
+                                builder->CreateIntCast(n, i32Ty, true);
+                            // Unpack the sender address.
+                            llvm::Value* addrlen = builder->CreateLoad(
+                                i32Ty, lenSlot, "udp.rf.len.v");
+                            llvm::Value* octets = builder->CreateAlloca(
+                                llvm::ArrayType::get(i8Ty, 16), nullptr,
+                                "udp.rf.oct");
+                            builder->CreateMemSet(octets,
+                                llvm::ConstantInt::get(i8Ty, 0),
+                                llvm::ConstantInt::get(i64Ty, 16),
+                                llvm::MaybeAlign(1));
+                            llvm::Value* portSlot = builder->CreateAlloca(
+                                i32Ty, nullptr, "udp.rf.port");
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 0), portSlot);
+                            llvm::Value* fam = builder->CreateCall(unpackFn,
+                                {scratch, addrlen, octets, portSlot},
+                                "udp.rf.fam");
+                            // unpack returns the family ordinal (0=V4) or -1;
+                            // clamp a -1 to 0 so buildSockAddr stays valid.
+                            llvm::Value* famOk = builder->CreateICmpSLT(fam,
+                                llvm::ConstantInt::get(i32Ty, 0), "udp.rf.famneg");
+                            llvm::Value* famClamped = builder->CreateSelect(
+                                famOk, llvm::ConstantInt::get(i32Ty, 0), fam,
+                                "udp.rf.fam.c");
+                            llvm::Value* portV = builder->CreateLoad(
+                                i32Ty, portSlot, "udp.rf.port.v");
+                            llvm::Value* from =
+                                buildSockAddr(octets, portV, famClamped);
+                            // RecvResult { vtable@0, count@1, from@2 }.
+                            auto* rrTy = llvm::cast<llvm::StructType>(
+                                rrCls->getLlvmType());
+                            const llvm::DataLayout& dl =
+                                module->getLlvmModule()->getDataLayout();
+                            llvm::Constant* size = llvm::ConstantInt::get(
+                                i64Ty, dl.getTypeAllocSize(rrTy));
+                            llvm::Value* rr =
+                                MemoryManager::createMallocInstruction(
+                                    module, size, builder->GetInsertBlock());
+                            builder->CreateMemSet(rr,
+                                llvm::ConstantInt::get(i8Ty, 0), size,
+                                llvm::MaybeAlign(8));
+                            llvm::Constant* vt =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            if (auto* g = rrCls->getVirtualTableGlobal()) {
+                                vt = CajetaModule::ensureGlobalInModule(
+                                    module->getLlvmModule(), g);
+                            }
+                            builder->CreateStore(vt,
+                                builder->CreateStructGEP(rrTy, rr, 0, "rr.vt"));
+                            builder->CreateStore(count,
+                                builder->CreateStructGEP(rrTy, rr, 1, "rr.count"));
+                            if (from) {
+                                builder->CreateStore(from,
+                                    builder->CreateStructGEP(rrTy, rr, 2,
+                                        "rr.from"));
+                            }
+                            resolvedType = rrCls;
+                            return rr;
+                        }
+                    }
+                    // --- UdpSocket.connect(peer) -> void ---
+                    if (methodCallName == "connect" && parameters.size() == 1) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_connect");
+                        llvm::Value* scratch = nullptr;
+                        llvm::Value* addrlen = nullptr;
+                        if (fn && packSockAddrArg(0, scratch, addrlen)) {
+                            llvm::Value* fd = loadNetFd();
+                            builder->CreateCall(fn, {fd, scratch, addrlen});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    // --- UdpSocket.send(data, offset, length) -> i32 ---
+                    if (methodCallName == "send" && parameters.size() == 3) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_send");
+                        if (fn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* off = loadI64Arg(1);
+                            llvm::Value* len = loadI64Arg(2);
+                            llvm::Value* buf = bufPtrAtOffset(0, off);
+                            llvm::Value* n = builder->CreateCall(fn,
+                                {fd, buf, len,
+                                 llvm::ConstantInt::get(i32Ty, 0)}, "udp.send");
+                            resolvedType = CajetaType::of("int32");
+                            return builder->CreateIntCast(n, i32Ty, true);
+                        }
+                    }
+                    // --- UdpSocket.recv(dst, offset, capacity) -> i32 ---
+                    if (methodCallName == "recv" && parameters.size() == 3) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_net_recv");
+                        if (fn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* off = loadI64Arg(1);
+                            llvm::Value* cap = loadI64Arg(2);
+                            llvm::Value* buf = bufPtrAtOffset(0, off);
+                            llvm::Value* n = builder->CreateCall(fn,
+                                {fd, buf, cap,
+                                 llvm::ConstantInt::get(i32Ty, 0)}, "udp.recv");
+                            resolvedType = CajetaType::of("int32");
+                            return builder->CreateIntCast(n, i32Ty, true);
+                        }
+                    }
+                    // --- UdpSocket.localAddress() -> SocketAddress ---
+                    if (methodCallName == "localAddress" && parameters.empty()) {
+                        llvm::Function* nameFn = module->getRuntimeFunction(
+                            "__cajeta_net_getsockname");
+                        llvm::Function* unpackFn = module->getRuntimeFunction(
+                            "__cajeta_net_sockaddr_unpack");
+                        if (nameFn && unpackFn) {
+                            llvm::Value* fd = loadNetFd();
+                            llvm::Value* scratch = builder->CreateAlloca(
+                                llvm::ArrayType::get(i8Ty, 128), nullptr,
+                                "udp.la.sa");
+                            llvm::Value* lenSlot = builder->CreateAlloca(
+                                i32Ty, nullptr, "udp.la.len");
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 128), lenSlot);
+                            llvm::Value* octets = builder->CreateAlloca(
+                                llvm::ArrayType::get(i8Ty, 16), nullptr,
+                                "udp.la.oct");
+                            builder->CreateMemSet(octets,
+                                llvm::ConstantInt::get(i8Ty, 0),
+                                llvm::ConstantInt::get(i64Ty, 16),
+                                llvm::MaybeAlign(1));
+                            llvm::Value* portSlot = builder->CreateAlloca(
+                                i32Ty, nullptr, "udp.la.port");
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 0), portSlot);
+                            builder->CreateCall(nameFn, {fd, scratch, lenSlot});
+                            llvm::Value* addrlen = builder->CreateLoad(
+                                i32Ty, lenSlot, "udp.la.len.v");
+                            llvm::Value* fam = builder->CreateCall(unpackFn,
+                                {scratch, addrlen, octets, portSlot},
+                                "udp.la.fam");
+                            llvm::Value* famNeg = builder->CreateICmpSLT(fam,
+                                llvm::ConstantInt::get(i32Ty, 0), "udp.la.famneg");
+                            llvm::Value* famClamped = builder->CreateSelect(
+                                famNeg, llvm::ConstantInt::get(i32Ty, 0), fam,
+                                "udp.la.fam.c");
+                            llvm::Value* portV = builder->CreateLoad(
+                                i32Ty, portSlot, "udp.la.port.v");
+                            llvm::Value* sa =
+                                buildSockAddr(octets, portV, famClamped);
+                            if (sa) {
+                                auto& cmapN2 = CajetaType::getCanonicalMap();
+                                auto sIt = cmapN2.find("cajeta.net.SocketAddress");
+                                if (sIt == cmapN2.end())
+                                    sIt = cmapN2.find("SocketAddress");
+                                if (sIt != cmapN2.end())
+                                    resolvedType =
+                                        std::dynamic_pointer_cast<CajetaClass>(
+                                            sIt->second);
+                                return sa;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Null-receiver short-circuit for class String null-safe methods.
         // Pre-Phase 2b-β these calls lowered to legacy runtime helpers
         // (__cajeta_str_len / __cajeta_str_isEmpty / __cajeta_str_equals)
@@ -4088,6 +5645,80 @@ namespace cajeta {
         // either don't have a drop entry or have it managed by their
         // own emission path. See MemoryModel.md § Borrow / transfer.
         {
+            // Helper: deactivate the named local's drop entry at the
+            // current insertion point. Used by both the caller-side and
+            // callee-side transfer passes below.
+            auto deactivateIfClassLocal = [&](size_t argIdx) {
+                if (argIdx >= parameters.size()) return;
+                auto argExprBase = parameters[argIdx].expression;
+                auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                    argExprBase);
+                if (!idExpr) return;
+                auto scope = module->getScopeStack().peek();
+                if (!scope) return;
+                FieldPtr field = scope->getField(idExpr->getTextValue());
+                if (!field) return;
+                if (llvm::Value* entry = field->getDropEntry()) {
+                    if (llvm::Function* mark = module->getRuntimeFunction(
+                            "__cajeta_drop_mark_inactive")) {
+                        builder->CreateCall(mark, {entry});
+                    }
+                }
+            };
+            // Caller-side `#x` (Phase 1 of #68). The caller's intent is
+            // explicit at the source line — deactivate the source's drop
+            // regardless of whether we can resolve the callee or inspect
+            // its formals. Required for callees the standard non-ctor
+            // resolveMethod can't find (synthesized view ctors, free
+            // functions called via overloads, etc.); the caller-side
+            // marker is the authoritative signal for those.
+            //
+            // Phase 3a of #68 (body-side check): if the `#x` source is a
+            // borrowed class parameter (plain-T formal, no `#`), reject
+            // — the caller is claiming to transfer a value they don't
+            // own.
+            for (size_t i = 0; i < parameters.size(); ++i) {
+                if (!parameters[i].callerTransferred) continue;
+                auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                    parameters[i].expression);
+                if (idExpr) {
+                    if (auto scope = module->getScopeStack().peek()) {
+                        FieldPtr field = scope->getField(idExpr->getTextValue());
+                        auto pf = std::dynamic_pointer_cast<ParameterField>(field);
+                        if (pf) {
+                            auto formal = pf->getFormalParameter();
+                            if (formal && !formal->isTransferred()) {
+                                auto klass = std::dynamic_pointer_cast<CajetaClass>(
+                                    field->getType());
+                                if (klass && !klass->isInterface()) {
+                                    throw Exception(
+                                        "cannot transfer borrowed parameter `"
+                                            + idExpr->getTextValue() + "` via "
+                                            "`#` — its formal is declared plain `T` "
+                                            "(borrow), so this scope doesn't own the "
+                                            "value. Fix: mark the formal `#"
+                                            + idExpr->getTextValue() + "` to receive "
+                                            "ownership at the outer call site, or "
+                                            "restructure to not retain the borrow.",
+                                        "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
+                                }
+                            }
+                        }
+                    }
+                }
+                deactivateIfClassLocal(i);
+            }
+            // Callee-side `#T` formal — Phase 2 of #68: contract check.
+            // When the formal is `#T` and the caller didn't acknowledge
+            // transfer (no `#x` at the call site, no MoveExpression
+            // wrapper, no fresh allocator), throw
+            // CAJETA_ERROR_TRANSFER_REQUIRED so the caller has to either
+            // surrender ownership explicitly or restructure. The check
+            // fires only on a genuine double-free hazard: an
+            // IdentifierExpression of a class-typed local whose Field
+            // carries an active drop entry. Primitives, fresh ctors,
+            // null literals, and locals without drop entries naturally
+            // pass through. See cajeta-docs/stdlib/OwnershipTransfer.md.
             bool callFloatingX = true;
             for (auto& e : entries) {
                 if (e.label.empty()) { callFloatingX = false; break; }
@@ -4109,20 +5740,25 @@ namespace cajeta {
                     if (argIdx >= parameters.size()) break;
                     ++fIdx;
                     if (!fp->isTransferred()) continue;
-                    auto argExprBase = parameters[argIdx].expression;
+                    if (parameters[argIdx].callerTransferred) continue;
+                    auto argExpr = parameters[argIdx].expression;
+                    if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;
+                    if (dynamic_pointer_cast<NewExpression>(argExpr)) continue;
                     auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
-                        argExprBase);
+                        argExpr);
                     if (!idExpr) continue;
                     auto scope = module->getScopeStack().peek();
                     if (!scope) continue;
                     FieldPtr field = scope->getField(idExpr->getTextValue());
-                    if (!field) continue;
-                    if (llvm::Value* entry = field->getDropEntry()) {
-                        if (llvm::Function* mark = module->getRuntimeFunction(
-                                "__cajeta_drop_mark_inactive")) {
-                            builder->CreateCall(mark, {entry});
-                        }
-                    }
+                    if (!field || !field->getDropEntry()) continue;
+                    throw Exception(
+                        "method `" + methodCallName + "` declares parameter `"
+                            + fp->getName() + "` as `#T` (ownership transfer required); "
+                            "write `#" + idExpr->getTextValue() + "` at the call site "
+                            "to surrender ownership of the source local, or pass a "
+                            "fresh `heap T(...)` / `stack T(...)` construction. "
+                            "See cajeta-docs/stdlib/OwnershipTransfer.md.",
+                        "CAJETA_ERROR_TRANSFER_REQUIRED");
                 }
             }
         }
@@ -4263,8 +5899,19 @@ namespace cajeta {
             for (auto& e : entries) {
                 if (e.label.empty()) { callFloating = false; break; }
             }
+            // Thread the call's explicit method type-args (`parse<Box>`) into
+            // resolution, exactly as the invokeMethod call above (which drives
+            // codegen) already does. Without this, a templated call whose name
+            // collides with a same-arity NON-template overload (e.g.
+            // `Json.parse<T>(int8[],int64)` vs `Json.parse(int8[],int64)`)
+            // re-resolves here to the non-template overload and pins the wrong
+            // static return type (`JsonValue` instead of the instantiated `T` =
+            // `Box`). resolveMethod routes a non-empty arg list through the
+            // method-template resolver + instantiateMethodTemplate, so the
+            // returned method's getReturnType() is the substituted `Box`.
             MethodPtr resolved = targetClass->resolveMethod(
-                methodCallName, entries, /*isConstructor=*/false, callFloating);
+                methodCallName, entries, /*isConstructor=*/false, callFloating,
+                /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
             if (resolved && resolved->getReturnType()) {
                 // Capture conversion (P2-2 item 1): when the receiver
                 // is a bounded-wildcard instantiation, the method's

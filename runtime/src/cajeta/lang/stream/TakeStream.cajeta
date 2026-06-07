@@ -1,10 +1,19 @@
 package cajeta.lang.stream;
 
 /**
- * Intermediate combinator: wraps another Stream and yields at most
+ * Intermediate combinator: wraps another `Stream` and yields at most
  * `n` elements from it. Lazy — only pulls from the source as the
- * downstream consumer calls next(). Constructed via
+ * downstream consumer calls `next()`. Constructed via
  * `someStream.take(n)`; not typically instantiated directly.
+ *
+ * Each `next()` returns an `Optional` holding the next element, or an
+ * empty `Optional` once `n` elements have been taken (or the source
+ * runs dry, whichever comes first).
+ *
+ * ```cajeta
+ * #Stream<int32> firstThree = source.take(3);
+ * Optional<int32> head = firstThree.next();
+ * ```
  *
  * Implementation note (P1.1): `Stream<T> source;` is a template-
  * instantiated class-typed field. The enclosing class struct lays
@@ -16,14 +25,35 @@ public class TakeStream<T> extends Stream<T> {
     Stream<T> source;
     int32 remaining;
 
-    public TakeStream(Stream<T> source, int32 n) {
+    /**
+     * Wraps `source`, taking ownership (`#`), and caps the element count at `n`.
+     *
+     * ```cajeta
+     * #TakeStream<int32> limited = heap TakeStream<int32>(source, 5);
+     * ```
+     */
+    public TakeStream(#Stream<T> source, int32 n) {
         this.source = source;
         this.remaining = n;
     }
 
-    public #Optional<T> next() {
+    /**
+     * Pulls the next element from `source`, returning it as an `Optional`.
+     * Yields an empty `Optional` once `n` elements have been taken or the
+     * source is exhausted; decrements the remaining count only on a non-empty
+     * pull.
+     *
+     * ```cajeta
+     * #Stream<int32> firstThree = source.take(3);
+     * Optional<int32> head = firstThree.next();
+     * if (head.isPresent()) {
+     *     int32 first = head.get();
+     * }
+     * ```
+     */
+    public Optional<T> next() {
         if (this.remaining <= 0) {
-            return heap Optional<T>(false, null);
+            return stack Optional<T>(false, null);
         }
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {
@@ -37,6 +67,10 @@ public class TakeStream<T> extends Stream<T> {
         return this.source;
     }
 
+    /**
+     * Always `true`: this combinator carries mutable state (`remaining`), so
+     * pipeline optimizers must not fuse or reorder it freely.
+     */
     public boolean isStatefulWrapper() {
         return true;
     }

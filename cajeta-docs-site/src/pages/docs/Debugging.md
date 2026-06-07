@@ -273,7 +273,7 @@ cajeta lsp --port=2087              # TCP mode
   ownership semantics. Reduces ambient memory-model surprise.
 - **Type-argument inlay hints.** `Box<int32>` is shown at use
   sites even when type inference picks it: `var x = new
-  Box(42)` becomes `var x: <Box<int32>> = new Box(42)`.
+  Box(42)` becomes `var x: <Box<int32>> = heap Box(42)`.
 
 ---
 
@@ -489,7 +489,7 @@ public class Point {
     public Point(int32 x, int32 y) { this.x = x; this.y = y; }
 }
 
-Point origin = new Point(0, 0);
+Point origin = heap Point(0, 0);
 origin.x + origin.y
 ```
 

@@ -360,6 +360,19 @@ class CajetaType : public Modifiable, public Annotatable,
         static void markArchiveValueType(const string& canonical);
         static bool isArchiveValueType(const string& canonical);
 
+        // Mark a previously-registered archive entry as an INTERFACE
+        // declaration. Read by fromContext's placeholder-synthesis path
+        // so a cross-file field/param/local declared at a forward-
+        // referenced interface type (e.g. `ByteChannel stream;` in
+        // AsyncReader before ByteChannel.cajeta is parsed) is born as a
+        // FAT 24-byte interface pointer `{ ptr data, ptr vtable, i64 kind }`
+        // — not a thin 8-byte class pointer that silently drops interface
+        // dispatch at codegen. Called by the prescan visitor's
+        // visitInterfaceDeclaration after registerArchive(canonical,
+        // shortName). See cajeta-interface-arg-field-offset-bug.
+        static void markArchiveInterface(const string& canonical);
+        static bool isArchiveInterface(const string& canonical);
+
         // Record template metadata for an archived class. Called by
         // the prescan visitor for any class/interface declaration
         // that carries a `typeParameters` clause. The templateSource

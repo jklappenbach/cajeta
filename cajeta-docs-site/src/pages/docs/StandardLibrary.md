@@ -128,7 +128,7 @@ cajeta.reflect         — runtime type introspection: Class<T>, Field,
 
 Immutable, encoding-aware character sequence. Internal storage: UTF-8 byte
 array plus a cached code-point count. A `String` carries a tagged mode
-internally — **owned** (heap-allocated; `new String(...)`) or **view**
+internally — **owned** (heap-allocated; `heap String(...)`) or **view**
 (borrowed over bytes that live elsewhere; `String.viewOf(...)`).
 
 ```cajeta
@@ -197,7 +197,7 @@ hierarchy. Iteration is over code points, not bytes — bytes are accessible via
 Both modes are the same type, so user code mostly doesn't notice.
 The differences show up at the boundaries:
 
-- **Allocation.** `new String(...)` allocates and copies. `String.
+- **Allocation.** `heap String(...)` allocates and copies. `String.
   viewOf(...)` doesn't. The call site tells you.
 - **Lifetime.** A view's lifetime is tied to the source it borrows
   from. The borrow checker rejects escapes; `.toOwned()` is the
@@ -327,7 +327,7 @@ public class Point {
 //   }
 //   public boolean operator==(Object other) { ... fieldwise compare ... }
 
-HashMap<Point, String> map = new HashMap<>();   // Just works
+HashMap<Point, String> map = heap HashMap<>();   // Just works
 ```
 
 **Error attribution is load-bearing.** Synthesizer-emitted diagnostics must
@@ -696,7 +696,7 @@ print(xs.count());  // still usable
 
 // Consuming — when you want to drain into something else
 HashMap<int32, String> source = ...;
-HashMap<int32, String> dest = new HashMap<int32, String>(64);
+HashMap<int32, String> dest = heap HashMap<int32, String>(64);
 for (entry in source.iterOwned()) {
     dest.put(entry.key, entry.value);
 }
@@ -915,7 +915,7 @@ Concrete types — same storage-policy split as sets:
   ```cajeta
   // Tracking visited nodes during graph traversal — even two nodes
   // with identical contents are distinct entries.
-  IdentityHashMap<GraphNode, VisitState> seen = new IdentityHashMap();
+  IdentityHashMap<GraphNode, VisitState> seen = heap IdentityHashMap();
   for (node in graph.nodes()) {
       if (!seen.containsKey(node)) {
           seen.put(node, VisitState.NEW);
@@ -1272,7 +1272,7 @@ public class StoogeSort<T> extends SortAlgorithm<T> {
 }
 
 ArrayList<Event> events = loadEvents();
-events.sort(new StoogeSort<Event>(), byTimestamp);
+events.sort(heap StoogeSort<Event>(), byTimestamp);
 ```
 
 The dispatcher in `ArraySortable.sort(alg, cmp)` hands the
@@ -1842,7 +1842,7 @@ public class CaseInsensitiveString {
     }
 
     public int64 hash() {
-        return new DefaultHasher()
+        return heap DefaultHasher()
             .writeString(inner.toLowerCase())
             .finish();
     }

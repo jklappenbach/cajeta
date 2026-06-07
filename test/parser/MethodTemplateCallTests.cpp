@@ -58,7 +58,7 @@ TEST(MethodTemplateCallTests, staticIdentityTwoSpecializations) {
         "    public static int32 run() {\n"
         "        int32 a = Util.identity(7);\n"
         "        int64 b = Util.identity(8L);\n"
-        "        Counter c = Util.identity(new Counter(9));\n"
+        "        Counter c = Util.identity(heap Counter(9));\n"
         "        return a + (int32) b + c.v;\n"
         "    }\n"
         "}\n";
@@ -125,7 +125,7 @@ TEST(MethodTemplateCallTests, instanceMethodOnTemplatedReceiver) {
         "public class Box<T> {\n"
         "    public T item;\n"
         "    public Box(T t) { this.item = t; }\n"
-        "    public final R transform<R>((T) -> R fn, T arg) { return fn(arg); }\n"
+        "    public final R transform<R>((T) -> #R fn, T arg) { return fn(arg); }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -150,7 +150,7 @@ TEST(MethodTemplateCallTests, instanceMethodWithTypeParam) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box b = new Box(0);\n"
+        "        Box b = heap Box(0);\n"
         "        return b.passthrough(99);\n"
         "    }\n"
         "}\n";

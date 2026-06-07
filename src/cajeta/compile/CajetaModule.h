@@ -195,7 +195,15 @@ namespace cajeta {
         // when an enclosing try would catch the throw.
         std::vector<std::vector<CajetaTypePtr>> tryCatchStack;
 
-        // See pushTryFinally — active try/catch exception frames a return unwinds.
+        // One entry per enclosing `try` body currently being codegen'd — the
+        // finally StatementPtr (null for catch-only tries). A `return` (or
+        // break/continue) escaping those try bodies must, innermost-first, emit
+        // a matching `__cajeta_exc_pop` AND run each finally, or the frame leaks
+        // on the runtime exception chain (its stack slot is reused and a later
+        // pop reads a garbage `prev` — the HttpsServer keep-alive crash) and the
+        // finally never runs (bugfix-plan C1). Pushed/popped in lockstep with the
+        // try body in TryStatement::generateCode; consumed by emitTryFinallyUnwind
+        // at every return/break/continue site. See pushTryFinally.
         std::vector<std::shared_ptr<void>> tryFinallyStack;
 
         // Type-parameter substitution stack for template instantiation. Each
@@ -538,6 +546,19 @@ namespace cajeta {
         }
         std::vector<std::shared_ptr<void>>& getTryFinallyStack() {
             return tryFinallyStack;
+        }
+        // Detach the try-finally stack (leaving it empty) for the duration of a
+        // nested function body's codegen — lambda bodies are generated inline
+        // within the enclosing method's codegen, so the enclosing method's open
+        // try frames must not bleed into the lambda's `return` unwind. Restore
+        // the saved stack afterward.
+        std::vector<std::shared_ptr<void>> takeTryFinally() {
+            std::vector<std::shared_ptr<void>> saved = std::move(tryFinallyStack);
+            tryFinallyStack.clear();
+            return saved;
+        }
+        void restoreTryFinally(std::vector<std::shared_ptr<void>> saved) {
+            tryFinallyStack = std::move(saved);
         }
 
         void processMetadata(CajetaClassPtr structure);

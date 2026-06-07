@@ -1,14 +1,28 @@
 package cajeta.io.file;
 
 /**
- * A single filesystem change observation. Emitted by
- * `Watcher.events()`. See
- * `cajeta-docs/stdlib/io/file/Watcher.md`.
+ * A single filesystem change observation produced by a
+ * `Watcher`. Each event pairs the affected `Path` with a
+ * `WatchKind` (carried as its ordinal in `kind`) and the
+ * `int64` Unix-nanosecond `timestampNanos` at which the change
+ * was seen.
+ *
+ * Construct one with the `Path`, the `WatchKind` ordinal,
+ * the timestamp, and (for renames) the destination path, then
+ * dispatch on `kind`:
+ *
+ * ```cajeta
+ * FileEvent event = heap FileEvent(path, kind, timestampNanos, renameTarget);
+ * if (event.kind == WatchKind.RENAME) {
+ *     // renameTarget holds the new Path; null for every other kind
+ *     moveIndexEntry(event.path, event.renameTarget);
+ * }
+ * ```
  *
  * Phase deferred — placeholder so file structure mirrors the
  * spec. `renameTarget` is null when `kind != RENAME`. The
- * `timestamp` is `int64` Unix nanoseconds until the `Instant`
- * class lands; signatures flip then.
+ * `timestampNanos` stays `int64` Unix nanoseconds until the
+ * `Instant` class lands; signatures flip then.
  */
 public class FileEvent {
     public Path path;
@@ -16,6 +30,15 @@ public class FileEvent {
     public int64 timestampNanos;
     public Path renameTarget;
 
+    /**
+     * Bundle a change observation. Pass the `WatchKind` ordinal
+     * as `kind`; leave `renameTarget` null unless `kind` is a
+     * rename.
+     *
+     * ```cajeta
+     * FileEvent e = heap FileEvent(path, WatchKind.MODIFY, timestampNanos, null);
+     * ```
+     */
     public FileEvent(Path path, int32 kind, int64 timestampNanos, Path renameTarget) {
         this.path = path;
         this.kind = kind;

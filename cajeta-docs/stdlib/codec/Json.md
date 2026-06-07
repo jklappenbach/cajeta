@@ -647,7 +647,7 @@ state after a throw is undefined; discard the reader.
   standard auto-field-drop chain.
 - `JsonReader.currentString()` returns a `String` that may be a
   borrowed view into the input buffer (zero-copy fast path) or an
-  owned new String (escapes present). The user can't distinguish at
+  owned heap String (escapes present). The user can't distinguish at
   call sites that just need to read; for cross-call-boundary use the
   receiver doctrine of `String` already covers the borrow rules.
 - `JsonWriter.toBytes()` returns `#byte[]` — ownership transferred,

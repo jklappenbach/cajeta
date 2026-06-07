@@ -113,7 +113,7 @@ TEST(SpawnDropTests, carrierDropsAccountedSeparately) {
         "package test;\n"
         "public final class D {\n"
         "    public static async int32 compute_with_local() {\n"
-        "        int32[] tmp = new int32[4];\n"
+        "        int32[] tmp = heap int32[4];\n"
         "        return 7;\n"
         "    }\n"
         "    public static int32 run() {\n"

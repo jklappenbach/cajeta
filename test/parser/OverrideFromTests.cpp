@@ -52,7 +52,7 @@ TEST(OverrideFromTests, fromMatchingAncestorMethodCompiles) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    B b = new B();\n"
+        "    B b = heap B();\n"
         "    return b.kind();\n"  // 99 — override + matching from=A
         "  }\n"
         "}\n";
@@ -72,7 +72,7 @@ TEST(OverrideFromTests, fromMatchingAncestorWithDotClassCompiles) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    B b = new B();\n"
+        "    B b = heap B();\n"
         "    return b.kind();\n"  // 11
         "  }\n"
         "}\n";
@@ -100,7 +100,7 @@ TEST(OverrideFromTests, fromMatchingAncestorAcrossMultipleInheritance) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.stride();\n"  // 5 * 10 = 50
         "  }\n"
         "}\n";
@@ -126,7 +126,7 @@ TEST(OverrideFromTests, fromUnrelatedClassRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    B b = new B();\n"
+        "    B b = heap B();\n"
         "    return b.kind();\n"
         "  }\n"
         "}\n";
@@ -151,7 +151,7 @@ TEST(OverrideFromTests, fromAncestorWithoutMatchingMethodRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    B b = new B();\n"
+        "    B b = heap B();\n"
         "    return b.kind();\n"
         "  }\n"
         "}\n";
@@ -178,7 +178,7 @@ TEST(OverrideFromTests, bareOverrideWithoutFromStillCompiles) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    B b = new B();\n"
+        "    B b = heap B();\n"
         "    return b.kind();\n"  // 99
         "  }\n"
         "}\n";

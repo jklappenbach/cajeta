@@ -779,11 +779,11 @@ TEST(XpuVulkanEmitTests, lowersIntegerDotToSpirv) {
         "public class D {\n"
         "    @Kernel\n"
         "    public static void dp4a(Buffer<int32> out, uint32 n) {\n"
-        "        Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);\n"
-        "        Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);\n"
+        "        Vector<int8,4> a = heap Vector<int8,4>(1, 2, 3, 4);\n"
+        "        Vector<int8,4> b = heap Vector<int8,4>(5, 6, 7, 8);\n"
         "        int32 d = a.dot(b);\n"          // signed dot
         "        int32 e = a.dot(b, d);\n"       // fused signed dot-add
-        "        Vector<uint8,4> u = new Vector<uint8,4>(9, 10, 11, 12);\n"
+        "        Vector<uint8,4> u = heap Vector<uint8,4>(9, 10, 11, 12);\n"
         "        int32 f = u.dot(u);\n"          // unsigned dot
         "        out[0] = e + f;\n"
         "    }\n"

@@ -27,8 +27,24 @@ import cajeta.lang.Pair;
  * key equality. Class K defaults to identity (override `hash()` + `==`
  * for value keys); primitive K lowers `.hash()` to the intrinsic.
  *
- * @see cajeta.collection.HashMap
- * @see cajeta.lang.Pair
+ * ## Usage
+ *
+ * Snapshot an `ArrayList` of `Pair` entries, then query it. Reads
+ * go through `get` / `operator[]`, presence through `containsKey`, and
+ * `keyAt` / `valAt` walk entries in insertion order.
+ *
+ * ```cajeta
+ * // entries: ArrayList<Pair<string, int32>>, already populated
+ * ImmutableMap<string, int32> m = heap ImmutableMap<string, int32>(entries);
+ *
+ * int32 one = m["one"];                // subscript -> get("one")
+ * boolean has = m.containsKey("two");  // true
+ * int64 n = m.count();                 // entry count
+ * string firstKey = m.keyAt(0);        // dense, insertion order
+ * ```
+ *
+ * @See cajeta.collection.HashMap
+ * @See cajeta.lang.Pair
  */
 public class ImmutableMap<K, V> {
 
@@ -50,7 +66,12 @@ public class ImmutableMap<K, V> {
      * a key already present has its value overwritten (last-wins),
      * otherwise a new entry is appended. The source list is untouched.
      *
-     * @param src entries to snapshot, as `Pair<key, value>`.
+     * ```cajeta
+     * ArrayList<Pair<string, int32>> entries = ...;
+     * ImmutableMap<string, int32> m = heap ImmutableMap<string, int32>(entries);
+     * ```
+     *
+     * @Param src entries to snapshot, as `Pair``<key, value>`.
      */
     public ImmutableMap(ArrayList<Pair<K, V>> src) {
         int32 n = src.count();
@@ -58,9 +79,9 @@ public class ImmutableMap<K, V> {
         while (cap < (int64) n * 2) {
             cap = cap * 2;
         }
-        K[] keys = new K[n];
-        V[] vals = new V[n];
-        int64[] tab = new int64[cap];
+        K[] keys = heap K[n];
+        V[] vals = heap V[n];
+        int64[] tab = heap int64[cap];
         int32 count = 0;
 
         int32 i = 0;
@@ -121,7 +142,7 @@ public class ImmutableMap<K, V> {
                 idx = (idx + 1) & (this.tableCap - 1);
             }
         }
-        V[] missDefault = new V[1];
+        V[] missDefault = heap V[1];
         return missDefault[0];
     }
 
@@ -158,6 +179,7 @@ public class ImmutableMap<K, V> {
         return (int64) this.entryCount;
     }
 
+    /** @returns true iff the map holds no entries. */
     public boolean isEmpty() {
         return this.entryCount == 0;
     }
@@ -165,7 +187,7 @@ public class ImmutableMap<K, V> {
     /** Key at dense index `i` (0-based, insertion order); zero value if out of range. */
     public K keyAt(int32 i) {
         if (i < 0 || i >= this.entryCount) {
-            K[] missDefault = new K[1];
+            K[] missDefault = heap K[1];
             return missDefault[0];
         }
         return this.keyArr[i];
@@ -174,7 +196,7 @@ public class ImmutableMap<K, V> {
     /** Value at dense index `i` (0-based, insertion order); zero value if out of range. */
     public V valAt(int32 i) {
         if (i < 0 || i >= this.entryCount) {
-            V[] missDefault = new V[1];
+            V[] missDefault = heap V[1];
             return missDefault[0];
         }
         return this.valArr[i];

@@ -1,0 +1,45 @@
+package cajeta.collection;
+
+/**
+ * One entry in a `Cache``<K,V>`. Doubly-linked into the cache's LRU
+ * list (head=most-recently-used, tail=least). The cache also keeps
+ * a `HashMap``<K, CacheNode<K,V>>` for O(1) lookup, so each access
+ * resolves the node directly without scanning the list.
+ *
+ * Same v1 visibility posture as `LinkedListNode` — fields are
+ * public for the cache's straightforward access; a future stdlib
+ * pass tightens visibility uniformly.
+ */
+public class CacheNode<K, V> {
+    public K key;
+    public V value;
+    /**
+     * Nanosecond timestamp from `Cajeta.currentTimeNanos()` at the
+     * last `get` or `put`. The TTL pass evicts entries whose
+     * `(now - accessedAt) > maxAge`.
+     *
+     * Nanos rather than millis to match `Cajeta.currentTimeNanos`
+     * + `cajeta.time.Duration`'s unit, and to defer the unit
+     * conversion to the public API surface where humans see it.
+     */
+    public int64 accessedAt;
+    public CacheNode<K, V> prev;
+    public CacheNode<K, V> next;
+
+    /**
+     * Builds an unlinked node stamped with the current access time;
+     * `prev`/`next` start `null` and the owning `Cache` splices it
+     * into the LRU list. Allocate on the heap so the cache can own it.
+     *
+     * ```cajeta
+     * CacheNode<K, V> fresh = #heap CacheNode<K, V>(key, value, Cajeta.currentTimeNanos());
+     * ```
+     */
+    public CacheNode(K key, V value, int64 accessedAt) {
+        this.key = key;
+        this.value = value;
+        this.accessedAt = accessedAt;
+        this.prev = null;
+        this.next = null;
+    }
+}

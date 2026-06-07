@@ -1,12 +1,38 @@
 package cajeta.error;
 
-// Recoverable subtype: errors a caller might reasonably handle and
-// proceed past (failed parse, missing record, transient I/O). Distinct
-// from UnrecoverableException so the runtime's Unrecoverable detection
-// can chain-walk a thrown instance's vtable to decide whether the
-// throw should propagate to abort.
+/**
+ * Recoverable subtype of `Exception`: errors a caller might reasonably
+ * handle and proceed past — a failed parse, a missing record, transient
+ * I/O. Throw one (or a domain subclass of it) when the caller has a
+ * sensible fallback and the program can continue.
+ *
+ * Contrast with `UnrecoverableException`, the sibling subtype for
+ * invariant violations and programmer error: the runtime's Unrecoverable
+ * detection chain-walks a thrown instance's vtable, so anything reaching
+ * `RecoverableException` (and not `UnrecoverableException`) stays catchable
+ * rather than propagating to abort. Both descend from `Exception` →
+ * `Throwable`, which carries the `message` field.
+ *
+ * ```cajeta
+ * try {
+ *     parseRecord(line);
+ * } catch (RecoverableException e) {
+ *     log(e.message);   // recover and keep going
+ * }
+ * ```
+ *
+ * See cajeta-docs/stdlib/ErrorModel.md.
+ */
 public class RecoverableException extends Exception {
-    public RecoverableException(String message) {
+    /**
+     * Wrap a heap `#String` message into a throwable recoverable error.
+     * The message ownership transfers in; `cause` is left unset.
+     *
+     * ```cajeta
+     * throw RecoverableException("record not found");
+     * ```
+     */
+    public RecoverableException(#String message) {
         this.message = message;
         this.cause = 0;
     }

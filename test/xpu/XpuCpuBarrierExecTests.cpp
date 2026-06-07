@@ -82,8 +82,8 @@ public class M {
     }
     public static uint32 run() {
         uint32 n = 256;
-        uint32[] ha = new uint32[n];
-        uint32[] hb = new uint32[n];
+        uint32[] ha = heap uint32[n];
+        uint32[] hb = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { ha[i] = 0; hb[i] = 0; }
         Buffer<uint32> a = heap Buffer<uint32>(n);
         Buffer<uint32> b = heap Buffer<uint32>(n);
@@ -125,8 +125,8 @@ public class M {
     }
     public static uint32 run() {
         uint32 n = 256;
-        uint32[] hin = new uint32[n];
-        uint32[] hout = new uint32[n];
+        uint32[] hin = heap uint32[n];
+        uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = i; hout[i] = 0; }
         Buffer<uint32> in = heap Buffer<uint32>(n);
         Buffer<uint32> out = heap Buffer<uint32>(n);
@@ -173,8 +173,8 @@ public class M {
     }
     public static int32 run() {
         uint32 n = 256;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[1];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[1];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
         hout[0] = 0;
         Buffer<int32> in = heap Buffer<int32>(n);
@@ -194,8 +194,8 @@ public class M {
     public static int32 runMultiBlock() {
         uint32 blocks = 32;
         uint32 n = blocks * 256;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[blocks];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[blocks];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
         for (uint32 b = 0; b < blocks; b = b + 1) { hout[b] = 0; }
         Buffer<int32> in = heap Buffer<int32>(n);
@@ -246,10 +246,10 @@ public class M {
     public static int32 run() {
         uint32 n = 256;
         uint32 k = 3;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[n];
-        int32[] ra = new int32[n];
-        int32[] rb = new int32[n];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[n];
+        int32[] ra = heap int32[n];
+        int32[] rb = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; ra[i] = (int32) i; }
         for (uint32 it = 0; it < k; it = it + 1) {
             for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
@@ -302,10 +302,10 @@ public class M {
     public static int32 run() {
         uint32 n = 256;
         uint32 k = 4;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[n];
-        int32[] ra = new int32[n];
-        int32[] rb = new int32[n];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[n];
+        int32[] ra = heap int32[n];
+        int32[] rb = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; ra[i] = (int32) i; }
         for (uint32 it = 0; it < k; it = it + 1) {
             for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
@@ -358,9 +358,9 @@ public class M {
     public static int32 run() {
         uint32 n = 256;
         uint32 k = 5;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[n];
-        int32[] ref = new int32[n];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[n];
+        int32[] ref = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; }
         for (uint32 t = 0; t < n; t = t + 1) {
             int32 acc = 0;
@@ -419,10 +419,10 @@ public class M {
         uint32 n = 256;
         uint32 ki = 2;
         uint32 kj = 3;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[n];
-        int32[] ra = new int32[n];
-        int32[] rb = new int32[n];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[n];
+        int32[] ra = heap int32[n];
+        int32[] rb = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; ra[i] = (int32) i; }
         for (uint32 it = 0; it < ki * kj; it = it + 1) {
             for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
@@ -483,10 +483,10 @@ public class M {
         uint32 n = 256;
         uint32 ki = 2;
         uint32 kj = 2;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[n];
-        int32[] ra = new int32[n];
-        int32[] rb = new int32[n];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[n];
+        int32[] ra = heap int32[n];
+        int32[] rb = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; ra[i] = (int32) i; }
         uint32 reps = ki * (kj + 1);
         for (uint32 it = 0; it < reps; it = it + 1) {
@@ -543,8 +543,8 @@ public class M {
     }
     public static int32 run() {
         uint32 n = 256;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[1];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[1];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
         hout[0] = 0;
         Buffer<int32> in = heap Buffer<int32>(n);
@@ -591,7 +591,7 @@ public class M {
     }
     public static int32 run() {
         uint32 n = 256;
-        uint32[] hw = new uint32[n];
+        uint32[] hw = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hw[i] = 0; }
         Buffer<uint32> wbuf = heap Buffer<uint32>(n);
         wbuf.upload(hw);
@@ -602,8 +602,8 @@ public class M {
         int32 W = (int32) hw[0];
         if (W < 1) { return -1; }
 
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[n];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hout[i] = 0; }
         Buffer<int32> in = heap Buffer<int32>(n);
         Buffer<int32> out = heap Buffer<int32>(n);
@@ -648,8 +648,8 @@ public class M {
     }
     public static int32 run() {
         uint32 n = 256;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[1];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[1];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
         hout[0] = 0;
         Buffer<int32> in = heap Buffer<int32>(n);
@@ -691,8 +691,8 @@ public class M {
     }
     public static int32 run() {
         uint32 n = 64;
-        int32[] hin = new int32[n];
-        int32[] hout = new int32[n];
+        int32[] hin = heap int32[n];
+        int32[] hout = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; }
         Buffer<int32> in = heap Buffer<int32>(n);
         Buffer<int32> out = heap Buffer<int32>(n);
@@ -938,8 +938,20 @@ namespace {
 
 struct ScopedEnv {
     std::string key;
-    ScopedEnv(const char* k, const char* v) : key(k) { ::setenv(k, v, 1); }
-    ~ScopedEnv() { ::unsetenv(key.c_str()); }
+    ScopedEnv(const char* k, const char* v) : key(k) {
+#if defined(_WIN32)
+        _putenv_s(k, v);
+#else
+        ::setenv(k, v, 1);
+#endif
+    }
+    ~ScopedEnv() {
+#if defined(_WIN32)
+        _putenv_s(key.c_str(), "");   // empty value removes the var on Windows
+#else
+        ::unsetenv(key.c_str());
+#endif
+    }
 };
 
 // The body text of `define ... @<name>(...) { ... }`, or "" if absent.

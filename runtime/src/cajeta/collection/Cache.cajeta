@@ -1,0 +1,299 @@
+package cajeta.collection;
+
+import cajeta.lang.Optional;
+import cajeta.time.Duration;
+
+/**
+ * Bounded in-memory cache with LRU eviction and optional TTL.
+ *
+ * The canonical cajeta primitive for "memoize this lookup but don't
+ * grow without bound." Any cajeta consumer that wants `compute -
+ * once, reuse N times, drop oldest under pressure` semantics reaches
+ * for `Cache<K, V>`.
+ *
+ * ## Cost model
+ *
+ * - `get` / `put` / `remove` / `containsKey` — amortized O(1):
+ *   one hashmap lookup + a doubly-linked-list pointer reshuffle.
+ * - `evict` (manual) — O(n) over the entries, since the TTL pass
+ *   has to inspect each node's `accessedAt`. The size-cap pass
+ *   alone is O(k) where k is the number of entries removed.
+ *
+ * Storage is `HashMap<K, CacheNode<K,V>>` keyed on `K`, paired with
+ * a doubly-linked LRU list with `mruHead` = most-recently-used and
+ * `lruTail` = least. `get` moves the node to head; `put` inserts at
+ * head and evicts the tail when over `maxEntries`.
+ *
+ * ## TTL semantics
+ *
+ * `setMaxAge(millis)` enables time-based expiration. An entry is
+ * considered expired when `(now - accessedAt) > maxAge`. Expiration
+ * is checked **on lookup** (returning `Optional.empty()` for an
+ * expired entry, even if it's still physically present) AND drained
+ * by the periodic eviction pass — that way an idle cache still
+ * releases stale entries without waiting for the next lookup. Set
+ * to 0 (the default) to disable TTL.
+ *
+ * ## Concurrency
+ *
+ * `Cache<K, V>` is **not thread-safe**. Wrap it in `Mutex.withLock`
+ * if multiple threads share an instance — same posture as `HashMap`.
+ * A future `ConcurrentCache<K, V>` may ship if the lock contention
+ * shows up in a real consumer; until then, the explicit lock keeps
+ * the API minimal.
+ *
+ * ## Why not just LinkedHashMap?
+ *
+ * Java's `LinkedHashMap` overloads insertion order + access order
+ * with an opt-in flag, which makes the contract murky and TTL
+ * support awkward. `Cache<K, V>` is purpose-built: every operation
+ * is in service of "remember things until forgetting them is the
+ * right call." The shape matches Caffeine + Rust's `lru` crate.
+ *
+ * ## Usage
+ *
+ * Construct with the LRU bound, optionally arm a TTL with a
+ * `Duration`, and read back through `Optional`:
+ *
+ * ```cajeta
+ * Cache<int64, String> cache = stack Cache<int64, String>(1024);
+ * cache.setMaxAge(Duration.ofSeconds(30));
+ *
+ * cache.put(42, "answer");
+ *
+ * Optional<String> hit = cache.get(42);
+ * if (hit.isPresent()) {
+ *     print(hit.get());
+ * }
+ * ```
+ */
+public class Cache<K, V> {
+
+    HashMap<K, CacheNode<K, V>> entries;
+    CacheNode<K, V> mruHead;
+    CacheNode<K, V> lruTail;
+    int32 maxEntries;
+    /**
+     * TTL in nanoseconds. Stored as nanos to match
+     * `Cajeta.currentTimeNanos()`'s unit and avoid per-check
+     * multiplication; the public `setMaxAge(Duration)` accepts the
+     * typed duration and converts.
+     */
+    int64 maxAgeNanos;
+
+    /**
+     * Build a cache with the given LRU bound. `maxEntries` must be
+     * positive; a cache of size 0 would evict every entry on insert
+     * and is almost certainly a bug.
+     *
+     * ```cajeta
+     * Cache<String, User> cache = stack Cache<String, User>(256);
+     * ```
+     */
+    public Cache(int32 maxEntries) {
+        // Heap-allocate the backing table with an explicit power-of-2
+        // capacity (HashMap has no no-arg constructor; it auto-grows past 16).
+        this.entries = heap HashMap<K, CacheNode<K, V>>(16);
+        this.mruHead = null;
+        this.lruTail = null;
+        this.maxEntries = maxEntries;
+        this.maxAgeNanos = 0;
+    }
+
+    /**
+     * Set the maximum age before an entry expires. Pass a zero
+     * `Duration` (`Duration.ofNanos(0)`) to disable TTL — the
+     * default. Changing
+     * this after entries exist applies to subsequent expiration
+     * checks; nothing is eagerly evicted.
+     */
+    public void setMaxAge(Duration maxAge) {
+        this.maxAgeNanos = maxAge.toNanos();
+    }
+
+    public int32 count() {
+        return this.entries.count();
+    }
+
+    public boolean isEmpty() {
+        return this.entries.count() == 0;
+    }
+
+    /**
+     * True when `key` is present AND not expired. Unlike `get`, this
+     * does not touch the entry's access time or move it in the LRU
+     * list — and it leaves an expired entry physically in place
+     * (the next `get`/`evict` reclaims it).
+     */
+    public boolean containsKey(K key) {
+        // HashMap.get returns the value directly (null on a miss for a
+        // class V), NOT an Optional — so null-check the node rather than
+        // wrapping it. (Treating the raw V as an Optional would dispatch
+        // Optional.isEmpty() on a possibly-null node pointer.)
+        CacheNode<K, V> n = this.entries.get(key);
+        if (n == null) {
+            return false;
+        }
+        return !this.isExpired(n, Cajeta.currentTimeNanos());
+    }
+
+    /**
+     * Look up `key`. Touches the entry's access time + moves it to
+     * the LRU-list head. Returns empty when the key is absent or
+     * when the entry has expired (in which case the stale entry is
+     * removed as a side-effect — the cache shouldn't carry
+     * "previously seen" garbage longer than the TTL allows).
+     * Resolves through `Optional`:
+     *
+     * ```cajeta
+     * Optional<V> hit = cache.get(key);
+     * V value = hit.isPresent() ? hit.get() : compute(key);
+     * ```
+     */
+    public Optional<V> get(K key) {
+        // HashMap.get returns the value directly (null on a miss for a
+        // class V), NOT an Optional — null-check the node before use.
+        CacheNode<K, V> node = this.entries.get(key);
+        if (node == null) {
+            return stack Optional<V>(false, #null);
+        }
+        int64 now = Cajeta.currentTimeNanos();
+        if (this.isExpired(node, now)) {
+            this.removeNode(node);
+            this.entries.remove(key);
+            return stack Optional<V>(false, #null);
+        }
+        node.accessedAt = now;
+        this.moveToHead(node);
+        return stack Optional<V>(true, node.value);
+    }
+
+    /**
+     * Insert (or replace) `key`'s value. Evicts the LRU entry when
+     * the bound is exceeded. Putting an existing key bumps its
+     * access time + moves it to the head, same as `get`.
+     *
+     * ```cajeta
+     * cache.put("session-7f3a", session);
+     * ```
+     */
+    public void put(K key, V value) {
+        int64 now = Cajeta.currentTimeNanos();
+        // HashMap.get returns the value directly (null on a miss for a
+        // class V), NOT an Optional — null-check rather than isPresent().
+        CacheNode<K, V> node = this.entries.get(key);
+        if (node != null) {
+            node.value = value;
+            node.accessedAt = now;
+            this.moveToHead(node);
+            return;
+        }
+        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, value, now);
+        this.entries.put(key, #fresh);
+        this.linkAtHead(fresh);
+        if (this.entries.count() > this.maxEntries) {
+            this.evictLru();
+        }
+    }
+
+    /** Drop `key` and its LRU node if present; a no-op otherwise. */
+    public void remove(K key) {
+        // HashMap.get returns the value directly (null on a miss for a
+        // class V), NOT an Optional — null-check rather than isEmpty().
+        CacheNode<K, V> existing = this.entries.get(key);
+        if (existing == null) { return; }
+        this.removeNode(existing);
+        this.entries.remove(key);
+    }
+
+    /** Drop every entry and reset the LRU list to empty. */
+    public void clear() {
+        // Heap-allocate the backing table with an explicit power-of-2
+        // capacity (HashMap has no no-arg constructor; it auto-grows past 16).
+        this.entries = heap HashMap<K, CacheNode<K, V>>(16);
+        this.mruHead = null;
+        this.lruTail = null;
+    }
+
+    /**
+     * Manual eviction pass — drops everything currently expired
+     * under the TTL. The size-cap is enforced on every `put`, so
+     * this method only matters when a long-idle cache wants to
+     * release stale entries without waiting for the next access.
+     * Call from a scheduled task / heartbeat if the consumer cares.
+     *
+     * ```cajeta
+     * cache.setMaxAge(Duration.ofMinutes(5));
+     * // ...later, on a timer tick:
+     * cache.evict();
+     * ```
+     */
+    public void evict() {
+        if (this.maxAgeNanos == 0) { return; }
+        int64 now = Cajeta.currentTimeNanos();
+        CacheNode<K, V> cursor = this.lruTail;
+        while (cursor != null) {
+            CacheNode<K, V> prev = cursor.prev;
+            if (this.isExpired(cursor, now)) {
+                this.removeNode(cursor);
+                this.entries.remove(cursor.key);
+            }
+            cursor = prev;
+        }
+    }
+
+    /** TTL test: always `false` when TTL is disabled (`maxAgeNanos == 0`). */
+    boolean isExpired(CacheNode<K, V> node, int64 nowNanos) {
+        if (this.maxAgeNanos == 0) { return false; }
+        return (nowNanos - node.accessedAt) > this.maxAgeNanos;
+    }
+
+    /** Splice `node` in as the new MRU head, seeding the tail if empty. */
+    void linkAtHead(CacheNode<K, V> node) {
+        node.prev = null;
+        node.next = this.mruHead;
+        if (this.mruHead != null) {
+            this.mruHead.prev = node;
+        }
+        this.mruHead = node;
+        if (this.lruTail == null) {
+            this.lruTail = node;
+        }
+    }
+
+    /** Promote `node` to MRU head; no-op when it is already the head. */
+    void moveToHead(CacheNode<K, V> node) {
+        if (node == this.mruHead) { return; }
+        this.unlinkOnly(node);
+        this.linkAtHead(node);
+    }
+
+    /** Detach `node` from the LRU list, mending head/tail and its neighbors. */
+    void unlinkOnly(CacheNode<K, V> node) {
+        if (node.prev != null) {
+            node.prev.next = node.next;
+        } else {
+            this.mruHead = node.next;
+        }
+        if (node.next != null) {
+            node.next.prev = node.prev;
+        } else {
+            this.lruTail = node.prev;
+        }
+        node.prev = null;
+        node.next = null;
+    }
+
+    /** Unlink `node` from the LRU list; the caller drops the map entry. */
+    void removeNode(CacheNode<K, V> node) {
+        this.unlinkOnly(node);
+    }
+
+    /** Drop the LRU tail entry (the size-cap victim); no-op when empty. */
+    void evictLru() {
+        if (this.lruTail == null) { return; }
+        CacheNode<K, V> victim = this.lruTail;
+        this.unlinkOnly(victim);
+        this.entries.remove(victim.key);
+    }
+}

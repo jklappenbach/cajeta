@@ -1,0 +1,67 @@
+package cajeta.net;
+
+/**
+ * The lifecycle states of a [`Server`](Server.cajeta) — the small,
+ * monotonically-advancing state machine the accept loop and the
+ * graceful-shutdown path coordinate on (plan item **NET-4.1**).
+ *
+ * ## The state machine
+ *
+ * ```
+ *   NEW ──serve()──▶ RUNNING ──shutdown()──▶ DRAINING ──drained──▶ STOPPED
+ * ```
+ *
+ * The transition is **one-way and monotonic** (the ordinals only
+ * increase), so a single [`AtomicInt32`](../threading/AtomicInt32.cajeta)
+ * holds the state and every transition is a `compareAndSet` from the
+ * expected prior state. That gives two free invariants:
+ *
+ *   - **`serve()` is idempotent-guarded** — a second `serve()` finds the
+ *     state already past `NEW` and refuses, so an accept loop is never
+ *     started twice on one server.
+ *   - **shutdown is a latch** — once `shutdown()` has moved the state to
+ *     `DRAINING` (or beyond), the accept loop's `state == RUNNING` test
+ *     fails and it stops pulling new connections; a second `shutdown()`
+ *     is a no-op because the `RUNNING → DRAINING` CAS no longer fires.
+ *
+ * ## Why ordinals, not an enum type
+ *
+ * The states live as `int32` ordinals (the same posture
+ * [`NetException.KIND_*`](NetException.cajeta) and
+ * [`Reactor.READ`](reactor/Reactor.cajeta) take) so they drop straight
+ * into the `AtomicInt32` cell the server's `compareAndSet` transitions
+ * run against — no boxing, no separate enum-tag load. They are an
+ * **append-only** contract: never renumber an existing value.
+ */
+public class ServerState {
+    /**
+     * Constructed but not yet serving — [`Server.bind`](Server.cajeta#bind)
+     * leaves a fresh server here. The only legal next state is
+     * [`RUNNING`](#RUNNING) via [`serve`](Server.cajeta#serve).
+     */
+    public static final int32 NEW = 0;
+
+    /**
+     * The accept loop is live: [`serve`](Server.cajeta#serve) has begun
+     * pulling connections off the listener and dispatching them to the
+     * handler. The accept loop continues while — and only while — the
+     * server is in this state.
+     */
+    public static final int32 RUNNING = 1;
+
+    /**
+     * [`shutdown`](Server.cajeta#shutdown) has been requested: the accept
+     * loop has stopped taking **new** connections, but in-flight handlers
+     * are still being awaited (drained) up to the shutdown deadline. New
+     * connections are refused; established ones run to completion.
+     */
+    public static final int32 DRAINING = 2;
+
+    /**
+     * Fully stopped: the accept loop has exited and every in-flight
+     * connection has either completed or been force-closed at the drain
+     * deadline. The listener is closed. Terminal — a `STOPPED` server is
+     * not restartable (build a fresh one).
+     */
+    public static final int32 STOPPED = 3;
+}

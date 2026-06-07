@@ -1,0 +1,1060 @@
+package cajeta.net.uri;
+
+import cajeta.lang.String;
+import cajeta.net.uri.MalformedUriException;
+import cajeta.net.uri.UriComponent;
+import cajeta.net.uri.PercentCodec;
+import cajeta.net.uri.QueryParams;
+
+/**
+ * An immutable, parsed **URI** per [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986).
+ *
+ * `Uri.parse` decomposes a string into the seven generic-syntax
+ * components — *scheme*, *userinfo*, *host*, *port*, *path*, *query*,
+ * *fragment* — following the reference algorithm of RFC 3986
+ * **Appendix B**:
+ *
+ * ```
+ * URI       = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
+ * hier-part = "//" authority path-abempty
+ *           / path-absolute / path-rootless / path-empty
+ * authority = [ userinfo "@" ] host [ ":" port ]
+ * ```
+ *
+ * ## Scope (plan item NET-6.1)
+ *
+ * This file is the **parse + component-accessor** layer. It is
+ * deliberately split from the dependent items so they compose on top:
+ *
+ *   - **NET-6.2** percent-encoding (`encode`/`decode`) — *not here*.
+ *   - **NET-6.3** query-param multi-map — *not here* (`query()`
+ *     returns the raw, still-percent-encoded query string).
+ *   - **NET-6.4** the builder + RFC 3986 §5 reference resolution
+ *     (`resolve(base, relative)`) — *not here*.
+ *
+ * What NET-6.1 *does* deliver: a strict component decomposition that
+ *
+ *   - rejects malformed input with a citing [`MalformedUriException`](MalformedUriException.cajeta)
+ *     (carrying the byte offset of the problem),
+ *   - parses **IPv6 literal hosts** in bracket form (`[::1]`,
+ *     `[2001:db8::1]`), stripping the brackets from `host()`,
+ *   - applies the **default port per scheme** (`http` → 80,
+ *     `https` → 443, `ws` → 80, `wss` → 443, `ftp` → 21) when the
+ *     authority omits an explicit `:port`, and
+ *   - handles **authority-less** forms (`mailto:a@b.test`,
+ *     `urn:isbn:0`, a bare relative path `a/b/c`).
+ *
+ * ## Component model
+ *
+ * Every component is stored as a `String`. The distinction between
+ * "absent" and "present-but-empty" matters in RFC 3986 (an empty
+ * authority `http:///x` differs from no authority `http:/x`), so each
+ * optional component carries a companion `has*` boolean rather than
+ * overloading the empty string. `host`/`port` are only meaningful when
+ * `hasAuthority` is true.
+ *
+ * The stored `scheme` is **lowercased** (schemes are case-insensitive
+ * per RFC 3986 §3.1); all other components retain their original case.
+ * No percent-decoding happens at parse time — components are returned
+ * exactly as they appeared (decoding is NET-6.2's job, and is
+ * component-set-sensitive).
+ */
+public class Uri {
+    /** Lowercased scheme (`"https"`), or empty when `hasScheme` is false. */
+    public String scheme;
+    /** True iff the input carried a `scheme:` prefix. */
+    public boolean hasScheme;
+
+    /** True iff the input carried a `//authority` section. */
+    public boolean hasAuthority;
+
+    /** Userinfo (`"user:pass"`), meaningful only when `hasUserinfo`. */
+    public String userinfo;
+    /** True iff the authority carried a `userinfo@` prefix. */
+    public boolean hasUserinfo;
+
+    /**
+     * Host, brackets stripped for IPv6 literals (`"::1"` for input
+     * `[::1]`). Meaningful only when `hasAuthority`.
+     */
+    public String host;
+    /** True iff the parsed host was an IPv6 literal bracket form. */
+    public boolean hostIsIpv6;
+
+    /**
+     * Port. When the authority carried an explicit `:port` this is
+     * that value (`hasExplicitPort` true); otherwise it is the scheme
+     * default if one is known, with `hasExplicitPort` false. `-1`
+     * means no port is known (authority present, no explicit port, no
+     * scheme default).
+     */
+    public int32 port;
+    /** True iff the authority carried an explicit `:port`. */
+    public boolean hasExplicitPort;
+
+    /** Path component (may be empty). Always present (possibly ""). */
+    public String path;
+
+    /** Raw (still-percent-encoded) query, meaningful when `hasQuery`. */
+    public String query;
+    /** True iff the input carried a `?query` section. */
+    public boolean hasQuery;
+
+    /** Fragment, meaningful when `hasFragment`. */
+    public String fragment;
+    /** True iff the input carried a `#fragment` section. */
+    public boolean hasFragment;
+
+    /**
+     * Field-pinning no-arg constructor. Leaves every component at a
+     * safe default (absent / empty). `parse` is the real entry point;
+     * this exists so the layout is constructible for tests and so
+     * partially-built instances never carry dangling state.
+     */
+    public Uri() {
+        int8[] e0 = heap int8[0];
+        this.scheme = heap String(#e0, 0);
+        this.hasScheme = false;
+        this.hasAuthority = false;
+        int8[] e1 = heap int8[0];
+        this.userinfo = heap String(#e1, 0);
+        this.hasUserinfo = false;
+        int8[] e2 = heap int8[0];
+        this.host = heap String(#e2, 0);
+        this.hostIsIpv6 = false;
+        this.port = -1;
+        this.hasExplicitPort = false;
+        int8[] e3 = heap int8[0];
+        this.path = heap String(#e3, 0);
+        int8[] e4 = heap int8[0];
+        this.query = heap String(#e4, 0);
+        this.hasQuery = false;
+        int8[] e5 = heap int8[0];
+        this.fragment = heap String(#e5, 0);
+        this.hasFragment = false;
+    }
+
+    // -- component accessors ------------------------------------------------
+
+    /** Lowercased scheme, or "" when absent. */
+    public String getScheme() {
+        return this.scheme;
+    }
+
+    /** Host (IPv6 brackets stripped), or "" when no authority. */
+    public String getHost() {
+        return this.host;
+    }
+
+    /**
+     * Effective port: explicit if present, else the scheme default,
+     * else `-1`. See `hasExplicitPort` to distinguish the two.
+     */
+    public int32 getPort() {
+        return this.port;
+    }
+
+    /** Userinfo, or "" when absent. */
+    public String getUserinfo() {
+        return this.userinfo;
+    }
+
+    /** Path (possibly ""). */
+    public String getPath() {
+        return this.path;
+    }
+
+    /** Raw query, or "" when absent. */
+    public String getQuery() {
+        return this.query;
+    }
+
+    /**
+     * Parse the raw query (NET-6.1 keeps it percent-encoded) into a
+     * [`QueryParams`](QueryParams.cajeta) multi-map — the decoded,
+     * order-preserving, duplicate-key view (plan item **NET-6.3**). This
+     * is the `u.query()` surface the spec
+     * ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md))
+     * describes; the raw slice stays available via
+     * [`getQuery`](#getQuery). Form-urlencoded by default (`+` is space)
+     * — the right reading for `?key=value` query strings. Returns an
+     * empty map when there is no `?query` section.
+     */
+    public #QueryParams queryParams() {
+        if (!this.hasQuery) {
+            return heap QueryParams();
+        }
+        return QueryParams.parse(this.query);
+    }
+
+    /** Fragment, or "" when absent. */
+    public String getFragment() {
+        return this.fragment;
+    }
+
+    // -- char-class helpers (RFC 3986 §2/§3) --------------------------------
+
+    /** ALPHA = a-z / A-Z. */
+    private static boolean isAlpha(int32 c) {
+        return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+    }
+
+    /** DIGIT = 0-9. */
+    private static boolean isDigit(int32 c) {
+        return c >= 48 && c <= 57;
+    }
+
+    /**
+     * scheme char after the first: ALPHA / DIGIT / "+" / "-" / "."
+     * (RFC 3986 §3.1). `+`=43, `-`=45, `.`=46.
+     */
+    private static boolean isSchemeChar(int32 c) {
+        return Uri.isAlpha(c) || Uri.isDigit(c)
+            || c == 43 || c == 45 || c == 46;
+    }
+
+    /** Read byte `i` of `b` as an unsigned 0..255 int32. */
+    private static int32 byteAt(int8[] b, int32 i) {
+        return ((int32) b[i]) & 0xff;
+    }
+
+    /** Slice `[begin, end)` of `b` into a fresh owned String. */
+    private static #String slice(int8[] b, int32 begin, int32 end) {
+        int32 len = end - begin;
+        if (len < 0) {
+            len = 0;
+        }
+        int8[] out = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            out[i] = b[begin + i];
+            i = i + 1;
+        }
+        return heap String(#out, len);
+    }
+
+    /**
+     * Default port for a (lowercased) scheme, or `-1` if unknown.
+     * Covers the schemes the HTTP + WebSocket stacks need plus `ftp`.
+     */
+    private static int32 defaultPortFor(String s) {
+        if (s.equals("http")) {
+            return 80;
+        }
+        if (s.equals("https")) {
+            return 443;
+        }
+        if (s.equals("ws")) {
+            return 80;
+        }
+        if (s.equals("wss")) {
+            return 443;
+        }
+        if (s.equals("ftp")) {
+            return 21;
+        }
+        return -1;
+    }
+
+    // -- parse --------------------------------------------------------------
+
+    /**
+     * Parse `input` into a `Uri` per RFC 3986. Throws
+     * [`MalformedUriException`](MalformedUriException.cajeta) (citing
+     * the offending byte offset) when the input violates the generic
+     * syntax — an empty input, a scheme with an illegal character, an
+     * unterminated IPv6 literal `[`, or a non-numeric / out-of-range
+     * port.
+     *
+     * The returned `Uri` owns its component strings; the source
+     * `input` may drop independently afterward.
+     */
+    public static #Uri parse(String input) {
+        if (input == null) {
+            throw heap MalformedUriException("null URI input", (int64) -1);
+        }
+        int32 n = input.byteLength;
+        if (n == 0) {
+            throw heap MalformedUriException("empty URI", (int64) -1);
+        }
+        int8[] b = input.bytes;
+
+        Uri u = heap Uri();
+
+        // RFC 3986 Appendix B: peel off fragment, then query, from the
+        // tail — those delimiters ('#', '?') are unambiguous once the
+        // earlier ones are removed. '#' first: a '?' inside a fragment
+        // is literal, but a '#' is never literal in query/path.
+        int32 end = n;
+
+        // fragment: first '#' in [0, end).
+        int32 hashIdx = -1;
+        int32 i = 0;
+        while (i < end) {
+            if (Uri.byteAt(b, i) == 35) {   // '#'
+                hashIdx = i;
+                i = end;                    // stop at the first '#'
+            } else {
+                i = i + 1;
+            }
+        }
+        if (hashIdx >= 0) {
+            u.fragment = Uri.slice(b, hashIdx + 1, end);
+            u.hasFragment = true;
+            end = hashIdx;
+        }
+
+        // query: first '?' in [0, end) (fragment already removed).
+        int32 qIdx = -1;
+        i = 0;
+        while (i < end) {
+            if (Uri.byteAt(b, i) == 63) {   // '?'
+                qIdx = i;
+                i = end;
+            } else {
+                i = i + 1;
+            }
+        }
+        if (qIdx >= 0) {
+            u.query = Uri.slice(b, qIdx + 1, end);
+            u.hasQuery = true;
+            end = qIdx;
+        }
+
+        // scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":".
+        // Only a ':' that appears before the first '/' counts (a ':'
+        // inside a path segment, e.g. "a/b:c", is not a scheme delim).
+        int32 cursor = 0;
+        if (end > 0 && Uri.isAlpha(Uri.byteAt(b, 0))) {
+            int32 j = 1;
+            boolean valid = true;
+            int32 colonAt = -1;
+            while (j < end && colonAt < 0 && valid) {
+                int32 c = Uri.byteAt(b, j);
+                if (c == 58) {              // ':'
+                    colonAt = j;
+                } else if (c == 47) {       // '/' before ':' → no scheme
+                    valid = false;
+                } else if (!Uri.isSchemeChar(c)) {
+                    valid = false;
+                }
+                j = j + 1;
+            }
+            if (colonAt > 0) {
+                String rawScheme = Uri.slice(b, 0, colonAt);
+                u.scheme = rawScheme.toLowerCase();
+                u.hasScheme = true;
+                cursor = colonAt + 1;
+            }
+        }
+
+        // hier-part: if it starts with "//", an authority follows, up
+        // to the next '/', '?' or '#' (the latter two already peeled).
+        if (cursor + 1 < end
+                && Uri.byteAt(b, cursor) == 47
+                && Uri.byteAt(b, cursor + 1) == 47) {
+            int32 authStart = cursor + 2;
+            int32 authEnd = authStart;
+            while (authEnd < end && Uri.byteAt(b, authEnd) != 47) {
+                authEnd = authEnd + 1;
+            }
+            Uri.parseAuthority(u, b, authStart, authEnd);
+            u.hasAuthority = true;
+            cursor = authEnd;
+
+            // Apply the scheme default port when no explicit port was
+            // present in the authority. Bind the boolean field to a local
+            // before the ternary condition — a field used directly as a
+            // ternary condition (`u.hasScheme ? .. : ..`) mistypes the
+            // field load and builds a malformed ICmp; a local condition
+            // lowers cleanly.
+            if (!u.hasExplicitPort) {
+                boolean schemed = u.hasScheme;
+                if (schemed) {
+                    u.port = Uri.defaultPortFor(u.scheme);
+                } else {
+                    u.port = -1;
+                }
+            }
+        }
+
+        // path: the remainder.
+        u.path = Uri.slice(b, cursor, end);
+
+        return #u;
+    }
+
+    // -- percent-encoding (NET-6.2 surface) ---------------------------------
+
+    /**
+     * Percent-encode `raw` for use in URI component `comp`, using that
+     * component's RFC 3986 safe set (path / query / fragment / userinfo
+     * / host differ — see [`UriComponent`](UriComponent.cajeta)). UTF-8
+     * aware. Convenience facade over
+     * [`PercentCodec.encode`](PercentCodec.cajeta); the spec surface is
+     * `Uri.percentEncode(raw, UriComponent.QUERY)`.
+     */
+    public static #String percentEncode(String raw, UriComponent comp) {
+        return PercentCodec.encode(raw, comp);
+    }
+
+    /**
+     * Decode percent-escapes (`%XX`) in `s`, the inverse of
+     * [`percentEncode`](#percentEncode). Component-independent (decoding
+     * is unambiguous). Throws
+     * [`MalformedUriException`](MalformedUriException.cajeta) on a
+     * truncated or non-hex escape. Facade over
+     * [`PercentCodec.decode`](PercentCodec.cajeta).
+     */
+    public static #String percentDecode(String s) {
+        return PercentCodec.decode(s);
+    }
+
+    /**
+     * Decompose the authority slice `[start, end)` into userinfo,
+     * host, and port. The grammar is
+     * `[ userinfo "@" ] host [ ":" port ]`, where host is either an
+     * IPv6 literal `"[" ... "]"` or a reg-name / IPv4 run. The
+     * bracket form is detected first so a ':' inside `[::1]` is not
+     * mistaken for the port delimiter.
+     */
+    private static void parseAuthority(Uri u, int8[] b, int32 start, int32 end) {
+        int32 hostStart = start;
+
+        // userinfo: up to the LAST '@' in the authority (an '@' may
+        // legally appear percent-encoded; the last unencoded one wins
+        // as the userinfo/host boundary per common practice).
+        int32 atIdx = -1;
+        int32 i = start;
+        while (i < end) {
+            if (Uri.byteAt(b, i) == 64) {   // '@'
+                atIdx = i;
+            }
+            i = i + 1;
+        }
+        if (atIdx >= 0) {
+            u.userinfo = Uri.slice(b, start, atIdx);
+            u.hasUserinfo = true;
+            hostStart = atIdx + 1;
+        }
+
+        // host: IPv6 literal bracket form, or reg-name/IPv4.
+        if (hostStart < end && Uri.byteAt(b, hostStart) == 91) {  // '['
+            int32 close = hostStart + 1;
+            boolean found = false;
+            while (close < end && !found) {
+                if (Uri.byteAt(b, close) == 93) {   // ']'
+                    found = true;
+                } else {
+                    close = close + 1;
+                }
+            }
+            if (!found) {
+                throw heap MalformedUriException(
+                    "unterminated IPv6 literal '[' in authority",
+                    (int64) hostStart);
+            }
+            // host is the content between the brackets.
+            u.host = Uri.slice(b, hostStart + 1, close);
+            u.hostIsIpv6 = true;
+            // After ']' an optional ':' port may follow.
+            int32 afterBracket = close + 1;
+            if (afterBracket < end) {
+                if (Uri.byteAt(b, afterBracket) != 58) {   // not ':'
+                    throw heap MalformedUriException(
+                        "unexpected character after IPv6 literal ']'",
+                        (int64) afterBracket);
+                }
+                Uri.parsePort(u, b, afterBracket + 1, end);
+            }
+        } else {
+            // reg-name / IPv4 host: host runs to the LAST ':' (the
+            // port delimiter), if any. reg-name forbids ':' so the
+            // first/last ':' coincide for well-formed input.
+            int32 colonIdx = -1;
+            i = hostStart;
+            while (i < end) {
+                if (Uri.byteAt(b, i) == 58) {   // ':'
+                    colonIdx = i;
+                }
+                i = i + 1;
+            }
+            if (colonIdx >= 0) {
+                u.host = Uri.slice(b, hostStart, colonIdx);
+                Uri.parsePort(u, b, colonIdx + 1, end);
+            } else {
+                u.host = Uri.slice(b, hostStart, end);
+            }
+        }
+    }
+
+    /**
+     * Parse the port digits in `[start, end)`. An empty port
+     * (`host:`) is allowed by RFC 3986 (`port = *DIGIT`) and is
+     * treated as "no explicit port" so the scheme default applies. A
+     * non-digit or an out-of-range value (> 65535) is a malformed
+     * URI.
+     */
+    private static void parsePort(Uri u, int8[] b, int32 start, int32 end) {
+        if (start >= end) {
+            // Empty port — leave hasExplicitPort false; scheme default
+            // is applied by the caller.
+            return;
+        }
+        int32 value = 0;
+        int32 i = start;
+        while (i < end) {
+            int32 c = Uri.byteAt(b, i);
+            if (!Uri.isDigit(c)) {
+                throw heap MalformedUriException(
+                    "non-numeric port", (int64) i);
+            }
+            value = value * 10 + (c - 48);
+            if (value > 65535) {
+                throw heap MalformedUriException(
+                    "port out of range (> 65535)", (int64) start);
+            }
+            i = i + 1;
+        }
+        u.port = value;
+        u.hasExplicitPort = true;
+    }
+
+    // -- byte-buffer recomposition helpers ----------------------------------
+
+    /**
+     * Copy `src`'s payload into `dst` starting at `at`, returning the
+     * heap cursor (`at + src.byteLength`). A tiny "append a String into
+     * a pre-sized int8[]" primitive — the language has no String
+     * concatenation operator yet (NET-6.4 predates the `cajeta.text`
+     * builders), so recomposition pre-computes the total length then
+     * fills with this.
+     */
+    private static int32 copyInto(int8[] dst, int32 at, String src) {
+        int32 i = 0;
+        int32 m = src.byteLength;
+        while (i < m) {
+            dst[at + i] = src.bytes[i];
+            i = i + 1;
+        }
+        return at + m;
+    }
+
+    /** Put a single ASCII byte `c` at `at`, returning `at + 1`. */
+    private static int32 putByte(int8[] dst, int32 at, int32 c) {
+        dst[at] = (int8) c;
+        return at + 1;
+    }
+
+    /** Decimal-digit width of a non-negative `v` (1 for 0). */
+    private static int32 digits(int32 v) {
+        if (v < 10) {
+            return 1;
+        }
+        int32 d = 0;
+        int32 t = v;
+        while (t > 0) {
+            d = d + 1;
+            t = t / 10;
+        }
+        return d;
+    }
+
+    /** Write `v`'s decimal digits at `[at, at+digits(v))`; return end. */
+    private static int32 putInt(int8[] dst, int32 at, int32 v) {
+        int32 w = Uri.digits(v);
+        int32 j = at + w - 1;
+        int32 t = v;
+        int32 first = 1;
+        while (first == 1 || t > 0) {
+            dst[j] = (int8) (48 + (t % 10));
+            t = t / 10;
+            j = j - 1;
+            first = 0;
+        }
+        return at + w;
+    }
+
+    // -- §5.3 recomposition -------------------------------------------------
+
+    /**
+     * Recompose this `Uri` back into a string per **RFC 3986 §5.3**:
+     *
+     * ```
+     * result = scheme ":" "//" authority path "?" query "#" fragment
+     * ```
+     *
+     * with each prefix emitted only when the corresponding component is
+     * present (`has*` flags). The authority, when present, is
+     * `userinfo "@" host [ ":" port ]`, and an explicit `:port` is
+     * emitted only when one was given (`hasExplicitPort` — a
+     * scheme-default port is *not* serialized, so `http://h/` round
+     * trips, not `http://h:80/`). IPv6 literal hosts are re-bracketed.
+     *
+     * This is the inverse of `parse` for the components it carries and
+     * is what `resolve` compares against the RFC §5.4 golden table.
+     */
+    public #String toString() {
+        // Two-pass: size the buffer, then fill it.
+        int32 len = 0;
+        if (this.hasScheme) {
+            len = len + this.scheme.byteLength + 1;          // scheme ":"
+        }
+        if (this.hasAuthority) {
+            len = len + 2;                                   // "//"
+            if (this.hasUserinfo) {
+                len = len + this.userinfo.byteLength + 1;    // userinfo "@"
+            }
+            if (this.hostIsIpv6) {
+                len = len + this.host.byteLength + 2;        // "[" host "]"
+            } else {
+                len = len + this.host.byteLength;
+            }
+            if (this.hasExplicitPort && this.port >= 0) {
+                len = len + 1 + Uri.digits(this.port);       // ":" port
+            }
+        }
+        len = len + this.path.byteLength;
+        if (this.hasQuery) {
+            len = len + this.query.byteLength + 1;           // "?" query
+        }
+        if (this.hasFragment) {
+            len = len + this.fragment.byteLength + 1;        // "#" fragment
+        }
+
+        int8[] out = heap int8[len];
+        int32 at = 0;
+        if (this.hasScheme) {
+            at = Uri.copyInto(out, at, this.scheme);
+            at = Uri.putByte(out, at, 58);                   // ':'
+        }
+        if (this.hasAuthority) {
+            at = Uri.putByte(out, at, 47);                   // '/'
+            at = Uri.putByte(out, at, 47);                   // '/'
+            if (this.hasUserinfo) {
+                at = Uri.copyInto(out, at, this.userinfo);
+                at = Uri.putByte(out, at, 64);               // '@'
+            }
+            if (this.hostIsIpv6) {
+                at = Uri.putByte(out, at, 91);               // '['
+                at = Uri.copyInto(out, at, this.host);
+                at = Uri.putByte(out, at, 93);               // ']'
+            } else {
+                at = Uri.copyInto(out, at, this.host);
+            }
+            if (this.hasExplicitPort && this.port >= 0) {
+                at = Uri.putByte(out, at, 58);               // ':'
+                at = Uri.putInt(out, at, this.port);
+            }
+        }
+        at = Uri.copyInto(out, at, this.path);
+        if (this.hasQuery) {
+            at = Uri.putByte(out, at, 63);                   // '?'
+            at = Uri.copyInto(out, at, this.query);
+        }
+        if (this.hasFragment) {
+            at = Uri.putByte(out, at, 35);                   // '#'
+            at = Uri.copyInto(out, at, this.fragment);
+        }
+        return heap String(#out, len);
+    }
+
+    // -- §5.2.4 remove_dot_segments -----------------------------------------
+
+    /**
+     * Apply the **RFC 3986 §5.2.4** `remove_dot_segments` algorithm to a
+     * path string, collapsing `.` and `..` complete segments. Operates
+     * on raw bytes (no percent-decoding) and preserves a trailing slash
+     * produced by a final `.`/`..` (per the normative §5.4 examples,
+     * e.g. `./` against base `c` resolves with a trailing slash).
+     *
+     * The reference algorithm uses an input buffer and an output
+     * buffer; this mirrors it directly. The input is copied into a
+     * mutable scratch buffer because steps B and C rewrite the leading
+     * `/./`/`/..`/`/.` into a bare `/` in place before re-testing.
+     */
+    private static #String removeDotSegments(String path) {
+        int32 n = path.byteLength;
+        // Mutable working copy of the input (steps B/C rewrite it).
+        int8[] in = heap int8[n];
+        int32 z = 0;
+        while (z < n) {
+            in[z] = path.bytes[z];
+            z = z + 1;
+        }
+        // Output is never larger than the (possibly grown-by-one via the
+        // in-place "/.."->"/" rewrite, which shrinks net) input.
+        int8[] out = heap int8[n];
+        int32 olen = 0;
+        int32 i = 0;
+        while (i < n) {
+            // The five §5.2.4 step-2 cases, in order:
+            //   A "../" or "./"      → drop the prefix
+            //   B "/./" or "/."(end) → collapse to "/"
+            //   C "/../" or "/.."(end) → "/" and pop last out segment
+            //   D exactly "." or ".." → remove it
+            //   E otherwise          → move one segment to the output
+            if (Uri.startsAt(in, n, i, 46, 46, 47)) {        // A: "../"
+                i = i + 3;
+            } else if (Uri.startsAt2(in, n, i, 46, 47)) {    // A: "./"
+                i = i + 2;
+            } else if (Uri.startsAt(in, n, i, 47, 46, 47)) { // B: "/./"
+                i = i + 2;                                    // leave one '/'
+            } else if (i + 2 == n && Uri.byteAt(in, i) == 47
+                    && Uri.byteAt(in, i + 1) == 46) {         // B: "/." end
+                in[i + 1] = (int8) 47;                        // -> "/"
+                i = i + 1;
+            } else if (Uri.startsAt(in, n, i, 47, 46, 46)
+                    && i + 3 == n) {                          // C: "/.." end
+                in[i + 2] = (int8) 47;                        // -> "/"
+                i = i + 2;
+                olen = Uri.popSegment(out, olen);
+            } else if (Uri.startsAt(in, n, i, 47, 46, 46)
+                    && Uri.byteAt(in, i + 3) == 47) {         // C: "/../"
+                i = i + 3;                                    // leave one '/'
+                olen = Uri.popSegment(out, olen);
+            } else if (Uri.isDot(in, n, i)) {                // D: "." or ".."
+                i = n;
+            } else {                                          // E: move segment
+                int32 start = i;
+                if (Uri.byteAt(in, i) == 47) {
+                    i = i + 1;
+                }
+                while (i < n && Uri.byteAt(in, i) != 47) {
+                    i = i + 1;
+                }
+                int32 k = start;
+                while (k < i) {
+                    out[olen] = in[k];
+                    olen = olen + 1;
+                    k = k + 1;
+                }
+            }
+        }
+        int8[] fin = heap int8[olen];
+        int32 c = 0;
+        while (c < olen) {
+            fin[c] = out[c];
+            c = c + 1;
+        }
+        return heap String(#fin, olen);
+    }
+
+    /** True iff bytes at `i` are the three given ASCII codes. */
+    private static boolean startsAt(int8[] b, int32 n, int32 i,
+                                    int32 a, int32 c, int32 d) {
+        return i + 2 < n
+            && Uri.byteAt(b, i) == a
+            && Uri.byteAt(b, i + 1) == c
+            && Uri.byteAt(b, i + 2) == d;
+    }
+
+    /** True iff bytes at `i` are the two given ASCII codes. */
+    private static boolean startsAt2(int8[] b, int32 n, int32 i,
+                                     int32 a, int32 c) {
+        return i + 1 < n
+            && Uri.byteAt(b, i) == a
+            && Uri.byteAt(b, i + 1) == c;
+    }
+
+    /** True iff the remainder from `i` is exactly "." or "..". */
+    private static boolean isDot(int8[] b, int32 n, int32 i) {
+        if (i + 1 == n && Uri.byteAt(b, i) == 46) {
+            return true;
+        }
+        if (i + 2 == n && Uri.byteAt(b, i) == 46
+                && Uri.byteAt(b, i + 1) == 46) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Remove the trailing output segment (back through and including
+     * the preceding '/'), returning the new output length. Matches the
+     * §5.2.4 step 2.C "remove the last segment and its preceding '/'".
+     */
+    private static int32 popSegment(int8[] out, int32 olen) {
+        int32 j = olen;
+        // back over the last segment's chars
+        while (j > 0 && Uri.byteAt(out, j - 1) != 47) {
+            j = j - 1;
+        }
+        // back over the preceding '/' too
+        if (j > 0) {
+            j = j - 1;
+        }
+        return j;
+    }
+
+    // -- §5.2.3 merge -------------------------------------------------------
+
+    /**
+     * Merge a reference path onto the **base** per **RFC 3986 §5.2.3**:
+     * if the base has an authority and an empty path, the merged path is
+     * `"/" + ref`; otherwise it is the base path up to and including its
+     * last `/`, followed by `ref`.
+     */
+    private static #String merge(Uri base, String refPath) {
+        if (base.hasAuthority && base.path.byteLength == 0) {
+            int32 len = refPath.byteLength + 1;
+            int8[] out = heap int8[len];
+            out[0] = (int8) 47;                              // '/'
+            Uri.copyInto(out, 1, refPath);
+            return heap String(#out, len);
+        }
+        // last '/' in base.path
+        int32 lastSlash = -1;
+        int32 i = 0;
+        int32 bn = base.path.byteLength;
+        while (i < bn) {
+            if (Uri.byteAt(base.path.bytes, i) == 47) {
+                lastSlash = i;
+            }
+            i = i + 1;
+        }
+        int32 keep = lastSlash + 1;                          // 0 if none
+        int32 len = keep + refPath.byteLength;
+        int8[] out = heap int8[len];
+        int32 k = 0;
+        while (k < keep) {
+            out[k] = base.path.bytes[k];
+            k = k + 1;
+        }
+        Uri.copyInto(out, keep, refPath);
+        return heap String(#out, len);
+    }
+
+    // -- §5.2.2 transform references ----------------------------------------
+
+    /**
+     * Resolve a reference URI string against a base `Uri` per
+     * **RFC 3986 §5.2** (the *strict* algorithm), returning the target
+     * `Uri`. This is the operation HTTP redirect handling (NET-8.3)
+     * uses to turn a relative `Location` header into an absolute URL.
+     *
+     * The reference is parsed with `parse`; the resulting components
+     * are recombined with `base`'s per §5.2.2, then the target path
+     * runs through `removeDotSegments`. Call `toString` on the result
+     * for the recomposed string.
+     *
+     * `base` is expected to be an absolute URI (carrying a scheme); the
+     * §5.4 examples all resolve against `http://a/b/c/d;p?q`.
+     */
+    public static #Uri resolve(Uri base, String reference) {
+        // RFC 3986 §5.2: an empty (or absent) reference is a valid
+        // "same-document" reference whose components are all empty — it
+        // resolves to the base (minus fragment). `Uri.parse` rejects "" with
+        // MalformedUriException, so synthesize the empty reference directly
+        // (a default Uri() already has empty path and all flags false) rather
+        // than parsing it.
+        Uri ref = heap Uri();
+        if (reference != null && reference.byteLength > 0) {
+            ref = Uri.parse(reference);
+        }
+        Uri t = heap Uri();
+
+        if (ref.hasScheme) {
+            // R.scheme defined: target is the reference (dot-segments
+            // still removed from its path).
+            t.scheme = Uri.cloneStr(ref.scheme);
+            t.hasScheme = true;
+            Uri.copyAuthority(t, ref);
+            t.path = Uri.removeDotSegments(ref.path);
+            t.query = Uri.cloneStr(ref.query);
+            t.hasQuery = ref.hasQuery;
+        } else {
+            // Inherit base scheme.
+            t.scheme = Uri.cloneStr(base.scheme);
+            t.hasScheme = base.hasScheme;
+            if (ref.hasAuthority) {
+                Uri.copyAuthority(t, ref);
+                t.path = Uri.removeDotSegments(ref.path);
+                t.query = Uri.cloneStr(ref.query);
+                t.hasQuery = ref.hasQuery;
+            } else {
+                Uri.copyAuthority(t, base);
+                if (ref.path.byteLength == 0) {
+                    // Empty reference path: keep base path; query is the
+                    // reference's if it has one, else the base's.
+                    t.path = Uri.cloneStr(base.path);
+                    if (ref.hasQuery) {
+                        t.query = Uri.cloneStr(ref.query);
+                        t.hasQuery = true;
+                    } else {
+                        t.query = Uri.cloneStr(base.query);
+                        t.hasQuery = base.hasQuery;
+                    }
+                } else {
+                    if (Uri.byteAt(ref.path.bytes, 0) == 47) {  // absolute
+                        t.path = Uri.removeDotSegments(ref.path);
+                    } else {
+                        String merged = Uri.merge(base, ref.path);
+                        t.path = Uri.removeDotSegments(merged);
+                    }
+                    t.query = Uri.cloneStr(ref.query);
+                    t.hasQuery = ref.hasQuery;
+                }
+            }
+        }
+        // Fragment is always the reference's.
+        t.fragment = Uri.cloneStr(ref.fragment);
+        t.hasFragment = ref.hasFragment;
+        return #t;
+    }
+
+    /**
+     * Deep-copy a `String` into a fresh owned `String`. `resolve` and
+     * the builder produce a `Uri` that **owns** its component strings
+     * (the drop chain frees them), so every component inherited from a
+     * borrowed `base`/`reference` must be copied, never aliased —
+     * aliasing would double-free when both source and result drop.
+     */
+    private static #String cloneStr(String s) {
+        int32 n = s.byteLength;
+        int8[] out = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = s.bytes[i];
+            i = i + 1;
+        }
+        return heap String(#out, n);
+    }
+
+    /**
+     * Copy the authority sub-components (userinfo / host / port flags)
+     * from `src` to `dst`, including the `hasAuthority` flag. The two
+     * string components (userinfo, host) are deep-copied so `dst` owns
+     * them independently of `src`. Used by `resolve` when a target
+     * inherits a whole authority from either the base or the reference.
+     */
+    private static void copyAuthority(Uri dst, Uri src) {
+        dst.hasAuthority = src.hasAuthority;
+        dst.userinfo = Uri.cloneStr(src.userinfo);
+        dst.hasUserinfo = src.hasUserinfo;
+        dst.host = Uri.cloneStr(src.host);
+        dst.hostIsIpv6 = src.hostIsIpv6;
+        dst.port = src.port;
+        dst.hasExplicitPort = src.hasExplicitPort;
+    }
+
+    // -- builder ------------------------------------------------------------
+
+    /**
+     * Fluent **builder** for constructing a `Uri` programmatically
+     * (RFC 3986 §5.3 recomposition driven from explicit components),
+     * the complement to `parse`. Each setter returns `this` so calls
+     * chain; `build()` returns the assembled `Uri`.
+     *
+     * ```cajeta
+     * Uri u = Uri.builder()
+     *     .scheme("https").host("h.test").port(8443)
+     *     .path("/a/b").query("x=1").fragment("frag")
+     *     .build();
+     * u.toString();   // "https://h.test:8443/a/b?x=1#frag"
+     * ```
+     *
+     * Setting a `host` implies an authority. `port` is recorded as an
+     * explicit port (it will be serialized); leave it unset to omit the
+     * `:port` (the scheme default is *not* auto-emitted on build).
+     */
+    public static #UriBuilder builder() {
+        return heap UriBuilder();
+    }
+}
+
+/**
+ * Builder for [`Uri`](Uri.cajeta) — see [`Uri.builder`](Uri.cajeta).
+ * Accumulates components, then `build()` materializes an immutable
+ * `Uri` with the `has*` presence flags set to match what was supplied.
+ */
+public class UriBuilder {
+    private Uri u;
+
+    public UriBuilder() {
+        this.u = heap Uri();
+    }
+
+    /** Set the (case-insensitive) scheme; marks the scheme present. */
+    public UriBuilder scheme(String scheme) {
+        this.u.scheme = scheme.toLowerCase();
+        this.u.hasScheme = true;
+        return this;
+    }
+
+    /** Set the userinfo (`"user:pass"`); marks userinfo present. */
+    public UriBuilder userinfo(String userinfo) {
+        // Clone so the builder's Uri owns the bytes independently of the
+        // caller's argument (bare assignment is a borrow in this model).
+        this.u.userinfo = userinfo.substring(0, userinfo.byteLength);
+        this.u.hasUserinfo = true;
+        return this;
+    }
+
+    /**
+     * Set the host (and thereby an authority). Pass the bare host —
+     * an IPv6 literal (one that contains ':') is auto-flagged so
+     * `toString` re-brackets it.
+     */
+    public UriBuilder host(String host) {
+        this.u.host = host.substring(0, host.byteLength);
+        this.u.hasAuthority = true;
+        this.u.hostIsIpv6 = host.contains(":");
+        return this;
+    }
+
+    /** Set an explicit port (serialized verbatim by `toString`). */
+    public UriBuilder port(int32 port) {
+        this.u.port = port;
+        this.u.hasExplicitPort = true;
+        this.u.hasAuthority = true;
+        return this;
+    }
+
+    /** Set the path component (always present; "" is valid). */
+    public UriBuilder path(String path) {
+        this.u.path = path.substring(0, path.byteLength);
+        return this;
+    }
+
+    /** Set the raw (already-encoded) query; marks query present. */
+    public UriBuilder query(String query) {
+        this.u.query = query.substring(0, query.byteLength);
+        this.u.hasQuery = true;
+        return this;
+    }
+
+    /** Set the fragment; marks fragment present. */
+    public UriBuilder fragment(String fragment) {
+        this.u.fragment = fragment.substring(0, fragment.byteLength);
+        this.u.hasFragment = true;
+        return this;
+    }
+
+    /**
+     * Materialize the assembled `Uri`. Returns a *fresh* owned `Uri`
+     * whose components are copied from the builder's working instance,
+     * so the builder may be discarded (or reused) independently of the
+     * result's lifetime.
+     */
+    public #Uri build() {
+        Uri r = heap Uri();
+        // Clone each owned String so the returned Uri's lifetime is
+        // independent of this builder (which still owns this.u).
+        r.scheme = this.u.scheme.substring(0, this.u.scheme.byteLength);
+        r.hasScheme = this.u.hasScheme;
+        r.hasAuthority = this.u.hasAuthority;
+        r.userinfo = this.u.userinfo.substring(0, this.u.userinfo.byteLength);
+        r.hasUserinfo = this.u.hasUserinfo;
+        r.host = this.u.host.substring(0, this.u.host.byteLength);
+        r.hostIsIpv6 = this.u.hostIsIpv6;
+        r.port = this.u.port;
+        r.hasExplicitPort = this.u.hasExplicitPort;
+        r.path = this.u.path.substring(0, this.u.path.byteLength);
+        r.query = this.u.query.substring(0, this.u.query.byteLength);
+        r.hasQuery = this.u.hasQuery;
+        r.fragment = this.u.fragment.substring(0, this.u.fragment.byteLength);
+        r.hasFragment = this.u.hasFragment;
+        return #r;
+    }
+}

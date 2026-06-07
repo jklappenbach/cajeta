@@ -194,7 +194,7 @@ TEST(SystemIoTests, concatFromLocal) {
 
 TEST(SystemIoTests, printfWithNoPlaceholders) {
     auto jit = CajetaJit::compile(makeSource(
-        "String[] args = new String[0];\n"
+        "String[] args = heap String[0];\n"
         "System.stdout.printf(\"plain text\", args);"), "test.Sio");
     auto fn = jit->lookup<int32_t (*)()>("run");
     std::string out = captureFd(1, fn);
@@ -203,7 +203,7 @@ TEST(SystemIoTests, printfWithNoPlaceholders) {
 
 TEST(SystemIoTests, printfWithOnePlaceholder) {
     auto jit = CajetaJit::compile(makeSource(
-        "String[] args = new String[1];\n"
+        "String[] args = heap String[1];\n"
         "args[0] = \"world\";\n"
         "System.stdout.printf(\"hello {}\", args);"), "test.Sio");
     auto fn = jit->lookup<int32_t (*)()>("run");
@@ -213,7 +213,7 @@ TEST(SystemIoTests, printfWithOnePlaceholder) {
 
 TEST(SystemIoTests, printfWithMultiplePlaceholders) {
     auto jit = CajetaJit::compile(makeSource(
-        "String[] args = new String[3];\n"
+        "String[] args = heap String[3];\n"
         "args[0] = \"alice\";\n"
         "args[1] = \"42\";\n"
         "args[2] = \"login\";\n"
@@ -226,7 +226,7 @@ TEST(SystemIoTests, printfWithMultiplePlaceholders) {
 TEST(SystemIoTests, printfMissingArgsRenderNull) {
     // Two placeholders, only one arg → second one prints "null".
     auto jit = CajetaJit::compile(makeSource(
-        "String[] args = new String[1];\n"
+        "String[] args = heap String[1];\n"
         "args[0] = \"first\";\n"
         "System.stdout.printf(\"{} and {}\", args);"), "test.Sio");
     auto fn = jit->lookup<int32_t (*)()>("run");
@@ -236,7 +236,7 @@ TEST(SystemIoTests, printfMissingArgsRenderNull) {
 
 TEST(SystemIoTests, printfExtraArgsIgnored) {
     auto jit = CajetaJit::compile(makeSource(
-        "String[] args = new String[3];\n"
+        "String[] args = heap String[3];\n"
         "args[0] = \"used\";\n"
         "args[1] = \"unused1\";\n"
         "args[2] = \"unused2\";\n"
@@ -301,7 +301,7 @@ TEST(SystemIoTests, printInt32NoNewline) {
 
 TEST(SystemIoTests, printfToStderr) {
     auto jit = CajetaJit::compile(makeSource(
-        "String[] args = new String[1];\n"
+        "String[] args = heap String[1];\n"
         "args[0] = \"boom\";\n"
         "System.stderr.printf(\"error: {}\", args);"), "test.Sio");
     auto fn = jit->lookup<int32_t (*)()>("run");

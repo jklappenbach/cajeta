@@ -1,0 +1,6 @@
+package com.example.util;
+
+// Shared utilities used by every member.
+public class Util {
+    public static int32 add(int32 a, int32 b) { return a + b; }
+}

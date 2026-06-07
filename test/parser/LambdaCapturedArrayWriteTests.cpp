@@ -43,7 +43,7 @@ constexpr const char* kProbeWithArray =
     "    public int32[] log;\n"
     "    public int32 next;\n"
     "    public Probe(int32 capacity) {\n"
-    "        this.log = new int32[capacity];\n"
+    "        this.log = heap int32[capacity];\n"
     "        this.next = 0;\n"
     "    }\n"
     "}\n";
@@ -58,7 +58,7 @@ TEST(LambdaCapturedArrayWriteTests, directWriteToCapturedClassArrayField) {
     auto src = std::string(kProbeWithArray) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Probe p = new Probe(4);\n"
+        "        Probe p = heap Probe(4);\n"
         "        (int32, int32) -> void fn = (int32 idx, int32 x) -> {\n"
         "            p.log[idx] = x;\n"
         "        };\n"
@@ -79,7 +79,7 @@ TEST(LambdaCapturedArrayWriteTests, sequentialWriteAndBumpCounter) {
     auto src = std::string(kProbeWithArray) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Probe p = new Probe(4);\n"
+        "        Probe p = heap Probe(4);\n"
         "        (int32) -> void fn = (int32 x) -> {\n"
         "            p.log[p.next] = x;\n"
         "            p.next = p.next + 1;\n"
@@ -103,7 +103,7 @@ TEST(LambdaCapturedArrayWriteTests, conditionalWriteInsideIfBranch) {
     auto src = std::string(kProbeWithArray) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Probe p = new Probe(8);\n"
+        "        Probe p = heap Probe(8);\n"
         "        (int32) -> void fn = (int32 x) -> {\n"
         "            if (x % 2 == 0) {\n"
         "                p.log[p.next] = x;\n"
@@ -131,9 +131,9 @@ TEST(LambdaCapturedArrayWriteTests, writeInsidePredicateOfParallelFindFirst) {
     auto src = std::string(kProbeWithArray) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = new int32[100];\n"
+        "        int32[] xs = heap int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
-        "        Probe p = new Probe(8);\n"
+        "        Probe p = heap Probe(8);\n"
         "        Optional<int32> o = xs.stream().parallel()\n"
         "                              .findFirst((x) -> {\n"
         "                                  if (x == 73) {\n"
@@ -159,7 +159,7 @@ TEST(LambdaCapturedArrayWriteTests, readModifyWriteCapturedArraySlot) {
     auto src = std::string(kProbeWithArray) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Probe p = new Probe(4);\n"
+        "        Probe p = heap Probe(4);\n"
         "        p.log[0] = 10;\n"
         "        (int32, int32) -> void fn = (int32 idx, int32 add) -> {\n"
         "            p.log[idx] = p.log[idx] + add;\n"
@@ -178,7 +178,7 @@ TEST(LambdaCapturedArrayWriteTests, writeInsideForLoopBody) {
     auto src = std::string(kProbeWithArray) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Probe p = new Probe(6);\n"
+        "        Probe p = heap Probe(6);\n"
         "        (int32) -> void fn = (int32 n) -> {\n"
         "            for (int32 i = 0; i < n; i = i + 1) {\n"
         "                p.log[p.next] = i + 1;\n"

@@ -268,7 +268,7 @@ cajeta lsp --port=2087              # TCP mode
   ownership semantics. Reduces ambient memory-model surprise.
 - **Type-argument inlay hints.** `Box<int32>` is shown at use
   sites even when type inference picks it: `var x = new
-  Box(42)` becomes `var x: <Box<int32>> = new Box(42)`.
+  Box(42)` becomes `var x: <Box<int32>> = heap Box(42)`.
 
 ---
 
@@ -343,10 +343,32 @@ what will fire when the function returns or scope exits.
 }
 ```
 
+### Drop / destructor breakpoints
+
+To answer *"when was this instance destructed?"*, set an **ordinary source
+breakpoint on the class's destructor** — `~T()`. No special breakpoint type and
+no protocol extension are involved:
+
+- Every class implicitly extends `Object`, which declares the root virtual
+  destructor `~Object()`. Destruction is virtual — dropping through any base
+  reference dispatches to the most-derived `~T()` via the vtable drop slot.
+- A `~T()` body is a normal method body, so under `--debug-info` it carries the
+  same per-statement safepoints as any other code. A breakpoint on a line in
+  `~T()` therefore parks through the existing DebugController rendezvous when an
+  instance of `T` is dropped (at scope exit, or an explicit `delete`).
+- It composes with conditional breakpoints (CP6f-1) and is toggled/removed live
+  like any line breakpoint.
+
+To make a class's destruction observable, give it a `~T()` (even a trivial one)
+and breakpoint its body. A class with no `~T()` runs only `Object`'s empty
+destructor plus the synthesized field-drop/free wrapper, which carry no
+user-visible source line — add a `~T()` if you need to stop there.
+
 ### Ownership annotations in variables
 
-The standard DAP `variables` response gets an extension field
-per variable:
+The standard DAP `variables` response gets a namespaced `cajeta`
+extension field per variable carrying three orthogonal memory
+facets (CP7-1d; see `ide-plugins/idea/ide-plugin-debug-fr-1.md`):
 
 ```jsonc
 {
@@ -355,14 +377,32 @@ per variable:
     "type":      "byte[]",
     "variablesReference": 17,
     "cajeta": {
-        "ownership": "owned" | "borrowed" | "moved-out" | "view",
-        "moveSource": null,         // for "view": where it borrows from
-        "willDrop":   true
-    }
+        // where the value lives
+        "alloc":     "stack" | "heap" | "shared" | "unknown",
+        // who is responsible for it
+        "ownership": "owner" | "borrow" | "moved"  | "unknown",
+        // lifetime state at this stop
+        "lifetime":  "live"  | "moved-out" | "about-to-drop" | "unknown"
+    },
+    // standard DAP hint: a moved-out (consumed) binding is read-only
+    "presentationHint": { "attributes": ["readOnly"] }
 }
 ```
 
-The IDE plugin can render an icon or color per ownership state.
+The three axes are independent (a value can be heap + owner +
+about-to-drop, or heap + borrow + live). Each tag is always
+present — `"unknown"` is emitted explicitly rather than omitted so
+the plugin renders a neutral state instead of guessing. The tags
+are the authoritative, color-independent carrier; the plugin maps
+them to icon + color + treatment. `presentationHint.attributes`
+gets `"readOnly"` for a moved-out binding so a generic DAP client
+also blocks editing a consumed value.
+
+The facets originate in the compiler (`dbg::MemoryFacets`),
+travel through the runtime debug frame chain (`__cajeta_dbg_local`
+carries the alloc/ownership bytes + the owner's drop-entry
+pointer), and `lifetime` is derived host-side at the stop from the
+drop entry's live `active` flag.
 
 ### Async task tree
 
@@ -484,7 +524,7 @@ public class Point {
     public Point(int32 x, int32 y) { this.x = x; this.y = y; }
 }
 
-Point origin = new Point(0, 0);
+Point origin = heap Point(0, 0);
 origin.x + origin.y
 ```
 

@@ -12,12 +12,12 @@ TEST(ArrayFieldProbe, concreteIntArrayAsClassField) {
         "public class Box {\n"
         "    public int32[] xs;\n"
         "    public Box() {\n"
-        "        this.xs = new int32[3];\n"
+        "        this.xs = heap int32[3];\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box b = new Box();\n"
+        "        Box b = heap Box();\n"
         "        b.xs[0] = 7;\n"
         "        b.xs[1] = 11;\n"
         "        b.xs[2] = 13;\n"
@@ -31,7 +31,7 @@ TEST(ArrayFieldProbe, concreteIntArrayAsClassField) {
 
 // Generic T[] field on a templated class. Exercises the full
 // template-instantiation path: the field is laid out with T's bound
-// type after instantiation, the constructor's `new T[N]` allocates
+// type after instantiation, the constructor's `heap T[N]` allocates
 // against the bound type, and `c.data[i]` indexing reads through the
 // instantiated array.
 TEST(ArrayFieldProbe, genericArrayAsClassField) {
@@ -40,12 +40,12 @@ TEST(ArrayFieldProbe, genericArrayAsClassField) {
         "public class Container<T> {\n"
         "    public T[] data;\n"
         "    public Container() {\n"
-        "        this.data = new T[2];\n"
+        "        this.data = heap T[2];\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Container<int32> c = new Container<int32>();\n"
+        "        Container<int32> c = heap Container<int32>();\n"
         "        c.data[0] = 100;\n"
         "        c.data[1] = 200;\n"
         "        return c.data[0] + c.data[1];\n"

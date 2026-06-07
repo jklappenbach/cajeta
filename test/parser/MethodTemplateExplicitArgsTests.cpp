@@ -119,7 +119,7 @@ TEST(MethodTemplateExplicitArgsTests, instanceExplicitTypeArg) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box b = new Box(0);\n"
+        "        Box b = heap Box(0);\n"
         "        return b.passthrough<int32>(99);\n"
         "    }\n"
         "}\n";

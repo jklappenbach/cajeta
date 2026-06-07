@@ -39,7 +39,7 @@ TEST(NumericBoundTests, intArgSatisfiesNumeric) {
     std::string src = std::string("package test;\n") + HOLDER +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Holder<int32> h = new Holder<int32>(7);\n"
+        "        Holder<int32> h = heap Holder<int32>(7);\n"
         "        return h.get();\n"
         "    }\n"
         "}\n";
@@ -51,7 +51,7 @@ TEST(NumericBoundTests, floatArgSatisfiesNumeric) {
     std::string src = std::string("package test;\n") + HOLDER +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Holder<float32> h = new Holder<float32>(2.5f);\n"
+        "        Holder<float32> h = heap Holder<float32>(2.5f);\n"
         "        return (int32) h.get();\n"
         "    }\n"
         "}\n";
@@ -64,7 +64,7 @@ TEST(NumericBoundTests, classArgRejectedByNumeric) {
         "public class Thing { public Thing() { return; } }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Holder<Thing> h = new Holder<Thing>(new Thing());\n"
+        "        Holder<Thing> h = heap Holder<Thing>(heap Thing());\n"
         "        return 0;\n"
         "    }\n"
         "}\n";

@@ -7,7 +7,7 @@
 // (or the @Around-advice call, when @Around is also present).
 //
 // Tests use the drop-count side-channel: each advice declares
-// `int32[] tmp = new int32[1]` whose scope-exit drop bumps the
+// `int32[] tmp = heap int32[1]` whose scope-exit drop bumps the
 // counter. Combined with try/catch in run() to recover from
 // thrown values, the test can observe both whether advice fired
 // AND that the throw still propagates after @AfterThrowing
@@ -43,7 +43,7 @@ TEST(AfterReturningThrowingTests, afterReturningFiresOnNormalReturn) {
         "@Aspect public class A {\n"
         "    @AfterReturning(Audited.class)\n"
         "    public static void onReturn() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -68,7 +68,7 @@ TEST(AfterReturningThrowingTests, afterReturningSkipsThrowPath) {
         "@Aspect public class A {\n"
         "    @AfterReturning(Audited.class)\n"
         "    public static void onReturn() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -99,7 +99,7 @@ TEST(AfterReturningThrowingTests, afterThrowingFiresOnThrowPath) {
         "@Aspect public class A {\n"
         "    @AfterThrowing(Audited.class)\n"
         "    public static void onThrow() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -129,7 +129,7 @@ TEST(AfterReturningThrowingTests, afterThrowingSkipsNormalReturn) {
         "@Aspect public class A {\n"
         "    @AfterThrowing(Audited.class)\n"
         "    public static void onThrow() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -182,12 +182,12 @@ TEST(AfterReturningThrowingTests, bothNormalPathFiresAfterReturningOnly) {
         "@Aspect public class A {\n"
         "    @AfterReturning(Audited.class)\n"
         "    public static void onReturn() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "    @AfterThrowing(Audited.class)\n"
         "    public static void onThrow() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"
@@ -212,12 +212,12 @@ TEST(AfterReturningThrowingTests, bothThrowPathFiresAfterThrowingOnly) {
         "@Aspect public class A {\n"
         "    @AfterReturning(Audited.class)\n"
         "    public static void onReturn() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "    @AfterThrowing(Audited.class)\n"
         "    public static void onThrow() {\n"
-        "        int32[] tmp = new int32[1];\n"
+        "        int32[] tmp = heap int32[1];\n"
         "        return;\n"
         "    }\n"
         "}\n"

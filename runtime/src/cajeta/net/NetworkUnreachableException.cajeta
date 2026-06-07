@@ -1,0 +1,20 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+
+/**
+ * The target network could not be reached — a routing failure at the
+ * network level (no route to the destination network, ICMP
+ * network-unreachable). POSIX `ENETUNREACH` / Winsock
+ * `WSAENETUNREACH`. `kind == NetException.KIND_NETWORK_UNREACHABLE`
+ * (8). Compare [`HostUnreachableException`](HostUnreachableException.cajeta),
+ * the single-host variant. See
+ * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ */
+public class NetworkUnreachableException extends NetException {
+    public NetworkUnreachableException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 8;   // NetException.KIND_NETWORK_UNREACHABLE
+    }
+}

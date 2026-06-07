@@ -4,16 +4,30 @@ import cajeta.error.RecoverableException;
 import cajeta.lang.String;
 
 /**
- * Base of the cajeta.io.file exception hierarchy. See
+ * Base of the `cajeta.io.file` exception hierarchy. See
  * `cajeta-docs/stdlib/io/file/Errors.md` for the full chart
  * (errno → exception) and the throws-clause discipline.
  *
- * Recoverable, not Unrecoverable: callers either catch the
- * specific subtype or declare it in their throws clause.
- *
+ * Extends `RecoverableException` (not an unrecoverable error): callers
+ * either catch the specific subtype or declare it in their throws clause.
  * Subclass exceptions live in their own files alongside this one.
+ *
+ * ```cajeta
+ * try {
+ *     file.read(buffer);
+ * } catch (e: IoException) {
+ *     log.warn(e.message);
+ * }
+ * ```
  */
 public class IoException extends RecoverableException {
+    /**
+     * Wraps a human-readable `String` cause as a recoverable I/O failure.
+     *
+     * ```cajeta
+     * throw IoException("could not open " + path);
+     * ```
+     */
     public IoException(String message) {
         super(message);
     }

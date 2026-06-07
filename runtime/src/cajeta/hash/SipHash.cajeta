@@ -14,9 +14,12 @@ import cajeta.lang.String;
  *
  * For internal keys (compiler-generated, known-shape buffers,
  * non-attacker inputs) use `XXHash3` instead — ~10× faster per byte.
- * For ETag / fingerprint use `MD5`. Default `Object.hash()` uses a
+ * For ETag / fingerprint use `MD5`. Default `Object``.hash()` uses a
  * process-seeded XXH3-64 (which is itself DoS-resistant by virtue
  * of the secret per-process seed).
+ *
+ * Implements `Hasher`, so it can stream any primitive plus
+ * `String` and `Object` values into the digest.
  *
  * ## Surface
  *
@@ -27,14 +30,14 @@ import cajeta.lang.String;
  *
  * Streaming `Hasher`:
  * ```cajeta
- * SipHash h = new SipHash(k0, k1);
+ * SipHash h = heap SipHash(k0, k1);
  * h.writeString(user.name);
  * h.writeInt32(user.id);
  * int64 digest = h.finish();
  * ```
  *
- * @see cajeta.hash.Hasher
- * @see [stdlib/Hashing.md § SipHash](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See cajeta.hash.Hasher
+ * @See [stdlib/Hashing.md § SipHash](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public final class SipHash implements Hasher {
 
@@ -55,8 +58,16 @@ public final class SipHash implements Hasher {
     public int64 k1;
 
     /**
-     * Construct a SipHash with the given 128-bit key as two int64
-     * halves.
+     * Construct a streaming SipHash with the given 128-bit key as two
+     * int64 halves. Feed it via the `Hasher` `write*` methods, then
+     * call `finish()`.
+     *
+     * ```cajeta
+     * SipHash h = heap SipHash(k0, k1);
+     * h.writeString(user.name);
+     * h.writeInt32(user.id);
+     * int64 digest = h.finish();
+     * ```
      */
     public SipHash(int64 keyLow, int64 keyHigh) {
         this.k0 = keyLow;
@@ -64,6 +75,7 @@ public final class SipHash implements Hasher {
         this.state = SipHash.allocState(keyLow, keyHigh);
     }
 
+    /** Frees the native SipHash state when the object is destroyed. */
     ~SipHash() {
         SipHash.freeState(this.state);
     }
@@ -114,26 +126,48 @@ public final class SipHash implements Hasher {
 
     // --- One-shot statics -------------------------------------------
 
+    /**
+     * One-shot keyed digest of the first `len` bytes of `data` — the
+     * common case, no streaming object required.
+     *
+     * ```cajeta
+     * int64 hash = SipHash.hashKeyed(bytes, bytes.count(), k0, k1);
+     * ```
+     */
     public static int64 hashKeyed(int8[] data, int64 len, int64 keyLow, int64 keyHigh) {
         return SipHash.oneshot(data, len, keyLow, keyHigh);
     }
 
+    /**
+     * One-shot keyed digest of a `String`'s UTF-8 bytes.
+     *
+     * ```cajeta
+     * int64 hash = SipHash.hashStringKeyed(user.name, k0, k1);
+     * ```
+     */
     public static int64 hashStringKeyed(String s, int64 keyLow, int64 keyHigh) {
         return SipHash.oneshot(s.bytes, (int64) s.byteLength, keyLow, keyHigh);
     }
 
     // --- Streaming surface ------------------------------------------
 
+    /** Absorbs the first `len` bytes of `data` into the running digest. */
     public void update(int8[] data, int64 len) {
         SipHash.updateNative(this.state, data, len);
     }
 
+    /**
+     * Re-initializes the state from the stored key so the instance can
+     * be reused for a fresh digest. The 128-bit key is required because
+     * SipHash-2-4 state cannot be re-derived without it.
+     */
     public void reset() {
         SipHash.resetNative(this.state, this.k0, this.k1);
     }
 
     // --- Hasher streaming primitives --------------------------------
 
+    /** Absorbs a boolean as a single byte (`1` for true, `0` for false). */
     public void writeBoolean(boolean v) {
         SipHash.writeI8Native(this.state, (int8)(v ? 1 : 0));
     }
@@ -152,6 +186,7 @@ public final class SipHash implements Hasher {
         SipHash.updateNative(this.state, data, data.count());
     }
 
+    /** Absorbs `length` bytes from `data` starting at `offset`. */
     public void writeBytesRange(int8[] data, int64 offset, int64 length) {
         SipHash.updateNative(this.state, data, length);
     }
@@ -160,10 +195,18 @@ public final class SipHash implements Hasher {
         SipHash.updateNative(this.state, s.bytes, (int64) s.byteLength);
     }
 
+    /** Absorbs an `Object` by feeding its `hash()` value as 8 bytes. */
     public void writeObject(Object obj) {
         SipHash.writeI64Native(this.state, obj.hash());
     }
 
+    /**
+     * Finalizes the streamed input and returns the 64-bit digest.
+     *
+     * ```cajeta
+     * int64 digest = h.finish();
+     * ```
+     */
     public int64 finish() {
         return SipHash.finishNative(this.state);
     }

@@ -1,14 +1,15 @@
 //
-// User-facing Lock and LockGuard classes — the package-cajeta.threading
-// API that wraps the low-level lock intrinsics with RAII semantics.
+// User-facing Lock and LockGuard classes — the cajeta.threading API
+// that wraps the low-level lock intrinsics with RAII semantics.
 // LockGuard's user-defined drop() calls release; the class-drop
 // infrastructure auto-fires it at scope exit. See cajeta-docs/stdlib/Thread.md §
 // Synchronization primitives.
 //
-// These tests inline the Cajeta source for Lock and LockGuard into
-// each test (no stdlib loading exists yet). Once the threading
-// package is part of a preloaded standard library, the inline source
-// goes away.
+// As of R7-A these classes are part of the preloaded standard library
+// (runtime/src/cajeta/threading/{Lock,LockGuard}.cajeta), auto-embedded
+// into the compiler. The tests now `import cajeta.threading.*` rather
+// than inlining the source — exercising the real stdlib types and the
+// embed/auto-load path end-to-end.
 //
 // LockGuard holds the raw handle (not a back-reference to the Lock),
 // so its drop() reaches the runtime helper directly. The lifetime
@@ -34,33 +35,13 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-const char* LOCK_SRC =
-    "public class LockGuard {\n"
-    "    public pointer handle;\n"
-    "    public LockGuard(pointer handle) { this.handle = handle; }\n"
-    "    public ~LockGuard() { Cajeta.lockRelease(this.handle); }\n"
-    "}\n"
-    "public class Lock {\n"
-    "    private pointer handle;\n"
-    "    public Lock() { this.handle = Cajeta.lockNew(); }\n"
-    "    public ~Lock() { Cajeta.lockDestroy(this.handle); }\n"
-    "    public #LockGuard acquire() {\n"
-    "        Cajeta.lockAcquire(this.handle);\n"
-    "        return new LockGuard(this.handle);\n"
-    "    }\n"
-    "    public int32 tryAcquire() {\n"
-    "        return Cajeta.lockTryAcquire(this.handle);\n"
-    "    }\n"
-    "    public void releaseLock() {\n"
-    "        Cajeta.lockRelease(this.handle);\n"
-    "    }\n"
-    "}\n";
-
-// Compile a complete source unit: the inlined Lock + LockGuard, plus
-// the user-supplied class body for D.
+// Compile a complete source unit: import the stdlib Lock + LockGuard,
+// plus the user-supplied class body for D.
 std::string lockTestSource(const std::string& dBody) {
-    return std::string("package test;\n") + LOCK_SRC +
-        "public final class D {\n" + dBody + "}\n";
+    return std::string("package test;\n")
+        + "import cajeta.threading.Lock;\n"
+        + "import cajeta.threading.LockGuard;\n"
+        + "public final class D {\n" + dBody + "}\n";
 }
 
 int32_t runI32(const std::string& dBody) {
@@ -77,7 +58,7 @@ int32_t runI32(const std::string& dBody) {
 TEST(LockClassTests, constructAndDestroy) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        return 1;\n"
         "    }\n"
     ), 1);
@@ -89,7 +70,7 @@ TEST(LockClassTests, constructAndDestroy) {
 TEST(LockClassTests, tryAcquireUncontendedSucceeds) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        int32 got = lock.tryAcquire();\n"
         "        if (got == 1) lock.releaseLock();\n"
         "        return got;\n"
@@ -103,7 +84,7 @@ TEST(LockClassTests, tryAcquireUncontendedSucceeds) {
 TEST(LockClassTests, tryAcquireWhileHeldFails) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        LockGuard held = lock.acquire();\n"
         "        int32 second = lock.tryAcquire();\n"
         "        return second;\n"
@@ -120,7 +101,7 @@ TEST(LockClassTests, tryAcquireWhileHeldFails) {
 TEST(LockClassTests, guardDropAtMethodExitReleasesBeforeDestroy) {
     EXPECT_EQ(runI32(
         "    public static int32 acquireAndReturn() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        LockGuard g = lock.acquire();\n"
         "        return 0;\n"
         "        // At return: g drops first (release), lock drops\n"
@@ -138,8 +119,8 @@ TEST(LockClassTests, guardDropAtMethodExitReleasesBeforeDestroy) {
 TEST(LockClassTests, twoIndependentLocks) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock a = new Lock();\n"
-        "        Lock b = new Lock();\n"
+        "        Lock a = heap Lock();\n"
+        "        Lock b = heap Lock();\n"
         "        LockGuard ga = a.acquire();\n"
         "        int32 bFree = b.tryAcquire();\n"
         "        if (bFree == 1) b.releaseLock();\n"
@@ -154,7 +135,7 @@ TEST(LockClassTests, twoIndependentLocks) {
 TEST(LockClassTests, repeatedManualAcquireRelease) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
-        "        Lock lock = new Lock();\n"
+        "        Lock lock = heap Lock();\n"
         "        int32 sum = 0;\n"
         "        int32 got1 = lock.tryAcquire();\n"
         "        if (got1 == 1) {\n"

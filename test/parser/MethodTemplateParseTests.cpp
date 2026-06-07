@@ -108,7 +108,7 @@ TEST(MethodTemplateParseTests, mixedTemplatedAndNonTemplatedMethods) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Foo f = new Foo();\n"
+        "        Foo f = heap Foo();\n"
         "        return f.plain();\n"
         "    }\n"
         "}\n";

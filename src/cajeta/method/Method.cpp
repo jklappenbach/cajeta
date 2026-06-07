@@ -3,6 +3,8 @@
 //
 
 #include "Method.h"
+#include <functional>
+#include <unordered_set>
 #include "../type/CajetaClass.h"
 #include "../type/CajetaView.h"
 #include "../type/CajetaArray.h"
@@ -13,8 +15,11 @@
 #include "../asn/DefaultBlock.h"
 #include "../asn/Statement.h"
 #include "../asn/expression/MethodCallExpression.h"
+#include "../asn/expression/NewExpression.h"
+#include "../asn/expression/AggregateInitializerExpression.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
+#include "cajeta/dbg/DebugCodegen.h"
 #include "../util/Printer.h"
 #include "../xpu/core/KernelArgTrait.h"
 #include "../xpu/core/XpuAttributes.h"
@@ -83,6 +88,259 @@ namespace cajeta {
         this->block = block;
     }
 
+    // --- Value-return determination (M1) -----------------------------------
+    // A return expression is a `stack` construction when it's a `stack X(...)`
+    // (NewExpression with stackAlloc) or a stack aggregate-initializer. Storage
+    // class lives on the construction, not the type — so this is how the
+    // compiler learns a method returns by copy.
+    bool Method::exprIsStackConstruction(const ExpressionPtr& e) {
+        if (!e) return false;
+        if (auto ne = dynamic_pointer_cast<NewExpression>(e)) {
+            return ne->getStackAlloc();
+        }
+        if (auto ai = dynamic_pointer_cast<AggregateInitializerExpression>(e)) {
+            return ai->getStackAlloc();
+        }
+        return false;
+    }
+
+    bool Method::blockHasStackReturn(const BlockPtr& block) {
+        if (!block) return false;
+        for (auto& child : block->getChildren()) {
+            if (nodeHasStackReturn(child)) return true;
+        }
+        return false;
+    }
+
+    // Walk statement containers looking for any `return stack X(...)`. The
+    // branch/loop bodies hidden behind private fields (then/else, loop body,
+    // nested scope/label blocks) aren't in `children`, so descend through their
+    // accessors explicitly; everything else falls back to the generic child
+    // walk. (try/switch bodies have no public accessors today — returns nested
+    // directly inside a try/switch aren't detected; not needed for v1.)
+    bool Method::nodeHasStackReturn(const AbstractSyntaxNodePtr& node) {
+        if (!node) return false;
+        if (auto ret = dynamic_pointer_cast<ReturnStatement>(node)) {
+            return exprIsStackConstruction(ret->getExpression());
+        }
+        if (auto lbl = dynamic_pointer_cast<LabelStatement>(node)) {
+            return blockHasStackReturn(lbl->getBlock());
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            return blockHasStackReturn(sc->getBlock());
+        }
+        if (auto iff = dynamic_pointer_cast<IfStatement>(node)) {
+            return nodeHasStackReturn(iff->getThenBranch())
+                || nodeHasStackReturn(iff->getElseBranch());
+        }
+        if (auto wh = dynamic_pointer_cast<WhileStatement>(node)) {
+            return nodeHasStackReturn(wh->getBody());
+        }
+        if (auto fr = dynamic_pointer_cast<ForStatement>(node)) {
+            return nodeHasStackReturn(fr->getBody());
+        }
+        if (auto efr = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            return nodeHasStackReturn(efr->getBody());
+        }
+        if (auto dod = dynamic_pointer_cast<DoStatement>(node)) {
+            return nodeHasStackReturn(dod->getBody());
+        }
+        for (auto& c : node->getChildren()) {
+            if (nodeHasStackReturn(c)) return true;
+        }
+        return false;
+    }
+
+    // --- Lint helpers for [heap-optional-return] --------------------------
+    // A return expression matches the "scope-bounded heap C(...)" pattern
+    // when it's a `heap C(...)` (NewExpression with !stackAlloc) whose
+    // constructed type's canonical class name matches the method's declared
+    // return-type class (modulo `#`). The lint targets `#Optional<T>`
+    // returns whose body's every return is `return heap Optional<...>(...)`
+    // — the heap allocation immediately becomes the return value and the
+    // caller's first observable use, so it could safely be a stack
+    // construction returned by value (sret) instead.
+    static std::string trimTemplateArgs(const std::string& canonical) {
+        auto lt = canonical.find('<');
+        if (lt == std::string::npos) return canonical;
+        return canonical.substr(0, lt);
+    }
+    static bool exprIsHeapCtorOfClass(const ExpressionPtr& e,
+            const std::string& targetClassCanonical) {
+        if (!e) return false;
+        auto ne = dynamic_pointer_cast<NewExpression>(e);
+        if (!ne) return false;
+        if (ne->getStackAlloc()) return false;
+        auto rt = ne->getResolvedType();
+        if (!rt || !rt->getQName()) return false;
+        std::string ctorClass = trimTemplateArgs(
+            rt->getQName()->toCanonical());
+        return ctorClass == targetClassCanonical;
+    }
+    // Walk the method body's nested statement containers and visit every
+    // return statement, calling `visit(retExpr)`. Returns false if any
+    // visit returns false. Mirrors blockHasStackReturn's structural walk.
+    static bool methodVisitReturns(const AbstractSyntaxNodePtr& node,
+            const std::function<bool(const ExpressionPtr&)>& visit);
+    static bool methodVisitReturnsBlock(const BlockPtr& block,
+            const std::function<bool(const ExpressionPtr&)>& visit) {
+        if (!block) return true;
+        for (auto& c : block->getChildren()) {
+            if (!methodVisitReturns(c, visit)) return false;
+        }
+        return true;
+    }
+    static bool methodVisitReturns(const AbstractSyntaxNodePtr& node,
+            const std::function<bool(const ExpressionPtr&)>& visit) {
+        if (!node) return true;
+        if (auto ret = dynamic_pointer_cast<ReturnStatement>(node)) {
+            return visit(ret->getExpression());
+        }
+        if (auto lbl = dynamic_pointer_cast<LabelStatement>(node)) {
+            return methodVisitReturnsBlock(lbl->getBlock(), visit);
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            return methodVisitReturnsBlock(sc->getBlock(), visit);
+        }
+        if (auto iff = dynamic_pointer_cast<IfStatement>(node)) {
+            return methodVisitReturns(iff->getThenBranch(), visit)
+                && methodVisitReturns(iff->getElseBranch(), visit);
+        }
+        if (auto wh = dynamic_pointer_cast<WhileStatement>(node)) {
+            return methodVisitReturns(wh->getBody(), visit);
+        }
+        if (auto fr = dynamic_pointer_cast<ForStatement>(node)) {
+            return methodVisitReturns(fr->getBody(), visit);
+        }
+        if (auto efr = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            return methodVisitReturns(efr->getBody(), visit);
+        }
+        if (auto dod = dynamic_pointer_cast<DoStatement>(node)) {
+            return methodVisitReturns(dod->getBody(), visit);
+        }
+        for (auto& c : node->getChildren()) {
+            if (!methodVisitReturns(c, visit)) return false;
+        }
+        return true;
+    }
+
+    void Method::lintHeapOptionalReturn() {
+        // Gate: declared return must be `#Optional<...>` (heap ownership
+        // transfer of an Optional). `@HeapReturn` is the escape hatch when
+        // a caller really wants the heap allocation (the annotation may
+        // not exist yet; the lookup is a no-op until it does).
+        if (!returnsOwnership) return;
+        auto rtClass = dynamic_pointer_cast<CajetaClass>(returnType);
+        if (!rtClass || !rtClass->getQName()) return;
+        std::string rtCanonical = trimTemplateArgs(
+            rtClass->getQName()->toCanonical());
+        if (rtCanonical != "cajeta.lang.Optional") return;
+        if (findAnnotation("HeapReturn") != nullptr) return;
+        if (!block) return;
+        // Per-method dedupe: with method-level templates the same Method
+        // can be instantiated many times. Key on parent canonical +
+        // method's labeled canonical so each declaration warns once.
+        static std::unordered_set<std::string> warned;
+        // Dedupe by source-canonical (template args trimmed): the same
+        // source-level method warning shouldn't repeat for each
+        // template instantiation (Stream<int32>.next, Stream<int64>.next
+        // all share one declaration site).
+        std::string parentCanonical = parent && parent->getQName()
+            ? trimTemplateArgs(parent->getQName()->toCanonical())
+            : std::string("");
+        std::string key = parentCanonical + "::" + name;
+        if (warned.count(key)) return;
+        int returnCount = 0;
+        bool allHeapOptional = methodVisitReturnsBlock(block,
+            [&](const ExpressionPtr& e) -> bool {
+                returnCount++;
+                return exprIsHeapCtorOfClass(e, "cajeta.lang.Optional");
+            });
+        if (!allHeapOptional || returnCount == 0) return;
+        warned.insert(key);
+        std::cerr << "warning: [heap-optional-return] "
+            << (parentCanonical.empty()
+                ? std::string("") : parentCanonical + ".")
+            << name
+            << " returns #Optional<...> but every return is a "
+            << "scope-bounded `heap Optional<...>(...)`. Consider "
+            << "dropping `#` from the return type and switching to "
+            << "`return stack Optional<...>(...)` — the value lands "
+            << "in the caller's slot by copy (sret), avoiding a heap "
+            << "allocation per call. Suppress with @HeapReturn when "
+            << "the caller really needs heap ownership."
+            << std::endl;
+    }
+
+    bool Method::returnsStackValue() {
+        if (returnsStackValueCache != -1) {
+            return returnsStackValueCache == 1;
+        }
+        returnsStackValueCache = 0;
+        // A `#`-marked return is an explicit heap ownership transfer, never a
+        // by-value copy — they're mutually exclusive.
+        if (returnsOwnership) return false;
+        // A @ValueType (Vec2, Matrix, ...) is a small POD aggregate returned
+        // *by value* in registers (the isValueTypeR path in generatePrototype),
+        // never via the sret hidden-pointer ABI. Exclude it here so every sret
+        // call site (prototype, call emission, arg indexing) agrees that value
+        // types are not sret. See value-type-overloading-plan.md.
+        if (returnType && returnType->isValueType()) return false;
+        // Only class (value) returns travel by copy. void/primitive returns
+        // never do; interfaces already have their own by-value fat-pointer ABI
+        // (Method::generatePrototype S9.5.5); arrays are reference-typed.
+        auto rtClass = dynamic_pointer_cast<CajetaClass>(returnType);
+        if (!rtClass) return false;
+        if (rtClass->isInterface()) return false;
+        if (dynamic_pointer_cast<CajetaArray>(returnType)) return false;
+        if (blockHasStackReturn(block)) {
+            returnsStackValueCache = 1;
+            return true;
+        }
+        // #63: an interface method (abstract, no body) returning a value-shape
+        // class (Optional<T>, etc.) has no body to scan, but the dispatch-site
+        // ABI must match the impl's. Impls of such methods use `return stack
+        // X(...)` (the canonical shape) and compile with sret; the interface
+        // decl's prototype must too, or indirect calls via the vtable
+        // misalign args. Force sret on the interface decl based on the
+        // signature alone.
+        if (parent && parent->isInterface()) {
+            returnsStackValueCache = 1;
+            return true;
+        }
+        // #66: a class method whose body has no `return stack X(...)` (the
+        // canonical PeekStream/SkipStream shape — body is just `return o;`
+        // for a local Optional<T>) still needs sret if an ancestor class's
+        // same-name method is sret. The vtable slot ABI was fixed by the
+        // base; overrides must match or virtual dispatch misaligns args.
+        // Walk the superclass chain for any method with the same name +
+        // arg count whose own returnsStackValue() is true. Map key is the
+        // full canonical signature, not the bare name — iterate and match
+        // by name field + parameter count (the override discriminator the
+        // vtable slot resolution uses).
+        if (parent && !parent->isInterface()) {
+            size_t myParamCount = parameterList.size();
+            for (auto& ancestor : parent->getSuperClasses()) {
+                CajetaClassPtr cls = ancestor;
+                while (cls) {
+                    for (auto& kv : cls->getMethods()) {
+                        MethodPtr ancMethod = kv.second;
+                        if (!ancMethod || ancMethod.get() == this) continue;
+                        if (ancMethod->getName() != name) continue;
+                        if (ancMethod->getParameterList().size() != myParamCount) continue;
+                        if (ancMethod->returnsStackValue()) {
+                            returnsStackValueCache = 1;
+                            return true;
+                        }
+                    }
+                    if (cls->getSuperClasses().empty()) break;
+                    cls = cls->getSuperClasses().front();
+                }
+            }
+        }
+        return false;
+    }
+
     // Emit the body of an @Native-annotated method: a thin wrapper that
     // forwards all parameters to the named C runtime symbol. The wrapper
     // function (this method's llvmFunction) keeps its cajeta-mangled name
@@ -110,6 +368,10 @@ namespace cajeta {
 
         std::vector<llvm::Value*> args;
         args.reserve(llvmFunction->arg_size());
+        // @Native ABI convention: an `int8[]` (CajetaArray) argument is passed
+        // as its HEADER pointer ({ i64 count, [N x i8] data }); the C bridge
+        // skips the 8-byte length header itself (`hdr + 8`), as e.g.
+        // __cajeta_sha256_update does. So the forwarder passes args verbatim.
         for (auto& arg : llvmFunction->args()) {
             args.push_back(&arg);
         }
@@ -517,7 +779,14 @@ namespace cajeta {
             // implementer (ArrayStream<T>) emits `ret ptr`. The
             // mismatched call signature stores the struct return into
             // a ptr-sized alloca and overflows the stack.
+            // #63: also mirror the sret path. An interface method
+            // returning a value-shape class (e.g. `Optional<T> next()`)
+            // must use the sret ABI on the interface prototype, because
+            // every well-formed impl uses `return stack X(...)` and
+            // compiles with sret — the indirect call via the vtable
+            // would otherwise misalign args (sret slot becomes `this`).
             llvm::Type* llvmRetAbs;
+            llvm::Type* sretStructTyAbs = nullptr;
             {
                 CajetaTypePtr rt = returnType;
                 bool isArrR = rt
@@ -527,11 +796,20 @@ namespace cajeta {
                 bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
                 bool isInterfaceR = rtClass && rtClass->isInterface();
                 // @ValueType returns by value (the aggregate itself), like a POD
-                // primitive — not by pointer. See value-type-overloading-plan.md.
+                // primitive — not by pointer and not via sret (returnsStackValue
+                // is forced false for value types). See value-type-overloading-plan.md.
                 bool isValueTypeR = rt && rt->isValueType();
+                bool sretReturnAbs = returnsStackValue();
                 bool returnByPointer = isClassLikeR
                     && (isArrR || !isPrimR) && !isInterfaceR && !isValueTypeR;
-                if (returnByPointer) {
+                if (sretReturnAbs) {
+                    sretStructTyAbs = rt ? rt->getLlvmType() : nullptr;
+                    llvmRetAbs = llvm::Type::getVoidTy(
+                        *module->getLlvmContext());
+                    llvmTypes.insert(llvmTypes.begin(),
+                        llvm::PointerType::get(
+                            *module->getLlvmContext(), 0));
+                } else if (returnByPointer) {
                     llvmRetAbs = llvm::PointerType::get(
                         *module->getLlvmContext(), 0);
                 } else {
@@ -584,7 +862,14 @@ namespace cajeta {
                 returnIsReferenceTyped = true;
             }
         }
-        if (staticMethod && !returnsOwnership
+        // sret value-returning methods aren't borrow-returning — the result
+        // is constructed directly into the caller's slot by copy (M3
+        // NRVO), so there's no parameter lifetime to inherit. Exempt them
+        // from the multi-parameter borrow-return check (otherwise e.g.
+        // `Tasks.withTimeout(Duration, Task<R>) -> Optional<R>` is
+        // wrongly rejected even though every return is `return stack
+        // Optional<R>(...)`).
+        if (staticMethod && !returnsOwnership && !returnsStackValue()
                 && returnIsReferenceTyped
                 && parameterList.size() > 1) {
             char buf[256];
@@ -652,6 +937,14 @@ namespace cajeta {
         // STRUCTURE itself (the three-word tuple) is callee-local stack
         // for any synthesized interface value, so by-value return is
         // the only safe shape.
+        // Way 2 value-return ABI (sret + NRVO): a method that returns a
+        // `stack`-constructed value hands it back by copy. The LLVM function
+        // returns `void` and takes a hidden leading `ptr` (param 0, before
+        // `this`) carrying the `sret(structTy)` attribute; the callee
+        // constructs its result directly into that caller-owned slot. See
+        // cajeta-docs/stdlib/ValueReturns.md.
+        bool sretReturn = returnsStackValue();
+        llvm::Type* sretStructTy = nullptr;
         llvm::Type* llvmRet;
         {
             CajetaTypePtr rt = returnType;
@@ -666,7 +959,12 @@ namespace cajeta {
             bool isValueTypeR = rt && rt->isValueType();
             bool returnByPointer = isClassLikeR && (isArrR || !isPrimR)
                 && !isInterfaceR && !isValueTypeR;
-            if (returnByPointer) {
+            if (sretReturn) {
+                sretStructTy = rt ? rt->getLlvmType() : nullptr;
+                llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
+                llvmTypes.insert(llvmTypes.begin(),
+                    llvm::PointerType::get(*module->getLlvmContext(), 0));
+            } else if (returnByPointer) {
                 llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
             } else {
                 llvmRet = rt ? rt->getLlvmType() : nullptr;
@@ -713,12 +1011,26 @@ namespace cajeta {
             llvmFunction->addFnAttr(llvm::Attribute::AlwaysInline);
         }
 
+        // Tag the hidden sret pointer (arg 0) so the backend + optimizer treat
+        // it as the return slot. Idempotent across reprototype calls.
+        if (sretReturn && sretStructTy && llvmFunction->arg_size() > 0) {
+            llvmFunction->getArg(0)->addAttr(
+                llvm::Attribute::getWithStructRetType(
+                    *module->getLlvmContext(), sretStructTy));
+        }
+
         archive[canonical] = shared_from_this();
 
         module->getLlvmModule()->getOrInsertFunction(canonical, llvmFunctionType);
     }
 
     void Method::generateCode() {
+        // [heap-optional-return] lint fires before the abstract /
+        // method-template early-returns: the body is still walkable on
+        // template declarations and the warning is independent of LLVM
+        // emission. Dedupes internally so a single template doesn't
+        // re-warn per instantiation.
+        lintHeapOptionalReturn();
         // Abstract methods carry no body — dispatch goes to a concrete
         // implementation via the vtable.
         if (abstractFlag) return;
@@ -839,7 +1151,9 @@ namespace cajeta {
 
         createScope();
 
-        int i = 0;
+        // Value-returning (sret) methods reserve arg 0 for the hidden result
+        // pointer, so the real parameters (including `this`) start at arg 1.
+        int i = returnsStackValue() ? 1 : 0;
         for (auto& parameter: parameterList) {
             FieldPtr parameterField = make_shared<ParameterField>(module, parameter, bodyFn, i++);
             module->getScopeStack().peek()->putField(parameterField);
@@ -864,6 +1178,44 @@ namespace cajeta {
         if (llvm::Function* enterFn = module->getRuntimeFunction(
                 "__cajeta_scope_enter")) {
             builder->CreateCall(enterFn, {});
+        }
+
+        // Debugger CP5: push a debug frame for this method (no-op unless
+        // --debug-info). Paired with __cajeta_dbg_frame_leave on every return
+        // path (emitScopeExitToWatermark + the synthetic fall-through below).
+        dbg::emitDbgFrameEnter(module, getLlvmSymbolName());
+
+        // Register the parameters as locals in the debug frame. Materializing
+        // their slots here (getOrCreateAllocation) is the same store-arg-to-
+        // alloca the body would do on first use; doing it at entry just makes
+        // every parameter inspectable from the first statement on.
+        if (module->getFlags().debugInfo) {
+            for (auto& parameter : parameterList) {
+                FieldPtr pf = module->getScopeStack().peek()
+                                    ->getField(parameter->getName());
+                if (!pf || !pf->getType()) continue;
+                // CP7-1b memory facets. alloc: primitives live inline in the
+                // slot (Stack), class/array/view params hold a pointer (Heap),
+                // matching ParameterField::getOrCreateAllocation. ownership: a
+                // `#`-transferred param takes ownership (Owner); any other
+                // non-primitive param is a borrow the caller still owns; a
+                // primitive is a plain value (Unknown role). `shared` is
+                // deferred (XPU placement, not a parameter form).
+                CajetaTypePtr pt = pf->getType();
+                bool isArr  = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
+                bool isPrim = (pt->getTypeFlags() & PRIMITIVE_FLAG) && !isArr;
+                dbg::FieldFacetInputs facetIn;
+                facetIn.isStackField = isPrim;
+                facetIn.isHeapField  = !isPrim;
+                facetIn.ownsDrop     = parameter->isTransferred()
+                                       || pf->getDropEntry() != nullptr;
+                facetIn.isReference  = !isPrim && !parameter->isTransferred();
+                dbg::emitDbgLocal(module, pf->getName(),
+                                  pt->toCanonical(),
+                                  pf->getOrCreateAllocation(),
+                                  dbg::classifyField(facetIn),
+                                  pf->getDropEntry());
+            }
         }
 
         // @NonNull parameter checks. Fire BEFORE the try frame so a
@@ -945,6 +1297,59 @@ namespace cajeta {
                         llvm::ConstantInt::get(vi64Ty, off),
                         "vbase_init_target");
                 builder->CreateStore(ancPtr, slotPtr);
+            }
+        }
+
+        // MultiClassing Phase 3 v4 vbase init — INHERITED sub-objects.
+        // The block above initializes only SELF's own appended vbase
+        // slots — those are the slots an inherited-field access loads when
+        // the receiver's STATIC type is this most-derived class. But an
+        // inherited-field read through an UPCAST base static type loads the
+        // vbase pointer from the BASE sub-object's own vbase slot instead
+        // (e.g. `e.message` where `e` is statically `NetException` but the
+        // object is a `ConnectionRefusedException` subtype uses
+        // NetException's vbase-to-Throwable slot, NOT the subtype's). Those
+        // inherited sub-object vbase slots are normally initialized by each
+        // ancestor's own constructor — but only if it actually RUNS. A
+        // subtype whose parent has no no-arg constructor (so the auto
+        // super-ctor invoke below is skipped) and that does not chain an
+        // explicit `super(...)` would otherwise leave them null, and an
+        // upcast inherited-field read then dereferences a null vbase
+        // pointer and crashes. So initialize every first-parent-chain
+        // ancestor's own vbase slots here too, pointing at self's canonical
+        // sub-object positions. First-parent-chain ancestors all sit at
+        // byte offset 0 (they share self's primary layout prefix), so each
+        // ancestor's struct is a valid prefix of self and a StructGEP off
+        // the receiver lands on the right slot. Non-first (diamond) parents
+        // are still handled by the descendant fixup further below.
+        if (constructor && parent && bodyFn->arg_size() > 0) {
+            llvm::Value* receiver = bodyFn->getArg(0);
+            auto& vctx = *module->getLlvmContext();
+            llvm::Type* vi8Ty = llvm::Type::getInt8Ty(vctx);
+            llvm::Type* vi64Ty = llvm::Type::getInt64Ty(vctx);
+            CajetaClass* chain = parent->getSuperClasses().empty()
+                ? nullptr : parent->getSuperClasses().front().get();
+            while (chain) {
+                if (!chain->getVbaseAncestors().empty()) {
+                    llvm::Type* chainLlvm = chain->getLlvmType();
+                    for (auto& anc : chain->getVbaseAncestors()) {
+                        if (!anc) continue;
+                        int slotIdx = chain->getVbaseSlotIndex(anc.get());
+                        if (slotIdx < 0) continue;
+                        llvm::Value* slotPtr = builder->CreateStructGEP(
+                            chainLlvm, receiver, (unsigned) slotIdx,
+                            "vbase_init_inh_slot");
+                        uint64_t off = parent->getSubObjectByteOffset(anc.get());
+                        llvm::Value* ancPtr = (off == 0)
+                            ? receiver
+                            : builder->CreateInBoundsGEP(vi8Ty, receiver,
+                                llvm::ConstantInt::get(vi64Ty, off),
+                                "vbase_init_inh_target");
+                        builder->CreateStore(ancPtr, slotPtr);
+                    }
+                }
+                chain = chain->getSuperClasses().empty()
+                    ? nullptr : chain->getSuperClasses().front().get();
             }
         }
 
@@ -1225,6 +1630,10 @@ namespace cajeta {
                 llvm::Value* mark = builder->CreateLoad(ptrTy, scopeWatermark);
                 builder->CreateCall(exitToFn, {mark});
             }
+            // Debugger CP5: pop this method's debug frame on the fall-through
+            // return path (mirrors the explicit-return path in
+            // emitScopeExitToWatermark). No-op unless --debug-info.
+            dbg::emitDbgFrameLeave(module);
             // Fire scope-end drops before the synthetic return so the chain is
             // unwound the same way an explicit `return` would do it.
             emitOwnerDrops(module);

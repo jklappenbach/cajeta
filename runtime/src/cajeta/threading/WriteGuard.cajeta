@@ -1,0 +1,32 @@
+package cajeta.threading;
+
+/**
+ * RAII guard for `RwLock`'s exclusive write lock. Its destructor
+ * releases the write lock, so it unlocks automatically at scope exit
+ * (normal return or exception unwind, via the drop chain). Holds the raw
+ * rwlock handle so its drop reaches the runtime release helper directly,
+ * without keeping the `RwLock` object alive. "Forgot to unlock" is
+ * structurally unrepresentable; the lifetime contract is "guard <= lock".
+ *
+ * You almost never construct a `WriteGuard` yourself — `RwLock``.withWrite`
+ * acquires the write lock, holds a method-scoped guard for the duration of
+ * the critical section, and lets it drop:
+ *
+ * ```cajeta
+ * void scope() {
+ *     WriteGuard g = heap WriteGuard(handle);   // write lock held here
+ *     // ... exclusive critical section ...
+ * }                                            // g drops -> write lock released
+ * ```
+ *
+ * Compare `LockGuard` from `Lock`, which follows the same
+ * drop-to-release contract for a plain mutual-exclusion lock.
+ *
+ * See cajeta-docs/stdlib/Thread.md § Synchronization primitives.
+ */
+public class WriteGuard {
+    public pointer handle;
+    public WriteGuard(pointer handle) { this.handle = handle; }
+    /** Releases the exclusive write lock via the runtime helper as the guard drops. */
+    public ~WriteGuard() { Cajeta.rwlockWrunlock(this.handle); }
+}

@@ -5,6 +5,17 @@ package cajeta.lang;
  * `T` may be any type — primitive, class reference, struct, even
  * another Optional.
  *
+ * ```cajeta
+ * stack Optional<int> hit = Optional<int>(true, 42);
+ * stack Optional<int> miss = Optional<int>(false, 0);
+ * if (hit.isPresent()) {
+ *     int v = hit.get();          // 42
+ * }
+ * if (miss.isEmpty()) {
+ *     int v = miss.orElse(-1);    // -1
+ * }
+ * ```
+ *
  * ## v1 surface
  *
  * Minimal Java-style core: construction (via ctor for now;
@@ -31,14 +42,30 @@ package cajeta.lang;
  *
  * ## Stream integration (deferred)
  *
- * stdlib/Streams.md commits to Optional extending Stream<T> with
- * single-shot next(); that lands when Stream<T> itself does (P6.4+).
+ * stdlib/Streams.md commits to Optional extending `Stream`<T> with
+ * single-shot next(); that lands when `Stream`<T> itself does (P6.4+).
  */
 public class Optional<T> {
     boolean present;
     T value;
 
-    public Optional(boolean present, T value) {
+    /**
+     * Build an Optional directly. Pass `present == true` with the held
+     * value, or `present == false` for an empty one (the `value` slot is
+     * ignored when empty, but still consumed — pass a zero/default). The
+     * `Some`/`None` static factories supersede this once generic-static-call
+     * syntax lands.
+     *
+     * ```cajeta
+     * stack Optional<int> some = Optional<int>(true, 42);
+     * stack Optional<int> none = Optional<int>(false, 0);
+     * if (some.isPresent()) {
+     *     int v = some.get();      // 42
+     * }
+     * int fallback = none.orElse(-1); // -1
+     * ```
+     */
+    public Optional(boolean present, #T value) {
         this.present = present;
         this.value = value;
     }
@@ -64,6 +91,7 @@ public class Optional<T> {
         return this.value;
     }
 
+    /** Returns the held value when present, otherwise `fallback`. Never throws. */
     public T orElse(T fallback) {
         if (this.present) {
             return this.value;

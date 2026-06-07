@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cajeta.org/specs/lockfile-v1.json",
+  "title": "Cajeta lockfile (cajeta.lock) — v1",
+  "description": "Resolved-state lockfile committed alongside cajeta.json. Strict JSON (no comments — machine only). Format is stable: keys in fixed order, two-space indent, trailing newline; byte-identical given the same inputs. Authoritative C++ writer/reader: src/cajeta/buildtool/Lockfile.cpp.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "lockfile-version",
+    "manifest-checksum",
+    "resolved-at",
+    "generator",
+    "properties"
+  ],
+  "properties": {
+    "lockfile-version": { "const": 1 },
+    "manifest-checksum": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "SHA-256 of the manifest source bytes. Drives drift detection."
+    },
+    "resolved-at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp."
+    },
+    "generator": {
+      "type": "object",
+      "required": ["tool", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "properties": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Resolved property map. Lexicographic key order on disk."
+    },
+    "packages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/resolvedPackage" }
+    },
+    "melts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/resolvedMelt" }
+    },
+    "plugins": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/resolvedPlugin" }
+    },
+    "overrides": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/appliedOverride" }
+    },
+    "workspace": {
+      "type": "object",
+      "description": "Present only on workspace-scoped lockfiles. Single-package lockfiles omit the field entirely (byte-identical to pre-Phase-12 lockfiles).",
+      "additionalProperties": false,
+      "required": ["members"],
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "declared-path", "manifest-checksum"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "declared-path": { "type": "string" },
+              "manifest-checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+            }
+          }
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "description": "Phase 14: resolved toolchain identity. Drives drift detection on toolchain pin change.",
+      "additionalProperties": false,
+      "properties": {
+        "distribution": { "type": "string" },
+        "version": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^([0-9a-f]{64}|sha256:[0-9a-f]{64})$" }
+      }
+    }
+  },
+  "$defs": {
+    "resolvedPackage": {
+      "type": "object",
+      "required": ["name", "version", "resolved-from", "checksum", "provided-by"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "resolved-from": { "type": "string", "description": "Repository name." },
+        "checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "provided-by": {
+          "type": "string",
+          "description": "`explicit` when pinned by the consumer; otherwise `<melt-name>@<melt-version>`."
+        },
+        "member": {
+          "type": "string",
+          "description": "Workspace-mode only. Names the member that owns this entry. Omitted (not empty) when the lockfile is single-package."
+        }
+      }
+    },
+    "resolvedMelt": {
+      "type": "object",
+      "required": ["name", "version", "resolved-from", "checksum"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "resolved-from": { "type": "string" },
+        "checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "transitive-melts": {
+          "type": "array",
+          "items": { "type": "string", "description": "name@version" }
+        }
+      }
+    },
+    "resolvedPlugin": {
+      "type": "object",
+      "required": ["name", "version", "resolved-from", "checksum", "capabilities"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "resolved-from": { "type": "string" },
+        "checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "manifest-v1.json#/$defs/capabilityName" },
+          "description": "Sorted set of declared capabilities. Recorded so PRs surface capability additions."
+        }
+      }
+    },
+    "appliedOverride": {
+      "type": "object",
+      "required": ["target"],
+      "additionalProperties": true,
+      "properties": {
+        "target": { "type": "string", "description": "Package name the override applied to." },
+        "version": { "type": "string" },
+        "path": { "type": "string" },
+        "git": { "type": "string" },
+        "branch": { "type": "string" },
+        "tag": { "type": "string" },
+        "rev": { "type": "string" },
+        "allow-major-downgrade": { "type": "boolean" }
+      }
+    }
+  }
+}

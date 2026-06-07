@@ -1,0 +1,261 @@
+package cajeta.codec;
+
+import cajeta.codec.Base64Exception;
+import cajeta.lang.String;
+
+/**
+ * Base64 (RFC 4648) byte ⇄ text codec.
+ *
+ * Supports both alphabets in §4 (standard, `+` `/`) and §5
+ * (URL- and filename-safe, `-` `_`), with explicit control over
+ * padding. Decoding accepts **either** alphabet transparently —
+ * `-`/`_` and `+`/`/` are both recognised — so a caller need not
+ * know which variant produced the text (the common case for an
+ * HTTP `Authorization: Basic …` header vs. a JWT segment).
+ *
+ * ## Surface
+ *
+ * One-shot encode (allocates the result `String`):
+ * ```cajeta
+ * String b = Base64.encode(bytes, bytes.count());      // standard, padded
+ * String u = Base64.encodeUrlSafe(bytes, bytes.count()); // -/_, no padding
+ * ```
+ *
+ * One-shot decode (allocates the result `int8[]`):
+ * ```cajeta
+ * int8[] raw = Base64.decode(text);   // throws Base64Exception on garbage
+ * ```
+ *
+ * ## Design notes
+ *
+ * No `@Native` bridge: Base64 is pure index arithmetic over bytes,
+ * cheap enough in Cajeta that a C primitive would only add an ABI
+ * boundary. The alphabet is computed arithmetically rather than
+ * indexed out of a literal table, so the codec carries no static
+ * byte-array dependency.
+ *
+ * Decoding is alphabet-agnostic and length-checked: a character
+ * outside `[A-Za-z0-9+/-_]` (other than `=` padding) or a stripped
+ * length of `1 mod 4` raises [[Base64Exception]] with the offending
+ * byte offset. Trailing `=` padding is consumed and ignored — the
+ * decoder reconstructs the byte count from the unpadded length, so
+ * unpadded URL-safe input round-trips without the caller re-adding
+ * `=`.
+ *
+ * @see cajeta.codec.Base64Exception
+ * @see [Net.md § Supporting primitives](../../../../../cajeta-docs/Net.md)
+ */
+public final class Base64 {
+
+    // --- Alphabet arithmetic ----------------------------------------
+
+    /**
+     * Map a 6-bit value `v` (0..63) to its alphabet byte. `urlSafe`
+     * selects `-`/`_` for indices 62/63 instead of `+`/`/`.
+     *
+     *   0..25  → 'A'..'Z'   (65 + v)
+     *   26..51 → 'a'..'z'   (97 + (v - 26))
+     *   52..61 → '0'..'9'   (48 + (v - 52))
+     *   62     → '+' / '-'
+     *   63     → '/' / '_'
+     */
+    private static int32 sextetToChar(int32 v, boolean urlSafe) {
+        if (v < 26) {
+            return 65 + v;
+        }
+        if (v < 52) {
+            return 97 + (v - 26);
+        }
+        if (v < 62) {
+            return 48 + (v - 52);
+        }
+        if (v == 62) {
+            return urlSafe ? 45 : 43;   // '-' : '+'
+        }
+        return urlSafe ? 95 : 47;       // '_' : '/'
+    }
+
+    /**
+     * Inverse of [[sextetToChar]]: map an encoded byte `c` to its
+     * 6-bit value, accepting **both** alphabets. Returns `-1` for a
+     * byte that is not a valid Base64 symbol (the `=` pad is handled
+     * by the caller before this is reached).
+     */
+    private static int32 charToSextet(int32 c) {
+        if (c >= 65 && c <= 90) {
+            return c - 65;          // 'A'..'Z' → 0..25
+        }
+        if (c >= 97 && c <= 122) {
+            return c - 97 + 26;     // 'a'..'z' → 26..51
+        }
+        if (c >= 48 && c <= 57) {
+            return c - 48 + 52;     // '0'..'9' → 52..61
+        }
+        if (c == 43 || c == 45) {
+            return 62;              // '+' or '-'
+        }
+        if (c == 47 || c == 95) {
+            return 63;              // '/' or '_'
+        }
+        return -1;
+    }
+
+    // --- Encode -----------------------------------------------------
+
+    /**
+     * Encode `data[0..len)` to standard Base64 (§4) **with** `=`
+     * padding. The result `String` owns a freshly-allocated byte
+     * buffer.
+     */
+    public static #String encode(int8[] data, int64 len) {
+        return Base64.encodeInto(data, len, false, true);
+    }
+
+    /**
+     * Encode `data[0..len)` to URL- and filename-safe Base64 (§5,
+     * `-`/`_`) **without** `=` padding — the form expected in JWT
+     * segments and URL query parameters.
+     */
+    public static #String encodeUrlSafe(int8[] data, int64 len) {
+        return Base64.encodeInto(data, len, true, false);
+    }
+
+    /**
+     * General encode. `urlSafe` picks the §5 alphabet; `pad` appends
+     * `=` to a multiple-of-4 length when the final group is short.
+     */
+    public static #String encode(int8[] data, int64 len,
+                                 boolean urlSafe, boolean pad) {
+        return Base64.encodeInto(data, len, urlSafe, pad);
+    }
+
+    private static #String encodeInto(int8[] data, int64 len,
+                                      boolean urlSafe, boolean pad) {
+        int32 n = (int32) len;
+        if (n < 0) {
+            n = 0;
+        }
+        // Output length: every 3 input bytes → 4 chars. With padding
+        // the result is rounded up to a multiple of 4; without, the
+        // trailing group emits only as many chars as its bits cover.
+        int32 fullGroups = n / 3;
+        int32 rem = n - fullGroups * 3;     // 0, 1 or 2
+        int32 outLen = fullGroups * 4;
+        if (rem == 1) {
+            outLen = outLen + (pad ? 4 : 2);
+        } else if (rem == 2) {
+            outLen = outLen + (pad ? 4 : 3);
+        }
+
+        int8[] out = heap int8[outLen];
+        int32 i = 0;
+        int32 o = 0;
+
+        // Whole 3-byte → 4-char groups.
+        while (i + 3 <= n) {
+            int32 b0 = ((int32) data[i]) & 0xff;
+            int32 b1 = ((int32) data[i + 1]) & 0xff;
+            int32 b2 = ((int32) data[i + 2]) & 0xff;
+            int32 v = (b0 << 16) | (b1 << 8) | b2;
+            out[o] = (int8) Base64.sextetToChar((v >> 18) & 0x3f, urlSafe);
+            out[o + 1] = (int8) Base64.sextetToChar((v >> 12) & 0x3f, urlSafe);
+            out[o + 2] = (int8) Base64.sextetToChar((v >> 6) & 0x3f, urlSafe);
+            out[o + 3] = (int8) Base64.sextetToChar(v & 0x3f, urlSafe);
+            i = i + 3;
+            o = o + 4;
+        }
+
+        // Trailing 1- or 2-byte group.
+        if (rem == 1) {
+            int32 b0 = ((int32) data[i]) & 0xff;
+            int32 v = b0 << 16;
+            out[o] = (int8) Base64.sextetToChar((v >> 18) & 0x3f, urlSafe);
+            out[o + 1] = (int8) Base64.sextetToChar((v >> 12) & 0x3f, urlSafe);
+            o = o + 2;
+            if (pad) {
+                out[o] = (int8) 61;     // '='
+                out[o + 1] = (int8) 61; // '='
+                o = o + 2;
+            }
+        } else if (rem == 2) {
+            int32 b0 = ((int32) data[i]) & 0xff;
+            int32 b1 = ((int32) data[i + 1]) & 0xff;
+            int32 v = (b0 << 16) | (b1 << 8);
+            out[o] = (int8) Base64.sextetToChar((v >> 18) & 0x3f, urlSafe);
+            out[o + 1] = (int8) Base64.sextetToChar((v >> 12) & 0x3f, urlSafe);
+            out[o + 2] = (int8) Base64.sextetToChar((v >> 6) & 0x3f, urlSafe);
+            o = o + 3;
+            if (pad) {
+                out[o] = (int8) 61;     // '='
+                o = o + 1;
+            }
+        }
+
+        return heap String(#out, outLen);
+    }
+
+    // --- Decode -----------------------------------------------------
+
+    /**
+     * Decode a Base64 `String` (either alphabet, with or without
+     * `=` padding) to its raw bytes. Throws [[Base64Exception]] on a
+     * character outside the alphabet or an impossible length.
+     */
+    public static #int8[] decode(String s) {
+        return Base64.decodeBytes(s.bytes, (int64) s.byteLength);
+    }
+
+    /**
+     * Decode `data[0..len)` (encoded text) to raw bytes. Shared by
+     * [[decode]]; exposed for callers holding the encoded text as a
+     * byte buffer rather than a `String`.
+     */
+    public static #int8[] decodeBytes(int8[] data, int64 len) {
+        int32 n = (int32) len;
+        if (n < 0) {
+            n = 0;
+        }
+        // Strip trailing '=' padding — its only role was to round the
+        // text to a multiple of 4; the byte count is reconstructed
+        // from the unpadded length.
+        int32 stripped = n;
+        while (stripped > 0 && (((int32) data[stripped - 1]) & 0xff) == 61) {
+            stripped = stripped - 1;
+        }
+
+        // A stripped length of 1 mod 4 is a single dangling sextet —
+        // 6 bits, not enough for one byte. No valid encoding produces
+        // it.
+        if ((stripped & 0x3) == 1) {
+            throw heap Base64Exception(
+                "base64: truncated final quantum", (int64) stripped);
+        }
+
+        // Decoded byte count = floor(stripped * 6 / 8).
+        int32 outLen = (stripped * 6) / 8;
+        int8[] out = heap int8[outLen];
+
+        int32 acc = 0;
+        int32 bits = 0;
+        int32 o = 0;
+        int32 i = 0;
+        while (i < stripped) {
+            int32 c = ((int32) data[i]) & 0xff;
+            int32 sextet = Base64.charToSextet(c);
+            if (sextet < 0) {
+                throw heap Base64Exception(
+                    "base64: invalid character", (int64) i);
+            }
+            acc = (acc << 6) | sextet;
+            bits = bits + 6;
+            if (bits >= 8) {
+                bits = bits - 8;
+                out[o] = (int8) ((acc >> bits) & 0xff);
+                o = o + 1;
+            }
+            i = i + 1;
+        }
+
+        return #out;
+    }
+}

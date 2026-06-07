@@ -6,33 +6,60 @@ package cajeta.collection;
  * only needs `==` for `remove` / `contains` — both primitive T
  * (using the built-in `==`) and class T (identity comparison) work.
  *
+ * The head/tail API makes it usable as a deque (double-ended queue)
+ * or a stack: push/pop at either end in O(1).
+ *
+ * ```cajeta
+ * LinkedList<int64> nums = heap LinkedList<int64>();
+ * nums.addTail(10);      // tail:  [10]
+ * nums.addTail(20);      // tail:  [10, 20]
+ * nums.addHead(5);       // head:  [5, 10, 20]
+ * int64 front = nums.head();        // 5  (peek, no removal)
+ * int64 back  = nums.tail();        // 20
+ * int64 first = nums.popHead();     // 5  -> [10, 20]
+ * int64 last  = nums.popTail();     // 20 -> [10]
+ * boolean has = nums.contains(10);  // true
+ * int64 n = nums.count();           // 1
+ * ```
+ *
  * ## v1 surface
  *
- * `add(T)` appends to the tail. `addFirst(T)` prepends. `get(int64)`
- * walks from the closer end. `remove(T)` finds the first
- * `==`-matching node and unlinks it. `count()` returns the live
- * node count. `contains(T)` is a boolean find.
+ * `addTail(T)` (alias `add`) appends; `addHead(T)` (alias `addFirst`)
+ * prepends. `head()` / `tail()` peek the end values without removing;
+ * `popHead()` / `popTail()` remove and return them. `get(int64)` walks
+ * from the closer end. `remove(T)` finds the first `==`-matching node
+ * and unlinks it. `contains(T)` is a boolean find. `count()` returns
+ * the live node count.
  *
- * Stream views and Optional-returning methods (e.g. `first()`
- * returning `Optional<T>`) are deferred — they'd need the
- * Optional<class T> field-layout bug fixed first.
+ * Peek/pop on an empty list return the type's zero value (matching
+ * `get`'s miss convention); guard with `count()` when the zero value
+ * is itself a valid element. `Optional`-returning variants are deferred
+ * until the `Optional<class T>` field-layout bug is fixed.
  *
  * ## Storage
  *
- * Heap-allocates one `LinkedListNode<T>` per `add`. The list owns
- * the nodes; removed nodes fall off the drop chain at scope exit.
- * Values are NOT owned by the nodes — `remove(T)` returns whether
- * a node was unlinked, but doesn't drop the value.
+ * Heap-allocates one `LinkedListNode`<T> per insert. The list owns the
+ * nodes; unlinked nodes fall off the drop chain at scope exit. Values
+ * are NOT owned by the nodes — `remove(T)` returns whether a node was
+ * unlinked, but doesn't drop the value.
  */
 public class LinkedList<T> {
 
-    private LinkedListNode<T> head;
-    private LinkedListNode<T> tail;
+    private LinkedListNode<T> headNode;
+    private LinkedListNode<T> tailNode;
     private int64 sizeCount;
 
+    /**
+     * Create an empty list.
+     *
+     * ```cajeta
+     * LinkedList<string> names = heap LinkedList<string>();
+     * names.addTail("ada");
+     * ```
+     */
     public LinkedList() {
-        this.head = null;
-        this.tail = null;
+        this.headNode = null;
+        this.tailNode = null;
         this.sizeCount = 0;
     }
 
@@ -41,13 +68,13 @@ public class LinkedList<T> {
      */
     public void add(T value) {
         LinkedListNode<T> node = heap LinkedListNode<T>(value);
-        if (this.tail == null) {
-            this.head = node;
-            this.tail = node;
+        if (this.tailNode == null) {
+            this.headNode = node;
+            this.tailNode = node;
         } else {
-            node.prev = this.tail;
-            this.tail.next = node;
-            this.tail = node;
+            node.prev = this.tailNode;
+            this.tailNode.next = node;
+            this.tailNode = node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -57,15 +84,139 @@ public class LinkedList<T> {
      */
     public void addFirst(T value) {
         LinkedListNode<T> node = heap LinkedListNode<T>(value);
-        if (this.head == null) {
-            this.head = node;
-            this.tail = node;
+        if (this.headNode == null) {
+            this.headNode = node;
+            this.tailNode = node;
         } else {
-            node.next = this.head;
-            this.head.prev = node;
-            this.head = node;
+            node.next = this.headNode;
+            this.headNode.prev = node;
+            this.headNode = node;
         }
         this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * Append `value` to the tail. O(1). Deque-style synonym of `add`,
+     * named to pair with `addHead` / `popHead` / `popTail`.
+     *
+     * ```cajeta
+     * nums.addTail(42);   // [..., 42]
+     * ```
+     */
+    public void addTail(T value) {
+        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        if (this.tailNode == null) {
+            this.headNode = node;
+            this.tailNode = node;
+        } else {
+            node.prev = this.tailNode;
+            this.tailNode.next = node;
+            this.tailNode = node;
+        }
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * Prepend `value` to the head. O(1). Deque-style synonym of
+     * `addFirst`, named to pair with `addTail` / `popHead` / `popTail`.
+     *
+     * ```cajeta
+     * nums.addHead(0);    // [0, ...]
+     * ```
+     */
+    public void addHead(T value) {
+        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        if (this.headNode == null) {
+            this.headNode = node;
+            this.tailNode = node;
+        } else {
+            node.next = this.headNode;
+            this.headNode.prev = node;
+            this.headNode = node;
+        }
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * Peek the value at the head without removing it. O(1). Returns the
+     * type's zero value if the list is empty (`get`'s miss convention).
+     *
+     * ```cajeta
+     * int64 front = nums.head();
+     * ```
+     */
+    public T head() {
+        if (this.headNode == null) {
+            T[] missDefault = heap T[1];
+            return missDefault[0];
+        }
+        return this.headNode.value;
+    }
+
+    /**
+     * Peek the value at the tail without removing it. O(1). Returns the
+     * type's zero value if the list is empty.
+     *
+     * ```cajeta
+     * int64 back = nums.tail();
+     * ```
+     */
+    public T tail() {
+        if (this.tailNode == null) {
+            T[] missDefault = heap T[1];
+            return missDefault[0];
+        }
+        return this.tailNode.value;
+    }
+
+    /**
+     * Remove and return the value at the head. O(1). Returns the type's
+     * zero value and leaves the list unchanged if it is empty.
+     *
+     * ```cajeta
+     * int64 first = nums.popHead();   // shrinks the list from the front
+     * ```
+     */
+    public T popHead() {
+        if (this.headNode == null) {
+            T[] missDefault = heap T[1];
+            return missDefault[0];
+        }
+        LinkedListNode<T> node = this.headNode;
+        T value = node.value;
+        this.headNode = node.next;
+        if (this.headNode != null) {
+            this.headNode.prev = null;
+        } else {
+            this.tailNode = null;
+        }
+        this.sizeCount = this.sizeCount - 1;
+        return value;
+    }
+
+    /**
+     * Remove and return the value at the tail. O(1). Returns the type's
+     * zero value and leaves the list unchanged if it is empty.
+     *
+     * ```cajeta
+     * int64 last = nums.popTail();   // shrinks the list from the back
+     * ```
+     */
+    public T popTail() {
+        if (this.tailNode == null) {
+            T[] missDefault = heap T[1];
+            return missDefault[0];
+        }
+        LinkedListNode<T> node = this.tailNode;
+        T value = node.value;
+        this.tailNode = node.prev;
+        if (this.tailNode != null) {
+            this.tailNode.next = null;
+        } else {
+            this.headNode = null;
+        }
+        this.sizeCount = this.sizeCount - 1;
+        return value;
     }
 
     /**
@@ -77,12 +228,12 @@ public class LinkedList<T> {
      */
     public T get(int64 idx) {
         if (idx < 0 || idx >= this.sizeCount) {
-            T[] missDefault = new T[1];
+            T[] missDefault = heap T[1];
             return missDefault[0];
         }
         // Walk from the closer end to halve the worst-case cost.
         if (idx < this.sizeCount / 2) {
-            LinkedListNode<T> cur = this.head;
+            LinkedListNode<T> cur = this.headNode;
             int64 i = 0;
             while (i < idx) {
                 cur = cur.next;
@@ -90,7 +241,7 @@ public class LinkedList<T> {
             }
             return cur.value;
         }
-        LinkedListNode<T> cur = this.tail;
+        LinkedListNode<T> cur = this.tailNode;
         int64 i = this.sizeCount - 1;
         while (i > idx) {
             cur = cur.prev;
@@ -104,18 +255,18 @@ public class LinkedList<T> {
      * was unlinked. O(n) in the worst case (linear scan from head).
      */
     public boolean remove(T value) {
-        LinkedListNode<T> cur = this.head;
+        LinkedListNode<T> cur = this.headNode;
         while (cur != null) {
             if (cur.value == value) {
                 if (cur.prev != null) {
                     cur.prev.next = cur.next;
                 } else {
-                    this.head = cur.next;
+                    this.headNode = cur.next;
                 }
                 if (cur.next != null) {
                     cur.next.prev = cur.prev;
                 } else {
-                    this.tail = cur.prev;
+                    this.tailNode = cur.prev;
                 }
                 this.sizeCount = this.sizeCount - 1;
                 return true;
@@ -129,7 +280,7 @@ public class LinkedList<T> {
      * Test whether `value` is present in the list. O(n).
      */
     public boolean contains(T value) {
-        LinkedListNode<T> cur = this.head;
+        LinkedListNode<T> cur = this.headNode;
         while (cur != null) {
             if (cur.value == value) {
                 return true;
@@ -139,9 +290,6 @@ public class LinkedList<T> {
         return false;
     }
 
-    /**
-     * @returns the number of values currently in the list.
-     */
     public int64 count() {
         return this.sizeCount;
     }

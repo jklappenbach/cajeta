@@ -158,7 +158,7 @@ R drive(Stream<T> head, R seed, (T -> X), (R, X -> R), (R, R -> R) combiner) {
 
     // 3. Open structured-concurrency scope. Each worker writes its
     //    partial into a fresh slot transferred back at scope exit.
-    R[] partials = new R[splits];
+    R[] partials = heap R[splits];
     scope {
         Splittable<T> remaining = shape.source;
         for (int32 i = 0; i < splits - 1; i = i + 1) {
@@ -286,7 +286,7 @@ shape construction):
 - Tests: each terminal with both splittable and non-splittable sources.
 
 **P3 — Cross-type combinators.**
-- `fold<R>(seed, fn, combiner)` new overload (sequential-friendly
+- `fold<R>(seed, fn, combiner)` heap overload (sequential-friendly
   three-arg form stays single-threaded).
 - `Collector<T, R>` combiner field + `Collectors.toList` combiner.
 - `collect` parallel path.

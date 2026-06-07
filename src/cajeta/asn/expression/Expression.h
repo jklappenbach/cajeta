@@ -311,6 +311,8 @@ namespace cajeta {
 
         PrefixOp getOp() const { return op; }
 
+        void resolveTypes(CajetaModulePtr module) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -360,7 +362,7 @@ namespace cajeta {
     };
 
 
-    // Method reference: `Type::method`, `obj::method`, or `Type::new`.
+    // Method reference: `Type::method`, `obj::method`, or `Type::heap`.
     // Compiles to a function-typed value (same value-level shape as a
     // lambda) pointing at a synthesized thunk that adapts the underlying
     // method to the closure ABI (`ptr captures` as the first arg).
@@ -375,10 +377,10 @@ namespace cajeta {
             STATIC,            // Type::staticMethod
             BOUND_INSTANCE,    // obj::method
             UNBOUND_INSTANCE,  // Type::instanceMethod
-            CONSTRUCTOR        // Type::new
+            CONSTRUCTOR        // Type::heap
         };
     private:
-        // For `Type::id` / `Type::new`: the type appears literally in
+        // For `Type::id` / `Type::heap`: the type appears literally in
         // the source as a typeType and we resolve it eagerly at AST
         // build time (its name is in scope unconditionally).
         CajetaTypePtr receiverType;
@@ -402,8 +404,16 @@ namespace cajeta {
         // hasBorrowCaptures flag, consumed by the L3-2 escape check at
         // ReturnStatement and propagated to function-typed Fields.
         bool _hasBorrowCaptures = false;
+        // Target-type hint from the surrounding context, mirroring
+        // LambdaExpression. When the LHS is an sret-form function-type and
+        // the underlying method's natural ABI is borrow (non-sret, non-#),
+        // setting expectedType lets resolveTypes pick the sret-form fnType
+        // and generateCode synthesize the borrow→sret adapter thunk
+        // (cajeta-docs/stdlib/ValueReturns.md — M5(b) adapter).
+        CajetaTypePtr expectedType;
     public:
         bool getHasBorrowCaptures() const { return _hasBorrowCaptures; }
+        void setExpectedType(CajetaTypePtr t) { expectedType = std::move(t); }
         MethodReferenceExpression(antlr4::Token* token,
                                   CajetaTypePtr receiverType,
                                   ExpressionPtr receiverExpr,

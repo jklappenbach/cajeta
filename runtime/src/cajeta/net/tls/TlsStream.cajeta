@@ -1,0 +1,255 @@
+package cajeta.net.tls;
+
+import cajeta.lang.String;
+import cajeta.net.TcpStream;
+import cajeta.net.ByteChannel;
+
+/**
+ * A TLS connection over a live [`TcpStream`](../TcpStream.cajeta) (**NET-5.2**).
+ * It runs the [`TlsConnection`](TlsConnection.cajeta) memory-BIO pump against
+ * the socket's **async** ops (`readAsync` / `writeAllAsync`), so the handshake
+ * and every read/write park the fiber on the reactor when the socket isn't
+ * ready — the engine never blocks, the carrier thread stays free.
+ *
+ * The shuttle is mechanical:
+ *   - **produce** → after a handshake step / `write`, [`flush`](#) drains the
+ *     engine's queued ciphertext to the socket;
+ *   - **consume** → on [`WANT_IO`](TlsConnection.cajeta#WANT_IO), [`fill`](#)
+ *     reads ciphertext from the socket and feeds it back into the engine.
+ *
+ * Owns its stream + engine: dropping the `TlsStream` closes the socket and
+ * frees the TLS handles.
+ */
+public class TlsStream implements ByteChannel {
+
+    TcpStream stream;
+    TlsConnection tls;
+    int8[] buf;
+
+    private TlsStream(#TcpStream stream, #TlsConnection tls) {
+        this.stream = #stream;
+        this.tls = #tls;
+        this.buf = heap int8[16384];
+    }
+
+    /**
+     * Wrap a freshly-connected `stream` as a **verifying** TLS client for
+     * `host` (used for SNI *and* hostname verification), trusting `trustPem` as
+     * an anchor. Call [`handshake`](#handshake) next.
+     */
+    public static #TlsStream client(#TcpStream stream, int8[] host, int32 hostLen,
+                                    int8[] trustPem, int32 trustLen) {
+        TlsConnection tls = TlsConnection.verifyingClient();
+        tls.setSni(host, hostLen);
+        tls.addTrust(trustPem, trustLen);
+        tls.setVerifyHost(host, hostLen);
+        return heap TlsStream(#stream, #tls);
+    }
+
+    /**
+     * Wrap a freshly-connected `stream` as a **verifying** TLS client for
+     * `host` (SNI + hostname verification) trusting the **operating-system**
+     * CA store (NET-5.3) — the real-world `https://` client path: no
+     * caller-supplied anchor, the public PKI validates the peer. Call
+     * [`handshake`](#handshake) next. (Contrast
+     * [`client`](#client), which trusts an explicit `trustPem` anchor — the
+     * private-CA / self-signed-loopback path.)
+     */
+    public static #TlsStream clientSystemTrust(#TcpStream stream, int8[] host,
+                                               int32 hostLen) {
+        TlsConnection tls = TlsConnection.verifyingClient();
+        tls.setSni(host, hostLen);
+        tls.useSystemTrust();
+        tls.setVerifyHost(host, hostLen);
+        return heap TlsStream(#stream, #tls);
+    }
+
+    /** Wrap an accepted `stream` as a TLS server presenting `cert` + `key`. */
+    public static #TlsStream server(#TcpStream stream, int8[] cert, int32 certLen,
+                                    int8[] key, int32 keyLen) {
+        TlsConnection tls = TlsConnection.server(cert, certLen, key, keyLen);
+        return heap TlsStream(#stream, #tls);
+    }
+
+    // --- ALPN (NET-5.4), set before the handshake ---------------------------
+
+    /** Client: offer an ALPN protocol list (wire format: 1-byte length + bytes
+     *  each, e.g. `\x08http/1.1`). Call before [`handshake`](#handshake). */
+    public void offerAlpn(int8[] protos, int32 len) {
+        this.tls.setAlpn(protos, len);
+    }
+
+    /** Server: the ALPN protocols this side supports (same wire format). The
+     *  handshake picks the first the client also offered. Call before
+     *  [`handshake`](#handshake). */
+    public void supportAlpn(int8[] protos, int32 len) {
+        this.tls.setServerAlpn(protos, len);
+    }
+
+    /** The negotiated ALPN protocol bytes into `out` (post-handshake); returns
+     *  the length, or 0 if none was negotiated. */
+    public int32 negotiatedAlpn(int8[] out, int32 max) {
+        return this.tls.negotiatedAlpn(out, max);
+    }
+
+    // --- the socket pump ----------------------------------------------------
+
+    /** Drain queued ciphertext to the socket (parks on a non-writable socket). */
+    private void flush() {
+        int32 n = this.tls.pull(this.buf, 16384);
+        while (n > 0) {
+            this.stream.writeAllAsync(this.buf, (int64) 0, (int64) n);
+            n = this.tls.pull(this.buf, 16384);
+        }
+    }
+
+    /** Read ciphertext from the socket and feed the engine; bytes fed (0=EOF). */
+    private int32 fill() {
+        int64 n = this.stream.readAsync(this.buf, (int64) 0, (int64) 16384);
+        if (n <= (int64) 0) {
+            return 0;
+        }
+        this.tls.feed(this.buf, (int32) n);
+        return (int32) n;
+    }
+
+    /**
+     * Drive the TLS handshake to completion over the socket. Throws
+     * [`CertificateInvalidException`](CertificateInvalidException.cajeta) when
+     * verification fails (the `CERT_*` reason), or
+     * [`TlsException`](TlsException.cajeta) for a protocol error / a peer that
+     * closes mid-handshake.
+     */
+    public void handshake() {
+        boolean done = false;
+        while (!done) {
+            int32 step = this.tls.handshakeStep();
+            this.flush();
+            if (step == TlsConnection.OK) {
+                done = true;
+            } else {
+                if (step == TlsConnection.FAILED) {
+                    int32 reason = this.tls.verifyResult();
+                    if (reason != TlsConnection.CERT_OK) {
+                        throw heap CertificateInvalidException(
+                            "TLS certificate verification failed", reason);
+                    }
+                    throw heap TlsException("TLS handshake failed");
+                }
+                int32 got = this.fill();
+                if (got == 0) {
+                    throw heap TlsException("peer closed during TLS handshake");
+                }
+            }
+        }
+    }
+
+    /** Read decrypted application data into `out`; bytes read, or 0 at EOF. */
+    public int32 read(int8[] out, int32 max) {
+        boolean retry = true;
+        while (retry) {
+            int32 r = this.tls.read(out, max);
+            if (r >= 0) {
+                return r;
+            }
+            if (r == TlsConnection.CLOSED) {
+                return 0;
+            }
+            if (r == TlsConnection.WANT_IO) {
+                int32 got = this.fill();
+                if (got == 0) {
+                    return 0;
+                }
+            } else {
+                throw heap TlsException("TLS read error");
+            }
+        }
+        return 0;
+    }
+
+    /** Encrypt + send `len` plaintext bytes. */
+    public void write(int8[] data, int32 len) {
+        this.tls.write(data, len);
+        this.flush();
+    }
+
+    /** Queue a clean `close_notify` and flush it. */
+    public void closeNotify() {
+        this.tls.shutdown();
+        this.flush();
+    }
+
+    // --- ByteChannel adapter (NET-8.1 / NET-9.5) ----------------------------
+    //
+    // The plaintext socket surface ([`ByteChannel`](../ByteChannel.cajeta))
+    // mapped onto the TLS pump, so the buffered
+    // [`AsyncReader`](../AsyncReader.cajeta) / [`AsyncWriter`](../AsyncWriter.cajeta)
+    // — and the HTTP/WS codecs above them — drive an encrypted transport with
+    // no code change. The buffered reader/writer always pass `offset == 0`; a
+    // non-zero offset is honoured via a small scratch copy so the contract is
+    // general.
+
+    /**
+     * [`ByteChannel.readAsync`](../ByteChannel.cajeta#readAsync): decrypt up
+     * to `length` app-data bytes into `buf[offset .. offset+length)`. Returns
+     * the count (`>= 0`); `0` is a clean TLS close (peer `close_notify`) — the
+     * EOF the buffered reader terminates on.
+     */
+    public int64 readAsync(int8[] buf, int64 offset, int64 length) {
+        int32 off = (int32) offset;
+        int32 len = (int32) length;
+        if (off == 0) {
+            return (int64) this.read(buf, len);
+        }
+        int8[] tmp = heap int8[len];
+        int32 r = this.read(tmp, len);
+        int32 i = 0;
+        while (i < r) {
+            buf[off + i] = tmp[i];
+            i = i + 1;
+        }
+        return (int64) r;
+    }
+
+    /**
+     * [`ByteChannel.writeAllAsync`](../ByteChannel.cajeta#writeAllAsync):
+     * encrypt + send all of `data[offset .. offset+length)`.
+     */
+    public void writeAllAsync(int8[] data, int64 offset, int64 length) {
+        int32 off = (int32) offset;
+        int32 len = (int32) length;
+        if (off == 0) {
+            this.write(data, len);
+            return;
+        }
+        int8[] tmp = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            tmp[i] = data[off + i];
+            i = i + 1;
+        }
+        this.write(tmp, len);
+    }
+
+    /**
+     * [`ByteChannel.readWithin`](../ByteChannel.cajeta#readWithin): v1 TLS has
+     * no record-level read deadline, so this delegates to the unbounded
+     * [`readAsync`](#readAsync) (the slowloris guard applies at the plaintext
+     * socket layer; a TLS-terminating server reads under the OS socket
+     * timeout). `timeoutMs` is advisory here.
+     */
+    public int64 readWithin(int8[] buf, int64 offset, int64 length, int32 timeoutMs) {
+        return this.readAsync(buf, offset, length);
+    }
+
+    /**
+     * [`ByteChannel.close`](../ByteChannel.cajeta#close): send a clean
+     * `close_notify`, then close the underlying socket. Idempotent
+     * (`closeNotify` + [`TcpStream.close`](../TcpStream.cajeta#close) are both
+     * safe to repeat).
+     */
+    public void close() {
+        this.closeNotify();
+        this.stream.close();
+    }
+}

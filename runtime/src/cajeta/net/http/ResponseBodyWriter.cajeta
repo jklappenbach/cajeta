@@ -1,0 +1,142 @@
+package cajeta.net.http;
+
+import cajeta.net.AsyncWriter;
+import cajeta.net.http.HttpResponse;
+import cajeta.net.http.HttpSerializer;
+import cajeta.net.http.ChunkedEncoder;
+import cajeta.net.http.KeepAlive;
+
+/**
+ * The server-side **streaming response body writer** — plan item
+ * **NET-9.4** (the response half). A handler that does not have its whole
+ * response body in memory — a generated report, a proxied upstream, a
+ * file streamed off disk — writes the **head once**, then pushes body
+ * pieces incrementally through this writer, each framed as a chunked
+ * transfer-encoding chunk ([`ChunkedEncoder`](ChunkedEncoder.cajeta)) and
+ * flushed to the [`AsyncWriter`](../AsyncWriter.cajeta) (NET-3.5) so the
+ * peer receives the body as it is produced — **without** the server ever
+ * buffering the whole payload.
+ *
+ * ```cajeta
+ * // Inside a streaming handler, given the connection's AsyncWriter:
+ * ResponseBodyWriter body = ResponseBodyWriter.begin(writer,
+ *     HttpResponse.of(200).header("Content-Type", "text/plain"), true);
+ * for (piece in source) {
+ *     body.write(piece, piece.count());   // one chunk on the wire
+ * }
+ * body.finish();                          // 0\r\n\r\n + flush
+ * ```
+ *
+ * ## Lifecycle
+ *
+ *   1. [`begin`](#begin) writes the response **head** with
+ *      `Transfer-Encoding: chunked` framing and a `Connection` header
+ *      stamped to match the keep-alive decision, then flushes it so the
+ *      peer can start consuming before the body exists.
+ *   2. [`write`](#write) frames each body piece as one chunk and flushes
+ *      it — a zero-length piece is a harmless no-op (it must **not** hit
+ *      the wire as a `0`-chunk, which would terminate the body early).
+ *   3. [`finish`](#finish) writes the last-chunk terminator
+ *      (`0 CRLF CRLF`) and flushes; after it the connection head is
+ *      reusable for the next keep-alive request. Calling [`write`](#write)
+ *      after [`finish`](#finish) is a no-op (the stream is closed).
+ *
+ * ## Where this sits
+ *
+ * This is the **socket-facing shim** over the pure
+ * [`ChunkedEncoder`](ChunkedEncoder.cajeta) codec — exactly as
+ * [`HttpServer.serveConnection`](HttpServer.cajeta#serveConnection) is the
+ * shim over the pure [`HttpServer.handleRequest`](HttpServer.cajeta#handleRequest)
+ * byte path. The chunk **framing** (the golden-testable logic) lives in
+ * the encoder; this type only sequences `head → chunks → terminator`
+ * over the buffered async writer. It **borrows** the
+ * [`AsyncWriter`](../AsyncWriter.cajeta) (the connection loop owns it).
+ *
+ * The buffered-body baseline ([`HttpServer`](HttpServer.cajeta), NET-9.1)
+ * stays the common path; this writer is the opt-in streaming variant a
+ * handler reaches for only when the body is large or open-ended.
+ */
+public final class ResponseBodyWriter {
+    /**
+     * The connection's buffered writer. **Borrowed** — the
+     * [`HttpServer`](HttpServer.cajeta) connection loop owns and (after a
+     * final flush) the NET-4 core closes the underlying socket.
+     */
+    AsyncWriter writer;
+
+    /** True once [`finish`](#finish) has written the terminator. */
+    boolean finished;
+
+    /** Private ctor; construct through [`begin`](#begin). */
+    ResponseBodyWriter(AsyncWriter writer) {
+        this.writer = writer;
+        this.finished = false;
+    }
+
+    /**
+     * Begin a streaming chunked response: stamp the `Connection` header to
+     * match `keepAlive`, serialize `response`'s status line + headers with
+     * `Transfer-Encoding: chunked` framing (and **no** body — the head
+     * only, via [`HttpSerializer.responseChunkedHead`](HttpSerializer.cajeta#responseChunkedHead)),
+     * write it through `writer`, and flush so the peer sees the head
+     * before any body chunk. Returns the writer to push body chunks
+     * through.
+     *
+     * `response` should carry **no** in-memory body (`hasBody == false`) —
+     * the body is supplied incrementally via [`write`](#write). Any
+     * `Content-Length` the caller set is ignored under chunked framing.
+     */
+    public static #ResponseBodyWriter begin(AsyncWriter writer, HttpResponse response,
+                                            boolean keepAlive) {
+        KeepAlive.applyConnectionHeader(response.getHeaders(),
+                                        response.getVersion(), keepAlive);
+        int8[] head = HttpSerializer.responseChunkedHead(response);
+        writer.writeAll(head, 0, head.count());
+        writer.flush();
+        return heap ResponseBodyWriter(writer);
+    }
+
+    /**
+     * Frame `data[0 .. length)` as one chunked-transfer chunk
+     * ([`ChunkedEncoder.encodeChunk`](ChunkedEncoder.cajeta#encodeChunk))
+     * and flush it to the peer. A zero-length (or negative) `length` is a
+     * no-op — it must not be emitted as a `0`-chunk (the terminator). A
+     * no-op too once [`finish`](#finish) has closed the stream.
+     *
+     * Each call flushes, so the chunk is on the wire when `write` returns
+     * (subject to the kernel send buffer); a producer that wants to
+     * coalesce small pieces should batch before calling.
+     */
+    public void write(int8[] data, int32 length) {
+        if (this.finished) {
+            return;
+        }
+        if (length <= 0) {
+            return;
+        }
+        int8[] chunk = ChunkedEncoder.encodeChunk(data, length);
+        this.writer.writeAll(chunk, 0, chunk.count());
+        this.writer.flush();
+    }
+
+    /**
+     * Close the chunked body: write the last-chunk terminator
+     * (`0 CRLF CRLF`, [`ChunkedEncoder.encodeLast`](ChunkedEncoder.cajeta#encodeLast))
+     * and flush. Idempotent — a second call is a no-op. After `finish` the
+     * connection head is reusable for the next keep-alive request.
+     */
+    public void finish() {
+        if (this.finished) {
+            return;
+        }
+        int8[] last = ChunkedEncoder.encodeLast();
+        this.writer.writeAll(last, 0, last.count());
+        this.writer.flush();
+        this.finished = true;
+    }
+
+    /** True once the body has been terminated (after [`finish`](#finish)). */
+    public boolean isFinished() {
+        return this.finished;
+    }
+}

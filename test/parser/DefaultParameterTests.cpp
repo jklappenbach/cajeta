@@ -35,7 +35,7 @@ TEST(DefaultParameterTests, singleTrailingDefault) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Calc c = new Calc();\n"
+        "        Calc c = heap Calc();\n"
         "        return c.echo();\n"
         "    }\n"
         "}\n";
@@ -51,7 +51,7 @@ TEST(DefaultParameterTests, explicitArgOverridesDefault) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Calc c = new Calc();\n"
+        "        Calc c = heap Calc();\n"
         "        return c.echo(99);\n"
         "    }\n"
         "}\n";
@@ -69,7 +69,7 @@ TEST(DefaultParameterTests, partialFillFromDefaults) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Calc calc = new Calc();\n"
+        "        Calc calc = heap Calc();\n"
         "        return calc.add(1);\n"
         "    }\n"
         "}\n";

@@ -541,7 +541,7 @@ var rng = RngKey.of(42);
 var (initKey, dropKey) = rng.split2();
 
 var model = Transformer.init(initKey, modelSpec);
-var optimizer = new Adam(lr: 3e-4);
+var optimizer = heap Adam(lr: 3e-4);
 var optState = optimizer.init(model.parameters());
 
 for (int64 stepIdx = 0; stepIdx < numSteps; stepIdx++) {

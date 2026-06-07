@@ -1,0 +1,75 @@
+.\" Manual page for the cajeta compiler.
+.\" Generated/maintained alongside src/main.cpp printUsage; keep in sync.
+.TH CAJETA 1 "2026-06-01" "cajeta" "Cajeta Compiler Manual"
+.SH NAME
+cajeta \- the Cajeta language compiler
+.SH SYNOPSIS
+.B cajeta
+[\fIoptions\fR] \fIentry-method\fR \fIsource-root-path\fR \fIarchive-root-path\fR
+.br
+.B cajeta
+\fIsubcommand\fR [\fIargs\fR ...]
+.br
+.B cajeta
+.B --version
+|
+.B --help
+.SH DESCRIPTION
+.B cajeta
+compiles Cajeta source into LLVM IR, native objects/executables, or
+project archives (\fB.cja\fR). The default mode emits IR; see
+.B --emit
+for the other output modes. The compiler links an embedded language
+runtime and standard library, so a single binary is self-contained.
+.SH SUBCOMMANDS
+.TP
+.B archive
+Archive-management surface (create / inspect / sign \fB.cja\fR archives).
+.TP
+.B jit\-run \fIsource-root\fR \fIpackage.Class.method\fR
+Compile and run an entry point in-process via the JIT host.
+.TP
+.B dap
+Debug Adapter Protocol server over stdio; spawned by the IDE plugin to
+drive an interactive debug session.
+.SH OPTIONS
+.SS Mode
+.TP
+.B --mode=debug|debug-release|release|fast|minimal
+Compilation mode. Flavor aliases \fB--debug\fR, \fB--debug-release\fR,
+\fB--release\fR, \fB--fast\fR, \fB--minimal\fR are also accepted.
+.SS Output
+.TP
+.B --emit=ir|obj|cja|uber|exe
+Output mode. Default \fBir\fR.
+.TP
+.B --classpath=\fIa.cja,b.cja\fR
+Cajeta archives to ingest as dependencies (repeatable).
+.TP
+.B --target=\fItriple\fR
+LLVM target triple. Default: host.
+.TP
+.B -o \fIpath\fR
+Output path for the final artifact.
+.SS Informational
+.TP
+.B --help, -h
+Print the full option listing and exit.
+.TP
+.B --version, -V
+Print version and build provenance and exit. Pair with
+.B --verbose
+for the LLVM and host-triple lines.
+.PP
+The full per-feature override and XPU option set is printed by
+.BR "cajeta --help" .
+.SH FILES
+.TP
+.I ~/.cajeta/
+User-local toolchain root (when installed via the version manager).
+.SH SEE ALSO
+Project documentation at
+.UR https://github.com/jklappenbach/cajeta
+.UE .
+.SH AUTHOR
+Julian Klappenbach <jklappenbach@gmail.com>

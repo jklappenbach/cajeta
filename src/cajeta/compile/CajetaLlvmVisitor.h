@@ -639,8 +639,47 @@ namespace cajeta {
                 }
             }
 
-            CajetaClassPtr interface = make_shared<CajetaClass>(
-                pModule, qName, qExtended, qImplemented);
+            // Placeholder reuse — mirror visitClassDeclaration (line 181).
+            // A field/param/local of an earlier-parsed class that named this
+            // interface created a forward-reference placeholder (via
+            // CajetaType::fromContext's born-fat interface branch) and
+            // captured its shared_ptr. Fill that SAME instance in place so
+            // the interface's method set (and therefore its dispatch slots)
+            // becomes visible through every earlier reference; otherwise a
+            // freshly make_shared'd interface would orphan those references
+            // at a methodless placeholder and `this.field.method()` dispatch
+            // would find no slot and drop the call.
+            //
+            // Restricted to NON-GENERIC interfaces — exactly the set
+            // fromContext's born-fat branch synthesizes a fat placeholder for
+            // (a generic interface has typeParameters and is excluded there,
+            // staying a thin class-shaped placeholder routed through the
+            // template instantiation machinery). A generic interface
+            // (`Encoder<T>`, `Stream<T>`) keeps its prior fresh-make_shared
+            // path: reusing a generic placeholder here mis-seeds the template
+            // (its `Encoder<X>` instantiation then fails the implements-
+            // completeness check, CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED).
+            bool isGenericIface = ctx->typeParameters() != nullptr;
+            CajetaClassPtr interface;
+            if (!isGenericIface) {
+                auto& canon = CajetaType::getCanonicalMap();
+                auto it = canon.find(qName->toCanonical());
+                if (it == canon.end()) {
+                    it = canon.find(qName->getTypeName());
+                }
+                if (it != canon.end()) {
+                    auto existing = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                    if (existing && existing->isPlaceholder()) {
+                        existing->fillFromDeclaration(
+                            pModule, qName, qExtended, qImplemented);
+                        interface = existing;
+                    }
+                }
+            }
+            if (!interface) {
+                interface = make_shared<CajetaClass>(
+                    pModule, qName, qExtended, qImplemented);
+            }
             interface->setIsInterface(true);
             // @ValueType is meaningless on an interface (value types are by-value
             // POD). The interface path never attaches annotations to the structure,

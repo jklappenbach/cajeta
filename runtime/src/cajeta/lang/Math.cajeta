@@ -44,7 +44,7 @@ package cajeta.lang;
  *
  * Any of the intrinsics applies **element-wise** to a `Vector<T,N>`:
  * ```
- * Vector<float32,4> v  = new Vector<float32,4>(0.0f, 0.5f, 1.0f, 2.0f);
+ * Vector<float32,4> v  = Vector<float32,4>(0.0f, 0.5f, 1.0f, 2.0f);
  * Vector<float32,4> s  = Math.sin(v);     // (sin v.x, sin v.y, sin v.z, sin v.w)
  * Vector<float32,4> sq = Math.sqrt(v);    // element-wise sqrt
  * ```

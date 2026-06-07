@@ -11,6 +11,12 @@ namespace cajeta {
     struct MethodCallParameter {
         string label;
         ExpressionPtr expression;
+        // Phase 1 of two-sided transfer (cajeta-docs/stdlib/OwnershipTransfer.md).
+        // `#x` at the argument position sets this; the call-site transfer
+        // machinery in MethodCallExpression.cpp / CreatorRest.cpp fires the
+        // drop deactivation when EITHER this is true OR the matching formal
+        // is `#T`-marked. Either suffices; either acknowledges transfer.
+        bool callerTransferred = false;
     };
 
     class MethodCallExpression : public Expression {

@@ -1,0 +1,115 @@
+{
+    // cajeta.lint.security — first-party security lint plugin.
+    //
+    // Ships one action — `cajeta.lint.security.scan` — that walks
+    // the project source tree and emits findings for:
+    //   - imports matching the configured `banned-imports` list
+    //   - lines matching any of the configured `secret-patterns`
+    //
+    // Consumed by the default `lint` task; findings merge into the
+    // native lint action's unified report via the `include-findings`
+    // param. See cajeta-docs/BuildTool.md "Plugins" and "lint task".
+
+    "details": {
+        "name":               "cajeta.lint.security",
+        "version":            "1.0.0",
+        "description":        "Banned-imports + secret-pattern scanner for cajeta projects",
+        "license":            "Apache-2.0",
+        "authors":            ["cajeta"],
+        "cajeta-lang-version": "1.0",
+
+        "plugin": {
+            "id": "cajeta.lint.security",
+            "actions": [
+                "cajeta.lint.security.scan"
+            ],
+            "entries": {
+                "cajeta.lint.security.scan":
+                    "cajeta.lint.security.Scan::run"
+            }
+        }
+    },
+
+    "settings": {
+        // Read-only access to the project source tree. We never
+        // shell out to anything, never touch the network — a
+        // security scanner that reaches out to the network at scan
+        // time would defeat its own purpose.
+        "capabilities": ["filesystem"],
+
+        "dependencies": {
+            "cajeta.lang":             "1.0.*",
+            "cajeta.lang.io":          "1.0.*",
+            "cajeta.collection":       "1.0.*",
+            "cajeta.buildtool.plugin": "1.0.*"
+        },
+
+        "build": {
+            "target":       "host",
+            "kind":         "plugin"
+        }
+    },
+
+    "tasks": {
+
+        "build": {
+            "description": "Build the security-lint plugin",
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "release",
+                  "profile": "release",
+                  "id":      "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "test": {
+            "description": "Plugin's own unit tests",
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "debug",
+                  "profile": "test",
+                  "id":      "art" },
+                { "action": "test", "input": "${art.path}", "id": "tr" }
+            ],
+            "outputs": { "passed": "${tr.passed}", "failed": "${tr.failed}" }
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+
+    // Example consumer config — a project would put this under its
+    // own `plugins.cajeta.lint.security` block:
+    //
+    // "plugins": {
+    //     "cajeta.lint.security": {
+    //         "version": "1.0.*",
+    //         "config": {
+    //             "banned-imports": [
+    //                 { "pattern": "unsafe.legacy.*",
+    //                   "reason":  "supply-chain risk; use cajeta.io.net instead" },
+    //                 { "pattern": "vendor.deprecated.*",
+    //                   "reason":  "vendor end-of-life 2025-12; migrate" }
+    //             ],
+    //             "secret-patterns": [
+    //                 { "id":      "aws-access-key",
+    //                   "pattern": "AKIA[0-9A-Z]{16}",
+    //                   "severity": "error" },
+    //                 { "id":      "github-pat",
+    //                   "pattern": "ghp_[A-Za-z0-9]{36}",
+    //                   "severity": "error" },
+    //                 { "id":      "private-key-header",
+    //                   "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    //                   "severity": "error" }
+    //             ],
+    //             "exclude-files": [
+    //                 "**/*_test_fixture.cajeta",
+    //                 "test/secrets/**"
+    //             ]
+    //         }
+    //     }
+    // }
+}

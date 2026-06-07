@@ -19,6 +19,11 @@
 #include "cajeta/xpu/amd/HipDriver.h"
 
 #include <cstdlib>
+#if defined(_WIN32)
+// POSIX setenv/unsetenv are absent on mingw; shim onto _putenv_s.
+static inline int setenv(const char* k, const char* v, int) { return _putenv_s(k, v); }
+static inline int unsetenv(const char* k) { return _putenv_s(k, ""); }
+#endif
 
 using cajeta_test::CajetaJit;
 using cajeta::xpu::amd::HipDriver;
@@ -39,8 +44,8 @@ const char* kSaxpyHostSource =
     "    }\n"
     "    public static float32 run() {\n"
     "        uint32 n = 1024;\n"
-    "        float32[] hx = new float32[n];\n"
-    "        float32[] hy = new float32[n];\n"
+    "        float32[] hx = heap float32[n];\n"
+    "        float32[] hy = heap float32[n];\n"
     "        for (uint32 i = 0; i < n; i = i + 1) {\n"
     "            hx[i] = 1.0f;\n"
     "            hy[i] = 2.0f;\n"
@@ -123,8 +128,8 @@ TEST(XpuHipDispatchDeviceTests, gridStrideForEachRoutesToHipOnDevice) {
         "    }\n"
         "    public static float32 run() {\n"
         "        uint32 n = 1024;\n"
-        "        float32[] hx = new float32[n];\n"
-        "        float32[] hy = new float32[n];\n"
+        "        float32[] hx = heap float32[n];\n"
+        "        float32[] hy = heap float32[n];\n"
         "        for (uint32 i = 0; i < n; i = i + 1) { hx[i] = 1.0f; hy[i] = 0.0f; }\n"
         "        Buffer<float32> x = heap Buffer<float32>(0, n);\n"
         "        Buffer<float32> y = heap Buffer<float32>(0, n);\n"
@@ -178,8 +183,8 @@ TEST(XpuHipDispatchDeviceTests, deviceBufferParamHelperRoutesToHipOnDevice) {
         "    }\n"
         "    public static float32 run() {\n"
         "        uint32 n = 256;\n"
-        "        float32[] hx = new float32[n];\n"
-        "        float32[] hy = new float32[n];\n"
+        "        float32[] hx = heap float32[n];\n"
+        "        float32[] hy = heap float32[n];\n"
         "        for (uint32 i = 0; i < n; i = i + 1) { hx[i] = (float32)i; hy[i] = 0.0f; }\n"
         "        Buffer<float32> x = heap Buffer<float32>(0, n);\n"
         "        Buffer<float32> y = heap Buffer<float32>(0, n);\n"
@@ -234,7 +239,7 @@ TEST(XpuHipDispatchDeviceTests, podStructArgRoutesToHipOnDevice) {
         "    }\n"
         "    public static float32 run() {\n"
         "        uint32 n = 256;\n"
-        "        float32[] hy = new float32[n];\n"
+        "        float32[] hy = heap float32[n];\n"
         "        for (uint32 i = 0; i < n; i = i + 1) { hy[i] = 0.0f; }\n"
         "        Buffer<float32> y = heap Buffer<float32>(0, n);\n"
         "        y.allocate();\n"
@@ -288,22 +293,22 @@ TEST(XpuHipDispatchDeviceTests, textureSampleRoutesToHipOnDevice) {
         "    public static int32 run() {\n"
         "        uint32 w = 2;\n"
         "        uint32 h = 2;\n"
-        "        float32[] pixels = new float32[4];\n"
+        "        float32[] pixels = heap float32[4];\n"
         "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
         "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
         "        Texture2D tex = heap Texture2D(w, h);\n"
         "        tex.upload(pixels);\n"
         "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
         "        uint32 n = 5;\n"
-        "        float32[] hus = new float32[n];\n"
-        "        float32[] hvs = new float32[n];\n"
-        "        float32[] hexp = new float32[n];\n"
+        "        float32[] hus = heap float32[n];\n"
+        "        float32[] hvs = heap float32[n];\n"
+        "        float32[] hexp = heap float32[n];\n"
         "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
         "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
         "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
         "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
         "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
-        "        float32[] hout = new float32[n];\n"
+        "        float32[] hout = heap float32[n];\n"
         "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
         "        Buffer<float32> us = heap Buffer<float32>(0, n);\n"
         "        Buffer<float32> vs = heap Buffer<float32>(0, n);\n"

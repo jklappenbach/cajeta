@@ -131,7 +131,7 @@ TEST(CrossClassStaticCallTests, methodRefStillUnboundAfterFix) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter c = new Counter();\n"
+        "        Counter c = heap Counter();\n"
         "        (Counter) -> int32 fn = Counter::value;\n"
         "        return fn(c);\n"
         "    }\n"

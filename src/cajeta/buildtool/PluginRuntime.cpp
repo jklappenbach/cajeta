@@ -1,0 +1,333 @@
+// Plugin subprocess runtime — see PluginRuntime.h for the surface.
+//
+// ── Protocol spec (v1) ───────────────────────────────────────────
+//
+// Direction: parent (build tool) → child (plugin binary).
+//
+//   Stdin (single JSON object):
+//     {
+//       "version": 1,
+//       "action":  "<namespaced action name>",
+//       "entry":   "<symbol path from sidecar's entries map, or empty>",
+//       "params":  { ... substituted action params ... },
+//       "context": {
+//         "workdir":         "<abs path to project root>",
+//         "project-name":    "<consumer's details.name>",
+//         "project-version": "<consumer's details.version>",
+//         "capabilities":    [ ... allowlist intersection ... ]
+//       }
+//     }
+//
+// Direction: child → parent.
+//
+//   Stdout (one JSON object per line; trailing newline required):
+//
+//     {"kind": "log",   "level": "info|warn|debug", "message": "..."}
+//     {"kind": "warn",                              "message": "..."}
+//     {"kind": "write",                             "text":    "..."}
+//     {"kind": "output", "key": "...",              "value":   "..."}
+//     {"kind": "finding",
+//       "rule":     "...",
+//       "severity": "error|warning|info",
+//       "file":     "...",
+//       "line":     <int>,
+//       "column":   <int>,
+//       "message":  "..."}
+//
+//     {"kind": "result", "status": "ok"}                  // success
+//     {"kind": "result", "status": "error", "message": "..."}  // logical failure
+//
+//   Stderr: free-form text. Forwarded verbatim to the build tool's
+//   stderr so users see crash traces / "binary not found" / etc.
+//
+// Exit codes:
+//   0   — plugin completed cleanly. Result kind decides logical
+//         success/failure (a "result" record with status=error is
+//         a logical fail; the plugin still exits 0).
+//   non-zero — plugin crashed or refused to start. Surfaces to the
+//             build tool as a hard error from invokePluginAction.
+//
+// ── Why this shape ──
+//
+// - Single request JSON keeps the parent → child handshake atomic.
+//   No streaming of params; the plugin gets everything before doing
+//   work. Aligns with how plugins are written — synchronous
+//   functions in cajeta source, not coroutines.
+// - JSON-line response lets the plugin emit progress as it goes:
+//   coverage's per-file findings, lint's per-file warnings stream
+//   to the parent live without waiting for whole-action completion.
+// - `kind` discriminator makes parsing one-pass + extensible: future
+//   record kinds (progress percentage, sub-action invocation) don't
+//   break old parents.
+
+#include "cajeta/buildtool/PluginRuntime.h"
+
+#include "cajeta/buildtool/JsonC.h"
+
+#include <llvm/Support/Error.h>
+#include <llvm/Support/JSON.h>
+#include <llvm/Support/raw_ostream.h>
+
+#include <cerrno>
+#include <cstring>
+#include <iostream>
+#include <cstdio>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "cajeta/buildtool/Subprocess.h"
+
+namespace cajeta::buildtool {
+
+    namespace {
+
+        llvm::Error err(const std::string& msg) {
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(), msg);
+        }
+
+        // Build the request JSON the plugin reads from stdin.
+        std::string serializeRequest(
+            const ResolvedPlugin& plugin,
+            const std::string& actionName,
+            const llvm::json::Object& params,
+            const TaskContext& ctx) {
+            llvm::json::Object req;
+            req["version"] = 1;
+            req["action"]  = actionName;
+            auto entryIt = plugin.entries.find(actionName);
+            req["entry"] = (entryIt != plugin.entries.end())
+                               ? entryIt->second
+                               : std::string();
+            // Copy params verbatim — they're already substituted by
+            // the TaskRunner before we get here.
+            req["params"] = llvm::json::Value(
+                llvm::json::Object(params));
+
+            llvm::json::Object context;
+            const Manifest* m = ctx.manifest();
+            std::string workdir;
+            if (m) {
+                // Best-effort: workdir is the consumer's manifest's
+                // parent dir. We don't carry that on TaskContext yet,
+                // so plugins requiring an absolute path fall back to
+                // `.` and resolve themselves. v1 acceptable; harder
+                // wiring once TaskRunner threads it through.
+                workdir = ".";
+                context["project-name"]    = m->details.name;
+                context["project-version"] = m->details.version;
+            } else {
+                workdir = ".";
+                context["project-name"]    = std::string();
+                context["project-version"] = std::string();
+            }
+            context["workdir"] = workdir;
+            llvm::json::Array caps;
+            for (const auto& c : plugin.capabilities) {
+                caps.push_back(c);
+            }
+            context["capabilities"] = std::move(caps);
+            req["context"] = std::move(context);
+
+            std::string out;
+            llvm::raw_string_ostream os(out);
+            os << llvm::json::Value(std::move(req));
+            os.flush();
+            return out;
+        }
+
+        struct ProtocolState {
+            bool resultSeen = false;
+            bool resultOk = true;
+            std::string resultMessage;
+            ActionResult result;
+        };
+
+        // Parse one line of the plugin's stdout stream into the
+        // protocol state. Lines that don't parse as JSON-objects with
+        // a string `kind` are reported back as protocol errors.
+        llvm::Error applyResponseLine(
+            const std::string& line,
+            ProtocolState& state,
+            TaskContext& /*ctx*/) {
+            // Allow blank lines — plugin emitters might add them for
+            // readability when piping through a debugger.
+            std::string trimmed = line;
+            while (!trimmed.empty() &&
+                   (trimmed.back() == '\r' || trimmed.back() == '\n' ||
+                    trimmed.back() == ' '  || trimmed.back() == '\t')) {
+                trimmed.pop_back();
+            }
+            if (trimmed.empty()) return llvm::Error::success();
+
+            auto parsed = parseJsonC(trimmed);
+            if (!parsed) {
+                llvm::consumeError(parsed.takeError());
+                return err("plugin response line is not valid JSON: " +
+                           trimmed);
+            }
+            const auto* obj = parsed->getAsObject();
+            if (!obj) {
+                return err("plugin response line is not a JSON object: " +
+                           trimmed);
+            }
+            auto kind = obj->getString("kind");
+            if (!kind) {
+                return err("plugin response line missing 'kind': " +
+                           trimmed);
+            }
+
+            // Dispatch by kind. Unknown kinds are accepted but ignored
+            // (forward-compat: future plugin versions can emit new
+            // record kinds without breaking older build tools).
+            std::string k = kind->str();
+            if (k == "log") {
+                // Verbose-mode log — write to stderr so it doesn't
+                // pollute structured outputs.
+                auto msg = obj->getString("message");
+                if (msg) {
+                    std::cerr << "[plugin] " << msg->str() << "\n";
+                }
+            } else if (k == "warn") {
+                auto msg = obj->getString("message");
+                if (msg) {
+                    std::cerr << "warning: " << msg->str() << "\n";
+                }
+            } else if (k == "write") {
+                auto text = obj->getString("text");
+                if (text) {
+                    std::cout << text->str();
+                }
+            } else if (k == "output") {
+                auto key   = obj->getString("key");
+                auto value = obj->getString("value");
+                if (!key || !value) {
+                    return err("plugin 'output' record missing key or value: " +
+                               trimmed);
+                }
+                state.result.outputs[key->str()] = value->str();
+            } else if (k == "finding") {
+                // Structured findings — parsed into the typed
+                // ActionResult.findings list. The lint task
+                // aggregates these across actions; the test task
+                // gates on coverage findings.
+                ActionFinding f;
+                if (auto s = obj->getString("rule")) f.rule = s->str();
+                if (auto s = obj->getString("severity")) {
+                    f.severity = s->str();
+                }
+                if (auto s = obj->getString("file")) f.file = s->str();
+                if (auto n = obj->getInteger("line")) {
+                    f.line = static_cast<int>(*n);
+                }
+                if (auto n = obj->getInteger("column")) {
+                    f.column = static_cast<int>(*n);
+                }
+                if (auto s = obj->getString("message")) {
+                    f.message = s->str();
+                }
+                if (f.severity.empty()) f.severity = "info";
+                state.result.findings.push_back(std::move(f));
+            } else if (k == "result") {
+                state.resultSeen = true;
+                auto status = obj->getString("status");
+                if (!status) {
+                    return err("plugin 'result' record missing 'status': " +
+                               trimmed);
+                }
+                if (status->str() == "ok") {
+                    state.resultOk = true;
+                } else if (status->str() == "error") {
+                    state.resultOk = false;
+                    auto msg = obj->getString("message");
+                    state.resultMessage = msg ? msg->str()
+                                              : std::string("plugin reported error");
+                } else {
+                    return err("plugin 'result' record has unknown "
+                               "status '" + status->str() +
+                               "' (expected 'ok' or 'error'): " +
+                               trimmed);
+                }
+            }
+            // Unknown kind: ignore (forward-compat).
+            return llvm::Error::success();
+        }
+
+    } // namespace
+
+    llvm::Expected<ActionResult> invokePluginAction(
+        const ResolvedPlugin& plugin,
+        const std::string& actionName,
+        const llvm::json::Object& params,
+        TaskContext& ctx) {
+
+        if (plugin.binaryPath.empty()) {
+            return err("plugin '" + plugin.name +
+                       "' has no binary declared in its sidecar " +
+                       "(details.plugin.binary) — cannot dispatch '" +
+                       actionName + "'");
+        }
+
+        std::string requestJson = serializeRequest(
+            plugin, actionName, params, ctx);
+
+        // Single-arg spawn: the plugin binary takes no positional arguments —
+        // everything it needs is on stdin. Feed it the request, capture its
+        // stdout/stderr. Plugins that emit huge amounts on stdout before
+        // draining stdin could deadlock, but cajeta plugins' params are bounded
+        // by manifest size, so the simple serial pattern works for v1.
+        std::string stdoutBuf;
+        std::string stderrBuf;
+        SubprocessOptions so;
+        so.argv = {plugin.binaryPath};
+        so.stdinData = &requestJson;
+        so.outData = &stdoutBuf;
+        so.errData = &stderrBuf;
+        SubprocessResult procRes = runSubprocess(so);
+        if (!procRes.launched) {
+            return err("plugin: cannot execute '" + plugin.binaryPath +
+                       "': " + procRes.error);
+        }
+
+        // Forward the plugin's stderr verbatim — that's where its
+        // crash traces / "binary not found" land.
+        if (!stderrBuf.empty()) {
+            std::fwrite(stderrBuf.data(), 1, stderrBuf.size(), stderr);
+        }
+
+        if (procRes.signaled) {
+            return err("plugin '" + plugin.name + "' crashed (signal " +
+                       std::to_string(procRes.signal) + ") while " +
+                       "dispatching '" + actionName + "'");
+        }
+        int exitCode = procRes.exited ? procRes.exitCode : -1;
+        if (exitCode != 0) {
+            return err("plugin '" + plugin.name + "' exited " +
+                       std::to_string(exitCode) +
+                       " while dispatching '" + actionName + "'");
+        }
+
+        // Parse the JSON-line response stream.
+        ProtocolState state;
+        std::istringstream lines(stdoutBuf);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (auto e = applyResponseLine(line, state, ctx)) {
+                return std::move(e);
+            }
+        }
+
+        if (!state.resultSeen) {
+            return err("plugin '" + plugin.name +
+                       "' produced no 'result' record for '" +
+                       actionName + "' (protocol violation)");
+        }
+        if (!state.resultOk) {
+            return err("cajeta.plugin: " + plugin.name + "." +
+                       actionName + ": " + state.resultMessage);
+        }
+        return state.result;
+    }
+
+} // namespace cajeta::buildtool

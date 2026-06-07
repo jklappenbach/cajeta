@@ -1,0 +1,73 @@
+package cajeta.coverage.internal;
+
+import cajeta.coverage.CoverageMap;
+import cajeta.coverage.Grain;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.Path;
+
+/**
+ * Reverse of CoverageMapWriter. Rejects unknown magic / version
+ * rather than silently mis-parsing — a stale tool reading a future
+ * file should produce a clear error, not a wrong coverage number.
+ */
+public class CoverageMapReader {
+
+    public static CoverageMap read(Path path) {
+        FileReader r = FileReader.open(path);
+        byte[] magic = r.readBytes(4);
+        if (magic != "CJCV".bytes()) {
+            throw stack CoverageMapFormatException(
+                "not a coverage map: bad magic at " + path.toString());
+        }
+        int32 version = r.readU16BE();
+        if (version != 1) {
+            throw stack CoverageMapFormatException(
+                "coverage map version " + String.valueOf(version) +
+                " not supported (expected 1) at " + path.toString());
+        }
+        Grain grain = grainFromByte(r.readU8());
+        r.readU8();  // reserved
+        int32 nFiles = r.readU32BE();
+        CoverageMap out = #heap CoverageMap(grain);
+        int32 i = 0;
+        while (i < nFiles) {
+            int32 pathLen = r.readU32BE();
+            String fpath = String.fromBytes(r.readBytes(pathLen));
+            int32 totalProbes = r.readU32BE();
+            int32 hitProbes   = r.readU32BE();
+            CoverageMap.FileEntry e = out.getOrCreate(fpath, totalProbes);
+            // Inflate the byte-packed bitset.
+            int32 nBytes = (totalProbes + 7) / 8;
+            byte[] packed = r.readBytes(nBytes);
+            int32 pid = 0;
+            while (pid < totalProbes) {
+                int32 byteIdx = pid / 8;
+                int32 bitIdx  = pid - (byteIdx * 8);
+                if ((packed[byteIdx] & (1 << bitIdx)) != 0) {
+                    e.markCovered(pid);
+                }
+                pid = pid + 1;
+            }
+            // Cross-check: the file's own hitProbes count should
+            // match what we just reconstructed. A mismatch means
+            // the writer/reader drifted — fail loudly so we catch
+            // it in CI rather than reporting a corrupted number.
+            if (e.hitProbes() != hitProbes) {
+                throw stack CoverageMapFormatException(
+                    "coverage map " + path.toString() +
+                    ": file '" + fpath + "' hit-count mismatch " +
+                    "(stored " + String.valueOf(hitProbes) +
+                    ", reconstructed " + String.valueOf(e.hitProbes()) + ")");
+            }
+            i = i + 1;
+        }
+        r.close();
+        return out;
+    }
+
+    static Grain grainFromByte(int32 b) {
+        if (b == 0) { return Grain.LINE; }
+        if (b == 1) { return Grain.BRANCH; }
+        return Grain.REGION;
+    }
+}

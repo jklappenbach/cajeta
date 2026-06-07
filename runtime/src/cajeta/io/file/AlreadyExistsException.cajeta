@@ -3,12 +3,36 @@ package cajeta.io.file;
 import cajeta.lang.String;
 
 /**
- * Open with `OpenMode.CREATE_NEW` against an existing path, or
+ * Thrown when a create-only operation collides with an existing
+ * path. The two triggers are opening with `OpenMode.CREATE_NEW`
+ * (see `OpenMode`) against a path that already exists, or a
  * `copyTo` / `moveTo` to a destination that already exists
- * without overwrite intent. POSIX `EEXIST`. See
+ * without overwrite intent. Maps to POSIX `EEXIST`. See
  * `cajeta-docs/stdlib/io/file/Errors.md`.
+ *
+ * A recoverable subtype of `IoException`: catch it to fall back
+ * to a non-exclusive open, or let it propagate via your throws
+ * clause. Pairs with `File``.openExclusive` and
+ * `OpenMode``.CREATE_NEW`.
+ *
+ * ```cajeta
+ * try {
+ *     #File f = File.open("/tmp/lock", OpenMode.CREATE_NEW);
+ *     // ... we won the race; we own the file
+ * } catch (AlreadyExistsException e) {
+ *     // someone else already created it — back off
+ * }
+ * ```
  */
 public class AlreadyExistsException extends IoException {
+    /**
+     * Wrap an `EEXIST` failure with a human-readable `message`
+     * (see `String`).
+     *
+     * ```cajeta
+     * throw heap AlreadyExistsException("/tmp/lock already exists");
+     * ```
+     */
     public AlreadyExistsException(String message) {
         super(message);
     }

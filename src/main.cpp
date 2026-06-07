@@ -8,6 +8,11 @@
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/cli/ArchiveCommands.h"
+#include "cajeta/cli/DocCommand.h"
+#include "cajeta/cli/IdeCommands.h"
+#include "cajeta/jit/CajetaJitHost.h"
+#include "cajeta/dap/DapServer.h"
+#include "cajeta/buildtool/BuildToolCommands.h"
 
 // CAJETA_VERSION and CAJETA_GIT_HASH are stamped at configure time by the
 // top-level CMakeLists.txt. Fall back to a placeholder if a non-CMake build
@@ -44,6 +49,14 @@ void printVersion(bool verbose) {
 void printUsage(const char* progname) {
     std::cerr << "Usage: " << progname
               << " [options] <entry-method> <source-root-path> <archive-root-path>\n"
+              << "       " << progname << " <subcommand> [args...]\n"
+              << "\n"
+              << "Subcommands:\n"
+              << "  archive <cmd>      Create / inspect / sign .cja archives (archive --help).\n"
+              << "  ide <cmd>          Manage the bundled IntelliJ IDEA plugin\n"
+              << "                     (ide install | uninstall | list).\n"
+              << "  jit-run <root> <package.Class.method>   Compile + run an entry point via the JIT.\n"
+              << "  dap                Debug Adapter Protocol server over stdio (for IDE debugging).\n"
               << "\n"
               << "Mode (cajeta-docs/CompilerModes.md):\n"
               << "  --mode=debug|debug-release|release|fast|minimal\n"
@@ -76,6 +89,13 @@ void printUsage(const char* progname) {
               << "  --target=<triple>                    LLVM target triple. Default: host.\n"
               << "  --cpu=<name>                         Target CPU. Default: generic.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
+              << "  --profile=<name>                     Active @Profile for component gating\n"
+              << "                                       (dev/test/release/...; default none).\n"
+              << "\n"
+              << "Reproducible builds (cajeta-docs/BuildTool.md):\n"
+              << "  --source-date-epoch=<unix-ts>        Fixed build timestamp (SOURCE_DATE_EPOCH).\n"
+              << "  --debug-prefix-map=<from>=<to>       Remap source paths in debug info.\n"
+              << "  --seed=<hex>                         Deterministic salt for any build RNG.\n"
               << "\n"
               << "XPU (GPU compute, cajeta-docs/CajetaXPU.md):\n"
               << "  --xpu-backend=<list>                 Device backend(s) for @Kernel methods, comma-separated\n"
@@ -145,11 +165,44 @@ bool setBoolFlag(const char* flagName, const std::string& value, bool& out) {
 int main(int argc, const char* argv[]) {
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
     // the archive-management surface (cajeta-docs/ArchiveManagement.md);
-    // anything else falls through to the legacy compile flow below.
-    // When BuildTool.md ships, more subcommands ("build", "test",
-    // "run", ...) land alongside `archive`.
+    // `cajeta info` (and eventually `build`, `test`, ...) routes to
+    // the build-tool surface (cajeta-docs/BuildTool.md). Anything not
+    // claimed by either falls through to the legacy compile flow below.
     if (argc >= 2 && std::string(argv[1]) == "archive") {
         return cajeta::dispatchArchive(argc, argv);
+    }
+    {
+        int btExit = 0;
+        if (cajeta::buildtool::dispatchBuildTool(argc, argv, &btExit)) {
+            return btExit;
+        }
+    }
+
+    // `cajeta jit-run <sourceRoot> <package.Class.method>` — in-process JIT
+    // host (CP1 of the debugger plan; the `cajeta dap` server reuses it). A
+    // developer/diagnostic verb for now.
+    if (argc >= 2 && std::string(argv[1]) == "jit-run") {
+        return cajeta::jit::dispatchJitRun(argc, argv);
+    }
+
+    // `cajeta dap` — Debug Adapter Protocol server over stdio (cajeta-docs/
+    // Debugging.md). The IDE plugin spawns this and drives the debug session.
+    if (argc >= 2 && std::string(argv[1]) == "dap") {
+        cajeta::dap::DapServer server;
+        return server.run(std::cin, std::cout);
+    }
+
+    // `cajeta doc <source-root> [...]` — documentation generator
+    // (cajeta-docs/Documentation.md). Forwards to the shared cajetadoc engine
+    // (tools/cajetadoc/), the same code as the standalone `cajetadoc` binary.
+    if (argc >= 2 && std::string(argv[1]) == "doc") {
+        return cajeta::doc::dispatchDoc(argc, argv);
+    }
+
+    // `cajeta ide <install|uninstall|list>` — manage the bundled IntelliJ IDEA
+    // plugin embedded in this binary (cross-platform install path, D8).
+    if (argc >= 2 && std::string(argv[1]) == "ide") {
+        return cajeta::dispatchIde(argc, argv);
     }
 
     // --version / -V short-circuit. Handled before Compiler construction
@@ -301,6 +354,18 @@ int main(int argc, const char* argv[]) {
             compiler.setCpu(value);
         } else if (match(arg, "features", value)) {
             compiler.setFeatures(value);
+        } else if (match(arg, "profile", value)) {
+            // Active @Profile for component gating: CajetaModule includes a
+            // @Profile-annotated component only when it matches the active
+            // profile (profile-neutral components are always included). The
+            // build tool forwards each task's `profile` here (dev/test/release/…).
+            CajetaModule::setActiveProfile(value);
+        } else if (match(arg, "source-date-epoch", value)) {
+            compiler.getMutableFlags().sourceDateEpoch = value;
+        } else if (match(arg, "debug-prefix-map", value)) {
+            compiler.getMutableFlags().debugPrefixMap = value;
+        } else if (match(arg, "seed", value)) {
+            compiler.getMutableFlags().seed = value;
         } else if (match(arg, "xpu-backend", value)) {
             // Comma-separated list — a binary can bundle several targets
             // (e.g. vulkan,cpu); the runtime dispatcher picks the best

@@ -10,6 +10,7 @@
 #include "expression/NewExpression.h"
 #include "expression/AggregateInitializerExpression.h"
 #include "../compile/CajetaModule.h"
+#include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../field/ParameterField.h"
@@ -914,6 +915,8 @@ namespace cajeta {
             module->pushTryCatchContext(std::move(catchTypes));
         }
         // C1: a return inside the try body must pop this frame + run finally.
+        // The push records this try's finally (null for catch-only) so a
+        // `return`/break/continue escaping the body unwinds it (emitTryFinallyUnwind).
         module->pushTryFinally(finallyBlock);
         if (tryBlock) tryBlock->generateCode(module);
         module->popTryFinally();
@@ -943,95 +946,183 @@ namespace cajeta {
                 llvm::PointerType::get(ctx, 0), scopeWmSlot);
             builder->CreateCall(scopeExitTo, {wm});
         }
+
+        // Multi-clause type dispatch (Error-model RTTI catch-matching) composed
+        // with try/finally semantics. For each catch clause IN SOURCE ORDER, test
+        // whether the thrown object's runtime type is-a the clause's declared type
+        // — a vtable parent-chain walk via __cajeta_exc_matches, the same chain
+        // __cajeta_is_unrecoverable uses. The FIRST matching clause binds + runs
+        // its body, then branches to afterBB (where the finally runs on the normal
+        // edge). If a `finally` is present, each clause's body is additionally
+        // wrapped in its own exception frame whose landing pad runs the finally +
+        // re-raises (H3), so a throw OUT of a catch body still runs the finally
+        // before propagating. If NO clause matches, the exception is re-thrown so
+        // it propagates to the enclosing frame (we already popped this try's
+        // frame, so the re-throw targets the outer handler).
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Function* excMatches = module->getRuntimeFunction("__cajeta_exc_matches");
+        llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+
+        // Bind the thrown value to a clause's catch variable in the current
+        // scope (int-shaped bindings PtrToInt back to the legacy throw shape;
+        // class/pointer bindings store the ptr directly).
+        auto bindCatchVar = [&](const CatchClause& c) {
+            if (c.variableName.empty()) return;
+            auto type = c.type ? c.type : CajetaType::of("int64");
+            llvm::Type* bindTy = type->getLlvmType();
+            if (!bindTy) bindTy = i64Ty;
+            bool classTypedBinding =
+                dynamic_pointer_cast<CajetaClass>(type) != nullptr;
+            if (classTypedBinding) bindTy = ptrTy;
+            llvm::Value* slot = entryBuilder.CreateAlloca(bindTy);
+            llvm::Value* storeVal = thrownValPtr;
+            if (bindTy->isIntegerTy()) {
+                storeVal = builder->CreatePtrToInt(thrownValPtr, i64Ty);
+                if (bindTy != i64Ty) {
+                    storeVal = builder->CreateIntCast(storeVal, bindTy,
+                        /*isSigned=*/true);
+                }
+            }
+            builder->CreateStore(storeVal, slot);
+            auto& scope = module->getScopeStack();
+            if (!scope.isEmpty()) {
+                auto field = make_shared<HeapField>(module, c.variableName, type);
+                field->setAllocation(llvm::cast<llvm::AllocaInst>(slot));
+                scope.peek()->putField(field);
+            }
+        };
+
+        // Emit one matched clause's body, returning its normal-completion NYA
+        // snapshot for the DA merge. Without a finally, the body runs directly at
+        // the current (bind) block. With a finally, the body is wrapped in its own
+        // exception frame (H3): normal completion pops the frame and branches to
+        // afterBB (where the finally runs); a throw out of the body lands on
+        // catchLandBB, which pops the frame, runs the finally, and re-raises. C1:
+        // a `return` inside the catch body unwinds through the finally too, via
+        // the pushed tryFinally entry (emitTryFinallyUnwind at the return site).
+        auto emitClauseBody = [&](const CatchClause& c) -> std::set<std::string> {
+            if (!finallyBlock) {
+                if (c.body) c.body->generateCode(module);
+                return daScope ? daScope->snapshotNotYetAssigned()
+                               : std::set<std::string>();
+            }
+            llvm::Value* catchFrame = entryBuilder.CreateAlloca(
+                llvm::ArrayType::get(i8Ty, frameBytes));
+            llvm::BasicBlock* catchBodyBB =
+                llvm::BasicBlock::Create(ctx, "catch_body", parentFn);
+            llvm::BasicBlock* catchLandBB =
+                llvm::BasicBlock::Create(ctx, "catch_finally", parentFn);
+            builder->CreateCall(push, {catchFrame});
+            llvm::Value* csj = builder->CreateCall(setjmpFn, {catchFrame});
+            llvm::Value* cthrew = builder->CreateICmpNE(
+                csj, llvm::ConstantInt::get(i32Ty, 0));
+            builder->CreateCondBr(cthrew, catchLandBB, catchBodyBB);
+
+            // Normal: run the catch body, pop its frame, join at afterBB.
+            builder->SetInsertPoint(catchBodyBB);
+            module->pushTryFinally(finallyBlock);
+            if (c.body) c.body->generateCode(module);
+            module->popTryFinally();
+            std::set<std::string> afterBodyNYA;
+            if (daScope) afterBodyNYA = daScope->snapshotNotYetAssigned();
+            if (!builder->GetInsertBlock()->hasTerminator()) {
+                builder->CreateCall(pop, {});
+                builder->CreateBr(afterBB);
+            }
+
+            // Landing: the catch body threw — pop its frame, run finally, re-raise.
+            builder->SetInsertPoint(catchLandBB);
+            llvm::Value* thrown2 = builder->CreateCall(getThrown, {});
+            builder->CreateCall(pop, {});
+            finallyBlock->generateCode(module);
+            if (throwFn && !builder->GetInsertBlock()->hasTerminator()) {
+                builder->CreateCall(throwFn, {thrown2});
+                builder->CreateUnreachable();
+            }
+            // Restore the body's DA state so the merge below is unaffected by the
+            // throw-path finally regen.
+            if (daScope) daScope->restoreNotYetAssigned(afterBodyNYA);
+            return afterBodyNYA;
+        };
+
+        std::vector<std::set<std::string>> armNYAs;  // per-arm post-NYA for DA merge
+
         if (!catchClauses.empty()) {
-            auto& c = catchClauses[0];  // single-clause for now
-            // The catch binding + body emission, factored so it can run either
-            // directly or inside a nested exception frame (H3 wrapping below).
-            auto emitCatchBody = [&]() {
-                if (!c.variableName.empty()) {
-                    auto type = c.type ? c.type : CajetaType::of("int64");
-                    llvm::Type* bindTy = type->getLlvmType();
-                    if (!bindTy) bindTy = i64Ty;
-                    // Class-typed catch bindings (catch (Throwable e), etc.)
-                    // hold a heap pointer, not a struct-by-value. The class's
-                    // getLlvmType() returns the struct type, so we substitute
-                    // `ptr` for the alloca's stored element. The thrown value
-                    // is already a ptr, so it stores directly.
-                    llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
-                    bool classTypedBinding =
-                        dynamic_pointer_cast<CajetaClass>(type) != nullptr;
-                    if (classTypedBinding) bindTy = ptrTy;
-                    llvm::Value* slot = entryBuilder.CreateAlloca(bindTy);
-                    // Integer catch binding: PtrToInt to recover the legacy
-                    // i64-throw shape. Pointer/class binding: store the ptr
-                    // directly.
-                    llvm::Value* storeVal = thrownValPtr;
-                    if (bindTy->isIntegerTy()) {
-                        storeVal = builder->CreatePtrToInt(thrownValPtr, i64Ty);
-                        if (bindTy != i64Ty) {
-                            storeVal = builder->CreateIntCast(storeVal, bindTy,
-                                /*isSigned=*/true);
-                        }
-                    }
-                    builder->CreateStore(storeVal, slot);
-                    auto& scope = module->getScopeStack();
-                    if (!scope.isEmpty()) {
-                        auto field = make_shared<HeapField>(module, c.variableName, type);
-                        field->setAllocation(llvm::cast<llvm::AllocaInst>(slot));
-                        scope.peek()->putField(field);
+            // Legacy `throw 42` idiom: the value is an integer IntToPtr'd into
+            // the throw slot (below the zero-page boundary), with no vtable to
+            // walk. To preserve the historical "first clause catches an untyped
+            // throw" behavior — and the int-binding tests — such a value matches
+            // the first clause unconditionally. Real Throwable instances
+            // (>= 4096) dispatch by the vtable walk.
+            llvm::Value* thrownInt = builder->CreatePtrToInt(thrownValPtr, i64Ty);
+            llvm::Value* isLegacyInt = builder->CreateICmpULT(thrownInt,
+                llvm::ConstantInt::get(i64Ty, 4096));
+            for (size_t ci = 0; ci < catchClauses.size(); ++ci) {
+                auto& c = catchClauses[ci];
+                bool lastClause = (ci + 1 == catchClauses.size());
+                llvm::BasicBlock* bindBB =
+                    llvm::BasicBlock::Create(ctx, "catch_bind", parentFn);
+                llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(ctx,
+                    lastClause ? "catch_nomatch" : "catch_test", parentFn);
+
+                // Resolve this clause's #VTable global (the identity we match
+                // the thrown object's chain against). A non-class clause (e.g.
+                // `catch (int64 e)`) or a class with no vtable is treated as a
+                // catch-all — it matches unconditionally (last-resort clause).
+                //
+                // The universal roots `cajeta.error.Throwable` /
+                // `cajeta.error.Exception` are ALSO catch-all: they catch every
+                // exception by definition, and treating them so avoids
+                // dereferencing a legacy `throw 12345` integer-as-pointer (whose
+                // value can exceed the 4096 low-address guard, so it isn't
+                // covered by isLegacyInt) for a vtable read that would SIGSEGV.
+                llvm::Constant* catchVt = nullptr;
+                auto catchClass = dynamic_pointer_cast<CajetaClass>(c.type);
+                bool universalCatch = false;
+                if (catchClass && catchClass->getQName()) {
+                    auto canon = catchClass->getQName()->toCanonical();
+                    universalCatch = (canon == "cajeta.error.Throwable"
+                        || canon == "cajeta.error.Exception");
+                }
+                if (catchClass && !universalCatch) {
+                    if (auto* vt = catchClass->getVirtualTableGlobal()) {
+                        catchVt = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), vt);
                     }
                 }
-                if (c.body) c.body->generateCode(module);
-            };
-            if (finallyBlock) {
-                // H3 (bugfix-plan): a throw OUT of the catch body must still run
-                // the finally before propagating. Wrap the catch body in its own
-                // exception frame whose landing pad runs the finally + re-raises;
-                // the normal completion path runs the finally at afterBB.
-                llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
-                llvm::Value* catchFrame = entryBuilder.CreateAlloca(
-                    llvm::ArrayType::get(i8Ty, frameBytes));
-                llvm::BasicBlock* catchBodyBB =
-                    llvm::BasicBlock::Create(ctx, "catch_body", parentFn);
-                llvm::BasicBlock* catchLandBB =
-                    llvm::BasicBlock::Create(ctx, "catch_finally", parentFn);
-                builder->CreateCall(push, {catchFrame});
-                llvm::Value* csj = builder->CreateCall(setjmpFn, {catchFrame});
-                llvm::Value* cthrew = builder->CreateICmpNE(
-                    csj, llvm::ConstantInt::get(i32Ty, 0));
-                builder->CreateCondBr(cthrew, catchLandBB, catchBodyBB);
+                if (catchVt && excMatches) {
+                    llvm::Value* m = builder->CreateCall(excMatches,
+                        {thrownValPtr, catchVt}, "catch.match");
+                    llvm::Value* isM = builder->CreateICmpNE(m,
+                        llvm::ConstantInt::get(i32Ty, 0));
+                    // A legacy int throw matches the first clause it reaches.
+                    llvm::Value* cond = builder->CreateOr(isLegacyInt, isM);
+                    builder->CreateCondBr(cond, bindBB, nextBB);
+                } else {
+                    builder->CreateBr(bindBB);  // catch-all clause
+                }
 
-                // Normal: run the catch body, pop its frame, join at afterBB.
-                builder->SetInsertPoint(catchBodyBB);
-                // C1: a return inside the catch body must pop catchFrame + finally.
-                module->pushTryFinally(finallyBlock);
-                emitCatchBody();
-                module->popTryFinally();
-                // Snapshot the catch body's DA state before the landing pad's
-                // finally regen mutates the (single, evolving) NYA set.
-                std::set<std::string> afterCatchBodyNYA;
-                if (daScope) afterCatchBodyNYA = daScope->snapshotNotYetAssigned();
+                // --- matched: bind + run the body from the pre-try baseline ---
+                builder->SetInsertPoint(bindBB);
+                if (daScope) daScope->restoreNotYetAssigned(preTryNYA);
+                bindCatchVar(c);
+                std::set<std::string> armNYA = emitClauseBody(c);
+                if (daScope) armNYAs.push_back(armNYA);
+                // The no-finally path falls through here un-terminated; the
+                // finally path already branched/terminated inside emitClauseBody.
                 if (!builder->GetInsertBlock()->hasTerminator()) {
-                    builder->CreateCall(pop, {});
                     builder->CreateBr(afterBB);
                 }
 
-                // Landing: the catch body threw — pop its frame, run finally,
-                // re-raise the catch's exception.
-                builder->SetInsertPoint(catchLandBB);
-                llvm::Value* thrown2 = builder->CreateCall(getThrown, {});
-                builder->CreateCall(pop, {});
-                finallyBlock->generateCode(module);
-                if (throwFn && !builder->GetInsertBlock()->hasTerminator()) {
-                    builder->CreateCall(throwFn, {thrown2});
-                    builder->CreateUnreachable();
-                }
-                // Restore the catch-body DA state so the merge below is unaffected
-                // by the throw-path finally regen.
-                if (daScope) daScope->restoreNotYetAssigned(afterCatchBodyNYA);
-            } else {
-                emitCatchBody();
+                // Continue testing the next clause (or land on the nomatch
+                // block after the loop).
+                builder->SetInsertPoint(nextBB);
             }
+            // No clause matched: re-throw to the enclosing frame.
+            if (throwFn) {
+                builder->CreateCall(throwFn, {thrownValPtr});
+            }
+            builder->CreateUnreachable();
         } else {
             // H2 (bugfix-plan): try/finally with NO catch clause — the throw must
             // propagate, not be swallowed. Run the finally on this unwinding edge
@@ -1039,24 +1130,25 @@ namespace cajeta {
             // finally), then re-raise. afterBB runs the finally for the normal,
             // non-throwing edge; this is the matching emission for the throw edge.
             if (finallyBlock) finallyBlock->generateCode(module);
-            llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
             if (throwFn && !builder->GetInsertBlock()->hasTerminator()) {
                 builder->CreateCall(throwFn, {thrownValPtr});
                 builder->CreateUnreachable();
+            } else if (!builder->GetInsertBlock()->hasTerminator()) {
+                builder->CreateBr(afterBB);
             }
         }
-        if (!builder->GetInsertBlock()->hasTerminator()) {
-            builder->CreateBr(afterBB);
-        }
 
-        // Merge post-try and post-catch NYA: a name is NYA-after iff
-        // NYA in either arm (the union). When there are no catch
-        // clauses (try {…} alone), any throw propagates out of the
-        // enclosing method — the only reachable post-after state is
-        // the post-try one, so skip the union with the catch arm.
+        // Merge post-try and post-catch NYA: a name is NYA-after iff NYA in the
+        // try arm OR any catch arm (union). The nomatch re-throw doesn't reach
+        // afterBB, so it doesn't contribute. With no catch clauses (try {…}
+        // alone), any throw propagates out, so only the post-try state reaches
+        // afterBB.
         if (daScope) {
-            if (!catchClauses.empty()) {
-                std::set<std::string> postCatchNYA = daScope->snapshotNotYetAssigned();
+            if (!armNYAs.empty()) {
+                std::set<std::string> postCatchNYA = armNYAs[0];
+                for (size_t k = 1; k < armNYAs.size(); ++k) {
+                    for (auto& n : armNYAs[k]) postCatchNYA.insert(n);
+                }
                 daScope->restoreNotYetAssigned(postTryNYA);
                 daScope->mergeNotYetAssigned(postCatchNYA);
             } else {
@@ -1240,6 +1332,11 @@ namespace cajeta {
     }
 
     static void emitScopeExitToWatermark(CajetaModulePtr module) {
+        // Debugger CP5: pop this method's debug frame on the return path. Done
+        // first (independent of the watermark below) so it fires on every
+        // explicit-return chokepoint that funnels through here. No-op unless
+        // --debug-info.
+        dbg::emitDbgFrameLeave(module);
         auto m = module->getCurrentMethod();
         if (!m) return;
         llvm::AllocaInst* mark = m->getScopeWatermark();
@@ -1268,12 +1365,124 @@ namespace cajeta {
                 m->emitAfterReturningAdvice(module);
                 m->emitAfterThrowingTryPop(module);
             }
-            // C1: run enclosing try finallys + pop their frames first.
+            // C1: run enclosing try finallys + pop their frames first (this also
+            // emits the __cajeta_exc_pop for each escaped try frame).
             emitTryFinallyUnwind(module);
             // Pop any open scope frames before the value-less return so
             // every pending child task is joined first.
             emitScopeExitToWatermark(module);
             // Fire drops before the value-less return.
+            if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
+            return builder->CreateRetVoid();
+        }
+        // Value-return (sret + NRVO): the enclosing method/lambda hands back
+        // a `stack`-constructed value by copy. Its LLVM signature returns
+        // `void` and takes the result slot as hidden arg 0. Build the
+        // returned value directly into that caller-owned slot (NRVO for a
+        // `stack X(...)` construction; memcpy/store fallback otherwise),
+        // then `ret void`. No pointer escapes the dying frame — the bytes
+        // already live in the caller. This bypasses the fresh-return
+        // rejection + by-pointer load machinery below, which both assume a
+        // pointer/value return. Triggered for methods via
+        // Method::returnsStackValue() (the body-scan that drives the sret
+        // ABI in Method.cpp) and for lambdas via the LLVM signature itself
+        // (M5(b) — lambdas have no Method context but their underlying
+        // function carries the sret attribute on arg 0).
+        // See cajeta-docs/stdlib/ValueReturns.md.
+        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+        bool sretMethod = false;
+        if (auto m = module->getCurrentMethod()) {
+            sretMethod = m->returnsStackValue();
+        }
+        bool sretFnSig = curFn && curFn->getReturnType()->isVoidTy()
+            && curFn->arg_size() > 0
+            && curFn->getArg(0)->hasAttribute(llvm::Attribute::StructRet);
+        if ((sretMethod || sretFnSig) && expression) {
+            llvm::Value* sretPtr = curFn->getArg(0);
+            if (auto newExpr = dynamic_pointer_cast<NewExpression>(expression)) {
+                newExpr->setNrvoTarget(sretPtr);
+                expression->generateCode(module);
+            } else {
+                // Fallback (e.g. `return someStackLocal;` or a stack
+                // aggregate): produce the value/pointer and copy it into
+                // the sret slot. For a class-typed identifier (the
+                // FilterStream `return o;` shape after the #66 stream
+                // pipeline sweep), the field's getOrCreateAllocation
+                // returns the local's pointer SLOT (an alloca of `ptr`)
+                // — to copy the struct bytes we have to load through the
+                // slot once to recover the struct's actual address. The
+                // class typing comes from the expression's resolvedType;
+                // raw `pointer`-typed slots and aggregate-direct results
+                // skip the load.
+                llvm::Value* v = expression->generateCode(module);
+                llvm::Type* structTy = nullptr;
+                if (auto m = module->getCurrentMethod()) {
+                    if (m->getReturnType()) structTy = m->getReturnType()->getLlvmType();
+                }
+                if (!structTy && sretFnSig) {
+                    // Recover the struct type from the sret param attribute
+                    // (set when the function was created).
+                    structTy = curFn->getArg(0)->getAttribute(
+                        llvm::Attribute::StructRet).getValueAsType();
+                }
+                if (v && structTy) {
+                    if (v->getType()->isPointerTy()) {
+                        // A class-typed expression (the `return o;` shape
+                        // for a class local; also a class-typed parameter
+                        // or member access) produced a SLOT pointer, not
+                        // the struct address — local slots are alloca of
+                        // ptr that holds the struct address. To memcpy
+                        // the struct bytes we have to load through the
+                        // slot once. Without the load, the memcpy reads
+                        // the slot's pointer bytes (8 bytes of `ptr to
+                        // struct` + adjacent stack) instead of the struct
+                        // contents — the runtime SIGSEGVs or returns
+                        // uninitialized data on the caller's first
+                        // method call.
+                        llvm::Value* srcPtr = v;
+                        // Identifier-of-class-typed-local: the field's
+                        // allocation is a SLOT (alloca of ptr) holding
+                        // the struct address. Load through to get the
+                        // struct address before memcpy. Field lookup
+                        // through scope, not expression->getResolvedType
+                        // (which IdentifierExpression::resolveTypes leaves
+                        // null when the local was declared after the
+                        // surrounding block's resolveTypes ran — see
+                        // Statement.cpp's resolveTypes ordering).
+                        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                            if (auto scope = module->getScopeStack().peek()) {
+                                FieldPtr fld = scope->getField(idExpr->getTextValue());
+                                if (fld) {
+                                    auto klass = dynamic_pointer_cast<CajetaClass>(fld->getType());
+                                    if (klass && !klass->isInterface()) {
+                                        llvm::Type* ptrTy = llvm::PointerType::get(
+                                            *module->getLlvmContext(), 0);
+                                        srcPtr = builder->CreateLoad(ptrTy, v);
+                                    }
+                                }
+                            }
+                        }
+                        const llvm::DataLayout& dl =
+                            module->getLlvmModule()->getDataLayout();
+                        llvm::Value* sz = llvm::ConstantInt::get(
+                            llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                            dl.getTypeAllocSize(structTy));
+                        builder->CreateMemCpy(sretPtr, llvm::MaybeAlign(8),
+                            srcPtr, llvm::MaybeAlign(8), sz);
+                    } else {
+                        builder->CreateStore(v, sretPtr);
+                    }
+                }
+            }
+            if (auto m = module->getCurrentMethod()) {
+                m->emitAfterAdvice(module);
+                m->emitAfterReturningAdvice(module);
+                m->emitAfterThrowingTryPop(module);
+            }
+            // C1: run enclosing try finallys + pop their frames before the
+            // sret value-return (mirrors the void + typed return paths).
+            emitTryFinallyUnwind(module);
+            emitScopeExitToWatermark(module);
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
         }
@@ -1361,6 +1570,51 @@ namespace cajeta {
                                     "`#T`. See cajeta-docs/stdlib/MemoryModel"
                                     ".md § Function signatures.",
                                     "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Phase 3a of #68 (body-side borrow-escape check): returning a
+        // borrowed class parameter through a `#T`-return signature is
+        // a silent escape. The caller will register a fresh drop entry
+        // expecting ownership, but the value was the caller-of-caller's
+        // borrow — when the original owner drops, the receiver's drop
+        // fires on the same allocation and produces a double free. The
+        // borrow-param's formal is plain `T` (not `#T`), so the
+        // parameter doesn't own its value and can't transfer it.
+        if (auto m = module->getCurrentMethod()) {
+            if (m->isReturnsOwnership() && expression) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                    auto scope = module->getScopeStack().peek();
+                    if (scope) {
+                        FieldPtr fld = scope->getField(idExpr->getTextValue());
+                        auto pf = dynamic_pointer_cast<ParameterField>(fld);
+                        if (pf) {
+                            auto formal = pf->getFormalParameter();
+                            if (formal && !formal->isTransferred()) {
+                                auto klass = dynamic_pointer_cast<CajetaClass>(
+                                    fld->getType());
+                                if (klass && !klass->isInterface()) {
+                                    throw Exception(
+                                        "method `" + m->toCanonical(false)
+                                            + "` declares a `#T` return "
+                                            "(ownership transfer) but returns "
+                                            "borrowed parameter `"
+                                            + idExpr->getTextValue() + "` "
+                                            "declared without `#`. The caller "
+                                            "would register a fresh drop entry "
+                                            "on receipt and free a value the "
+                                            "original owner still references. "
+                                            "Fix: mark the parameter `#"
+                                            + idExpr->getTextValue() + "` so the "
+                                            "caller transfers ownership, or "
+                                            "change the return type to plain "
+                                            "`T` (borrow pass-through). See "
+                                            "cajeta-docs/stdlib/OwnershipTransfer.md.",
+                                        "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
+                                }
                             }
                         }
                     }

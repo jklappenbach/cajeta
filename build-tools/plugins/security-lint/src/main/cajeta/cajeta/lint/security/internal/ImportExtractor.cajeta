@@ -1,0 +1,92 @@
+package cajeta.lint.security.internal;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * Pulls `import` declarations out of cajeta source.
+ *
+ * Cajeta's `import` shape (per cajeta-docs/Compilation.md):
+ *
+ *   import <dotted.name>;
+ *   import <dotted.name>.*;
+ *
+ * The extractor reads the file's preamble line-by-line, stopping
+ * at the first non-blank, non-comment, non-import line — the rest
+ * of the file is class bodies and irrelevant to import scanning.
+ * Each yielded `ImportRef` carries the dotted path (no trailing
+ * `.*`, no trailing `;`) plus the 1-based line number for finding
+ * citations.
+ *
+ * Scope choices made deliberately:
+ *
+ *   - We don't parse the cajeta source. The cajeta compiler is
+ *     authoritative for the grammar; replicating its parser in a
+ *     lint plugin would drift. Regex over the preamble lines is
+ *     sufficient for the import-statement shape, which is fixed.
+ *   - We stop at the first non-import line to avoid scanning whole
+ *     files. Cajeta requires imports at the top of the file
+ *     (after the optional `package` line), so this is correct AND
+ *     fast.
+ *   - We accept `import X.*;` and yield `X` as the dotted path —
+ *     same level of granularity the banned-imports glob operates
+ *     on.
+ */
+public class ImportExtractor {
+
+    public class ImportRef {
+        String dottedPath;
+        int32 line;
+
+        public ImportRef(String dottedPath, int32 line) {
+            this.dottedPath = dottedPath;
+            this.line = line;
+        }
+        public String dottedPath() { return this.dottedPath; }
+        public int32 line()        { return this.line;       }
+    }
+
+    /**
+     * Yield each import in the preamble of `source` (the file's
+     * full text). Returns in declaration order.
+     */
+    public static ArrayList<ImportRef> extract(String source) {
+        ArrayList<ImportRef> out = #heap ArrayList<ImportRef>();
+        String[] lines = source.split("\n");
+        int32 i = 0;
+        while (i < lines.count) {
+            String trimmed = lines[i].trim();
+            // Skip blanks + line comments. Block comments mid-
+            // preamble are rare in practice and would require
+            // multi-line tracking; v1 ignores them — a banned
+            // import buried inside a block comment doesn't matter.
+            if (trimmed.count() == 0 ||
+                trimmed.startsWith("//") ||
+                trimmed.startsWith("/*") ||
+                trimmed.startsWith("*")  ||
+                trimmed.startsWith("package ")) {
+                i = i + 1;
+                continue;
+            }
+            if (!trimmed.startsWith("import ")) {
+                // First substantive non-import line — the rest of
+                // the file is class/struct bodies.
+                break;
+            }
+            // Pull out the dotted path. Format:
+            //   import <dotted>;     or     import <dotted>.*;
+            String body = trimmed.substring(7);  // past "import "
+            if (body.endsWith(";")) {
+                body = body.substring(0, body.count() - 1);
+            }
+            if (body.endsWith(".*")) {
+                body = body.substring(0, body.count() - 2);
+            }
+            body = body.trim();
+            if (body.count() > 0) {
+                out.add(#heap ImportRef(body, i + 1));
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+}
