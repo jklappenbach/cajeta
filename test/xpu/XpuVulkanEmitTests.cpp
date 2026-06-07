@@ -986,6 +986,59 @@ TEST(XpuVulkanEmitTests, lowersIntAtomicsToSpirv) {
     }
 }
 
+// Shared-memory atomics: an atomic on `shared T[]` (Workgroup storage) must carry
+// WORKGROUP scope, while an atomic on a global Buffer carries DEVICE scope — the
+// scope is picked from the pointer's address space. This kernel does both, so the
+// IR must contain syncscope("workgroup") AND syncscope("device"); spirv-val clean.
+TEST(XpuVulkanEmitTests, lowersSharedAtomicsToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Barrier;\n"
+        "import cajeta.xpu.core.Shared;\n"
+        "public class A {\n"
+        "    @Kernel\n"
+        "    public static void mixed(Buffer<uint32> out, uint32 n) {\n"
+        "        Shared<uint32> acc = shared uint32[64];\n"
+        "        uint32 t = Thread.x();\n"
+        "        if (t == 0) { acc[0] = 0; }\n"
+        "        Barrier.workgroup();\n"
+        "        acc.atomicAdd(0, 1);\n"   // shared -> Workgroup scope
+        "        out.atomicAdd(0, 1);\n"   // global -> Device scope
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.A");
+    auto k = findMethod(module->getStructures()["test.A"], "mixed");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_shatomic_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    // Both scopes present — shared atomic at Workgroup, global atomic at Device.
+    EXPECT_NE(ir.find("syncscope(\"workgroup\")"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("syncscope(\"device\")"), std::string::npos) << ir;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_shatomic_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the shared-atomics module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // Shader clock (SPV_KHR_shader_clock). `Thread.clock()` lowers to the fork's
 // llvm.spv.read.clock intrinsic, which the SPIR-V backend selects to
 // OpReadClockKHR at Subgroup scope under the ShaderClockKHR capability. GPU-free:
