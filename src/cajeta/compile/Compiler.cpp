@@ -810,10 +810,17 @@ namespace cajeta {
         emitXpuKernels(archiveRootPath);
 
         // Binary emit needs a C-ABI `main` to satisfy the loader. Synthesize
-        // a shim that forwards to the user's static entry method. Skipped
-        // for IR emit; the JIT and IR-archive consumers invoke the entry
-        // by mangled name directly.
-        if ((emitMode == EmitMode::Obj || emitMode == EmitMode::Exe)
+        // a shim that bridges crt0's `main(argc, argv)` to the user's static
+        // entry: it installs `-Dkey=value` props, marshals argv into the
+        // cajeta `String[]` the entry expects, calls it, and returns its int32.
+        // Skipped for IR emit; the JIT and IR-archive consumers invoke the
+        // entry by mangled name directly. Uber archives are the "runnable,
+        // self-contained deployment artifact" form, so they carry the shim too
+        // — linking an uber's bitcode into a binary then needs no external
+        // entry. (Plain `cja` archives are classpath libraries — no shim, so a
+        // consumer's own `main` can't collide.)
+        if ((emitMode == EmitMode::Obj || emitMode == EmitMode::Exe
+                || emitMode == EmitMode::Uber)
                 && !entryMethod.empty()) {
             emitCMainShim(entryMethod);
         }
