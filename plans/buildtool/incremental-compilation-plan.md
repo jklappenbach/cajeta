@@ -135,12 +135,27 @@ loaded `.bc` references. Declarations are still registered by parsing
       `new T<…>()`, `xs.stream()`, `resolveMethod`-driven, nested — flows
       through it, so capture is provably complete for classes (no per-site
       gaps). 46 instantiation-heavy tests stay green.
-- [ ] Remaining capture work: **method-template** instantiations
-      (`Method::instantiateMethodTemplate`, a separate path that lands an
-      instantiated method into a possibly-cross-module host class) are not
-      yet captured; and reconcile the obligation key form
-      (`...ArrayStream<int32>`) with the `getStructureToModule` key form
-      (`...ArrayStream<cajeta.int32>`) so replay can resolve an obligation.
+- [x] **Method-template capture.** `Method::instantiateMethodTemplate` is
+      now a thin wrapper over `instantiateMethodTemplateInternal` that
+      records via the `currentCodegenModule` frame, mirroring the class choke
+      point. A method-template instantiation lands its body into the host
+      class's (possibly cross-module) module via `host->addMethod`, separate
+      from any class instantiation, so it gets its own obligation —
+      `CajetaModule::noteCrossModuleMethodInstantiation`, keyed by
+      `inst->getMapKey(false)` (carries `::`, distinguishing it from a class
+      obligation). Same sorted sidecar set; capture fires on cache hits too.
+      Test: `InstantiationObligation.MethodTemplateUseRecordsCrossModuleObligation`
+      (`.map<int32>` → `Stream<int32>::map…<int32>` obligation). 3/3 green.
+- [x] **Obligation-key reconciliation — resolved, no code needed.** The
+      choke-point move (Phase 3 task-0) already made the class obligation key
+      ≡ the `getStructureToModule` key: both are the same `instCanonical`
+      string (`qName->toCanonical() + buildArgSuffix(args)`). Verified
+      empirically — the sidecar records `cajeta.lang.stream.ArrayStream<int32>`
+      (primitives canonicalize to `int32`, not `cajeta.int32`; the earlier
+      `<cajeta.int32>` worry was from the pre-choke-point array-stream capture
+      site, now dead). Replay resolves a class obligation by direct map
+      lookup. See `cajeta-docs/IncrementalCompilation.md` § "Two obligation
+      flavors, one set."
 - [ ] Driver computes the dirty set from transitive digests; clean
       modules are codegen-skipped, dirty modules recompiled.
 - [ ] Clean modules: register declarations (parse for now), then load

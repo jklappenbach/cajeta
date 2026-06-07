@@ -349,7 +349,18 @@ namespace cajeta {
         //
         // Only valid on a template method (asserts isMethodTemplate()).
         // Implemented in MethodTemplateInstantiator.cpp.
+        //
+        // Thin choke point: forwards to instantiateMethodTemplateInternal and
+        // then records a cross-module instantiation obligation (incremental
+        // compilation — cajeta-docs/IncrementalCompilation.md). Capture lives
+        // in the wrapper so it fires on cache hits too, mirroring the
+        // CajetaClass::instantiate / instantiateInternal split.
         MethodPtr instantiateMethodTemplate(vector<CajetaTypePtr> args);
+
+    private:
+        MethodPtr instantiateMethodTemplateInternal(vector<CajetaTypePtr> args);
+
+    public:
 
         // Used by MethodTemplateInstantiator to reparent an instantiation
         // from the throwaway wrapper class (used to host the re-parse) to

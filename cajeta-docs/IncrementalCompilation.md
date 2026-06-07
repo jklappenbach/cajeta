@@ -121,6 +121,39 @@ stdlib's own per-build `.bc`. Leaning toward caching stdlib like any
 other module and treating obligations as the trigger set that makes a
 skipped module's needs explicit.
 
+**Two obligation flavors, one set.** There are two independently-codegen'd
+instantiation kinds, both captured at a single choke point and serialized
+into the *same* sorted sidecar set, distinguished by their key shape:
+
+- **Class templates** — captured at `CajetaClass::instantiate` (wrapping
+  `instantiateInternal`), keyed by `inst->toCanonical()`, e.g.
+  `cajeta.lang.stream.ArrayStream<int32>`. This key is *identical by
+  construction* to the `getStructureToModule` registry key (both are the
+  `instCanonical = qName->toCanonical() + buildArgSuffix(args)` string), so
+  replay resolves an obligation to its owning module by direct map lookup —
+  no key reconciliation is needed. (Primitive args canonicalize to their
+  bare name, e.g. `int32`, not `cajeta.int32`; both keys agree on that.)
+- **Method templates** — captured at `Method::instantiateMethodTemplate`
+  (wrapping `instantiateMethodTemplateInternal`), keyed by
+  `inst->getMapKey(false)`, e.g.
+  `cajeta.lang.stream.Stream<int32>::map((int32) -> #int32)<int32>`. A
+  method-template instantiation lands its body in the *host* class's module
+  via `host->addMethod` — a side effect entirely separate from the class
+  instantiation, so replaying the class obligation does **not** re-create
+  it. The `::` host/method separator distinguishes a method obligation from
+  a class one at replay. The host-class instantiation (`Stream<int32>`) is
+  itself recorded as a class obligation, so it is a prerequisite the driver
+  must replay first.
+
+  *Known cosmetic dup:* the same method instantiation can appear twice —
+  once before and once after `this` is inserted into the formal list
+  (`map((int32) -> …)` vs. `map(pointer,(int32) -> …)`) — because capture
+  fires on the cached re-entry during the codegen loop's later passes. Both
+  replay to the same `(host, name, type-args)` instantiation, which is
+  idempotent, so the duplicate collapses harmlessly; the value-param
+  signature in the key only matters to disambiguate same-name/same-type-arg
+  method-template overloads (vanishingly rare).
+
 ## Determinism prerequisites
 
 Module-granular caching is only as trustworthy as the byte-stability of
