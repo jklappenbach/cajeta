@@ -16,6 +16,7 @@
 #include <fstream>
 #include <filesystem>
 #include <queue>
+#include <set>
 #include <llvm/Support/raw_os_ostream.h>
 #include "../type/ScopeStack.h"
 
@@ -147,6 +148,17 @@ namespace cajeta {
         map<string, CajetaClassPtr> structures;
         MethodPtr currentMethod;
         StructureMetadataPtr structureMetadata;
+
+        // Incremental compilation (cajeta-docs/IncrementalCompilation.md,
+        // Phase 2): the set of template instantiations this module's codegen
+        // drove into ANOTHER module (typically stdlib) — e.g. a method body
+        // calling `xs.stream()` instantiates `ArrayStream<int32>` into the
+        // stdlib module. If this module's codegen is later skipped (clean in
+        // an incremental build), those instantiations would vanish unless
+        // replayed, so we record them as "obligations". Sorted set → stable
+        // sidecar ordering. Same-module instantiations are NOT recorded (they
+        // travel with the module's own IR).
+        std::set<std::string> instantiationObligations;
 
         // Compiler-level options that codegen consults. Set on the module by the
         // Compiler at creation time (so each module produces IR consistent with the
@@ -509,6 +521,24 @@ namespace cajeta {
         static std::string remapSourcePath(const std::string& sourcePath,
                                            const std::string& sourceRoot,
                                            const std::string& debugPrefixMap);
+
+        // Incremental compilation (Phase 2) — obligation capture/serialize.
+        const std::set<std::string>& getInstantiationObligations() const {
+            return instantiationObligations;
+        }
+        // Record `inst` as an obligation of `triggering` IFF it's a genuine,
+        // cross-module instantiation (owned by a different module). Called
+        // from codegen sites that trigger template instantiation, with
+        // `triggering` = the module whose method body is being lowered.
+        // No-op when same-module or either arg is null.
+        static void noteCrossModuleInstantiation(
+            const CajetaModulePtr& triggering, const CajetaClassPtr& inst);
+        // Write this module's obligations to a sidecar next to its emitted IR
+        // (`<archiveRoot><archivePath:.ll→.obligations>`), one sorted
+        // canonical name per line. No-op (and removes any stale sidecar) when
+        // the set is empty, so a module that drops its last cross-module use
+        // doesn't leave a misleading file behind.
+        void writeObligationsSidecar() const;
 
         // Intern a source-file path as a module-global constant `const char*`
         // for the debug-mode source-tagging machinery. Subsequent calls with

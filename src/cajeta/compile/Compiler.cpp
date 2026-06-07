@@ -829,6 +829,9 @@ namespace cajeta {
                 // parseStdlibInto); user modules carry only extern decls
                 // for runtime helpers, resolved by the JIT/AOT link step.
                 emitForModule(module);
+                // Incremental compilation (Phase 2): emit the per-module
+                // instantiation-obligation sidecar alongside its IR.
+                module->writeObligationsSidecar();
             }
         }
 

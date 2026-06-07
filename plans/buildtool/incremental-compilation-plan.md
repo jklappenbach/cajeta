@@ -85,20 +85,38 @@ trusts `.bc` bytes is trustworthy. Independently closes the
 recording that module's **instantiation obligations** — without yet
 skipping anything. Pure instrumentation; behavior unchanged.
 
-- [ ] Emit each user module's `.bc` to an addressable path (extend the
-      existing per-module emit; `WriteBitcodeToFile` already exists at
-      `Compiler.cpp:1506`).
-- [ ] Capture, per module, the set of `(template, type-args)` its
-      codegen drove into stdlib (instrument the instantiation site that
-      the `Compiler.cpp:759-767` loop comment describes).
-- [ ] Serialize obligations to a per-module sidecar (stable ordering).
-- [ ] Test: a module using `ArrayStream<int32>` records exactly that
-      obligation; a module using none records an empty set.
+- [~] Emit each user module's `.bc` to an addressable path. _Deferred to
+      Phase 4: the compiler already emits per-module IR/`.bc`
+      (`WriteBitcodeToFile`, `Compiler.cpp:1506`); the *addressable*
+      (cache-keyed) path is dictated by the manifest, so it lands with the
+      manifest protocol rather than here._
+- [x] Capture, per module, cross-module template instantiations. _Mechanism
+      shipped: `CajetaModule::instantiationObligations` +
+      `noteCrossModuleInstantiation()` (codegen-phase, cross-module only —
+      the rule chosen 2026-06-07). Wired at the array-`stream()` intrinsic
+      site (`MethodCallExpression.cpp`). **Coverage is currently that one
+      site** — broadening to the other codegen instantiation triggers
+      (`new T<…>()` in `NewExpression::generateCode`, method-template
+      instantiation, `resolveMethod`) is required before Phase 3 can rely
+      on completeness; tracked as the first Phase 3 task._
+- [x] Serialize obligations to a per-module sidecar (stable ordering).
+      _`CajetaModule::writeObligationsSidecar()` writes
+      `<archiveRoot>/<pkg>/<Class>.obligations`, one sorted canonical name
+      per line; removes a stale sidecar when the set empties. Called from
+      the per-module emit loop. Exact key form, e.g.
+      `cajeta.lang.stream.ArrayStream<int32>` (note: `<int32>`, not
+      `<cajeta.int32>` — Phase 3 replay must reconcile with the
+      `getStructureToModule` key form)._
+- [x] Test: `test/compile/InstantiationObligationTests.cpp` — an
+      `ArrayStream<int32>` user records the obligation; a no-template user
+      records none. 2/2 green (fork+exec, process-isolated).
 
 **Acceptance**
 
-- [ ] For a fixture tree, every module's recorded obligations exactly
+- [~] For a fixture tree, every module's recorded obligations exactly
       match the template instantiations observed during a full build.
+      _Proven for the array-stream site; full-coverage match gates on the
+      capture-site broadening noted above (Phase 3 task 0)._
 
 ---
 
@@ -109,6 +127,12 @@ replay their obligations so stdlib still contains every symbol the
 loaded `.bc` references. Declarations are still registered by parsing
 (interface cache deferred to Phase 6).
 
+- [ ] **(carried from Phase 2)** Broaden obligation capture from the
+      array-`stream()` site to every codegen instantiation trigger
+      (`new T<…>()` in `NewExpression::generateCode`, method-template
+      instantiation, `resolveMethod`), and reconcile the obligation key
+      form with `getStructureToModule` so replay can look an obligation up.
+      Completeness here is a correctness precondition for skipping.
 - [ ] Driver computes the dirty set from transitive digests; clean
       modules are codegen-skipped, dirty modules recompiled.
 - [ ] Clean modules: register declarations (parse for now), then load
