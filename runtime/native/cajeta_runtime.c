@@ -1384,6 +1384,30 @@ static void __cajeta_fiber_park(void) {
     __cajeta_swapcontext(&f->ctx, &__cajeta_carrier_ctx);
 }
 
+// Park variant for callers that ALREADY hold __cajeta_task_mutex. Enqueues
+// the fiber on parked_head and releases the mutex BEFORE swapping to the
+// carrier. The point is atomicity: a caller rechecks its wake condition
+// (done flag, deadline, I/O registration) under the same mutex immediately
+// before calling this, so the fiber is committed to parked_head before any
+// concurrent waker — task_complete on another carrier, the reactor thread,
+// the timer thread — can acquire the mutex and drain/remove it. Without
+// this, the unlocked-check-then-separately-lock-and-park sequence has a
+// lost-wakeup window: the waker fires between the check and the enqueue,
+// finds nothing parked, and the fiber then parks forever. (Single-carrier
+// runs never hit it — everything is cooperative on one OS thread — which is
+// why the await/deadline/io tests only hang under the multi-carrier pool.)
+// Home-carrier pinning makes the post-unlock pre-swap window safe: only this
+// fiber's home carrier resumes it, and that is the very thread executing the
+// swap, so it cannot be re-dispatched until the swap has saved its context.
+static void __cajeta_fiber_park_locked(void) {
+    struct cajeta_fiber* f = __cajeta_current_fiber;
+    f->state = CAJETA_FIBER_PARKED;
+    f->next = __cajeta_parked_head;
+    __cajeta_parked_head = f;
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    __cajeta_swapcontext(&f->ctx, &__cajeta_carrier_ctx);
+}
+
 // Carrier loop. Pop own deque (LIFO, cache-warm); on empty, try stealing
 // from peer carriers (lock-free); on universally-empty, sleep on the pool
 // condvar until a pusher signals. R8.3 — the carrier struct comes in via
@@ -1406,21 +1430,44 @@ static void* __cajeta_carrier_loop(void* arg) {
         }
 
         if (!f) {
-            // Pool-wide empty. Sleep on the shared condvar after a
-            // re-check under the pool mutex (a pusher may have just
-            // committed work between our last scan and now).
+            // Pool-wide empty. Decide whether to exit, retry, or wait — all
+            // off a SINGLE pool_total_work() read taken under the pool mutex.
+            //
+            // The earlier form called pool_total_work() twice (once for the
+            // shutdown-exit check, once for the retry check). When work
+            // transiently read >0 then 0 across those two calls, a carrier
+            // that had ALREADY observed shutdown_requested fell through to
+            // cond_wait — but the shutdown broadcast is one-shot and had
+            // already fired, so that carrier never woke and __cajeta_task_
+            // shutdown's join() wedged forever. Reading work once closes the
+            // TOCTOU; checking shutdown FIRST guarantees a shutting-down
+            // carrier never blocks on the one-shot condvar (it exits when the
+            // pool is drained, else loops to drain reachable work). The wait
+            // is also bounded as a final backstop against any missed wake on
+            // the work path — the broadcast/signal still wakes us immediately
+            // in the common case; the timeout only matters if a wake is lost.
             pthread_mutex_lock(&__cajeta_task_mutex);
-            if (__cajeta_task_shutdown_requested
-                    && __cajeta_pool_total_work() == 0) {
+            int64_t work = __cajeta_pool_total_work();
+            if (__cajeta_task_shutdown_requested) {
                 pthread_mutex_unlock(&__cajeta_task_mutex);
-                return NULL;
+                if (work == 0) {
+                    return NULL;
+                }
+                continue;  // drain reachable work; never cond_wait at shutdown
             }
-            if (__cajeta_pool_total_work() > 0) {
+            if (work > 0) {
                 pthread_mutex_unlock(&__cajeta_task_mutex);
                 continue;
             }
             __cajeta_sleeping_count++;
-            pthread_cond_wait(&__cajeta_task_queue_cond, &__cajeta_task_mutex);
+            struct timespec __wait_ts;
+            clock_gettime(CLOCK_REALTIME, &__wait_ts);
+            __wait_ts.tv_nsec += 50 * 1000 * 1000;  // 50ms backstop
+            if (__wait_ts.tv_nsec >= 1000000000L) {
+                __wait_ts.tv_nsec -= 1000000000L;
+                __wait_ts.tv_sec += 1;
+            }
+            pthread_cond_timedwait(&__cajeta_task_queue_cond, &__cajeta_task_mutex, &__wait_ts);
             __cajeta_sleeping_count--;
             pthread_mutex_unlock(&__cajeta_task_mutex);
             continue;
@@ -1653,8 +1700,18 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
 void __cajeta_task_wait(int32_t* done_addr) {
     if (!done_addr) return;
     if (__cajeta_current_fiber) {
-        while (!*done_addr) {
-            __cajeta_fiber_park();
+        // Recheck *done_addr under the SAME mutex task_complete uses to set
+        // it and drain parked fibers, then park atomically. If done flipped
+        // before we acquired the lock, we see it here and never park — which
+        // closes the lost-wakeup window (task_complete draining an empty
+        // parked list, then this fiber parking with no future waker).
+        for (;;) {
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            if (*done_addr) {
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+                break;
+            }
+            __cajeta_fiber_park_locked();  // releases the mutex, then swaps
             void* cancel = __cajeta_current_fiber->cancel_with;
             if (cancel) {
                 __cajeta_current_fiber->cancel_with = NULL;
@@ -1907,15 +1964,24 @@ int32_t __cajeta_task_wait_timeout(int32_t* done_addr, int64_t deadline_ns) {
         pthread_cond_signal(&__cajeta_timer_cond);
     }
     for (;;) {
+        // Recheck both wake conditions (task done / deadline passed) under
+        // the mutex that task_complete and the timer thread use, then park
+        // atomically — same lost-wakeup fix as __cajeta_task_wait. The timer
+        // thread, if it fires before we park, can't find us on parked_head
+        // and consumes our entry; we observe the elapsed deadline here and
+        // return 0 instead of parking with no waker left.
+        pthread_mutex_lock(&__cajeta_task_mutex);
         if (*done_addr) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
             __cajeta_timer_cancel(&entry);
             return 1;
         }
         if (__cajeta_now_ns() >= deadline_ns) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
             __cajeta_timer_cancel(&entry);
             return 0;
         }
-        __cajeta_fiber_park();
+        __cajeta_fiber_park_locked();  // releases the mutex, then swaps
         // Mirror __cajeta_task_wait's R5-C cancel handling: a scope's
         // first-throw escalation may have set cancel_with while we were
         // parked; honor it before looping (we still cancel our timer so
@@ -2125,8 +2191,13 @@ int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
         pthread_mutex_unlock(&__cajeta_task_mutex);
         return -1;
     }
-    pthread_mutex_unlock(&__cajeta_task_mutex);
-    __cajeta_fiber_park();
+    // Park while STILL holding task_mutex (park_locked releases it). The
+    // waiter was registered under this same lock, so by the time the mutex
+    // is dropped the fiber is already on parked_head — the reactor thread,
+    // which needs task_mutex to match + wake waiters, therefore cannot fire
+    // and free our waiter in the gap before we park (the EPOLLONESHOT event
+    // is one-shot, so a missed wake would hang the fiber permanently).
+    __cajeta_fiber_park_locked();
     return 1;
 }
 
