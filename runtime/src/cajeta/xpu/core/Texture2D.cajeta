@@ -15,26 +15,34 @@ package cajeta.xpu.core;
  * scope exit (the Buffer/FileReader RAII convention). A launch borrows each
  * Texture2D argument until the next Stream.sync().
  *
- * v1 LIMITS: 2-D, single-channel float32 texels, read-only, one Sampler. The
- * generic Texture2D<T>, 3-D/cube, depth/compare, mip levels, and integer
- * formats are follow-ups.
+ * FORMATS. The storage format is chosen at construction from {@link
+ * TextureFormat} — single- or four-channel, 32-bit float or 8-bit UNORM. The
+ * default (2-arg ctor) is `R32F`, one float channel. `sample(...)` always
+ * returns `Vector<float32, 4>` regardless of format.
+ *
+ * v1 LIMITS: 2-D, read-only, one Sampler, float-sampled formats. 3-D/cube,
+ * depth/compare, mip levels, and raw-integer (texelFetch) textures are
+ * follow-ups.
  */
 public final class Texture2D {
     int64 deviceHandle;
     uint32 width;
     uint32 height;
+    int32 format;        // a TextureFormat ordinal; the native alloc/upload contract
 
     Texture2D(int64 deviceHandle, uint32 width, uint32 height) {
         this.deviceHandle = deviceHandle;
         this.width = width;
         this.height = height;
+        this.format = 0;     // TextureFormat.R32F
     }
 
     /**
      * RAII constructor: allocate a `width` x `height` float32 device image.
      * The constructor acquires the device image and ~Texture2D() releases it.
      *
-     *     Texture2D tex = heap Texture2D(w, h);
+     *     Texture2D tex = heap Texture2D(w, h);                       // R32F
+     *     Texture2D rgba = heap Texture2D(w, h, TextureFormat.RGBA32F);
      *     tex.upload(pixels);                       // row-major width*height
      *     kernel.launch(s, ...)(tex, samp, ...);
      *     s.sync();
@@ -43,7 +51,20 @@ public final class Texture2D {
     public Texture2D(uint32 width, uint32 height) {
         this.width = width;
         this.height = height;
-        this.deviceHandle = this.deviceAlloc(width, height);
+        this.format = 0;     // TextureFormat.R32F
+        this.deviceHandle = this.deviceAlloc(width, height, 0);
+    }
+
+    /**
+     * RAII constructor with an explicit storage {@link TextureFormat}, e.g.
+     * `heap Texture2D(w, h, TextureFormat.RGBA8_UNORM)`. `format` is a
+     * `TextureFormat` ordinal (the enum constant resolves to its i32 ordinal).
+     */
+    public Texture2D(uint32 width, uint32 height, int32 format) {
+        this.width = width;
+        this.height = height;
+        this.format = format;
+        this.deviceHandle = this.deviceAlloc(width, height, format);
     }
 
     /**
@@ -67,19 +88,23 @@ public final class Texture2D {
     }
 
     /**
-     * Host -> device transfer of `width`*`height` row-major float32 texels.
+     * Host -> device transfer of `width`*`height` row-major texels, supplied as
+     * channel-interleaved float32 (R, or R,G,B,A per texel — `count` =
+     * width*height*channels(format)). For UNORM formats the floats are in [0, 1]
+     * and quantized to bytes on store; for float formats they are stored as-is.
      */
     public void upload(float32[] host) {
-        this.deviceUpload(this.deviceHandle, host, this.width, this.height);
+        this.deviceUpload(this.deviceHandle, host, this.width, this.height,
+                          this.format);
     }
 
     /**
      * Device-only intrinsic: sample this texture at normalized coordinates
      * (u, v) in [0, 1] through `s`, returning the filtered RGBA texel — the
      * four channels the hardware image-sample op produces natively. Read a
-     * single channel with `.r`/`.x` (or a swizzle). v1 textures are single
-     * channel (R32f), so the sampled value lands in `.r`/`.x`; the other
-     * channels are not contractual until multi-channel formats land (B3).
+     * single channel with `.r`/`.x` (or a swizzle). For single-channel formats
+     * (R32F/R8_UNORM) the value lands in `.r`/`.x` (G/B = 0, A = 1); RGBA
+     * formats fill all four.
      * Lowered at the call site inside an @Kernel / @Device function to the
      * backend's image-sample op (Vulkan OpImageSampleExplicitLod via
      * llvm.spv.resource.samplelevel, AMD __ockl_image_sample_2D, NVPTX
@@ -96,10 +121,11 @@ public final class Texture2D {
     // pointer-shaped at the ABI boundary, so one C symbol per name serves the
     // type. The leading `this` the forwarder passes is ignored by the C side.
     @Native("__cajeta_xpu_texture_alloc")
-    private int64 deviceAlloc(uint32 width, uint32 height);
+    private int64 deviceAlloc(uint32 width, uint32 height, int32 format);
 
     @Native("__cajeta_xpu_texture_upload")
-    private void deviceUpload(int64 handle, float32[] host, uint32 width, uint32 height);
+    private void deviceUpload(int64 handle, float32[] host, uint32 width, uint32 height,
+                             int32 format);
 
     @Native("__cajeta_xpu_texture_free")
     private void deviceFree(int64 handle);

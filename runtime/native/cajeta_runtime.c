@@ -6107,11 +6107,13 @@ static int cajeta_xpu_cuda_ready(void) {
 // ROCm headers (they're not on the default include path and carry C++), so the
 // few structs hipCreateTextureObject needs are mirrored here with byte-exact
 // layout. Enum values match driver_types.h / texture_types.h.
+enum { CAJ_HIP_CHANNEL_UNSIGNED = 1 };  // hipChannelFormatKindUnsigned (UNORM store)
 enum { CAJ_HIP_CHANNEL_FLOAT = 2 };     // hipChannelFormatKindFloat
 enum { CAJ_HIP_RES_ARRAY = 0 };         // hipResourceTypeArray
 enum { CAJ_HIP_ADDR_WRAP = 0, CAJ_HIP_ADDR_CLAMP = 1 };  // hipTextureAddressMode
 enum { CAJ_HIP_FILTER_POINT = 0, CAJ_HIP_FILTER_LINEAR = 1 };  // filter mode
 enum { CAJ_HIP_READ_ELEMENT = 0 };      // hipReadModeElementType
+enum { CAJ_HIP_READ_NORMALIZED_FLOAT = 1 };  // hipReadModeNormalizedFloat (UNORM→[0,1])
 enum { CAJ_HIP_MEMCPY_HTOD = 1 };       // hipMemcpyHostToDevice
 
 struct caj_hip_channel_format_desc { int x, y, z, w; int f; };
@@ -6172,7 +6174,46 @@ static struct cajeta_hip_api g_xpu_hip;
 // HIP texture record: a Texture2D's device handle on AMD is a 1-based-... no, a
 // pointer to one of these (the hipArray + dims). The hipTextureObject is built
 // per launch from this array + the paired Sampler's modes.
-struct cajeta_hip_tex { void* array; uint32_t w, h; };
+struct cajeta_hip_tex { void* array; uint32_t w, h; int32_t format; };
+
+// --- Texture format table ----------------------------------------------------
+// TextureFormat ordinals — MUST match runtime/src/cajeta/xpu/core/TextureFormat.cajeta.
+// All four are float-sampled (sample() returns a vec4): float formats read back
+// as-is, UNORM formats store a byte 0..255 and read back normalized to [0,1].
+#define CAJ_TEXFMT_R32F        0
+#define CAJ_TEXFMT_R8_UNORM    1
+#define CAJ_TEXFMT_RGBA8_UNORM 2
+#define CAJ_TEXFMT_RGBA32F     3
+
+static inline int cajeta_texfmt_channels(int32_t fmt) {
+    return (fmt == CAJ_TEXFMT_RGBA8_UNORM || fmt == CAJ_TEXFMT_RGBA32F) ? 4 : 1;
+}
+static inline int cajeta_texfmt_is_unorm(int32_t fmt) {
+    return fmt == CAJ_TEXFMT_R8_UNORM || fmt == CAJ_TEXFMT_RGBA8_UNORM;
+}
+// Bytes per texel in device storage (UNORM = 1 byte/channel, float = 4).
+static inline size_t cajeta_texfmt_texel_bytes(int32_t fmt) {
+    return (size_t) cajeta_texfmt_channels(fmt) *
+           (cajeta_texfmt_is_unorm(fmt) ? 1u : 4u);
+}
+// Quantize one float [0,1] to a UNORM byte (round-to-nearest, clamped).
+static inline unsigned char cajeta_texfmt_unorm8(float f) {
+    if (f <= 0.0f) return 0;
+    if (f >= 1.0f) return 255;
+    return (unsigned char) (f * 255.0f + 0.5f);
+}
+// Encode `texels` (= w*h*channels) channel-interleaved floats from `src` into
+// `dst` in the storage format: float → memcpy, UNORM → quantized bytes. `dst`
+// must hold texels*texelChannelBytes.
+static void cajeta_texfmt_encode(void* dst, const float* src, size_t texels,
+                                 int32_t fmt) {
+    if (cajeta_texfmt_is_unorm(fmt)) {
+        unsigned char* b = (unsigned char*) dst;
+        for (size_t i = 0; i < texels; ++i) b[i] = cajeta_texfmt_unorm8(src[i]);
+    } else {
+        memcpy(dst, src, texels * sizeof(float));
+    }
+}
 
 #if !defined(_WIN32)
 // Load libamdhip64, preferring canonical ROCm (/opt/rocm, the
@@ -6856,6 +6897,7 @@ struct cajeta_vk_tex {
     uint32_t w, h;
     int live;
     int storage;            // 1 = writable STORAGE_IMAGE (Image2D), 0 = sampled
+    int32_t format;         // TextureFormat ordinal (sampled images; storage = R32F)
     VkImageLayout layout;   // current layout (tracked for storage-image barriers)
 };
 #define CAJETA_VK_MAX_TEXTURES 256
@@ -6876,13 +6918,26 @@ static struct cajeta_vk_tex* cajeta_xpu_vk_tex_rec(int64_t handle) {
 // until cajeta_xpu_vk_tex_upload). `storage`=1 makes a writable STORAGE_IMAGE
 // (Image2D) usable as an OpImageWrite target and readable back to the host
 // (TRANSFER_SRC) — its texels start undefined and are produced by a kernel.
-static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage) {
+static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
+                                       int32_t format) {
     if (w == 0 || h == 0) return 0;
+    // Storage images (Image2D) are R32F only; sampled images (Texture2D) pick a
+    // VkFormat from the TextureFormat ordinal. All sample to float in the shader,
+    // so the descriptor format is the only thing that varies.
+    VkFormat vkfmt = VK_FORMAT_R32_SFLOAT;
+    if (!storage) {
+        switch (format) {
+            case CAJ_TEXFMT_R8_UNORM:    vkfmt = VK_FORMAT_R8_UNORM;            break;
+            case CAJ_TEXFMT_RGBA8_UNORM: vkfmt = VK_FORMAT_R8G8B8A8_UNORM;      break;
+            case CAJ_TEXFMT_RGBA32F:     vkfmt = VK_FORMAT_R32G32B32A32_SFLOAT; break;
+            case CAJ_TEXFMT_R32F: default: vkfmt = VK_FORMAT_R32_SFLOAT;        break;
+        }
+    }
     VkImageCreateInfo ici;
     memset(&ici, 0, sizeof(ici));
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType = VK_IMAGE_TYPE_2D;
-    ici.format = VK_FORMAT_R32_SFLOAT;
+    ici.format = vkfmt;
     ici.extent.width = w; ici.extent.height = h; ici.extent.depth = 1;
     ici.mipLevels = 1; ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -6924,7 +6979,7 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage) {
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image = img;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = VK_FORMAT_R32_SFLOAT;
+    vci.format = vkfmt;
     vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     vci.subresourceRange.levelCount = 1;
     vci.subresourceRange.layerCount = 1;
@@ -6955,6 +7010,7 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage) {
     g_vk_texs[slot].w = w; g_vk_texs[slot].h = h;
     g_vk_texs[slot].live = 1;
     g_vk_texs[slot].storage = storage;
+    g_vk_texs[slot].format = storage ? CAJ_TEXFMT_R32F : format;
     g_vk_texs[slot].layout = VK_IMAGE_LAYOUT_UNDEFINED;
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return (int64_t) (slot + 1);
@@ -6963,15 +7019,16 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage) {
 // Stage `data` (w*h row-major float32 texels) into the image, leaving it in
 // SHADER_READ_ONLY_OPTIMAL ready to sample. Uses a transient host-visible
 // staging buffer + a one-time command buffer (barrier / copy / barrier).
-static void cajeta_xpu_vk_tex_upload(int64_t handle, const void* data,
-                                     uint32_t w, uint32_t h) {
+static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
+                                     uint32_t w, uint32_t h, int32_t format) {
     struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
-    if (!t || !data || w != t->w || h != t->h) return;
-    uint64_t bytes = (uint64_t) w * h * sizeof(float);
+    if (!t || !src || w != t->w || h != t->h) return;
+    size_t texels = (size_t) w * h * cajeta_texfmt_channels(format);
+    uint64_t bytes = (uint64_t) w * h * cajeta_texfmt_texel_bytes(format);
     int64_t staging = cajeta_xpu_vk_alloc(bytes);   // host-visible+coherent
     if (!staging) return;
     void* m = cajeta_xpu_vk_mapped(staging);
-    if (m) memcpy(m, data, (size_t) bytes);
+    if (m) cajeta_texfmt_encode(m, src, texels, format);   // float memcpy / UNORM quantize
     struct cajeta_vk_buf* sb = cajeta_xpu_vk_rec(staging);
 
     // The staging copy submits to the shared VkQueue/VkCommandPool — serialize it
@@ -7730,12 +7787,13 @@ static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
-static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage) {
-    (void) w; (void) h; (void) storage; return 0;
+static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
+                                       int32_t format) {
+    (void) w; (void) h; (void) storage; (void) format; return 0;
 }
-static void cajeta_xpu_vk_tex_upload(int64_t h, const void* d,
-                                     uint32_t w, uint32_t ht) {
-    (void) h; (void) d; (void) w; (void) ht;
+static void cajeta_xpu_vk_tex_upload(int64_t h, const float* src,
+                                     uint32_t w, uint32_t ht, int32_t format) {
+    (void) h; (void) src; (void) w; (void) ht; (void) format;
 }
 static void cajeta_xpu_vk_tex_download(int64_t h, void* d,
                                        uint32_t w, uint32_t ht) {
@@ -8337,28 +8395,44 @@ static int cajeta_hip_tex_supported(void) {
            g_xpu_hip.hipCreateTextureObject && g_xpu_hip.hipDestroyTextureObject;
 }
 
-static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h) {
+static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h, int32_t format) {
     if (!cajeta_hip_tex_supported()) return 0;
+    int channels = cajeta_texfmt_channels(format);
+    int bits = cajeta_texfmt_is_unorm(format) ? 8 : 32;  // per-channel
     struct caj_hip_channel_format_desc cd;
     memset(&cd, 0, sizeof(cd));
-    cd.x = 32;                          // R32, single float channel
-    cd.f = CAJ_HIP_CHANNEL_FLOAT;
+    cd.x = bits;
+    if (channels == 4) { cd.y = bits; cd.z = bits; cd.w = bits; }
+    // UNORM stores unsigned bytes (read back normalized to [0,1] via the texobj's
+    // NormalizedFloat read mode); float stores raw floats read element-typed.
+    cd.f = cajeta_texfmt_is_unorm(format) ? CAJ_HIP_CHANNEL_UNSIGNED
+                                          : CAJ_HIP_CHANNEL_FLOAT;
     void* array = NULL;
     if (g_xpu_hip.hipMallocArray(&array, &cd, w, h, 0) != 0 || !array) return 0;
     struct cajeta_hip_tex* t =
         (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
-    t->array = array; t->w = w; t->h = h;
+    t->array = array; t->w = w; t->h = h; t->format = format;
     return (int64_t) (intptr_t) t;
 }
 
-static void cajeta_xpu_hip_tex_upload(int64_t handle, const void* data,
-                                      uint32_t w, uint32_t h) {
+static void cajeta_xpu_hip_tex_upload(int64_t handle, const float* src,
+                                      uint32_t w, uint32_t h, int32_t format) {
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
     if (!t || !t->array || w != t->w || h != t->h) return;
-    size_t rowBytes = (size_t) w * sizeof(float);
-    g_xpu_hip.hipMemcpy2DToArray(t->array, 0, 0, data, rowBytes, rowBytes, h,
-                                 CAJ_HIP_MEMCPY_HTOD);
+    size_t rowBytes = (size_t) w * cajeta_texfmt_texel_bytes(format);
+    if (cajeta_texfmt_is_unorm(format)) {
+        size_t texels = (size_t) w * h * cajeta_texfmt_channels(format);
+        unsigned char* tmp = (unsigned char*) malloc(texels);   // 1 byte/sample
+        if (!tmp) return;
+        cajeta_texfmt_encode(tmp, src, texels, format);
+        g_xpu_hip.hipMemcpy2DToArray(t->array, 0, 0, tmp, rowBytes, rowBytes, h,
+                                     CAJ_HIP_MEMCPY_HTOD);
+        free(tmp);
+    } else {
+        g_xpu_hip.hipMemcpy2DToArray(t->array, 0, 0, src, rowBytes, rowBytes, h,
+                                     CAJ_HIP_MEMCPY_HTOD);
+    }
 }
 
 static void cajeta_xpu_hip_tex_free(int64_t handle) {
@@ -8385,7 +8459,9 @@ static int64_t cajeta_xpu_hip_make_texobj(int64_t texHandle, int32_t filterMode,
     td.addressMode[0] = hipAddr; td.addressMode[1] = hipAddr;
     td.addressMode[2] = hipAddr;
     td.filterMode = filterMode == 1 ? CAJ_HIP_FILTER_LINEAR : CAJ_HIP_FILTER_POINT;
-    td.readMode = CAJ_HIP_READ_ELEMENT;
+    // UNORM arrays read back as normalized float [0,1]; float arrays read raw.
+    td.readMode = cajeta_texfmt_is_unorm(t->format) ? CAJ_HIP_READ_NORMALIZED_FLOAT
+                                                    : CAJ_HIP_READ_ELEMENT;
     td.normalizedCoords = 1;
     void* texObj = NULL;
     if (g_xpu_hip.hipCreateTextureObject(&texObj, &rd, &td, NULL) != 0)
@@ -8403,17 +8479,21 @@ static int64_t cajeta_xpu_hip_make_texobj(int64_t texHandle, int32_t filterMode,
 // texture unit would. On Vulkan/AMD the handle is a device image / hipArray
 // record and the kernel samples it through the native image path.
 struct cajeta_cpu_texobj {
-    float*   data;   // row-major width*height float32 texels (owned)
+    float*   data;     // row-major w*h*channels DECODED float texels (owned)
     uint32_t w;
     uint32_t h;
+    int32_t  format;   // TextureFormat ordinal
+    int      channels; // 1 (R) or 4 (RGBA)
 };
 
 // __cajeta_xpu_texture_alloc(this, width, height) -> int64 handle.
 // Instance @Native (the Buffer convention): the leading `self` is the cajeta
 // `this`, ignored — the device side is keyed on the returned handle.
-int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height) {
+int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
+                                   int32_t format) {
     (void) self;
     if (width == 0 || height == 0) return 0;
+    int channels = cajeta_texfmt_channels(format);
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CPU: {
             struct cajeta_cpu_texobj* t =
@@ -8421,14 +8501,19 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height) 
             if (!t) return 0;
             t->w = width;
             t->h = height;
-            t->data = (float*) calloc((size_t) width * height, sizeof(float));
+            t->format = format;
+            t->channels = channels;
+            // CPU stores DECODED channel-interleaved floats (channels per texel);
+            // UNORM precision is emulated at upload, so the sampler is float-only.
+            t->data = (float*) calloc((size_t) width * height * channels,
+                                      sizeof(float));
             if (!t->data) { free(t); return 0; }
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 0); // sampled image (Stage B)
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format); // sampled image
         case CAJ_XPU_HIP:
-            return cajeta_xpu_hip_tex_alloc(width, height); // hipArray (Stage C)
+            return cajeta_xpu_hip_tex_alloc(width, height, format);   // hipArray
         // CUDA texture objects land in Stage D (emit-only).
         default: return 0;
     }
@@ -8438,25 +8523,33 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height) 
 // `host` is a Cajeta float32[] header — { i64 count, [count x f32] data } — so
 // the texels start at offset 8 (matches __cajeta_xpu_buffer_upload).
 void __cajeta_xpu_texture_upload(void* self, int64_t handle, void* host,
-                                 uint32_t width, uint32_t height) {
+                                 uint32_t width, uint32_t height, int32_t format) {
     (void) self;
     if (!handle || !host || width == 0 || height == 0) return;
-    const void* data = (const void*) ((const char*) host + 8);
-    size_t bytes = (size_t) width * height * sizeof(float);
+    // `host` is a cajeta float32[] header { i64 count, [count x f32] } — the
+    // channel-interleaved float texels (R, or R,G,B,A per texel) start at offset 8.
+    const float* src = (const float*) ((const char*) host + 8);
+    size_t texels = (size_t) width * height * cajeta_texfmt_channels(format);
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CPU: {
             struct cajeta_cpu_texobj* t =
                 (struct cajeta_cpu_texobj*) (intptr_t) handle;
-            if (t->data) memcpy(t->data, data, bytes);
+            if (!t->data) return;
+            if (cajeta_texfmt_is_unorm(format)) {
+                // Emulate the device's 256-level UNORM quantization on the CPU so
+                // both paths agree bit-for-bit on exactly-representable values.
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = (float) cajeta_texfmt_unorm8(src[i]) / 255.0f;
+            } else {
+                memcpy(t->data, src, texels * sizeof(float));
+            }
             return;
         }
         case CAJ_XPU_VULKAN:
-            (void) bytes;
-            cajeta_xpu_vk_tex_upload(handle, data, width, height);
+            cajeta_xpu_vk_tex_upload(handle, src, width, height, format);
             return;
         case CAJ_XPU_HIP:
-            (void) bytes;
-            cajeta_xpu_hip_tex_upload(handle, data, width, height);
+            cajeta_xpu_hip_tex_upload(handle, src, width, height, format);
             return;
         default: return;
     }
@@ -8492,7 +8585,7 @@ int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return 0;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 1);  // storage image
+            return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F);  // storage image (R32F)
         default: return 0;
     }
 }
@@ -8565,22 +8658,40 @@ static inline int cajeta_tex_addr(int c, int n, int32_t addressMode) {
     return c;
 }
 
-// CPU texture sampler — the lowering of `tex.sample(sampler, u, v)`. (u, v) are
-// normalized coords in [0, 1]; filterMode 0 = nearest, 1 = bilinear; addressMode
-// 0 = clamp, 1 = wrap. Bilinear uses the texel-center convention (coord =
-// u*W - 0.5) matching GPU texture units. Out-of-range texels are resolved by the
-// addressing mode, so the gather is always in-bounds.
-float __cajeta_xpu_cpu_tex_sample(void* texp, int32_t filterMode,
-                                  int32_t addressMode, float u, float v) {
+// A 4-lane float vector matching LLVM `<4 x float>` in the x86-64 SysV ABI
+// (returned in xmm0), so the CPU sampleTexture seam can declare this symbol as
+// returning `<4 x float>` and use the result as a Vector<float32,4> directly.
+typedef float caj_v4f __attribute__((vector_size(16)));
+
+// Fetch texel (x,y) as RGBA from the DECODED float store: read `channels` stored
+// floats; missing channels default to G/B = 0, A = 1 (the GPU R/RG-format
+// expansion). (x,y) are already addressed (in-bounds).
+static inline caj_v4f cajeta_cpu_texel(const struct cajeta_cpu_texobj* t,
+                                       int x, int y) {
+    const float* p = t->data + ((size_t) y * t->w + (size_t) x) * t->channels;
+    caj_v4f c = { 0.0f, 0.0f, 0.0f, 1.0f };
+    for (int i = 0; i < t->channels; ++i) c[i] = p[i];
+    return c;
+}
+
+// CPU texture sampler — the lowering of `tex.sample(sampler, u, v)`, returning
+// the filtered RGBA texel. (u, v) are normalized coords in [0, 1]; filterMode
+// 0 = nearest, 1 = bilinear; addressMode 0 = clamp, 1 = wrap. Bilinear uses the
+// texel-center convention (coord = u*W - 0.5) matching GPU texture units.
+// Out-of-range texels are resolved by the addressing mode, so the gather is
+// always in-bounds. Works for any channel count (G/B/A default per channel).
+caj_v4f __cajeta_xpu_cpu_tex_sample_rgba(void* texp, int32_t filterMode,
+                                         int32_t addressMode, float u, float v) {
     struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
-    if (!t || !t->data || t->w == 0 || t->h == 0) return 0.0f;
+    caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
+    if (!t || !t->data || t->w == 0 || t->h == 0) return zero;
     int W = (int) t->w, H = (int) t->h;
     if (filterMode == 0) {                   // nearest
         int x = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
         int y = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
-        return t->data[(size_t) y * W + x];
+        return cajeta_cpu_texel(t, x, y);
     }
-    // bilinear (texel-center)
+    // bilinear (texel-center) — blend four RGBA texels
     float fx = u * (float) W - 0.5f;
     float fy = v * (float) H - 0.5f;
     int x0 = (int) floorf(fx), y0 = (int) floorf(fy);
@@ -8589,12 +8700,12 @@ float __cajeta_xpu_cpu_tex_sample(void* texp, int32_t filterMode,
     int cx1 = cajeta_tex_addr(x0 + 1, W, addressMode);
     int cy0 = cajeta_tex_addr(y0,     H, addressMode);
     int cy1 = cajeta_tex_addr(y0 + 1, H, addressMode);
-    float t00 = t->data[(size_t) cy0 * W + cx0];
-    float t10 = t->data[(size_t) cy0 * W + cx1];
-    float t01 = t->data[(size_t) cy1 * W + cx0];
-    float t11 = t->data[(size_t) cy1 * W + cx1];
-    float a = t00 + (t10 - t00) * dx;
-    float b = t01 + (t11 - t01) * dx;
+    caj_v4f t00 = cajeta_cpu_texel(t, cx0, cy0);
+    caj_v4f t10 = cajeta_cpu_texel(t, cx1, cy0);
+    caj_v4f t01 = cajeta_cpu_texel(t, cx0, cy1);
+    caj_v4f t11 = cajeta_cpu_texel(t, cx1, cy1);
+    caj_v4f a = t00 + (t10 - t00) * dx;
+    caj_v4f b = t01 + (t11 - t01) * dx;
     return a + (b - a) * dy;
 }
 
