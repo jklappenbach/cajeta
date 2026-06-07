@@ -19,6 +19,7 @@
 #include "cajeta/xpu/amd/HipDriver.h"
 
 #include <cstdlib>
+#include <string>
 #if defined(_WIN32)
 // POSIX setenv/unsetenv are absent on mingw; shim onto _putenv_s.
 static inline int setenv(const char* k, const char* v, int) { return _putenv_s(k, v); }
@@ -69,6 +70,150 @@ const char* kSaxpyHostSource =
     "        return sum;\n"
     "    }\n"
     "}\n";
+
+// Multi-channel texture on the real AMD device (B3): an RGBA Texture2D sampled
+// through __ockl_image_sample_2D returns all four channels (sample() ->
+// Vector<float32,4>). A 2x2 RGBA image (per texel R,G,B,A = .2t, +.05, +.1, +.15,
+// all in [0,1] so the same source is UNORM-safe) is sampled at the four texel
+// centers; every channel of every texel is checked within the 0.02 tol. Exercises
+// the format-routed HIP channel descriptor (4-channel float / unorm8) + the AMD
+// vec4 sampler — the gfx1151 twin of the Vulkan RGBA tests.
+const char* kHipRgbaSampleSrc(const char* fmt) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexRgbaHip {\n"
+        "    @Kernel\n"
+        "    public static void sample(Texture2D tex, Sampler s,\n"
+        "                              Buffer<float32> us, Buffer<float32> vs,\n"
+        "                              Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<float32,4> c = tex.sample(s, us[i], vs[i]);\n"
+        "            out[i*4 + 0] = c.x;\n"
+        "            out[i*4 + 1] = c.y;\n"
+        "            out[i*4 + 2] = c.z;\n"
+        "            out[i*4 + 3] = c.w;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[16];\n"   // 2*2 RGBA
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            pixels[t*4 + 0] = r;\n"
+        "            pixels[t*4 + 1] = r + 0.05f;\n"
+        "            pixels[t*4 + 2] = r + 0.1f;\n"
+        "            pixels[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        Texture2D tex = heap Texture2D(w, h, ") + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
+        "        uint32 n = 4;\n"
+        "        uint32 m = n * 4;\n"
+        "        float32[] hus = heap float32[n];\n"
+        "        float32[] hvs = heap float32[n];\n"
+        "        hus[0] = 0.25f; hvs[0] = 0.25f;\n"        // texel (0,0)
+        "        hus[1] = 0.75f; hvs[1] = 0.25f;\n"        // texel (1,0)
+        "        hus[2] = 0.25f; hvs[2] = 0.75f;\n"        // texel (0,1)
+        "        hus[3] = 0.75f; hvs[3] = 0.75f;\n"        // texel (1,1)
+        "        float32[] hexp = heap float32[m];\n"
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            hexp[t*4 + 0] = r;\n"
+        "            hexp[t*4 + 1] = r + 0.05f;\n"
+        "            hexp[t*4 + 2] = r + 0.1f;\n"
+        "            hexp[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        float32[] hout = heap float32[m];\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> us = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> vs = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, m);\n"
+        "        us.allocate(); vs.allocate(); out.allocate();\n"
+        "        us.upload(hus); vs.upload(hvs); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        us.free(); vs.free(); out.free();\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) {\n"
+        "            float32 d = hout[i] - hexp[i];\n"
+        "            if (d < -0.02f || d > 0.02f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+// Single-channel float-storage format on the real AMD device, parametrized by
+// ordinal (for R16F). A 2x2 image {0,1,2,3} (all binary16-exact) sampled at the
+// four texel centers returns the exact texels in .x; the dead-center returns 1.5.
+const char* kHipR1SampleSrc(const char* fmt) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexR1Hip {\n"
+        "    @Kernel\n"
+        "    public static void sample(Texture2D tex, Sampler s,\n"
+        "                              Buffer<float32> us, Buffer<float32> vs,\n"
+        "                              Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { Vector<float32,4> c = tex.sample(s, us[i], vs[i]); out[i] = c.x; }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[4];\n"
+        "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
+        "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
+        "        Texture2D tex = heap Texture2D(w, h, ") + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
+        "        uint32 n = 5;\n"
+        "        float32[] hus = heap float32[n];\n"
+        "        float32[] hvs = heap float32[n];\n"
+        "        float32[] hexp = heap float32[n];\n"
+        "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
+        "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
+        "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
+        "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
+        "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> us = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> vs = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        us.allocate(); vs.allocate(); out.allocate();\n"
+        "        us.upload(hus); vs.upload(hvs); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        us.free(); vs.free(); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = hout[i] - hexp[i];\n"
+        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
 
 } // namespace
 
@@ -341,6 +486,77 @@ TEST(XpuHipDispatchDeviceTests, textureSampleRoutesToHipOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
+}
+
+// B3 multi-channel on the real AMD device: an RGBA32F Texture2D sampled on
+// gfx1151 returns all four channels (sample() -> Vector<float32,4>). Verifies the
+// 4-channel-float HIP channel descriptor + the AMD vec4 sampler path.
+TEST(XpuHipDispatchDeviceTests, textureSampleRgba32fRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipRgbaSampleSrc("TextureFormat.RGBA32F"),
+                                  "test.TexRgbaHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F sample mismatch at i)";
+}
+
+// B3 8-bit normalized RGBA on the real AMD device: bytes 0..255 stored, read back
+// as float [0,1]. Exercises the float->unorm8 quantize-on-upload + the 4-channel
+// unorm8 HIP channel descriptor (readMode NormalizedFloat), within the 0.02 tol.
+TEST(XpuHipDispatchDeviceTests, textureSampleRgba8UnormRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipRgbaSampleSrc("TextureFormat.RGBA8_UNORM"),
+                                  "test.TexRgbaHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA8_UNORM sample mismatch at i)";
+}
+
+// B3 half-float single channel on the real AMD device (R16F): float uploaded,
+// binary16 stored in the 16-bit-float hipArray, read back as float. Texel values
+// {0,1,2,3} are f16-exact.
+TEST(XpuHipDispatchDeviceTests, textureSampleR16fRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipR1SampleSrc("TextureFormat.R16F"),
+                                  "test.TexR1Hip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R16F sample mismatch at i)";
+}
+
+// B3 half-float RGBA on the real AMD device (RGBA16F): four-channel cheap HDR via
+// the 4-channel 16-bit-float HIP channel descriptor. Within the 0.02 tol.
+TEST(XpuHipDispatchDeviceTests, textureSampleRgba16fRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipRgbaSampleSrc("TextureFormat.RGBA16F"),
+                                  "test.TexRgbaHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA16F sample mismatch at i)";
 }
 
 // Bundle BOTH amdgpu and cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU

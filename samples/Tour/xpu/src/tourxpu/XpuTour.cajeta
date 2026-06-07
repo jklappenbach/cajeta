@@ -5,6 +5,9 @@ import cajeta.xpu.core.Stream;
 import cajeta.xpu.core.Thread;
 import cajeta.xpu.core.Wave;
 import cajeta.xpu.core.Bits;
+import cajeta.xpu.core.Texture2D;
+import cajeta.xpu.core.Sampler;
+import cajeta.xpu.core.TextureFormat;
 import cajeta.lang.Math;
 
 // Cajeta XPU tour — portable @Kernel programs run through the runtime
@@ -202,6 +205,25 @@ public final class XpuTour {
             if (rr == v) { ok = ok + 1; }
             if (rev == v) { ok = ok + 1; }
             out[i] = pc * 10 + ok;
+        }
+    }
+
+    // ---- Multi-channel texture sampling (B3) ---------------------------------
+    // texSample: read all four channels of an RGBA texture through a filtering
+    // Sampler. A 2x2 RGBA8_UNORM image stores per-texel R,G,B,A = .2t, +.05, +.1,
+    // +.15 (t = texel index). Lane i samples texel i's center and writes the
+    // channel sum R+G+B+A = 0.8t + 0.3. The bytes-stored-read-back-normalized path
+    // (UNORM) + the vec4 sample lower on every backend (CPU bilinear too).
+    //   out[i] = c.x + c.y + c.z + c.w  ->  {0.3, 1.1, 1.9, 2.7}, sum 6.0
+    @Kernel
+    public static void texSample(Texture2D tex, Sampler s,
+                                 Buffer<float32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            float32 u = 0.25f + 0.5f * (float32)(i & 1);          // texel-center u
+            float32 v = 0.25f + 0.5f * (float32)((i >> 1) & 1);   // texel-center v
+            Vector<float32, 4> c = tex.sample(s, u, v);
+            out[i] = c.x + c.y + c.z + c.w;
         }
     }
 
@@ -430,6 +452,7 @@ public final class XpuTour {
         runHistogram();
         runShaderClock();
         runBitOps();
+        runTexture();
         runTransforms();
         runPrecision();
         runCoopMatrix();
@@ -689,6 +712,38 @@ public final class XpuTour {
         out.download(hout);
         System.stdout.println("  popcount(0x12345678)*10 + rotate&reverse roundtrips:  out[0]="
                             + (int32) hout[0] + "  (expect 132)");
+    }
+
+    // RGBA texture sampling: a 2x2 RGBA8_UNORM image sampled through a linear
+    // Sampler; each lane reads all four channels of one texel and sums them.
+    static void runTexture() {
+        System.stdout.println("");
+        System.stdout.println("-- texture: RGBA8_UNORM 2x2, sample 4 channels per texel --");
+        uint32 w = 2;
+        uint32 h = 2;
+        float32[] pixels = heap float32[16];                    // 2*2 RGBA
+        for (uint32 t = 0; t < 4; t = t + 1) {
+            float32 r = (float32) t * 0.2f;                     // all in [0,1]
+            pixels[t * 4 + 0] = r;
+            pixels[t * 4 + 1] = r + 0.05f;
+            pixels[t * 4 + 2] = r + 0.1f;
+            pixels[t * 4 + 3] = r + 0.15f;
+        }
+        Texture2D tex = stack Texture2D(w, h, TextureFormat.RGBA8_UNORM);
+        tex.upload(pixels);
+        Sampler samp = stack Sampler(1, 0);                     // linear, clamp
+        uint32 n = 4;
+        float32[] hout = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0.0f; }
+        Buffer<float32> out = stack Buffer<float32>(n);
+        out.upload(hout);
+        Stream s = Stream.current();
+        texSample.launch(s, grid: [1], block: [64])(tex, samp, out, n);
+        s.sync();
+        out.download(hout);
+        float32 sum = hout[0] + hout[1] + hout[2] + hout[3];
+        System.stdout.println("  per-texel channel sums (0.8t + 0.3), total = "
+                            + (int32)(sum + 0.5f) + "   (expect 6)");
     }
 
     // Quaternion rotation algebra + small-matrix determinant/inverse/solve, run

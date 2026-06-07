@@ -25,6 +25,7 @@
 #include "cajeta/xpu/XpuTarget.h"
 
 #include <cstdlib>
+#include <string>
 #if defined(_WIN32)
 // POSIX setenv/unsetenv are absent on mingw; shim onto _putenv_s.
 static inline int setenv(const char* k, const char* v, int) { return _putenv_s(k, v); }
@@ -446,6 +447,145 @@ const char* kTextureSampleSource =
     "    }\n"
     "}\n";
 
+// Multi-channel texture on CPU (B3): an RGBA Texture2D sampled through the CPU
+// `caj_v4f` sampler returns all four channels (sample() -> Vector<float32,4>).
+// A 2x2 RGBA image (per texel R,G,B,A = .2t, +.05, +.1, +.15, all in [0,1] so
+// the same source is UNORM-safe) is sampled at the four texel centers; every
+// channel of every texel is checked within the 0.02 tol (UNORM quantization).
+// Exercises the format-routed CPU upload (incl. the float->unorm8 quantize for
+// RGBA8_UNORM) and the vec4 CPU sampler — the CPU twin of the Vulkan RGBA tests.
+static const char* kRgbaSampleSrcCpu(const char* fmt) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexRgbaCpu {\n"
+        "    @Kernel\n"
+        "    public static void sample(Texture2D tex, Sampler s,\n"
+        "                              Buffer<float32> us, Buffer<float32> vs,\n"
+        "                              Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<float32,4> c = tex.sample(s, us[i], vs[i]);\n"
+        "            out[i*4 + 0] = c.x;\n"
+        "            out[i*4 + 1] = c.y;\n"
+        "            out[i*4 + 2] = c.z;\n"
+        "            out[i*4 + 3] = c.w;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[16];\n"   // 2*2 RGBA
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            pixels[t*4 + 0] = r;\n"
+        "            pixels[t*4 + 1] = r + 0.05f;\n"
+        "            pixels[t*4 + 2] = r + 0.1f;\n"
+        "            pixels[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        Texture2D tex = heap Texture2D(w, h, ") + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
+        "        uint32 n = 4;\n"
+        "        uint32 m = n * 4;\n"
+        "        float32[] hus = heap float32[n];\n"
+        "        float32[] hvs = heap float32[n];\n"
+        "        hus[0] = 0.25f; hvs[0] = 0.25f;\n"        // texel (0,0)
+        "        hus[1] = 0.75f; hvs[1] = 0.25f;\n"        // texel (1,0)
+        "        hus[2] = 0.25f; hvs[2] = 0.75f;\n"        // texel (0,1)
+        "        hus[3] = 0.75f; hvs[3] = 0.75f;\n"        // texel (1,1)
+        "        float32[] hexp = heap float32[m];\n"
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            hexp[t*4 + 0] = r;\n"
+        "            hexp[t*4 + 1] = r + 0.05f;\n"
+        "            hexp[t*4 + 2] = r + 0.1f;\n"
+        "            hexp[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        float32[] hout = heap float32[m];\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> us = heap Buffer<float32>(n);\n"
+        "        Buffer<float32> vs = heap Buffer<float32>(n);\n"
+        "        Buffer<float32> out = heap Buffer<float32>(m);\n"
+        "        us.upload(hus); vs.upload(hvs); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        sample.launch(s, grid: [1], block: [n])(tex, samp, us, vs, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) {\n"
+        "            float32 d = hout[i] - hexp[i];\n"
+        "            if (d < -0.02f || d > 0.02f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+// Single-channel float-storage format on CPU, parametrized by ordinal (for R16F).
+// A 2x2 image {0,1,2,3} (all binary16-exact) sampled at the four texel centers
+// returns the exact texels in .x; the dead-center returns the average 1.5.
+static const char* kR1SampleSrcCpu(const char* fmt) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexR1Cpu {\n"
+        "    @Kernel\n"
+        "    public static void sample(Texture2D tex, Sampler s,\n"
+        "                              Buffer<float32> us, Buffer<float32> vs,\n"
+        "                              Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { Vector<float32,4> c = tex.sample(s, us[i], vs[i]); out[i] = c.x; }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[4];\n"
+        "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
+        "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
+        "        Texture2D tex = heap Texture2D(w, h, ") + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
+        "        uint32 n = 5;\n"
+        "        float32[] hus = heap float32[n];\n"
+        "        float32[] hvs = heap float32[n];\n"
+        "        float32[] hexp = heap float32[n];\n"
+        "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
+        "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
+        "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
+        "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
+        "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> us = heap Buffer<float32>(n);\n"
+        "        Buffer<float32> vs = heap Buffer<float32>(n);\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        us.upload(hus); vs.upload(hvs); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        sample.launch(s, grid: [1], block: [n])(tex, samp, us, vs, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != hexp[i]) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -557,6 +697,57 @@ TEST(XpuCpuDispatchTests, textureSampleOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
+}
+
+// B3 multi-channel on CPU: an RGBA32F Texture2D sampled through the CPU vec4
+// sampler returns all four channels (sample() -> Vector<float32,4>). Verifies the
+// format-routed CPU alloc/upload + the `caj_v4f` sampler off the GPU.
+TEST(XpuCpuDispatchTests, textureSampleRgba32fOnCpu) {
+    auto jit = CajetaJit::compile(kRgbaSampleSrcCpu("TextureFormat.RGBA32F"),
+                                  "test.TexRgbaCpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F sample mismatch at i)";
+}
+
+// B3 8-bit normalized RGBA on CPU: bytes 0..255 stored, read back as float [0,1].
+// Exercises the float->unorm8 quantize-on-upload path + the vec4 CPU sampler,
+// within unorm8 quantization of the 0.02 tol.
+TEST(XpuCpuDispatchTests, textureSampleRgba8UnormOnCpu) {
+    auto jit = CajetaJit::compile(kRgbaSampleSrcCpu("TextureFormat.RGBA8_UNORM"),
+                                  "test.TexRgbaCpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA8_UNORM sample mismatch at i)";
+}
+
+// B3 half-float single channel on CPU (R16F): float uploaded, round-tripped
+// through binary16 (the CPU emulation of the device's f16 storage), read back as
+// float. Texel values {0,1,2,3} are f16-exact, so the same bit-exact expecteds.
+TEST(XpuCpuDispatchTests, textureSampleR16fOnCpu) {
+    auto jit = CajetaJit::compile(kR1SampleSrcCpu("TextureFormat.R16F"),
+                                  "test.TexR1Cpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R16F sample mismatch at i)";
+}
+
+// B3 half-float RGBA on CPU (RGBA16F): four-channel cheap HDR, binary16-emulated.
+// Channel values within the 0.02 tol of their f16 round-trip.
+TEST(XpuCpuDispatchTests, textureSampleRgba16fOnCpu) {
+    auto jit = CajetaJit::compile(kRgbaSampleSrcCpu("TextureFormat.RGBA16F"),
+                                  "test.TexRgbaCpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA16F sample mismatch at i)";
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the

@@ -9,9 +9,10 @@ package cajeta.xpu.core;
  *
  * Two independent axes are folded into one format:
  *   - **channels:** 1 (R) or 4 (RGBA).
- *   - **encoding:** 32-bit float (the value is read back as-is, any range), or
- *     8-bit UNORM (a byte 0..255 stored, read back normalized to float [0, 1] —
- *     the common, compact color-texture encoding).
+ *   - **encoding:** 32-bit float (the value is read back as-is, any range),
+ *     16-bit half float (the cheap-HDR encoding — half the bandwidth of f32,
+ *     read back as float), or 8-bit UNORM (a byte 0..255 stored, read back
+ *     normalized to float [0, 1] — the common, compact color-texture encoding).
  *
  * `upload(float32[])` always takes channel-interleaved floats in [0, 1] for the
  * UNORM formats (quantized to bytes on store) or any range for the float
@@ -29,5 +30,7 @@ public enum TextureFormat {
     R32F,         // 0 — 1 channel, 32-bit float           (VK_FORMAT_R32_SFLOAT)
     R8_UNORM,     // 1 — 1 channel, 8-bit normalized [0,1]  (VK_FORMAT_R8_UNORM)
     RGBA8_UNORM,  // 2 — 4 channel, 8-bit normalized [0,1]  (VK_FORMAT_R8G8B8A8_UNORM)
-    RGBA32F       // 3 — 4 channel, 32-bit float            (VK_FORMAT_R32G32B32A32_SFLOAT)
+    RGBA32F,      // 3 — 4 channel, 32-bit float            (VK_FORMAT_R32G32B32A32_SFLOAT)
+    R16F,         // 4 — 1 channel, 16-bit half float       (VK_FORMAT_R16_SFLOAT)
+    RGBA16F       // 5 — 4 channel, 16-bit half float       (VK_FORMAT_R16G16B16A16_SFLOAT)
 }
