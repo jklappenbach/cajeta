@@ -1,0 +1,6 @@
+package cajeta.blank;
+
+// No doc comments here at all — exercises the "empty input" smoke path.
+public class Blank {
+    public void noop();
+}

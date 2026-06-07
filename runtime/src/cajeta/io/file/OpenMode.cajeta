@@ -15,11 +15,28 @@ package cajeta.io.file;
  *
  * Don't reorder without updating cajeta_runtime.c's openmode→flags
  * map.
+ *
+ * ## Usage
+ * Pass a mode to the `File` / `FileWriter` factories to declare
+ * intent up front; the matching `O_*` flags are applied for you:
+ *
+ * ```cajeta
+ * #File db = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
+ * #FileWriter log = File.openWrite("/var/log/app.log", OpenMode.APPEND);
+ * ```
+ *
+ * `FileReader` is always read-only, so `File`.openRead takes no
+ * `OpenMode`.
  */
 public enum OpenMode {
+    /** Read an existing file (`O_RDONLY`); fails if the path is missing. */
     READ,
+    /** Write from the start, creating or truncating the file (`O_WRONLY | O_CREAT | O_TRUNC`). */
     WRITE,
+    /** Write at end-of-file, creating it if absent (`O_WRONLY | O_CREAT | O_APPEND`). */
     APPEND,
+    /** Read and write the same handle, creating it if absent (`O_RDWR | O_CREAT`). */
     READ_WRITE,
+    /** Create exclusively (`O_WRONLY | O_CREAT | O_EXCL`); throws if the file already exists. */
     CREATE_NEW
 }

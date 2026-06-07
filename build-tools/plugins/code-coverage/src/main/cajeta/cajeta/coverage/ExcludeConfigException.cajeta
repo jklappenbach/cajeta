@@ -1,0 +1,13 @@
+package cajeta.coverage;
+
+/**
+ * Raised when an entry in `plugins.cajeta.coverage.config.exclude`
+ * fails parse-time validation — bad kind, missing field, generic
+ * reason. The message always cites the array index so the author
+ * can find the offending entry without grep.
+ */
+public class ExcludeConfigException extends Exception {
+    public ExcludeConfigException(String message) {
+        super(message);
+    }
+}

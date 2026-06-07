@@ -122,7 +122,42 @@ namespace cajeta {
                 type = make_shared<CajetaArray>(module, type);
             }
         }
-        // Skip diamond — needs inference that runs at generateCode.
+        // Diamond form (`heap Box<>(7)`): infer the type arguments now so
+        // `resolvedType` is the concrete instantiation (`Box<int32>`), not the
+        // open template (`Box`). Earlier this was deferred to generateCode,
+        // which left resolvedType as the open template through the whole
+        // resolve pass — so member access off the result (`heap Box<>(7).id`)
+        // and the local-init assignability oracle saw an uninstantiated type
+        // and scored it unrelated to the declared `Box<int32>`. The inference
+        // reads each constructor-arg's resolved type (available now: the base
+        // resolveTypes above walked our children) and is pure inspection —
+        // inferDiamondArgs re-parses the template snippet without emitting IR.
+        // generateCode runs the same inference independently for codegen; both
+        // land on the same instantiation, so they stay in agreement.
+        if (isDiamond) {
+            auto klass = dynamic_pointer_cast<CajetaClass>(type);
+            if (klass && klass->isTemplate()) {
+                if (auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest)) {
+                    vector<CajetaTypePtr> argTypes;
+                    bool allResolved = true;
+                    for (auto& p : ccr->getParameters()) {
+                        if (!p.expression) { allResolved = false; break; }
+                        if (!p.expression->getResolvedType()) {
+                            p.expression->resolveTypes(module);
+                        }
+                        auto t = p.expression->getResolvedType();
+                        if (!t) { allResolved = false; break; }
+                        argTypes.push_back(t);
+                    }
+                    // Only commit the instantiation when every arg type is
+                    // known; otherwise leave the open template and let
+                    // generateCode's (later, fuller) pass do the inference.
+                    if (allResolved) {
+                        type = klass->instantiate(klass->inferDiamondArgs(argTypes));
+                    }
+                }
+            }
+        }
         resolvedType = type;
     }
 
@@ -292,6 +327,11 @@ namespace cajeta {
             if (auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest)) {
                 ccr->setStackAlloc(true);
             }
+        }
+        // NRVO: when this construction is the returned value of a value-
+        // returning method, build straight into the caller's sret slot.
+        if (nrvoTarget) {
+            creatorRest->setNrvoTarget(nrvoTarget);
         }
         return creatorRest->generateCode(module);
     }

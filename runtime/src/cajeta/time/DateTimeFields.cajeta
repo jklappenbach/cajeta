@@ -1,0 +1,121 @@
+package cajeta.time;
+
+/**
+ * A flat bag of decomposed temporal fields that a `DateTimeFormatter` renders.
+ * Build one from any temporal via the `of*` factories, then hand it to
+ * `DateTimeFormatter.format(...)` (the per-type `format*` convenience methods do
+ * this for you).
+ *
+ * A reference object (created on the heap) so it can carry many fields without
+ * the single-field value-type restriction the date/time value types observe.
+ * Decompose a `LocalDate`, `LocalTime`, `LocalDateTime`, or `ZonedDateTime`
+ * into one of these, then format it.
+ *
+ * ```cajeta
+ * #DateTimeFields f = DateTimeFields.ofZoned(zdt);
+ * // f.year, f.month, f.day, f.hour ... f.offsetSeconds (set when f.hasOffset)
+ * ```
+ */
+public class DateTimeFields {
+    public int32 year;
+    public int32 month;         // 1..12
+    public int32 day;           // 1..31
+    public int32 hour;          // 0..23
+    public int32 minute;        // 0..59
+    public int32 second;        // 0..59
+    public int32 nano;          // 0..999999999
+    public int32 dayOfWeek;     // 1=Mon .. 7=Sun
+    public int32 offsetSeconds; // UTC offset, when hasOffset
+    public boolean hasOffset;
+
+    /**
+     * Populates every field positionally. Prefer the `of*` factories
+     * (`LocalDate` → `ofDate`, `ZonedDateTime` → `ofZoned`, etc.) which fill
+     * placeholders and derive `dayOfWeek` for you.
+     *
+     * ```cajeta
+     * #DateTimeFields f = heap DateTimeFields(2026, 6, 5, 14, 30, 0, 0, 5, 0, false);
+     * ```
+     */
+    public DateTimeFields(int32 year, int32 month, int32 day, int32 hour, int32 minute,
+                          int32 second, int32 nano, int32 dayOfWeek, int32 offsetSeconds,
+                          boolean hasOffset) {
+        this.year = year;
+        this.month = month;
+        this.day = day;
+        this.hour = hour;
+        this.minute = minute;
+        this.second = second;
+        this.nano = nano;
+        this.dayOfWeek = dayOfWeek;
+        this.offsetSeconds = offsetSeconds;
+        this.hasOffset = hasOffset;
+    }
+
+    /** ISO day-of-week (1=Mon..7=Sun) for a y/m/d, computed via `LocalDate`'s epoch-day formula. */
+    static int32 dowOf(int32 year, int32 month, int32 day) {
+        int64 ed = LocalDate.daysFromCivil(year, month, day);
+        int64 dow = (ed + 3) % 7;
+        if (dow < 0) {
+            dow = dow + 7;
+        }
+        return (int32) (dow + 1);
+    }
+
+    /**
+     * Fields of a `LocalDate` (time parts zero, no offset).
+     *
+     * ```cajeta
+     * #DateTimeFields f = DateTimeFields.ofDate(LocalDate.of(2026, 6, 5));
+     * ```
+     */
+    public static #DateTimeFields ofDate(LocalDate d) {
+        return heap DateTimeFields(d.getYear(), d.getMonthValue(), d.getDayOfMonth(),
+                                   0, 0, 0, 0, d.getDayOfWeek(), 0, false);
+    }
+
+    /**
+     * Fields of a `LocalTime`; date parts are filled with the placeholder
+     * `0001-01-01` and `dayOfWeek` with `1`.
+     *
+     * ```cajeta
+     * #DateTimeFields f = DateTimeFields.ofTime(LocalTime.of(14, 30));
+     * ```
+     */
+    public static #DateTimeFields ofTime(LocalTime t) {
+        return heap DateTimeFields(1, 1, 1, t.getHour(), t.getMinute(), t.getSecond(),
+                                   t.getNano(), 1, 0, false);
+    }
+
+    /**
+     * Fields of a zone-naive `LocalDateTime` (no offset).
+     *
+     * ```cajeta
+     * #DateTimeFields f = DateTimeFields.ofDateTime(LocalDateTime.of(2026, 6, 5, 14, 30));
+     * ```
+     */
+    public static #DateTimeFields ofDateTime(LocalDateTime t) {
+        return heap DateTimeFields(t.getYear(), t.getMonthValue(), t.getDayOfMonth(),
+                                   t.getHour(), t.getMinute(), t.getSecond(), t.getNano(),
+                                   t.getDayOfWeek(), 0, false);
+    }
+
+    /**
+     * Fields of a `ZonedDateTime`, including its UTC offset (`hasOffset` is `true`
+     * and `offsetSeconds` is taken from the `ZoneOffset`). `dayOfWeek` is derived.
+     *
+     * ```cajeta
+     * #DateTimeFields f = DateTimeFields.ofZoned(zdt);
+     * // f.hasOffset == true; f.offsetSeconds holds the UTC offset
+     * ```
+     */
+    public static #DateTimeFields ofZoned(ZonedDateTime z) {
+        int32 y = z.getYear();
+        int32 mo = z.getMonthValue();
+        int32 da = z.getDayOfMonth();
+        ZoneOffset off = z.getOffset();
+        int32 dow = DateTimeFields.dowOf(y, mo, da);
+        return heap DateTimeFields(y, mo, da, z.getHour(), z.getMinute(), z.getSecond(),
+                                   z.getNano(), dow, off.getTotalSeconds(), true);
+    }
+}

@@ -38,7 +38,7 @@ TEST(VarargsTests, threeArgsPackIntoArray) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Calc c = new Calc();\n"
+        "        Calc c = heap Calc();\n"
         "        return c.second(10, 20, 30);\n"
         "    }\n"
         "}\n";
@@ -54,7 +54,7 @@ TEST(VarargsTests, sizeMatchesTrailingArgCount) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Calc c = new Calc();\n"
+        "        Calc c = heap Calc();\n"
         "        return c.count(1, 2, 3, 4, 5);\n"
         "    }\n"
         "}\n";
@@ -73,7 +73,7 @@ TEST(VarargsTests, fixedPlusVarargs) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Calc c = new Calc();\n"
+        "        Calc c = heap Calc();\n"
         "        return c.sumWithBase(100, 5, 7);\n"
         "    }\n"
         "}\n";

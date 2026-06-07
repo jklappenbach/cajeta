@@ -72,7 +72,7 @@ TEST(StructViewTests, structDeclarationCompiles) {
 TEST(StructViewTests, viewConstructionSucceedsOnSufficientBuffer) {
     // 16 bytes is enough for { i32, i64, i32 } = 16 bytes packed.
     EXPECT_EQ(runI32(
-        "int32[] bytes = new int32[4];\n"
+        "int32[] bytes = heap int32[4];\n"
         "Header h = Header(bytes);\n"
         "return 0;"), 0);
 }
@@ -81,7 +81,7 @@ TEST(StructViewTests, viewConstructionSucceedsOnSufficientBuffer) {
 
 TEST(StructViewTests, writeAndReadInt32FieldThroughView) {
     EXPECT_EQ(runI32(
-        "int32[] bytes = new int32[4];\n"
+        "int32[] bytes = heap int32[4];\n"
         "Header h = Header(bytes);\n"
         "h.version = 42;\n"
         "return h.version;"), 42);
@@ -89,7 +89,7 @@ TEST(StructViewTests, writeAndReadInt32FieldThroughView) {
 
 TEST(StructViewTests, multipleFieldsIndependent) {
     EXPECT_EQ(runI32(
-        "int32[] bytes = new int32[4];\n"
+        "int32[] bytes = heap int32[4];\n"
         "Header h = Header(bytes);\n"
         "h.version = 100;\n"
         "h.payloadLen = 25;\n"
@@ -100,7 +100,7 @@ TEST(StructViewTests, viewSharesBufferWithSource) {
     // Mutating the buffer directly should be visible through the view, and
     // vice versa — the view aliases the buffer, no copy.
     EXPECT_EQ(runI32(
-        "int32[] bytes = new int32[4];\n"
+        "int32[] bytes = heap int32[4];\n"
         "Header h = Header(bytes);\n"
         "h.version = 7;\n"
         // Read back the same field via the view; the buffer is the storage.
@@ -111,7 +111,7 @@ TEST(StructViewTests, viewSharesBufferWithSource) {
 
 TEST(StructViewTests, freshBufferReadsZero) {
     EXPECT_EQ(runI32(
-        "int32[] bytes = new int32[4];\n"
+        "int32[] bytes = heap int32[4];\n"
         "Header h = Header(bytes);\n"
         "return h.version;"), 0);   // calloc zeros the buffer
 }
@@ -140,7 +140,7 @@ TEST(StructViewTests, structParamReadsCallerValues) {
         "        return h.version;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        Header h = Header(bytes);\n"
         "        h.version = 99;\n"
         "        return S.readVersion(h);\n"
@@ -169,7 +169,7 @@ TEST(StructViewTests, structParamMutationsAreVisibleToCaller) {
         "        h.version = h.version + 1;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        Header h = Header(bytes);\n"
         "        h.version = 10;\n"
         "        S.bump(h);\n"
@@ -209,7 +209,7 @@ TEST(StructViewTests, returningViewOfLocalBufferIsRejected) {
         "}\n"
         "public final class S {\n"
         "    public static Header makeView() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        Header h = Header(bytes);\n"
         "        return h;\n"
         "    }\n"
@@ -235,7 +235,7 @@ TEST(StructViewTests, returningViewOfParamBufferIsOK) {
         "        return h;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        int32[] bytes = new int32[4];\n"
+        "        int32[] bytes = heap int32[4];\n"
         "        Header h = S.asHeader(bytes);\n"
         "        h.version = 77;\n"
         "        return h.version;\n"

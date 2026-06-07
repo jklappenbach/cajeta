@@ -1,0 +1,65 @@
+package cajeta.lint.security.internal;
+
+import cajeta.collection.ArrayList;
+import cajeta.coverage.Glob;
+import cajeta.io.file.Path;
+
+/**
+ * Walks one or more source roots and yields the `*.cajeta` files
+ * worth scanning. Filters out anything matching the exclude-files
+ * globs at walk time so excluded files aren't even read.
+ *
+ * Deterministic ordering: walks each root in declared order, and
+ * within each root walks entries lexicographically. Findings come
+ * back in a stable order across runs, which matters for CI diffs.
+ */
+public class SourceWalker {
+
+    ArrayList<String> excludeGlobs;
+
+    public SourceWalker(ArrayList<String> excludeGlobs) {
+        this.excludeGlobs = excludeGlobs;
+    }
+
+    public ArrayList<Path> walk(ArrayList<String> sourceRoots) {
+        ArrayList<Path> out = #heap ArrayList<Path>();
+        int32 i = 0;
+        while (i < sourceRoots.count()) {
+            Path root = Path.of(sourceRoots.get(i));
+            if (root.exists() && root.isDirectory()) {
+                walkOne(root, out);
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    void walkOne(Path dir, ArrayList<Path> out) {
+        // Pre-sorted; the path API guarantees lexicographic ordering
+        // on listMatching().
+        ArrayList<Path> entries = dir.listMatching("*");
+        int32 i = 0;
+        while (i < entries.count()) {
+            Path e = entries.get(i);
+            if (e.isDirectory()) {
+                walkOne(e, out);
+            } else if (e.fileName().endsWith(".cajeta")) {
+                if (!isExcluded(e.toString())) {
+                    out.add(e);
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    boolean isExcluded(String filePath) {
+        int32 i = 0;
+        while (i < this.excludeGlobs.count()) {
+            if (Glob.matches(this.excludeGlobs.get(i), filePath, '/')) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}

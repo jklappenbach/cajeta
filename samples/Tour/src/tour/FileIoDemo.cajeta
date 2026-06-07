@@ -43,7 +43,7 @@ public class FileIoDemo extends DemoClass {
         String path = "/tmp/cajeta_tour_oneshot.txt";
 
         // "Hello" — five bytes, ASCII so the int8 literals match.
-        int8[] data = new int8[5];
+        int8[] data = heap int8[5];
         data[0] = (int8) 72;   // 'H'
         data[1] = (int8) 101;  // 'e'
         data[2] = (int8) 108;  // 'l'
@@ -83,7 +83,7 @@ public class FileIoDemo extends DemoClass {
     public void streamingReader() {
         String path = "/tmp/cajeta_tour_streaming.txt";
         FileReader r = File.openRead(path);
-        int8[] buf = new int8[64];
+        int8[] buf = heap int8[64];
         int32 n = r.read(buf, 64);
         int64 pos = r.position();
         r.close();

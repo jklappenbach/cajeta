@@ -1,0 +1,311 @@
+package cajeta.time;
+
+import cajeta.lang.Comparable;
+
+/**
+ * An immutable time-of-day with nanosecond precision and no date or time-zone —
+ * `HH:mm:ss.nnnnnnnnn`. Modeled on `java.time.LocalTime`.
+ *
+ * Stored canonically as a single `int64` nanosecond-of-day in
+ * `[0, 86399999999999]`; the hour/minute/second/nano parts are derived on
+ * access. A pure stack value type (like `Duration`): every factory and
+ * transform returns a fresh `stack` value by copy. An out-of-range field throws
+ * `DateTimeException`.
+ *
+ * Arithmetic (`plusHours`/`plusMinutes`/`plusSeconds`/`plusNanos`) wraps within
+ * a 24-hour day — adding an hour to 23:30 yields 00:30; there is no day
+ * overflow carried out of `LocalTime` (use `LocalDateTime` for that).
+ *
+ * ```cajeta
+ * stack LocalTime start = LocalTime.of(9, 30);          // 09:30
+ * stack LocalTime end = start.plusMinutes(90);          // 11:00
+ * if (start.isBefore(end)) {
+ *     #String label = end.iso();                        // "11:00"
+ * }
+ * ```
+ *
+ * Implements `Comparable`, so instances order by nanosecond-of-day.
+ *
+ * Implementation note: every return is an inline `return stack LocalTime(...)`
+ * literal (never a delegating call), so the compiler classifies all factories —
+ * including the multi-parameter ones — as stack-value returns rather than
+ * multi-parameter borrow returns.
+ */
+public class LocalTime implements Comparable<LocalTime> {
+    int64 nanoOfDay;
+
+    /**
+     * Wraps a raw nanosecond-of-day without range checking; prefer the
+     * validating factory `ofNanoOfDay`, which rejects values outside
+     * `[0, 86399999999999]`.
+     *
+     * ```cajeta
+     * stack LocalTime t = LocalTime.ofNanoOfDay(43200000000000);   // 12:00
+     * ```
+     */
+    public LocalTime(int64 nanoOfDay) {
+        this.nanoOfDay = nanoOfDay;
+    }
+
+    /**
+     * `hh:mm:ss.nnnnnnnnn` — validates every field, throwing
+     * `DateTimeException` if any is out of range.
+     *
+     * ```cajeta
+     * stack LocalTime t = LocalTime.ofHmsn(23, 59, 59, 999999999);
+     * ```
+     */
+    public static LocalTime ofHmsn(int32 hour, int32 minute, int32 second, int32 nano) {
+        if (hour < 0 || hour > 23) {
+            throw heap DateTimeException("LocalTime: hour out of range 0..23");
+        }
+        if (minute < 0 || minute > 59) {
+            throw heap DateTimeException("LocalTime: minute out of range 0..59");
+        }
+        if (second < 0 || second > 59) {
+            throw heap DateTimeException("LocalTime: second out of range 0..59");
+        }
+        if (nano < 0 || nano > 999999999) {
+            throw heap DateTimeException("LocalTime: nano out of range 0..999999999");
+        }
+        int64 n = (int64) hour * 3600000000000;
+        n = n + (int64) minute * 60000000000;
+        n = n + (int64) second * 1000000000;
+        n = n + (int64) nano;
+        return stack LocalTime(n);
+    }
+
+    /**
+     * `hh:mm`. Throws `DateTimeException` on an out-of-range field.
+     *
+     * ```cajeta
+     * stack LocalTime t = LocalTime.of(9, 30);   // 09:30
+     * ```
+     */
+    public static LocalTime of(int32 hour, int32 minute) {
+        if (hour < 0 || hour > 23) {
+            throw heap DateTimeException("LocalTime: hour out of range 0..23");
+        }
+        if (minute < 0 || minute > 59) {
+            throw heap DateTimeException("LocalTime: minute out of range 0..59");
+        }
+        int64 n = (int64) hour * 3600000000000 + (int64) minute * 60000000000;
+        return stack LocalTime(n);
+    }
+
+    /**
+     * `hh:mm:ss`. Throws `DateTimeException` on an out-of-range field.
+     *
+     * ```cajeta
+     * stack LocalTime t = LocalTime.ofHms(14, 30, 15);   // 14:30:15
+     * ```
+     */
+    public static LocalTime ofHms(int32 hour, int32 minute, int32 second) {
+        if (hour < 0 || hour > 23) {
+            throw heap DateTimeException("LocalTime: hour out of range 0..23");
+        }
+        if (minute < 0 || minute > 59) {
+            throw heap DateTimeException("LocalTime: minute out of range 0..59");
+        }
+        if (second < 0 || second > 59) {
+            throw heap DateTimeException("LocalTime: second out of range 0..59");
+        }
+        int64 n = (int64) hour * 3600000000000;
+        n = n + (int64) minute * 60000000000;
+        n = n + (int64) second * 1000000000;
+        return stack LocalTime(n);
+    }
+
+    /**
+     * 00:00, the start of the day.
+     *
+     * ```cajeta
+     * stack LocalTime t = LocalTime.midnight();   // 00:00
+     * ```
+     */
+    public static LocalTime midnight() {
+        return stack LocalTime(0);
+    }
+
+    /**
+     * 12:00.
+     *
+     * ```cajeta
+     * stack LocalTime t = LocalTime.noon();   // 12:00
+     * ```
+     */
+    public static LocalTime noon() {
+        return stack LocalTime(43200000000000);
+    }
+
+    /**
+     * The time `nanoOfDay` nanoseconds after midnight (0 .. 86399999999999).
+     * Throws `DateTimeException` if out of range. Inverse of `toNanoOfDay`.
+     *
+     * ```cajeta
+     * stack LocalTime t = LocalTime.ofNanoOfDay(43200000000000);   // 12:00
+     * ```
+     */
+    public static LocalTime ofNanoOfDay(int64 nanoOfDay) {
+        if (nanoOfDay < 0 || nanoOfDay > 86399999999999) {
+            throw heap DateTimeException("LocalTime: nanoOfDay out of range");
+        }
+        return stack LocalTime(nanoOfDay);
+    }
+
+    /**
+     * The time `secondOfDay` seconds after midnight (0 .. 86399); the
+     * nanosecond part is zero. Throws `DateTimeException` if out of range.
+     *
+     * ```cajeta
+     * stack LocalTime t = LocalTime.ofSecondOfDay(3661);   // 01:01:01
+     * ```
+     */
+    public static LocalTime ofSecondOfDay(int64 secondOfDay) {
+        if (secondOfDay < 0 || secondOfDay > 86399) {
+            throw heap DateTimeException("LocalTime: secondOfDay out of range");
+        }
+        return stack LocalTime(secondOfDay * 1000000000);
+    }
+
+    public int32 getHour() {
+        return (int32) (this.nanoOfDay / 3600000000000);
+    }
+
+    public int32 getMinute() {
+        return (int32) ((this.nanoOfDay / 60000000000) % 60);
+    }
+
+    public int32 getSecond() {
+        return (int32) ((this.nanoOfDay / 1000000000) % 60);
+    }
+
+    public int32 getNano() {
+        return (int32) (this.nanoOfDay % 1000000000);
+    }
+
+    /** Nanoseconds since midnight. */
+    public int64 toNanoOfDay() {
+        return this.nanoOfDay;
+    }
+
+    /** Whole seconds since midnight (drops the nanosecond part). */
+    public int64 toSecondOfDay() {
+        return this.nanoOfDay / 1000000000;
+    }
+
+    /** This time plus `nanos`, wrapping within the day. */
+    public LocalTime plusNanos(int64 nanos) {
+        int64 day = 86400000000000;
+        int64 n = (this.nanoOfDay + nanos) % day;
+        if (n < 0) {
+            n = n + day;
+        }
+        return stack LocalTime(n);
+    }
+
+    /** This time plus `seconds`, wrapping within the day. */
+    public LocalTime plusSeconds(int64 seconds) {
+        int64 day = 86400000000000;
+        int64 n = (this.nanoOfDay + seconds * 1000000000) % day;
+        if (n < 0) {
+            n = n + day;
+        }
+        return stack LocalTime(n);
+    }
+
+    /** This time plus `minutes`, wrapping within the day. */
+    public LocalTime plusMinutes(int64 minutes) {
+        int64 day = 86400000000000;
+        int64 n = (this.nanoOfDay + minutes * 60000000000) % day;
+        if (n < 0) {
+            n = n + day;
+        }
+        return stack LocalTime(n);
+    }
+
+    /** This time plus `hours`, wrapping within the day. */
+    public LocalTime plusHours(int64 hours) {
+        int64 day = 86400000000000;
+        int64 n = (this.nanoOfDay + hours * 3600000000000) % day;
+        if (n < 0) {
+            n = n + day;
+        }
+        return stack LocalTime(n);
+    }
+
+    /**
+     * Total order by nanosecond-of-day: negative if this is earlier than
+     * `other`, zero if equal, positive if later.
+     */
+    public int32 compareTo(LocalTime other) {
+        if (this.nanoOfDay < other.nanoOfDay) {
+            return -1;
+        }
+        if (this.nanoOfDay > other.nanoOfDay) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /** True iff this time is strictly before `other`. */
+    public boolean isBefore(LocalTime other) {
+        return this.nanoOfDay < other.nanoOfDay;
+    }
+
+    /** True iff this time is strictly after `other`. */
+    public boolean isAfter(LocalTime other) {
+        return this.nanoOfDay > other.nanoOfDay;
+    }
+
+    /** Structural equality by nanosecond-of-day. */
+    public static boolean operator== (LocalTime a, LocalTime b) {
+        return a.nanoOfDay == b.nanoOfDay;
+    }
+
+    /** Content hash of the nanosecond-of-day. */
+    public int64 hash() {
+        return this.nanoOfDay;
+    }
+
+    /**
+     * ISO-8601 text: `HH:mm`, `HH:mm:ss` when seconds are present, or
+     * `HH:mm:ss.nnnnnnnnn` (always 9 fractional digits) when nanos are present.
+     *
+     * Returns an owned `#String` (built into a fresh byte buffer) rather than
+     * overriding `Object.toString` — the toString surface isn't stable yet.
+     *
+     * ```cajeta
+     * #String a = LocalTime.of(9, 30).iso();              // "09:30"
+     * #String b = LocalTime.ofHms(9, 30, 15).iso();       // "09:30:15"
+     * ```
+     */
+    public #String iso() {
+        int32 h = this.getHour();
+        int32 mi = this.getMinute();
+        int32 s = this.getSecond();
+        int32 na = this.getNano();
+        int32 len = 5;
+        if (na > 0) {
+            len = 18;
+        } else {
+            if (s > 0) {
+                len = 8;
+            }
+        }
+        int8[] buf = heap int8[len];
+        int32 p = 0;
+        p = Fmt.writeUint(buf, p, (int64) h, 2);
+        p = Fmt.writeChar(buf, p, 58); // ':'
+        p = Fmt.writeUint(buf, p, (int64) mi, 2);
+        if (len > 5) {
+            p = Fmt.writeChar(buf, p, 58); // ':'
+            p = Fmt.writeUint(buf, p, (int64) s, 2);
+        }
+        if (na > 0) {
+            p = Fmt.writeChar(buf, p, 46); // '.'
+            p = Fmt.writeUint(buf, p, (int64) na, 9);
+        }
+        return heap String(#buf, len);
+    }
+}

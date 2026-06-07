@@ -121,7 +121,7 @@ throughout.
   `nvidia::emitKernelRegistration` calls (`Compiler.cpp:839`,
   `JitTestHelper.cpp:297`) into a switch on `xpuBackend`. AMD arm is a stub
   that throws "not yet implemented" for now.
-- **Gate:** full `run_tests` stays green; NVIDIA on-device unchanged. No
+- **Gate:** full `cajeta_tests` stays green; NVIDIA on-device unchanged. No
   AMD behavior yet — this is pure plumbing. This is also where you'll
   *discover* the real interface: write the switch, see what the AMD arm
   needs, and only then name the abstraction.

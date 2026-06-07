@@ -10,7 +10,7 @@
 // Out of scope (later L4 sub-slices):
 //   - L4-2: bound instance method references (`obj::method`)
 //   - L4-3: unbound instance method references (`Type::instanceMethod`)
-//   - L4-4: constructor references (`Type::new`)
+//   - L4-4: constructor references (`Type::heap`)
 //
 
 #include "gtest/gtest.h"
@@ -92,7 +92,7 @@ TEST(LambdaL4Tests, staticMethodReferenceTwiceConsistent) {
 // scheduled for L4-2/L4-3/L4-4. The error mentions the specific shape
 // so callers know what's missing.
 // ---------------------------------------------------------------------
-// L4-4: constructor references — `Type::new`
+// L4-4: constructor references — `Type::heap`
 // ---------------------------------------------------------------------
 
 // Zero-arg constructor reference. The thunk mallocs the instance,
@@ -105,7 +105,7 @@ TEST(LambdaL4Tests, constructorReferenceZeroArg) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        () -> Counter ctor = Counter::new;\n"
+        "        () -> #Counter ctor = Counter::heap;\n"
         "        Counter c = ctor();\n"
         "        return c.next();\n"  // 13
         "    }\n"
@@ -122,11 +122,11 @@ TEST(LambdaL4Tests, returnedConstructorRefCallable) {
         "    public int32 next() { return 21; }\n"
         "}\n"
         "public final class D {\n"
-        "    public static () -> Counter mkCtor() {\n"
-        "        return Counter::new;\n"
+        "    public static () -> #Counter mkCtor() {\n"
+        "        return Counter::heap;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        () -> Counter ctor = mkCtor();\n"
+        "        () -> #Counter ctor = mkCtor();\n"
         "        Counter c = ctor();\n"
         "        return c.next();\n"
         "    }\n"
@@ -148,7 +148,7 @@ TEST(LambdaL4Tests, boundInstanceMethodReferenceCallable) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter c = new Counter();\n"
+        "        Counter c = heap Counter();\n"
         "        () -> int32 fn = c::next;\n"
         "        return fn();\n"
         "    }\n"
@@ -172,7 +172,7 @@ TEST(LambdaL4Tests, unboundInstanceMethodReferenceCallable) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter c = new Counter();\n"
+        "        Counter c = heap Counter();\n"
         "        (Counter) -> int32 fn = Counter::next;\n"
         "        return fn(c);\n"
         "    }\n"
@@ -189,7 +189,7 @@ TEST(LambdaL4Tests, unboundInstanceMethodReferenceMultiArg) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Adder a = new Adder();\n"
+        "        Adder a = heap Adder();\n"
         "        (Adder, int32) -> int32 fn = Adder::plus;\n"
         "        return fn(a, 10);\n"  // 11
         "    }\n"
@@ -211,7 +211,7 @@ TEST(LambdaL4Tests, returnedUnboundInstanceRefCallable) {
         "    }\n"
         "    public static int32 run() {\n"
         "        (Counter) -> int32 fn = mkFn();\n"
-        "        Counter c = new Counter();\n"
+        "        Counter c = heap Counter();\n"
         "        return fn(c);\n"
         "    }\n"
         "}\n";
@@ -229,7 +229,7 @@ TEST(LambdaL4Tests, returnBoundInstanceRefIsBorrowEscape) {
         "}\n"
         "public final class D {\n"
         "    public static () -> int32 mkFn() {\n"
-        "        Counter c = new Counter();\n"
+        "        Counter c = heap Counter();\n"
         "        () -> int32 fn = c::next;\n"
         "        return fn;\n"
         "    }\n"

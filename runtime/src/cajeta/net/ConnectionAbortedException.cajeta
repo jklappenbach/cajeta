@@ -1,0 +1,18 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+
+/**
+ * The local end aborted a connection in progress (e.g. an
+ * in-flight `accept`/`connect` was torn down by the local stack).
+ * POSIX `ECONNABORTED` / Winsock `WSAECONNABORTED`.
+ * `kind == NetException.KIND_CONNECTION_ABORTED` (4). See
+ * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ */
+public class ConnectionAbortedException extends NetException {
+    public ConnectionAbortedException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 4;   // NetException.KIND_CONNECTION_ABORTED
+    }
+}

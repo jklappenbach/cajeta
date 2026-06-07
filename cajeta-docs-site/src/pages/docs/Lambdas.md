@@ -77,7 +77,7 @@ If a lambda's parameter types aren't pinned by context AND aren't written explic
 
 ## Method references
 
-`obj::method`, `MyClass::staticMethod`, `MyClass::instanceMethod`, `MyClass::new`. Each desugars to a lambda; the desugaring determines what gets captured.
+`obj::method`, `MyClass::staticMethod`, `MyClass::instanceMethod`, `MyClass::heap`. Each desugars to a lambda; the desugaring determines what gets captured.
 
 ### Static method reference
 
@@ -99,7 +99,7 @@ class Stringifier {
     public string toJson(Record r) { ... }
 }
 
-Stringifier s = new Stringifier();
+Stringifier s = heap Stringifier();
 (Record) -> string fn = s::toJson;
 fn(someRecord);
 ```
@@ -126,11 +126,11 @@ class Point {
     public Point(int32 x, int32 y) { ... }
 }
 
-(int32, int32) -> Point makePoint = Point::new;
+(int32, int32) -> Point makePoint = Point::heap;
 Point p = makePoint(3, 4);
 ```
 
-Desugars to `(x, y) -> new Point(x, y)`. No captures.
+Desugars to `(x, y) -> heap Point(x, y)`. No captures.
 
 ### Overload resolution
 
@@ -185,7 +185,7 @@ class Cell {
     public Cell(int32 v) { value = v; }
 }
 
-Cell m = new Cell(10);
+Cell m = heap Cell(10);
 (int32) -> int32 fn = x -> x * m.value;       // borrows m
 m.value = 20;
 fn(5);   // returns 100 — closure sees updated state through the borrow
@@ -196,7 +196,7 @@ fn(5);   // returns 100 — closure sees updated state through the borrow
 Class instances, arrays, strings, and any other heap-allocated owner — the closure holds a borrow. The original local still owns the value; the closure must not outlive the borrow's scope.
 
 ```
-StringBuilder sb = new StringBuilder();
+StringBuilder sb = heap StringBuilder();
 () -> string fn = () -> sb.toString();   // closure borrows sb
 
 sb.append("hello");
@@ -207,7 +207,7 @@ The borrow checker enforces lifetime: a function returning a closure that borrow
 
 ```
 () -> int32 makeCounter() {
-    Counter c = new Counter();
+    Counter c = heap Counter();
     return () -> c.next();    // ERROR: borrow of `c` would dangle past the function return
 }
 ```
@@ -232,7 +232,7 @@ To make a closure outlive its captures' original scope, transfer ownership. Same
 
 ```
 () -> int32 makeCounter() {
-    Counter c = new Counter();
+    Counter c = heap Counter();
     return () -> #c.next();   // c is transferred into the closure
     // c is unavailable here — moved
 }
@@ -248,7 +248,7 @@ For `detach`, transfer is mandatory (no scope to anchor borrows):
 
 ```
 async void main() {
-    LogSink sink = new LogSink();
+    LogSink sink = heap LogSink();
     detach () -> async void {
         await #sink.flush();   // sink moves into the detached task
     };
@@ -284,7 +284,7 @@ Reading sugar: `() -> value` inside an instance method is implicit-this, capture
 Heap-value captures are borrows (Rule 2). Mutating through a borrow is governed by the existing aliasing rules: an exclusive-mutable borrow precludes other access for its lifetime. So a lambda that mutates a heap-value capture is automatically safe — the compiler refuses any conflicting read of the same value while the closure exists.
 
 ```
-StringBuilder buf = new StringBuilder();
+StringBuilder buf = heap StringBuilder();
 () -> void appendDot = () -> { buf.append("."); };   // exclusive-mutable borrow of buf
 
 appendDot();
@@ -316,7 +316,7 @@ class Cell {
     public Cell(int32 v) { value = v; }
 }
 
-Cell c = new Cell(0);
+Cell c = heap Cell(0);
 () -> int32 inc = () -> { c.value++; return c.value; };  // borrows c
 inc();   // 1
 inc();   // 2
@@ -337,7 +337,7 @@ class List<T> {
     }
 
     public List<U> map<U>((T) -> U f) {
-        List<U> out = new List<U>();
+        List<U> out = heap List<U>();
         for (T t : items) out.add(f(t));
         return out;
     }
@@ -366,7 +366,7 @@ nums.forEach(System::println);
 class Logger {
     public void log(int32 n) { ... }
 }
-Logger l = new Logger();
+Logger l = heap Logger();
 nums.forEach(l::log);
 
 // Function-typed variable
@@ -418,7 +418,7 @@ Lambdas compose with the threading model (see `cajeta-docs/ThreadModel.md`) acco
 The scope blocks until children complete, so a borrow into a spawned task is bounded by the scope's lifetime.
 
 ```
-StringBuilder log = new StringBuilder();
+StringBuilder log = heap StringBuilder();
 scope {
     spawn () -> async void { await runWithLog(log); };   // borrows log
     spawn () -> async void { await runWithLog(log); };
@@ -430,7 +430,7 @@ scope {
 `detach` runs the task past the surrounding scope, so borrows would dangle. Transfer is mandatory:
 
 ```
-Counter c = new Counter();
+Counter c = heap Counter();
 detach () -> async void {
     await #c.run();    // c transferred into the detached task
 };
@@ -443,8 +443,8 @@ Actor references are heap values; they capture by borrow by default. If the clos
 
 ```
 async void wireUp() {
-    Logger log = new Logger();                  // an actor
-    Worker w = new Worker(#log);                // transfers log into the worker
+    Logger log = heap Logger();                  // an actor
+    Worker w = heap Worker(#log);                // transfers log into the worker
     // log unavailable here
     await w.run();
 }
@@ -457,7 +457,7 @@ async void wireUp() {
 A LockGuard holds a borrow of the locked value; capturing it into a lambda follows the same rules.
 
 ```
-Mutex<Stats> stats = new Mutex<>(new Stats());
+Mutex<Stats> stats = heap Mutex<>(heap Stats());
 
 async void recordAll(List<Event> events) {
     scope {
@@ -482,7 +482,7 @@ The lifetime / aliasing rules from the memory model produce error messages tied 
 ```
 () -> int32 makeFn() {
     int32 x = 0;
-    Counter c = new Counter();
+    Counter c = heap Counter();
     return () -> c.next() + x;       // ERROR
 }
 //   ^ closure outlives its capture
@@ -491,7 +491,7 @@ The lifetime / aliasing rules from the memory model produce error messages tied 
 ```
 
 ```
-StringBuilder buf = new StringBuilder();
+StringBuilder buf = heap StringBuilder();
 () -> void writer = () -> { buf.append("."); };
 string snap = buf.toString();    // ERROR
 //            ^ conflicting access

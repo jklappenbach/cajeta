@@ -1,0 +1,45 @@
+package cajeta.coverage;
+
+/**
+ * Coverage-exclusion target kind.
+ *
+ *  - FILE     — glob over source paths. Drops the entire file from
+ *               both numerator and denominator. Same semantics as
+ *               the v1 string-only `exclude` entries.
+ *  - PACKAGE  — glob over dotted package names. Drops every type
+ *               whose package matches; useful for "exclude all the
+ *               mock packages" without listing each file.
+ *  - SYMBOL   — glob over fully-qualified declaration names
+ *               (`com.foo.Bar.baz`). Drops the named declaration's
+ *               probes; the rest of the file still counts.
+ *
+ * The kind is required at parse time — the parser refuses to guess
+ * whether `com.foo.*` means a package, a symbol, or a path-like
+ * pattern that just happens to contain dots. Forcing the author to
+ * say which they meant is the same principle as cajeta.json's
+ * "tagged unions over magic strings" stance generally.
+ */
+public enum ExcludeKind {
+    FILE,
+    PACKAGE,
+    SYMBOL;
+
+    /**
+     * Parse the manifest string. Returns `Optional.empty()` when the
+     * string isn't one of the three known values — callers convert
+     * that into a config-load error citing the offending entry.
+     */
+    public static Optional<ExcludeKind> parse(String s) {
+        if (s == "file")    { return stack Optional<ExcludeKind>(true, ExcludeKind.FILE);    }
+        if (s == "package") { return stack Optional<ExcludeKind>(true, ExcludeKind.PACKAGE); }
+        if (s == "symbol")  { return stack Optional<ExcludeKind>(true, ExcludeKind.SYMBOL);  }
+        return stack Optional<ExcludeKind>(false, ExcludeKind.FILE);
+    }
+
+    /** Round-trip back to the manifest string. */
+    public String toName() {
+        if (this == ExcludeKind.FILE)    { return "file";    }
+        if (this == ExcludeKind.PACKAGE) { return "package"; }
+        return "symbol";
+    }
+}

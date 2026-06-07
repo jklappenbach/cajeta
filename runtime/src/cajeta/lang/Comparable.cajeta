@@ -1,0 +1,60 @@
+package cajeta.lang;
+
+/**
+ * A total ordering over values of type `T`. Modeled on `java.lang.Comparable`.
+ *
+ * `compareTo` returns a negative int32 if `this` orders before `other`, zero if
+ * they order equally, and a positive int32 if `this` orders after `other`. The
+ * ordering must be total and consistent: `a.compareTo(b)` and `b.compareTo(a)`
+ * must report opposite signs, and the relation must be transitive.
+ *
+ * Implementors that also define equality (`operator==`) should keep the two
+ * consistent — `a == b` iff `a.compareTo(b) == 0` — though cajeta does not
+ * enforce this.
+ *
+ * ## Implementing
+ *
+ * An implementor returns a signed `int32` by comparing its ordering fields. The
+ * `cajeta.time` value types — `Duration`, `LocalDate`, `LocalDateTime`,
+ * and `ZonedDateTime` — follow this pattern. `Duration`, for example, orders
+ * by its total nanosecond field:
+ *
+ * ```cajeta
+ * public int32 compareTo(Duration other) {
+ *     if (this.nanos < other.nanos) {
+ *         return -1;
+ *     }
+ *     if (this.nanos > other.nanos) {
+ *         return 1;
+ *     }
+ *     return 0;
+ * }
+ * ```
+ *
+ * ## Note (toolchain)
+ *
+ * Templated-interface vtable instantiation for implementing classes is still
+ * maturing in the compiler, so the `cajeta.time` value types declare `compareTo`
+ * as a concrete method and call it directly (monomorphic dispatch) rather than
+ * relying on virtual dispatch through this interface. The interface is the
+ * documented contract and the seam for generic ordered algorithms once those
+ * vtables land.
+ */
+public interface Comparable<T> {
+    /**
+     * Orders `this` against `other`: negative if `this` sorts first, `0` if they
+     * sort equally, positive if `this` sorts last. Must be total, transitive, and
+     * sign-symmetric with `other.compareTo(this)`.
+     *
+     * Here two `LocalDate` values are ordered chronologically:
+     *
+     * ```cajeta
+     * stack LocalDate a = LocalDate.of(2026, 6, 5);
+     * stack LocalDate b = LocalDate.of(2026, 12, 25);
+     * if (a.compareTo(b) < 0) {
+     *     // a is earlier than b
+     * }
+     * ```
+     */
+    int32 compareTo(T other);
+}

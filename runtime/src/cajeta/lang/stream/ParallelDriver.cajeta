@@ -1,6 +1,7 @@
 package cajeta.lang.stream;
 
 import cajeta.error.Exception;
+import cajeta.threading.AtomicInt32;
 
 /**
  * Fork/join orchestrator for parallel stream terminals.
@@ -23,6 +24,21 @@ import cajeta.error.Exception;
  * Status); the orchestration topology is fork-ready, and once a
  * multi-carrier scheduler lands the same driver yields wall-clock
  * parallelism without a code change.
+ *
+ * ## Usage
+ * ```cajeta
+ * // Reduce a Splittable source in parallel — `fn` MUST be associative
+ * // and `seed` its identity:
+ * int32 total = ParallelDriver.reduceParallel<int32>(src, 0, (a, b) -> a + b);
+ *
+ * // Over a whole Stream pipeline (wrapper-chain aware):
+ * boolean any = ParallelDriver.anyMatchParallelChain<int32>(stream, (x) -> x > 100);
+ * Optional<int32> hit = ParallelDriver.findAnyParallelChain<int32>(stream, (x) -> x % 2 == 0);
+ * ```
+ *
+ * Drives `Splittable` sources and `Stream` pipelines, returns
+ * single-element results as `Optional`, and coordinates short-circuit
+ * workers through a shared `AtomicInt32` cancel flag.
  *
  * See cajeta-docs/stdlib/StreamParallelism.md.
  */
@@ -49,6 +65,10 @@ public class ParallelDriver {
      * v1 body walks the source sequentially. The split-count
      * decision is computed but unused — the driver records what
      * fan-out it WOULD have picked for future debug instrumentation.
+     *
+     * ```cajeta
+     * int32 n = ParallelDriver.countParallel<int32>(src);
+     * ```
      */
     public static int32 countParallel<T>(Splittable<T> source) {
         // Inline sequential walk. Avoids re-dispatching through
@@ -88,8 +108,12 @@ public class ParallelDriver {
      * and the orchestrator combines partials with `fn` again (legal
      * because `fn` is associative + identity-respecting per the
      * contract above).
+     *
+     * ```cajeta
+     * int32 sum = ParallelDriver.reduceParallel<int32>(src, 0, (a, b) -> a + b);
+     * ```
      */
-    public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> T fn) {
+    public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> #T fn) {
         int64 sz = source.estimateSize();
         int32 nSplits = pickSplitCount(sz);
         if (nSplits < 2) {
@@ -101,7 +125,7 @@ public class ParallelDriver {
             }
             return acc;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -113,7 +137,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        T[] partials = new T[shareCount + 1];
+        T[] partials = heap T[shareCount + 1];
         int32 pi = 0;
         while (pi < shareCount + 1) {
             partials[pi] = seed;
@@ -154,7 +178,7 @@ public class ParallelDriver {
      * targets need a return type; the meaningful output is the
      * partials[slot] write.
      */
-    public static async int32 reduceWorker<T>(Stream<T> share, int32 slot, T[] partials, (T, T) -> T fn) {
+    public static async int32 reduceWorker<T>(Stream<T> share, int32 slot, T[] partials, (T, T) -> #T fn) {
         T acc = partials[slot];
         Optional<T> o = share.next();
         while (o.isPresent()) {
@@ -176,6 +200,10 @@ public class ParallelDriver {
      * top of its next loop iteration. The predicate must be side-
      * effect-free (Java's same contract) so the cooperative cancel
      * can't observe a half-committed state.
+     *
+     * ```cajeta
+     * boolean found = ParallelDriver.anyMatchParallel<int32>(src, (x) -> x > 100);
+     * ```
      */
     public static boolean anyMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
         int64 sz = source.estimateSize();
@@ -190,7 +218,7 @@ public class ParallelDriver {
             }
             return false;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -202,8 +230,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        AtomicInt32 hit = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -211,7 +238,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
+        if (hit.load() != 0) {
             return true;
         }
         Optional<T> o = source.next();
@@ -229,6 +256,10 @@ public class ParallelDriver {
      * satisfies `predicate`. Vacuously true on an empty source.
      * Uses findFailWorker, which signals on the first !predicate
      * element; sibling workers see the flag and bail.
+     *
+     * ```cajeta
+     * boolean ok = ParallelDriver.allMatchParallel<int32>(src, (x) -> x >= 0);
+     * ```
      */
     public static boolean allMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
         int64 sz = source.estimateSize();
@@ -243,7 +274,7 @@ public class ParallelDriver {
             }
             return true;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -255,8 +286,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] fail = new boolean[1];
-        fail[0] = false;
+        AtomicInt32 fail = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -264,7 +294,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (fail[0]) {
+        if (fail.load() != 0) {
             return false;
         }
         Optional<T> o = source.next();
@@ -281,6 +311,10 @@ public class ParallelDriver {
      * Parallel noneMatch. Returns true only if no element satisfies
      * `predicate`. Same shape as anyMatch — shares findHitWorker —
      * but inverts the return: a hit means the result is false.
+     *
+     * ```cajeta
+     * boolean none = ParallelDriver.noneMatchParallel<int32>(src, (x) -> x < 0);
+     * ```
      */
     public static boolean noneMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
         int64 sz = source.estimateSize();
@@ -295,7 +329,7 @@ public class ParallelDriver {
             }
             return true;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -307,8 +341,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        AtomicInt32 hit = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -316,7 +349,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
+        if (hit.load() != 0) {
             return false;
         }
         Optional<T> o = source.next();
@@ -334,16 +367,21 @@ public class ParallelDriver {
      * the cooperative `hit` flag is set by a sibling, or this worker
      * finds an element satisfying `predicate` (and sets `hit` for
      * siblings). Returns 0 unconditionally — the meaningful output
-     * is the hit[0] write.
+     * is the hit.store(1) write.
+     *
+     * R8.3 audit: `hit` is an AtomicInt32 (was `boolean[1]`) so the
+     * cross-carrier reads/writes don't tear under multi-worker
+     * scheduling. The one-shot 0→1 transition is the only contended
+     * write; load() per-iteration is the cooperative bail check.
      */
-    public static async int32 findHitWorker<T>(Stream<T> share, (T) -> boolean predicate, boolean[] hit) {
+    public static async int32 findHitWorker<T>(Stream<T> share, (T) -> boolean predicate, AtomicInt32 hit) {
         Optional<T> o = share.next();
         while (o.isPresent()) {
-            if (hit[0]) {
+            if (hit.load() != 0) {
                 return 0;
             }
             if (predicate(o.get())) {
-                hit[0] = true;
+                hit.store(1);
                 return 0;
             }
             o = share.next();
@@ -355,15 +393,18 @@ public class ParallelDriver {
      * Worker for allMatch. Drains `share` until either the
      * cooperative `fail` flag is set by a sibling, or this worker
      * finds an element failing `predicate` (and sets `fail`).
+     *
+     * R8.3 audit: `fail` is an AtomicInt32 (was `boolean[1]`); same
+     * rationale as findHitWorker.
      */
-    public static async int32 findFailWorker<T>(Stream<T> share, (T) -> boolean predicate, boolean[] fail) {
+    public static async int32 findFailWorker<T>(Stream<T> share, (T) -> boolean predicate, AtomicInt32 fail) {
         Optional<T> o = share.next();
         while (o.isPresent()) {
-            if (fail[0]) {
+            if (fail.load() != 0) {
                 return 0;
             }
             if (!predicate(o.get())) {
-                fail[0] = true;
+                fail.store(1);
                 return 0;
             }
             o = share.next();
@@ -396,7 +437,7 @@ public class ParallelDriver {
      *      isn't Splittable or the size is below threshold, fall
      *      back to sequential `head.next()` walk.
      *   3. For each split share, rebuild the head's wrapper chain
-     *      over the share via `head.cloneChainOver(piece)` —
+     *      over the share via `head.cloneChainOver(#piece)` —
      *      wrappers recurse to rebuild themselves bottom-up,
      *      Splittable roots return the share unchanged. Fork via
      *      `scope { spawn reduceWorker<T> }`.
@@ -412,13 +453,20 @@ public class ParallelDriver {
      * fallback. Lifting the type-changing case wants either
      * Object-erasure or wildcards (CajetaType.cpp:454 rejects
      * `<?>` today).
+     *
+     * Entry point for a `Stream` head; sibling chain links such as
+     * `MapStream` / `FlatMapStream` fall back to sequential here.
+     *
+     * ```cajeta
+     * int32 total = ParallelDriver.reduceParallelChain<int32>(stream, 0, (a, b) -> a + b);
+     * ```
      */
-    public static #T reduceParallelChain<T>(Stream<T> head, T seed, (T, T) -> T fn) {
+    public static #T reduceParallelChain<T>(Stream<T> head, T seed, (T, T) -> #T fn) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -447,7 +495,7 @@ public class ParallelDriver {
         // the share. For depth>0, each wrapper level wraps the
         // recursive result so the worker sees the same chain over
         // its slice.
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -455,11 +503,11 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        T[] partials = new T[shareCount + 1];
+        T[] partials = heap T[shareCount + 1];
         int32 pi = 0;
         while (pi < shareCount + 1) {
             partials[pi] = seed;
@@ -491,8 +539,8 @@ public class ParallelDriver {
     /**
      * Wrapper-chain-aware parallel fold with explicit combiner.
      * Same shape as `reduceParallelChain` but with cross-type R: the
-     * per-share accumulator is `(R, T) -> R fn`, and the partials
-     * are merged via `(R, R) -> R combiner` (which the orchestrator
+     * per-share accumulator is `(R, T) -> #R fn`, and the partials
+     * are merged via `(R, R) -> #R combiner` (which the orchestrator
      * also uses to seed-accumulate, mirroring fn's identity contract
      * over `seed`). Per Java's reduce(seed, fn, combiner) contract:
      *   - `combiner` MUST be associative.
@@ -508,13 +556,19 @@ public class ParallelDriver {
      * Map/FlatMap nodes flip to a different element type that
      * Stream<T>.unwrap()=null hides. Lifting that wants either
      * Object-erasure or wildcard support (CajetaType.cpp:454).
+     *
+     * ```cajeta
+     * // Fold int32 elements into a wider int64 accumulator:
+     * int64 total = ParallelDriver.foldParallelChain<int32, int64>(
+     *     stream, 0L, (acc, x) -> acc + (int64) x, (a, b) -> a + b);
+     * ```
      */
-    public static #R foldParallelChain<T, R>(Stream<T> head, R seed, (R, T) -> R fn, (R, R) -> R combiner) {
+    public static #R foldParallelChain<T, R>(Stream<T> head, R seed, (R, T) -> #R fn, (R, R) -> #R combiner) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -534,7 +588,7 @@ public class ParallelDriver {
             }
             return accY;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -542,11 +596,11 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        R[] partials = new R[shareCount + 1];
+        R[] partials = heap R[shareCount + 1];
         int32 pi = 0;
         while (pi < shareCount + 1) {
             partials[pi] = seed;
@@ -581,7 +635,7 @@ public class ParallelDriver {
      * accumulator. The combiner isn't needed inside the worker; it
      * only fires on the orchestrator when the join-scope completes.
      */
-    public static async int32 foldWorker<T, R>(Stream<T> share, int32 slot, R[] partials, (R, T) -> R fn) {
+    public static async int32 foldWorker<T, R>(Stream<T> share, int32 slot, R[] partials, (R, T) -> #R fn) {
         R acc = partials[slot];
         Optional<T> o = share.next();
         while (o.isPresent()) {
@@ -601,13 +655,23 @@ public class ParallelDriver {
      * `add` / drop. Per-worker drain reuses `foldWorker<T, R>` —
      * the worker side is identical; only the partials[] seeding
      * differs.
+     *
+     * ```cajeta
+     * // Each worker gets its own `ArrayList` via the supplier, so
+     * // there's no aliasing/race on a shared mutable container:
+     * ArrayList<int32> out = ParallelDriver.collectParallelChain<int32, ArrayList<int32>>(
+     *     stream,
+     *     () -> heap ArrayList<int32>(),
+     *     (list, x) -> list.add(x),
+     *     (a, b) -> a.addAll(b));
+     * ```
      */
-    public static #R collectParallelChain<T, R>(Stream<T> head, () -> R supplier, (R, T) -> R accumulator, (R, R) -> R combiner) {
+    public static #R collectParallelChain<T, R>(Stream<T> head, () -> #R supplier, (R, T) -> #R accumulator, (R, R) -> #R combiner) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -627,7 +691,7 @@ public class ParallelDriver {
             }
             return accY;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -635,11 +699,11 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        R[] partials = new R[shareCount + 1];
+        R[] partials = heap R[shareCount + 1];
         int32 pi = 0;
         while (pi < shareCount + 1) {
             partials[pi] = supplier();
@@ -671,16 +735,20 @@ public class ParallelDriver {
     /**
      * Wrapper-chain-aware parallel anyMatch. Same shape as
      * `reduceParallelChain`: walk unwrap, reject stateful, rebuild
-     * each share via `head.cloneChainOver(piece)`, fork via
+     * each share via `head.cloneChainOver(#piece)`, fork via
      * `scope { spawn findHitWorker<T> }`. Short-circuits via a
      * shared `boolean[1] hit` flag.
+     *
+     * ```cajeta
+     * boolean found = ParallelDriver.anyMatchParallelChain<int32>(stream, (x) -> x > 100);
+     * ```
      */
     public static boolean anyMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -701,7 +769,7 @@ public class ParallelDriver {
             }
             return false;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -709,12 +777,11 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        AtomicInt32 hit = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -722,7 +789,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
+        if (hit.load() != 0) {
             return true;
         }
         Optional<T> ot = head.next();
@@ -740,13 +807,17 @@ public class ParallelDriver {
      * anyMatchParallelChain but uses findFailWorker — first worker
      * to find a non-matching element flips the shared `fail` flag;
      * siblings observe and bail.
+     *
+     * ```cajeta
+     * boolean ok = ParallelDriver.allMatchParallelChain<int32>(stream, (x) -> x >= 0);
+     * ```
      */
     public static boolean allMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -767,7 +838,7 @@ public class ParallelDriver {
             }
             return true;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -775,12 +846,11 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] fail = new boolean[1];
-        fail[0] = false;
+        AtomicInt32 fail = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -788,7 +858,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (fail[0]) {
+        if (fail.load() != 0) {
             return false;
         }
         Optional<T> ot = head.next();
@@ -805,13 +875,17 @@ public class ParallelDriver {
      * Wrapper-chain-aware parallel noneMatch. Same shape as
      * anyMatchParallelChain — shares findHitWorker, but inverts the
      * return: a hit means the result is false.
+     *
+     * ```cajeta
+     * boolean none = ParallelDriver.noneMatchParallelChain<int32>(stream, (x) -> x < 0);
+     * ```
      */
     public static boolean noneMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -832,7 +906,7 @@ public class ParallelDriver {
             }
             return true;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -840,12 +914,11 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        AtomicInt32 hit = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -853,7 +926,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
+        if (hit.load() != 0) {
             return false;
         }
         Optional<T> ot = head.next();
@@ -874,19 +947,26 @@ public class ParallelDriver {
      * semantically to findAny — encounter order across split workers
      * isn't preserved, so the "first" in the sequential sense isn't
      * meaningful. Worker writes its hit element into the shared
-     * `result` slot and flips `hit[0]` — siblings observe and bail.
+     * `result` slot and flips `result[0]` non-null — siblings observe and bail.
      *
      * Same chain-walking shape as anyMatchParallelChain: walk
      * unwrap, reject stateful, rebuild each share via
-     * `head.cloneChainOver(piece)`, fork via
+     * `head.cloneChainOver(#piece)`, fork via
      * `scope { spawn findAnyWorker<T> }`.
+     *
+     * ```cajeta
+     * Optional<int32> hit = ParallelDriver.findAnyParallelChain<int32>(stream, (x) -> x % 2 == 0);
+     * if (hit.isPresent()) {
+     *     int32 even = hit.get();
+     * }
+     * ```
      */
-    public static #Optional<T> findAnyParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
+    public static Optional<T> findAnyParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -901,13 +981,13 @@ public class ParallelDriver {
             Optional<T> oY = head.next();
             while (oY.isPresent()) {
                 if (predicate(oY.get())) {
-                    return heap Optional<T>(true, oY.get());
+                    return stack Optional<T>(true, oY.get());
                 }
                 oY = head.next();
             }
-            return heap Optional<T>(false, null);
+            return stack Optional<T>(false, null);
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -915,7 +995,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -928,13 +1008,13 @@ public class ParallelDriver {
         // History: pre-Task-#46 this used a T[1] + boolean[1] pair
         // with the orchestrator constructing the Optional after
         // scope-join, working around a compile-time crash in
-        // `new Optional<T>[1]` when T is a method-template parameter
+        // `heap Optional<T>[1]` when T is a method-template parameter
         // (CajetaArray ctor's elementType->getLlvmType() returned
         // null for a bare-template Optional and crashed
         // llvm::ArrayType::get). Fixed by extending
         // CajetaClass::getLlvmType to return ptr for bare templates
         // — same fallback the placeholder and wildcard cases use.
-        Optional<T>[] result = new Optional<T>[1];
+        Optional<T>[] result = heap Optional<T>[1];
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -943,7 +1023,7 @@ public class ParallelDriver {
             }
         }
         if (result[0] != null && result[0].isPresent()) {
-            return heap Optional<T>(true, result[0].get());
+            return stack Optional<T>(true, result[0].get());
         }
         // Tail walks on the orchestrator after scope-join — workers
         // finished without a hit, but the root may have residual
@@ -951,11 +1031,11 @@ public class ParallelDriver {
         Optional<T> ot = head.next();
         while (ot.isPresent()) {
             if (predicate(ot.get())) {
-                return heap Optional<T>(true, ot.get());
+                return stack Optional<T>(true, ot.get());
             }
             ot = head.next();
         }
-        return heap Optional<T>(false, null);
+        return stack Optional<T>(false, null);
     }
 
     /**
@@ -987,13 +1067,17 @@ public class ParallelDriver {
      * Order across workers is unspecified per
      * StreamParallelism.md § Per-terminal rules — `fn` must be
      * commutative AND thread-safe.
+     *
+     * ```cajeta
+     * ParallelDriver.forEachParallelChain<int32>(stream, (x) -> println(x));
+     * ```
      */
     public static void forEachParallelChain<T>(Stream<T> head, (T) -> void fn) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
             if (cur.isStatefulWrapper()) {
-                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+                throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
             }
             Stream<?> next = cur.unwrap();
             if (next == null) {
@@ -1012,7 +1096,7 @@ public class ParallelDriver {
             }
             return;
         }
-        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
@@ -1020,7 +1104,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }

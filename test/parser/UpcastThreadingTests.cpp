@@ -2,7 +2,7 @@
 // adjustForUpcast threading tests (L-03 polymorphism follow-up).
 //
 // `CajetaClass::adjustForUpcast` is wired at `LocalVariableDeclaration`
-// (Phase 1 of poly-MI) — `B b = new C()` correctly shifts the pointer
+// (Phase 1 of poly-MI) — `B b = heap C()` correctly shifts the pointer
 // to B's sub-object inside C's layout, so a later `b.method()`
 // dispatches through B's secondary vtable in C.
 //
@@ -63,7 +63,7 @@ TEST(UpcastThreadingTests, assignmentToNonFirstParentTypedSlotAdjustsPointer) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    B b;\n"
         "    b = c;\n"  // assignment to B-typed slot — needs adjustment
         "    return b.readBx();\n"  // 42 if b's pointer was adjusted to B's sub-object
@@ -94,13 +94,13 @@ TEST(UpcastThreadingTests, returnUpcastToNonFirstParentAdjustsPointer) {
         "public class Maker {\n"
         "  public Maker() { return; }\n"
         "  public #B makeAsB() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c;\n"  // return C as B — needs adjustment
         "  }\n"
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Maker m = new Maker();\n"
+        "    Maker m = heap Maker();\n"
         "    B b = m.makeAsB();\n"  // b receives B-adjusted pointer
         "    return b.readBx();\n"  // 73
         "  }\n"
@@ -132,8 +132,8 @@ TEST(UpcastThreadingTests, parameterPassingToNonFirstParentAdjustsPointer) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
-        "    Reader r = new Reader();\n"
+        "    C c = heap C();\n"
+        "    Reader r = heap Reader();\n"
         "    return r.readFromB(c);\n"  // 88 if c is adjusted to B at the call site
         "  }\n"
         "}\n";
@@ -159,7 +159,7 @@ TEST(UpcastThreadingTests, assignmentToFirstParentNoShiftStillWorks) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    A a;\n"
         "    a = c;\n"  // first parent — offset 0, no adjust needed
         "    return a.readAx();\n"  // 17
@@ -179,7 +179,7 @@ TEST(UpcastThreadingTests, sameClassAssignmentDoesNotAdjust) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    A a1 = new A();\n"
+        "    A a1 = heap A();\n"
         "    a1.x = 5;\n"
         "    A a2;\n"
         "    a2 = a1;\n"  // same class — no adjustment

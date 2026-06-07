@@ -40,7 +40,7 @@ TEST(NonTypeParamTests, userTemplateWithIntegerParamInstantiates) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tile<int32, 16> t = new Tile<int32, 16>();\n"
+        "        Tile<int32, 16> t = heap Tile<int32, 16>();\n"
         "        return t.through(42);\n"
         "    }\n"
         "}\n";
@@ -57,8 +57,8 @@ TEST(NonTypeParamTests, distinctIntegerArgsAreDistinctInstantiations) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tile<int32, 8>  a = new Tile<int32, 8>();\n"
-        "        Tile<int32, 16> b = new Tile<int32, 16>();\n"
+        "        Tile<int32, 8>  a = heap Tile<int32, 8>();\n"
+        "        Tile<int32, 16> b = heap Tile<int32, 16>();\n"
         "        return a.through(1) + b.through(2);\n"
         "    }\n"
         "}\n";
@@ -75,7 +75,7 @@ TEST(NonTypeParamTests, typeArgForNonTypeParamRejected) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tile<int32, float32> t = new Tile<int32, float32>();\n"
+        "        Tile<int32, float32> t = heap Tile<int32, float32>();\n"
         "        return t.through(1);\n"
         "    }\n"
         "}\n";
@@ -101,8 +101,8 @@ TEST(NonTypeParamTests, nonTypeParamSubstitutesInNestedTypeArg) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Outer<int32, 16> o = new Outer<int32, 16>();\n"
-        "        Inner<int32, 16> i = new Inner<int32, 16>();\n"
+        "        Outer<int32, 16> o = heap Outer<int32, 16>();\n"
+        "        Inner<int32, 16> i = heap Inner<int32, 16>();\n"
         "        return o.take(i);\n"
         "    }\n"
         "}\n";
@@ -119,7 +119,7 @@ TEST(NonTypeParamTests, constantArgForTypeParamRejected) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tile<4, 16> t = new Tile<4, 16>();\n"
+        "        Tile<4, 16> t = heap Tile<4, 16>();\n"
         "        return 0;\n"
         "    }\n"
         "}\n";

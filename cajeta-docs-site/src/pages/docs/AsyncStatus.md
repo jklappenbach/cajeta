@@ -7,11 +7,46 @@ description: 'Tracks the R1–R5 rollout of the async runtime described in Threa
 
 Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `ImplementationStatus.md` (which covers the MemoryModel rollout).
 
+<!-- SYNC NOTE: this is the published-site mirror of cajeta-docs/stdlib/AsyncStatus.md
+     (the in-repo source of truth). Keep the body content of the two in sync when
+     editing either; this copy adds the Astro frontmatter above and uses bare doc names. -->
+
+
 ---
 
 ## Current status
 
-**Phases R1 through R5-D + error-model v1 complete.** Full structured-concurrency story functional end-to-end: stackful fibers, scope joins, cancellation, exception escalation. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`, with `cause` chaining), `throws` clause grammar + advisory lint with try/catch coverage awareness, runtime exception path on `void*`, Task<T> exception slot with await re-raise, and stack-trace capture at throw sites with auto-print on uncaught.
+**Phases R1 through R9 + error-model v1 complete.** Full structured-concurrency
+story functional end-to-end: stackful fibers on a multi-carrier work-stealing
+pool, scope joins, cancellation, exception escalation, atomics, timers, async
+I/O reactor. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`,
+with `cause` chaining), `throws` clause grammar + advisory lint with try/catch
+coverage awareness, runtime exception path on `void*`, Task<T> exception slot
+with await re-raise, and stack-trace capture at throw sites with auto-print on
+uncaught.
+
+> **Scheduler reality (authoritative — this doc is the source of truth).** The
+> executor is a **multi-carrier work-stealing pool** (Chase–Lev deques per
+> carrier). Default carrier count is `min(nproc, 4)`; `CAJETA_CARRIERS=N`
+> overrides for deterministic-order debug runs (set to 1 for the
+> single-carrier model the early releases shipped). Timer wheel ships
+> (`__cajeta_task_wait_timeout` + a sorted-list timer thread), backing
+> `cajeta.time.Duration`, `Tasks.withTimeout<R>`, and `Tasks.withDeadline<R>`.
+> Sync→async bridge ships as `Tasks.runBlocking<R>(() -> R body) -> R` (R9.5)
+> for non-async entry points that want to drive an async body. Multiplexed
+> receive ships as `Tasks.selectReceive<T>(Channel<T>[])` returning
+> `Optional<SelectResult<T>>` (R9.6) — Go-style channel select over an
+> array; lowest-index-wins on simultaneous readiness; empty Optional
+> signals all channels closed+drained. `cajeta.threading.AsyncIterator<T>`
+> interface ships (R9.7) with the canonical
+> `while ((opt = iter.next()).isPresent()) ...` loop pattern — a
+> `for (T x in iter)` desugaring is the planned v2.1 surface.
+> Async I/O reactor ships (Linux epoll), with `Cajeta.io*` intrinsics for
+> non-blocking fd registration / wait. Atomics ship as `cajeta.threading.AtomicInt32/64` (R8.1).
+
+**R5-C / R5-D — shipped (named here precisely, since `Features.md` S-805 long read "designed"):**
+- [x] R5-C cooperative cancellation — `CancellationException extends RecoverableException`; scope sets each child fiber's `cancel_with`; `__cajeta_task_wait` re-raises it on the next park-resume (commit `fa7c7f8`).
+- [x] R5-D scope exception-escalation — `scope_exit`/`scope_exit_to` join children, cancel surviving siblings on the first non-null exception slot, then re-raise the first throw into the containing frame.
 
 **Post-v1 polish items — all shipped:**
 - [x] Recoverable/Unrecoverable distinction via vtable type-check (#210) — commit `ea5ca6e`.
@@ -58,7 +93,7 @@ New test `SpawnDropTests.carrierDropsAccountedSeparately`: a spawned method decl
 
 `DetachExpression::generateCode` was previously a sync passthrough — it just `inner->generateCode(module)`'d the call, so `detach foo();` ran inline on the caller's thread, indistinguishable from a bare call. The fire-and-forget semantics `ThreadModel.md` describes weren't actually implemented.
 
-Spec tightened first (`ThreadModel.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `new T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
+Spec tightened first (`ThreadModel.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `heap T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
 
 Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue lowering — a new `detachMode` flag on `SpawnExpression` gates the two pieces detach skips:
 
@@ -69,7 +104,7 @@ Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue loweri
 
 Auxiliary fix: `SpawnExpression`'s value-store path now skips when the inner returns void (`isVoidTy()` check) and `CajetaTask::CajetaTask` substitutes an `i8` placeholder for the value slot when `elementType` is void — LLVM forbids storing void or putting it in an aggregate field. Previously latent because all spawn tests used int-returning inner functions; surfaced when `detach foo();` runs an `async void foo()`.
 
-New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediately; primitive captures work; `#`-transferred class captures work; bare class-typed identifier (borrow capture) is rejected at compile time. Fresh-allocator (`new T()` inline as arg) is documented as a Known gap rather than tested directly — the underlying NewExpression-as-method-call-argument codegen path is broken even for non-detach calls (`consume(new Payload())` crashes), so the detach-specific check accepting `NewExpression` will light up the moment that gap is fixed.
+New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediately; primitive captures work; `#`-transferred class captures work; bare class-typed identifier (borrow capture) is rejected at compile time. Fresh-allocator (`heap T()` inline as arg) is documented as a Known gap rather than tested directly — the underlying NewExpression-as-method-call-argument codegen path is broken even for non-detach calls (`consume(heap Payload())` crashes), so the detach-specific check accepting `NewExpression` will light up the moment that gap is fixed.
 
 ### Out of scope for this rollout
 
@@ -80,7 +115,7 @@ New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediatel
 
 ### Ownership-transfer model — why option (a)
 
-`MemoryModel.md` § Borrow / transfer rules: *"Auto-promotion for fresh `new`. An anonymous `new T(...)` expression in transfer position promotes implicitly. ... The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk."* Spawn is a fresh allocator with no prior identity — same rule applies. The drop-chain primitive `__cajeta_drop_mark_inactive` already exists for `#`-move; we're invoking it from a new call site, not inventing a mechanism.
+`MemoryModel.md` § Borrow / transfer rules: *"Auto-promotion for fresh `new`. An anonymous `heap T(...)` expression in transfer position promotes implicitly. ... The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk."* Spawn is a fresh allocator with no prior identity — same rule applies. The drop-chain primitive `__cajeta_drop_mark_inactive` already exists for `#`-move; we're invoking it from a new call site, not inventing a mechanism.
 
 Two alternatives considered and rejected:
 - *(b) Local skips its own drop when the initializer is a Spawn.* Localized but breaks `#`-move-out of Task locals — with no entry to deactivate, ownership can't be transferred out of the local later. Makes Task a second-class citizen for the move syntax.
@@ -163,7 +198,7 @@ Two alternatives considered and rejected:
 
 ## Known gaps surfaced by the rollout
 
-_(None active. Earlier entries — TLS-promote, `detach` fire-and-forget, inline `new T(...)` as method-call argument — have all shipped.)_
+_(None active. Earlier entries — TLS-promote, `detach` fire-and-forget, inline `heap T(...)` as method-call argument — have all shipped.)_
 
 ---
 

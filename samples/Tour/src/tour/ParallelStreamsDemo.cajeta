@@ -60,7 +60,7 @@ public class ParallelStreamsDemo extends DemoClass {
     // sequential walk if the source is below the min-per-split
     // threshold; either way the answer is the same.
     public void parallelCount() {
-        int32[] xs = new int32[1000];
+        int32[] xs = heap int32[1000];
         for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i; }
         int32 par = xs.stream().parallel().count();
         int32 seq = xs.stream().count();
@@ -71,7 +71,7 @@ public class ParallelStreamsDemo extends DemoClass {
     // partials feed back into the same lambda for the final merge.
     // sum(1..1000) = 1000 * 1001 / 2 = 500500.
     public void parallelReduceSum() {
-        int32[] xs = new int32[1000];
+        int32[] xs = heap int32[1000];
         for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
         int32 total = xs.stream().parallel()
                        .reduce(0, (a, b) -> a + b);
@@ -84,7 +84,7 @@ public class ParallelStreamsDemo extends DemoClass {
     // sequential-only — the 3-arg overload is what unlocks parallel
     // folds.
     public void parallelFoldCombiner() {
-        int32[] xs = new int32[1000];
+        int32[] xs = heap int32[1000];
         for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
         int64 total = xs.stream().parallel()
                         .fold<int64>(
@@ -99,7 +99,7 @@ public class ParallelStreamsDemo extends DemoClass {
     // soon as ANY worker finds a match; the scope cancels and
     // siblings observe at their next pull-loop checkpoint.
     public void parallelFilterPredicates() {
-        int32[] xs = new int32[1000];
+        int32[] xs = heap int32[1000];
         for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
 
         boolean anyOver500 = xs.stream().parallel()
@@ -128,7 +128,7 @@ public class ParallelStreamsDemo extends DemoClass {
     // element is SOMEWHERE in the match set but its position is
     // unspecified — under parallel, encounter order is lost.
     public void parallelFindAny() {
-        int32[] xs = new int32[1000];
+        int32[] xs = heap int32[1000];
         for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
 
         Optional<int32> hit = xs.stream().parallel()

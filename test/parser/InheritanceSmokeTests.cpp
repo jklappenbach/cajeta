@@ -213,7 +213,7 @@ TEST(InheritanceSmokeTests, childExtendsWithoutOverriding) {
 // Behavior verified:
 //   1. AChild's struct picks up ZParent's inherited field at the
 //      right slot (read returns the value written through this).
-//   2. Cross-file `new AChild()` resolves the vtable pointer through
+//   2. Cross-file `heap AChild()` resolves the vtable pointer through
 //      the merged module's resolved-extern decls (would crash on
 //      `<badref>` before the fixup).
 //   3. Reading c.inherited produces i32, not the field-GEP pointer
@@ -239,7 +239,7 @@ TEST(InheritanceSmokeTests, implicitSuperCallChainsParentCtor) {
         "}\n"
         "public final class I {\n"
         "    public static int32 run() {\n"
-        "        C c = new C();\n"
+        "        C c = heap C();\n"
         "        return c.inherited;\n"
         "    }\n"
         "}\n";
@@ -266,7 +266,7 @@ TEST(InheritanceSmokeTests, implicitSuperChainsThreeLevels) {
         "}\n"
         "public final class I {\n"
         "    public static int32 run() {\n"
-        "        C c = new C();\n"
+        "        C c = heap C();\n"
         "        return c.a + c.b + c.c;\n"
         "    }\n"
         "}\n";
@@ -277,7 +277,7 @@ TEST(InheritanceSmokeTests, implicitSuperChainsThreeLevels) {
 // (CajetaModule::buildPendingPrototypes), cross-module extern-decl
 // fixup (ensureGlobalInModule / ensureFunctionInModule), and
 // implicit super-constructor chaining all have to work for the
-// `new AChild()` here to lay out the inherited field, run ZParent's
+// `heap AChild()` here to lay out the inherited field, run ZParent's
 // ctor, and load the resulting value through c.inherited.
 TEST(InheritanceSmokeTests, crossFileChildExtendsParentInOtherFile) {
     std::map<std::string, std::string> sources;
@@ -294,7 +294,7 @@ TEST(InheritanceSmokeTests, crossFileChildExtendsParentInOtherFile) {
         "    public AChild() { return; }\n"
         "    public int32 childMethod() { return 2; }\n"
         "    public static int32 run() {\n"
-        "        AChild c = new AChild();\n"
+        "        AChild c = heap AChild();\n"
         "        return c.inherited;\n"
         "    }\n"
         "}\n";
@@ -325,11 +325,11 @@ TEST(InheritanceSmokeTests, bareClassInheritsObjectHash) {
         "}\n"
         "public final class I {\n"
         "    public static int64 hashOnce() {\n"
-        "        Bare b = new Bare();\n"
+        "        Bare b = heap Bare();\n"
         "        return b.hash();\n"
         "    }\n"
         "    public static int64 hashTwiceSameInstance() {\n"
-        "        Bare b = new Bare();\n"
+        "        Bare b = heap Bare();\n"
         "        int64 h1 = b.hash();\n"
         "        int64 h2 = b.hash();\n"
         "        return h1 == h2 ? 1 : 0;\n"
@@ -362,7 +362,7 @@ TEST(InheritanceSmokeTests, manualHashOverrideWins) {
         "}\n"
         "public final class I {\n"
         "    public static int64 hashCustom() {\n"
-        "        Custom c = new Custom();\n"
+        "        Custom c = heap Custom();\n"
         "        c.x = 7;\n"
         "        return c.hash();\n"
         "    }\n"

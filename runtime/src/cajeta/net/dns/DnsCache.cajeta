@@ -1,0 +1,330 @@
+package cajeta.net.dns;
+
+import cajeta.lang.String;
+import cajeta.lang.Optional;
+import cajeta.time.Duration;
+import cajeta.collection.Cache;
+import cajeta.net.IpAddress;
+import cajeta.net.SocketAddress;
+import cajeta.net.NetException;
+import cajeta.net.dns.Resolver;
+import cajeta.net.dns.SystemResolver;
+import cajeta.net.dns.ResolveFamily;
+import cajeta.net.dns.DnsCacheEntry;
+
+/**
+ * A **bounded TTL cache** in front of blocking name resolution (plan
+ * item **NET-2.4**): an LRU keyed on `(host, family)`, honoring a
+ * configurable default TTL, with **negative-result caching**, layered
+ * over the canonical [`Cache<K,V>`](../../collection/Cache.cajeta)
+ * LRU+TTL primitive and the swappable
+ * [`Resolver`](Resolver.cajeta) backend.
+ *
+ * ```cajeta
+ * DnsCache cache = DnsCache.create();              // default size + TTL
+ * SocketAddress[] a = cache.resolve("example.test", 443, ResolveFamily.BOTH);
+ * SocketAddress[] b = cache.resolve("example.test", 443, ResolveFamily.BOTH);
+ * // `b` came from the cache — no second getaddrinfo.
+ * ```
+ *
+ * ## What the cache keys on, and why port is *not* part of it
+ *
+ * The key is `(host, family)` — **not** the port. A name's address set
+ * is independent of which port a caller intends to dial; baking the
+ * port into the key would split the cache pointlessly (a lookup of
+ * `host:80` and `host:443` resolve the *same* addresses). So the cache
+ * stores **port-0** addresses and **re-bakes** the caller's port onto a
+ * fresh [`SocketAddress`](../SocketAddress.cajeta) per result on the way
+ * out (see [`bakePort`](#bakePort)) — exactly the
+ * [`Dns.resolve(host, port, family)`](Dns.cajeta) surface, just memoized.
+ *
+ * `(host, family)` is folded into a single `String` key
+ * ([`keyFor`](#keyFor)): a one-byte family tag (`1`/`2`/`3` — control
+ * bytes that never appear in a hostname) prepended to the host bytes.
+ * This lets the existing `Cache<String, …>` carry the composite key
+ * directly, with no bespoke key class + `hash`/`equals` to get wrong.
+ *
+ * ## TTL — fixed default, because `getaddrinfo` hides the record TTL
+ *
+ * libc/Winsock `getaddrinfo` does **not** surface the DNS record TTL,
+ * so v1 cannot honor the authoritative per-record value. Instead the
+ * cache applies a single **configurable default TTL** (positive +
+ * negative share it in v1) via the underlying `Cache.setMaxAge`. An
+ * entry older than the TTL is treated as absent on the next lookup and
+ * re-resolved — the standard `Cache<K,V>` expiry semantics, unchanged.
+ *
+ * ## Negative-result caching
+ *
+ * A name that fails to resolve is cached as a **negative**
+ * [`DnsCacheEntry`](DnsCacheEntry.cajeta) for the same TTL window, so a
+ * retry storm against a dead name does not re-hammer the resolver. A
+ * hit on a negative entry re-raises a [`NetException`](../NetException.cajeta)
+ * (carrying [`KIND_OTHER`]) citing the host, rather than returning
+ * addresses. Disable negative caching with
+ * [`setCacheFailures(false)`](#setCacheFailures) if a consumer prefers
+ * every failure to re-try the backend.
+ *
+ * ## The injectable backend (what makes this testable)
+ *
+ * Every **miss** calls through a [`Resolver`](Resolver.cajeta). Production
+ * wires [`SystemResolver`](SystemResolver.cajeta) (the real
+ * [`Dns.resolve`](Dns.cajeta) `getaddrinfo` path); a test injects a
+ * **counting** resolver via [`withResolver`](#withResolver) and asserts a
+ * second lookup inside the TTL never increments the counter — the
+ * `DnsTests.cacheHitSkipsSecondLookup` acceptance.
+ *
+ * ## Concurrency
+ *
+ * Like the `Cache<K,V>` it wraps, `DnsCache` is **not thread-safe**;
+ * guard a shared instance with a `Mutex` (NET-2.3's async resolver will
+ * own that coordination when it lands).
+ */
+public final class DnsCache {
+
+    /** Default LRU bound — entries before eviction. */
+    public static final int32 DEFAULT_MAX_ENTRIES = 1024;
+
+    /** Default TTL — 30 seconds, a conservative middle ground given the
+     *  record TTL is unavailable (short enough to bound staleness, long
+     *  enough to absorb a burst of lookups for the same name). */
+    public static final int64 DEFAULT_TTL_SECONDS = 30;
+
+    /** The LRU+TTL store, keyed on the folded `(host, family)` String. */
+    Cache<String, DnsCacheEntry> store;
+
+    /** The miss backend — `SystemResolver` in production, a fake in tests. */
+    Resolver resolver;
+
+    /** Whether failed lookups are cached as negative entries. */
+    boolean cacheFailures;
+
+    /**
+     * Build a cache with an explicit LRU bound + TTL + resolver. The
+     * static factories ([`create`](#create), [`withResolver`](#withResolver))
+     * are the usual entry points; this is the full-control ctor.
+     *
+     * @param maxEntries the LRU bound (must be positive).
+     * @param ttl        the default TTL applied to positive + negative
+     *                   entries (`Duration.ofNanos(0)` disables expiry).
+     * @param resolver   the miss backend (takes ownership).
+     */
+    public DnsCache(int32 maxEntries, Duration ttl, #Resolver resolver) {
+        this.store = heap Cache<String, DnsCacheEntry>(maxEntries);
+        this.store.setMaxAge(ttl);
+        this.resolver = resolver;
+        this.cacheFailures = true;
+    }
+
+    /**
+     * The production cache: [`DEFAULT_MAX_ENTRIES`] entries, a
+     * [`DEFAULT_TTL_SECONDS`]-second TTL, and a
+     * [`SystemResolver`](SystemResolver.cajeta) backend (the real
+     * `getaddrinfo` path).
+     */
+    public static #DnsCache create() {
+        return heap DnsCache(DnsCache.DEFAULT_MAX_ENTRIES,
+            Duration.ofSeconds(DnsCache.DEFAULT_TTL_SECONDS),
+            heap SystemResolver());
+    }
+
+    /**
+     * A cache with the default size + TTL but a **caller-supplied**
+     * [`Resolver`](Resolver.cajeta) — the test seam that injects a
+     * counting fake to pin the cache-hit-skips-lookup behavior.
+     */
+    public static #DnsCache withResolver(#Resolver resolver) {
+        return heap DnsCache(DnsCache.DEFAULT_MAX_ENTRIES,
+            Duration.ofSeconds(DnsCache.DEFAULT_TTL_SECONDS), resolver);
+    }
+
+    /**
+     * Enable/disable negative-result caching. When `false`, a failed
+     * lookup re-raises but is **not** stored, so the next attempt
+     * re-tries the backend. Default `true`.
+     */
+    public void setCacheFailures(boolean enabled) {
+        this.cacheFailures = enabled;
+    }
+
+    /** Number of live entries (positive + negative) currently cached. */
+    public int32 count() {
+        return this.store.count();
+    }
+
+    /** Drop every cached entry. */
+    public void clear() {
+        this.store.clear();
+    }
+
+    /**
+     * Resolve `host` under `family`, baking `port` into each returned
+     * [`SocketAddress`](../SocketAddress.cajeta), serving from the cache
+     * inside the TTL.
+     *
+     * Flow:
+     *   1. Fold `(host, family)` into the key; look it up.
+     *   2. **Hit, positive** → re-bake `port` onto the cached port-0
+     *      addresses and return (no backend call).
+     *   3. **Hit, negative** → re-raise a citing
+     *      [`NetException`](../NetException.cajeta) (no backend call).
+     *   4. **Miss** → call the [`Resolver`](Resolver.cajeta). On success,
+     *      store a positive entry (port-0) + return the port-baked copy.
+     *      On failure, store a negative entry (when
+     *      [`cacheFailures`](#setCacheFailures)) + re-raise.
+     *
+     * @throws NetException on a null host, a resolver failure, or a
+     *         negative cache hit (always cites the host).
+     */
+    public #SocketAddress[] resolve(String host, int32 port,
+                                    ResolveFamily family) {
+        if (host == null) {
+            throw heap NetException("cannot resolve a null host",
+                NetException.KIND_INVALID);
+        }
+        String key = DnsCache.keyFor(host, family);
+
+        Optional<DnsCacheEntry> hit = this.store.get(key);
+        if (hit.isPresent()) {
+            DnsCacheEntry entry = hit.get();
+            if (entry.negative) {
+                throw heap NetException(DnsCache.failureMessage(host),
+                    NetException.KIND_OTHER);
+            }
+            return DnsCache.bakePort(entry.addresses, port);
+        }
+
+        // Miss — go to the backend. On success the result is baked +
+        // cached + returned from inside the try (so the owned array is
+        // assigned exactly once, never a null-then-reassign). On failure
+        // we fall through to the negative-cache + raise below: rather
+        // than re-propagating the caught instance (the v1 compiler has
+        // no proven catch-variable rethrow — see TcpStream.connectAny's
+        // same swallow-then-throw-fresh shape) we raise a *fresh* citing
+        // NetException. The surfaced taxonomy (`KIND_OTHER`, host-citing
+        // message) is identical either way; NET-2.5 later narrows both
+        // the direct and cached failures to `UnknownHost` /
+        // `ResolutionFailed` uniformly.
+        try {
+            SocketAddress[] resolved = this.resolver.resolve(host, family);
+            // Bake the caller's port out of the still-owned result
+            // *before* moving it into the cache: `bakePort` only reads
+            // `resolved` (copying each address's octets), so the returned
+            // array is the caller's, and the cache then takes ownership
+            // of the canonical port-0 `resolved` for the TTL window.
+            SocketAddress[] baked = DnsCache.bakePort(resolved, port);
+            this.store.put(key, #DnsCacheEntry.positive(#resolved));
+            return #baked;
+        } catch (NetException e) {
+            // fall through to negative-cache + raise
+        }
+
+        if (this.cacheFailures) {
+            this.store.put(key, #DnsCacheEntry.negativeResult());
+        }
+        throw heap NetException(DnsCache.failureMessage(host),
+            NetException.KIND_OTHER);
+    }
+
+    // -- internals ----------------------------------------------------------
+
+    /**
+     * Fold `(host, family)` into a single cache key: a one-byte family
+     * tag (`V4_ONLY → 1`, `V6_ONLY → 2`, `BOTH → 3` — control bytes that
+     * never occur in a hostname, so no host can collide with another
+     * family's key) prepended to the host's UTF-8 bytes. This is the one
+     * place the composite key is materialized, keeping the
+     * `(host, family)` distinctness exact without a bespoke key class.
+     */
+    private static #String keyFor(String host, ResolveFamily family) {
+        int32 tag = 3;                              // BOTH
+        if (family == ResolveFamily.V4_ONLY) {
+            tag = 1;
+        } else if (family == ResolveFamily.V6_ONLY) {
+            tag = 2;
+        }
+        int8[] hostBytes = host.bytes;
+        int32 hostLen = host.byteLength;
+        int32 total = hostLen + 1;
+        int8[] keyBytes = heap int8[total];
+        keyBytes[0] = (int8) tag;
+        int32 i = 0;
+        while (i < hostLen) {
+            keyBytes[i + 1] = hostBytes[i];
+            i = i + 1;
+        }
+        return heap String(#keyBytes, total);
+    }
+
+    /**
+     * Produce a fresh `SocketAddress[]` from the cached **port-0**
+     * addresses with `port` baked into each. Never mutates the cached
+     * array (it is the shared cache value); every element is a new
+     * [`SocketAddress`](../SocketAddress.cajeta) over a fresh
+     * [`IpAddress`](../IpAddress.cajeta) copy, so the returned array is
+     * the caller's to keep and the cache's value stays canonical at
+     * port 0.
+     */
+    private static #SocketAddress[] bakePort(SocketAddress[] cached,
+                                             int32 port) {
+        int32 n = cached.count();
+        SocketAddress[] out = heap SocketAddress[n];
+        int32 i = 0;
+        while (i < n) {
+            IpAddress srcIp = cached[i].getIp();
+            int8[] oct = srcIp.getOctets();
+            int32 len = 16;
+            if (srcIp.isV4()) {
+                len = 4;
+            }
+            IpAddress copy = IpAddress.fromOctets(oct, len);
+            out[i] = SocketAddress.of(#copy, port);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Build the negative-cache-hit message `"failed to resolve host:
+     * <host>"` — the same shape [`Dns.failureMessage`](Dns.cajeta)
+     * produces, so a cached failure reads identically to a fresh one.
+     * Concatenates the fixed prefix with the host bytes into a fresh
+     * owned `String` (the v1 `String` has no `concat`).
+     */
+    private static #String failureMessage(String host) {
+        int8[] prefix = heap int8[18];
+        prefix[0] = (int8) 102;   // 'f'
+        prefix[1] = (int8) 97;    // 'a'
+        prefix[2] = (int8) 105;   // 'i'
+        prefix[3] = (int8) 108;   // 'l'
+        prefix[4] = (int8) 101;   // 'e'
+        prefix[5] = (int8) 100;   // 'd'
+        prefix[6] = (int8) 32;    // ' '
+        prefix[7] = (int8) 116;   // 't'
+        prefix[8] = (int8) 111;   // 'o'
+        prefix[9] = (int8) 32;    // ' '
+        prefix[10] = (int8) 114;  // 'r'
+        prefix[11] = (int8) 101;  // 'e'
+        prefix[12] = (int8) 115;  // 's'
+        prefix[13] = (int8) 111;  // 'o'
+        prefix[14] = (int8) 108;  // 'l'
+        prefix[15] = (int8) 118;  // 'v'
+        prefix[16] = (int8) 101;  // 'e'
+        prefix[17] = (int8) 32;   // ' '
+
+        int8[] hostBytes = host.bytes;
+        int32 hostLen = host.byteLength;
+        int32 total = 18 + hostLen;
+        int8[] msg = heap int8[total];
+        int32 i = 0;
+        while (i < 18) {
+            msg[i] = prefix[i];
+            i = i + 1;
+        }
+        int32 j = 0;
+        while (j < hostLen) {
+            msg[18 + j] = hostBytes[j];
+            j = j + 1;
+        }
+        return heap String(#msg, total);
+    }
+}

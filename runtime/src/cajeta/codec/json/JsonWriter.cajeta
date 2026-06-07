@@ -2,6 +2,32 @@ package cajeta.codec.json;
 
 import cajeta.lang.String;
 
+/**
+ * Streaming JSON encoder that builds wire-form bytes incrementally.
+ *
+ * `JsonWriter` owns a growable `int8[]` buffer and tracks nesting
+ * depth and sibling state so callers never have to thread commas or
+ * colons by hand. Every `begin*`/`end*`/`write*`/`key` method returns
+ * `this`, so emission reads as a fluent chain. When the document is
+ * complete, `toBytes` hands back the encoded bytes and resets the
+ * writer for reuse.
+ *
+ * Scalars come in via `writeNull`, `writeBoolean`, `writeNumber`,
+ * and `writeString` (the latter accepts a `String` directly). A
+ * whole parsed tree can be re-emitted with `writeValue`, which walks
+ * a `JsonValue` and its `JsonArray` / `JsonObject` children.
+ *
+ * ## Usage
+ * ```cajeta
+ * #JsonWriter w = heap JsonWriter();
+ * w.beginObject()
+ *  .key("name").writeString("Ada")
+ *  .key("age").writeNumber((int64) 36)
+ *  .key("admin").writeBoolean(true)
+ *  .endObject();
+ * #int8[] json = w.toBytes();      // {"name":"Ada","age":36,"admin":true}
+ * ```
+ */
 public final class JsonWriter {
     int8[] buf;
     int32 cap;
@@ -12,12 +38,21 @@ public final class JsonWriter {
     int32 depth;
     boolean afterKey;
 
+    /**
+     * Create an empty writer with a 64-byte buffer that grows on demand.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.beginArray().writeNumber((int64) 1).writeNumber((int64) 2).endArray();
+     * #int8[] json = w.toBytes();   // [1,2]
+     * ```
+     */
     public JsonWriter() {
         this.cap = 64;
-        this.buf = new int8[64];
+        this.buf = heap int8[64];
         this.size = 0;
-        this.depthStack = new int8[1024];
-        this.sibling = new boolean[1024];
+        this.depthStack = heap int8[1024];
+        this.sibling = heap boolean[1024];
         this.depth = 0;
         this.afterKey = false;
     }
@@ -26,6 +61,15 @@ public final class JsonWriter {
         return this.size;
     }
 
+    /**
+     * Open a JSON object (`{`), pushing a new nesting frame. Pair each
+     * call with `endObject` and emit members as `key`/value pairs.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.beginObject().key("ok").writeBoolean(true).endObject();   // {"ok":true}
+     * ```
+     */
     public JsonWriter beginObject() {
         this.maybeSeparator();
         this.append((int32) 123);
@@ -33,6 +77,7 @@ public final class JsonWriter {
         return this;
     }
 
+    /** Close the current object (`}`) and pop its nesting frame. */
     public JsonWriter endObject() {
         this.append((int32) 125);
         this.popFrame();
@@ -40,6 +85,15 @@ public final class JsonWriter {
         return this;
     }
 
+    /**
+     * Open a JSON array (`[`), pushing a new nesting frame. Pair each
+     * call with `endArray`; separators between elements are automatic.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.beginArray().writeString("a").writeString("b").endArray();   // ["a","b"]
+     * ```
+     */
     public JsonWriter beginArray() {
         this.maybeSeparator();
         this.append((int32) 91);
@@ -47,6 +101,7 @@ public final class JsonWriter {
         return this;
     }
 
+    /** Close the current array (`]`) and pop its nesting frame. */
     public JsonWriter endArray() {
         this.append((int32) 93);
         this.popFrame();
@@ -54,6 +109,7 @@ public final class JsonWriter {
         return this;
     }
 
+    /** Emit a JSON `null` literal. */
     public JsonWriter writeNull() {
         this.maybeSeparator();
         this.append((int32) 110);
@@ -64,6 +120,7 @@ public final class JsonWriter {
         return this;
     }
 
+    /** Emit a JSON `true` or `false` literal. */
     public JsonWriter writeBoolean(boolean v) {
         this.maybeSeparator();
         if (v) {
@@ -82,6 +139,14 @@ public final class JsonWriter {
         return this;
     }
 
+    /**
+     * Emit a signed integer in base-10 (e.g. `-42`).
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.writeNumber((int64) -42);   // -42
+     * ```
+     */
     public JsonWriter writeNumber(int64 v) {
         this.maybeSeparator();
         if (v == (int64) 0) {
@@ -94,7 +159,7 @@ public final class JsonWriter {
             negative = true;
             v = - v;
         }
-        int8[] tmp = new int8[20];
+        int8[] tmp = heap int8[20];
         int32 nd = 0;
         while (v > (int64) 0) {
             int64 d = v % (int64) 10;
@@ -113,13 +178,22 @@ public final class JsonWriter {
         return this;
     }
 
-    // Float64 emitter. Always emits a decimal point so the value
-    // round-trips as float64 (not int) through any JSON parser. v1
-    // is a naive fixed-precision serializer: integer part via the
-    // int64 digit loop above (inlined to avoid double maybeSeparator),
-    // followed by '.' and up to 6 fractional digits. Doesn't yet emit
-    // scientific notation for very large / very small magnitudes; that
-    // lands when a real strtod-class formatter is wired through.
+    /**
+     * Emit a `float64`, always with a decimal point so the value
+     * round-trips as a float (not an int) through any JSON parser.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.writeNumber(3.5);   // 3.5
+     * ```
+     *
+     * v1 is a naive fixed-precision serializer: the integer part via
+     * the `int64` digit loop above (inlined to avoid a double
+     * `maybeSeparator`), followed by `.` and up to 6 fractional
+     * digits. It does not yet emit scientific notation for very large
+     * or very small magnitudes; that lands when a real strtod-class
+     * formatter is wired through.
+     */
     public JsonWriter writeNumber(float64 v) {
         this.maybeSeparator();
         if (v == 0.0) {
@@ -140,7 +214,7 @@ public final class JsonWriter {
         if (intPart == (int64) 0) {
             this.append((int32) 48);
         } else {
-            int8[] tmp = new int8[20];
+            int8[] tmp = heap int8[20];
             int32 nd = 0;
             while (intPart > (int64) 0) {
                 int64 d = intPart % (int64) 10;
@@ -170,10 +244,13 @@ public final class JsonWriter {
         return this;
     }
 
-    // Byte-buffer + explicit length form. The String-typed overload
-    // below is the user-friendly path; this one stays for the
-    // synthesizer's hot-path emit code which already has the bytes
-    // and byteLength in hand.
+    /**
+     * Emit a quoted, escaped JSON string from the first `n` bytes of
+     * `s` (`"` and `\` are escaped). Byte-buffer + explicit length
+     * form for the synthesizer's hot-path emit code, which already has
+     * the bytes and length in hand; hand-written code should prefer
+     * the `String` overload below.
+     */
     public JsonWriter writeString(int8[] s, int32 n) {
         this.maybeSeparator();
         this.writeStringRaw(s, n);
@@ -181,15 +258,26 @@ public final class JsonWriter {
         return this;
     }
 
-    // String-typed overload — delegates to the byte-buffer form
-    // against the String's `.bytes` + `.byteLength` directly.
-    // Preferred for hand-written user code.
+    /**
+     * Emit a quoted, escaped JSON string from a `String` (delegates
+     * to the byte-buffer form against `.bytes` + `.byteLength`).
+     * Preferred for hand-written user code.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.writeString("hi \"there\"");   // "hi \"there\""
+     * ```
+     */
     public JsonWriter writeString(String s) {
         return this.writeString(s.bytes, s.byteLength);
     }
 
-    // Emit `"key":` (escapes `"` and `\` inside the key). Suppresses
-    // the leading separator on the value that immediately follows.
+    /**
+     * Emit an object member name as `"key":` (escaping `"` and `\`
+     * inside the key) and suppress the leading separator on the value
+     * that immediately follows. Byte-buffer + length form; prefer the
+     * `String` overload in hand-written code.
+     */
     public JsonWriter key(int8[] name, int32 n) {
         this.maybeSeparator();
         this.writeStringRaw(name, n);
@@ -199,7 +287,15 @@ public final class JsonWriter {
         return this;
     }
 
-    // String-typed key overload. Same shape as writeString(String).
+    /**
+     * Emit an object member name from a `String`. Same shape as the
+     * `String` `writeString` overload.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.beginObject().key("id").writeNumber((int64) 7).endObject();   // {"id":7}
+     * ```
+     */
     public JsonWriter key(String name) {
         return this.key(name.bytes, name.byteLength);
     }
@@ -210,7 +306,7 @@ public final class JsonWriter {
      * dance. The bytes MUST already be a syntactically valid JSON
      * value (quoted string, number, boolean, null, array, or
      * object). Used by the @JsonRaw synthesizer arm — the
-     * captured bytes from `JsonReader.currentRawBytes()` are
+     * captured bytes from `JsonReader``.currentRawBytes()` are
      * passed through unchanged so the wire-form round-trip is
      * byte-stable.
      *
@@ -229,6 +325,7 @@ public final class JsonWriter {
         return this;
     }
 
+    /** Write `"..."` for the first `n` bytes of `s`, escaping `"` and `\`. No separator handling. */
     final void writeStringRaw(int8[] s, int32 n) {
         this.append((int32) 34);
         int32 i = 0;
@@ -248,11 +345,20 @@ public final class JsonWriter {
         this.append((int32) 34);
     }
 
-    // Recursively emit a JsonValue tree. Routes by kind into the
-    // existing scalar emitters; for objects + arrays walks members
-    // and recurses. The writer's separator state takes care of
-    // commas between siblings — the caller doesn't need to thread
-    // anything.
+    /**
+     * Recursively emit a parsed `JsonValue` tree. Routes by
+     * `v.kind()` into the scalar emitters; for arrays and objects it
+     * walks the `JsonArray` / `JsonObject` members and recurses.
+     * Separator state handles commas between siblings, so the caller
+     * threads nothing. An unknown kind is emitted as `null` to be
+     * forgiving.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.writeValue(parsed);            // re-emits the tree as JSON
+     * #int8[] json = w.toBytes();
+     * ```
+     */
     public JsonWriter writeValue(JsonValue v) {
         int32 k = v.kind();
         if (k == 0) {                                  // NULL
@@ -294,9 +400,21 @@ public final class JsonWriter {
         return this.writeNull();
     }
 
+    /**
+     * Copy the encoded document out as a fresh heap `#int8[]` and
+     * reset the writer (size, depth, and key state) so it can be
+     * reused for the next document. Ownership of the returned bytes
+     * transfers to the caller.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.beginArray().writeBoolean(true).endArray();
+     * #int8[] json = w.toBytes();   // [true]  — w is now empty again
+     * ```
+     */
     public #int8[] toBytes() {
         int32 n = this.size;
-        int8[] out = new int8[n];
+        int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
             out[i] = this.buf[i];
@@ -308,6 +426,7 @@ public final class JsonWriter {
         return out;
     }
 
+    /** Emit a `,` before a value when the current frame already has a sibling, unless we just wrote a key. */
     void maybeSeparator() {
         if (this.afterKey) {
             this.afterKey = false;
@@ -318,23 +437,27 @@ public final class JsonWriter {
         }
     }
 
+    /** Record that the current frame now has a value, so the next one is comma-separated. */
     void markSibling() {
         if (this.depth > 0) {
             this.sibling[this.depth - 1] = true;
         }
     }
 
+    /** Push a nesting frame (`kind` 1 = object, 0 = array) with no sibling yet. */
     final void pushFrame(int32 kind) {
         this.depthStack[this.depth] = (int8) kind;
         this.sibling[this.depth] = false;
         this.depth = this.depth + 1;
     }
 
+    /** Pop the current nesting frame and clear pending key state. */
     void popFrame() {
         this.depth = this.depth - 1;
         this.afterKey = false;
     }
 
+    /** Append one byte, growing the buffer first if it is full. */
     final void append(int8 b) {
         if (this.size >= this.cap) {
             this.grow();
@@ -343,9 +466,10 @@ public final class JsonWriter {
         this.size = this.size + 1;
     }
 
+    /** Double the buffer capacity and copy the existing bytes across. */
     void grow() {
         int32 newCap = this.cap * 2;
-        int8[] dst = new int8[newCap];
+        int8[] dst = heap int8[newCap];
         int32 i = 0;
         while (i < this.size) {
             dst[i] = this.buf[i];

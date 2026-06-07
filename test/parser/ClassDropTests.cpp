@@ -56,7 +56,7 @@ int64_t observeDropCount(const std::string& classBody,
 TEST(ClassDropTests, instanceWithoutUserDropFiresAutoDrop) {
     EXPECT_EQ(observeDropCount(
         /*classBody*/ "public int32 value() { return 7; }",
-        /*runBody*/   "Thing t = new Thing();"
+        /*runBody*/   "Thing t = heap Thing();"
     ), 1);
 }
 
@@ -64,8 +64,8 @@ TEST(ClassDropTests, instanceWithoutUserDropFiresAutoDrop) {
 TEST(ClassDropTests, twoInstancesFireBothDrops) {
     EXPECT_EQ(observeDropCount(
         /*classBody*/ "public int32 value() { return 7; }",
-        /*runBody*/   "Thing a = new Thing();\n"
-        "        Thing b = new Thing();"
+        /*runBody*/   "Thing a = heap Thing();\n"
+        "        Thing b = heap Thing();"
     ), 2);
 }
 
@@ -82,13 +82,13 @@ TEST(ClassDropTests, userDropMethodIsInvoked) {
         "package test;\n"
         "public class Tracer {\n"
         "    public ~Tracer() {\n"
-        "        int32[] junk = new int32[1];\n"
+        "        int32[] junk = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cajeta.dropCountReset();\n"
-        "        Tracer t = new Tracer();\n"
+        "        Tracer t = heap Tracer();\n"
         "        return 0;\n"
         "    }\n"
         "    public static int64 read() {\n"
@@ -111,7 +111,7 @@ TEST(ClassDropTests, classWithoutUserDropContributesOne) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cajeta.dropCountReset();\n"
-        "        Plain p = new Plain();\n"
+        "        Plain p = heap Plain();\n"
         "        return 0;\n"
         "    }\n"
         "    public static int64 read() {\n"
@@ -140,8 +140,8 @@ TEST(ClassDropTests, twoInstancesDropWithoutCrash) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cajeta.dropCountReset();\n"
-        "        Box a = new Box();\n"
-        "        Box b = new Box();\n"
+        "        Box a = heap Box();\n"
+        "        Box b = heap Box();\n"
         "        return 0;\n"
         "    }\n"
         "    public static int64 read() {\n"
@@ -170,7 +170,7 @@ TEST(ClassDropTests, returnedInstanceOwnershipTransfers) {
         "}\n"
         "public final class D {\n"
         "    public static #Counter mk() {\n"
-        "        Counter c = new Counter();\n"
+        "        Counter c = heap Counter();\n"
         "        return c;\n"
         "    }\n"
         "    public static int32 run() {\n"

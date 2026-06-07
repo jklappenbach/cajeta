@@ -1,0 +1,25 @@
+package cajeta.lint.security;
+
+/**
+ * One typed entry from `config.banned-imports`. Pattern is a glob
+ * over dotted import paths (see `Glob` in the coverage plugin for
+ * the dialect — `*` matches a segment-content, no `**` because
+ * imports are dotted names, not file paths).
+ *
+ * `reason` is mandatory; the parser rejects empty / generic
+ * justifications. Same discipline as the coverage exclude entries —
+ * reviewers need to see *why* an import is banned, not just *that*
+ * it is.
+ */
+public class BannedImportEntry {
+    String pattern;
+    String reason;
+
+    public BannedImportEntry(String pattern, String reason) {
+        this.pattern = pattern;
+        this.reason  = reason;
+    }
+
+    public String pattern() { return this.pattern; }
+    public String reason()  { return this.reason;  }
+}

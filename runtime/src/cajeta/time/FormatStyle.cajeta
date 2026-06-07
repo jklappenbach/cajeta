@@ -1,0 +1,45 @@
+package cajeta.time;
+
+/**
+ * Names a ready-made, standardized date/time layout. Pass one to
+ * `DateTimeFormatter``.ofStandard(...)` instead of hand-writing a pattern, so
+ * the common shapes are one call away.
+ *
+ * Each constant fixes both the field order and the punctuation; the sample
+ * outputs below all render `2026-06-05T14:03:09` (offset `+02:00`):
+ *
+ *  - `ISO_LOCAL_DATE`       `2026-06-05`
+ *  - `ISO_LOCAL_TIME`       `14:03:09`
+ *  - `ISO_LOCAL_DATE_TIME`  `2026-06-05T14:03:09`
+ *  - `ISO_OFFSET_DATE_TIME` `2026-06-05T14:03:09+02:00` — local date-time plus a zone offset
+ *  - `ISO_INSTANT`          `2026-06-05T14:03:09Z` — UTC instant; feed it a zoned/offset value
+ *  - `BASIC_ISO_DATE`       `20260605` — compact ISO date, no separators
+ *  - `RFC_1123_DATE_TIME`   `Fri, 05 Jun 2026 14:03:09 GMT` — HTTP/email header form
+ *  - `US_DATE`              `06/05/2026` — month/day/year
+ *  - `EURO_DATE`            `05.06.2026` — day.month.year
+ *  - `SQL_TIMESTAMP`        `2026-06-05 14:03:09` — space-separated, no `T`
+ *
+ * ## Usage
+ *
+ * ```cajeta
+ * #DateTimeFormatter fmt = DateTimeFormatter.ofStandard(FormatStyle.US_DATE);
+ * stack LocalDate d = LocalDate.of(2026, 6, 5);
+ * #String text = fmt.formatDate(d);   // "06/05/2026"
+ * ```
+ *
+ * Pair date-only styles with `LocalDate`, time-only with `LocalTime`,
+ * `ISO_LOCAL_DATE_TIME`/`SQL_TIMESTAMP` with `LocalDateTime`, and
+ * `ISO_OFFSET_DATE_TIME`/`ISO_INSTANT` with `ZonedDateTime`.
+ */
+public enum FormatStyle {
+    ISO_LOCAL_DATE,
+    ISO_LOCAL_TIME,
+    ISO_LOCAL_DATE_TIME,
+    ISO_OFFSET_DATE_TIME,
+    ISO_INSTANT,
+    BASIC_ISO_DATE,
+    RFC_1123_DATE_TIME,
+    US_DATE,
+    EURO_DATE,
+    SQL_TIMESTAMP
+}

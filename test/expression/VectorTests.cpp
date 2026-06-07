@@ -46,25 +46,25 @@ float runF32(const std::string& body) {
 // Construct and read a component by name (.y) and by color alias (.g == .y).
 TEST(VectorTests, constructAndComponentRead) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> v = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,4> v = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
         "        return (int32) v.y;\n"), 2);
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> v = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,4> v = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
         "        return (int32) v.w;\n"), 4);
 }
 
 // .r/.g/.b/.a alias the first four lanes.
 TEST(VectorTests, colorAliases) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> c = new Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+        "        Vector<float32,4> c = heap Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
         "        return (int32)(c.r + c.b);\n"), 40);  // 10 + 30
 }
 
 // Element-wise add of two same-shape vectors.
 TEST(VectorTests, elementWiseAdd) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> a = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
-        "        Vector<float32,4> b = new Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+        "        Vector<float32,4> a = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,4> b = heap Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
         "        Vector<float32,4> s = a + b;\n"
         "        return (int32) s.z;\n"), 33);  // 3 + 30
 }
@@ -72,11 +72,11 @@ TEST(VectorTests, elementWiseAdd) {
 // Scalar broadcast: vec * scalar and scalar * vec.
 TEST(VectorTests, scalarBroadcast) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> a = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,4> a = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
         "        Vector<float32,4> h = a * 2.0f;\n"
         "        return (int32) h.w;\n"), 8);   // 4 * 2
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> a = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,4> a = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
         "        Vector<float32,4> h = 3.0f * a;\n"
         "        return (int32) h.x;\n"), 3);   // 3 * 1
 }
@@ -84,8 +84,8 @@ TEST(VectorTests, scalarBroadcast) {
 // Integer vectors: element-wise subtract.
 TEST(VectorTests, integerVectorSub) {
     EXPECT_EQ(runI32(
-        "        Vector<int32,3> a = new Vector<int32,3>(10, 20, 30);\n"
-        "        Vector<int32,3> b = new Vector<int32,3>(1, 2, 3);\n"
+        "        Vector<int32,3> a = heap Vector<int32,3>(10, 20, 30);\n"
+        "        Vector<int32,3> b = heap Vector<int32,3>(1, 2, 3);\n"
         "        Vector<int32,3> d = a - b;\n"
         "        return d.y;\n"), 18);  // 20 - 2
 }
@@ -93,10 +93,10 @@ TEST(VectorTests, integerVectorSub) {
 // Indexed read v[i], constant and dynamic index.
 TEST(VectorTests, indexRead) {
     EXPECT_EQ(runI32(
-        "        Vector<int32,4> v = new Vector<int32,4>(5, 6, 7, 8);\n"
+        "        Vector<int32,4> v = heap Vector<int32,4>(5, 6, 7, 8);\n"
         "        return v[2];\n"), 7);
     EXPECT_EQ(runI32(
-        "        Vector<int32,4> v = new Vector<int32,4>(5, 6, 7, 8);\n"
+        "        Vector<int32,4> v = heap Vector<int32,4>(5, 6, 7, 8);\n"
         "        int32 i = 3;\n"
         "        return v[i];\n"), 8);
 }
@@ -104,7 +104,7 @@ TEST(VectorTests, indexRead) {
 // Component assignment v.x = e.
 TEST(VectorTests, componentAssign) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> v = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,4> v = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
         "        v.x = 9.0f;\n"
         "        return (int32)(v.x + v.y);\n"), 11);  // 9 + 2
 }
@@ -112,7 +112,7 @@ TEST(VectorTests, componentAssign) {
 // Indexed assignment v[i] = e.
 TEST(VectorTests, indexAssign) {
     EXPECT_EQ(runI32(
-        "        Vector<int32,4> v = new Vector<int32,4>(5, 6, 7, 8);\n"
+        "        Vector<int32,4> v = heap Vector<int32,4>(5, 6, 7, 8);\n"
         "        v[1] = 60;\n"
         "        int32 k = 2;\n"
         "        v[k] = 70;\n"
@@ -122,24 +122,24 @@ TEST(VectorTests, indexAssign) {
 // dot(a, b) over a float vector.
 TEST(VectorTests, dotProduct) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 2.0f, 3.0f);\n"
-        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 5.0f, 6.0f);\n"
+        "        Vector<float32,3> a = heap Vector<float32,3>(1.0f, 2.0f, 3.0f);\n"
+        "        Vector<float32,3> b = heap Vector<float32,3>(4.0f, 5.0f, 6.0f);\n"
         "        return (int32) a.dot(b);\n"), 32);  // 4 + 10 + 18
 }
 
 // Integer dot (DP4a): Vector<int8,4> -> int32. 1*5+2*6+3*7+4*8 = 70.
 TEST(VectorTests, integerDotProduct) {
     EXPECT_EQ(runI32(
-        "        Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);\n"
-        "        Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);\n"
+        "        Vector<int8,4> a = heap Vector<int8,4>(1, 2, 3, 4);\n"
+        "        Vector<int8,4> b = heap Vector<int8,4>(5, 6, 7, 8);\n"
         "        return a.dot(b);\n"), 70);
 }
 
 // Fused integer dot-add: a.dot(b, acc) = acc + dot(a,b) = 100 + 70 = 170.
 TEST(VectorTests, integerDotAccumulate) {
     EXPECT_EQ(runI32(
-        "        Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);\n"
-        "        Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);\n"
+        "        Vector<int8,4> a = heap Vector<int8,4>(1, 2, 3, 4);\n"
+        "        Vector<int8,4> b = heap Vector<int8,4>(5, 6, 7, 8);\n"
         "        return a.dot(b, 100);\n"), 170);
 }
 
@@ -147,22 +147,22 @@ TEST(VectorTests, integerDotAccumulate) {
 // of 200/100 would be negative. 200*2+100*3+50*4+25*5 = 1025.
 TEST(VectorTests, unsignedIntegerDotProduct) {
     EXPECT_EQ(runI32(
-        "        Vector<uint8,4> u = new Vector<uint8,4>(200, 100, 50, 25);\n"
-        "        Vector<uint8,4> w = new Vector<uint8,4>(2, 3, 4, 5);\n"
+        "        Vector<uint8,4> u = heap Vector<uint8,4>(200, 100, 50, 25);\n"
+        "        Vector<uint8,4> w = heap Vector<uint8,4>(2, 3, 4, 5);\n"
         "        return u.dot(w);\n"), 1025);
 }
 
 // length((3,4)) == 5.
 TEST(VectorTests, lengthHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,2> v = new Vector<float32,2>(3.0f, 4.0f);\n"
+        "        Vector<float32,2> v = heap Vector<float32,2>(3.0f, 4.0f);\n"
         "        return (int32) v.length();\n"), 5);
 }
 
 // normalize((0,4)) == (0,1); the y lane is 1.
 TEST(VectorTests, normalizeHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,2> v = new Vector<float32,2>(0.0f, 4.0f);\n"
+        "        Vector<float32,2> v = heap Vector<float32,2>(0.0f, 4.0f);\n"
         "        Vector<float32,2> n = v.normalize();\n"
         "        return (int32)(n.y + 0.5f);\n"), 1);  // 1.0 + 0.5 -> 1
 }
@@ -171,8 +171,8 @@ TEST(VectorTests, normalizeHelper) {
 // min((1,5,3),(4,2,6)) = (1,2,3) -> sum 6.
 TEST(VectorTests, minHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
-        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
+        "        Vector<float32,3> a = heap Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
+        "        Vector<float32,3> b = heap Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
         "        Vector<float32,3> m = a.min(b);\n"
         "        return (int32)(m.x + m.y + m.z);\n"), 6);  // 1+2+3
 }
@@ -180,8 +180,8 @@ TEST(VectorTests, minHelper) {
 // max((1,5,3),(4,2,6)) = (4,5,6) -> sum 15.
 TEST(VectorTests, maxHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
-        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
+        "        Vector<float32,3> a = heap Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
+        "        Vector<float32,3> b = heap Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
         "        Vector<float32,3> m = a.max(b);\n"
         "        return (int32)(m.x + m.y + m.z);\n"), 15);  // 4+5+6
 }
@@ -189,7 +189,7 @@ TEST(VectorTests, maxHelper) {
 // clamp((-2,5,20), 0, 10) = (0,5,10) -> sum 15.
 TEST(VectorTests, clampHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,3> v = new Vector<float32,3>(-2.0f, 5.0f, 20.0f);\n"
+        "        Vector<float32,3> v = heap Vector<float32,3>(-2.0f, 5.0f, 20.0f);\n"
         "        Vector<float32,3> c = v.clamp(0.0f, 10.0f);\n"
         "        return (int32)(c.x + c.y + c.z);\n"), 15);  // 0+5+10
 }
@@ -197,8 +197,8 @@ TEST(VectorTests, clampHelper) {
 // lerp((0,0),(10,20), 0.5) = (5,10) -> sum 15.
 TEST(VectorTests, lerpHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,2> a = new Vector<float32,2>(0.0f, 0.0f);\n"
-        "        Vector<float32,2> b = new Vector<float32,2>(10.0f, 20.0f);\n"
+        "        Vector<float32,2> a = heap Vector<float32,2>(0.0f, 0.0f);\n"
+        "        Vector<float32,2> b = heap Vector<float32,2>(10.0f, 20.0f);\n"
         "        Vector<float32,2> r = a.lerp(b, 0.5f);\n"
         "        return (int32)(r.x + r.y);\n"), 15);  // 5+10
 }
@@ -206,8 +206,8 @@ TEST(VectorTests, lerpHelper) {
 // B1 intrinsics A2 — geometry. cross((1,0,0),(0,1,0)) = (0,0,1) -> z lane 1.
 TEST(VectorTests, crossHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 0.0f, 0.0f);\n"
-        "        Vector<float32,3> b = new Vector<float32,3>(0.0f, 1.0f, 0.0f);\n"
+        "        Vector<float32,3> a = heap Vector<float32,3>(1.0f, 0.0f, 0.0f);\n"
+        "        Vector<float32,3> b = heap Vector<float32,3>(0.0f, 1.0f, 0.0f);\n"
         "        Vector<float32,3> c = a.cross(b);\n"
         "        return (int32)(c.x + c.y + 2.0f * c.z);\n"), 2);  // (0,0,1): 2*1
 }
@@ -215,8 +215,8 @@ TEST(VectorTests, crossHelper) {
 // reflect((1,-1), (0,1)) = (1,-1) - 2*(-1)*(0,1) = (1,1) -> sum 2.
 TEST(VectorTests, reflectHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,2> i = new Vector<float32,2>(1.0f, -1.0f);\n"
-        "        Vector<float32,2> n = new Vector<float32,2>(0.0f, 1.0f);\n"
+        "        Vector<float32,2> i = heap Vector<float32,2>(1.0f, -1.0f);\n"
+        "        Vector<float32,2> n = heap Vector<float32,2>(0.0f, 1.0f);\n"
         "        Vector<float32,2> r = i.reflect(n);\n"
         "        return (int32)(r.x + r.y);\n"), 2);  // (1,1)
 }
@@ -224,8 +224,8 @@ TEST(VectorTests, reflectHelper) {
 // distance((0,0),(3,4)) = 5.
 TEST(VectorTests, distanceHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,2> a = new Vector<float32,2>(0.0f, 0.0f);\n"
-        "        Vector<float32,2> b = new Vector<float32,2>(3.0f, 4.0f);\n"
+        "        Vector<float32,2> a = heap Vector<float32,2>(0.0f, 0.0f);\n"
+        "        Vector<float32,2> b = heap Vector<float32,2>(3.0f, 4.0f);\n"
         "        return (int32) a.distance(b);\n"), 5);
 }
 
@@ -233,8 +233,8 @@ TEST(VectorTests, distanceHelper) {
 // dot(n,i)=-1, k=1, result = i - (… )*n = (0,-1) -> sum -1.
 TEST(VectorTests, refractHelper) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,2> i = new Vector<float32,2>(0.0f, -1.0f);\n"
-        "        Vector<float32,2> n = new Vector<float32,2>(0.0f, 1.0f);\n"
+        "        Vector<float32,2> i = heap Vector<float32,2>(0.0f, -1.0f);\n"
+        "        Vector<float32,2> n = heap Vector<float32,2>(0.0f, 1.0f);\n"
         "        Vector<float32,2> r = i.refract(n, 1.0f);\n"
         "        return (int32)(r.x + r.y);\n"), -1);  // (0,-1)
 }
@@ -243,8 +243,8 @@ TEST(VectorTests, refractHelper) {
 TEST(VectorTests, crossNon3DRejected) {
     try {
         runI32(
-            "        Vector<float32,2> a = new Vector<float32,2>(1.0f, 0.0f);\n"
-            "        Vector<float32,2> b = new Vector<float32,2>(0.0f, 1.0f);\n"
+            "        Vector<float32,2> a = heap Vector<float32,2>(1.0f, 0.0f);\n"
+            "        Vector<float32,2> b = heap Vector<float32,2>(0.0f, 1.0f);\n"
             "        Vector<float32,2> c = a.cross(b);\n"
             "        return 0;\n");
         FAIL() << "expected CAJETA_ERROR_VECTOR_METHOD";
@@ -257,8 +257,8 @@ TEST(VectorTests, crossNon3DRejected) {
 TEST(VectorTests, integerMinRejected) {
     try {
         runI32(
-            "        Vector<int32,2> a = new Vector<int32,2>(1, 5);\n"
-            "        Vector<int32,2> b = new Vector<int32,2>(4, 2);\n"
+            "        Vector<int32,2> a = heap Vector<int32,2>(1, 5);\n"
+            "        Vector<int32,2> b = heap Vector<int32,2>(4, 2);\n"
             "        Vector<int32,2> m = a.min(b);\n"
             "        return m.x;\n");
         FAIL() << "expected CAJETA_ERROR_VECTOR_METHOD";
@@ -272,7 +272,7 @@ TEST(VectorTests, integerMinRejected) {
 //   v.xxyy = (1,1,2,2)  (repeats allowed)   .wz = (4,3)
 TEST(VectorTests, swizzleReads) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> v = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,4> v = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
         "        Vector<float32,2> xy = v.xy;\n"        // (1,2)
         "        Vector<float32,3> zyx = v.zyx;\n"      // (3,2,1)
         "        Vector<float32,4> xxyy = v.xxyy;\n"    // (1,1,2,2)
@@ -284,7 +284,7 @@ TEST(VectorTests, swizzleReads) {
 // Color aliases swizzle too: c=(10,20,30,40); c.rgb = (10,20,30).
 TEST(VectorTests, swizzleColorAlias) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,4> c = new Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+        "        Vector<float32,4> c = heap Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
         "        Vector<float32,3> rgb = c.rgb;\n"
         "        return (int32)(rgb.r + rgb.g + rgb.b);\n"), 60);  // 10+20+30
 }
@@ -293,7 +293,7 @@ TEST(VectorTests, swizzleColorAlias) {
 TEST(VectorTests, swizzleOutOfRangeRejected) {
     try {
         runI32(
-            "        Vector<float32,2> v = new Vector<float32,2>(1.0f, 2.0f);\n"
+            "        Vector<float32,2> v = heap Vector<float32,2>(1.0f, 2.0f);\n"
             "        Vector<float32,3> bad = v.xyz;\n"
             "        return 0;\n");
         FAIL() << "expected CAJETA_ERROR_VECTOR_COMPONENT";
@@ -307,8 +307,8 @@ TEST(VectorTests, swizzleOutOfRangeRejected) {
 //   a == b  = (F,F,T)        -> .any()=true, .all()=false
 TEST(VectorTests, comparisonMaskAnyAll) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
-        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 2.0f, 3.0f);\n"
+        "        Vector<float32,3> a = heap Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
+        "        Vector<float32,3> b = heap Vector<float32,3>(4.0f, 2.0f, 3.0f);\n"
         "        int32 ltAny = (a < b).any() ? 1 : 0;\n"     // 1
         "        int32 ltAll = (a < b).all() ? 1 : 0;\n"     // 0
         "        int32 eqAny = (a == b).any() ? 1 : 0;\n"    // 1
@@ -319,8 +319,8 @@ TEST(VectorTests, comparisonMaskAnyAll) {
 //   a=(1,5,3) b=(4,2,6): (a<b)=(T,F,T) -> (1,2,3) -> sum 6.
 TEST(VectorTests, maskSelectIsMin) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,3> a = new Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
-        "        Vector<float32,3> b = new Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
+        "        Vector<float32,3> a = heap Vector<float32,3>(1.0f, 5.0f, 3.0f);\n"
+        "        Vector<float32,3> b = heap Vector<float32,3>(4.0f, 2.0f, 6.0f);\n"
         "        Vector<float32,3> m = (a < b).select(a, b);\n"
         "        return (int32)(m.x + m.y + m.z);\n"), 6);  // 1+2+3
 }
@@ -329,8 +329,8 @@ TEST(VectorTests, maskSelectIsMin) {
 //   (x > 0) = (F,T,F) -> select(x, 0) = (0,2,0) (a ReLU) -> sum 2.
 TEST(VectorTests, maskScalarBroadcastRelu) {
     EXPECT_EQ(runI32(
-        "        Vector<float32,3> x = new Vector<float32,3>(-1.0f, 2.0f, -3.0f);\n"
-        "        Vector<float32,3> z = new Vector<float32,3>(0.0f, 0.0f, 0.0f);\n"
+        "        Vector<float32,3> x = heap Vector<float32,3>(-1.0f, 2.0f, -3.0f);\n"
+        "        Vector<float32,3> z = heap Vector<float32,3>(0.0f, 0.0f, 0.0f);\n"
         "        Vector<float32,3> y = (x > 0.0f).select(x, z);\n"
         "        return (int32)(y.x + y.y + y.z);\n"), 2);  // ReLU -> (0,2,0)
 }
@@ -339,10 +339,10 @@ TEST(VectorTests, maskScalarBroadcastRelu) {
 // c = (1,2)+(10,20) = (11,22); e = (3,4)+(3,4) = (6,8). c.y + e.x = 22 + 6 = 28.
 TEST(VectorTests, halfAndBfloat16Elements) {
     EXPECT_EQ(runI32(
-        "        Vector<float16,2> a = new Vector<float16,2>(1.0f, 2.0f);\n"
-        "        Vector<float16,2> b = new Vector<float16,2>(10.0f, 20.0f);\n"
+        "        Vector<float16,2> a = heap Vector<float16,2>(1.0f, 2.0f);\n"
+        "        Vector<float16,2> b = heap Vector<float16,2>(10.0f, 20.0f);\n"
         "        Vector<float16,2> c = a + b;\n"
-        "        Vector<bfloat16,2> d = new Vector<bfloat16,2>(3.0f, 4.0f);\n"
+        "        Vector<bfloat16,2> d = heap Vector<bfloat16,2>(3.0f, 4.0f);\n"
         "        Vector<bfloat16,2> e = d + d;\n"
         "        return (int32)(float32) c.y + (int32)(float32) e.x;\n"), 28);
 }
@@ -351,7 +351,7 @@ TEST(VectorTests, halfAndBfloat16Elements) {
 TEST(VectorTests, componentOutOfRangeRejected) {
     try {
         runI32(
-            "        Vector<float32,3> v = new Vector<float32,3>(1.0f, 2.0f, 3.0f);\n"
+            "        Vector<float32,3> v = heap Vector<float32,3>(1.0f, 2.0f, 3.0f);\n"
             "        return (int32) v.w;\n");
         FAIL() << "expected CAJETA_ERROR_VECTOR_COMPONENT";
     } catch (cajeta::Exception& e) {
@@ -363,7 +363,7 @@ TEST(VectorTests, componentOutOfRangeRejected) {
 TEST(VectorTests, constructorArityMismatchRejected) {
     try {
         runI32(
-            "        Vector<float32,4> v = new Vector<float32,4>(1.0f, 2.0f);\n"
+            "        Vector<float32,4> v = heap Vector<float32,4>(1.0f, 2.0f);\n"
             "        return 0;\n");
         FAIL() << "expected CAJETA_ERROR_VECTOR_CONSTRUCT";
     } catch (cajeta::Exception& e) {

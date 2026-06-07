@@ -2,16 +2,38 @@ package cajeta.codec.json;
 
 import cajeta.error.RecoverableException;
 
-// Thrown by JsonReader on malformed input. The reader's state
-// after the throw is undefined; discard the reader.
-//
-// `position` is the byte offset (0-based) at which the parser
-// noticed the problem. v1 carries only the offset; line/column
-// derivation can land later via a one-shot scan when the message
-// is formatted.
+/**
+ * Recoverable exception thrown by `JsonReader` on malformed input.
+ * After the throw the reader's state is undefined — discard it and
+ * start over from a fresh source.
+ *
+ * Being a `RecoverableException`, it is the kind of error a caller
+ * can reasonably catch and proceed past rather than aborting.
+ *
+ * ## position
+ *
+ * `position` is the byte offset (0-based) at which the parser noticed
+ * the problem. v1 carries only the offset; line/column derivation can
+ * land later via a one-shot scan when the message is formatted.
+ *
+ * ## Usage
+ *
+ * Typically raised from inside the reader and caught by the caller:
+ *
+ * ```cajeta
+ * throw heap JsonParseException("unexpected character", this.pos);
+ * ```
+ */
 public class JsonParseException extends RecoverableException {
     public int64 position;
 
+    /**
+     * Build an exception describing a parse failure at a byte offset.
+     *
+     * ```cajeta
+     * throw heap JsonParseException("trailing comma", 42);
+     * ```
+     */
     public JsonParseException(String message, int64 position) {
         this.message = message;
         this.cause = 0;

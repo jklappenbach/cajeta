@@ -1,0 +1,21 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+
+/**
+ * A `connect` was actively refused by the peer — nothing is
+ * listening on the target address/port (the peer sent a TCP RST in
+ * response to the SYN). POSIX `ECONNREFUSED` / Winsock
+ * `WSAECONNREFUSED`. `kind == NetException.KIND_CONNECTION_REFUSED`
+ * (2). See [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ *
+ * The message cites the address that refused (the connecting code
+ * formats `host:port` into it) so the diagnostic is actionable.
+ */
+public class ConnectionRefusedException extends NetException {
+    public ConnectionRefusedException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 2;   // NetException.KIND_CONNECTION_REFUSED
+    }
+}

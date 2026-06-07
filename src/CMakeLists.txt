@@ -23,10 +23,25 @@ add_definitions(-DANTLR4CPP_STATIC)
 
 find_package(glog 0.6.0 REQUIRED)
 find_package(GTest REQUIRED)
+# zlib backs the embedded-IDE-plugin extraction (`cajeta ide install`): the
+# plugin distribution zip's DEFLATE entries are raw-inflated via zlib. Linked
+# unconditionally (the lld branch below also uses it, but that path is optional).
+find_package(ZLIB REQUIRED)
 # libcrypto from OpenSSL backs `cajeta archive sign` / `verify-sig`
 # (ed25519 detached signatures + PEM key parsing). See
 # cajeta-docs/ArchiveManagement.md §8.
 find_package(OpenSSL REQUIRED)
+
+# libcurl powers the HTTP repository driver (Phase 6b: bearer + mTLS
+# auth, GETs against the v1 registry REST API). Linked PUBLIC so the
+# header surface is reachable from test code that exercises the
+# in-process HTTP fixture server.
+find_package(CURL REQUIRED)
+# zlib is used unconditionally by the OCI image writer (Phase 9, gzip
+# layer encoding). It's also pulled in by lld below — that block stays
+# but is now redundant on the linker side. Doubling the find_package
+# is a no-op (CMake caches the target).
+find_package(ZLIB REQUIRED)
 
 # LLVM (since 18) expects an IMPORTED target zstd::libzstd_shared.
 # Prefer the proper find_package(zstd CONFIG) path — MSYS2 (mingw-w64),
@@ -229,7 +244,7 @@ else()
     llvm_map_components_to_libnames(LLVM_LIBS
             support core irreader option
             target mc passes analysis bitwriter bitreader
-            orcjit executionengine runtimedyld linker
+            orcjit orcdebugging jitlink executionengine runtimedyld linker
             AllTargetsAsmParsers
             AllTargetsCodeGens
             AllTargetsDescs
@@ -288,6 +303,11 @@ set(BINARY ${CMAKE_PROJECT_NAME})
 # consistent.
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS LIST_DIRECTORIES false *.h *.cpp)
 list(FILTER SOURCES EXCLUDE REGEX ".*/main\\.cpp$")
+# DocCommand.cpp (the `cajeta doc` forwarder) is compiled into the cajeta
+# executable, NOT cajeta_lib, so wiring it to the cajetadoc engine doesn't add
+# include/define usage-requirements to cajeta_lib and force a full recompile of
+# the compiler. See the executable definition below.
+list(FILTER SOURCES EXCLUDE REGEX ".*/cli/DocCommand\\.cpp$")
 
 set(GENERATED_SOURCES
         ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
@@ -376,14 +396,24 @@ if(APPLE)
     list(APPEND CAJETA_RT_FLAGS "-fno-emulated-tls")
 endif()
 
+# cajeta_runtime.c is a single TU that `#include`s the per-subsystem native
+# sources (cajeta_net_*.c, cajeta_hash_*.c, …). A bare `DEPENDS` on the top
+# file would NOT rebuild the bitcode when one of those included .c files
+# changes — clang emits no dependency info without `-MD`. Emit a depfile and
+# wire it through `DEPFILE` so every transitive include is tracked (Ninja);
+# otherwise edits to an included runtime source silently ship a stale bitcode
+# (a real bug: a new intrinsic added to e.g. cajeta_net_socket.c would be
+# missing from the embedded runtime, so getRuntimeFunction can't find it).
 add_custom_command(
         OUTPUT ${CAJETA_RT_BC}
         COMMAND ${CAJETA_CLANG} -c -emit-llvm -O2 -fno-builtin
                 -ffunction-sections -fdata-sections
+                -MD -MF ${CAJETA_RT_BC}.d
                 -I${CAJETA_XXHASH_INCLUDE_DIR}
                 ${CAJETA_RT_FLAGS}
                 -o ${CAJETA_RT_BC} ${CAJETA_RT_SRC}
         DEPENDS ${CAJETA_RT_SRC}
+        DEPFILE ${CAJETA_RT_BC}.d
         COMMENT "Compiling Cajeta runtime to LLVM bitcode")
 
 # xxd -i derives the C variable name from the input filename, so we run it in
@@ -403,6 +433,15 @@ list(APPEND GENERATED_SOURCES ${CAJETA_RT_EMBED})
 # embedded bitcode version; the native one only matters for the test binary.
 set_source_files_properties(${CAJETA_RT_SRC} PROPERTIES LANGUAGE C)
 list(APPEND GENERATED_SOURCES ${CAJETA_RT_SRC})
+
+# cajeta.net TLS engine (NET-5.1). Compiled as a STANDALONE native C object —
+# NOT #included into cajeta_runtime.c — so OpenSSL's headers stay out of the
+# embedded JIT bitcode (which is loaded into every JIT test). The `__cajeta_tls_*`
+# symbols land in libcajeta_lib, so the test binary calls them directly and the
+# JIT resolves them through its process-symbol generator at @Native call sites.
+set(CAJETA_TLS_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_tls.c)
+set_source_files_properties(${CAJETA_TLS_SRC} PROPERTIES LANGUAGE C)
+list(APPEND GENERATED_SOURCES ${CAJETA_TLS_SRC})
 
 # Embed the cajeta stdlib `.cajeta` source files into the compiler binary.
 # The Compiler iterates the resulting cajeta::stdlib::g_files manifest at
@@ -427,10 +466,45 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
         ${CAJETA_STDLIB_ROOT}/cajeta/error
+        # cajeta/time before cajeta/threading: R9.3's withTimeout (a stdlib
+        # function in cajeta.threading) takes a Duration parameter, so the
+        # Duration class has to be loadable when threading parses.
+        ${CAJETA_STDLIB_ROOT}/cajeta/time
+        # Threading sync primitives (Lock/LockGuard today; Mutex/RwLock/
+        # ConditionVariable/Channel/Semaphore land in later R7 sub-phases).
+        # After cajeta/lang (needs Object) and cajeta/error (future
+        # Channel close/timeout throws).
+        ${CAJETA_STDLIB_ROOT}/cajeta/threading
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
+        # ── cajeta.net (cajeta-net branch, NET-* plan) — PURE-LOGIC SLICE.
+        # Only directories whose .cajeta sources are pure logic (no socket /
+        # reactor intrinsic calls) are eagerly compiled here. The socket-backed
+        # files call compiler receiver-dispatch lowering that isn't implemented
+        # yet (NET-1.3 / MethodCallExpression.cpp); eager-compiling them crashes
+        # the stdlib build. Those are isolated under gated subdirs and are NOT
+        # listed: cajeta/net/socket, cajeta/net/reactor, cajeta/net/dns, and the
+        # socket-backed files of net/http + net/ws (see net/http/socket,
+        # net/ws/socket). The embed glob is non-recursive, so listing net/http
+        # picks up only its pure message-model files, not net/http/socket.
+        # cajeta.net core: NetException + exception hierarchy + Headers +
+        # TcpStream/TcpListener/UdpSocket (sync surface, b1/b2) + the async
+        # buffered-stream trio AsyncReader/AsyncWriter/RingBuffer (NET-3.5, b3).
+        # The async trio declares `package cajeta.net` and lives here (NOT under
+        # net/socket): the JIT compile path enforces package==dir, so a file
+        # under net/socket would have to declare `package cajeta.net.socket`.
+        # The b5 server stack (Server/SharedPoolServer/ConnectionLimiter/...)
+        # is isolated under net/socket/server (NOT listed) so it stays gated.
+        ${CAJETA_STDLIB_ROOT}/cajeta/net
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/reactor  # async I/O reactor (NET-3.1 @Native bridges, b3)
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/dns      # DNS (NET-2, b4) — diagnostic un-gate
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/tls      # TLS engine surface (NET-5, b6)
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/uri      # RFC 3986 URI parse/build (NET-6)
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/http     # HTTP/1.1 message model (NET-7) — pure files; net/http/socket gated
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/ws       # WebSocket frame codec + protocol (NET-10) — pure files; net/ws/socket gated
         ${CAJETA_STDLIB_ROOT}/cajeta/wire
+        ${CAJETA_STDLIB_ROOT}/cajeta/codec        # Base64 (NET-11.3)
         ${CAJETA_STDLIB_ROOT}/cajeta/codec/json
         # Larger-than-memory collections. Listed after collection/wire/
         # io.file so its dependencies (BPlusTree shape, Encoder, File) are
@@ -494,6 +568,127 @@ set_source_files_properties(${CAJETA_STDLIB_EMBED} PROPERTIES GENERATED TRUE)
 list(APPEND GENERATED_SOURCES ${CAJETA_STDLIB_EMBED})
 # ------------------------------------------------------------------------------
 
+# --- Embedded IntelliJ IDEA plugin (plan §7) ---------------------------------
+# Embed the plugin distribution zip into the compiler binary via xxd -i (same
+# mechanism as the runtime bitcode), so `cajeta ide install` can extract it
+# into the IDE plugins dir from any distribution form (D8). The Gradle build
+# (release.yml §10) drops Cajeta-<ver>.zip under build/distributions/ before
+# this configure runs. When no zip is present (a configure before the plugin
+# build, e.g. a fresh dev tree), embed a zero-length stub so the build still
+# links; `cajeta ide install` then reports no bundled plugin.
+set(CAJETA_PLUGIN_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_plugin_embedded.cpp)
+file(GLOB CAJETA_PLUGIN_ZIPS CONFIGURE_DEPENDS
+     ${PROJECT_SOURCE_DIR}/ide-plugins/idea/build/distributions/*.zip)
+if(CAJETA_PLUGIN_ZIPS)
+    list(GET CAJETA_PLUGIN_ZIPS 0 CAJETA_PLUGIN_ZIP)
+    # xxd derives the C symbol from the input filename, so copy to a stable
+    # name (cajeta_plugin.zip) first → symbols cajeta_plugin_zip[/ _len].
+    add_custom_command(
+        OUTPUT ${CAJETA_PLUGIN_EMBED}
+        COMMAND ${CMAKE_COMMAND} -E copy ${CAJETA_PLUGIN_ZIP}
+                ${CMAKE_CURRENT_BINARY_DIR}/cajeta_plugin.zip
+        COMMAND ${CAJETA_XXD} -i cajeta_plugin.zip ${CAJETA_PLUGIN_EMBED}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS ${CAJETA_PLUGIN_ZIP}
+        COMMENT "Embedding IDE plugin ${CAJETA_PLUGIN_ZIP}")
+    message(STATUS "Embedding IDE plugin: ${CAJETA_PLUGIN_ZIP}")
+else()
+    # Zero-length stub matching the xxd symbol names. Written at configure time
+    # (no command) so the source always exists; CONFIGURE_DEPENDS on the glob
+    # re-runs cmake and flips to the xxd path once a zip appears.
+    file(WRITE ${CAJETA_PLUGIN_EMBED}
+        "// AUTO-GENERATED stub: no IDE plugin zip available at build time.\n"
+        "unsigned char cajeta_plugin_zip[1] = { 0 };\n"
+        "unsigned int cajeta_plugin_zip_len = 0;\n")
+    message(STATUS "No IDE plugin zip under ide-plugins/idea/build/distributions/; embedding stub")
+endif()
+set_source_files_properties(${CAJETA_PLUGIN_EMBED} PROPERTIES GENERATED TRUE)
+list(APPEND GENERATED_SOURCES ${CAJETA_PLUGIN_EMBED})
+# ------------------------------------------------------------------------------
+
+# Isolate the llvm::Error consumers (toString/cantFail/consumeError) used by
+# the in-process JIT host in one TU and compile it -fno-rtti when the host LLVM
+# has RTTI off (ROCm / many upstream builds) — same rationale as
+# test/CMakeLists.txt's handling of JitErrorShim.cpp. No-op when LLVM has RTTI.
+if(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
+    set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/jit/CajetaJitErrorShim.cpp
+            PROPERTIES COMPILE_OPTIONS "-fno-rtti")
+endif()
+
+# ------------------------------------------------------------------------------
+# Embedded `cajeta init` archetype templates.
+#
+# samples/buildtool/<type>/ doubles as the on-disk worked example AND
+# the source-of-truth for what `cajeta init <type>` writes. CMake walks
+# those trees here and emits a generated .cpp that embeds the bytes.
+# This eliminates drift between the samples and the archetypes the
+# binary ships.
+#
+# Convention: only `cajeta.json` and anything under `src/` is embedded.
+# `run.sh` and `README.md` describe the SAMPLE (where it lives in the
+# repo, what today's CLI surface can exercise) — that's sample-meta,
+# not what a freshly-init'd project needs. The init command writes a
+# minimal next-steps message instead.
+set(CAJETA_INIT_TEMPLATE_ROOT ${PROJECT_SOURCE_DIR}/samples/buildtool)
+set(CAJETA_INIT_TEMPLATE_NAMES basic workspace multi-binary melt)
+set(CAJETA_INIT_TEMPLATE_FILES "")
+set(CAJETA_INIT_MANIFEST_ROWS "")
+foreach(tname ${CAJETA_INIT_TEMPLATE_NAMES})
+    set(troot ${CAJETA_INIT_TEMPLATE_ROOT}/${tname})
+    if (NOT EXISTS ${troot})
+        message(FATAL_ERROR
+            "init template '${tname}' missing: ${troot} does not exist")
+    endif()
+    # Manifest (always one). Glob picks up the cajeta.json at the root
+    # and per-member manifests under workspace/.
+    file(GLOB_RECURSE manifests CONFIGURE_DEPENDS ${troot}/cajeta.json
+                                                  ${troot}/*/cajeta.json
+                                                  ${troot}/*/*/cajeta.json
+                                                  ${troot}/*/*/*/cajeta.json)
+    # Source files (zero or more — `melt` has none).
+    file(GLOB_RECURSE sources CONFIGURE_DEPENDS ${troot}/src/*.cajeta
+                                                ${troot}/*/src/*.cajeta
+                                                ${troot}/*/*/src/*.cajeta
+                                                ${troot}/*/*/*/src/*.cajeta
+                                                ${troot}/*/*/*/*/src/*.cajeta)
+    list(SORT manifests)
+    list(SORT sources)
+    foreach(abs ${manifests} ${sources})
+        file(RELATIVE_PATH rel "${troot}" "${abs}")
+        list(APPEND CAJETA_INIT_TEMPLATE_FILES ${abs})
+        list(APPEND CAJETA_INIT_MANIFEST_ROWS "${tname}\t${rel}\t${abs}")
+    endforeach()
+endforeach()
+
+set(CAJETA_INIT_EMBED    ${CMAKE_CURRENT_BINARY_DIR}/cajeta_init_embedded.cpp)
+set(CAJETA_INIT_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/cajeta_init_manifest.txt)
+
+# Write the manifest at configure time. CONFIGURE_DEPENDS on the globs
+# above re-runs cmake (and thus rewrites this manifest) when samples
+# are added or removed. The custom-command's DEPENDS picks up edits.
+file(WRITE "${CAJETA_INIT_MANIFEST}" "")
+foreach(row ${CAJETA_INIT_MANIFEST_ROWS})
+    file(APPEND "${CAJETA_INIT_MANIFEST}" "${row}\n")
+endforeach()
+
+add_custom_command(
+    OUTPUT ${CAJETA_INIT_EMBED}
+    COMMAND ${CMAKE_COMMAND}
+            -DMANIFEST=${CAJETA_INIT_MANIFEST}
+            -DEMBED_OUT=${CAJETA_INIT_EMBED}
+            -P ${PROJECT_SOURCE_DIR}/cmake/EmbedInitTemplates.cmake
+    DEPENDS ${CAJETA_INIT_TEMPLATE_FILES}
+            ${CAJETA_INIT_MANIFEST}
+            ${PROJECT_SOURCE_DIR}/cmake/EmbedInitTemplates.cmake
+    COMMENT "Embedding cajeta init archetype templates into ${CAJETA_INIT_EMBED}"
+    VERBATIM
+)
+
+set_source_files_properties(${CAJETA_INIT_EMBED} PROPERTIES GENERATED TRUE)
+list(APPEND GENERATED_SOURCES ${CAJETA_INIT_EMBED})
+# ------------------------------------------------------------------------------
+
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})
 target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         PUBLIC
@@ -509,13 +704,22 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         ${LLVM_LIBS}
         glog::glog
         zstd
-        OpenSSL::Crypto)
+        ZLIB::ZLIB
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl)
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
 # BCryptGenRandom for its RNG on Windows — link the bcrypt system lib.
 # Only the test binary actually pulls the native runtime object; on
 # cajeta.exe this is a harmless unused import.
 if(WIN32)
-    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt)
+    # bcrypt: __cajeta_alloc/random helpers. ws2_32: the cajeta.net native
+    # runtime (cajeta_net_*.c, #included into cajeta_runtime.c) calls Winsock —
+    # WSAStartup/socket/bind/getaddrinfo/select/etc. crypt32: the OS trust-store
+    # shim in cajeta_tls.c (CertOpenSystemStore / CertEnumCertificatesInStore,
+    # NET-5.3). PUBLIC so every consumer (cajeta.exe, cajeta_test,
+    # cajeta_debug_test) inherits the import lib.
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt ws2_32 crypt32)
 endif()
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src
@@ -534,5 +738,17 @@ if(CAJETA_HAS_SPV_COOP_MATRIX)
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_SPV_COOP_MATRIX=1)
 endif()
 
-add_executable(${CMAKE_PROJECT_NAME} main.cpp)
+# `cajeta doc` subcommand. DocCommand.cpp + the cajetadoc engine (the
+# cajetadoc_core OBJECT library) are compiled/linked into the executable only,
+# so cajeta_lib (the whole compiler) is untouched and not forced to recompile.
+# cajetadoc_core's objects carry the antlr parser refs they need; the executable
+# also links cajeta_lib, which defines those same parser symbols. When cajetadoc
+# is disabled (-DCAJETA_BUILD_CAJETADOC=OFF) the stub branch of DocCommand.cpp
+# compiles instead (no CAJETA_HAS_DOC, no cajetadoc include needed).
+add_executable(${CMAKE_PROJECT_NAME} main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/cli/DocCommand.cpp)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_PROJECT_NAME}_lib)
+if(TARGET cajetadoc_core)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE cajetadoc_core)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE CAJETA_HAS_DOC=1)
+endif()

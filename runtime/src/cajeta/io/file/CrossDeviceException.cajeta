@@ -3,13 +3,38 @@ package cajeta.io.file;
 import cajeta.lang.String;
 
 /**
- * `moveTo` across filesystems on POSIX — `rename()` returns
- * `EXDEV`. Callers can either fall back to copy+delete via the
- * forthcoming `moveToOrCopy(target)`, or upfront-stage the file
- * on the destination's filesystem. See
- * `cajeta-docs/stdlib/io/file/Errors.md`.
+ * `IoException` raised when a rename crosses filesystem
+ * boundaries on POSIX — the underlying `rename(2)` returns
+ * `EXDEV`. A rename can only be a metadata operation within a
+ * single filesystem; across devices the bytes must actually be
+ * copied.
+ *
+ * ## Recovery
+ * Catch it and fall back to a manual copy-then-delete: read the
+ * source with `File``.readAllBytes`, write it to the
+ * destination with `File``.writeAllBytes`, then remove the
+ * original. `delete()` is a `Path` method, so wrap the source
+ * in a `Path` via `Path.of(...)` before calling it.
+ *
+ * ```cajeta
+ * #int8[] data = File.readAllBytes("/mnt/usb/report.pdf");
+ * File.writeAllBytes("/home/julian/report.pdf", data, (int32) data.count());
+ * Path.of("/mnt/usb/report.pdf").delete();   // unlink the original
+ * ```
+ *
+ * Sits alongside the rest of the hierarchy (`AlreadyExistsException`,
+ * `NotFoundException`, `PermissionException`, `DiskFullException`).
+ * See `cajeta-docs/stdlib/io/file/Errors.md`.
  */
 public class CrossDeviceException extends IoException {
+    /**
+     * Wrap an `EXDEV` failure with a human-readable `message`
+     * (see `String`).
+     *
+     * ```cajeta
+     * throw heap CrossDeviceException("cannot rename across devices: /mnt/usb -> /home");
+     * ```
+     */
     public CrossDeviceException(String message) {
         super(message);
     }

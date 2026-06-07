@@ -1,0 +1,221 @@
+package cajeta.time;
+
+import cajeta.lang.Comparable;
+
+/**
+ * An immutable moment on the UTC timeline with nanosecond precision, modeled on
+ * `java.time.Instant`. Stored as `int64 epochSecond` (seconds since
+ * 1970-01-01T00:00:00Z, may be negative) plus `int32 nano` (0..999999999), the
+ * canonical normalized form so equal instants compare and hash equally.
+ *
+ * A pure stack value type: every factory and transform returns a fresh `stack`
+ * value by copy. Arithmetic is via `Duration`; calendar breakdown is done by
+ * projecting through `LocalDateTime` at a `ZoneOffset`. Implements
+ * `Comparable`, so instants sort chronologically.
+ *
+ * ```cajeta
+ * stack Instant t0 = Instant.ofEpochMilli(1717599600000);
+ * stack Instant t1 = t0.plus(Duration.ofSeconds(90));
+ * stack Duration elapsed = Instant.between(t0, t1);   // 90s
+ * boolean earlier = t0.isBefore(t1);                  // true
+ * ```
+ */
+public class Instant implements Comparable<Instant> {
+    int64 epochSecond;
+    int32 nano;
+
+    /**
+     * A normalized instant from a raw `epochSecond` and `nano`; the caller must
+     * already keep `nano` in 0..999999999. Prefer the `ofEpoch*` factories,
+     * which normalize for you.
+     *
+     * ```cajeta
+     * stack Instant t = stack Instant(1717599600, 500000000);  // +0.5s nanos
+     * ```
+     */
+    public Instant(int64 epochSecond, int32 nano) {
+        this.epochSecond = epochSecond;
+        this.nano = nano;
+    }
+
+    /**
+     * The instant `epochSecond` seconds after the epoch, zero nanos.
+     *
+     * ```cajeta
+     * stack Instant t = Instant.ofEpochSecond(1717599600);
+     * ```
+     */
+    public static Instant ofEpochSecond(int64 epochSecond) {
+        return stack Instant(epochSecond, 0);
+    }
+
+    /**
+     * The instant `epochSecond` seconds plus `nanoAdjustment` nanoseconds after
+     * the epoch, normalized so the nano part lands in 0..999999999.
+     *
+     * ```cajeta
+     * stack Instant t = Instant.ofEpochSecondAdjust(10, 2500000000);  // 12.5s
+     * ```
+     */
+    public static Instant ofEpochSecondAdjust(int64 epochSecond, int64 nanoAdjustment) {
+        int64 s = epochSecond + nanoAdjustment / 1000000000;
+        int32 n = (int32) (nanoAdjustment % 1000000000);
+        if (n < 0) {
+            n = n + 1000000000;
+            s = s - 1;
+        }
+        return stack Instant(s, n);
+    }
+
+    /**
+     * The instant `epochMilli` milliseconds after the epoch.
+     *
+     * ```cajeta
+     * stack Instant t = Instant.ofEpochMilli(1717599600000);
+     * ```
+     */
+    public static Instant ofEpochMilli(int64 epochMilli) {
+        int64 s = epochMilli / 1000;
+        int32 n = (int32) ((epochMilli % 1000) * 1000000);
+        if (n < 0) {
+            n = n + 1000000000;
+            s = s - 1;
+        }
+        return stack Instant(s, n);
+    }
+
+    /**
+     * The epoch itself, 1970-01-01T00:00:00Z.
+     *
+     * ```cajeta
+     * stack Instant base = Instant.epoch();
+     * ```
+     */
+    public static Instant epoch() {
+        return stack Instant(0, 0);
+    }
+
+    /** Seconds since the epoch (may be negative). */
+    public int64 getEpochSecond() {
+        return this.epochSecond;
+    }
+
+    /** Nanosecond-of-second, 0..999999999. */
+    public int32 getNano() {
+        return this.nano;
+    }
+
+    /** Milliseconds since the epoch (truncated toward negative infinity by construction). */
+    public int64 toEpochMilli() {
+        return this.epochSecond * 1000 + (int64) (this.nano / 1000000);
+    }
+
+    /** This instant plus `seconds` seconds. */
+    public Instant plusSeconds(int64 seconds) {
+        return stack Instant(this.epochSecond + seconds, this.nano);
+    }
+
+    /** This instant plus `millis` milliseconds, normalized. */
+    public Instant plusMillis(int64 millis) {
+        int64 addNanos = millis * 1000000;
+        int64 total = (int64) this.nano + addNanos;
+        int64 s = this.epochSecond + total / 1000000000;
+        int32 n = (int32) (total % 1000000000);
+        if (n < 0) {
+            n = n + 1000000000;
+            s = s - 1;
+        }
+        return stack Instant(s, n);
+    }
+
+    /** This instant plus `nanos` nanoseconds, normalized. */
+    public Instant plusNanos(int64 nanos) {
+        int64 total = (int64) this.nano + nanos;
+        int64 s = this.epochSecond + total / 1000000000;
+        int32 n = (int32) (total % 1000000000);
+        if (n < 0) {
+            n = n + 1000000000;
+            s = s - 1;
+        }
+        return stack Instant(s, n);
+    }
+
+    /** This instant advanced by a `Duration`. */
+    public Instant plus(Duration d) {
+        int64 total = (int64) this.nano + d.toNanos();
+        int64 s = this.epochSecond + total / 1000000000;
+        int32 n = (int32) (total % 1000000000);
+        if (n < 0) {
+            n = n + 1000000000;
+            s = s - 1;
+        }
+        return stack Instant(s, n);
+    }
+
+    /** This instant moved back by a `Duration`. */
+    public Instant minus(Duration d) {
+        int64 total = (int64) this.nano - d.toNanos();
+        int64 s = this.epochSecond + total / 1000000000;
+        int32 n = (int32) (total % 1000000000);
+        if (n < 0) {
+            n = n + 1000000000;
+            s = s - 1;
+        }
+        return stack Instant(s, n);
+    }
+
+    /**
+     * The elapsed `Duration` from `start` to `end` (negative if end precedes
+     * start). A two-parameter static returning a stack value — allowed because
+     * the return is an inline `stack Duration(...)` literal.
+     *
+     * ```cajeta
+     * stack Duration d = Instant.between(start, end);
+     * ```
+     */
+    public static Duration between(Instant start, Instant end) {
+        int64 secs = end.epochSecond - start.epochSecond;
+        int64 nanos = secs * 1000000000 + (int64) (end.nano - start.nano);
+        return stack Duration(nanos);
+    }
+
+    /**
+     * Total order on the UTC timeline: negative if this precedes `other`, zero
+     * if equal, positive if after.
+     */
+    public int32 compareTo(Instant other) {
+        if (this.epochSecond < other.epochSecond) {
+            return -1;
+        }
+        if (this.epochSecond > other.epochSecond) {
+            return 1;
+        }
+        if (this.nano < other.nano) {
+            return -1;
+        }
+        if (this.nano > other.nano) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /** True iff this instant strictly precedes `other`. */
+    public boolean isBefore(Instant other) {
+        return this.compareTo(other) < 0;
+    }
+
+    /** True iff this instant is strictly after `other`. */
+    public boolean isAfter(Instant other) {
+        return this.compareTo(other) > 0;
+    }
+
+    /** Structural equality by (epochSecond, nano). */
+    public static boolean operator== (Instant a, Instant b) {
+        return a.epochSecond == b.epochSecond && a.nano == b.nano;
+    }
+
+    /** Content hash mixing the two fields. */
+    public int64 hash() {
+        return this.epochSecond * 1000000007 + (int64) this.nano;
+    }
+}

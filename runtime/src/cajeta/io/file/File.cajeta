@@ -3,7 +3,7 @@ package cajeta.io.file;
 import cajeta.lang.String;
 
 /**
- * Two patterns under one class name (see
+ * Filesystem access in two patterns under one class name (see
  * `cajeta-docs/stdlib/io/file/File.md`):
  *
  *   - **Static one-shots** — `readAllBytes` / `writeAllBytes`,
@@ -12,6 +12,22 @@ import cajeta.lang.String;
  *   - **Instance random-access handle** — Phase E. Returned by
  *     `File.open(path, mode)`; supports seek, lock, truncate,
  *     sync, and positional read/write.
+ *
+ * Pick a factory by what you need: whole-file in one call, a
+ * streaming reader/writer, or a seekable handle. Open modes are
+ * selected with `OpenMode`.
+ *
+ * ```cajeta
+ * // Whole-file one-shot.
+ * #int8[] all = File.readAllBytes("/etc/hostname");
+ *
+ * // Seekable random-access handle.
+ * #File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
+ * f.seek(4096);
+ * int8[] page = heap int8[512];
+ * f.read(page, 0, 512);
+ * f.close();
+ * ```
  *
  * All bodies are intrinsic-lowered at the call site
  * (MethodCallExpression's File-receiver dispatch); the stubs
@@ -48,11 +64,15 @@ public class File {
 
     /**
      * Read the entire file at `path` into a freshly allocated
-     * int8[]. Intrinsic-lowered to
+     * `int8[]`. Intrinsic-lowered to
      * `__cajeta_file_read_all(path)`.
+     *
+     * ```cajeta
+     * #int8[] bytes = File.readAllBytes("/etc/hostname");
+     * ```
      */
     public static #int8[] readAllBytes(String path) {
-        int8[] empty = new int8[0];
+        int8[] empty = heap int8[0];
         return empty;
     }
 
@@ -60,13 +80,24 @@ public class File {
      * Write `data[0..len)` to `path` with atomic-rename
      * semantics. Intrinsic-lowered to
      * `__cajeta_file_write_all(path, data, len)`.
+     *
+     * ```cajeta
+     * int8[] data = heap int8[3];
+     * File.writeAllBytes("/tmp/out.bin", data, 3);
+     * ```
      */
     public static void writeAllBytes(String path, int8[] data, int32 len) {
         return;
     }
 
     /**
-     * Open `path` for reading; return a streaming FileReader.
+     * Open `path` for reading; return a streaming `FileReader`.
+     *
+     * ```cajeta
+     * #FileReader r = File.openRead("/var/log/app.log");
+     * #String line = r.readString(256);
+     * r.close();
+     * ```
      */
     public static #FileReader openRead(String path) {
         return heap FileReader(-1);
@@ -74,7 +105,14 @@ public class File {
 
     /**
      * Open `path` for writing in `mode`; return a streaming
-     * FileWriter.
+     * `FileWriter`. `mode` is an `OpenMode` such as
+     * `WRITE`, `APPEND`, or `CREATE_NEW`.
+     *
+     * ```cajeta
+     * #FileWriter w = File.openWrite("/tmp/out.txt", OpenMode.APPEND);
+     * w.writeString("hello\n");
+     * w.close();
+     * ```
      */
     public static #FileWriter openWrite(String path, OpenMode mode) {
         return heap FileWriter(-1);
@@ -82,10 +120,35 @@ public class File {
 
     // Static factories for random-access (Phase E)
 
+    /**
+     * Open `path` as a seekable random-access `File` handle in
+     * the given `OpenMode`. The returned handle owns its fd;
+     * transfer it with `#` and `close()` it (or let the
+     * destructor) when done.
+     *
+     * ```cajeta
+     * #File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
+     * f.seek(1024);
+     * int8[] buf = heap int8[64];
+     * f.read(buf, 0, 64);
+     * f.close();
+     * ```
+     */
     public static #File open(String path, OpenMode mode) {
         return heap File(-1);
     }
 
+    /**
+     * Atomically create-and-open `path`, failing if it already
+     * exists (`O_CREAT | O_EXCL`). Use as a lock-file / unique-
+     * create primitive; equivalent to `open(path, OpenMode.CREATE_NEW)`
+     * with read/write access.
+     *
+     * ```cajeta
+     * #File lock = File.openExclusive("/tmp/run.lock");
+     * lock.close();
+     * ```
+     */
     public static #File openExclusive(String path) {
         return heap File(-1);
     }

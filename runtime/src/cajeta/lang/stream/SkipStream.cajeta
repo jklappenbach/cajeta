@@ -1,26 +1,45 @@
 package cajeta.lang.stream;
 
 /**
- * Intermediate combinator: wraps another Stream and discards the first
- * `n` elements from it, then passes everything else through. Lazy —
- * the skip happens on the first `next()` pull, not at construction.
- * Constructed via `someStream.skip(n)`; not typically instantiated
- * directly.
+ * Intermediate combinator: wraps another `Stream` and discards the
+ * first `n` elements from it, then passes everything else through.
+ * Lazy — the skip happens on the first `next()` pull, not at
+ * construction. Constructed via `someStream.skip(n)`; not typically
+ * instantiated directly.
  *
- * Symmetric counterpart to TakeStream: `take(n)` keeps the first n,
- * `skip(n)` discards them. Combined: `someStream.skip(2).take(3)`
- * yields elements 3..5 (Java's slice idiom).
+ * Symmetric counterpart to `TakeStream`: `take(n)` keeps the first
+ * `n`, `skip(n)` discards them. Combined, they form Java's slice idiom:
+ *
+ * ```cajeta
+ * // elements 3..5 of the source: drop 2, then keep 3
+ * #Stream<int32> sliced = nums.skip(2).take(3);
+ * int32 kept = sliced.count();   // 3
+ * ```
+ *
+ * Each pull drives a present/empty `Optional` off the source until
+ * the skip quota is met. `skip(n)` is a stateful wrapper, so it is
+ * rejected on a `.parallel()` stream — call `.sequential()` first.
  */
 public class SkipStream<T> extends Stream<T> {
     Stream<T> source;
     int32 remaining;
 
-    public SkipStream(Stream<T> source, int32 n) {
+    /**
+     * Internal — wrap `source`, scheduling its first `n` elements to be
+     * discarded on the first pull. Prefer `source.skip(n)` over
+     * constructing this directly.
+     */
+    public SkipStream(#Stream<T> source, int32 n) {
         this.source = source;
         this.remaining = n;
     }
 
-    public #Optional<T> next() {
+    /**
+     * Pull the next element, first draining and discarding up to the
+     * remaining skip quota. If the source runs dry mid-skip, returns
+     * that empty `Optional` straight through.
+     */
+    public Optional<T> next() {
         while (this.remaining > 0) {
             Optional<T> dropped = this.source.next();
             if (dropped.isEmpty()) {
@@ -31,10 +50,15 @@ public class SkipStream<T> extends Stream<T> {
         return this.source.next();
     }
 
+    /** Wrapper-chain unwind: returns the wrapped source `Stream`. */
     public Stream<?> unwrap() {
         return this.source;
     }
 
+    /**
+     * Always `true` — the skip count is encounter-order-dependent, so
+     * the parallel driver rejects this wrapper in a split chain.
+     */
     public boolean isStatefulWrapper() {
         return true;
     }

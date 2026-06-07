@@ -16,8 +16,8 @@ package cajeta.collection.ltm;
  * over-allocated by one slot so an insert can overflow in place
  * before the tree splits the node.
  *
- * @see cajeta.collection.ltm.LtmPager
- * @see cajeta.collection.ltm.BPlusTree
+ * @See cajeta.collection.ltm.LtmPager
+ * @See cajeta.collection.ltm.BPlusTree
  */
 public class LtmBPlusTreeNode<K, V> {
     public int64 pageId;
@@ -33,17 +33,29 @@ public class LtmBPlusTreeNode<K, V> {
     /** Set when the in-memory image diverges from disk; cleared on write. */
     public boolean dirty;
 
+    /**
+     * Allocates a fresh, `dirty` page image. `order` sizes the key array
+     * (over-allocated by one slot for in-place overflow); pass `leaf` to
+     * choose whether `values` or `childIds` is allocated. The `LtmPager`
+     * normally calls this when growing the tree or splitting a node.
+     *
+     * ```cajeta
+     * # newLeaf = heap LtmBPlusTreeNode<int64, string>(pageId, true, order);
+     * newLeaf.nextLeafId = oldLeaf.pageId;
+     * # internal = heap LtmBPlusTreeNode<int64, string>(rootId, false, order);
+     * ```
+     */
     public LtmBPlusTreeNode(int64 pageId, boolean leaf, int32 order) {
         this.pageId = pageId;
         this.leaf = leaf;
         this.numKeys = 0;
-        this.keys = new K[order + 1];
+        this.keys = heap K[order + 1];
         if (leaf) {
-            this.values = new V[order + 1];
+            this.values = heap V[order + 1];
             this.childIds = null;
         } else {
             this.values = null;
-            this.childIds = new int64[order + 2];
+            this.childIds = heap int64[order + 2];
         }
         this.nextLeafId = -1;
         this.dirty = true;

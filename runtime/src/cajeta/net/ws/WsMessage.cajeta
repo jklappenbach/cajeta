@@ -1,0 +1,88 @@
+package cajeta.net.ws;
+
+/**
+ * One **reassembled logical WebSocket message** (RFC 6455 §5.4) — the
+ * unit the fragmentation layer ([`WsMessageAssembler`](WsMessageAssembler.cajeta),
+ * **NET-10.4**) emits once a message's frames are all in. Where a
+ * [`WsFrame`](WsFrame.cajeta) is a single on-wire fragment, a `WsMessage`
+ * is the application-visible whole: a `text` or `binary` message whose
+ * [`payload`](#payload) is the concatenation of its data frame and any
+ * following continuation frames. A pure value type (no I/O), the WS
+ * analogue of an HTTP request/response body once
+ * [`BodyReader`](../http/BodyReader.cajeta) has drained it.
+ *
+ * ## Fields
+ *
+ *   - [`opcode`](#opcode) — the message kind: [`WsOpcode.TEXT`](WsOpcode.cajeta)
+ *     (`0x1`) or [`WsOpcode.BINARY`](WsOpcode.cajeta) (`0x2`). Never a
+ *     control opcode (control frames are passed through, not reassembled)
+ *     and never `CONTINUATION` — the message carries the opcode of its
+ *     *first* frame, which the continuation frames inherit implicitly
+ *     (RFC 6455 §5.4).
+ *   - [`payload`](#payload) — the **full reassembled** application bytes:
+ *     the first frame's payload followed by every continuation frame's
+ *     payload, in order. An empty — but non-null — `int8[]` for a
+ *     zero-length message (an empty text frame). Owned by the message.
+ *
+ * A message decoded from a *single, unfragmented* frame
+ * (`FIN == 1`, opcode text/binary) is simply that frame's opcode and
+ * payload; a fragmented message (a `FIN == 0` text/binary frame, zero or
+ * more `FIN == 0` continuations, a final `FIN == 1` continuation) carries
+ * the concatenated payload. The assembler hides the distinction: the
+ * application sees only whole messages.
+ */
+public class WsMessage {
+    /**
+     * The message kind — [`WsOpcode.TEXT`](WsOpcode.cajeta) (`0x1`) or
+     * [`WsOpcode.BINARY`](WsOpcode.cajeta) (`0x2`). Field 0.
+     */
+    public int32 opcode;
+    /** The full reassembled application payload (never null; may be empty). Field 1. */
+    public int8[] payload;
+
+    /**
+     * Field-pinning no-arg constructor: an empty binary message. The
+     * assembler builds populated instances; this keeps the layout
+     * constructible and free of dangling state.
+     */
+    public WsMessage() {
+        this.opcode = 2;            // WsOpcode.BINARY
+        this.payload = heap int8[0];
+    }
+
+    /**
+     * Build a message from its kind + reassembled bytes. Takes ownership
+     * of `payload` (the full, already-concatenated application bytes).
+     */
+    public static #WsMessage of(int32 opcode, #int8[] payload) {
+        WsMessage m = heap WsMessage();
+        m.opcode = opcode;
+        m.payload = payload;
+        return #m;
+    }
+
+    /** The message kind (`WsOpcode.TEXT` or `WsOpcode.BINARY`). */
+    public int32 getOpcode() {
+        return this.opcode;
+    }
+
+    /** The full reassembled application payload (never null; may be empty). */
+    public int8[] getPayload() {
+        return this.payload;
+    }
+
+    /** Reassembled payload length in bytes. */
+    public int32 length() {
+        return this.payload.count();
+    }
+
+    /** `true` when this is a text message (`WsOpcode.TEXT`). */
+    public boolean isText() {
+        return this.opcode == WsOpcode.TEXT;
+    }
+
+    /** `true` when this is a binary message (`WsOpcode.BINARY`). */
+    public boolean isBinary() {
+        return this.opcode == WsOpcode.BINARY;
+    }
+}

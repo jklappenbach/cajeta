@@ -30,6 +30,28 @@ import cajeta.error.Exception;
  * Per stdlib/Streams.md, Optional<T> extends Stream<T> with single-
  * shot next(). That lands once method-override on generic stdlib
  * classes is verified end-to-end via ArrayStream below.
+ *
+ * ## Usage
+ *
+ * A stream comes from a splittable root such as `ArrayStream`; chain
+ * lazy intermediates and finish with an eager terminal:
+ *
+ * ```cajeta
+ * Stream<int32> s = ArrayStream.from(nums);
+ * int32 evens = s.filter((x) -> x % 2 == 0).count();
+ *
+ * // cross-type fold into a wider accumulator
+ * int64 sum = ArrayStream.from(nums)
+ *     .fold<int64>(0L, (acc, e) -> acc + e);
+ *
+ * // opt into the parallel path; a combiner merges per-worker partials
+ * int64 par = ArrayStream.from(nums).parallel()
+ *     .fold<int64>(0L, (acc, e) -> acc + e, (a, b) -> a + b);
+ * ```
+ *
+ * Element lookups (`findFirst`) return an `Optional`; reductions can
+ * be packaged with a `Collector` (see `Collectors` for the
+ * built-ins like `toList`).
  */
 public class Stream<T> {
     /**
@@ -45,8 +67,8 @@ public class Stream<T> {
      * Pull the next element. Implementers override; default returns
      * an empty Optional.
      */
-    public #Optional<T> next() {
-        return heap Optional<T>(false, null);
+    public Optional<T> next() {
+        return stack Optional<T>(false, null);
     }
 
     /**
@@ -137,6 +159,10 @@ public class Stream<T> {
     /**
      * Count elements by walking next() to exhaustion. The simplest
      * terminal; no lambda needed.
+     *
+     * ```cajeta
+     * int32 n = s.count();
+     * ```
      */
     public int32 count() {
         int32 n = 0;
@@ -155,6 +181,10 @@ public class Stream<T> {
      * own share. Order across workers is unspecified per
      * StreamParallelism.md § Per-terminal rules; `fn` must be
      * commutative and thread-safe.
+     *
+     * ```cajeta
+     * s.forEach((x) -> print(x));
+     * ```
      */
     public void forEach((T) -> void fn) {
         if (this.isParallel) {
@@ -175,6 +205,10 @@ public class Stream<T> {
      * `ParallelDriver.anyMatchParallelChain`; the first worker to
      * find a match flips a shared cancel flag and siblings bail at
      * their next pull-loop checkpoint.
+     *
+     * ```cajeta
+     * boolean hasNeg = s.anyMatch((x) -> x < 0);
+     * ```
      */
     public boolean anyMatch((T) -> boolean pred) {
         if (this.isParallel) {
@@ -246,19 +280,24 @@ public class Stream<T> {
      * for the predicate, once for the construction) sidesteps the
      * borrow-via-local issue — neither result gets a drop entry
      * since both are immediate temporaries.
+     *
+     * ```cajeta
+     * Optional<int32> hit = s.findFirst((x) -> x > 10);
+     * if (hit.isPresent()) { use(hit.get()); }
+     * ```
      */
-    public #Optional<T> findFirst((T) -> boolean pred) {
+    public Optional<T> findFirst((T) -> boolean pred) {
         if (this.isParallel) {
             return ParallelDriver.findAnyParallelChain<T>(this, pred);
         }
         Optional<T> o = this.next();
         while (o.isPresent()) {
             if (pred(o.get())) {
-                return heap Optional<T>(true, o.get());
+                return stack Optional<T>(true, o.get());
             }
             o = this.next();
         }
-        return heap Optional<T>(false, null);
+        return stack Optional<T>(false, null);
     }
 
     /**
@@ -276,8 +315,12 @@ public class Stream<T> {
      * source is too small. Per Java's contract, `fn` must be
      * associative and `seed` its identity for the parallel path to
      * give the same answer as the sequential one.
+     *
+     * ```cajeta
+     * int32 total = s.reduce(0, (a, b) -> a + b);
+     * ```
      */
-    public T reduce(T seed, (T, T) -> T fn) {
+    public T reduce(T seed, (T, T) -> #T fn) {
         if (this.isParallel) {
             return ParallelDriver.reduceParallelChain<T>(this, seed, fn);
         }
@@ -295,10 +338,14 @@ public class Stream<T> {
      * a vtable — see cajeta-docs/stdlib/MethodLevelTemplate.md). The
      * inherited `next()` is what subclasses customize; this combinator
      * stays the same body across every Stream<T> subclass.
+     *
+     * ```cajeta
+     * int64 sum = s.fold<int64>(0L, (acc, e) -> acc + e);
+     * ```
      */
-    public final R fold<R>(R seed, (R, T) -> R fn) {
+    public final R fold<R>(R seed, (R, T) -> #R fn) {
         if (this.isParallel) {
-            throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER: 2-arg fold(seed, fn) cannot be applied to a parallel stream because there is no way to merge per-worker partials; use the 3-arg fold(seed, fn, combiner) overload, or call .sequential() first");
+            throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER: 2-arg fold(seed, fn) cannot be applied to a parallel stream because there is no way to merge per-worker partials; use the 3-arg fold(seed, fn, combiner) overload, or call .sequential() first");
         }
         R acc = seed;
         Optional<T> o = this.next();
@@ -312,7 +359,7 @@ public class Stream<T> {
     /**
      * Cross-type left-fold with explicit `combiner` for the parallel
      * path. Same per-element accumulation as the 2-arg `fold<R>`, but
-     * adds the `(R, R) -> R combiner` that the parallel driver uses
+     * adds the `(R, R) -> #R combiner` that the parallel driver uses
      * to merge per-worker partials at join time (Java's
      * `reduce(seed, accumulator, combiner)` shape).
      *
@@ -329,8 +376,14 @@ public class Stream<T> {
      *     `combiner(seed, fn(seed, t)) == fn(seed, t)` for every t.
      * Violating these gives a numerically-correct but
      * implementation-dependent answer.
+     *
+     * ```cajeta
+     * int64 sum = s.parallel().fold<int64>(0L,
+     *     (acc, e) -> acc + e,   // per-worker accumulate
+     *     (a, b) -> a + b);      // merge partials at join
+     * ```
      */
-    public final R fold<R>(R seed, (R, T) -> R fn, (R, R) -> R combiner) {
+    public final R fold<R>(R seed, (R, T) -> #R fn, (R, R) -> #R combiner) {
         if (this.isParallel) {
             return ParallelDriver.foldParallelChain<T, R>(this, seed, fn, combiner);
         }
@@ -344,12 +397,16 @@ public class Stream<T> {
     }
 
     /**
-     * Reduce a stream via a Collector — packages the (supplier,
+     * Reduce a stream via a `Collector` — packages the (supplier,
      * accumulator, combiner) triple so the same Stream can feed any
-     * compatible Collector. See `cajeta.collection.Collector` and
-     * `cajeta.collection.Collectors` for the standard built-in
-     * collectors (`toList`, etc.). The R type is method-level so the
-     * result type is independent of T.
+     * compatible `Collector`. See `cajeta.collection.Collector` and
+     * `Collectors` for the standard built-in collectors (`toList`,
+     * etc.). The R type is method-level so the result type is
+     * independent of T.
+     *
+     * ```cajeta
+     * #List<int32> out = s.collect(Collectors.toList<int32>());
+     * ```
      *
      * Under `.parallel()` each worker calls `c.supplier()` for its
      * own R partial (mutable R like ArrayList is safe — no aliasing
@@ -364,6 +421,14 @@ public class Stream<T> {
         return this.fold(c.supplier(), c.accumulator);
     }
 
+    /**
+     * Lazy intermediate: keep only elements matching `pred`, dropping
+     * the rest. No pull happens until a terminal runs.
+     *
+     * ```cajeta
+     * #Stream<int32> evens = s.filter((x) -> x % 2 == 0);
+     * ```
+     */
     public #Stream<T> filter((T) -> boolean pred) {
         return heap FilterStream<T>(this, pred);
     }
@@ -379,7 +444,7 @@ public class Stream<T> {
      */
     public #Stream<T> take(int32 n) {
         if (this.isParallel) {
-            throw new Exception("take(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
+            throw heap Exception("take(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
         }
         return heap TakeStream<T>(this, n);
     }
@@ -390,19 +455,33 @@ public class Stream<T> {
      */
     public #Stream<T> skip(int32 n) {
         if (this.isParallel) {
-            throw new Exception("skip(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
+            throw heap Exception("skip(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
         }
         return heap SkipStream<T>(this, n);
     }
 
+    /**
+     * Lazy intermediate: invoke `fn` on each element for its side
+     * effect (logging, debugging) and pass the element through
+     * unchanged. Stream contents and length are untouched.
+     *
+     * ```cajeta
+     * int32 n = s.peek((x) -> print(x)).count();
+     * ```
+     */
     public #Stream<T> peek((T) -> void fn) {
         return heap PeekStream<T>(this, fn);
     }
 
     /**
-     * Applies `fn: (T) -> R` to each element, yielding Stream<R>.
+     * Lazy intermediate: applies `fn: (T) -> R` to each element,
+     * yielding Stream<R>.
+     *
+     * ```cajeta
+     * #Stream<int64> wide = s.map<int64>((x) -> x * 2L);
+     * ```
      */
-    public final #Stream<R> map<R>((T) -> R fn) {
+    public final #Stream<R> map<R>((T) -> #R fn) {
         return heap MapStream<T, R>(this, fn);
     }
 
@@ -411,7 +490,7 @@ public class Stream<T> {
      * by draining each returned inner stream before pulling the next
      * outer element. Yields Stream<R>.
      */
-    public final #Stream<R> flatMap<R>((T) -> Stream<R> fn) {
+    public final #Stream<R> flatMap<R>((T) -> #Stream<R> fn) {
         return heap FlatMapStream<T, R>(this, fn);
     }
 
@@ -424,7 +503,7 @@ public class Stream<T> {
      * record. See `StreamParallelism.ErrorHandling.md` § 3.3 for
      * the full pattern catalogue.
      */
-    public final #Stream<R> mapOrSkip<R>((T) -> R fn) {
+    public final #Stream<R> mapOrSkip<R>((T) -> #R fn) {
         return heap MapOrSkipStream<T, R>(this, fn);
     }
 
@@ -436,7 +515,7 @@ public class Stream<T> {
      * Use when you need a same-length stream and a sentinel value
      * is acceptable for failures (0 for sum, identity for product).
      */
-    public final #Stream<R> mapOrFallback<R>((T) -> R fn, R fallback) {
+    public final #Stream<R> mapOrFallback<R>((T) -> #R fn, R fallback) {
         return heap MapOrFallbackStream<T, R>(this, fn, fallback);
     }
 
@@ -450,7 +529,7 @@ public class Stream<T> {
      * pipeline. The logger sees both the offending element and the
      * caught exception.
      */
-    public final #Stream<R> mapOrLog<R>((T) -> R fn, (T, Exception) -> void logger) {
+    public final #Stream<R> mapOrLog<R>((T) -> #R fn, (T, Exception) -> void logger) {
         return heap MapOrLogStream<T, R>(this, fn, logger);
     }
 }

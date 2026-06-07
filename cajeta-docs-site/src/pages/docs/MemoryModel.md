@@ -43,7 +43,7 @@ Single token. Appears in three positions:
 | `f(x)` | f borrows x | f takes ownership; x moved |
 | `return x` | caller borrows x (signature: `T f(...)`) | caller takes ownership (signature: `#T f(...)`) |
 
-**Auto-promotion for fresh `new`.** An anonymous `new T(...)` expression in transfer position promotes implicitly. `p.field = new T()` and `return new T()` (in a `#T` function) work without explicit `#`. The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk.
+**Auto-promotion for fresh `new`.** An anonymous `heap T(...)` expression in transfer position promotes implicitly. `p.field = heap T()` and `return heap T()` (in a `#T` function) work without explicit `#`. The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk.
 
 ---
 
@@ -104,7 +104,7 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 ## Fields
 
 - **Fields are always owners.** Field types are owned slots. Borrows cannot be stored in fields — this avoids inter-procedural lifetime annotations on field-holders.
-- **Field assignment transfers.** `p.field = x` must transfer: either `p.field = #x` (explicit) or `p.field = new T(...)` (auto-promoted). Plain `p.field = y` where `y` is a named borrow is a static error.
+- **Field assignment transfers.** `p.field = x` must transfer: either `p.field = #x` (explicit) or `p.field = heap T(...)` (auto-promoted). Plain `p.field = y` where `y` is a named borrow is a static error.
 - **Field reads borrow.** `String n = p.field` makes `n` a borrow rooted at `p`.
 
 ---

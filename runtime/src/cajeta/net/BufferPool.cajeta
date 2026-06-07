@@ -1,0 +1,155 @@
+package cajeta.net;
+
+/**
+ * Pooled `ByteBuffer` allocator — reused across connections to
+ * avoid the per-read allocation churn a server otherwise pays. See
+ * `cajeta-docs/Net.md` § *Buffer pool*.
+ *
+ * A free-list of cleared `ByteBuffer`s of a fixed `slabSize`.
+ * `acquire()` hands one out — reusing a freed buffer when the list
+ * is non-empty, allocating a fresh one only when it is empty.
+ * `release(buf)` clears the buffer and returns it to the free-list,
+ * up to `maxIdle` retained buffers; beyond that the buffer is
+ * dropped (the array reclaims) so a burst of connections doesn't
+ * leave the pool permanently bloated.
+ *
+ * ### Boundedness (the acceptance invariant)
+ *
+ * Drive N **sequential** connections — `acquire` then `release`
+ * each — and the pool performs at most one real allocation total:
+ * every connection after the first reuses the single retained
+ * buffer. `allocations()` (the lifetime count of fresh
+ * `ByteBuffer`s constructed) stays `<= maxIdle + peakConcurrent`,
+ * never growing with N. That is `BufferPoolTests.reuseStaysBounded`.
+ *
+ * Concurrent connections each hold their own buffer, so the live
+ * count can momentarily exceed `maxIdle`; the free-list cap only
+ * bounds the *idle* retained set, not the in-flight set.
+ *
+ * **Pure logic** — no syscalls, no locking. A server with a worker
+ * pool (Net.md Model B) gives each worker fiber its own
+ * `BufferPool` so there is no contention; a per-acceptor pool would
+ * add a lock, deferred until the reactor lands.
+ */
+public class BufferPool {
+    /**
+     * Free-list of reusable buffers (a simple stack — most-recently
+     * released is reused first, which is cache-friendlier).
+     */
+    ByteBuffer[] freeList;
+
+    /** Number of live entries in `freeList[0..idleCount)`. */
+    int32 idleCount;
+
+    /** Backing capacity of `freeList`. */
+    int32 listCap;
+
+    /** Byte size of every buffer this pool vends. */
+    int32 slabSize;
+
+    /** Max buffers retained idle; extras are dropped on release. */
+    int32 maxIdle;
+
+    /**
+     * Lifetime count of fresh `ByteBuffer`s constructed — the
+     * boundedness metric the acceptance test asserts on.
+     */
+    int32 allocCount;
+
+    /**
+     * Build a pool vending `slabSize`-byte buffers and retaining at
+     * most `maxIdle` idle ones. The free-list backing array is sized
+     * to `maxIdle` (its steady-state ceiling).
+     */
+    public BufferPool(int32 slabSize, int32 maxIdle) {
+        int32 cap = maxIdle;
+        if (cap < 1) {
+            cap = 1;
+        }
+        this.freeList = heap ByteBuffer[cap];
+        this.listCap = cap;
+        this.idleCount = 0;
+        this.slabSize = slabSize;
+        this.maxIdle = maxIdle;
+        this.allocCount = 0;
+    }
+
+    /** Byte size of every buffer this pool vends. */
+    public int32 bufferSize() {
+        return this.slabSize;
+    }
+
+    /** Buffers currently sitting idle in the free-list. */
+    public int32 idle() {
+        return this.idleCount;
+    }
+
+    /** Max idle buffers retained before release starts dropping. */
+    public int32 maxIdleCount() {
+        return this.maxIdle;
+    }
+
+    /**
+     * Lifetime count of fresh `ByteBuffer` allocations. Flat across
+     * sequential acquire/release cycles — that flatness is the
+     * pool's contract.
+     */
+    public int32 allocations() {
+        return this.allocCount;
+    }
+
+    /**
+     * Check out a cleared buffer. Reuses the most-recently released
+     * one when the free-list is non-empty; otherwise constructs a
+     * fresh `slabSize` buffer (and bumps `allocations()`). The
+     * returned buffer's cursors are at the front.
+     */
+    public #ByteBuffer acquire() {
+        if (this.idleCount > 0) {
+            this.idleCount = this.idleCount - 1;
+            ByteBuffer reused = this.freeList[this.idleCount];
+            // Null the slot so the pool no longer aliases the buffer
+            // it just handed off — the caller is now the sole owner.
+            this.freeList[this.idleCount] = null;
+            reused.clear();
+            return reused;
+        }
+        ByteBuffer fresh = heap ByteBuffer(this.slabSize);
+        this.allocCount = this.allocCount + 1;
+        return fresh;
+    }
+
+    /**
+     * Return `buf` to the pool. Cleared and retained when there is
+     * idle room (`idle() < maxIdle`); otherwise dropped so the idle
+     * set stays bounded. A `null` argument is ignored.
+     *
+     * Oversized buffers — ones a parser grew past `slabSize` via
+     * `reserve` — are NOT retained: keeping a giant buffer idle
+     * would defeat the memory bound. They are dropped, and the next
+     * `acquire` mints a fresh slab-sized one.
+     */
+    public void release(#ByteBuffer buf) {
+        // Takes OWNERSHIP of `buf` (the pool retains it for reuse). The
+        // free-list slot owns the buffer until a later `acquire` hands it
+        // back out. Without the `#` transfer the caller's owned reference
+        // would drop at its scope exit while the pool still aliased it,
+        // leaving a dangling slot that the next `acquire` reuses — a
+        // use-after-free. A `null` argument is ignored.
+        if (buf == null) {
+            return;
+        }
+        if (this.idleCount < this.maxIdle) {
+            if (buf.capacity() == this.slabSize) {
+                buf.clear();
+                this.freeList[this.idleCount] = buf;
+                this.idleCount = this.idleCount + 1;
+                return;
+            }
+        }
+        // Not retained (idle set full, or an oversized/grown buffer): the
+        // owned `buf` drops at this method's scope exit, reclaiming its
+        // `int8[]` storage and keeping the idle set bounded.
+        return;
+    }
+}

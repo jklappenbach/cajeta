@@ -112,6 +112,16 @@ namespace cajeta {
     // alloca address IS the value being yielded.
     llvm::Value* loadIfLValue(CajetaModulePtr module, llvm::Value* v, ExpressionPtr ast) {
         if (!v) return v;
+        // A constant null pointer is an r-value (the `null` literal, or a
+        // typed null cast like `(TcpStream) null` passed as a borrowed
+        // class/interface arg), never a slot to load through. The class-ref
+        // and pointer-with-different-type branches below would otherwise
+        // emit `load ptr, null` — a guaranteed segfault — treating the null
+        // value as if it were the address of a class slot. Hand back the
+        // null reference itself.
+        if (llvm::isa<llvm::ConstantPointerNull>(v)) {
+            return v;
+        }
         auto* builder = module->getBuilder();
         bool treatAllocaAsSlot = !ast
             || dynamic_pointer_cast<IdentifierExpression>(ast) != nullptr;
@@ -252,6 +262,19 @@ namespace cajeta {
         // vtable address. Then the stack-drop walking h calls free on
         // the vtable address (invalid pointer crash).
         if (dynamic_pointer_cast<NewExpression>(ast)) {
+            return v;
+        }
+        // A `#x` MoveExpression has ALREADY loaded its operand to the
+        // r-value (the owned heap pointer) — see MoveExpression::
+        // generateCode, which loads through the source alloca before
+        // returning. Without this carve-out the class-ref catch-all
+        // below loads through that pointer AGAIN and hands back the
+        // vtable word (the struct's first 8 bytes) instead of the
+        // instance reference, so `this.field = #param` stores the
+        // vtable address and every later dispatch / field read through
+        // the field reads garbage. Same shape as the NewExpression /
+        // MethodCallExpression carve-outs.
+        if (dynamic_pointer_cast<MoveExpression>(ast)) {
             return v;
         }
         // MethodCallExpression: the return value of a call IS the

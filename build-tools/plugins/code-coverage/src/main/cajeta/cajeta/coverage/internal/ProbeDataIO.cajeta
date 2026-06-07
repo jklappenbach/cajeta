@@ -1,0 +1,178 @@
+package cajeta.coverage.internal;
+
+import cajeta.buildtool.plugin.ActionContext;
+import cajeta.collection.ArrayList;
+import cajeta.coverage.CoverageMap;
+import cajeta.coverage.Grain;
+import cajeta.coverage.ProbeData;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.Path;
+
+/**
+ * Reader + merger for raw per-test probe-data dumps.
+ *
+ * Format (text — chosen for ease of debugging an individual test's
+ * dump from the shell; the merged map switches to binary):
+ *
+ *   cajeta-coverage v1
+ *   grain: <line|branch|region>
+ *   emitted-by: <abs-path-to-test-binary>
+ *   file: <abs-path-to-source>
+ *       <probe-id>\t<hit-count>
+ *       <probe-id>\t<hit-count>
+ *   file: <abs-path-to-source>
+ *       ...
+ *
+ * Whitespace before probe-id rows is significant (tab) — lets the
+ * parser distinguish header lines from probe rows in one pass.
+ */
+public class ProbeDataReader {
+
+    public static ProbeData read(Path path) {
+        FileReader r = FileReader.open(path);
+        String[] lines = r.readAllLines();
+        r.close();
+
+        if (lines.count < 3) {
+            throw stack ProbeDataFormatException(
+                "probe dump " + path.toString() +
+                " too short to be valid");
+        }
+        if (lines[0] != "cajeta-coverage v1") {
+            throw stack ProbeDataFormatException(
+                "probe dump " + path.toString() +
+                ": unexpected header line '" + lines[0] + "'");
+        }
+
+        Grain   grain     = parseGrainLine(lines[1], path);
+        String  emittedBy = parseEmittedByLine(lines[2], path);
+        ProbeData dump = #heap ProbeData(grain, emittedBy);
+
+        // Probe rows. The current-file pointer advances on every
+        // "file:" line so subsequent rows attribute correctly.
+        String currentFile = "";
+        int32 li = 3;
+        while (li < lines.count) {
+            String line = lines[li];
+            if (line.startsWith("file: ")) {
+                currentFile = line.substring(6);
+            } else if (line.startsWith("\t")) {
+                if (currentFile.count() == 0) {
+                    throw stack ProbeDataFormatException(
+                        "probe dump " + path.toString() +
+                        ": probe row before any `file:` line at line " +
+                        String.valueOf(li + 1));
+                }
+                ProbeRow row = parseProbeRow(line, path, li + 1);
+                dump.addHit(currentFile, row.probeId, row.hitCount);
+            }
+            // Blank lines and unknown leading-non-tab content are
+            // ignored — the format may grow header fields without
+            // breaking older readers.
+            li = li + 1;
+        }
+        return dump;
+    }
+
+    static Grain parseGrainLine(String line, Path path) {
+        if (!line.startsWith("grain: ")) {
+            throw stack ProbeDataFormatException(
+                "probe dump " + path.toString() +
+                ": expected 'grain:' on line 2, got '" + line + "'");
+        }
+        Optional<Grain> g = Grain.parse(line.substring(7));
+        if (g.isEmpty()) {
+            throw stack ProbeDataFormatException(
+                "probe dump " + path.toString() +
+                ": unknown grain '" + line.substring(7) + "'");
+        }
+        return g.get();
+    }
+
+    static String parseEmittedByLine(String line, Path path) {
+        if (!line.startsWith("emitted-by: ")) {
+            throw stack ProbeDataFormatException(
+                "probe dump " + path.toString() +
+                ": expected 'emitted-by:' on line 3, got '" + line + "'");
+        }
+        return line.substring(12);
+    }
+
+    public class ProbeRow {
+        int32 probeId;
+        int64 hitCount;
+        public ProbeRow(int32 probeId, int64 hitCount) {
+            this.probeId  = probeId;
+            this.hitCount = hitCount;
+        }
+    }
+
+    static ProbeRow parseProbeRow(String line, Path path, int32 lineNo) {
+        String trimmed = line.trim();
+        int32 tabIdx = trimmed.indexOf('\t');
+        if (tabIdx <= 0) {
+            // Also accept a single space as the separator — a few
+            // editors auto-convert tabs and we'd rather be lenient
+            // than fail a CI gate on whitespace.
+            tabIdx = trimmed.indexOf(' ');
+        }
+        if (tabIdx <= 0) {
+            throw stack ProbeDataFormatException(
+                "probe dump " + path.toString() +
+                ": probe row at line " + String.valueOf(lineNo) +
+                " missing separator");
+        }
+        int32 probeId  = String.parseInt32(trimmed.substring(0, tabIdx));
+        int64 hitCount = String.parseInt64(trimmed.substring(tabIdx + 1));
+        return stack ProbeRow(probeId, hitCount);
+    }
+}
+
+/**
+ * Folds a ProbeData dump into the in-progress CoverageMap. The
+ * coverage-map's total-probes value for each file is set the first
+ * time we touch it — from the compiler-emitted sidecar — so the
+ * merger only needs to mark hits.
+ */
+public class ProbeMerger {
+
+    public static void mergeInto(
+        CoverageMap map, ProbeData dump, ActionContext ctx) {
+        ArrayList<String> files = dump.getHits().keys();
+        int32 i = 0;
+        while (i < files.count()) {
+            String fpath = files.get(i);
+            int32 totalProbes = lookupTotalProbes(ctx, fpath);
+            CoverageMap.FileEntry entry = map.getOrCreate(fpath, totalProbes);
+            ArrayList<int32> probeIds = dump.getHits().get(fpath).get().keys();
+            int32 j = 0;
+            while (j < probeIds.count()) {
+                int32 pid = probeIds.get(j);
+                int64 hits = dump.getHits().get(fpath).get().get(pid).get();
+                if (hits > 0) {
+                    entry.markCovered(pid);
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    /**
+     * Number of probes the compiler emitted for `file`. Read from
+     * the per-source sidecar's header — same data PositionLookup
+     * consumes, but we only need the count here.
+     */
+    static int32 lookupTotalProbes(ActionContext ctx, String file) {
+        Path sidecar = sidecarPathFor(ctx, file);
+        return CoverageMapHeader.readProbeCount(sidecar);
+    }
+
+    static Path sidecarPathFor(ActionContext ctx, String file) {
+        String encoded = file.replace("/", "_").replace(":", "_");
+        return Path.of(ctx.workdir() + "/build/archive/" +
+                       ctx.projectName() + "-" +
+                       ctx.projectVersion() + ".cja.coverage-map/" +
+                       encoded + ".cmap");
+    }
+}

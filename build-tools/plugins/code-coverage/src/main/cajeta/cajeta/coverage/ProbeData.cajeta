@@ -1,0 +1,68 @@
+package cajeta.coverage;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+
+/**
+ * Raw per-test probe data — what the test runner emits per binary
+ * invocation, before `Collect` reduces it.
+ *
+ * One file per test process. Format (v1):
+ *
+ *   cajeta-coverage v1
+ *   grain: <line|branch|region>
+ *   file: <abs-path>
+ *       <probe-id> <hit-count>
+ *       <probe-id> <hit-count>
+ *       ...
+ *   file: <abs-path>
+ *       ...
+ *
+ * Probe-ids are the compiler's monotonic IDs (per-file scope) — see
+ * `compile/CoverageProbe.h` on the compiler side. The collect action
+ * sums hit-counts across all per-test files; the report action then
+ * folds probe-ids back to source positions via the compiler-emitted
+ * coverage map (a sibling artifact next to the IR).
+ */
+public class ProbeData {
+    /** Coverage grain this dump was produced at. Matches all sibling dumps. */
+    Grain grain;
+    /** Path of the test binary that emitted this dump. Diagnostic only. */
+    String emittedBy;
+    /** file path → (probe-id → hit-count). */
+    HashMap<String, HashMap<int32, int64>> hits;
+
+    public ProbeData(Grain grain, String emittedBy) {
+        this.grain = grain;
+        this.emittedBy = emittedBy;
+        this.hits = #heap HashMap<String, HashMap<int32, int64>>();
+    }
+
+    public Grain getGrain() { return this.grain; }
+
+    public HashMap<String, HashMap<int32, int64>> getHits() {
+        return this.hits;
+    }
+
+    /**
+     * Add `count` hits for `probeId` in `file`. Idempotent in the
+     * sense that two `addHit(f, 7, 1)` calls produce the same end
+     * state as one `addHit(f, 7, 2)` call.
+     */
+    public void addHit(String file, int32 probeId, int64 count) {
+        Optional<HashMap<int32, int64>> existing = this.hits.get(file);
+        if (existing.isEmpty()) {
+            HashMap<int32, int64> fresh = #heap HashMap<int32, int64>();
+            fresh.put(probeId, count);
+            this.hits.put(file, #fresh);
+            return;
+        }
+        HashMap<int32, int64> table = existing.get();
+        Optional<int64> prior = table.get(probeId);
+        int64 newCount = count;
+        if (prior.isPresent()) {
+            newCount = prior.get() + count;
+        }
+        table.put(probeId, newCount);
+    }
+}

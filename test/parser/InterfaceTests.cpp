@@ -44,7 +44,7 @@ TEST(InterfaceTests, classWithInterfaceStillDispatchesDirectly) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Hello h = new Hello();\n"
+        "        Hello h = heap Hello();\n"
         "        return h.greet();\n"
         "    }\n"
         "}\n";
@@ -65,7 +65,7 @@ TEST(InterfaceTests, dispatchThroughInterfaceVariableLandsOnImpl) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Greeter g = new Hello();\n"
+        "        Greeter g = heap Hello();\n"
         "        return g.greet();\n"
         "    }\n"
         "}\n";
@@ -88,8 +88,8 @@ TEST(InterfaceTests, twoImplementersDispatchIndependently) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Greeter a = new Aye();\n"
-        "        Greeter b = new Bee();\n"
+        "        Greeter a = heap Aye();\n"
+        "        Greeter b = heap Bee();\n"
         "        return a.greet() + b.greet();\n"
         "    }\n"
         "}\n";

@@ -11,6 +11,7 @@
 
 #ifdef _WIN32
 #include <stdlib.h>
+#include <process.h>   // _getpid
 
 static inline int setenv(const char* name, const char* value, int /*overwrite*/) {
     return _putenv_s(name, value ? value : "");
@@ -19,4 +20,16 @@ static inline int setenv(const char* name, const char* value, int /*overwrite*/)
 static inline int unsetenv(const char* name) {
     return _putenv_s(name, "");
 }
+#else
+#include <unistd.h>    // getpid
 #endif
+
+// Portable process id — used by tests to build unique temp paths. POSIX
+// getpid(2) lives in <unistd.h> (absent on Windows); the CRT spells it _getpid.
+static inline int cajeta_getpid() {
+#ifdef _WIN32
+    return _getpid();
+#else
+    return ::getpid();
+#endif
+}

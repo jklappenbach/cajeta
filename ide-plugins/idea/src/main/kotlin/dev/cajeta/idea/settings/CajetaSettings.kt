@@ -17,6 +17,12 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         var renderMarkdownInComments: Boolean = true,
         var testFixturesPath: String = DEFAULT_FIXTURES_PATH,
         var testTypingDelayMs: Int = 30,
+        // CP7-5 (FR-7.3): independent toggles for the three memory-facet
+        // visualization surfaces. All on by default (the FR-5.2 out-of-box
+        // encoding); each can be silenced without affecting the others.
+        var showFacetsInVariables: Boolean = true,
+        var showFacetsInGutter: Boolean = true,
+        var showFacetsInline: Boolean = true,
     )
 
     private var state = State()
@@ -46,6 +52,18 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
     var testTypingDelayMs: Int
         get() = state.testTypingDelayMs
         set(value) { state.testTypingDelayMs = value }
+
+    var showFacetsInVariables: Boolean
+        get() = state.showFacetsInVariables
+        set(value) { state.showFacetsInVariables = value }
+
+    var showFacetsInGutter: Boolean
+        get() = state.showFacetsInGutter
+        set(value) { state.showFacetsInGutter = value }
+
+    var showFacetsInline: Boolean
+        get() = state.showFacetsInline
+        set(value) { state.showFacetsInline = value }
 
     companion object {
         // Default points at the in-tree cajeta build. Users override

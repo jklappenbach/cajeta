@@ -1,0 +1,9 @@
+package com.example.multi.server;
+
+import cajeta.lang.System;
+
+public class Main {
+    public static void main(String[] args) {
+        System.out.println("server: bind 0.0.0.0:8080 ...");
+    }
+}

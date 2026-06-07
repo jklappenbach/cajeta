@@ -3,10 +3,31 @@ package cajeta.io.file;
 import cajeta.lang.String;
 
 /**
- * Filesystem has no space for the write. POSIX `ENOSPC`. See
- * `cajeta-docs/stdlib/io/file/Errors.md`.
+ * The filesystem has no space left for a write. Maps to POSIX `ENOSPC`.
+ *
+ * Thrown by write paths such as `FileWriter` when the underlying device
+ * fills up mid-operation. As a subtype of `IoException` it is recoverable:
+ * catch it specifically (or declare it in your throws clause) to react —
+ * free space, flush buffers, or fail the write cleanly. See
+ * `cajeta-docs/stdlib/io/file/Errors.md` for the full errno → exception chart.
+ *
+ * ```cajeta
+ * try {
+ *     writer.write(buffer, len);
+ * } catch (DiskFullException e) {
+ *     log.warn(e.message);   // device out of space, surface it
+ * }
+ * ```
  */
 public class DiskFullException extends IoException {
+    /**
+     * Wrap an `ENOSPC` failure with a human-readable `message`
+     * (see `String`).
+     *
+     * ```cajeta
+     * throw heap DiskFullException("no space left writing /var/log/app.log");
+     * ```
+     */
     public DiskFullException(String message) {
         super(message);
     }

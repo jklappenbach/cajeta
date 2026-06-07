@@ -1,13 +1,33 @@
 package cajeta.io.file;
 
 /**
- * Batched stat result. See
- * `cajeta-docs/stdlib/io/file/FileInfo.md`.
+ * Snapshot of a single `stat` call: size, timestamps, type flags, and
+ * permission bits for one filesystem entry, captured in one syscall so
+ * callers avoid a flurry of per-attribute round-trips.
  *
- * Phase C placeholder. Returned by `Path.info()`.
+ * ## Reading attributes
+ * Read the populated fields directly off an instance:
+ *
+ * ```cajeta
+ * #FileInfo meta = heap FileInfo();
+ * if (meta.isFile) {
+ *     int64 bytes = meta.size;
+ *     int64 mtime = meta.modifiedNanos;   // Unix nanoseconds
+ * }
+ * ```
+ *
+ * The `isFile` / `isDir` / `isSymlink` flags mirror the cheaper
+ * single-attribute probes on `Path` (`isFile()` / `isDir()` /
+ * `isSymlink()`); prefer this type when you need several attributes at
+ * once.
+ *
+ * Phase C placeholder. A stat-touching accessor on `Path` that
+ * returns a populated `FileInfo` in one syscall lands with Phase C;
+ * until then the only constructor is the zero-initialized no-arg form
+ * below.
  *
  * `Instant`-typed timestamps (`created`, `modified`, `accessed`)
- * are commented out until the `cajeta.lang.Instant` class lands
+ * are commented out until the `Instant` class lands
  * (see cajeta-docs/stdlib/Time.md). For now we expose
  * `createdNanos` / `modifiedNanos` / `accessedNanos` as `int64`
  * Unix nanoseconds — flippable to `Instant` accessors without
@@ -23,6 +43,18 @@ public class FileInfo {
     public boolean isSymlink;
     public int32 permissions;
 
+    /**
+     * Zero-initialized record (all sizes/timestamps `0`, all flags
+     * `false`). Once the Phase C stat accessor on `Path` lands you
+     * will normally receive a populated instance from it; for now
+     * construct one directly as a blank to fill in:
+     *
+     * ```cajeta
+     * #FileInfo meta = heap FileInfo();
+     * meta.isDir = true;
+     * meta.permissions = 0o755;
+     * ```
+     */
     public FileInfo() {
         this.size = 0;
         this.createdNanos = 0;

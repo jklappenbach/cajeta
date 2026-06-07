@@ -1,0 +1,143 @@
+package cajeta.lint.security;
+
+import cajeta.buildtool.plugin.ActionContext;
+import cajeta.buildtool.plugin.ActionResult;
+import cajeta.buildtool.plugin.Finding;
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
+import cajeta.collection.ArrayList;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.Path;
+import cajeta.lint.security.internal.ImportExtractor;
+import cajeta.lint.security.internal.SourceWalker;
+
+/**
+ * `cajeta.lint.security.scan` — walks the project source tree,
+ * applies the banned-imports + secret-patterns checks, emits one
+ * Finding per hit.
+ *
+ * Action contract (see README.md for the full table):
+ *
+ *   in:  source-roots (string[], default ["src/main"])
+ *        banned-imports (object[])
+ *        secret-patterns (object[])
+ *        exclude-files (string[])
+ *
+ *   out: findings (json) — one Finding per hit
+ *        files-scanned (int)
+ *        findings-count (int)
+ *
+ * Required capability: filesystem (read-only).
+ */
+public class Scan {
+
+    /** Banned-imports findings carry this rule id. */
+    static final String BANNED_IMPORT_RULE = "banned-import";
+
+    /**
+     * @capability filesystem
+     */
+    public static ActionResult run(ActionContext ctx, JsonObject params) {
+        // ── Param parsing ────────────────────────────────────────
+        ArrayList<String> sourceRoots = params.getStringArray("source-roots");
+        if (sourceRoots.count() == 0) {
+            sourceRoots.add("src/main");
+        }
+        ArrayList<String> excludeFiles =
+            params.getStringArray("exclude-files");
+
+        // getArray returns Optional<JsonArray>; the parsers accept
+        // null for "no config" so unwrap with a null fallback.
+        Optional<JsonArray> bannedRaw  = params.getArray("banned-imports");
+        Optional<JsonArray> secretsRaw = params.getArray("secret-patterns");
+        BannedImports banned = BannedImports.parse(
+            ctx, bannedRaw.isPresent()  ? bannedRaw.get()  : #null);
+        SecretPatterns secrets = SecretPatterns.parse(
+            ctx, secretsRaw.isPresent() ? secretsRaw.get() : #null);
+
+        // Resolve source roots relative to the project workdir so
+        // the consumer's `"source-roots": ["src/main"]` works
+        // without `ctx.workdir()` prefix repetition.
+        ArrayList<String> resolvedRoots = #heap ArrayList<String>();
+        int32 ri = 0;
+        while (ri < sourceRoots.count()) {
+            String r = sourceRoots.get(ri);
+            if (r.startsWith("/")) {
+                resolvedRoots.add(r);
+            } else {
+                resolvedRoots.add(ctx.workdir() + "/" + r);
+            }
+            ri = ri + 1;
+        }
+
+        // ── Walk + scan ──────────────────────────────────────────
+        SourceWalker walker = #heap SourceWalker(excludeFiles);
+        ArrayList<Path> files = walker.walk(resolvedRoots);
+
+        ArrayList<Finding> findings = #heap ArrayList<Finding>();
+        int32 fi = 0;
+        while (fi < files.count()) {
+            Path file = files.get(fi);
+            String source = FileReader.readAllText(file);
+            scanImports(file, source, banned, findings);
+            scanSecrets(file, source, secrets, findings);
+            fi = fi + 1;
+        }
+
+        // ── Result ───────────────────────────────────────────────
+        ActionResult r = #heap ActionResult();
+        r.output("files-scanned",   String.valueOf(files.count()));
+        r.output("findings-count",  String.valueOf(findings.count()));
+        r.findings(#findings);
+        return #r;
+    }
+
+    static void scanImports(
+        Path file, String source,
+        BannedImports banned, ArrayList<Finding> findings) {
+        if (banned.count() == 0) { return; }
+        ArrayList<ImportExtractor.ImportRef> imports =
+            ImportExtractor.extract(source);
+        int32 i = 0;
+        while (i < imports.count()) {
+            ImportExtractor.ImportRef ref = imports.get(i);
+            Optional<BannedImportEntry> hit = banned.match(ref.dottedPath());
+            if (hit.isPresent()) {
+                String reason = hit.get().reason();
+                String msg = "banned import '" + ref.dottedPath() + "'";
+                if (reason.count() > 0) {
+                    msg = msg + ": " + reason;
+                }
+                findings.add(#Finding.warning(
+                    BANNED_IMPORT_RULE,
+                    file.toString(), ref.line(), 1,
+                    msg));
+            }
+            i = i + 1;
+        }
+    }
+
+    static void scanSecrets(
+        Path file, String source,
+        SecretPatterns secrets, ArrayList<Finding> findings) {
+        if (secrets.count() == 0) { return; }
+        String[] lines = source.split("\n");
+        int32 li = 0;
+        while (li < lines.count) {
+            String line = lines[li];
+            ArrayList<SecretPatterns.Hit> hits = secrets.scanLine(line);
+            int32 hi = 0;
+            while (hi < hits.count()) {
+                SecretPatterns.Hit h = hits.get(hi);
+                findings.add(#Finding.withSeverity(
+                    h.entry().id(),
+                    h.entry().severity(),
+                    file.toString(), li + 1, h.startCol() + 1,
+                    "secret pattern '" + h.entry().id() +
+                    "' matched here"));
+                hi = hi + 1;
+            }
+            li = li + 1;
+        }
+    }
+}

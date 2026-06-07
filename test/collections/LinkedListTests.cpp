@@ -30,10 +30,10 @@ TEST(LinkedListTests, addAndCountClassT) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<Tag> ll = new LinkedList<Tag>();\n"
-        "        ll.add(new Tag(1));\n"
-        "        ll.add(new Tag(2));\n"
-        "        ll.add(new Tag(3));\n"
+        "        LinkedList<Tag> ll = heap LinkedList<Tag>();\n"
+        "        ll.add(heap Tag(1));\n"
+        "        ll.add(heap Tag(2));\n"
+        "        ll.add(heap Tag(3));\n"
         "        return (int32) ll.count();\n"
         "    }\n"
         "}\n";
@@ -50,10 +50,10 @@ TEST(LinkedListTests, getReturnsValueAtIndex) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<Tag> ll = new LinkedList<Tag>();\n"
-        "        ll.add(new Tag(10));\n"
-        "        ll.add(new Tag(20));\n"
-        "        ll.add(new Tag(30));\n"
+        "        LinkedList<Tag> ll = heap LinkedList<Tag>();\n"
+        "        ll.add(heap Tag(10));\n"
+        "        ll.add(heap Tag(20));\n"
+        "        ll.add(heap Tag(30));\n"
         "        Tag t = ll.get(1);\n"
         "        return t.id;\n"  // 20
         "    }\n"
@@ -71,9 +71,9 @@ TEST(LinkedListTests, addFirstPrepends) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<Tag> ll = new LinkedList<Tag>();\n"
-        "        ll.add(new Tag(2));\n"
-        "        ll.addFirst(new Tag(1));\n"  // [1, 2]
+        "        LinkedList<Tag> ll = heap LinkedList<Tag>();\n"
+        "        ll.add(heap Tag(2));\n"
+        "        ll.addFirst(heap Tag(1));\n"  // [1, 2]
         "        Tag t = ll.get(0);\n"
         "        return t.id;\n"  // 1
         "    }\n"
@@ -91,10 +91,10 @@ TEST(LinkedListTests, removeUnlinksAndDecrementsCount) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<Tag> ll = new LinkedList<Tag>();\n"
-        "        Tag a = new Tag(1);\n"
-        "        Tag b = new Tag(2);\n"
-        "        Tag c = new Tag(3);\n"
+        "        LinkedList<Tag> ll = heap LinkedList<Tag>();\n"
+        "        Tag a = heap Tag(1);\n"
+        "        Tag b = heap Tag(2);\n"
+        "        Tag c = heap Tag(3);\n"
         "        ll.add(a);\n"
         "        ll.add(b);\n"
         "        ll.add(c);\n"
@@ -115,8 +115,8 @@ TEST(LinkedListTests, containsFindsAddedValue) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<Tag> ll = new LinkedList<Tag>();\n"
-        "        Tag a = new Tag(1);\n"
+        "        LinkedList<Tag> ll = heap LinkedList<Tag>();\n"
+        "        Tag a = heap Tag(1);\n"
         "        ll.add(a);\n"
         "        if (ll.contains(a)) { return 1; } else { return 0; }\n"
         "    }\n"
@@ -134,8 +134,8 @@ TEST(LinkedListTests, removeAbsentReturnsFalse) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<Tag> ll = new LinkedList<Tag>();\n"
-        "        Tag a = new Tag(1);\n"
+        "        LinkedList<Tag> ll = heap LinkedList<Tag>();\n"
+        "        Tag a = heap Tag(1);\n"
         "        if (ll.remove(a)) { return 99; } else { return 0; }\n"
         "    }\n"
         "}\n";
@@ -150,7 +150,7 @@ TEST(LinkedListTests, primitiveTypeWorks) {
         "import cajeta.collection.LinkedList;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
         "        ll.add(10);\n"
         "        ll.add(20);\n"
         "        ll.add(30);\n"
@@ -166,7 +166,7 @@ TEST(LinkedListTests, primitiveContainsAndRemove) {
         "import cajeta.collection.LinkedList;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
         "        ll.add(10);\n"
         "        ll.add(20);\n"
         "        ll.add(30);\n"
@@ -187,7 +187,7 @@ TEST(LinkedListTests, emptyListCountIsZero) {
         "import cajeta.collection.LinkedList;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
         "        return (int32) ll.count();\n"
         "    }\n"
         "}\n";
@@ -200,7 +200,7 @@ TEST(LinkedListTests, getOutOfRangeReturnsZero) {
         "import cajeta.collection.LinkedList;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
         "        ll.add(10);\n"
         "        return ll.get(5);\n"  // 0 — miss default
         "    }\n"
@@ -214,7 +214,7 @@ TEST(LinkedListTests, removeFromMiddleRelinksProperly) {
         "import cajeta.collection.LinkedList;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        LinkedList<int32> ll = new LinkedList<int32>();\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
         "        ll.add(1);\n"
         "        ll.add(2);\n"
         "        ll.add(3);\n"
@@ -225,4 +225,120 @@ TEST(LinkedListTests, removeFromMiddleRelinksProperly) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 4);
+}
+
+// --- Deque API: head/tail peek, addHead/addTail, popHead/popTail ---------
+
+TEST(LinkedListTests, headAndTailPeek) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
+        "        ll.addTail(10);\n"
+        "        ll.addTail(20);\n"
+        "        ll.addTail(30);\n"
+        "        if (ll.head() != 10) { return -1; }\n"
+        "        if (ll.tail() != 30) { return -2; }\n"
+        "        return (int32) ll.count();\n"  // peek doesn't shrink -> 3
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+TEST(LinkedListTests, addHeadAndAddTailOrder) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
+        "        ll.addTail(2);\n"
+        "        ll.addHead(1);\n"   // [1, 2]
+        "        ll.addTail(3);\n"   // [1, 2, 3]
+        "        if (ll.head() != 1) { return -1; }\n"
+        "        if (ll.tail() != 3) { return -2; }\n"
+        "        return ll.get(1);\n"  // 2
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+TEST(LinkedListTests, popHeadRemovesAndReturnsFront) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
+        "        ll.addTail(10);\n"
+        "        ll.addTail(20);\n"
+        "        ll.addTail(30);\n"
+        "        int32 f = ll.popHead();\n"  // 10 -> [20, 30]
+        "        if (f != 10) { return -1; }\n"
+        "        if (ll.head() != 20) { return -2; }\n"
+        "        return (int32) ll.count();\n"  // 2
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+TEST(LinkedListTests, popTailRemovesAndReturnsBack) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
+        "        ll.addTail(10);\n"
+        "        ll.addTail(20);\n"
+        "        ll.addTail(30);\n"
+        "        int32 b = ll.popTail();\n"  // 30 -> [10, 20]
+        "        if (b != 30) { return -1; }\n"
+        "        if (ll.tail() != 20) { return -2; }\n"
+        "        return (int32) ll.count();\n"  // 2
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+TEST(LinkedListTests, popDrainsToEmptyThenZero) {
+    // Pop the last element from both ends, then pop/peek an empty list.
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
+        "        ll.addHead(7);\n"
+        "        int32 a = ll.popTail();\n"   // 7 -> []
+        "        if (a != 7) { return -1; }\n"
+        "        if (ll.count() != 0) { return -2; }\n"
+        "        if (ll.head() != 0) { return -3; }\n"  // empty -> zero
+        "        if (ll.popHead() != 0) { return -4; }\n"  // empty -> zero, no change
+        "        return (int32) ll.count();\n"  // still 0
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+TEST(LinkedListTests, dequeRoundTripUsesBothEnds) {
+    // Use it as a deque: push both ends, pop both ends, verify order.
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<int32> ll = heap LinkedList<int32>();\n"
+        "        ll.addTail(2);\n"
+        "        ll.addHead(1);\n"
+        "        ll.addTail(3);\n"   // [1, 2, 3]
+        "        if (ll.popHead() != 1) { return -1; }\n"  // [2, 3]
+        "        if (ll.popTail() != 3) { return -2; }\n"  // [2]
+        "        if (ll.popHead() != 2) { return -3; }\n"  // []
+        "        return (int32) ll.count();\n"  // 0
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
 }

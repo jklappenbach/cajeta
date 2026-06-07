@@ -1,0 +1,33 @@
+package cajeta.coverage.internal;
+
+/**
+ * One-decimal formatting for percentages. Pulled out so the Report
+ * action and every formatter format identically — easy to grep for
+ * if we later want to push to two decimals project-wide.
+ */
+public class FloatFormat {
+
+    /**
+     * Render `v` as a string with exactly one digit after the point.
+     * Negative inputs preserve the sign. Rounded half-to-even per
+     * `cajeta.lang.Math.roundHalfEven` to avoid the half-up bias that
+     * inflates aggregate percentages in CI gates.
+     */
+    public static String oneDecimal(float v) {
+        boolean negative = v < 0.0;
+        if (negative) { v = -v; }
+        // Scale, round, split — keeps the formatting branch-free in
+        // the common case (cajeta floats are IEEE-754 32-bit, the
+        // round-trip through int64 loses no information for the
+        // percentage range we care about).
+        int64 scaled = Math.roundHalfEven(v * 10.0);
+        int64 whole  = scaled / 10;
+        int64 frac   = scaled - (whole * 10);
+        StringBuilder b = stack StringBuilder();
+        if (negative) { b.append("-"); }
+        b.append(String.valueOf(whole));
+        b.append(".");
+        b.append(String.valueOf(frac));
+        return b.toString();
+    }
+}

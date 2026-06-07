@@ -15,20 +15,56 @@ package cajeta.lang.stream;
  * Lazy: fn invoked per outer pull, inner stream pulled on demand.
  * Outer empty → fmt empty. Inner stream returns empty → loop pulls
  * next outer until something yields or outer exhausts.
+ *
+ * Reached through `flatMap` on any `Stream`, not constructed
+ * directly. Each yielded element arrives as an `Optional`.
+ *
+ * ## Usage
+ * ```cajeta
+ * // Flatten an array-of-rows into a single stream of ints:
+ * int32[][] rows = { { 1, 2 }, { }, { 3 } };
+ * #Stream<int32[]> outer = heap ArrayStream<int32[]>(rows, 3);
+ *
+ * #Stream<int32> flat = outer.flatMap<int32>(
+ *     (int32[] row) -> heap ArrayStream<int32>(row, row.length));
+ *
+ * // empty inner rows are skipped transparently → 1, 2, 3
+ * flat.forEach((int32 x) -> println(x));
+ * ```
+ *
+ * Sibling combinator `MapStream` is the 1:1 version (one element in,
+ * one out); `FlatMapStream` is 1:N (one element in, a whole inner
+ * `Stream` out).
  */
 public class FlatMapStream<T, R> extends Stream<R> {
     Stream<T> source;
-    (T) -> Stream<R> fn;
+    (T) -> #Stream<R> fn;
     Stream<R> current;
     boolean primed;
 
-    public FlatMapStream(Stream<T> source, (T) -> Stream<R> fn) {
+    /**
+     * Wraps `source` and the per-element expander `fn`. Prefer the
+     * `flatMap` factory on `Stream` over calling this directly.
+     *
+     * ```cajeta
+     * #Stream<int32[]> outer = heap ArrayStream<int32[]>(rows, 3);
+     * #Stream<int32> flat = heap FlatMapStream<int32[], int32>(
+     *     outer, (int32[] row) -> heap ArrayStream<int32>(row, row.length));
+     * ```
+     */
+    public FlatMapStream(#Stream<T> source, (T) -> #Stream<R> fn) {
         this.source = source;
         this.fn = fn;
         this.primed = false;
     }
 
-    public #Optional<R> next() {
+    /**
+     * Pull the next flattened element: drains the live inner stream
+     * first, and only when it empties pulls the next outer element to
+     * build a fresh inner via `fn`. Empty inner streams are skipped;
+     * returns an empty `Optional` once the outer source exhausts.
+     */
+    public Optional<R> next() {
         while (true) {
             if (this.primed) {
                 Optional<R> r = this.current.next();
@@ -39,12 +75,12 @@ public class FlatMapStream<T, R> extends Stream<R> {
             }
             Optional<T> o = this.source.next();
             if (o.isEmpty()) {
-                return heap Optional<R>(false, null);
+                return stack Optional<R>(false, null);
             }
             this.current = this.fn(o.get());
             this.primed = true;
         }
-        return heap Optional<R>(false, null);
+        return stack Optional<R>(false, null);
     }
 
     /**
@@ -62,7 +98,12 @@ public class FlatMapStream<T, R> extends Stream<R> {
         return this.source;
     }
 
+    /**
+     * Type-changing wrapper rebuild. Re-wraps a freshly-split inner
+     * share with this stream's `fn` so each worker sees the
+     * flatMap-over-share chain (see `MapStream``.cloneChainOver`).
+     */
     public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
-        return heap FlatMapStream<T, R>(this.source.cloneChainOver(newRoot), this.fn);
+        return heap FlatMapStream<T, R>(this.source.cloneChainOver(#newRoot), this.fn);
     }
 }

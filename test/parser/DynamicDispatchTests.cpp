@@ -39,7 +39,7 @@ TEST(DynamicDispatchTests, singleClassDispatchesToItsOwnMethod) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter c = new Counter();\n"
+        "        Counter c = heap Counter();\n"
         "        return c.value();\n"
         "    }\n"
         "}\n";
@@ -63,7 +63,7 @@ TEST(DynamicDispatchTests, overrideDispatchesToSubclassMethod) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Dog d = new Dog();\n"
+        "        Dog d = heap Dog();\n"
         "        return d.speak();\n"
         "    }\n"
         "}\n";
@@ -84,7 +84,7 @@ TEST(DynamicDispatchTests, inheritedMethodReachesParentImpl) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Cat c = new Cat();\n"
+        "        Cat c = heap Cat();\n"
         "        return c.legs();\n"     // inherited from Animal
         "    }\n"
         "}\n";
@@ -105,7 +105,7 @@ TEST(DynamicDispatchTests, threeLevelChainDispatchesToDeepestOverride) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        C c = new C();\n"
+        "        C c = heap C();\n"
         "        return c.name();\n"     // C's override wins
         "    }\n"
         "}\n";
@@ -129,8 +129,8 @@ TEST(DynamicDispatchTests, twoSubclassesDispatchIndependently) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Square s = new Square();\n"
-        "        Triangle t = new Triangle();\n"
+        "        Square s = heap Square();\n"
+        "        Triangle t = heap Triangle();\n"
         "        return s.area() + t.area();\n"
         "    }\n"
         "}\n";
@@ -156,7 +156,7 @@ TEST(DynamicDispatchTests, multipleInheritanceDispatchesCorrectly) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        C c = new C();\n"
+        "        C c = heap C();\n"
         "        return c.fromA() + c.fromB() + c.fromC();\n"
         "    }\n"
         "}\n";
@@ -179,7 +179,7 @@ TEST(DynamicDispatchTests, multipleInheritanceWithOverride) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        C c = new C();\n"
+        "        C c = heap C();\n"
         "        return c.shared() + c.onlyB();\n"      // 7 + 100
         "    }\n"
         "}\n";

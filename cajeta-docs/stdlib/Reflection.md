@@ -387,7 +387,7 @@ public final class TypeArgument {
 
 ```cajeta
 // Walking the type tree at runtime:
-Box<List<int32>> nested = new Box<List<int32>>();
+Box<List<int32>> nested = heap Box<List<int32>>();
 Class<?>     cls    = nested.getClass();
 TypeArgument outerT = cls.getTypeArguments()[0];   // List<int32>
 Class<?>     listCls = outerT.getResolvedType();
@@ -470,7 +470,7 @@ public final class UnsafeReflect {
 }
 
 // Used like this:
-UnsafeReflect unsafe = new UnsafeReflect("JSON serializer needs private fields");
+UnsafeReflect unsafe = heap UnsafeReflect("JSON serializer needs private fields");
 for (field in someClass.getDeclaredFields()) {
     Object value = unsafe.getField(field, instance);
     // ...
@@ -716,7 +716,7 @@ public String toJson(Object obj) {
     Class<?> cls = obj.getClass();
     if (cls.isAnnotationPresent("Primitive")) return primitiveToJson(obj);
 
-    StringBuilder out = new StringBuilder();
+    StringBuilder out = heap StringBuilder();
     out.append("{");
     boolean first = true;
     for (field in cls.getFields()) {

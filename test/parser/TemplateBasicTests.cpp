@@ -8,7 +8,7 @@
 //  - Template source snippet retained for re-parse (TPL-2)
 //  - `T` substitutes during instantiation walk (TPL-3)
 //  - instantiate(args) produces a concrete class cached in structures (TPL-4)
-//  - `new Box<int32>()` resolves through the cache (TPL-5)
+//  - `heap Box<int32>()` resolves through the cache (TPL-5)
 //
 // Constraint enforcement (TPL-6) and diamond inference (TPL-7) live in
 // separate test files.
@@ -51,7 +51,7 @@ TEST(TemplateBasicTests, classTypeParameterFlowsIntoMethodSignature) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Pipe<int32> p = new Pipe<int32>();\n"
+        "        Pipe<int32> p = heap Pipe<int32>();\n"
         "        return p.through(99);\n"
         "    }\n"
         "}\n";
@@ -66,7 +66,7 @@ TEST(TemplateBasicTests, primitiveArgInstantiates) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box<int32> b = new Box<int32>();\n"
+        "        Box<int32> b = heap Box<int32>();\n"
         "        return b.value();\n"
         "    }\n"
         "}\n";
@@ -83,7 +83,7 @@ TEST(TemplateBasicTests, templateBodyWithoutTUseInstantiates) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Holder<int32> h = new Holder<int32>();\n"
+        "        Holder<int32> h = heap Holder<int32>();\n"
         "        return h.fixed();\n"
         "    }\n"
         "}\n";
@@ -108,7 +108,7 @@ TEST(TemplateBasicTests, satisfiedBoundInstantiates) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Kennel<Dog> k = new Kennel<Dog>();\n"
+        "        Kennel<Dog> k = heap Kennel<Dog>();\n"
         "        return k.fixed();\n"
         "    }\n"
         "}\n";
@@ -127,7 +127,7 @@ TEST(TemplateBasicTests, exactBoundIsSatisfied) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Kennel<Animal> k = new Kennel<Animal>();\n"
+        "        Kennel<Animal> k = heap Kennel<Animal>();\n"
         "        return k.fixed();\n"
         "    }\n"
         "}\n";
@@ -150,7 +150,7 @@ TEST(TemplateBasicTests, unrelatedClassArgViolatesBound) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Kennel<Robot> k = new Kennel<Robot>();\n"
+        "        Kennel<Robot> k = heap Kennel<Robot>();\n"
         "        return k.fixed();\n"
         "    }\n"
         "}\n";
@@ -172,7 +172,7 @@ TEST(TemplateBasicTests, userCtorWithTArgUnderExplicitArgs) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box<int32> b = new Box<int32>(7);\n"
+        "        Box<int32> b = heap Box<int32>(7);\n"
         "        return b.fixed();\n"
         "    }\n"
         "}\n";
@@ -191,7 +191,7 @@ TEST(TemplateBasicTests, diamondInfersSingleTypeParameter) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box<int32> b = new Box<>(7);\n"
+        "        Box<int32> b = heap Box<>(7);\n"
         "        return b.fixed();\n"
         "    }\n"
         "}\n";
@@ -200,7 +200,7 @@ TEST(TemplateBasicTests, diamondInfersSingleTypeParameter) {
 
 // Reject: diamond on a template whose constructors don't reference T can't
 // infer anything. The DefaultConstructorMethod has no T-typed params, so
-// `new Holder<>()` has nothing to unify against. Without an explicit LHS
+// `heap Holder<>()` has nothing to unify against. Without an explicit LHS
 // the test source would also fail to parse — pin Holder<int32> on the LHS
 // so the parser is happy and we exercise only the inference path.
 TEST(TemplateBasicTests, diamondWithoutInferableConstructorThrows) {
@@ -211,7 +211,7 @@ TEST(TemplateBasicTests, diamondWithoutInferableConstructorThrows) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Holder<int32> h = new Holder<>();\n"
+        "        Holder<int32> h = heap Holder<>();\n"
         "        return h.fixed();\n"
         "    }\n"
         "}\n";
@@ -231,7 +231,7 @@ TEST(TemplateBasicTests, primitiveArgViolatesClassBound) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Kennel<int32> k = new Kennel<int32>();\n"
+        "        Kennel<int32> k = heap Kennel<int32>();\n"
         "        return k.fixed();\n"
         "    }\n"
         "}\n";
@@ -251,8 +251,8 @@ TEST(TemplateBasicTests, distinctArgsProduceDistinctInstantiations) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box<int32> a = new Box<int32>();\n"
-        "        Box<int64> b = new Box<int64>();\n"
+        "        Box<int32> a = heap Box<int32>();\n"
+        "        Box<int64> b = heap Box<int64>();\n"
         "        return a.fixed() + b.fixed();\n"
         "    }\n"
         "}\n";
@@ -271,8 +271,8 @@ TEST(TemplateBasicTests, sameInstantiationIsCached) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Box<int32> a = new Box<int32>();\n"
-        "        Box<int32> b = new Box<int32>();\n"
+        "        Box<int32> a = heap Box<int32>();\n"
+        "        Box<int32> b = heap Box<int32>();\n"
         "        return a.fixed() + b.fixed();\n"
         "    }\n"
         "}\n";
@@ -289,7 +289,7 @@ TEST(TemplateBasicTests, twoParameterTemplateInstantiates) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Pair<int32, int64> p = new Pair<int32, int64>();\n"
+        "        Pair<int32, int64> p = heap Pair<int32, int64>();\n"
         "        return p.fixed();\n"
         "    }\n"
         "}\n";
@@ -313,7 +313,7 @@ TEST(TemplateBasicTests, parameterizedSuperInstantiates) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        List<int32> l = new List<int32>();\n"
+        "        List<int32> l = heap List<int32>();\n"
         "        return l.count();\n"
         "    }\n"
         "}\n";
@@ -335,8 +335,8 @@ TEST(TemplateBasicTests, nestedClassTypedCtorArgUnderExplicitArgs) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        List<int32> inner = new List<int32>();\n"
-        "        Wrapper<int32> w = new Wrapper<int32>(inner);\n"
+        "        List<int32> inner = heap List<int32>();\n"
+        "        Wrapper<int32> w = heap Wrapper<int32>(inner);\n"
         "        return w.fixed();\n"
         "    }\n"
         "}\n";
@@ -359,8 +359,8 @@ TEST(TemplateBasicTests, diamondInfersThroughNestedParameter) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        List<int32> inner = new List<int32>();\n"
-        "        Wrapper<int32> w = new Wrapper<>(inner);\n"
+        "        List<int32> inner = heap List<int32>();\n"
+        "        Wrapper<int32> w = heap Wrapper<>(inner);\n"
         "        return w.fixed();\n"
         "    }\n"
         "}\n";
@@ -381,7 +381,7 @@ TEST(TemplateBasicTests, nestedTypeArgumentAtTypeUseSite) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Outer<Inner<int32>> o = new Outer<Inner<int32>>();\n"
+        "        Outer<Inner<int32>> o = heap Outer<Inner<int32>>();\n"
         "        return o.outer();\n"
         "    }\n"
         "}\n";
@@ -405,7 +405,7 @@ TEST(TemplateBasicTests, deeplyNestedTypeArgumentsInstantiate) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Outer<Mid<Inner<int32>>> o = new Outer<Mid<Inner<int32>>>();\n"
+        "        Outer<Mid<Inner<int32>>> o = heap Outer<Mid<Inner<int32>>>();\n"
         "        return o.out();\n"
         "    }\n"
         "}\n";
@@ -430,7 +430,7 @@ TEST(TemplateBasicTests, nestedInstantiationSatisfiesBound) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Container<Pair<int32, int32>> c = new Container<Pair<int32, int32>>();\n"
+        "        Container<Pair<int32, int32>> c = heap Container<Pair<int32, int32>>();\n"
         "        return c.fixed();\n"
         "    }\n"
         "}\n";
@@ -450,7 +450,7 @@ TEST(TemplateBasicTests, diamondInfersMultipleParameters) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Pair<int32, int32> p = new Pair<>(3, 4);\n"
+        "        Pair<int32, int32> p = heap Pair<>(3, 4);\n"
         "        return p.fixed();\n"
         "    }\n"
         "}\n";

@@ -104,7 +104,7 @@ public class Grid {
     public int32[] cells;
 
     public Grid() {
-        this.cells = new int32[4];
+        this.cells = heap int32[4];
         this.cells[0] = 0;
         this.cells[1] = 0;
         this.cells[2] = 0;

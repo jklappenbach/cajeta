@@ -1,14 +1,14 @@
 #!/bin/bash
 # Run the RELEASE regression subset — the curated set of cross-compilation-
 # sensitive test suites listed in test/release_filter.txt, rather than the
-# full ~1725-test battery (`run_tests.sh` with no args). This is what the
+# full ~1725-test battery (`cajeta_tests.sh` with no args). This is what the
 # release workflow runs on every target: the full suite is too expensive to
 # run on all four matrix platforms, and most of it (the host-independent
 # front-end suites) can't regress due to cross-compilation anyway. See
 # test/release_filter.txt for the suite list and the rationale.
 #
 # The actual sharded execution + crash-isolation reporting is reused from
-# run_tests.sh (this script just selects the subset and delegates), so a
+# cajeta_tests.sh (this script just selects the subset and delegates), so a
 # JIT crash on a non-x86 target is surfaced by name — exactly the kind of
 # platform-specific lowering failure this subset exists to catch.
 #
@@ -19,10 +19,10 @@
 # Knobs:
 #   NO_BUILD=1   skip the incremental build step (CI sets this — the build
 #                already happened in the workflow's dedicated Build step).
-#   PARALLEL=N   shard count (default: nproc, capped at 32 by run_tests.sh).
+#   PARALLEL=N   shard count (default: nproc, capped at 32 by cajeta_tests.sh).
 #                PARALLEL=0 forces a serial run.
 #
-# Exit status is run_tests.sh's: non-zero if any selected test fails or a
+# Exit status is cajeta_tests.sh's: non-zero if any selected test fails or a
 # shard crashes, so this works directly as a release gate.
 
 set -euo pipefail
@@ -92,10 +92,10 @@ if [ ${#missing[@]} -gt 0 ]; then
     exit 1
 fi
 
-# Delegate to run_tests.sh for sharded execution. PARALLEL is forced (default
+# Delegate to cajeta_tests.sh for sharded execution. PARALLEL is forced (default
 # nproc) so the subset runs in parallel even though it's a filtered run —
-# run_tests.sh's parallel discovery honors these patterns. NO_BUILD avoids a
+# cajeta_tests.sh's parallel discovery honors these patterns. NO_BUILD avoids a
 # redundant second build (we already built / verified above).
-echo ">> Release subset: ${#patterns[@]} suites (delegating to run_tests.sh, parallel)"
+echo ">> Release subset: ${#patterns[@]} suites (delegating to cajeta_tests.sh, parallel)"
 exec env NO_BUILD=1 PARALLEL="${PARALLEL:-$(nproc 2>/dev/null || echo 4)}" \
-    ./run_tests.sh "${patterns[@]}"
+    ./cajeta_tests.sh "${patterns[@]}"

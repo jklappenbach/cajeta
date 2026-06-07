@@ -30,8 +30,8 @@ std::string compileVectorWorkloadIr() {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Vector<float32,4> a = new Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
-        "        Vector<float32,4> b = new Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+        "        Vector<float32,4> a = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        Vector<float32,4> b = heap Vector<float32,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
         "        Vector<float32,4> s = a + b;\n"       // fadd <4 x float>
         "        Vector<float32,4> t = s * 2.0f;\n"    // fmul <4 x float> (broadcast)
         "        t.x = 99.0f;\n"                        // insertelement

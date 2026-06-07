@@ -1,23 +1,63 @@
 package cajeta.lang.stream;
 
+/**
+ * A `Stream` backed by a contiguous `T[]` buffer over the index range
+ * `[idx, limit)`. Because the backing store is a flat array, `ArrayStream`
+ * implements `Splittable` cheaply: `trySplit()` halves the index range
+ * without copying any elements, making it the canonical parallel-friendly
+ * source for the streams pipeline.
+ *
+ * Elements are yielded one at a time as `Optional` values — a present
+ * `Optional` while elements remain, an empty one once `idx` reaches `limit`.
+ *
+ * ## Usage
+ * ```cajeta
+ * int32[] data = { 10, 20, 30, 40 };
+ * ArrayStream<int32> s = heap ArrayStream<int32>(data, 4);
+ *
+ * Optional<int32> o = s.next();
+ * while (o.isPresent()) {
+ *     // process o.get()
+ *     o = s.next();
+ * }
+ *
+ * // O(1) length and splitting for parallel terminals:
+ * int64 remaining = s.estimateSize();
+ * #Stream<int32> half = s.trySplit();   // null if < 2 elements remain
+ * ```
+ */
 public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
     T[] data;
     int32 idx;
     int32 limit;
 
+    /**
+     * Wrap an existing `T[]` buffer as a stream over `[0, limit)`. The buffer
+     * is shared, not copied; the stream reads elements `data[0 .. limit)`.
+     *
+     * ```cajeta
+     * int32[] data = { 1, 2, 3 };
+     * ArrayStream<int32> s = heap ArrayStream<int32>(data, 3);
+     * ```
+     */
     public ArrayStream(T[] data, int32 limit) {
         this.data = data;
         this.idx = 0;
         this.limit = limit;
     }
 
-    public #Optional<T> next() {
+    /**
+     * Yield the next element wrapped in `Optional` and advance the cursor.
+     * Returns an empty `Optional` once `idx` reaches `limit`; the contained
+     * element's ownership is moved out (`#v`).
+     */
+    public Optional<T> next() {
         if (this.idx >= this.limit) {
-            return heap Optional<T>(false, null);
+            return stack Optional<T>(false, null);
         }
         T v = this.data[this.idx];
         this.idx = this.idx + 1;
-        return heap Optional<T>(true, v);
+        return stack Optional<T>(true, #v);
     }
 
     /**
@@ -80,14 +120,21 @@ public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
         return share;
     }
 
+    /** Exact remaining element count (`limit - idx`), computed in O(1). */
     public int64 estimateSize() {
         return (int64) (this.limit - this.idx);
     }
 
+    /** `Splittable` size hint; for an array-backed stream this is exact (see `estimateSize`). */
     public int64 splittableSize() {
         return this.estimateSize();
     }
 
+    /**
+     * Wildcard-typed entry point for the parallel chain walker: splits this
+     * stream and upcasts the result to `Stream<?>` so the walker can step past
+     * type-changing wrappers. Returns null when fewer than 2 elements remain.
+     */
     public #Stream<?> trySplitRoot() {
         // Returns Stream<T>; assignable to Stream<?> at the upcast site.
         // The parallel chain walker (Step 5b — template wildcards) typed

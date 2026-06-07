@@ -1,0 +1,39 @@
+package cajeta.threading;
+
+/**
+ * RAII guard for `Lock`. Holds the raw lock handle; its destructor
+ * releases the lock, so a `LockGuard` going out of scope (method exit,
+ * early return, exception unwind — all driven by the drop chain)
+ * unlocks automatically. "Forgot to unlock" is structurally
+ * unrepresentable. The lifetime contract is "guard <= lock".
+ *
+ * You almost never construct a `LockGuard` yourself; you receive one
+ * (heap-owned, `#LockGuard`) from `Lock``.acquire()` and simply let it
+ * drop:
+ *
+ * ```cajeta
+ * stack lock = heap Lock();
+ * {
+ *     #LockGuard guard = lock.acquire();   // locked here
+ *     // ... critical section ...
+ * }                                        // guard drops -> lock released
+ * ```
+ *
+ * The guard holds the raw handle rather than a back-reference to the
+ * `Lock`, so its drop reaches the runtime release helper directly
+ * without keeping the `Lock` object alive. Compare `WriteGuard` from
+ * `RwLock`, which follows the same drop-to-release contract.
+ *
+ * See cajeta-docs/stdlib/Thread.md § Synchronization primitives.
+ */
+public class LockGuard {
+    public pointer handle;
+    /**
+     * Low-level: wraps an already-acquired raw lock `handle`. Prefer
+     * `Lock``.acquire()`, which acquires the lock and hands back the
+     * `#LockGuard` for you. Once constructed, this guard owns release of
+     * `handle` — its destructor calls `Cajeta.lockRelease(handle)`.
+     */
+    public LockGuard(pointer handle) { this.handle = handle; }
+    public ~LockGuard() { Cajeta.lockRelease(this.handle); }
+}

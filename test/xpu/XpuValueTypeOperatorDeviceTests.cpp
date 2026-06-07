@@ -89,7 +89,7 @@ const char* kVec2Add =
     "    public float32 y;\n"
     "    public Vec2(float32 x, float32 y) { this.x = x; this.y = y; }\n"
     "    @Device public static Vec2 operator+ (Vec2 a, Vec2 b) {\n"
-    "        return new Vec2(a.x + b.x, a.y + b.y);\n"
+    "        return heap Vec2(a.x + b.x, a.y + b.y);\n"
     "    }\n"
     "}\n";
 
@@ -220,8 +220,8 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceOperatorKernelValidatesAsSpirv) {
         "    public static void addk(Buffer<float32> out, uint32 n) {\n"
         "        uint32 i = Thread.globalIdX();\n"
         "        if (i < n) {\n"
-        "            Vec2 a = new Vec2((float32) i, 1.0f);\n"
-        "            Vec2 b = new Vec2(2.0f, (float32) i);\n"
+        "            Vec2 a = heap Vec2((float32) i, 1.0f);\n"
+        "            Vec2 b = heap Vec2(2.0f, (float32) i);\n"
         "            Vec2 c = a + b;\n"
         "            out[i] = c.x + c.y;\n"
         "        }\n"

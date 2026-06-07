@@ -60,7 +60,7 @@ TEST(MultiClassingPhase1Tests, ambiguousMethodDispatchRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.kind();\n"
         "  }\n"
         "}\n";
@@ -95,7 +95,7 @@ TEST(MultiClassingPhase1Tests, ambiguousMethodOverrideInChildResolves) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.kind();\n"  // 99 — C's override wins
         "  }\n"
         "}\n";
@@ -121,7 +121,7 @@ TEST(MultiClassingPhase1Tests, disjointMethodsAcrossParentsCompile) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.foo() + c.bar();\n"  // 18
         "  }\n"
         "}\n";
@@ -152,7 +152,7 @@ TEST(MultiClassingPhase1Tests, abstractInOneParentConcreteInOtherSatisfies) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.step();\n"  // 42 — B's concrete satisfies A's obligation
         "  }\n"
         "}\n";
@@ -183,7 +183,7 @@ TEST(MultiClassingPhase1Tests, commonAncestorMethodDoesNotConflict) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Z z = new Z();\n"
+        "    Z z = heap Z();\n"
         "    return z.m();\n"  // 5 — single impl, single answer
         "  }\n"
         "}\n";
@@ -208,7 +208,7 @@ TEST(MultiClassingPhase1Tests, ambiguousFieldAccessRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.total;\n"
         "  }\n"
         "}\n";
@@ -233,7 +233,7 @@ TEST(MultiClassingPhase1Tests, disjointFieldsAcrossParentsCompile) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.a + c.b;\n"  // 7
         "  }\n"
         "}\n";
@@ -265,7 +265,7 @@ TEST(MultiClassingPhase1Tests, returnTypeCollisionRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return 0;\n"
         "  }\n"
         "}\n";

@@ -1,24 +1,33 @@
 package cajeta.collection;
 
 /**
- * Standard `Collector<T, R>` factories. Each method returns a
- * `Collector` that `Stream<T>.collect<R>` can consume. The factories
- * are themselves method-level templated (`static <T> ...`) so each
- * call site monomorphizes per T — `Collectors.toList()` over an
- * `int32` stream is a distinct symbol from `toList()` over a
- * `String` stream.
+ * ## Overview
+ * Standard `Collector` factories. Each method returns a
+ * `Collector` that `Stream`'s `collect<R>` terminal can consume.
+ * The factories are themselves method-level templated
+ * (`static <T> ...`) so each call site monomorphizes per T —
+ * `Collectors.toList()` over an `int32` stream is a distinct symbol
+ * from `toList()` over a `String` stream.
  *
  * Every collector ships a combiner alongside the (seed, accumulator)
- * pair — required by Collector<T, R> so `.parallel().collect(...)`
+ * pair — required by `Collector` so `.parallel().collect(...)`
  * has a way to merge per-worker partials. For toList<T> the combiner
- * appends right onto left via `ArrayList.appendAll`; identity is the
- * empty list. See cajeta-docs/stdlib/MethodLevelTemplate.md for the
+ * appends right onto left via `ArrayList`'s `appendAll`; identity is
+ * the empty list. See cajeta-docs/stdlib/MethodLevelTemplate.md for the
  * dispatch model and cajeta-docs/stdlib/Streams.md § collect for the
  * user-facing pipeline shape.
+ *
+ * ## Example
+ * ```cajeta
+ * // Stream → collect → owned list:
+ * int32[] data = { 3, 1, 2 };
+ * #ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
+ *     .collect(Collectors.toList<int32>());
+ * ```
  */
 public class Collectors {
     /**
-     * Collect every element into a fresh `ArrayList<T>`. The
+     * Collect every element into a fresh `ArrayList``<T>`. The
      * accumulator appends in stream order and returns the same list
      * reference each iteration (no copy per step). The list is
      * heap-allocated and ownership flows out to the caller via the
@@ -26,10 +35,23 @@ public class Collectors {
      * — associative since list append preserves order within each
      * partial (the orchestrator's combine sweep walks partials in
      * worker-slot order, matching the split's prefix order).
+     *
+     * ```cajeta
+     * // Drain a `Stream` into an owned list:
+     * int32[] data = { 3, 1, 2 };
+     * #ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
+     *     .collect(Collectors.toList<int32>());
+     *
+     * // Safe under .parallel() — the combiner merges per-worker partials:
+     * #ArrayList<int64> wide = (heap ArrayStream<int32>(data, 3))
+     *     .parallel()
+     *     .map<int64>((x) -> x * 2L)
+     *     .collect(Collectors.toList<int64>());
+     * ```
      */
     public static #Collector<T, ArrayList<T>> toList<T>() {
-        return new Collector<T, ArrayList<T>>(
-            () -> new ArrayList<T>(),
+        return heap Collector<T, ArrayList<T>>(
+            () -> heap ArrayList<T>(),
             (acc, x) -> { acc.add(x); return acc; },
             (left, right) -> { left.appendAll(right); return left; });
     }

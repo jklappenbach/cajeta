@@ -1,0 +1,96 @@
+package cajeta.lint.security.internal;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * Minimal regex engine for secret-pattern matching.
+ *
+ * Dialect (ECMA-script subset, ASCII-only):
+ *
+ *   . | * + ? ^ $ ()
+ *   [a-z] [^...] character classes
+ *   {n} {n,} {n,m} bounded repetitions
+ *   \d \D \w \W \s \S — common shorthand
+ *   \\, \/, \(, \) — literal escapes
+ *
+ * Out of scope (until the stdlib regex lands): backreferences,
+ * lookaround, Unicode classes, named groups. Operators writing
+ * secret patterns rarely need these — AWS/GitHub/Stripe token
+ * formats are all ASCII fixed-shape literals + character classes
+ * + bounded counts.
+ *
+ * Implementation: classic NFA via Thompson construction (compile)
+ * + bitset simulation (match). Independent of the future cajeta-
+ * stdlib `cajeta.regex.Pattern` — when stdlib catches up, the
+ * public surface here (Regex.compile, Regex.find, Match) is a
+ * thin shim over Pattern and the NFA implementation goes away.
+ *
+ * Stub posture: this file documents the public surface and the
+ * intended semantics; the actual compile+simulate implementation
+ * is sketched but not exhaustive. Tests pin the surface; the
+ * implementation grows under them.
+ */
+public class Regex {
+
+    /** One regex match. start/end are byte offsets into the input. */
+    public class Match {
+        int32 start;
+        int32 end;
+
+        public Match(int32 start, int32 end) {
+            this.start = start;
+            this.end   = end;
+        }
+        public int32 start() { return this.start; }
+        public int32 end()   { return this.end;   }
+    }
+
+    /**
+     * Compile the pattern. Returns empty when the pattern is
+     * malformed (the caller surfaces the offending pattern in its
+     * error message — we don't propagate a parse-position because
+     * regex error positions are notoriously misleading and a "the
+     * regex failed to compile" message with the source string is
+     * always actionable).
+     */
+    public static Optional<Regex> compile(String pattern) {
+        // TODO: Thompson NFA construction. Returns
+        //   Optional.of(heap Regex(<compiled-states>))
+        // on success, Optional.empty() on syntax error.
+        return stack Optional<Regex>(true, #heap Regex());
+    }
+
+    /**
+     * Find the first match in `input`, or empty when nothing
+     * matches. Unanchored — same posture as `String.indexOf`,
+     * which is what secret-pattern scanning wants (find the
+     * token wherever it lives on the line).
+     */
+    public Optional<Match> find(String input) {
+        // TODO: NFA simulation. v1 stub returns empty so callers
+        // can iterate the plumbing without false hits.
+        return stack Optional<Match>(false, #heap Match(0, 0));
+    }
+
+    /**
+     * All non-overlapping matches in `input`. Used by tests and
+     * by any future "show every secret leak on this line" path.
+     * Default impl loops `find` + advances past each match.
+     */
+    public ArrayList<Match> findAll(String input) {
+        ArrayList<Match> out = #heap ArrayList<Match>();
+        int32 cursor = 0;
+        while (cursor < input.count()) {
+            String tail = input.substring(cursor);
+            Optional<Match> m = this.find(tail);
+            if (m.isEmpty()) { break; }
+            out.add(#heap Match(cursor + m.get().start(),
+                               cursor + m.get().end()));
+            cursor = cursor + m.get().end();
+            if (m.get().end() == m.get().start()) {
+                cursor = cursor + 1;
+            }
+        }
+        return out;
+    }
+}

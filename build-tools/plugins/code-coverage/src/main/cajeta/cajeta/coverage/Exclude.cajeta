@@ -1,0 +1,42 @@
+package cajeta.coverage;
+
+/**
+ * One typed exclude entry as it appears in
+ * `plugins.cajeta.coverage.config.exclude`.
+ *
+ * The `reason` field is mandatory at parse time — the parser
+ * rejects empty / generic strings (`wip`/`todo`/`skip`/`fixme`/`tbd`)
+ * so reviewers always see a real justification on the PR diff. The
+ * cost of the discipline is one short sentence per exclusion; the
+ * benefit is that "why is this excluded?" never needs to be asked
+ * later by someone reading the manifest cold.
+ *
+ * Construction: by `ExcludeParser.parse(...)` from the resolved
+ * plugin config. `ExcludeMatcher` consumes the resulting list to
+ * decide which files / packages / symbols to drop from the
+ * coverage report.
+ */
+public class Exclude {
+    ExcludeKind kind;
+    String pattern;
+    String reason;
+
+    public Exclude(ExcludeKind kind, String pattern, String reason) {
+        this.kind = kind;
+        this.pattern = pattern;
+        this.reason = reason;
+    }
+
+    public ExcludeKind kind()   { return this.kind;    }
+    public String pattern()     { return this.pattern; }
+    public String reason()      { return this.reason;  }
+
+    /**
+     * Stable debug rendering — used by Report's diagnostic output
+     * ("dropped X probes via Y exclusion") and by tests asserting on
+     * parsed entries.
+     */
+    public String toString() {
+        return this.kind.toName() + ":" + this.pattern;
+    }
+}

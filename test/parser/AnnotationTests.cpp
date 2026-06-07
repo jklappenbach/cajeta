@@ -41,7 +41,7 @@ TEST(AnnotationTests, classWithUserAnnotationCompiles) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter c = new Counter();\n"
+        "        Counter c = heap Counter();\n"
         "        return c.value();\n"
         "    }\n"
         "}\n";
@@ -73,7 +73,7 @@ TEST(AnnotationTests, annotationWithElementValuesParses) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Service s = new Service();\n"
+        "        Service s = heap Service();\n"
         "        return s.ping();\n"
         "    }\n"
         "}\n";

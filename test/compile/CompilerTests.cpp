@@ -43,20 +43,22 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-05-29: bumped 74 → 96 after the cajeta-xpu work merged the
 // cajeta.xpu.core prelude (Stream, Buffer, Thread, Workgroup, Barrier,
 // Event, Wave, …) into the implicitly-loaded stdlib — +22 structures.
-// 2026-06-01: bumped 96 → 98 — Item 8 added cajeta.xpu.core.Texture2D
-// and cajeta.xpu.core.Sampler to that prelude (+2 structures).
-// 2026-06-03: bumped 98 → 100 — cajeta-gpu Part C inc 3a added
-// cajeta.xpu.core.AccelerationStructure and cajeta.xpu.core.RayQuery (+2).
-// 2026-06-04: bumped 100 → 101 — cajeta-gpu Part C CM4 added
-// cajeta.xpu.core.CooperativeMatrix (+1).
-// 2026-06-05: bumped 101 → 102 — B1 added the declared cajeta.math.Matrix
-// hybrid value type (+1; references resolve to the flat CajetaMatrix repr).
-// 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.core.Bits
-// (per-invocation bit ops: reverse/count/rotate) to the xpu.core prelude;
-// empirical modules.size() is 1 + 104 (the prior 102 had drifted one low).
-// 2026-06-06: bumped 104 → 105 — writable images added cajeta.xpu.core.Image2D
-// (the writable twin of Texture2D: img.store(x,y,v) / download) to the prelude.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 105;
+// --- cajeta-xpu lineage (xpu.core prelude growth) ---
+// 2026-06-01: 96 → 98 — Item 8 added cajeta.xpu.core.Texture2D + Sampler (+2).
+// 2026-06-03: 98 → 100 — Part C inc 3a added AccelerationStructure + RayQuery (+2).
+// 2026-06-04: 100 → 101 — Part C CM4 added CooperativeMatrix (+1).
+// 2026-06-05: 101 → 102 — B1 added the declared cajeta.math.Matrix value type (+1).
+// 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.core.Bits (+ drift fix).
+// 2026-06-06: 104 → 105 — writable images added cajeta.xpu.core.Image2D (+1).
+// --- main lineage (threading / time / json / net preludes) ---
+// 2026-05-31: 96 → 110 — cajeta.threading + Atomic + cajeta.time.Duration + #66 stream sweep.
+// 2026-06-02: 110 → 123 — feature/build-system merge (collection.Cache, codec.json getters, …).
+// 2026-06-06: 123 → 264 — cajeta-net merge (cajeta.net.{tcp,udp,dns,http,tls,ws}, …, +141).
+// --- merge of origin/main into cajeta-xpu ---
+// 2026-06-06: both preludes now load together (main's 264 + the xpu.core
+// structures HEAD added beyond the shared base). This count is self-
+// anchoring — re-anchored to the live modules.size() after the merge build.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 273;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

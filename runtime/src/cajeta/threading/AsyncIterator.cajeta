@@ -1,0 +1,47 @@
+package cajeta.threading;
+
+import cajeta.lang.Optional;
+
+/**
+ * Source of values produced asynchronously. Each `next()` returns a
+ * present `Optional``<T>` carrying the next value or an empty
+ * `Optional``<T>` when the source is exhausted. Implementations are
+ * free to park / suspend internally — `next()` is called from inside
+ * a fiber context (e.g. an `async` method or a `Tasks``.runBlocking`
+ * body) so blocking on a channel, lock, or I/O readiness is sound.
+ *
+ * ## Iteration pattern (v1)
+ *
+ * The user-side loop is explicit:
+ *
+ *     Optional<T> opt = iter.next();
+ *     while (opt.isPresent()) {
+ *         T x = opt.get();
+ *         ...
+ *         opt = iter.next();
+ *     }
+ *
+ * A dedicated `for (T x in iter) { ... }` desugaring (mirroring the
+ * array-iteration form `EnhancedForStatement` already provides) is the
+ * planned v2.1 surface; the runtime contract is set by this interface
+ * either way.
+ *
+ * ## Relationship to `Channel``<T>`
+ *
+ * `Channel``<T>` is naturally an AsyncIterator: its `receive()` already
+ * returns `Optional``<T>` (present until the channel is closed and
+ * drained, empty thereafter). A `Channel` can therefore be drained via
+ * the loop above; binding it to a local of declared interface type
+ * (`AsyncIterator<int32> iter = ch;`) requires the implements clause,
+ * which we can wire onto `Channel``<T>` once the M5 value-return ripples
+ * settle on async-updates.
+ */
+public interface AsyncIterator<T> {
+    /**
+     * Yield the next item, blocking the calling fiber if necessary,
+     * or return empty when the source is exhausted. After the first
+     * empty result, subsequent calls must remain empty (terminal
+     * behavior, mirroring how `Channel``<T>.receive` behaves post-close).
+     */
+    Optional<T> next();
+}

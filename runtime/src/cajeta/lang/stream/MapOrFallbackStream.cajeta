@@ -3,8 +3,8 @@ package cajeta.lang.stream;
 import cajeta.error.RecoverableException;
 
 /**
- * Intermediate recovery combinator: wraps another Stream<T> and
- * applies `fn: (T) -> R` to each element, yielding a Stream<R>.
+ * Intermediate recovery combinator: wraps another `Stream`<T> and
+ * applies `fn: (T) -> R` to each element, yielding a `Stream`<R>.
  * Elements whose `fn` invocation throws `RecoverableException` are
  * **replaced** with the user-supplied `fallback` value — the output
  * stream has the SAME length as the input.
@@ -17,28 +17,53 @@ import cajeta.error.RecoverableException;
  * (`0` for sum-style accumulators, `""` for string concatenations).
  * Callers needing per-failure derived values should use
  * `mapOrLog` or write the lambda-local `try/catch` form.
+ *
+ * ## Usage
+ * ```cajeta
+ * // Parse each line, substituting -1 for any line that fails to parse.
+ * #Stream<i32> ints = heap MapOrFallbackStream<string, i32>(
+ *     #lines, (s) -> Integer.parse(s), -1);
+ * Optional<i32> first = ints.next();
+ * ```
+ * Each `next` call returns an `Optional` that is empty only when the
+ * underlying `Stream` is exhausted; recovered elements are still present.
  */
 public class MapOrFallbackStream<T, R> extends Stream<R> {
     Stream<T> source;
-    (T) -> R fn;
+    (T) -> #R fn;
     R fallback;
 
-    public MapOrFallbackStream(Stream<T> source, (T) -> R fn, R fallback) {
+    /**
+     * Wraps `source`, mapping each element through `fn` and substituting
+     * `fallback` whenever `fn` raises `RecoverableException`. Ownership
+     * of `source` and `fallback` transfers into the new stream.
+     * ```cajeta
+     * #Stream<i32> safe = heap MapOrFallbackStream<string, i32>(
+     *     #words, (w) -> Integer.parse(w), 0);
+     * ```
+     */
+    public MapOrFallbackStream(#Stream<T> source, (T) -> #R fn, #R fallback) {
         this.source = source;
         this.fn = fn;
         this.fallback = fallback;
     }
 
-    public #Optional<R> next() {
+    /**
+     * Pulls the next source element, returning `fn(element)` wrapped in a
+     * present `Optional`. On `RecoverableException` the `fallback` is
+     * returned instead (still present); an empty `Optional` signals the
+     * underlying `Stream` is exhausted.
+     */
+    public Optional<R> next() {
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {
-            return heap Optional<R>(false, null);
+            return stack Optional<R>(false, null);
         }
         try {
             R mapped = this.fn(o.get());
-            return heap Optional<R>(true, mapped);
+            return stack Optional<R>(true, #mapped);
         } catch (RecoverableException e) {
-            return heap Optional<R>(true, this.fallback);
+            return stack Optional<R>(true, this.fallback);
         }
     }
 
@@ -47,7 +72,8 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
         return this.source;
     }
 
+    /** Deep-copies this combinator, re-rooting the cloned chain at `newRoot`. */
     public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
-        return heap MapOrFallbackStream<T, R>(this.source.cloneChainOver(newRoot), this.fn, this.fallback);
+        return heap MapOrFallbackStream<T, R>(this.source.cloneChainOver(#newRoot), this.fn, this.fallback);
     }
 }

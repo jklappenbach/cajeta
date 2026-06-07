@@ -114,17 +114,23 @@ Status legend:
 
 ## Stdlib — `cajeta.time`
 
-All `cajeta.time` is **designed, unimplemented**. See `cajeta-docs/stdlib/Time.md`.
+Core `cajeta.time` is **implemented** (v1, `feature/time`); tz database + pattern
+formatter deferred. Plan: `plans/time/cajeta-time-plan.md`. Spec:
+`cajeta-docs/stdlib/Time.md`. Tests: `test/time/` (JIT). All value types are
+pure stack types (single canonical field, structural `operator==`, `int32
+compareTo` via `cajeta.lang.Comparable<T>`); ISO-8601 text via per-type `iso()`
+returning an owned `#String` (no `toString` override until the String surface
+stabilizes).
 
 | ID | Name | Description | Status |
 |----|------|-------------|--------|
-| S-501 | `Clock` static surface | nanoTime / millisTime / now | designed |
-| S-502 | `Instant` value type | UTC moment, ns precision | designed |
-| S-503 | `Duration` value type | Time-based amount | designed |
-| S-504 | `Period` value type | Calendar-based amount | designed |
-| S-505 | `LocalDate` / `LocalTime` / `LocalDateTime` | Zone-naive date/time | designed |
-| S-506 | `ZoneId` / `ZoneOffset` / `ZonedDateTime` | Time-zone resolution | designed |
-| S-507 | `DateTimeFormatter` | Pattern-based formatting + parsing | designed |
+| S-501 | `Clock` static surface | nanoTime / millisTime / now | shipped — `@Native` CLOCK_MONOTONIC/REALTIME binding |
+| S-502 | `Instant` value type | UTC moment, ns precision | shipped — epoch round-trips, plus/minus, between |
+| S-503 | `Duration` value type | Time-based amount | shipped — full arithmetic, compareTo, iso |
+| S-504 | `Period` value type | Calendar-based amount | shipped — Y/M/D, normalized, LocalDate.plus(Period) |
+| S-505 | `LocalDate` / `LocalTime` / `LocalDateTime` | Zone-naive date/time | shipped — Hinnant civil↔epoch-day, validation, carry arithmetic |
+| S-506 | `ZoneId` / `ZoneOffset` / `ZonedDateTime` | Time-zone resolution | shipped — `ZoneOffset` + offset-based `ZonedDateTime`; region `ZoneId` resolves DST-aware offsets via native TZif parse of `/usr/share/zoneinfo` (`__cajeta_tz_offset`), UTC fast-path for static builds |
+| S-507 | `DateTimeFormatter` | Pattern-based formatting + parsing | partial — strftime `ofPattern` (`%Y %m %d %H %I %M %S %p %j %a %A %b %B %z %Z %f %L %%`…) + `FormatStyle` standards (ISO/BASIC/RFC_1123/US/EURO/SQL) shipped over a `DateTimeFields` engine; fluent step-builder deferred (cajeta codegen for self-returning fluent methods unsound); parsing (text→temporal) deferred |
 
 ## Stdlib — `cajeta.io` / `.file` / `.net`
 
@@ -156,11 +162,11 @@ All `cajeta.io.*` is **designed, unimplemented**. See `cajeta-docs/stdlib/Io.md`
 
 | ID | Name | Description | Status | Doc / tests |
 |----|------|-------------|--------|-------------|
-| S-801 | Fiber runtime (R1-R5-A') | Stackful fibers, scheduler, timer wheel, reactor | shipped | `cajeta-docs/AsyncStatus.md` |
+| S-801 | Fiber runtime (R1-R5-A') | Stackful fibers + single-carrier cooperative scheduler. NOT YET: work-stealing pool, timer wheel, I/O reactor | shipped | `cajeta-docs/stdlib/AsyncStatus.md` |
 | S-802 | `Task<T>` + `spawn` syntax | Lightweight async tasks | shipped | `test/parser/TaskTypingTests.cpp`, `SpawnDropTests.cpp`, `AsyncSyntaxTests.cpp`, `DetachTests.cpp`, `PerFiberDropChainTests.cpp` |
-| S-803 | `Lock` class + intrinsics | Mutex via `Cajeta.lockNew()` etc. | shipped | `test/parser/LockIntrinsicTests.cpp`, `LockClassTests.cpp` |
+| S-803 | `Lock` class + intrinsics | Intrinsics (`Cajeta.lockNew()` etc.) shipped; the cajeta-source `Lock`/`LockGuard` classes exist only as inline test source, not yet as a stdlib `cajeta.threading` package (R7-A promotes them) | partial | `test/parser/LockIntrinsicTests.cpp`, `LockClassTests.cpp` |
 | S-804 | `Fiber` / `Thread` cajeta-source classes | Surface wrappers around runtime | designed | Runtime exists; surface classes haven't been declared |
-| S-805 | R5-C / R5-D runtime items | Per AsyncStatus.md | designed | `cajeta-docs/AsyncStatus.md` |
+| S-805 | R5-C / R5-D runtime items | R5-C cooperative cancellation + R5-D scope exception-escalation, in the runtime (`__cajeta_fiber_cancel`, cancel re-raise in `__cajeta_task_wait`) | shipped | `cajeta-docs/stdlib/AsyncStatus.md` |
 
 ## Stdlib — `cajeta.error`
 

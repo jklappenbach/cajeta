@@ -3,10 +3,10 @@ setlocal EnableExtensions EnableDelayedExpansion
 rem ===========================================================================
 rem Run the RELEASE regression subset on native Windows -- analogue of
 rem release_tests.sh. Runs only the cross-compilation-sensitive suites listed
-rem in test\release_filter.txt, not the full battery (run_tests.cmd with no
+rem in test\release_filter.txt, not the full battery (cajeta_tests.cmd with no
 rem args). See that file for the suite list + rationale.
 rem
-rem The sharded execution + crash reporting is reused from run_tests.cmd (this
+rem The sharded execution + crash reporting is reused from cajeta_tests.cmd (this
 rem script just selects the subset and delegates).
 rem
 rem Usage:
@@ -21,7 +21,7 @@ rem   MSYS2_ROOT   MSYS2 install root (default C:\msys64); its mingw64\bin is
 rem                prepended to PATH so cmake/ninja AND the test binary's
 rem                runtime DLLs resolve.
 rem
-rem Exit status is run_tests.cmd's, so this works directly as a release gate.
+rem Exit status is cajeta_tests.cmd's, so this works directly as a release gate.
 rem ===========================================================================
 
 rem Work from the repo root (this script lives there).
@@ -78,12 +78,12 @@ if %nmatch%==0 (
     exit /b 1
 )
 
-rem --- Delegate to run_tests.cmd for sharded execution -----------------------
+rem --- Delegate to cajeta_tests.cmd for sharded execution -----------------------
 rem PARALLEL forced (default CPU count) so the subset runs in parallel even
-rem though it's a filtered run; run_tests.cmd's parallel discovery honors
+rem though it's a filtered run; cajeta_tests.cmd's parallel discovery honors
 rem these patterns. NO_BUILD avoids a redundant second build.
 if not defined PARALLEL set "PARALLEL=%NUMBER_OF_PROCESSORS%"
-echo ^>^> Release subset: %npat% suites, %nmatch% tests (delegating to run_tests.cmd, parallel)
+echo ^>^> Release subset: %npat% suites, %nmatch% tests (delegating to cajeta_tests.cmd, parallel)
 set "NO_BUILD=1"
-call "%ROOT%\run_tests.cmd"%pats%
+call "%ROOT%\cajeta_tests.cmd"%pats%
 exit /b %errorlevel%

@@ -31,7 +31,7 @@ import cajeta.lang.String;
  *
  * Streaming `Hasher`:
  * ```cajeta
- * MD5 m = new MD5();
+ * MD5 m = heap MD5();
  * m.writeInt32(record.id);
  * m.writeString(record.title);
  * m.update(record.payload, record.payload.count());
@@ -51,8 +51,8 @@ import cajeta.lang.String;
  *   thread live-set, so one-shot and digest helpers pre-allocate
  *   the output on the cajeta side and the C helper fills it.
  *
- * @see cajeta.hash.Hasher
- * @see [stdlib/Hashing.md § MD5](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See cajeta.hash.Hasher
+ * @See [stdlib/Hashing.md § MD5](../../../../../cajeta-docs/stdlib/Hashing.md)
  */
 public final class MD5 implements Hasher {
 
@@ -61,10 +61,24 @@ public final class MD5 implements Hasher {
      */
     public pointer state;
 
+    /**
+     * Create an empty streaming hasher backed by freshly allocated
+     * native state. Feed it through the `Hasher` write methods, then
+     * collapse to a fingerprint with `finish()` (or pull the full
+     * 16-byte digest with `digest()`).
+     *
+     * ```cajeta
+     * MD5 m = heap MD5();
+     * m.writeInt32(record.id);
+     * m.writeString(record.title);
+     * int64 fingerprint = m.finish();
+     * ```
+     */
     public MD5() {
         this.state = MD5.allocState();
     }
 
+    /** Frees the native MD5 state when the instance is destroyed. */
     ~MD5() {
         MD5.freeState(this.state);
     }
@@ -118,32 +132,49 @@ public final class MD5 implements Hasher {
     /**
      * One-shot 16-byte digest of `data[0..len)`. Allocates a fresh
      * `int8[16]` and transfers ownership to the caller.
+     *
+     * ```cajeta
+     * #int8[] digest = MD5.hash(bytes, bytes.count());
+     * ```
      */
     public static #int8[] hash(int8[] data, int64 len) {
-        int8[] out = new int8[16];
+        int8[] out = heap int8[16];
         MD5.oneshotInto(data, len, out);
         return #out;
     }
 
     /**
-     * One-shot lowercase 32-char hex digest of `data[0..len)`.
-     * Common shape for ETag / Content-MD5 / asset fingerprints.
+     * One-shot lowercase 32-char hex digest of `data[0..len)`,
+     * returned as a `String`. Common shape for ETag / Content-MD5 /
+     * asset fingerprints.
+     *
+     * ```cajeta
+     * String etag = MD5.hashHex(bytes, bytes.count());
+     * ```
      */
     public static #String hashHex(int8[] data, int64 len) {
-        int8[] hex = new int8[32];
+        int8[] hex = heap int8[32];
         MD5.oneshotHexInto(data, len, hex);
         return heap String(#hex, 32);
     }
 
     /**
-     * One-shot 16-byte digest of a String's UTF-8 bytes.
+     * One-shot 16-byte digest of a `String`'s UTF-8 bytes.
+     *
+     * ```cajeta
+     * #int8[] d = MD5.hashString(name);
+     * ```
      */
     public static #int8[] hashString(String s) {
         return MD5.hash(s.bytes, (int64) s.byteLength);
     }
 
     /**
-     * One-shot lowercase hex digest of a String's UTF-8 bytes.
+     * One-shot lowercase hex digest of a `String`'s UTF-8 bytes.
+     *
+     * ```cajeta
+     * String key = MD5.hashStringHex(payload);
+     * ```
      */
     public static #String hashStringHex(String s) {
         return MD5.hashHex(s.bytes, (int64) s.byteLength);
@@ -163,7 +194,7 @@ public final class MD5 implements Hasher {
      * subsequent updates produce undefined results until `reset()`.
      */
     public #int8[] digest() {
-        int8[] out = new int8[16];
+        int8[] out = heap int8[16];
         MD5.finalizeInto(this.state, out);
         return #out;
     }
@@ -196,6 +227,12 @@ public final class MD5 implements Hasher {
         MD5.updateNative(this.state, data, data.count());
     }
 
+    /**
+     * Append `length` bytes of `data` to the digest.
+     *
+     * **v1 limitation:** `offset` is currently ignored — the native
+     * helper reads from a fixed start. True slicing lands in v2.
+     */
     public void writeBytesRange(int8[] data, int64 offset, int64 length) {
         // v1: `offset` ignored — the C helper reads from data[8..].
         // Slicing primitive is a v2 follow-up.
@@ -206,10 +243,26 @@ public final class MD5 implements Hasher {
         MD5.updateNative(this.state, s.bytes, (int64) s.byteLength);
     }
 
+    /**
+     * Mixes `obj.hash()` (the object's 64-bit identity hash) into the
+     * digest — not the object's deep byte contents.
+     */
     public void writeObject(Object obj) {
         MD5.writeI64Native(this.state, obj.hash());
     }
 
+    /**
+     * Finalize and project the 128-bit digest down to its first 8
+     * bytes as a little-endian `int64`, satisfying the `Hasher`
+     * contract. Consumes the state — for the full 16-byte digest call
+     * `digest()` first, and `reset()` to hash again.
+     *
+     * ```cajeta
+     * MD5 m = heap MD5();
+     * m.writeString(record.title);
+     * int64 fingerprint = m.finish();
+     * ```
+     */
     public int64 finish() {
         return MD5.finishInt64(this.state);
     }

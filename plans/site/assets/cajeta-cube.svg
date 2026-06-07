@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Cajeta caramel cube">
+  <defs>
+    <linearGradient id="cj-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFE6B8"/>
+      <stop offset="0.5" stop-color="#E0A85B"/>
+      <stop offset="1" stop-color="#C68A3E"/>
+    </linearGradient>
+    <linearGradient id="cj-left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#B97A2E"/>
+      <stop offset="1" stop-color="#7E4F1F"/>
+    </linearGradient>
+    <linearGradient id="cj-right" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8A5A22"/>
+      <stop offset="1" stop-color="#5A3617"/>
+    </linearGradient>
+    <radialGradient id="cj-glow" cx="0.5" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#FFE6B8" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#FFE6B8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cj-shadow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#2A1A0F" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#2A1A0F" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ambient glow -->
+  <rect x="0" y="0" width="128" height="128" fill="url(#cj-glow)"/>
+  <!-- contact shadow -->
+  <ellipse cx="64" cy="112" rx="40" ry="9" fill="url(#cj-shadow)"/>
+
+  <!-- cube faces (isometric) -->
+  <!-- top -->
+  <polygon points="64,20 104,42 64,64 24,42" fill="url(#cj-top)"/>
+  <!-- left -->
+  <polygon points="24,42 64,64 64,104 24,82" fill="url(#cj-left)"/>
+  <!-- right -->
+  <polygon points="104,42 64,64 64,104 104,82" fill="url(#cj-right)"/>
+
+  <!-- edge sheen -->
+  <polyline points="24,42 64,64 104,42" fill="none" stroke="#FFE6B8" stroke-opacity="0.5" stroke-width="1.5"/>
+  <!-- glossy specular highlight on the top face -->
+  <ellipse cx="58" cy="38" rx="13" ry="6" fill="#FFFFFF" fill-opacity="0.55" transform="rotate(-26 58 38)"/>
+  <!-- small secondary glint -->
+  <circle cx="80" cy="46" r="2.6" fill="#FFFFFF" fill-opacity="0.7"/>
+</svg>

@@ -1,0 +1,137 @@
+package cajeta.coverage;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+
+/**
+ * Merged coverage data — the output of `cajeta.coverage.collect`,
+ * the input to `cajeta.coverage.report`.
+ *
+ * Per-file table of probe-id → covered? (binary), and total/hit
+ * counters at file granularity so the report action can compute
+ * percentages without re-walking the table. Probe-ids tie back to
+ * source positions via the compiler-emitted coverage map (loaded
+ * lazily by the report action when it needs to render a specific
+ * file's annotated source).
+ */
+public class CoverageMap {
+
+    /**
+     * Per-file aggregate. Probe-set is the universe of probes the
+     * compiler emitted for this file at the configured grain;
+     * `hitProbes` is the subset that any test exercised at least
+     * once.
+     */
+    public class FileEntry {
+        String   path;
+        Grain    grain;
+        int32    totalProbes;
+        int32    hitProbes;
+        // The bitset of probe-ids that were covered. Stored explicit
+        // (not just counts) so the report action can render uncovered
+        // lines/branches individually. boolean[] indexed by probe-id.
+        boolean[] covered;
+
+        public FileEntry(String path, Grain grain, int32 totalProbes) {
+            this.path = path;
+            this.grain = grain;
+            this.totalProbes = totalProbes;
+            this.hitProbes = 0;
+            this.covered = #heap boolean[totalProbes];
+        }
+
+        public String  path()        { return this.path;        }
+        public Grain   grain()       { return this.grain;       }
+        public int32   totalProbes() { return this.totalProbes; }
+        public int32   hitProbes()   { return this.hitProbes;   }
+        public boolean wasHit(int32 probeId) {
+            return this.covered[probeId];
+        }
+
+        /**
+         * Mark `probeId` as covered. Re-marking is a no-op (so
+         * adding the same per-test ProbeData twice doesn't double-
+         * count the percent).
+         */
+        public void markCovered(int32 probeId) {
+            if (this.covered[probeId]) {
+                return;
+            }
+            this.covered[probeId] = true;
+            this.hitProbes = this.hitProbes + 1;
+        }
+
+        /**
+         * File-level percentage (`hit / total * 100`), or 100 if the
+         * file has no probes (vacuously covered).
+         */
+        public float percent() {
+            if (this.totalProbes == 0) {
+                return 100.0;
+            }
+            return (this.hitProbes * 100.0) / this.totalProbes;
+        }
+    }
+
+    Grain                       grain;
+    HashMap<String, FileEntry>  files;
+
+    public CoverageMap(Grain grain) {
+        this.grain = grain;
+        this.files = #heap HashMap<String, FileEntry>();
+    }
+
+    public Grain grain() { return this.grain; }
+
+    public HashMap<String, FileEntry> files() {
+        return this.files;
+    }
+
+    public int32 count() {
+        return this.files.count();
+    }
+
+    /**
+     * Materialize a file's entry. `totalProbes` is the universe the
+     * compiler emitted for this file — call once per file with the
+     * value read from the compiler-side coverage map. Subsequent
+     * calls for the same path return the existing entry.
+     */
+    public FileEntry getOrCreate(String path, int32 totalProbes) {
+        Optional<FileEntry> existing = this.files.get(path);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        FileEntry fresh = #heap FileEntry(path, this.grain, totalProbes);
+        this.files.put(path, #fresh);
+        return fresh;
+    }
+
+    /**
+     * Overall coverage percentage across all files. Files are not
+     * weighted by line count — every file contributes its
+     * `(hit / total)` directly. Use file-level percentages for the
+     * bottom-N report; the overall is a quick number for the gate.
+     */
+    public float overallPercent() {
+        int64 totalHit   = 0;
+        int64 totalProbes = 0;
+        // TODO P1: HashMap iterator surface (`.entries()` returning a
+        // Stream) lands once stream/iteration is finalized for
+        // HashMap. Until then, the report action calls
+        // `.percent()` per `FileEntry` and aggregates manually using
+        // the keys() helper.
+        ArrayList<String> keys = this.files.keys();
+        int32 i = 0;
+        while (i < keys.count()) {
+            FileEntry e = this.files.get(keys.get(i)).get();
+            totalHit    = totalHit    + e.hitProbes();
+            totalProbes = totalProbes + e.totalProbes();
+            i = i + 1;
+        }
+        if (totalProbes == 0) {
+            return 100.0;
+        }
+        return (totalHit * 100.0) / totalProbes;
+    }
+}

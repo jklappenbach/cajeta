@@ -112,7 +112,7 @@ install_linux_apt() {
         "llvm-${LLVM_VER}-dev"
         "libllvm${LLVM_VER}"
         libantlr4-runtime-dev
-        openjdk-17-jre
+        openjdk-21-jre
         libgtest-dev
         libgoogle-glog-dev
         libzstd-dev
@@ -155,7 +155,7 @@ install_linux_fallback() {
     # supported. The xxhash piece has its own multi-distro script.
     echo "[deps] non-apt Linux detected. Install the equivalents of:" >&2
     echo "       cmake ninja-build clang-${LLVM_VER} llvm-${LLVM_VER}-dev libantlr4-runtime-dev" >&2
-    echo "       openjdk-17-jre libgtest-dev libgoogle-glog-dev libzstd-dev" >&2
+    echo "       openjdk-21-jre libgtest-dev libgoogle-glog-dev libzstd-dev" >&2
     echo "       vim-common (for xxd) lld-${LLVM_VER}-dev" >&2
     echo "[deps] for xxhash specifically, you can run:" >&2
     echo "       scripts/install-xxhash-linux.sh" >&2
@@ -173,7 +173,7 @@ install_macos_brew() {
     # to the brew prefix, e.g.:
     #   LLVM_DIR="$(brew --prefix ${BREW_LLVM})/lib/cmake/llvm" ./setup.sh
     local formulas=(
-        cmake ninja "${BREW_LLVM}" antlr4-cpp-runtime openjdk@17
+        cmake ninja "${BREW_LLVM}" antlr4-cpp-runtime openjdk@21
         googletest glog zstd xxhash
     )
     echo "[deps] running: brew install ${formulas[*]}"

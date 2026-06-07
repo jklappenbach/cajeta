@@ -58,7 +58,7 @@ TEST(ValueTypeFlagTests, validValueTypeCarriesFlag) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        VtPoint p = new VtPoint(3.0f, 4.0f);\n"
+        "        VtPoint p = heap VtPoint(3.0f, 4.0f);\n"
         "        return (int32) p.total();\n"
         "    }\n"
         "}\n";

@@ -56,7 +56,7 @@ TEST(MultiClassingPhase2Tests, superBaseCombinesSiblingParentImpls) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.kind();\n"  // 1 + 2 = 3
         "  }\n"
         "}\n";
@@ -80,7 +80,7 @@ TEST(MultiClassingPhase2Tests, superBaseInSingleInheritanceMatchesPlainSuper) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Dog d = new Dog();\n"
+        "    Dog d = heap Dog();\n"
         "    return d.speak();\n"  // 10 + 32 = 42
         "  }\n"
         "}\n";
@@ -112,7 +112,7 @@ TEST(MultiClassingPhase2Tests, superBaseBypassesVtableNoInfiniteLoop) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.step();\n"  // 5 * 2 = 10
         "  }\n"
         "}\n";
@@ -139,7 +139,7 @@ TEST(MultiClassingPhase2Tests, thisBaseReadsAndWritesIndependentParentSlots) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.sum();\n"  // 10 + 20 = 30
         "  }\n"
         "}\n";
@@ -165,7 +165,7 @@ TEST(MultiClassingPhase2Tests, thisBaseInSingleInheritanceWorks) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    Bumped b = new Bumped();\n"
+        "    Bumped b = heap Bumped();\n"
         "    return b.read();\n"  // 7
         "  }\n"
         "}\n";
@@ -190,7 +190,7 @@ TEST(MultiClassingPhase2Tests, superBaseOnNonAncestorRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return c.oops();\n"
         "  }\n"
         "}\n";
@@ -214,7 +214,7 @@ TEST(MultiClassingPhase2Tests, thisBaseOnNonAncestorRejected) {
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
-        "    C c = new C();\n"
+        "    C c = heap C();\n"
         "    return 0;\n"
         "  }\n"
         "}\n";

@@ -75,9 +75,11 @@ MyClass e = stack MyClass();                    // stack, default ctor
 MyClass f;                                       // null reference (see § Definite assignment)
 ```
 
-### `new` retires
+### `new` removed
 
-The `new` keyword is removed. During migration, `new MyClass(args)` is treated as `heap MyClass(args)` with a deprecation warning. After the migration cycle, `new` produces a parse error.
+The `new` keyword has been removed. `heap MyClass(args)` is the sole heap
+allocator (`stack` and `shared` are the other placements). Writing `new`
+produces a parse error.
 
 ### Storage-agnostic type system
 
@@ -371,7 +373,7 @@ This is intentional asymmetry with locals: locals require explicit init (definit
 
 ## Migration from v1
 
-The v1 `new` keyword is supported during a deprecation cycle, then retired. The v1 `struct` keyword has been removed.
+The v1 `new` and `struct` keywords have both been removed — each is now a parse error.
 
 ### `struct` keyword
 
@@ -384,20 +386,19 @@ The `struct` keyword has been removed from the lexer and parser. v1 `struct` dec
 
 ### `new` keyword
 
-```cajeta
-MyClass x = new MyClass();           // v1
-MyClass x = heap MyClass();          // v2
-```
+The v1 `new` keyword has been removed from the lexer and parser; `new ClassName(args)` is now a parse error. Rewrite it with `heap` (or `stack`):
 
-During migration, `new` is treated as `heap`. After the cycle, `new` becomes a parse error.
+```cajeta
+MyClass x = heap MyClass();
+```
 
 ### Bare `MyClass(args)` was never legal
 
-In v1, constructor calls always went through `new ClassName(args)`. Bare `ClassName(args)` was either a parse error or routed to view-construction syntax. v2 keeps bare `ClassName(args)` as a compile error — every allocation says where (`stack` or `heap`).
+In v1, constructor calls always went through `heap ClassName(args)`. Bare `ClassName(args)` was either a parse error or routed to view-construction syntax. v2 keeps bare `ClassName(args)` as a compile error — every allocation says where (`stack` or `heap`).
 
 ### What changes for existing code
 
-- Every `new MyClass()` should be reviewed and migrated to either `heap MyClass()` (preserves behavior) or `stack MyClass()` (often better — avoids heap traffic).
+- Every `heap MyClass()` should be reviewed and migrated to either `heap MyClass()` (preserves behavior) or `stack MyClass()` (often better — avoids heap traffic).
 - Every `struct Foo` declaration becomes `class Foo`. Existing struct fields, methods, drops, interface impls all carry forward.
 - Tests using `MyClass x;` (Java-style null) continue to work, but `x.method()` immediately after will now be a compile error (was a runtime null-deref). Code paths that assumed lazy initialization may need an explicit `MyClass x = null;` or an `if (x != null)` guard.
 - Code that used `Foo(bytes)` view-construction syntax stays unchanged — view construction is unrelated.

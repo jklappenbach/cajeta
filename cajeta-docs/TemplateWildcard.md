@@ -192,7 +192,7 @@ The naive worst case is reachable through reasonable-looking source code:
 
 2. **Heterogeneous collection.**
    ```cajeta
-   ArrayList<Stream<?>> registered = new ArrayList<Stream<?>>();
+   ArrayList<Stream<?>> registered = heap ArrayList<Stream<?>>();
    registered.add(intList.stream());
    registered.add(nameList.stream());
    int32 i = 0;
@@ -333,8 +333,8 @@ don't care what T is" be a first-class type rather than a workaround.
 
 ```cajeta
 HashMap<String, Supplier<?>> factories = ...;
-factories.put("int",    () -> new Counter<int32>());
-factories.put("string", () -> new Counter<String>());
+factories.put("int",    () -> heap Counter<int32>());
+factories.put("string", () -> heap Counter<String>());
 
 Supplier<?> f = factories.get(key);
 Object made = f.get();

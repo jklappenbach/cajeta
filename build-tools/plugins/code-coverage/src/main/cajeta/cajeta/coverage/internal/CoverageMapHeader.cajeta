@@ -1,0 +1,43 @@
+package cajeta.coverage.internal;
+
+import cajeta.io.file.FileReader;
+import cajeta.io.file.Path;
+
+/**
+ * Header-only inspection of a compiler-emitted coverage-map sidecar.
+ * Used by the `cajeta.coverage.instrument` action to surface
+ * `probe-count` without paying for a full sidecar load.
+ *
+ * The sidecar's format is documented in `PositionLookup`. This class
+ * only reads the magic + version + grain + nProbes fields and stops.
+ */
+public class CoverageMapHeader {
+
+    /**
+     * Probe-count from the sidecar header. Returns 0 when the file
+     * is missing or malformed — `instrument` treats missing telemetry
+     * as a soft failure (the build succeeded; we just couldn't count
+     * probes).
+     */
+    public static int32 readProbeCount(Path path) {
+        if (!path.exists()) {
+            return 0;
+        }
+        FileReader r = FileReader.open(path);
+        byte[] magic = r.readBytes(4);
+        if (magic != "CJCM".bytes()) {
+            r.close();
+            return 0;
+        }
+        int32 version = r.readU16BE();
+        if (version != 1) {
+            r.close();
+            return 0;
+        }
+        r.readU8();  // grain
+        r.readU8();  // reserved
+        int32 nProbes = r.readU32BE();
+        r.close();
+        return nProbes;
+    }
+}

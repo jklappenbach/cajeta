@@ -38,11 +38,11 @@ TEST(StringIndexingTests, byteAtAsciiIndex) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 'a';\n"   // 0x61
         "        b[1] = (int8) 'b';\n"   // 0x62
         "        b[2] = (int8) 'c';\n"   // 0x63
-        "        String s = heap String(b, 3);\n"
+        "        String s = heap String(#b, 3);\n"
         "        int8 c = s.byteAt(1);\n"
         "        return (int32) c;\n"
         "    }\n"
@@ -56,11 +56,11 @@ TEST(StringIndexingTests, codepointAtAscii) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 'a';\n"
         "        b[1] = (int8) 'b';\n"
         "        b[2] = (int8) 'c';\n"
-        "        String s = heap String(b, 3);\n"
+        "        String s = heap String(#b, 3);\n"
         "        char c = s.codepointAt(1);\n"
         "        return (int32) c;\n"
         "    }\n"
@@ -75,11 +75,11 @@ TEST(StringIndexingTests, codepointAtMultibyte) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] b = new int8[3];\n"
+        "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 0xC3;\n"
         "        b[1] = (int8) 0xA9;\n"
         "        b[2] = (int8) 0x21;\n"   // '!'
-        "        String s = heap String(b, 3);\n"
+        "        String s = heap String(#b, 3);\n"
         "        char cp0 = s.codepointAt(0);\n"
         "        char cp1 = s.codepointAt(1);\n"
         "        return (int32) cp0 * 1000 + (int32) cp1;\n"
@@ -94,12 +94,12 @@ TEST(StringIndexingTests, codepointAtFourByte) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] b = new int8[4];\n"
+        "        int8[] b = heap int8[4];\n"
         "        b[0] = (int8) 0xF0;\n"
         "        b[1] = (int8) 0x9F;\n"
         "        b[2] = (int8) 0x98;\n"
         "        b[3] = (int8) 0x80;\n"
-        "        String s = heap String(b, 4);\n"
+        "        String s = heap String(#b, 4);\n"
         "        char cp = s.codepointAt(0);\n"
         "        return (int32) cp;\n"
         "    }\n"

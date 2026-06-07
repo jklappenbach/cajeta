@@ -55,12 +55,12 @@ TEST(DestructorChainTests, parentDestructorRunsAfterChild) {
     auto cls =
         "public class Base {\n"
         "    public ~Base() {\n"
-        "        int32[] baseMark = new int32[1];\n"
+        "        int32[] baseMark = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public class Derived extends Base {\n"
         "    public ~Derived() {\n"
-        "        int32[] derivedMark = new int32[1];\n"
+        "        int32[] derivedMark = heap int32[1];\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(observeChainDrops(cls,
@@ -74,12 +74,12 @@ TEST(DestructorChainTests, chainViaBaseTypedLocal) {
     auto cls =
         "public class Base {\n"
         "    public ~Base() {\n"
-        "        int32[] baseMark = new int32[1];\n"
+        "        int32[] baseMark = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public class Derived extends Base {\n"
         "    public ~Derived() {\n"
-        "        int32[] derivedMark = new int32[1];\n"
+        "        int32[] derivedMark = heap int32[1];\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(observeChainDrops(cls,
@@ -93,20 +93,20 @@ TEST(DestructorChainTests, threeLevelChain) {
     auto cls =
         "public class A {\n"
         "    public ~A() {\n"
-        "        int32[] a1 = new int32[1];\n"
+        "        int32[] a1 = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public class B extends A {\n"
         "    public ~B() {\n"
-        "        int32[] b1 = new int32[1];\n"
-        "        int32[] b2 = new int32[1];\n"
+        "        int32[] b1 = heap int32[1];\n"
+        "        int32[] b2 = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public class C extends B {\n"
         "    public ~C() {\n"
-        "        int32[] c1 = new int32[1];\n"
-        "        int32[] c2 = new int32[1];\n"
-        "        int32[] c3 = new int32[1];\n"
+        "        int32[] c1 = heap int32[1];\n"
+        "        int32[] c2 = heap int32[1];\n"
+        "        int32[] c3 = heap int32[1];\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(observeChainDrops(cls,
@@ -120,7 +120,7 @@ TEST(DestructorChainTests, parentChainWhenChildHasNoDestructor) {
     auto cls =
         "public class Base {\n"
         "    public ~Base() {\n"
-        "        int32[] baseMark = new int32[1];\n"
+        "        int32[] baseMark = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public class Derived extends Base {\n"
@@ -141,7 +141,7 @@ TEST(DestructorChainTests, childRunsWhenParentHasNoDestructor) {
         "}\n"
         "public class Derived extends Base {\n"
         "    public ~Derived() {\n"
-        "        int32[] derivedMark = new int32[1];\n"
+        "        int32[] derivedMark = heap int32[1];\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(observeChainDrops(cls,
@@ -157,13 +157,13 @@ TEST(DestructorChainTests, stackAllocChainsDestructors) {
         "public class Base {\n"
         "    public Base() { return; }\n"
         "    public ~Base() {\n"
-        "        int32[] baseMark = new int32[1];\n"
+        "        int32[] baseMark = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public class Derived extends Base {\n"
         "    public Derived() { return; }\n"
         "    public ~Derived() {\n"
-        "        int32[] derivedMark = new int32[1];\n"
+        "        int32[] derivedMark = heap int32[1];\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(observeChainDrops(cls,
@@ -180,19 +180,19 @@ TEST(DestructorChainTests, multiInheritanceBothParentsRun) {
         "public class P1 {\n"
         "    public P1() { return; }\n"
         "    public ~P1() {\n"
-        "        int32[] p1Mark = new int32[1];\n"
+        "        int32[] p1Mark = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public class P2 {\n"
         "    public P2() { return; }\n"
         "    public ~P2() {\n"
-        "        int32[] p2Mark = new int32[1];\n"
+        "        int32[] p2Mark = heap int32[1];\n"
         "    }\n"
         "}\n"
         "public class Child extends P1, P2 {\n"
         "    public Child() { return; }\n"
         "    public ~Child() {\n"
-        "        int32[] childMark = new int32[1];\n"
+        "        int32[] childMark = heap int32[1];\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(observeChainDrops(cls,

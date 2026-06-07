@@ -1,0 +1,16 @@
+package cajeta.coverage.internal;
+
+/**
+ * Raised when a per-test probe dump can't be parsed — bad header,
+ * missing `file:` context for a probe row, malformed probe-id /
+ * hit-count integer.
+ *
+ * Distinct from `CoverageMapFormatException` so the operator can
+ * tell at a glance whether the problem is upstream (test runner)
+ * or downstream (the merged map).
+ */
+public class ProbeDataFormatException extends Exception {
+    public ProbeDataFormatException(String message) {
+        super(message);
+    }
+}
