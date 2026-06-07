@@ -418,6 +418,122 @@ TEST(XpuVulkanDispatchDeviceTests, textureSampleOnDevice) {
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
 }
 
+// Multi-channel float texture (B3): an RGBA32F Texture2D sampled on RADV returns
+// all four channels (sample() -> Vector<float32,4>). Clones the R32F device test
+// (2x2, 3 coord/out buffers, linear) but the 2x2 texel R channels are (0,1,2,3)
+// — so reading .x at the four corners + center reproduces the R32F expecteds —
+// and the G/B/A channels (R+10/+20/+30) are checked at one corner.
+static const char* kRgbaSampleSrc(const char* fmt) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexRgba {\n"
+        "    @Kernel\n"
+        "    public static void sample(Texture2D tex, Sampler s,\n"
+        "                              Buffer<float32> us, Buffer<float32> vs,\n"
+        "                              Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<float32,4> c = tex.sample(s, us[i], vs[i]);\n"
+        "            out[i*4 + 0] = c.x;\n"
+        "            out[i*4 + 1] = c.y;\n"
+        "            out[i*4 + 2] = c.z;\n"
+        "            out[i*4 + 3] = c.w;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[16];\n"   // 2*2 RGBA
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"   // all channels in [0,1] (UNORM-safe)
+        "            pixels[t*4 + 0] = r;\n"
+        "            pixels[t*4 + 1] = r + 0.05f;\n"
+        "            pixels[t*4 + 2] = r + 0.1f;\n"
+        "            pixels[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        Texture2D tex = heap Texture2D(w, h, ") + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
+        "        uint32 n = 4;\n"                          // 4 query points (texel centers)
+        "        uint32 m = n * 4;\n"                      // 4 RGBA channels each
+        "        float32[] hus = heap float32[n];\n"
+        "        float32[] hvs = heap float32[n];\n"
+        "        hus[0] = 0.25f; hvs[0] = 0.25f;\n"        // texel (0,0)
+        "        hus[1] = 0.75f; hvs[1] = 0.25f;\n"        // texel (1,0)
+        "        hus[2] = 0.25f; hvs[2] = 0.75f;\n"        // texel (0,1)
+        "        hus[3] = 0.75f; hvs[3] = 0.75f;\n"        // texel (1,1)
+        "        float32[] hexp = heap float32[m];\n"
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n" // texel t: R,G,B,A = .2t, .2t+.05, +.1, +.15
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            hexp[t*4 + 0] = r;\n"
+        "            hexp[t*4 + 1] = r + 0.05f;\n"
+        "            hexp[t*4 + 2] = r + 0.1f;\n"
+        "            hexp[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        float32[] hout = heap float32[m];\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> us = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> vs = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, m);\n"
+        "        us.allocate(); vs.allocate(); out.allocate();\n"
+        "        us.upload(hus); vs.upload(hvs); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        us.free(); vs.free(); out.free();\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) {\n"
+        "            float32 d = hout[i] - hexp[i];\n"
+        "            if (d < -0.02f || d > 0.02f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+TEST(XpuVulkanDispatchDeviceTests, textureSampleRgba32fOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kRgbaSampleSrc("TextureFormat.RGBA32F"),
+                                  "test.TexRgba", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F sample mismatch at i)";
+}
+
+// 8-bit normalized RGBA (the common color texture): bytes 0..255 stored, read
+// back as float [0,1]. Same kernel/check as the RGBA32F test (all texel channel
+// values are in [0,1]); this exercises the float->unorm8 quantize-on-upload path
+// + the R8G8B8A8_UNORM device image, within unorm8 quantization of the 0.02 tol.
+TEST(XpuVulkanDispatchDeviceTests, textureSampleRgba8UnormOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kRgbaSampleSrc("TextureFormat.RGBA8_UNORM"),
+                                  "test.TexRgba", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA8_UNORM sample mismatch at i)";
+}
+
+
 // Writable images: an Image2D bound as a STORAGE_IMAGE that a compute kernel
 // WRITES with img.store(x, y, value) (OpImageWrite), then the host reads back
 // with img.download(...). On the real Vulkan device (RADV / Strix Halo) the

@@ -1,0 +1,33 @@
+package cajeta.xpu.core;
+
+/**
+ * Storage format of a {@link Texture2D}. Selects how texels are stored on the
+ * device (channel count + per-channel encoding); a `Texture2D.sample(...)`
+ * always returns a `Vector<float32, 4>` regardless — the hardware sampler
+ * expands missing channels (G/B = 0, A = 1) and decodes the stored encoding to
+ * float.
+ *
+ * Two independent axes are folded into one format:
+ *   - **channels:** 1 (R) or 4 (RGBA).
+ *   - **encoding:** 32-bit float (the value is read back as-is, any range), or
+ *     8-bit UNORM (a byte 0..255 stored, read back normalized to float [0, 1] —
+ *     the common, compact color-texture encoding).
+ *
+ * `upload(float32[])` always takes channel-interleaved floats in [0, 1] for the
+ * UNORM formats (quantized to bytes on store) or any range for the float
+ * formats; the runtime owns the float → storage encoding.
+ *
+ * **Ordinal values are the stable native contract** — the
+ * `__cajeta_xpu_texture_*` intrinsics (see
+ * [`runtime/native/cajeta_runtime.c`](../../../native/cajeta_runtime.c)) switch
+ * on them to pick the per-backend image format (`VK_FORMAT_*`, HIP
+ * `hipChannelFormatDesc`, CPU storage). Do **not** reorder without updating that
+ * C side. Raw-integer (non-normalized, int-returning) textures are a separate
+ * `fetch` surface and are intentionally not in this enum.
+ */
+public enum TextureFormat {
+    R32F,         // 0 — 1 channel, 32-bit float           (VK_FORMAT_R32_SFLOAT)
+    R8_UNORM,     // 1 — 1 channel, 8-bit normalized [0,1]  (VK_FORMAT_R8_UNORM)
+    RGBA8_UNORM,  // 2 — 4 channel, 8-bit normalized [0,1]  (VK_FORMAT_R8G8B8A8_UNORM)
+    RGBA32F       // 3 — 4 channel, 32-bit float            (VK_FORMAT_R32G32B32A32_SFLOAT)
+}
