@@ -16,6 +16,7 @@
 #include <fstream>
 #include <filesystem>
 #include <queue>
+#include <set>
 #include <llvm/Support/raw_os_ostream.h>
 #include "../type/ScopeStack.h"
 
@@ -127,6 +128,15 @@ namespace cajeta {
         // ever parallelize parsing this becomes thread_local.
         static CajetaModulePtr activeModule;
 
+        // Incremental compilation (Phase 2/3): the module whose method body
+        // is currently being lowered by Method::generateCode (innermost frame
+        // — set via an RAII guard, so nested codegen restores correctly).
+        // Null outside codegen (e.g. during parse). The template-instantiation
+        // choke point reads this to attribute a cross-module instantiation to
+        // the module that triggered it. Single-threaded codegen, like
+        // activeModule.
+        static CajetaModulePtr currentCodegenModule;
+
         // The compiler-owned module that holds the parsed stdlib
         // (cajeta.error.* today) and the linked runtime bitcode.
         // Set by Compiler's ctor, cleared in resetGlobals. User
@@ -147,6 +157,17 @@ namespace cajeta {
         map<string, CajetaClassPtr> structures;
         MethodPtr currentMethod;
         StructureMetadataPtr structureMetadata;
+
+        // Incremental compilation (cajeta-docs/IncrementalCompilation.md,
+        // Phase 2): the set of template instantiations this module's codegen
+        // drove into ANOTHER module (typically stdlib) — e.g. a method body
+        // calling `xs.stream()` instantiates `ArrayStream<int32>` into the
+        // stdlib module. If this module's codegen is later skipped (clean in
+        // an incremental build), those instantiations would vanish unless
+        // replayed, so we record them as "obligations". Sorted set → stable
+        // sidecar ordering. Same-module instantiations are NOT recorded (they
+        // travel with the module's own IR).
+        std::set<std::string> instantiationObligations;
 
         // Compiler-level options that codegen consults. Set on the module by the
         // Compiler at creation time (so each module produces IR consistent with the
@@ -469,6 +490,9 @@ namespace cajeta {
         static CajetaModulePtr getActiveModule() { return activeModule; }
         static void setActiveModule(CajetaModulePtr m) { activeModule = m; }
 
+        static CajetaModulePtr getCurrentCodegenModule() { return currentCodegenModule; }
+        static void setCurrentCodegenModule(CajetaModulePtr m) { currentCodegenModule = m; }
+
         static CajetaModulePtr getStdlibModule() { return stdlibModule; }
         static void setStdlibModule(CajetaModulePtr m) { stdlibModule = m; }
 
@@ -490,6 +514,43 @@ namespace cajeta {
         }
         const CompilerFlags& getFlags() const { return compilerFlags; }
         void setFlags(const CompilerFlags& f) { compilerFlags = f; }
+
+        // Reproducible builds: the constructor seeds the module's embedded
+        // source-file name with the absolute on-disk path, which would bake
+        // a machine-specific string into the emitted IR. Once the compiler
+        // flags (carrying --debug-prefix-map) are set, re-derive the name to
+        // a machine-independent form so the same source yields byte-identical
+        // bitcode across hosts. No-op for synthetic modules (empty sourcePath).
+        void canonicalizeSourceFileName();
+
+        // Pure mapping behind canonicalizeSourceFileName(), exposed for tests.
+        // Applies a `--debug-prefix-map=<from>=<to>` (split on the first '=',
+        // matching the GCC/Clang convention) when `sourcePath` starts with
+        // <from>; otherwise falls back to a `sourceRoot`-relative path. Path
+        // separators are normalized to '/' so the embedded form is stable
+        // across OSes. Returns `sourcePath` unchanged only when neither the
+        // map nor the root applies.
+        static std::string remapSourcePath(const std::string& sourcePath,
+                                           const std::string& sourceRoot,
+                                           const std::string& debugPrefixMap);
+
+        // Incremental compilation (Phase 2) — obligation capture/serialize.
+        const std::set<std::string>& getInstantiationObligations() const {
+            return instantiationObligations;
+        }
+        // Record `inst` as an obligation of `triggering` IFF it's a genuine,
+        // cross-module instantiation (owned by a different module). Called
+        // from codegen sites that trigger template instantiation, with
+        // `triggering` = the module whose method body is being lowered.
+        // No-op when same-module or either arg is null.
+        static void noteCrossModuleInstantiation(
+            const CajetaModulePtr& triggering, const CajetaClassPtr& inst);
+        // Write this module's obligations to a sidecar next to its emitted IR
+        // (`<archiveRoot><archivePath:.ll→.obligations>`), one sorted
+        // canonical name per line. No-op (and removes any stale sidecar) when
+        // the set is empty, so a module that drops its last cross-module use
+        // doesn't leave a misleading file behind.
+        void writeObligationsSidecar() const;
 
         // Intern a source-file path as a module-global constant `const char*`
         // for the debug-mode source-tagging machinery. Subsequent calls with

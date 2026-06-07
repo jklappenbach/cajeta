@@ -519,6 +519,10 @@ namespace cajeta {
             targetMachine);
         // Propagate compiler-level flags so codegen for this module respects them.
         module->setFlags(flags);
+        // Reproducible builds: now that flags (with --debug-prefix-map) are
+        // set, scrub the absolute source path the constructor embedded so the
+        // emitted IR is byte-identical across hosts.
+        module->canonicalizeSourceFileName();
         return module;
     }
 
@@ -825,6 +829,9 @@ namespace cajeta {
                 // parseStdlibInto); user modules carry only extern decls
                 // for runtime helpers, resolved by the JIT/AOT link step.
                 emitForModule(module);
+                // Incremental compilation (Phase 2): emit the per-module
+                // instantiation-obligation sidecar alongside its IR.
+                module->writeObligationsSidecar();
             }
         }
 

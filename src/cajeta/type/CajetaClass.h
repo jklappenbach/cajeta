@@ -667,6 +667,10 @@ namespace cajeta {
         // re-parsed on each unique instantiation; the result is cached in
         // `module->getStructures()` keyed by canonical-with-args name.
         CajetaClassPtr instantiate(vector<CajetaTypePtr> args);
+        // The actual instantiation logic; `instantiate` is a thin wrapper that
+        // also records cross-module instantiation obligations (incremental
+        // compilation, Phase 2/3 — cajeta-docs/IncrementalCompilation.md).
+        CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args);
 
         // Diamond-operator inference (TPL-7). Given the argument types of a
         // `new Box<>(args)` call site, examine this template's constructor
