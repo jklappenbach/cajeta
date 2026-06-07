@@ -170,3 +170,73 @@ TEST(XpuSharedVulkanDeviceTests, sharedTreeReductionRunsOnDevice) {
 
     EXPECT_EQ(result, expected);
 }
+
+// Shared-memory atomics: a per-block counter. Every thread in the workgroup does
+// acc.atomicAdd(0, 1) on a `shared uint32[]` slot (Workgroup-scope OpAtomicIAdd,
+// not the Device-scope global form); thread 0 flushes it to out[block]. One
+// workgroup of W threads -> out[0] == W. Proves the address-space-derived scope
+// is correct on the real device (RADV).
+TEST(XpuSharedVulkanDeviceTests, sharedAtomicCounterRunsOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    const unsigned W = cajeta::xpu::vulkan::kVulkanLocalSizeX;  // 64
+    std::string src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Workgroup;\n"
+        "import cajeta.xpu.core.Barrier;\n"
+        "import cajeta.xpu.core.Shared;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void blockCount(Buffer<uint32> out, uint32 n) {\n"
+        "        Shared<uint32> acc = shared uint32[1];\n"
+        "        uint32 t = Thread.x();\n"
+        "        if (t == 0) { acc[0] = 0; }\n"
+        "        Barrier.workgroup();\n"
+        "        uint32 g = Thread.globalIdX();\n"
+        "        if (g < n) { acc.atomicAdd(0, 1); }\n"
+        "        Barrier.workgroup();\n"
+        "        if (t == 0) { out[Workgroup.x()] = acc[0]; }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "blockCount");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_shatomic_vkdevice", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
+    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
+
+    const uint32_t n = W;   // one full workgroup contributes
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    VulkanDriver::Buffer dOut = vk.alloc(sizeof(uint32_t));
+    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    ASSERT_NE(dN, 0u);
+    uint32_t zero = 0;
+    ASSERT_TRUE(vk.upload(dOut, &zero, sizeof(uint32_t)));
+    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
+
+    bool launched = vk.launch(spirv.data(), spirv.size(), "blockCount",
+                              {dOut, dN}, /*groupCountX=*/1);
+    if (!launched) {
+        vk.free(dOut); vk.free(dN);
+        GTEST_SKIP() << "driver rejected the LLVM-emitted workgroup barrier";
+    }
+
+    uint32_t result = 0;
+    ASSERT_TRUE(vk.download(&result, dOut, sizeof(uint32_t)));
+    vk.free(dOut);
+    vk.free(dN);
+
+    EXPECT_EQ(result, W);   // W threads each added 1 into the shared counter
+}

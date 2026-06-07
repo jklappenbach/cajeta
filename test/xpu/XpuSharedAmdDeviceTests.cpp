@@ -237,3 +237,59 @@ TEST(XpuSharedAmdDeviceTests, dynamicSharedReductionRunsOnDevice) {
 
     EXPECT_EQ(result, expected);
 }
+
+// Shared-memory atomics on AMD (gfx1151): a per-block counter. Every thread does
+// acc.atomicAdd(0, 1) on a `shared uint32[]` slot (an LDS atomic — the addrspace(3)
+// pointer selects ds_add_u32, not a global atomic); thread 0 flushes it to
+// out[block]. One block of 256 threads -> out[0] == 256.
+TEST(XpuSharedAmdDeviceTests, sharedAtomicCounterRunsOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Workgroup;\n"
+        "import cajeta.xpu.core.Barrier;\n"
+        "import cajeta.xpu.core.Shared;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void blockCount(Buffer<uint32> out, uint32 n) {\n"
+        "        Shared<uint32> acc = shared uint32[1];\n"
+        "        uint32 t = Thread.x();\n"
+        "        if (t == 0) { acc[0] = 0; }\n"
+        "        Barrier.workgroup();\n"
+        "        uint32 g = Thread.globalIdX();\n"
+        "        if (g < n) { acc.atomicAdd(0, 1); }\n"
+        "        Barrier.workgroup();\n"
+        "        if (t == 0) { out[Workgroup.x()] = acc[0]; }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    std::vector<uint8_t> hsaco = buildHsaco(compiler, src, "blockCount");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
+
+    const uint32_t n = 256;   // one block of 256 threads all contribute
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "blockCount");
+    ASSERT_NE(fn, nullptr);
+
+    HipDevicePtr dOut = hip.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, nullptr);
+    uint32_t zero = 0;
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, &zero, sizeof(uint32_t)));
+
+    void* params[] = { &dOut, (void*) &n };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, /*block=*/256, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    uint32_t result = 0;
+    ASSERT_TRUE(hip.memcpyDtoH(&result, dOut, sizeof(uint32_t)));
+    hip.free(dOut);
+
+    EXPECT_EQ(result, 256u);
+}

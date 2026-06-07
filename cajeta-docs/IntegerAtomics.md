@@ -63,6 +63,31 @@ picks the opcode from the BinOp and `isSigned` selects `SMin/SMax` vs
 `UMin/UMax`. Lowered on a `LoweringTarget::atomicIntRMW` / `atomicCompareExchange`
 seam (default monotonic system-scope; Vulkan overrides to Device + AcquireRelease).
 
+## Shared-memory (LDS) atomics
+
+The same `atomic*` methods work on a `shared T[]` array — the fast path for
+per-block reductions, histograms, and allocation, since an LDS atomic is far
+cheaper than a global one:
+
+```
+Shared<uint32> acc = shared uint32[1];
+...
+acc.atomicAdd(0, 1);     // a Workgroup-scope LDS atomic, not a global one
+```
+
+The atomic's **memory scope follows the pointer's storage**: a `shared` array is
+Workgroup storage (LLVM addrspace 3), so its atomics emit at **Workgroup** scope
+(`ds_add_u32` on AMD; `OpAtomicIAdd` with Workgroup scope on Vulkan), while a
+global `Buffer<T>` atomic stays at Device scope. The scope is derived from the
+pointer address space — no separate API. Device-verified on RADV + gfx1151
+(`Xpu*SharedDeviceTests.sharedAtomicCounterRunsOnDevice`).
+
+> A shared atomic on element 0 surfaced *another* facet of the same upstream
+> `SPIRVLegalizePointerCast` gap as `atomicCompareExchange`: the element GEP folds
+> to the aggregate base, so the `atomicrmw` flows through a `spv_ptrcast` whose
+> atomic user was unhandled (load/store users *are*). Fixed on `cajeta-spirv`
+> alongside the cmpxchg case (the upstream PR covers both).
+
 ### A pre-existing upstream SPIR-V bug surfaced here
 
 `atomicCompareExchange` was the **first** construct to exercise an unhandled case

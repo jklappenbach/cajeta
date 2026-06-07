@@ -387,13 +387,27 @@ public:
         return b.CreateCall(f, {acc, x, y}, "dp4a");
     }
 
+    // Atomic memory scope from the target pointer's storage class. A shared
+    // (Workgroup-storage) pointer — cajeta's `shared T[]`, LLVM addrspace 3 —
+    // needs Workgroup scope; a global StorageBuffer pointer needs Device scope.
+    // Vulkan rejects CrossDevice scope, and an atomic's scope must match where the
+    // memory lives. (The storage-class bit of the memory semantics is derived by
+    // the backend from the pointer itself; here we only pick the scope.)
+    llvm::SyncScope::ID atomicScope(llvm::Module& m, llvm::Value* ptr) {
+        constexpr unsigned kSharedAS = 3;   // matches lowerSharedDecl's addrspace
+        const char* name =
+            ptr->getType()->getPointerAddressSpace() == kSharedAS ? "workgroup"
+                                                                  : "device";
+        return m.getContext().getOrInsertSyncScopeID(name);
+    }
+
     // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) -----------
     // Vulkan rejects CrossDevice scope and SequentiallyConsistent / relaxed-with-
     // storage-class memory semantics on OpAtomicF*EXT, so emit the atomicrmw with
-    // Device scope + AcquireRelease (the SPIR-V backend maps "device"→Scope Device
-    // and AcquireRelease→the matching semantics, including the storage-class bit
-    // for the StorageBuffer pointer). The op (OpAtomicFAddEXT/FMinEXT/FMaxEXT) and
-    // its capability + extension are selected by the backend from the BinOp.
+    // AcquireRelease + the storage-matched scope (Device for global buffers,
+    // Workgroup for `shared` memory — see atomicScope). The op
+    // (OpAtomicFAddEXT/FMinEXT/FMaxEXT) and its capability + extension are
+    // selected by the backend from the BinOp.
     llvm::Value* atomicFloatRMW(llvm::IRBuilderBase& b, llvm::Module& m,
                                 AtomicFloatOp op, llvm::Value* ptr,
                                 llvm::Value* value) override {
@@ -401,10 +415,9 @@ public:
             op == AtomicFloatOp::Add ? llvm::AtomicRMWInst::FAdd
           : op == AtomicFloatOp::Min ? llvm::AtomicRMWInst::FMin
                                      : llvm::AtomicRMWInst::FMax;
-        llvm::SyncScope::ID dev =
-            m.getContext().getOrInsertSyncScopeID("device");
         return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
-                                 llvm::AtomicOrdering::AcquireRelease, dev);
+                                 llvm::AtomicOrdering::AcquireRelease,
+                                 atomicScope(m, ptr));
     }
 
     // --- integer atomics (core SPIR-V) ----------------------------------------
@@ -430,24 +443,22 @@ public:
                                  : llvm::AtomicRMWInst::UMax; break;
             default:                    binop = llvm::AtomicRMWInst::Add; break;
         }
-        llvm::SyncScope::ID dev =
-            m.getContext().getOrInsertSyncScopeID("device");
         return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
-                                 llvm::AtomicOrdering::AcquireRelease, dev);
+                                 llvm::AtomicOrdering::AcquireRelease,
+                                 atomicScope(m, ptr));
     }
 
-    // Compare-exchange → OpAtomicCompareExchange. Device scope; AcquireRelease on
-    // success, Acquire on failure (the failure ordering may not be stronger than
-    // success nor carry a release). Returns the OLD value (element 0).
+    // Compare-exchange → OpAtomicCompareExchange. Storage-matched scope (Device
+    // for global, Workgroup for shared); AcquireRelease on success, Acquire on
+    // failure (the failure ordering may not be stronger than success nor carry a
+    // release). Returns the OLD value (element 0).
     llvm::Value* atomicCompareExchange(llvm::IRBuilderBase& b, llvm::Module& m,
                                        llvm::Value* ptr, llvm::Value* expected,
                                        llvm::Value* desired) override {
-        llvm::SyncScope::ID dev =
-            m.getContext().getOrInsertSyncScopeID("device");
         llvm::Value* pair = b.CreateAtomicCmpXchg(
             ptr, expected, desired, llvm::MaybeAlign(),
             llvm::AtomicOrdering::AcquireRelease, llvm::AtomicOrdering::Acquire,
-            dev);
+            atomicScope(m, ptr));
         return b.CreateExtractValue(pair, 0, "atomic.cas.old");
     }
 
