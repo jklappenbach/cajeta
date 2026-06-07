@@ -114,6 +114,54 @@ namespace cajeta {
         }
     }
 
+    std::string CajetaModule::remapSourcePath(const std::string& sourcePath,
+                                              const std::string& sourceRoot,
+                                              const std::string& debugPrefixMap) {
+        auto normalize = [](std::string s) {
+            std::replace(s.begin(), s.end(), '\\', '/');
+            return s;
+        };
+        std::string path = normalize(sourcePath);
+
+        // Honor an explicit --debug-prefix-map=<from>=<to>. Split on the
+        // first '=' (the GCC/Clang convention: <from> is everything before
+        // it). When the source path starts with <from>, swap that prefix.
+        if (!debugPrefixMap.empty()) {
+            auto eq = debugPrefixMap.find('=');
+            if (eq != std::string::npos) {
+                std::string from = normalize(debugPrefixMap.substr(0, eq));
+                std::string to = debugPrefixMap.substr(eq + 1);
+                if (!from.empty() && path.compare(0, from.size(), from) == 0) {
+                    return to + path.substr(from.size());
+                }
+            }
+        }
+
+        // No map (or no prefix match): fall back to a sourceRoot-relative
+        // path so the embedded name is still machine-independent when the
+        // compiler is driven directly (tests, manual invocation) without a
+        // map from the build tool.
+        std::string root = normalize(sourceRoot);
+        if (!root.empty() && path.compare(0, root.size(), root) == 0) {
+            std::string rel = path.substr(root.size());
+            if (!rel.empty() && rel[0] == '/') {
+                rel.erase(0, 1);
+            }
+            return rel;
+        }
+        return path;
+    }
+
+    void CajetaModule::canonicalizeSourceFileName() {
+        if (sourcePath.empty()) {
+            // Synthetic modules already embed the canonical name; nothing
+            // machine-specific to scrub.
+            return;
+        }
+        llvmModule->setSourceFileName(
+            remapSourcePath(sourcePath, sourceRoot, compilerFlags.debugPrefixMap));
+    }
+
     llvm::IRBuilder<>* CajetaModule::getBuilder() const {
         return builder;
     }

@@ -491,6 +491,25 @@ namespace cajeta {
         const CompilerFlags& getFlags() const { return compilerFlags; }
         void setFlags(const CompilerFlags& f) { compilerFlags = f; }
 
+        // Reproducible builds: the constructor seeds the module's embedded
+        // source-file name with the absolute on-disk path, which would bake
+        // a machine-specific string into the emitted IR. Once the compiler
+        // flags (carrying --debug-prefix-map) are set, re-derive the name to
+        // a machine-independent form so the same source yields byte-identical
+        // bitcode across hosts. No-op for synthetic modules (empty sourcePath).
+        void canonicalizeSourceFileName();
+
+        // Pure mapping behind canonicalizeSourceFileName(), exposed for tests.
+        // Applies a `--debug-prefix-map=<from>=<to>` (split on the first '=',
+        // matching the GCC/Clang convention) when `sourcePath` starts with
+        // <from>; otherwise falls back to a `sourceRoot`-relative path. Path
+        // separators are normalized to '/' so the embedded form is stable
+        // across OSes. Returns `sourcePath` unchanged only when neither the
+        // map nor the root applies.
+        static std::string remapSourcePath(const std::string& sourcePath,
+                                           const std::string& sourceRoot,
+                                           const std::string& debugPrefixMap);
+
         // Intern a source-file path as a module-global constant `const char*`
         // for the debug-mode source-tagging machinery. Subsequent calls with
         // the same path return the same Constant (no duplicate globals).
