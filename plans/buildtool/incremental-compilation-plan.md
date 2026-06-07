@@ -127,12 +127,20 @@ replay their obligations so stdlib still contains every symbol the
 loaded `.bc` references. Declarations are still registered by parsing
 (interface cache deferred to Phase 6).
 
-- [ ] **(carried from Phase 2)** Broaden obligation capture from the
-      array-`stream()` site to every codegen instantiation trigger
-      (`new T<…>()` in `NewExpression::generateCode`, method-template
-      instantiation, `resolveMethod`), and reconcile the obligation key
-      form with `getStructureToModule` so replay can look an obligation up.
-      Completeness here is a correctness precondition for skipping.
+- [x] **(carried from Phase 2)** Broaden obligation capture for **class
+      templates** to a single choke point: `CajetaClass::instantiate` is now
+      a thin wrapper over `instantiateInternal` that records via the
+      `currentCodegenModule` frame (set by an RAII guard in
+      `Method::generateCode`). Every class-template instantiation —
+      `new T<…>()`, `xs.stream()`, `resolveMethod`-driven, nested — flows
+      through it, so capture is provably complete for classes (no per-site
+      gaps). 46 instantiation-heavy tests stay green.
+- [ ] Remaining capture work: **method-template** instantiations
+      (`Method::instantiateMethodTemplate`, a separate path that lands an
+      instantiated method into a possibly-cross-module host class) are not
+      yet captured; and reconcile the obligation key form
+      (`...ArrayStream<int32>`) with the `getStructureToModule` key form
+      (`...ArrayStream<cajeta.int32>`) so replay can resolve an obligation.
 - [ ] Driver computes the dirty set from transitive digests; clean
       modules are codegen-skipped, dirty modules recompiled.
 - [ ] Clean modules: register declarations (parse for now), then load

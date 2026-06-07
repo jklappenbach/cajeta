@@ -128,6 +128,15 @@ namespace cajeta {
         // ever parallelize parsing this becomes thread_local.
         static CajetaModulePtr activeModule;
 
+        // Incremental compilation (Phase 2/3): the module whose method body
+        // is currently being lowered by Method::generateCode (innermost frame
+        // — set via an RAII guard, so nested codegen restores correctly).
+        // Null outside codegen (e.g. during parse). The template-instantiation
+        // choke point reads this to attribute a cross-module instantiation to
+        // the module that triggered it. Single-threaded codegen, like
+        // activeModule.
+        static CajetaModulePtr currentCodegenModule;
+
         // The compiler-owned module that holds the parsed stdlib
         // (cajeta.error.* today) and the linked runtime bitcode.
         // Set by Compiler's ctor, cleared in resetGlobals. User
@@ -480,6 +489,9 @@ namespace cajeta {
         // this. See the activeModule field for set/clear discipline.
         static CajetaModulePtr getActiveModule() { return activeModule; }
         static void setActiveModule(CajetaModulePtr m) { activeModule = m; }
+
+        static CajetaModulePtr getCurrentCodegenModule() { return currentCodegenModule; }
+        static void setCurrentCodegenModule(CajetaModulePtr m) { currentCodegenModule = m; }
 
         static CajetaModulePtr getStdlibModule() { return stdlibModule; }
         static void setStdlibModule(CajetaModulePtr m) { stdlibModule = m; }
