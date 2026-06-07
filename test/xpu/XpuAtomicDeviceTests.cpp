@@ -234,3 +234,174 @@ TEST(XpuAtomicDeviceTests, floatAtomicsRunOnAmdDevice) {
     EXPECT_FLOAT_EQ(result[1], expectedMax());
     EXPECT_FLOAT_EQ(result[2], expectedMin());
 }
+
+// ---- Integer atomics ------------------------------------------------------
+// Buffer<uint32> integer atomics — core OpAtomicI*/CompareExchange (no SPV_EXT).
+// Run concurrently across 4096 work-items on every backend. The first four slots
+// are CONTENDED hardware RMWs; the compare-exchange is exercised UNCONTENDED —
+// each thread CAS's its own slot 4+i (a spin-CAS on a shared slot is a classic
+// GPU livelock under lockstep subgroup execution, so it is deliberately avoided):
+//   slot 0    = atomicAdd(i)  -> sum 0..n-1 = 8386560
+//   slot 1    = atomicMax(i)  -> n-1        = 4095   (OpAtomicUMax)
+//   slot 2    = atomicMin(i)  -> 0          (init 0xFFFFFFFF; OpAtomicUMin)
+//   slot 3    = atomicOr(i)   -> n-1        = 4095   (OR of 0..4095)
+//   slot 4+i  = atomicCompareExchange(i, i+100) on a slot pre-set to i -> i+100
+namespace {
+const char* kIntAtomicSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void ireduce(Buffer<uint32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            out.atomicAdd(0, i);\n"
+    "            out.atomicMax(1, i);\n"
+    "            out.atomicMin(2, i);\n"
+    "            out.atomicOr(3, i);\n"
+    "            out.atomicCompareExchange(4 + i, i, i + 100);\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+// (out, n, then the 12 i32 grid coordinates).
+using IReduceFn = void (*)(uint32_t*, uint32_t,
+                           int32_t, int32_t, int32_t,
+                           int32_t, int32_t, int32_t,
+                           int32_t, int32_t, int32_t,
+                           int32_t, int32_t, int32_t);
+
+uint32_t iExpSum() { return (uint32_t) ((uint64_t) kN * (kN - 1) / 2); } // 8386560
+uint32_t iExpMax() { return kN - 1; }                                    // 4095
+uint32_t iExpMin() { return 0u; }
+uint32_t iExpOr()  { return kN - 1; }                                    // 4095
+// out: 4 reduction slots + n CAS slots (slot 4+i pre-set to i).
+std::vector<uint32_t> initIntOut() {
+    std::vector<uint32_t> v(4 + kN, 0u);
+    v[2] = 0xFFFFFFFFu;                       // min slot
+    for (uint32_t i = 0; i < kN; ++i) v[4 + i] = i;   // CAS expected value
+    return v;
+}
+
+void expectIntResult(const std::vector<uint32_t>& r) {
+    EXPECT_EQ(r[0], iExpSum());
+    EXPECT_EQ(r[1], iExpMax());
+    EXPECT_EQ(r[2], iExpMin());
+    EXPECT_EQ(r[3], iExpOr());
+    for (uint32_t i = 0; i < kN; ++i)
+        ASSERT_EQ(r[4 + i], i + 100) << "CAS slot " << i;
+}
+} // namespace
+
+TEST(XpuAtomicDeviceTests, intAtomicsRunOnCpu) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kIntAtomicSource);
+    auto k = findMethod(module->getStructures()["test.M"], "ireduce");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr) << "host target not registered";
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("xpu_iatomic_exec", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    ASSERT_TRUE(static_cast<bool>(jitOrErr))
+        << llvm::toString(jitOrErr.takeError());
+    auto jit = std::move(*jitOrErr);
+    auto err = jit->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    auto symOrErr = jit->lookup("ireduce");
+    ASSERT_TRUE(static_cast<bool>(symOrErr))
+        << llvm::toString(symOrErr.takeError());
+    auto ireduce = symOrErr->toPtr<IReduceFn>();
+
+    std::vector<uint32_t> out = initIntOut();
+    const int32_t B = 64;
+    const int32_t G = (int32_t) (kN / 64);
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            ireduce(out.data(), kN,
+                    tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+
+    expectIntResult(out);
+}
+
+TEST(XpuAtomicDeviceTests, intAtomicsRunOnVulkanDevice) {
+    using namespace cajeta::xpu::vulkan;
+    if (!VulkanDriver::available()) GTEST_SKIP() << "no Vulkan compute device";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kIntAtomicSource);
+    auto k = findMethod(module->getStructures()["test.M"], "ireduce");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_iatomic_vk", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
+    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
+
+    std::vector<uint32_t> out = initIntOut();
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    VulkanDriver::Buffer dOut = vk.alloc(out.size() * sizeof(uint32_t));
+    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u); ASSERT_NE(dN, 0u);
+    ASSERT_TRUE(vk.upload(dOut, out.data(), out.size() * sizeof(uint32_t)));
+    ASSERT_TRUE(vk.upload(dN, &kN, sizeof(uint32_t)));
+
+    const unsigned block = kVulkanLocalSizeX;
+    const unsigned grid = (kN + block - 1) / block;
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "ireduce",
+                          {dOut, dN}, grid));
+
+    std::vector<uint32_t> result(out.size());
+    ASSERT_TRUE(vk.download(result.data(), dOut,
+                            result.size() * sizeof(uint32_t)));
+    vk.free(dOut); vk.free(dN);
+
+    expectIntResult(result);
+}
+
+TEST(XpuAtomicDeviceTests, intAtomicsRunOnAmdDevice) {
+    using namespace cajeta::xpu::amd;
+    if (!HipDriver::available()) GTEST_SKIP() << "no AMD HIP device available";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kIntAtomicSource);
+    auto k = findMethod(module->getStructures()["test.M"], "ireduce");
+    ASSERT_NE(k, nullptr);
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_iatomic_amd", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
+
+    std::vector<uint32_t> out = initIntOut();
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "ireduce");
+    ASSERT_NE(fn, nullptr);
+    HipDevicePtr dOut = hip.alloc(out.size() * sizeof(uint32_t));
+    ASSERT_NE(dOut, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), out.size() * sizeof(uint32_t)));
+    void* params[] = {&dOut, (void*) &kN};
+    ASSERT_TRUE(hip.launch(fn, (kN + 63) / 64, 64, params));
+    ASSERT_TRUE(hip.synchronize());
+    std::vector<uint32_t> result(out.size());
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut,
+                               result.size() * sizeof(uint32_t)));
+    hip.free(dOut);
+
+    expectIntResult(result);
+}

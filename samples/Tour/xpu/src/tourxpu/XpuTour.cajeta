@@ -150,6 +150,20 @@ public final class XpuTour {
         }
     }
 
+    // histogram: the canonical INTEGER-atomic use — many threads bump shared bins
+    // with atomicAdd, no locks. data[i] = i % NB picks a bin, so each of the NB
+    // bins gets n/NB hits. Core OpAtomicIAdd on Vulkan (no extension, unlike the
+    // float path); the native atomicrmw on AMD/NVIDIA/CPU. See
+    // cajeta-docs/IntegerAtomics.md.
+    @Kernel
+    public static void histogram(Buffer<uint32> bins, Buffer<uint32> data,
+                                 uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            bins.atomicAdd(data[i], 1);   // ++bins[data[i]] atomically
+        }
+    }
+
     // ---- Shader clock: in-kernel timing --------------------------------------
     // clockProbe: each thread brackets a small compute loop with Thread.clock()
     // and stores the elapsed DEVICE cycles. The clock is a free-running hardware
@@ -413,6 +427,7 @@ public final class XpuTour {
         runMaskSelect();
         runIntegerDot();
         runAtomics();
+        runHistogram();
         runShaderClock();
         runBitOps();
         runTransforms();
@@ -608,6 +623,34 @@ public final class XpuTour {
         System.stdout.println("  sum=" + (int32) hout[0] + " max=" + (int32) hout[1]
                             + " min=" + (int32) hout[2]
                             + "  (expect 32640, 255, 0)");
+    }
+
+    // Integer atomics: a lock-free histogram. n items, each mapped to one of nb
+    // bins by value; every bin ends with n/nb hits. Core OpAtomicIAdd on Vulkan;
+    // native atomicrmw on AMD/NVIDIA/CPU. See cajeta-docs/IntegerAtomics.md.
+    static void runHistogram() {
+        System.stdout.println("");
+        System.stdout.println("-- integer atomics: lock-free histogram --");
+        uint32 n = 256;
+        uint32 nb = 8;
+        uint32[] hdata = new uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hdata[i] = i % nb; }
+        uint32[] hbins = new uint32[nb];
+        for (uint32 i = 0; i < nb; i = i + 1) { hbins[i] = 0; }
+        Buffer<uint32> data = stack Buffer<uint32>(n);
+        Buffer<uint32> bins = stack Buffer<uint32>(nb);
+        data.upload(hdata);
+        bins.upload(hbins);
+        Stream s = Stream.current();
+        histogram.launch(s, grid: [(n + 63) / 64], block: [64])(bins, data, n);
+        s.sync();
+        bins.download(hbins);
+        // 256 items over 8 bins -> 32 per bin.
+        System.stdout.println("  bins[0..7] = " + (int32) hbins[0] + " "
+                            + (int32) hbins[1] + " " + (int32) hbins[2] + " "
+                            + (int32) hbins[3] + " " + (int32) hbins[4] + " "
+                            + (int32) hbins[5] + " " + (int32) hbins[6] + " "
+                            + (int32) hbins[7] + "  (expect 32 each)");
     }
 
     // Shader clock: read a free-running hardware counter inside the kernel for

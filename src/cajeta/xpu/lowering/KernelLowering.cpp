@@ -1993,19 +1993,30 @@ private:
             // tiled GEMM (the consume side is CooperativeMatrix.load(Shared<T>)).
             return lowerCoopStage(name, mc);
         }
-        // Buffer<float32> float atomics: buf.atomic{Add,Min,Max}(index, value).
-        // An atomic RMW on the element pointer (the same bufferElementPtr seam as
-        // buf[i]); returns the OLD value. f32 v1 — the parallel-reduction /
-        // histogram lever. SPV_EXT_shader_atomic_float_{add,min_max} on Vulkan.
+        // Buffer atomics on the element pointer (the same bufferElementPtr seam as
+        // buf[i]); every form returns the OLD value.
+        //   Buffer<float32>: atomic{Add,Min,Max}(index, value) — the parallel-
+        //     reduction / histogram lever (SPV_EXT_shader_atomic_float on Vulkan).
+        //   Buffer<int32|uint32>: atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange}
+        //     (index, value) and atomicCompareExchange(index, expected, desired) —
+        //     core OpAtomicI*/CompareExchange; the universal concurrency primitive.
         if (!recv.empty() && bufferBases.count(recv) &&
-            (name == "atomicAdd" || name == "atomicMin" || name == "atomicMax")) {
+            (name == "atomicAdd" || name == "atomicSub" || name == "atomicMin" ||
+             name == "atomicMax" || name == "atomicAnd" || name == "atomicOr" ||
+             name == "atomicXor" || name == "atomicExchange" ||
+             name == "atomicCompareExchange")) {
             const auto& args = mc->getParameters();
-            if (args.size() != 2)
-                unsupported("Buffer." + name + " expects (index, value)");
+            const bool isCas = (name == "atomicCompareExchange");
+            const size_t wantArgs = isCas ? 3 : 2;
+            if (args.size() != wantArgs)
+                unsupported("Buffer." + name +
+                            (isCas ? " expects (index, expected, desired)"
+                                   : " expects (index, value)"));
             llvm::Type* elemTy = bufferElems[recv];
-            if (!elemTy->isFloatTy())
-                unsupported("Buffer." + name + " currently supports "
-                            "float32 buffers (v1)");
+            const bool elemSigned =
+                bufferElemSigned.count(recv) ? bufferElemSigned[recv] : true;
+            const bool elemIsFloat = elemTy->isFloatTy();
+            const bool elemIsI32 = elemTy->isIntegerTy(32);
             llvm::Value* idx = lowerExpr(args[0].expression);
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
             if (idx->getType() != i64)
@@ -2014,12 +2025,46 @@ private:
             llvm::Value* ptr = target.bufferElementPtr(builder, mod,
                                                        bufferBases[recv],
                                                        elemTy, idx);
+            if (isCas) {
+                if (!elemIsI32)
+                    unsupported("Buffer.atomicCompareExchange requires an "
+                                "int32/uint32 buffer (v1)");
+                llvm::Value* expected =
+                    coerceTo(lowerExpr(args[1].expression), elemTy);
+                llvm::Value* desired =
+                    coerceTo(lowerExpr(args[2].expression), elemTy);
+                return target.atomicCompareExchange(builder, mod, ptr, expected,
+                                                    desired);
+            }
             llvm::Value* val = coerceTo(lowerExpr(args[1].expression), elemTy);
-            LoweringTarget::AtomicFloatOp op =
-                name == "atomicAdd" ? LoweringTarget::AtomicFloatOp::Add
-              : name == "atomicMin" ? LoweringTarget::AtomicFloatOp::Min
-                                    : LoweringTarget::AtomicFloatOp::Max;
-            return target.atomicFloatRMW(builder, mod, op, ptr, val);
+            if (elemIsFloat) {
+                if (name == "atomicAdd" || name == "atomicMin" ||
+                    name == "atomicMax") {
+                    LoweringTarget::AtomicFloatOp op =
+                        name == "atomicAdd" ? LoweringTarget::AtomicFloatOp::Add
+                      : name == "atomicMin" ? LoweringTarget::AtomicFloatOp::Min
+                                            : LoweringTarget::AtomicFloatOp::Max;
+                    return target.atomicFloatRMW(builder, mod, op, ptr, val);
+                }
+                unsupported("Buffer." + name + " is not supported on float32 "
+                            "buffers (float atomics: atomicAdd/atomicMin/"
+                            "atomicMax only)");
+            }
+            if (elemIsI32) {
+                LoweringTarget::AtomicIntOp op =
+                    name == "atomicAdd"  ? LoweringTarget::AtomicIntOp::Add
+                  : name == "atomicSub"  ? LoweringTarget::AtomicIntOp::Sub
+                  : name == "atomicMin"  ? LoweringTarget::AtomicIntOp::Min
+                  : name == "atomicMax"  ? LoweringTarget::AtomicIntOp::Max
+                  : name == "atomicAnd"  ? LoweringTarget::AtomicIntOp::And
+                  : name == "atomicOr"   ? LoweringTarget::AtomicIntOp::Or
+                  : name == "atomicXor"  ? LoweringTarget::AtomicIntOp::Xor
+                                         : LoweringTarget::AtomicIntOp::Exchange;
+                return target.atomicIntRMW(builder, mod, op, ptr, val,
+                                           elemSigned);
+            }
+            unsupported("Buffer." + name + " requires a float32 or int32/uint32 "
+                        "buffer (v1)");
         }
         // Matrix<T,R,C> instance methods (B1): transpose/identity/row/col/
         // hadamard. Checked BEFORE the vector branch — a matrix local's slot is
@@ -3310,6 +3355,46 @@ llvm::Value* LoweringTarget::atomicFloatRMW(
                                  : llvm::AtomicRMWInst::FMax;
     return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
                              llvm::AtomicOrdering::Monotonic);
+}
+
+// Map an AtomicIntOp (+ signedness for min/max) to the LLVM atomicrmw BinOp. The
+// SPIR-V backend picks OpAtomicIAdd/ISub/And/Or/Xor/Exchange/SMin/UMin/SMax/UMax
+// from this; AMDGPU/NVPTX select native global atomics; CPU lowers to locked ops.
+static llvm::AtomicRMWInst::BinOp atomicIntBinOp(
+        LoweringTarget::AtomicIntOp op, bool isSigned) {
+    using A = llvm::AtomicRMWInst;
+    using O = LoweringTarget::AtomicIntOp;
+    switch (op) {
+        case O::Add:      return A::Add;
+        case O::Sub:      return A::Sub;
+        case O::And:      return A::And;
+        case O::Or:       return A::Or;
+        case O::Xor:      return A::Xor;
+        case O::Exchange: return A::Xchg;
+        case O::Min:      return isSigned ? A::Min : A::UMin;
+        case O::Max:      return isSigned ? A::Max : A::UMax;
+    }
+    return A::Add;  // unreachable
+}
+
+// Default integer atomic: a relaxed, system-scope atomicrmw (native on
+// AMDGPU/NVPTX, locked on CPU). Vulkan overrides for Device scope + AcquireRelease.
+llvm::Value* LoweringTarget::atomicIntRMW(
+    llvm::IRBuilderBase& b, llvm::Module& /*m*/, AtomicIntOp op,
+    llvm::Value* ptr, llvm::Value* value, bool isSigned) {
+    return b.CreateAtomicRMW(atomicIntBinOp(op, isSigned), ptr, value,
+                             llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
+}
+
+// Default compare-exchange: a relaxed cmpxchg; returns the OLD value (element 0
+// of the {value, success} aggregate). Vulkan overrides the orderings/scope.
+llvm::Value* LoweringTarget::atomicCompareExchange(
+    llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* ptr,
+    llvm::Value* expected, llvm::Value* desired) {
+    llvm::Value* pair = b.CreateAtomicCmpXchg(
+        ptr, expected, desired, llvm::MaybeAlign(),
+        llvm::AtomicOrdering::Monotonic, llvm::AtomicOrdering::Monotonic);
+    return b.CreateExtractValue(pair, 0, "atomic.cas.old");
 }
 
 // Default shader clock: llvm.readcyclecounter (CPU rdtsc). AMD/NVPTX/Vulkan

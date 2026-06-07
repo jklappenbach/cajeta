@@ -243,6 +243,33 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
             llvm::Value* ptr, llvm::Value* value);
 
+        // --- integer atomics (core SPIR-V — no extension) --------------------
+        // `Buffer<int32|uint32>.atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange}(i, v)`:
+        // an atomic read-modify-write on the element pointer, returning the OLD
+        // value. Unlike the float atomics these are CORE (no SPV_EXT), so the
+        // generic `atomicrmw` maps to OpAtomicIAdd/ISub/SMin/UMin/SMax/UMax/And/Or/
+        // Xor/Exchange directly (the backend picks the opcode from the BinOp;
+        // `isSigned` selects S vs U min/max). DEFAULT: relaxed (monotonic),
+        // system-scope — native global atomic on AMDGPU/NVPTX, lock-prefixed on
+        // CPU. Vulkan OVERRIDES to Device scope + AcquireRelease (same memory-model
+        // constraint as the float path). The universal concurrency primitive:
+        // counters, histograms, lock-free allocation (pairs with Wave.prefixSum).
+        enum class AtomicIntOp { Add, Sub, Min, Max, And, Or, Xor, Exchange };
+        virtual llvm::Value* atomicIntRMW(
+            llvm::IRBuilderBase& b, llvm::Module& m, AtomicIntOp op,
+            llvm::Value* ptr, llvm::Value* value, bool isSigned);
+
+        // `Buffer<int32|uint32>.atomicCompareExchange(i, expected, desired)`: the
+        // universal lock-free primitive — atomically set element `i` to `desired`
+        // iff it currently equals `expected`, returning the OLD value (compare the
+        // result to `expected` to learn if the swap happened). Lowers to a
+        // `cmpxchg` → OpAtomicCompareExchange; returns the loaded value (element 0
+        // of the {value, success} pair). DEFAULT monotonic; Vulkan Device scope +
+        // AcquireRelease/Acquire (success/failure orderings).
+        virtual llvm::Value* atomicCompareExchange(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+            llvm::Value* expected, llvm::Value* desired);
+
         // --- shader clock (SPV_KHR_shader_clock) -----------------------------
         // `Thread.clock()` — read a free-running hardware counter for in-kernel
         // timing/profiling, returning the 64-bit tick. DEFAULT: llvm.readcycle-

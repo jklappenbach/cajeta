@@ -907,6 +907,85 @@ TEST(XpuVulkanEmitTests, lowersFloatAtomicsToSpirv) {
     }
 }
 
+// Integer atomics: Buffer<int32> atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange} and
+// atomicCompareExchange lower to core OpAtomicI*/CompareExchange (NO extension —
+// unlike the float path). Signed buffer -> OpAtomicSMin/SMax. Device scope +
+// AcquireRelease (same memory-model constraint as floats). GPU-free; spirv-val
+// clean under Vulkan 1.3.
+TEST(XpuVulkanEmitTests, lowersIntAtomicsToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class A {\n"
+        "    @Kernel\n"
+        "    public static void atomics(Buffer<int32> a, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            a.atomicAdd(0, 1);\n"
+        "            a.atomicSub(1, 1);\n"
+        "            a.atomicMin(2, (int32) i);\n"
+        "            a.atomicMax(3, (int32) i);\n"
+        "            a.atomicAnd(4, (int32) i);\n"
+        "            a.atomicOr(5, (int32) i);\n"
+        "            a.atomicXor(6, (int32) i);\n"
+        "            a.atomicExchange(7, (int32) i);\n"
+        "            a.atomicCompareExchange(8, 0, (int32) i);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.A");
+    auto k = findMethod(module->getStructures()["test.A"], "atomics");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_iatomic_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("atomicrmw add"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("atomicrmw sub"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("atomicrmw min"), std::string::npos) << ir;   // signed
+    EXPECT_NE(ir.find("atomicrmw max"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("atomicrmw xchg"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("cmpxchg"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("syncscope(\"device\") acq_rel"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_iatomic_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpAtomicIAdd"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicISub"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicSMin"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicSMax"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicAnd"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicOr"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicXor"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicExchange"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_iatomic_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the int-atomics module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // Shader clock (SPV_KHR_shader_clock). `Thread.clock()` lowers to the fork's
 // llvm.spv.read.clock intrinsic, which the SPIR-V backend selects to
 // OpReadClockKHR at Subgroup scope under the ShaderClockKHR capability. GPU-free:

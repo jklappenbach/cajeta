@@ -407,6 +407,50 @@ public:
                                  llvm::AtomicOrdering::AcquireRelease, dev);
     }
 
+    // --- integer atomics (core SPIR-V) ----------------------------------------
+    // Same memory-model constraint as the float path: Device scope + AcquireRelease
+    // (Vulkan rejects CrossDevice scope / SequentiallyConsistent). The backend maps
+    // the BinOp to OpAtomicIAdd/ISub/And/Or/Xor/Exchange/SMin/UMin/SMax/UMax.
+    llvm::Value* atomicIntRMW(llvm::IRBuilderBase& b, llvm::Module& m,
+                              AtomicIntOp op, llvm::Value* ptr,
+                              llvm::Value* value, bool isSigned) override {
+        llvm::AtomicRMWInst::BinOp binop;
+        switch (op) {
+            case AtomicIntOp::Add:      binop = llvm::AtomicRMWInst::Add; break;
+            case AtomicIntOp::Sub:      binop = llvm::AtomicRMWInst::Sub; break;
+            case AtomicIntOp::And:      binop = llvm::AtomicRMWInst::And; break;
+            case AtomicIntOp::Or:       binop = llvm::AtomicRMWInst::Or; break;
+            case AtomicIntOp::Xor:      binop = llvm::AtomicRMWInst::Xor; break;
+            case AtomicIntOp::Exchange: binop = llvm::AtomicRMWInst::Xchg; break;
+            case AtomicIntOp::Min:
+                binop = isSigned ? llvm::AtomicRMWInst::Min
+                                 : llvm::AtomicRMWInst::UMin; break;
+            case AtomicIntOp::Max:
+                binop = isSigned ? llvm::AtomicRMWInst::Max
+                                 : llvm::AtomicRMWInst::UMax; break;
+            default:                    binop = llvm::AtomicRMWInst::Add; break;
+        }
+        llvm::SyncScope::ID dev =
+            m.getContext().getOrInsertSyncScopeID("device");
+        return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
+                                 llvm::AtomicOrdering::AcquireRelease, dev);
+    }
+
+    // Compare-exchange → OpAtomicCompareExchange. Device scope; AcquireRelease on
+    // success, Acquire on failure (the failure ordering may not be stronger than
+    // success nor carry a release). Returns the OLD value (element 0).
+    llvm::Value* atomicCompareExchange(llvm::IRBuilderBase& b, llvm::Module& m,
+                                       llvm::Value* ptr, llvm::Value* expected,
+                                       llvm::Value* desired) override {
+        llvm::SyncScope::ID dev =
+            m.getContext().getOrInsertSyncScopeID("device");
+        llvm::Value* pair = b.CreateAtomicCmpXchg(
+            ptr, expected, desired, llvm::MaybeAlign(),
+            llvm::AtomicOrdering::AcquireRelease, llvm::AtomicOrdering::Acquire,
+            dev);
+        return b.CreateExtractValue(pair, 0, "atomic.cas.old");
+    }
+
     // --- shader clock (SPV_KHR_shader_clock) ----------------------------------
     // OpReadClockKHR at Subgroup scope (3), via the fork's llvm.spv.read.clock
     // intrinsic — the Shader flavor's only reach to the op (the OpReadClockKHR
