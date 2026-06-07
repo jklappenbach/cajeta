@@ -1,5 +1,10 @@
 # Value-type operator overloading — mechanism + framework
 
+> **COMPLETE (2026-06-05).** Stages S0–S9 are all DONE; `@ValueType` / `VALUE_TYPE_FLAG`
+> + the operator-dispatch gate + the by-value ABI are live in the compiler (latest fix:
+> "@ValueType instance-method call"). Retained as the mechanism + decision record
+> (incl. Decision #4 / S7 — templated operators retired).
+
 ## Context
 
 cajeta wants the standard library (Prism, math types) to define **fast value types whose

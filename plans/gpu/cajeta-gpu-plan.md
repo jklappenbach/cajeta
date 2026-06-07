@@ -54,8 +54,9 @@ Checkbox legend: `[x]` landed+tested · `[~]` partial (sub-bullets) · `[ ]` not
 Backends: **NV** NVPTX→cubin · **AMD** AMDGPU→hsaco · **VK** SPIR-V · **CPU** LLJIT.
 **Working agreement:** one increment at a time, tests + docs + commit checkpoint;
 never a miscompile; commit only when asked; **no attribution trailer**; stage files
-explicitly. Companion docs: `cajeta-xpu-matrix.md`, `cajeta-xpu.md`, `cajeta-amd.md`,
-`cajeta-vulkan.md`, `cajeta-cpu.md`.
+explicitly. Companion docs (under `cajeta-docs/gpu/`): the capability matrix
+`xpu/CajetaXPU-Matrix.md`, the CPU-backend reference `xpu/CajetaCPU.md`, the XPU
+spec `xpu/CajetaXPU.md`, and the cross-backend discipline `xpu/CajetaXPU-Variance.md`.
 
 ---
 
@@ -88,7 +89,7 @@ explicitly. Companion docs: `cajeta-xpu-matrix.md`, `cajeta-xpu.md`, `cajeta-amd
 - [~] **S6** consolidation & diagnostics:
   - [x] distinct diagnostics — `CAJETA_ERROR_VECTOR_COMPONENT` (lane bounds), `_CONSTRUCT` (ctor arity), `_ELEMENT_TYPE` (non-bool numeric element), `_LENGTH` (positive N), `_METHOD` (incl. `length`/`normalize` on integral element). *(verified 2026-06-02 — already complete in the tree)*
   - [x] `Buffer<Vector<float32,4>>` end-to-end — `XpuVectorDeviceTests.bufferOfVectorRunsOnCpu` (16-byte element stride + whole-vector `out[i] = <4 x float>` store; CPU JIT). *(2026-06-02 — codegen already handled it; the gap was test coverage)*
-  - [~] matrix/doc updates — *(2026-06-04)* `cajeta-xpu-matrix.md` refreshed: footer redated, NVIDIA column corrected to **emit-only (compute on-device pending B5 runner)**, coop-matrix/ray-query landings noted. **Still open:** the LLVM-22-vs-23 version-string sweep across `README.md`/companion docs is *blocked on a decision* — the stock distro build defaults to LLVM 22 (`setup.sh` `CAJETA_LLVM_VERSION:-22`) while the fork/GPU path is 23, so a blanket bump would desync the docs from the build default.
+  - [~] matrix/doc updates — *(2026-06-04)* `CajetaXPU-Matrix.md` refreshed: footer redated, NVIDIA column corrected to **emit-only (compute on-device pending B5 runner)**, coop-matrix/ray-query landings noted. **Still open:** the LLVM-22-vs-23 version-string sweep across `README.md`/companion docs is *blocked on a decision* — the stock distro build defaults to LLVM 22 (`setup.sh` `CAJETA_LLVM_VERSION:-22`) while the fork/GPU path is 23, so a blanket bump would desync the docs from the build default.
   - [ ] RGBA bridge — retype `Texture2D.sample` → `Vector<float32,4>` at each `sampleTexture` seam (drop the lane-0 extract). *(2026-06-04: all three backend seams still narrow — `SpirvKernelLowering.cpp:280`, `AmdgpuKernelLowering.cpp:144`, `NvptxKernelLowering.cpp:145` each extract lane-0 from the `<4 x float>` hardware result; the gather infrastructure is ready, so the change is the `Texture2D.cajeta` return-type retype + removing the three extracts + test updates — zero backend work.)*
 
 ### Stage A4 — Texture / Sampler types ✅
@@ -140,7 +141,7 @@ foundation.
 ### Stage B5 — NVIDIA codegen/device verification
 - [ ] **NV runner = the x86-64 Windows + NVIDIA box, via WSL2** (Ubuntu + CUDA-on-WSL), reusing the **`linux-x64`** LLVM-23 artifact from C0 + the CUDA toolkit (`ptxas`/`fatbinary`). Registered as a second self-hosted **Linux** runner. This is the only NVIDIA hardware (the Strix Halo dev box is AMD-only); WSL2 avoids gating NV bring-up on the native-Windows/mingw toolchain (which is release-only — see `plans/c0/`). *(Verify CUDA-on-WSL exposes libcuda + ptxas on first setup.)*
 - [ ] Unblocks the **5 currently-skipped NV exec tests** (`XpuSaxpy`, `XpuLoop`, `XpuShared`×2, `XpuHostLaunch` — CUDA-gated, verified 2026-06-04) + verifies the NV emit-only foundation on-device (textures A4, math B2); complete NV fatbin (A5)
-- [ ] Promote the NVIDIA column of `cajeta-xpu-matrix.md` from "emit-only" to "on-device measured"
+- [ ] Promote the NVIDIA column of `CajetaXPU-Matrix.md` from "emit-only" to "on-device measured"
 - [ ] **Full-stack NVIDIA re-evaluation — REQUIRED once the branch is pulled to an NVIDIA machine.** Everything NVIDIA-facing is *emit-only* today (NVPTX text/cubin emit verified, but **no NVPTX kernel has ever executed on real NVIDIA hardware** — there is no NV device on the Strix Halo dev box). When the `cajeta-spirv`/`cajeta-xpu` branch lands on the WSL2+CUDA box, run the **entire stack** end-to-end on NVIDIA, not just the 5 unblocked exec tests:
   - the full XPU device suite (SAXPY, loop/reduction, static + dynamic shared, host-launch, **wave/subgroup ops**, **vectors**, **math intrinsics**, **textures**) against the CUDA driver;
   - the **A5 NV fatbin** path (`ptxas` per `sm_XX` → `fatbinary`) — currently deferred for lack of `ptxas`;
@@ -238,13 +239,13 @@ Tiering rule: *lowerable* = IR intrinsics/builtins **and** a `test/CodeGen/SPIRV
 - [ ] **Quad control** (`SPV_KHR_quad_control`), **replicated composites** (`SPV_EXT_replicated_composites`) — 0 files — minor
 
 ### Stage C3 — Sequencing (prioritized for compute · science · ML)
-- [ ] **1. C0 infra first** — the fork + prebuilt-artifact pipeline; everything else rides it
-- [ ] **2. Tier-1 probe sweep** — per-feature emit probes (the `GfxSpirvEmitProbe` pattern) to confirm Vulkan-flavor reach, then surface the confirmed calls in Cajeta
-- [ ] **3. Ray query + acceleration structures** (Tier 3) — headline foundation gap; smaller than full RT; upstream-first
-- [ ] **4. Cooperative matrix → Shader flavor** (Tier 2) — tensor-core matmul; biggest ML lever
-- [ ] **5. bf16 (port) + fp8 (add)** — ML precision
+- [~] **1. C0 infra first** — the fork + prebuilt-artifact pipeline; in place (fork + artifact + local consumption); CI-consume + fork-README refresh pending
+- [x] **2. Tier-1 probe sweep** — per-feature emit probes (the `GfxSpirvEmitProbe` pattern); surfaced: integer-dot, float + integer atomics, shader clock, bit instructions, subgroup rotate/reduce/prefix-scan, maximal reconvergence
+- [x] **3. Ray query + acceleration structures** (Tier 3) — delivered, on-device (Inc 1–3c)
+- [x] **4. Cooperative matrix → Shader flavor** (Tier 2) — delivered, on-device (CM1–CM5 + GEMM)
+- [~] **5. bf16 (port) + fp8 (add)** — bf16 element type + arithmetic landed; **fp8 deferred** (no LLVM backend support yet)
 - [ ] **6. Cooperative vector + tensor addressing** (Tier 3) — newest neural primitives
-- [ ] **7. Minor**: quad control, replicated composites; confirm subgroup/bit/reconvergence
+- [~] **7. Minor**: subgroup/bit/reconvergence confirmed + surfaced; quad control + replicated composites not started
 
 ### Placement: what is `cajeta-gpu` vs `cajeta-gfx`
 By the shared-foundation rule (*if both xpu and gfx need it → gpu*):
@@ -326,12 +327,15 @@ for the ML/RT work; cooperative matrix in particular is **Tier-2-only**.
 
 ## Definition of done for the foundation
 
-**Status checkpoint (2026-06-04):** the two early-exception blockers are **delivered** —
-ray query (Inc 1–3c, on-device) and cooperative matrix (CM1–CM5 + GEMM, on-device). The
-remaining gap is **breadth**: Part B is ~1/5 (only B2-Increment-1 landed); B1/B3/B4/B5
-unstarted; the capability matrix needs the CM/RQ rows + an honest emit-only-vs-on-device
-NVIDIA column; the value-type contract stays unfrozen until B1–B5 land. C0 infra is in
-place (fork + artifact + local consumption) with CI-consume + fork-README refresh pending.
+**Status checkpoint (2026-06-07):** the two early-exception blockers are **delivered** —
+ray query (Inc 1–3c, on-device) and cooperative matrix (CM1–CM5 + GEMM, on-device).
+**B1 (linear-algebra value types — Matrix/Quaternion/swizzles/comparison-masks/
+cross-reflect-refract) and B2 (device math intrinsics) are landed**, and **B3 is partial**
+(writable + readable storage images — `WritableImages.md`); B4/B5 remain. The capability
+matrix (`xpu/CajetaXPU-Matrix.md`) now carries the CM/RQ rows + an honest
+emit-only-vs-on-device NVIDIA column; the value-type contract stays unfrozen until the
+remaining B3–B5 work lands. C0 infra is in place (fork + artifact + local consumption)
+with CI-consume + fork-README refresh pending.
 
 - [ ] A3/S6 closed (or deferred with a tracked reason); A5 NV fatbin done or deferred
 - [ ] Part B Stages B1–B5 landed, each test-gated on CPU + on-device (AMD/VK; NV once B5 lands hardware)

@@ -1,5 +1,9 @@
 # Cajeta runtime + XPU — bugfix plan
 
+> **RESOLVED (2026-06-03).** All 36 findings are dispositioned: every actionable item is
+> FIXED and test-gated; the residual `[~]` rows are conscious won't-fix / by-design
+> decisions (M2, M4, M10, L4, L7), not open work. Retained as the disposition record.
+
 **Source:** adversarial bug-hunt workflow over the runtime + XPU subsystem (2026-06-03).
 12 subsystem hunters → independent per-finding verification → synthesis. **36 confirmed**
 (4 critical, 16 high, 11 medium, 5 low). The ray-query / acceleration-structure code is

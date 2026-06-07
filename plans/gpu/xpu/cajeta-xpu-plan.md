@@ -30,8 +30,9 @@ backend (SPIRV-Cross→MSL) for what MoltenVK can't do (cooperative matrix, reli
 ray query). Full strategy + sequencing in `cajeta-gpu-plan.md` § Platforms — Apple/macOS.
 **Working agreement:** one increment at a time, tests + docs + commit checkpoint;
 never a miscompile; commit only when asked; **no attribution trailer**; stage files
-explicitly. Companion docs: `cajeta-xpu-matrix.md`, `xpu-plan.md`, `cajeta-xpu.md`,
-`cajeta-amd.md`, `cajeta-vulkan.md`, `cajeta-cpu.md`.
+explicitly. Companion docs (under `cajeta-docs/gpu/xpu/`): the capability matrix
+`CajetaXPU-Matrix.md`, the CPU-backend reference `CajetaCPU.md`, the XPU spec
+`CajetaXPU.md`, and the cross-backend discipline `CajetaXPU-Variance.md`.
 
 ---
 
@@ -95,6 +96,10 @@ tracked in `cajeta-gpu`.)
 ### Stage 8 — Wave / subgroup ops ✅
 - [x] `Wave.shuffleSync`/`ballotSync`/`reduceSum`/`laneId` via the 5-method `LoweringTarget` wave seam; emit on all GPU backends, on-device AMD + VK; wave = SIMD lane on CPU (Inc 5C)
 - [x] `Wave.width()` on VK routed to selectable `llvm.spv.subgroup.size` (SubgroupSize builtin) — runs on RADV (the one that the SPIR-V backend couldn't select otherwise)
+- [x] `Wave.rotate` (subgroup cyclic shift) — fork; on-device VK/AMD (`CajetaXPU-Matrix.md` §8; doc `SubgroupRotate.md`)
+- [x] `Wave.reduceMax/Min/And/Or/Xor` + `reduceProduct` uniform group arithmetic — fork; on-device VK/AMD (doc `WaveReductions.md`)
+- [x] `Wave.prefixSum`/`prefixProduct` exclusive subgroup scans — fork; on-device VK/AMD (doc `WavePrefixScan.md`)
+- [x] Auto **maximal reconvergence** correctness companion emitted with the wave ops (no backend patch needed)
 
 > **Compute uses of `cajeta-gpu` features, already built:** `Texture2D.sample` in
 > kernels (Item 8) and `Vector<T,N>` in kernels (S5, device codegen) are *exercised*
@@ -108,11 +113,11 @@ The remaining execution-model capabilities the numerics/ML stack will demand. Fi
 Part II + the Part I follow-ups is the **definition of done** for `cajeta-xpu`.
 
 ### Stage 9 — Atomics & synchronization
-- [ ] `atomicAdd/Min/Max/And/Or/Xor/Exchange/CompareExchange` on global & shared
-- [ ] Float atomics (NV/AMD native; VK extension capability check)
+- [x] `atomicAdd/Min/Max/And/Or/Xor/Exchange/CompareExchange` on global & shared (integer; on-device CPU/VK/AMD — doc `IntegerAtomics.md`)
+- [x] Float atomics (NV/AMD native; VK `SPV_EXT_shader_atomic_float_*` capability check) — on-device, doc `FloatAtomics.md`
 - [ ] Functional `Fence` (the type is a `cajeta-gpu` prelude entry; the *kernel-side* scoped `OpMemoryBarrier`/fence lowering is here)
-- [ ] Memory-order surface (`acquire`/`release`/`relaxed`/`seq_cst`) on the seam
-- [ ] On-device tests: histogram, reduction-by-atomics, spin-free counters
+- [~] Memory-order surface (`acquire`/`release`/`relaxed`/`seq_cst`) on the seam — internal model exists (VK Device-scope + AcquireRelease; monotonic default) but is **not yet surfaced** as a user-facing API
+- [x] On-device tests: histogram, reduction-by-atomics, spin-free counters (Tour `histogram` + `reduceAtomic` + shared-atomic-counter demos)
 
 ### Stage 10 — Streams & async compute
 - [ ] `Stream` real semantics — overlap copy/compute, dependency ordering (the copy *primitive* is `cajeta-gpu`; the compute-overlap scheduling is here)
@@ -168,7 +173,7 @@ capability no target demands is a candidate to cut or defer.
 - [ ] Part I follow-ups closed (or deferred with a tracked reason): the per-stage follow-ups in Stages 3/4/5/7.
 - [ ] Part II Stages 9–12 landed, each test-gated on CPU + on-device (AMD/VK; NV once `cajeta-gpu` Stage B5 lands hardware).
 - [ ] A thin **proof-of-support compute probe per target** runs on the substrate (not the full library): a broadcast+reduction kernel (numerics); a matmul + atomic grad-scatter kernel (torch); a fused per-layer forward+cosine-loss+update pass (Prism/SPELA).
-- [ ] The capability matrix (`cajeta-xpu-matrix.md`) is honest and current for the compute rows.
+- [ ] The capability matrix (`CajetaXPU-Matrix.md`) is honest and current for the compute rows.
 - [ ] The Stage 12 launch/FFI contract is documented and frozen.
 - [ ] `cajeta-gpu` has cleared *its* definition of done (compute depends on it).
 
@@ -178,7 +183,7 @@ capability no target demands is a candidate to cut or defer.
 
 - [ ] **Testing** — per-stage gtest discipline; on-device gates for AMD/VK (NV when HW lands)
 - [ ] **Benchmarking** — kernel-throughput regression tracking as atomics/streams land
-- [ ] **Documentation** — keep `cajeta-xpu-matrix.md` honest (emit-only vs on-device); document the Stage 12 launch contract
+- [ ] **Documentation** — keep `CajetaXPU-Matrix.md` honest (emit-only vs on-device); document the Stage 12 launch contract
 - [ ] **CI** — multi-backend runners (CPU always; AMD/VK self-hosted; NV when available)
 
 ---

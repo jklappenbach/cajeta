@@ -1,5 +1,9 @@
 # Removing the `new` allocation keyword (in favor of `heap` / `stack`)
 
+> **DONE (2026-06-06, commit `802a00f`).** `new` was removed from the grammar — no
+> `NEW` token in the lexer/parser; `heap`/`stack` are the only allocators. The Option-B
+> (full removal) recommendation is fully executed; kept as the record of what changed.
+
 _Small report per request: where `new` lives in the grammar, where it's used,
 and how to remove it. Context: the unified-class model (UnifiedClasses.md)
 makes `heap` / `stack` the mandatory placement prefixes; `new` is a

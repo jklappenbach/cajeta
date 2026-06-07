@@ -1,6 +1,9 @@
 # Plan: `~Object` — a virtual destructor at the root of the class hierarchy
 
-Status: **DRAFT — awaiting approval to execute.** Nothing applied; working tree is clean.
+Status: **DONE (2026-06-01, commit `f089308`).** `~Object()` — a virtual destructor at
+the root of the hierarchy — landed, with drop/destructor breakpoints and
+`debug-tests/dap/DropBreakpointTests.cpp`. (Shipped as one test file rather than the four
+originally listed; feature coverage is equivalent.)
 
 ## 1. Goal
 

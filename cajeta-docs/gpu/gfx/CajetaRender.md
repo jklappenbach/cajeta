@@ -3,7 +3,7 @@
 This document specifies `cajeta.render`, Cajeta's graphics layer:
 rasterization, ray tracing, mesh shading, and the scene-graph + asset
 shape that feeds them. The library sits on top of
-[`cajeta.xpu`](CajetaXPU.md) — every dispatch ultimately lands in
+[`cajeta.xpu`](../xpu/CajetaXPU.md) — every dispatch ultimately lands in
 `cajeta.xpu.vulkan` (portable cross-vendor path) or in vendor-native
 backends (`cajeta.xpu.nvidia` for RT cores, `cajeta.xpu.amd` for RDNA
 ray accelerators) when the project opts into hardware-specific
@@ -46,7 +46,7 @@ doesn't need the BLAS bindings under `cajeta.xpu.nvidia.cublas`.
    the GPU through the end of frame N cannot be freed in the middle
    of frame N. The borrow checker treats render-pass scopes as
    deferred borrows the same way XPU does (per
-   [`CajetaXPU.md`](CajetaXPU.md#11-borrow-checker-interaction-notable-cases)).
+   [`CajetaXPU.md`](../xpu/CajetaXPU.md#11-borrow-checker-interaction-notable-cases)).
 
 ### 1.2 Non-goals
 
@@ -606,7 +606,7 @@ public class AnimationClip {
 
 Skinning uses dual-quaternion blend skinning by default (better
 silhouette than linear-blend skinning for large rotations) — the
-math lives in [`cajeta.math.linalg.DualQuaternion`](CajetaMath.md#geometry).
+math lives in [`cajeta.math.linalg.DualQuaternion`](../../CajetaMath.md#geometry).
 LBS remains available as a fallback for bones-heavy meshes where
 dual-quat cost matters.
 
@@ -715,7 +715,7 @@ lands). The same `PostFx` interface; the binding is what changes.
 ## 12. Borrow checker interaction
 
 The render library extends XPU's borrow-checker contract (per
-[`CajetaXPU.md` §11](CajetaXPU.md#11-borrow-checker-interaction-notable-cases))
+[`CajetaXPU.md` §11](../xpu/CajetaXPU.md#11-borrow-checker-interaction-notable-cases))
 with three render-specific cases:
 
 1. **Texture freed while bound to an in-flight pipeline.**
@@ -767,7 +767,7 @@ pipelines.
 - Pipeline-layout metadata in a sidecar `*.cajeta-pipeline` (binding
   shapes, push-constant ranges, vertex input layout).
 - Hot-reloadable sidecar files: `*.cajeta-spv` per stage, watched by
-  the runtime (per [`CajetaXPU.md` §6.5](CajetaXPU.md#65-hot-reload)).
+  the runtime (per [`CajetaXPU.md` §6.5](../xpu/CajetaXPU.md#65-hot-reload)).
 
 ### 13.3 Diagnostics
 
@@ -793,7 +793,7 @@ RenderDoc, NSight Graphics, Radeon GPU Profiler. SPIR-V carries
 ## 14. Phasing
 
 A reasonable order of implementation. The substrate phases
-([`CajetaXPU.md` §12](CajetaXPU.md#12-phasing)) gate everything here.
+([`CajetaXPU.md` §12](../xpu/CajetaXPU.md#12-phasing)) gate everything here.
 
 1. **`cajeta.render.Device` / `Surface` / `Swapchain` / `CommandBuffer`.**
    The minimum to draw a triangle. Depends on XPU phase 5 (Vulkan

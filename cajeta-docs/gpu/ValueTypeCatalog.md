@@ -3,7 +3,7 @@
 > **Status: design-stage reference.** This catalogs the operator-overloaded value
 > types cajeta intends to ship and their canonical operator-overload signatures, so
 > that when it is time to write definitions the surface is already specified. It is a
-> companion to [`OperatorOverloading.md`](OperatorOverloading.md) and depends on the
+> companion to [`OperatorOverloading.md`](../OperatorOverloading.md) and depends on the
 > value-type operator-overloading **mechanism change** (see
 > `plans/value-type-overloading-plan.md`): today only non-primitive classes dispatch
 > operators; value types are `@ValueType` POD classes that dispatch via a relaxed gate

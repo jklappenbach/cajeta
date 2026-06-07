@@ -2,10 +2,10 @@
 
 The hardware-target matrix for validating the XPU backends, and how the
 dev/CI loop splits **GPU-free codegen** from **on-device validation**.
-Companion to [`CajetaXPU.md`](CajetaXPU.md) (the spec) and
-[`CajetaXPU-Variance.md`](CajetaXPU-Variance.md) (the cross-backend
-discipline). Implementation status lives in
-[`../cajeta-xpu.md`](../cajeta-xpu.md).
+Companion to [`CajetaXPU.md`](gpu/xpu/CajetaXPU.md) (the spec) and
+[`CajetaXPU-Variance.md`](gpu/xpu/CajetaXPU-Variance.md) (the cross-backend
+discipline). The capability matrix lives in
+[`CajetaXPU-Matrix.md`](gpu/xpu/CajetaXPU-Matrix.md).
 
 > **Pricing snapshot: May 2026.** Cloud GPU rates and availability move
 > weekly; the dollar figures below are a point-in-time reference, not a

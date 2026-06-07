@@ -5,6 +5,11 @@ files. This is the work-list for the cajetadoc documentation pass — 110 files.
 
 Generated: 2026-06-05.
 
+> **DONE.** The cajetadoc documentation pass this work-list drove has landed (commit
+> `50da718` + follow-ups); all non-xpu `runtime/` sources now carry `/**` doc comments.
+> This is a regenerable static manifest — its purpose is fulfilled; the 110 count predates
+> later source additions.
+
 ## cajeta.codec.json
 - runtime/src/cajeta/codec/json/Json.cajeta
 - runtime/src/cajeta/codec/json/JsonArray.cajeta

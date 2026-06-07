@@ -331,7 +331,7 @@ Content below is drawn from real project sources: `README.md`, `Features.md`,
   - *True templates (monomorphization)* — not type-erased generics.
   - *Multiple inheritance for behavior*, single inheritance for state; vtable at offset 0.
   - *XPU portability* — one `@Kernel` source → CUDA / HIP / Vulkan / CPU, with
-    graceful CPU degradation (cite `cajeta-xpu-matrix.md`).
+    graceful CPU degradation (cite `gpu/xpu/CajetaXPU-Matrix.md`).
   - *Structured concurrency* — `async`/`await`/`scope`/`spawn`, stackful fibers.
   - *Compiler that teaches* — abundant linting, verbose errors, AI-friendly.
 - **Comparison table** — Cajeta vs **Rust** (friendlier, less borrow-checker
@@ -373,8 +373,10 @@ Build-time approach: read the actual sample files so snippets never drift
   - **Codec / IO:** `codec/Json.md`, `io/`.
   - **Compiler & build:** `Compilation.md`, `CompilerModes.md`, `BuildTool.md`,
     `LintRules.md`, `HarnessDesign.md`, `ArchiveManagement.md`, `Embedded.md`.
-  - **XPU:** `../cajeta-xpu.md`, `../cajeta-cpu.md`, `../cajeta-vulkan.md`,
-    `../cajeta-amd.md`, `../cajeta-xpu-matrix.md`.
+  - **GPU/XPU/GFX:** the `cajeta-docs/gpu/` tree — foundation value-type/math
+    docs at `gpu/`, compute at `gpu/xpu/` (`CajetaXPU.md`, `CajetaCPU.md`,
+    `CajetaXPU-Matrix.md`, `CajetaXPU-Variance.md`), graphics at `gpu/gfx/`
+    (`CajetaRender.md`).
   - **Specs (v1):** `specs/repository-protocol-v1.md`, `manifest-v1.json`,
     `lockfile-v1.json`, `action-catalog-v1.json`, `capabilities-v1.json`,
     `extension-api-v1.md`, `toolchain-registry-v1.md`, `schema-versioning.md`,
@@ -751,7 +753,7 @@ old taxonomy against the *current* tree — e.g.:
 | Stdlib   | `stdlib/Collections.md`, `stdlib/Streams.md`, `stdlib/StreamParallelism.md`, `stdlib/Hashing.md`, `stdlib/codec/Json.md`, `stdlib/Annotations.md`, `stdlib/AspectModel.md` |
 | Concurrency | `stdlib/Thread.md`, `stdlib/AsyncStatus.md` |
 | Tooling  | `Compilation.md`, `CompilerModes.md`, `BuildTool.md`, `LintRules.md`, `HarnessDesign.md`, `ArchiveManagement.md` |
-| XPU      | `../cajeta-xpu.md`, `../cajeta-cpu.md`, `../cajeta-vulkan.md`, `../cajeta-amd.md`, `../cajeta-xpu-matrix.md` |
+| GPU/XPU/GFX | `../../cajeta-docs/gpu/` tree — foundation at `gpu/`, compute at `gpu/xpu/` (`CajetaXPU.md`, `CajetaCPU.md`, `CajetaXPU-Matrix.md`, `CajetaXPU-Variance.md`), graphics at `gpu/gfx/` (`CajetaRender.md`) |
 | Specs    | `specs/*` (repository-protocol, manifest, lockfile, action-catalog, capabilities, extension-api, toolchain-registry, schema-versioning, tour) |
 | Status   | `Features.md`, `Embedded.md` |
 
@@ -821,9 +823,11 @@ files). This section is the editorial pass that turns that corpus into the
 **styled docs portion of cajeta.dev** (§14 wires it; this section *curates* it).
 
 > **XPU docs are out of scope for this editorial pass.** A separate session with
-> deeper XPU context owns `cajeta-xpu.md`, `cajeta-cpu.md`, `cajeta-vulkan.md`,
-> `cajeta-amd.md`, `cajeta-xpu-matrix.md`, `CajetaXPU.md`, `CajetaXPU-Variance.md`,
-> and `ci-validation-targets.md`. The catalog (§16.2) lists them for completeness
+> deeper XPU context owns the `cajeta-docs/gpu/` tree — `gpu/CajetaGPU.md`,
+> `gpu/xpu/CajetaXPU.md`, `gpu/xpu/CajetaCPU.md`, `gpu/xpu/CajetaXPU-Matrix.md`,
+> `gpu/xpu/CajetaXPU-Variance.md`, `gpu/gfx/CajetaGFX.md`, `gpu/gfx/CajetaRender.md`,
+> and `ci-validation-targets.md`. (That session has since reorganized these into the
+> gpu/xpu/gfx layout and retired the old root bring-up logs.) The catalog (§16.2) lists them for completeness
 > with **provisional** verdicts, but **do not edit, split, merge, or re-group the
 > XPU docs here** — the XPU group (§16.3 #10) and its site-map slots (§16.5) are
 > placeholders to be reconciled with that session before publish.
@@ -867,11 +871,10 @@ implemented") · **CUT** (delete or archive).
 | `README.md` | 513 | EDIT | Source for the landing pitch (§5.1); fix stale `0.1.0` (VERSION is law, §9); trim to an intro. | Start Here |
 | `Features.md` | 226 | KEEP | Feature-status matrix; publish as "Feature status" page, quote verbatim. | Start Here |
 | `RELEASING.md` | 262 | INTERNAL | Contributor/maintainer procedure; keep in repo, link from a "Contributing" page, not main nav. | Internal |
-| `cajeta-xpu.md` | 551 | DEFER (XPU session) | Cross-machine *handoff*; provisional: Internal. **Owned by the XPU session — do not edit here.** | XPU |
-| `cajeta-cpu.md` | 625 | DEFER (XPU session) | CPU backend bring-up log; provisional: Internal. **Owned by the XPU session.** | XPU |
-| `cajeta-vulkan.md` | 157 | DEFER (XPU session) | Vulkan bring-up log; provisional: Internal. **Owned by the XPU session.** | XPU |
-| `cajeta-amd.md` | 225 | DEFER (XPU session) | AMD bring-up plan; provisional: Internal. **Owned by the XPU session.** | XPU |
-| `cajeta-xpu-matrix.md` | 335 | DEFER (XPU session) | User-facing capability matrix; provisional: EDIT. **Owned by the XPU session.** | XPU |
+| `gpu/xpu/CajetaCPU.md` | 625 | INTERNAL | CPU-backend lowering reference (moved from root `cajeta-cpu.md`); contributor-facing. | XPU |
+| `gpu/xpu/CajetaXPU-Matrix.md` | 335 | EDIT | User-facing capability matrix (moved from root `cajeta-xpu-matrix.md`). | XPU |
+
+(The root bring-up logs `cajeta-xpu.md` / `cajeta-vulkan.md` / `cajeta-amd.md` were retired in the gpu/xpu/gfx reorg — superseded by the matrix, the variance doc, and the layer plans.)
 | `exception-fix-plan.md` | 143 | CUT | Open bug plan; archive when fixed, never publish. | — |
 
 #### `cajeta-docs/` (root)
@@ -1035,7 +1038,7 @@ Concrete line items, grouped by operation. (Verdicts come from §16.2.)
 
 **Trim for verbosity / audience** (EDIT verdicts): `OperatorOverloading.md`,
 `Annotations.md`, `String.md`, `Reflection.md`, `MethodLevelTemplate.md`,
-`Json.md`, `Lambdas.md`, `ArchiveManagement.md`, `cajeta-xpu-matrix.md`,
+`Json.md`, `Lambdas.md`, `ArchiveManagement.md`, `gpu/xpu/CajetaXPU-Matrix.md`,
 `TemplateWildcard.md`, `README.md` — cut to the developer-relevant core; move
 deep-internal rationale to `Internal` or footnotes.
 

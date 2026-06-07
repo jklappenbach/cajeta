@@ -1,5 +1,12 @@
 # Plan — typed coverage exclusions + `cajeta coverage` CLI
 
+> **COMPLETE (shippable scope).** C1 (typed plugin exclusions) + C2 (the `cajeta coverage
+> ignore/list/remove` CLI + `ManifestEditor` mutators) are implemented, committed
+> (`5bab003`, `704ee85`) and tested. C3 is a runtime-gated verification checkpoint (no
+> separate work); C4 is a separate repo, out of scope. Deviation: the CLI landed inline in
+> `BuildToolCommands.cpp` and tests in `ManifestEditorTests.cpp`, not the new files the
+> touch-points table named.
+
 Companion to [`build-tool-plan.md`](./build-tool-plan.md).
 Replaces the deleted Phase 7e (`@nocoverage` source annotation).
 
