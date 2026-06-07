@@ -24,9 +24,9 @@ import cajeta.collection.ArrayList;
 public final class Tour {
 
     // Entry point. Walks every demo and returns 0. The C `main` shim
-    // (synthesized by --emit=obj when compiling with this method as
-    // the entry) wires this up as the program's main.
-    public static int32 run() {
+    // (synthesized by --emit=obj/exe/uber when this method is the entry)
+    // wires this up as the program's C `main`; argv arrives as `args`.
+    public static int32 main(String[] args) {
         System.stdout.println("=== Cajeta language tour ===");
 
         // Heap-allocate one instance of every demo. The list owns

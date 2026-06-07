@@ -23,7 +23,7 @@ if [[ ! -x "$CAJETA_BIN" ]]; then
     exit 1
 fi
 
-ENTRY_METHOD="tour.Tour.run"
+ENTRY_METHOD="tour.Tour.main"
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
