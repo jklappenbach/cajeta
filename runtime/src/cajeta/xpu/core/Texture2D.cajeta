@@ -16,9 +16,9 @@ package cajeta.xpu.core;
  * Texture2D argument until the next Stream.sync().
  *
  * FORMATS. The storage format is chosen at construction from {@link
- * TextureFormat} — single- or four-channel, 32-bit float or 8-bit UNORM. The
- * default (2-arg ctor) is `R32F`, one float channel. `sample(...)` always
- * returns `Vector<float32, 4>` regardless of format.
+ * TextureFormat} — single- or four-channel, 32-bit float, 16-bit half float, or
+ * 8-bit UNORM. The default (2-arg ctor) is `R32F`, one float channel.
+ * `sample(...)` always returns `Vector<float32, 4>` regardless of format.
  *
  * v1 LIMITS: 2-D, read-only, one Sampler, float-sampled formats. 3-D/cube,
  * depth/compare, mip levels, and raw-integer (texelFetch) textures are

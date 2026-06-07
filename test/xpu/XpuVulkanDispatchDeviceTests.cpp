@@ -499,6 +499,72 @@ static const char* kRgbaSampleSrc(const char* fmt) {
     return s.c_str();
 }
 
+// Single-channel format parametrized by ordinal (R32F/R8_UNORM/R16F): a 2x2
+// image {0,1,2,3} sampled at the four texel centers returns the exact texels in
+// .x; the dead-center returns the 4-texel average 1.5. All values are f16- and
+// unorm8-... no: 0..3 exceed [0,1], so this helper is for the FLOAT single-channel
+// formats (R32F/R16F) — every value is exactly representable in binary16.
+static const char* kR1SampleSrc(const char* fmt) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexR1 {\n"
+        "    @Kernel\n"
+        "    public static void sample(Texture2D tex, Sampler s,\n"
+        "                              Buffer<float32> us, Buffer<float32> vs,\n"
+        "                              Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<float32,4> c = tex.sample(s, us[i], vs[i]);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[4];\n"
+        "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
+        "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
+        "        Texture2D tex = heap Texture2D(w, h, ") + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
+        "        uint32 n = 5;\n"
+        "        float32[] hus = heap float32[n];\n"
+        "        float32[] hvs = heap float32[n];\n"
+        "        float32[] hexp = heap float32[n];\n"
+        "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
+        "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
+        "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
+        "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
+        "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> us = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> vs = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        us.allocate(); vs.allocate(); out.allocate();\n"
+        "        us.upload(hus); vs.upload(hvs); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        us.free(); vs.free(); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = hout[i] - hexp[i];\n"
+        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 TEST(XpuVulkanDispatchDeviceTests, textureSampleRgba32fOnDevice) {
     if (!VulkanDriver::available()) {
         GTEST_SKIP() << "no Vulkan device/driver available";
@@ -531,6 +597,43 @@ TEST(XpuVulkanDispatchDeviceTests, textureSampleRgba8UnormOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA8_UNORM sample mismatch at i)";
+}
+
+// Half-float single channel (R16F): the cheap-HDR encoding — float uploaded,
+// binary16 stored (VK_FORMAT_R16_SFLOAT), read back as float. Texel values
+// {0,1,2,3} are all exactly representable in binary16, so the same texel-center
+// + dead-center expecteds as the R32F test hold bit-exactly.
+TEST(XpuVulkanDispatchDeviceTests, textureSampleR16fOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kR1SampleSrc("TextureFormat.R16F"),
+                                  "test.TexR1", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R16F sample mismatch at i)";
+}
+
+// Half-float RGBA (RGBA16F): four-channel cheap HDR (VK_FORMAT_R16G16B16A16_SFLOAT).
+// Same kernel/check as the RGBA32F test; the channel values (.2t .. +.15) are
+// within the 0.02 tol of their binary16 round-trip.
+TEST(XpuVulkanDispatchDeviceTests, textureSampleRgba16fOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kRgbaSampleSrc("TextureFormat.RGBA16F"),
+                                  "test.TexRgba", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA16F sample mismatch at i)";
 }
 
 

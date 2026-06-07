@@ -6184,17 +6184,29 @@ struct cajeta_hip_tex { void* array; uint32_t w, h; int32_t format; };
 #define CAJ_TEXFMT_R8_UNORM    1
 #define CAJ_TEXFMT_RGBA8_UNORM 2
 #define CAJ_TEXFMT_RGBA32F     3
+#define CAJ_TEXFMT_R16F        4
+#define CAJ_TEXFMT_RGBA16F     5
 
 static inline int cajeta_texfmt_channels(int32_t fmt) {
-    return (fmt == CAJ_TEXFMT_RGBA8_UNORM || fmt == CAJ_TEXFMT_RGBA32F) ? 4 : 1;
+    return (fmt == CAJ_TEXFMT_RGBA8_UNORM || fmt == CAJ_TEXFMT_RGBA32F ||
+            fmt == CAJ_TEXFMT_RGBA16F) ? 4 : 1;
 }
 static inline int cajeta_texfmt_is_unorm(int32_t fmt) {
     return fmt == CAJ_TEXFMT_R8_UNORM || fmt == CAJ_TEXFMT_RGBA8_UNORM;
 }
-// Bytes per texel in device storage (UNORM = 1 byte/channel, float = 4).
+// Half-float (16-bit IEEE binary16) storage formats — the cheap-HDR path.
+static inline int cajeta_texfmt_is_half(int32_t fmt) {
+    return fmt == CAJ_TEXFMT_R16F || fmt == CAJ_TEXFMT_RGBA16F;
+}
+// Bytes per channel in device storage (UNORM = 1, half = 2, float = 4).
+static inline size_t cajeta_texfmt_channel_bytes(int32_t fmt) {
+    if (cajeta_texfmt_is_unorm(fmt)) return 1u;
+    if (cajeta_texfmt_is_half(fmt))  return 2u;
+    return 4u;
+}
+// Bytes per texel in device storage.
 static inline size_t cajeta_texfmt_texel_bytes(int32_t fmt) {
-    return (size_t) cajeta_texfmt_channels(fmt) *
-           (cajeta_texfmt_is_unorm(fmt) ? 1u : 4u);
+    return (size_t) cajeta_texfmt_channels(fmt) * cajeta_texfmt_channel_bytes(fmt);
 }
 // Quantize one float [0,1] to a UNORM byte (round-to-nearest, clamped).
 static inline unsigned char cajeta_texfmt_unorm8(float f) {
@@ -6202,14 +6214,67 @@ static inline unsigned char cajeta_texfmt_unorm8(float f) {
     if (f >= 1.0f) return 255;
     return (unsigned char) (f * 255.0f + 0.5f);
 }
+// Convert one float32 to IEEE 754 binary16 (round-to-nearest-even), returned as
+// the raw 16-bit pattern. Handles sign, subnormals, overflow→Inf, and NaN.
+static inline uint16_t cajeta_f32_to_f16(float f) {
+    uint32_t x;
+    memcpy(&x, &f, sizeof(x));
+    uint32_t sign = (x >> 16) & 0x8000u;
+    int32_t  exp  = (int32_t) ((x >> 23) & 0xFFu) - 127 + 15;
+    uint32_t mant = x & 0x7FFFFFu;
+    if (((x >> 23) & 0xFFu) == 0xFFu) {                 // Inf / NaN
+        return (uint16_t) (sign | 0x7C00u | (mant ? 0x200u : 0u));
+    }
+    if (exp >= 0x1F) return (uint16_t) (sign | 0x7C00u);  // overflow → Inf
+    if (exp <= 0) {                                      // subnormal / zero
+        if (exp < -10) return (uint16_t) sign;
+        mant |= 0x800000u;
+        uint32_t shift = (uint32_t) (14 - exp);
+        uint32_t half  = mant >> shift;
+        uint32_t rem   = mant & ((1u << shift) - 1u);
+        uint32_t mid   = 1u << (shift - 1);
+        if (rem > mid || (rem == mid && (half & 1u))) half++;
+        return (uint16_t) (sign | half);
+    }
+    uint16_t half = (uint16_t) (sign | ((uint32_t) exp << 10) | (mant >> 13));
+    uint32_t rem = mant & 0x1FFFu;                       // round-to-nearest-even
+    if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) half++;
+    return half;
+}
+// Convert one IEEE 754 binary16 bit pattern back to float32 (exact).
+static inline float cajeta_f16_to_f32(uint16_t h) {
+    uint32_t sign = (uint32_t) (h & 0x8000u) << 16;
+    uint32_t exp  = (h >> 10) & 0x1Fu;
+    uint32_t mant = h & 0x3FFu;
+    uint32_t bits;
+    if (exp == 0) {
+        if (mant == 0) { bits = sign; }                 // +/- zero
+        else {                                          // subnormal
+            exp = 127 - 15 + 1;
+            while ((mant & 0x400u) == 0) { mant <<= 1; exp--; }
+            mant &= 0x3FFu;
+            bits = sign | (exp << 23) | (mant << 13);
+        }
+    } else if (exp == 0x1Fu) {                           // Inf / NaN
+        bits = sign | 0x7F800000u | (mant << 13);
+    } else {
+        bits = sign | ((exp - 15 + 127) << 23) | (mant << 13);
+    }
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
 // Encode `texels` (= w*h*channels) channel-interleaved floats from `src` into
-// `dst` in the storage format: float → memcpy, UNORM → quantized bytes. `dst`
-// must hold texels*texelChannelBytes.
+// `dst` in the storage format: float → memcpy, half → binary16, UNORM →
+// quantized bytes. `dst` must hold texels * channel_bytes.
 static void cajeta_texfmt_encode(void* dst, const float* src, size_t texels,
                                  int32_t fmt) {
     if (cajeta_texfmt_is_unorm(fmt)) {
         unsigned char* b = (unsigned char*) dst;
         for (size_t i = 0; i < texels; ++i) b[i] = cajeta_texfmt_unorm8(src[i]);
+    } else if (cajeta_texfmt_is_half(fmt)) {
+        uint16_t* h = (uint16_t*) dst;
+        for (size_t i = 0; i < texels; ++i) h[i] = cajeta_f32_to_f16(src[i]);
     } else {
         memcpy(dst, src, texels * sizeof(float));
     }
@@ -6930,6 +6995,8 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
             case CAJ_TEXFMT_R8_UNORM:    vkfmt = VK_FORMAT_R8_UNORM;            break;
             case CAJ_TEXFMT_RGBA8_UNORM: vkfmt = VK_FORMAT_R8G8B8A8_UNORM;      break;
             case CAJ_TEXFMT_RGBA32F:     vkfmt = VK_FORMAT_R32G32B32A32_SFLOAT; break;
+            case CAJ_TEXFMT_R16F:        vkfmt = VK_FORMAT_R16_SFLOAT;          break;
+            case CAJ_TEXFMT_RGBA16F:     vkfmt = VK_FORMAT_R16G16B16A16_SFLOAT; break;
             case CAJ_TEXFMT_R32F: default: vkfmt = VK_FORMAT_R32_SFLOAT;        break;
         }
     }
@@ -8398,13 +8465,16 @@ static int cajeta_hip_tex_supported(void) {
 static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h, int32_t format) {
     if (!cajeta_hip_tex_supported()) return 0;
     int channels = cajeta_texfmt_channels(format);
-    int bits = cajeta_texfmt_is_unorm(format) ? 8 : 32;  // per-channel
+    int bits = cajeta_texfmt_is_unorm(format) ? 8                 // per-channel
+             : cajeta_texfmt_is_half(format)  ? 16
+                                              : 32;
     struct caj_hip_channel_format_desc cd;
     memset(&cd, 0, sizeof(cd));
     cd.x = bits;
     if (channels == 4) { cd.y = bits; cd.z = bits; cd.w = bits; }
     // UNORM stores unsigned bytes (read back normalized to [0,1] via the texobj's
-    // NormalizedFloat read mode); float stores raw floats read element-typed.
+    // NormalizedFloat read mode); float/half store raw floats (16- or 32-bit) read
+    // element-typed — both are the Float channel kind.
     cd.f = cajeta_texfmt_is_unorm(format) ? CAJ_HIP_CHANNEL_UNSIGNED
                                           : CAJ_HIP_CHANNEL_FLOAT;
     void* array = NULL;
@@ -8421,9 +8491,12 @@ static void cajeta_xpu_hip_tex_upload(int64_t handle, const float* src,
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
     if (!t || !t->array || w != t->w || h != t->h) return;
     size_t rowBytes = (size_t) w * cajeta_texfmt_texel_bytes(format);
-    if (cajeta_texfmt_is_unorm(format)) {
+    if (cajeta_texfmt_is_unorm(format) || cajeta_texfmt_is_half(format)) {
+        // Storage differs from the float[] source (1 byte/sample UNORM, 2 bytes
+        // half) — encode into a temp buffer, then copy the packed bytes.
         size_t texels = (size_t) w * h * cajeta_texfmt_channels(format);
-        unsigned char* tmp = (unsigned char*) malloc(texels);   // 1 byte/sample
+        size_t bytes  = texels * cajeta_texfmt_channel_bytes(format);
+        unsigned char* tmp = (unsigned char*) malloc(bytes);
         if (!tmp) return;
         cajeta_texfmt_encode(tmp, src, texels, format);
         g_xpu_hip.hipMemcpy2DToArray(t->array, 0, 0, tmp, rowBytes, rowBytes, h,
@@ -8540,6 +8613,11 @@ void __cajeta_xpu_texture_upload(void* self, int64_t handle, void* host,
                 // both paths agree bit-for-bit on exactly-representable values.
                 for (size_t i = 0; i < texels; ++i)
                     t->data[i] = (float) cajeta_texfmt_unorm8(src[i]) / 255.0f;
+            } else if (cajeta_texfmt_is_half(format)) {
+                // Emulate binary16 storage precision (round-trip through f16) so
+                // the CPU path matches the device's half rounding.
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = cajeta_f16_to_f32(cajeta_f32_to_f16(src[i]));
             } else {
                 memcpy(t->data, src, texels * sizeof(float));
             }
