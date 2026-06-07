@@ -27,6 +27,7 @@ namespace cajeta {
     map<string, MethodPtr> CajetaModule::methods;
     map<string, CajetaModulePtr> CajetaModule::strutureToModule;
     CajetaModulePtr CajetaModule::activeModule;
+    CajetaModulePtr CajetaModule::currentCodegenModule;
     CajetaModulePtr CajetaModule::stdlibModule;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     vector<CajetaClassPtr> CajetaModule::aspectClasses;
@@ -114,6 +115,91 @@ namespace cajeta {
         }
     }
 
+    std::string CajetaModule::remapSourcePath(const std::string& sourcePath,
+                                              const std::string& sourceRoot,
+                                              const std::string& debugPrefixMap) {
+        auto normalize = [](std::string s) {
+            std::replace(s.begin(), s.end(), '\\', '/');
+            return s;
+        };
+        std::string path = normalize(sourcePath);
+
+        // Honor an explicit --debug-prefix-map=<from>=<to>. Split on the
+        // first '=' (the GCC/Clang convention: <from> is everything before
+        // it). When the source path starts with <from>, swap that prefix.
+        if (!debugPrefixMap.empty()) {
+            auto eq = debugPrefixMap.find('=');
+            if (eq != std::string::npos) {
+                std::string from = normalize(debugPrefixMap.substr(0, eq));
+                std::string to = debugPrefixMap.substr(eq + 1);
+                if (!from.empty() && path.compare(0, from.size(), from) == 0) {
+                    return to + path.substr(from.size());
+                }
+            }
+        }
+
+        // No map (or no prefix match): fall back to a sourceRoot-relative
+        // path so the embedded name is still machine-independent when the
+        // compiler is driven directly (tests, manual invocation) without a
+        // map from the build tool.
+        std::string root = normalize(sourceRoot);
+        if (!root.empty() && path.compare(0, root.size(), root) == 0) {
+            std::string rel = path.substr(root.size());
+            if (!rel.empty() && rel[0] == '/') {
+                rel.erase(0, 1);
+            }
+            return rel;
+        }
+        return path;
+    }
+
+    void CajetaModule::canonicalizeSourceFileName() {
+        if (sourcePath.empty()) {
+            // Synthetic modules already embed the canonical name; nothing
+            // machine-specific to scrub.
+            return;
+        }
+        llvmModule->setSourceFileName(
+            remapSourcePath(sourcePath, sourceRoot, compilerFlags.debugPrefixMap));
+    }
+
+    void CajetaModule::noteCrossModuleInstantiation(
+        const CajetaModulePtr& triggering, const CajetaClassPtr& inst) {
+        if (!triggering || !inst) {
+            return;
+        }
+        // Same-module instantiations travel with the module's own IR — only
+        // cross-module ones (the template is owned elsewhere, e.g. stdlib)
+        // can vanish when this module's codegen is skipped.
+        if (inst->getModule() == triggering) {
+            return;
+        }
+        triggering->instantiationObligations.insert(inst->toCanonical());
+    }
+
+    void CajetaModule::writeObligationsSidecar() const {
+        // Path mirrors the emitted IR: swap the .ll suffix for .obligations.
+        std::string path = archiveRoot + archivePath;
+        const std::string irExt = CAJETA_IR_EXTENSION; // ".ll"
+        if (path.size() >= irExt.size() &&
+            path.compare(path.size() - irExt.size(), irExt.size(), irExt) == 0) {
+            path.replace(path.size() - irExt.size(), irExt.size(), ".obligations");
+        } else {
+            path += ".obligations";
+        }
+        std::error_code ec;
+        if (instantiationObligations.empty()) {
+            std::filesystem::remove(path, ec); // drop any stale sidecar
+            return;
+        }
+        std::filesystem::create_directories(
+            std::filesystem::path(path).parent_path(), ec);
+        std::ofstream out(path, std::ios::trunc);
+        for (const auto& name : instantiationObligations) { // std::set → sorted
+            out << name << "\n";
+        }
+    }
+
     llvm::IRBuilder<>* CajetaModule::getBuilder() const {
         return builder;
     }
@@ -196,6 +282,7 @@ namespace cajeta {
         Method::getArchive().clear();
         stdlibModule.reset();
         activeModule.reset();
+        currentCodegenModule.reset();
     }
 
     // Walks the registered aspects, identifies each advice method by
