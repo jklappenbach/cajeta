@@ -27,6 +27,7 @@ namespace cajeta {
     map<string, MethodPtr> CajetaModule::methods;
     map<string, CajetaModulePtr> CajetaModule::strutureToModule;
     CajetaModulePtr CajetaModule::activeModule;
+    CajetaModulePtr CajetaModule::currentCodegenModule;
     CajetaModulePtr CajetaModule::stdlibModule;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     vector<CajetaClassPtr> CajetaModule::aspectClasses;
@@ -281,6 +282,7 @@ namespace cajeta {
         Method::getArchive().clear();
         stdlibModule.reset();
         activeModule.reset();
+        currentCodegenModule.reset();
     }
 
     // Walks the registered aspects, identifies each advice method by

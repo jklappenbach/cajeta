@@ -75,6 +75,23 @@ namespace cajeta {
     }
 
     CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
+        CajetaClassPtr result = instantiateInternal(std::move(args));
+        // Incremental compilation (Phase 2/3): if this produced a genuine
+        // instantiation (a different object than the template `this` — not a
+        // non-template passthrough or placeholder short-circuit) and it's
+        // owned by another module, record it as an obligation of whatever
+        // module's codegen triggered us. noteCrossModuleInstantiation no-ops
+        // outside codegen (currentCodegenModule null) and for same-module
+        // instantiations. This is the single choke point through which every
+        // class-template instantiation flows. (cajeta-docs/IncrementalCompilation.md.)
+        if (result && result.get() != this) {
+            CajetaModule::noteCrossModuleInstantiation(
+                CajetaModule::getCurrentCodegenModule(), result);
+        }
+        return result;
+    }
+
+    CajetaClassPtr CajetaClass::instantiateInternal(vector<CajetaTypePtr> args) {
         // Non-templates pass through unchanged. Lets callers do
         // `cls->instantiate(args)` without guarding on isTemplate themselves.
         if (!isTemplate()) {

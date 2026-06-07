@@ -1025,6 +1025,22 @@ namespace cajeta {
     }
 
     void Method::generateCode() {
+        // Incremental compilation (Phase 2/3): mark this method's module as
+        // the active codegen frame for the duration of body lowering, so the
+        // template-instantiation choke point can attribute any cross-module
+        // instantiation it triggers to the right module. RAII restores the
+        // previous frame on every exit path (including the early returns
+        // below) and nests correctly when codegen of one method drives
+        // codegen of another.
+        struct CodegenFrame {
+            CajetaModulePtr prev;
+            explicit CodegenFrame(const CajetaModulePtr& m)
+                : prev(CajetaModule::getCurrentCodegenModule()) {
+                CajetaModule::setCurrentCodegenModule(m);
+            }
+            ~CodegenFrame() { CajetaModule::setCurrentCodegenModule(prev); }
+        } codegenFrame(module);
+
         // [heap-optional-return] lint fires before the abstract /
         // method-template early-returns: the body is still walkable on
         // template declarations and the warning is independent of LLVM
