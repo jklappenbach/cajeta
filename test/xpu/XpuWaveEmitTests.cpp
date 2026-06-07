@@ -557,16 +557,14 @@ TEST(XpuWaveEmitTests, amdgpuLowersLaneIdToMbcnt) {
     EXPECT_NE(ir.find("llvm.amdgcn.mbcnt.hi"), std::string::npos) << ir;
 }
 
-// DISABLED 2026-06-02: this test hangs the suite indefinitely. The
-// `llvm::sys::ExecuteAndWait(spirv-val, ...)` call below has no timeout,
-// so a stuck validator subprocess (or non-terminating SPIR-V on the
-// emitted module under some lowerings) wedges ctest until the runner is
-// killed externally. Disabling so the suite completes; the XPU session
-// working in parallel should pick this up and either (a) wrap the
-// validator call in a bounded-wait helper, or (b) fix the SPIR-V lane-id
-// lowering so spirv-val terminates promptly on the emitted bytes.
-// Restore by removing the `DISABLED_` prefix once root cause is fixed.
-TEST(XpuWaveEmitTests, DISABLED_spirvLowersLaneIdToSubgroupInvocationAndValidates) {
+// Re-enabled 2026-06-07: the SPIR-V lane-id lowering now terminates promptly
+// under spirv-val (the wave/subgroup-invocation lowering done in the XPU
+// session fixed the non-terminating-bytes case), and the test passes in ~4.5s.
+// Was DISABLED 2026-06-02 because the unbounded `ExecuteAndWait(spirv-val, ...)`
+// below could wedge ctest indefinitely; that failure mode is additionally
+// contained now that cajeta_tests.sh runs each test in its own process under a
+// per-test timeout, so a stuck validator is killed rather than hanging the run.
+TEST(XpuWaveEmitTests, spirvLowersLaneIdToSubgroupInvocationAndValidates) {
     Compiler compiler;
     auto k = compileLaneKernel(compiler);
     ASSERT_NE(k, nullptr);
