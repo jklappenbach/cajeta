@@ -315,7 +315,10 @@ public:
         llvm::Value* rgba = b.CreateIntrinsic(
             v4f, llvm::Intrinsic::spv_resource_samplelevel,
             {texHandle, samplerHandle, coord, lod, offset});
-        return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
+        // Return the full <4 x float> RGBA — Texture2D.sample is typed
+        // Vector<float32,4>; the caller selects a channel with .r/.x. (R32f
+        // images keep the value in lane 0; the bridge stops discarding the rest.)
+        return rgba;
     }
 
     // Image2D.store(x, y, value) → a single OpImageWrite, native via the fork

@@ -159,7 +159,17 @@ public:
         llvm::Function* tex = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_tex_unified_2d_v4f32_f32);
         llvm::Value* rgba = b.CreateCall(tex, {texHandle, u, v}, "tex.rgba");
-        return b.CreateExtractValue(rgba, {0}, "tex.sample");
+        // The unified tex intrinsic returns a {f32,f32,f32,f32} struct; repack
+        // it as a <4 x float> so Texture2D.sample yields a Vector<float32,4>
+        // (the caller selects a channel with .r/.x).
+        llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* vec = llvm::PoisonValue::get(v4f);
+        for (unsigned i = 0; i < 4; ++i)
+            vec = b.CreateInsertElement(
+                vec, b.CreateExtractValue(rgba, {i}), uint64_t(i),
+                i == 3 ? "tex.sample" : "");
+        return vec;
     }
 
     // Shader clock: the 64-bit SM clock (clock64) — the NVIDIA analogue of

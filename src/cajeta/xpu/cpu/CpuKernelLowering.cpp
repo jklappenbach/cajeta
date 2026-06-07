@@ -153,8 +153,17 @@ public:
             m.getOrInsertFunction("__cajeta_xpu_cpu_tex_sample", fnTy);
         if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
             f->setDoesNotThrow();
-        return b.CreateCall(callee, {texHandle, filterMode, addressMode, u, v},
-                            "tex.sample");
+        // The C sampler returns the single R channel (v1 textures are R32f).
+        // Widen it to a <4 x float> so Texture2D.sample yields a
+        // Vector<float32,4>: (r, 0, 0, 0). Lane 0 (.r/.x) is the sampled value;
+        // the other channels are not contractual until multi-channel formats
+        // (B3) — the caller reads .r/.x today.
+        llvm::Value* r =
+            b.CreateCall(callee, {texHandle, filterMode, addressMode, u, v},
+                         "tex.r");
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* rgba = llvm::ConstantAggregateZero::get(v4f);
+        return b.CreateInsertElement(rgba, r, uint64_t(0), "tex.sample");
     }
 
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime

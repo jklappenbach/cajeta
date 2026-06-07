@@ -288,7 +288,7 @@ TEST(XpuHipDispatchDeviceTests, textureSampleRoutesToHipOnDevice) {
         "                              Buffer<float32> us, Buffer<float32> vs,\n"
         "                              Buffer<float32> out, uint32 n) {\n"
         "        uint32 i = Thread.globalIdX();\n"
-        "        if (i < n) { out[i] = tex.sample(s, us[i], vs[i]); }\n"
+        "        if (i < n) { Vector<float32,4> c = tex.sample(s, us[i], vs[i]); out[i] = c.x; }\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        uint32 w = 2;\n"
