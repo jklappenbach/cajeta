@@ -141,7 +141,9 @@ public:
             m.getOrInsertFunction("__ockl_image_sample_2D", fnTy);
         llvm::Value* rgba = b.CreateCall(s, {texHandle, sampPtr, coord},
                                          "tex.sample.rgba");
-        return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
+        // Return the full <4 x float> RGBA — Texture2D.sample is typed
+        // Vector<float32,4>; the caller picks a channel with .r/.x.
+        return rgba;
     }
 
     // (Shader clock uses the base default: llvm.readcyclecounter, which the

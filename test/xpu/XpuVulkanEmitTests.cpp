@@ -340,7 +340,7 @@ TEST(XpuVulkanEmitTests, lowersTextureSampleToSpirv) {
         "                                 Buffer<float32> out, uint32 n) {\n"
         "        uint32 i = Thread.globalIdX();\n"
         "        if (i < n) {\n"
-        "            out[i] = tex.sample(s, 0.5, 0.5);\n"
+        "            Vector<float32,4> c = tex.sample(s, 0.5, 0.5); out[i] = c.x;\n"
         "        }\n"
         "    }\n"
         "}\n";

@@ -200,7 +200,7 @@ const char* kTextureSampleSource =
     "    public static void sampleTex(Texture2D tex, Sampler s,\n"
     "                                 Buffer<float32> out, uint32 n) {\n"
     "        uint32 i = Thread.globalIdX();\n"
-    "        if (i < n) { out[i] = tex.sample(s, 0.5, 0.5); }\n"
+    "        if (i < n) { Vector<float32,4> c = tex.sample(s, 0.5, 0.5); out[i] = c.x; }\n"
     "    }\n"
     "}\n";
 } // namespace

@@ -75,16 +75,21 @@ public final class Texture2D {
 
     /**
      * Device-only intrinsic: sample this texture at normalized coordinates
-     * (u, v) in [0, 1] through `s`, returning the filtered texel value. Lowered
-     * at the call site inside an @Kernel / @Device function to the backend's
-     * image-sample op (Vulkan OpImageSampleExplicitLod via
-     * llvm.spv.resource.samplelevel, AMD llvm.amdgcn.image.sample.2d, NVPTX
+     * (u, v) in [0, 1] through `s`, returning the filtered RGBA texel — the
+     * four channels the hardware image-sample op produces natively. Read a
+     * single channel with `.r`/`.x` (or a swizzle). v1 textures are single
+     * channel (R32f), so the sampled value lands in `.r`/`.x`; the other
+     * channels are not contractual until multi-channel formats land (B3).
+     * Lowered at the call site inside an @Kernel / @Device function to the
+     * backend's image-sample op (Vulkan OpImageSampleExplicitLod via
+     * llvm.spv.resource.samplelevel, AMD __ockl_image_sample_2D, NVPTX
      * llvm.nvvm.tex, or CPU bilinear emulation). The body here is a resolution
      * placeholder — it is never emitted as a real call. Sampling on the host
      * (outside a kernel) is unsupported.
      */
-    public float32 sample(Sampler s, float32 u, float32 v) {
-        return 0.0f;
+    public Vector<float32, 4> sample(Sampler s, float32 u, float32 v) {
+        Vector<float32, 4> result = stack Vector<float32, 4>(0.0f, 0.0f, 0.0f, 0.0f);
+        return result;
     }
 
     // Device-image primitives. Instance @Native methods (the Buffer convention):
