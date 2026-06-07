@@ -12,7 +12,8 @@ Testing
 generated/
 *.gch
 *.tokens
-
+test-quality/
+__pycache__/
 # Cajeta compiler output (per-source artifacts from cajetac)
 *.cja
 *.ll
