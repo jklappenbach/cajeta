@@ -3509,6 +3509,13 @@ namespace cajeta {
                     auto instantiated = dynamic_pointer_cast<CajetaClass>(
                         streamKlass->instantiate({elemType}));
                     if (instantiated) {
+                        // Incremental compilation (Phase 2): this module's
+                        // codegen just drove ArrayStream<elem> into stdlib —
+                        // record the cross-module obligation so a future
+                        // incremental build can replay it if this module is
+                        // skipped. (cajeta-docs/IncrementalCompilation.md.)
+                        CajetaModule::noteCrossModuleInstantiation(
+                            module, instantiated);
                         auto& llvmCtx = *module->getLlvmContext();
                         llvm::Type* structTy = instantiated->getLlvmType();
                         const llvm::DataLayout& dl =

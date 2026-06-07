@@ -162,6 +162,43 @@ namespace cajeta {
             remapSourcePath(sourcePath, sourceRoot, compilerFlags.debugPrefixMap));
     }
 
+    void CajetaModule::noteCrossModuleInstantiation(
+        const CajetaModulePtr& triggering, const CajetaClassPtr& inst) {
+        if (!triggering || !inst) {
+            return;
+        }
+        // Same-module instantiations travel with the module's own IR — only
+        // cross-module ones (the template is owned elsewhere, e.g. stdlib)
+        // can vanish when this module's codegen is skipped.
+        if (inst->getModule() == triggering) {
+            return;
+        }
+        triggering->instantiationObligations.insert(inst->toCanonical());
+    }
+
+    void CajetaModule::writeObligationsSidecar() const {
+        // Path mirrors the emitted IR: swap the .ll suffix for .obligations.
+        std::string path = archiveRoot + archivePath;
+        const std::string irExt = CAJETA_IR_EXTENSION; // ".ll"
+        if (path.size() >= irExt.size() &&
+            path.compare(path.size() - irExt.size(), irExt.size(), irExt) == 0) {
+            path.replace(path.size() - irExt.size(), irExt.size(), ".obligations");
+        } else {
+            path += ".obligations";
+        }
+        std::error_code ec;
+        if (instantiationObligations.empty()) {
+            std::filesystem::remove(path, ec); // drop any stale sidecar
+            return;
+        }
+        std::filesystem::create_directories(
+            std::filesystem::path(path).parent_path(), ec);
+        std::ofstream out(path, std::ios::trunc);
+        for (const auto& name : instantiationObligations) { // std::set → sorted
+            out << name << "\n";
+        }
+    }
+
     llvm::IRBuilder<>* CajetaModule::getBuilder() const {
         return builder;
     }
