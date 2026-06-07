@@ -519,6 +519,10 @@ namespace cajeta {
             targetMachine);
         // Propagate compiler-level flags so codegen for this module respects them.
         module->setFlags(flags);
+        // Reproducible builds: now that flags (with --debug-prefix-map) are
+        // set, scrub the absolute source path the constructor embedded so the
+        // emitted IR is byte-identical across hosts.
+        module->canonicalizeSourceFileName();
         return module;
     }
 
