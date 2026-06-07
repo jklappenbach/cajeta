@@ -72,6 +72,22 @@ namespace cajeta {
     }
 
     MethodPtr Method::instantiateMethodTemplate(std::vector<CajetaTypePtr> args) {
+        MethodPtr inst = instantiateMethodTemplateInternal(std::move(args));
+        // Incremental compilation (Phase 3): record the instantiation as an
+        // obligation of whichever module's codegen triggered us. The capture
+        // sits in this wrapper — not the internal body — so it also fires when
+        // the internal returns a cached instance (a second call site requesting
+        // the same specialization during codegen). noteCrossModuleMethodInstantiation
+        // no-ops outside codegen (currentCodegenModule null) and for same-module
+        // instantiations. Mirrors the CajetaClass::instantiate choke point.
+        if (inst) {
+            CajetaModule::noteCrossModuleMethodInstantiation(
+                CajetaModule::getCurrentCodegenModule(), inst);
+        }
+        return inst;
+    }
+
+    MethodPtr Method::instantiateMethodTemplateInternal(std::vector<CajetaTypePtr> args) {
         if (!isMethodTemplate()) {
             throw Exception(
                 "instantiateMethodTemplate invoked on non-template method "

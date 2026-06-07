@@ -177,6 +177,25 @@ namespace cajeta {
         triggering->instantiationObligations.insert(inst->toCanonical());
     }
 
+    void CajetaModule::noteCrossModuleMethodInstantiation(
+        const CajetaModulePtr& triggering, const MethodPtr& inst) {
+        if (!triggering || !inst) {
+            return;
+        }
+        // The instantiated method's codegen lands in its own module (the host
+        // class's module — the template's declaring module, e.g. stdlib). Only
+        // a cross-module landing can vanish when `triggering`'s codegen is
+        // skipped; a same-module instantiation travels with this module's IR.
+        if (inst->getModule() == triggering) {
+            return;
+        }
+        // getMapKey(false) embeds the host-class canonical, method name,
+        // value-param signature, and method-type-arg suffix — unique,
+        // deterministic, and reconcilable at replay. The `::` separator marks
+        // it as a method (vs. a `<…>`-only class) obligation.
+        triggering->instantiationObligations.insert(inst->getMapKey(false));
+    }
+
     void CajetaModule::writeObligationsSidecar() const {
         // Path mirrors the emitted IR: swap the .ll suffix for .obligations.
         std::string path = archiveRoot + archivePath;

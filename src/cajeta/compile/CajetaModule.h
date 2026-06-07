@@ -545,6 +545,16 @@ namespace cajeta {
         // No-op when same-module or either arg is null.
         static void noteCrossModuleInstantiation(
             const CajetaModulePtr& triggering, const CajetaClassPtr& inst);
+        // Method-template twin of noteCrossModuleInstantiation. A method-
+        // template instantiation (e.g. `Stream<int32>.map<int32>`) lands its
+        // body in the HOST class's module via addMethod, separate from any
+        // class-template instantiation — so replaying the class obligation
+        // does NOT re-create it. Records `inst->getMapKey(false)` (which
+        // carries `::`, distinguishing it from a class obligation) on
+        // `triggering` IFF the host module differs. No-op when same-module or
+        // either arg is null. See cajeta-docs/IncrementalCompilation.md.
+        static void noteCrossModuleMethodInstantiation(
+            const CajetaModulePtr& triggering, const MethodPtr& inst);
         // Write this module's obligations to a sidecar next to its emitted IR
         // (`<archiveRoot><archivePath:.ll→.obligations>`), one sorted
         // canonical name per line. No-op (and removes any stale sidecar) when
