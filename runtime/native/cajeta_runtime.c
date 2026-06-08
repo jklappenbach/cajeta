@@ -6107,7 +6107,8 @@ static int cajeta_xpu_cuda_ready(void) {
 // ROCm headers (they're not on the default include path and carry C++), so the
 // few structs hipCreateTextureObject needs are mirrored here with byte-exact
 // layout. Enum values match driver_types.h / texture_types.h.
-enum { CAJ_HIP_CHANNEL_UNSIGNED = 1 };  // hipChannelFormatKindUnsigned (UNORM store)
+enum { CAJ_HIP_CHANNEL_SIGNED = 0 };    // hipChannelFormatKindSigned (R32I store)
+enum { CAJ_HIP_CHANNEL_UNSIGNED = 1 };  // hipChannelFormatKindUnsigned (UNORM / R32UI store)
 enum { CAJ_HIP_CHANNEL_FLOAT = 2 };     // hipChannelFormatKindFloat
 enum { CAJ_HIP_RES_ARRAY = 0 };         // hipResourceTypeArray
 enum { CAJ_HIP_ADDR_WRAP = 0, CAJ_HIP_ADDR_CLAMP = 1 };  // hipTextureAddressMode
@@ -6186,10 +6187,15 @@ struct cajeta_hip_tex { void* array; uint32_t w, h; int32_t format; };
 #define CAJ_TEXFMT_RGBA32F     3
 #define CAJ_TEXFMT_R16F        4
 #define CAJ_TEXFMT_RGBA16F     5
+#define CAJ_TEXFMT_R32I        6   // 1ch 32-bit signed int   — fetch-only (raw, no convert)
+#define CAJ_TEXFMT_R32UI       7   // 1ch 32-bit unsigned int — fetch-only
+#define CAJ_TEXFMT_RGBA32I     8   // 4ch 32-bit signed int   — fetch-only
+#define CAJ_TEXFMT_RGBA32UI    9   // 4ch 32-bit unsigned int — fetch-only
 
 static inline int cajeta_texfmt_channels(int32_t fmt) {
     return (fmt == CAJ_TEXFMT_RGBA8_UNORM || fmt == CAJ_TEXFMT_RGBA32F ||
-            fmt == CAJ_TEXFMT_RGBA16F) ? 4 : 1;
+            fmt == CAJ_TEXFMT_RGBA16F     || fmt == CAJ_TEXFMT_RGBA32I ||
+            fmt == CAJ_TEXFMT_RGBA32UI) ? 4 : 1;
 }
 static inline int cajeta_texfmt_is_unorm(int32_t fmt) {
     return fmt == CAJ_TEXFMT_R8_UNORM || fmt == CAJ_TEXFMT_RGBA8_UNORM;
@@ -6198,7 +6204,17 @@ static inline int cajeta_texfmt_is_unorm(int32_t fmt) {
 static inline int cajeta_texfmt_is_half(int32_t fmt) {
     return fmt == CAJ_TEXFMT_R16F || fmt == CAJ_TEXFMT_RGBA16F;
 }
-// Bytes per channel in device storage (UNORM = 1, half = 2, float = 4).
+// Raw 32-bit integer storage formats (signed or unsigned) — stored and fetched
+// verbatim (no normalization / float convert); fetch-only (no hardware filter).
+static inline int cajeta_texfmt_is_integer(int32_t fmt) {
+    return fmt == CAJ_TEXFMT_R32I  || fmt == CAJ_TEXFMT_R32UI ||
+           fmt == CAJ_TEXFMT_RGBA32I || fmt == CAJ_TEXFMT_RGBA32UI;
+}
+// True for the unsigned integer formats (HIP channel-kind / VK *_UINT select).
+static inline int cajeta_texfmt_is_unsigned(int32_t fmt) {
+    return fmt == CAJ_TEXFMT_R32UI || fmt == CAJ_TEXFMT_RGBA32UI;
+}
+// Bytes per channel in device storage (UNORM = 1, half = 2, float/int = 4).
 static inline size_t cajeta_texfmt_channel_bytes(int32_t fmt) {
     if (cajeta_texfmt_is_unorm(fmt)) return 1u;
     if (cajeta_texfmt_is_half(fmt))  return 2u;
@@ -6997,6 +7013,10 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
             case CAJ_TEXFMT_RGBA32F:     vkfmt = VK_FORMAT_R32G32B32A32_SFLOAT; break;
             case CAJ_TEXFMT_R16F:        vkfmt = VK_FORMAT_R16_SFLOAT;          break;
             case CAJ_TEXFMT_RGBA16F:     vkfmt = VK_FORMAT_R16G16B16A16_SFLOAT; break;
+            case CAJ_TEXFMT_R32I:        vkfmt = VK_FORMAT_R32_SINT;            break;
+            case CAJ_TEXFMT_R32UI:       vkfmt = VK_FORMAT_R32_UINT;            break;
+            case CAJ_TEXFMT_RGBA32I:     vkfmt = VK_FORMAT_R32G32B32A32_SINT;   break;
+            case CAJ_TEXFMT_RGBA32UI:    vkfmt = VK_FORMAT_R32G32B32A32_UINT;   break;
             case CAJ_TEXFMT_R32F: default: vkfmt = VK_FORMAT_R32_SFLOAT;        break;
         }
     }
@@ -8474,8 +8494,13 @@ static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h, int32_t format) 
     if (channels == 4) { cd.y = bits; cd.z = bits; cd.w = bits; }
     // UNORM stores unsigned bytes (read back normalized to [0,1] via the texobj's
     // NormalizedFloat read mode); float/half store raw floats (16- or 32-bit) read
-    // element-typed — both are the Float channel kind.
-    cd.f = cajeta_texfmt_is_unorm(format) ? CAJ_HIP_CHANNEL_UNSIGNED
+    // element-typed (Float channel kind); raw 32-bit integer formats store
+    // signed/unsigned ints, read element-typed (the texobj readMode below is
+    // Element, so image_load returns the raw integer bits — bitcast on the device).
+    cd.f = cajeta_texfmt_is_integer(format)
+               ? (cajeta_texfmt_is_unsigned(format) ? CAJ_HIP_CHANNEL_UNSIGNED
+                                                     : CAJ_HIP_CHANNEL_SIGNED)
+         : cajeta_texfmt_is_unorm(format) ? CAJ_HIP_CHANNEL_UNSIGNED
                                           : CAJ_HIP_CHANNEL_FLOAT;
     void* array = NULL;
     if (g_xpu_hip.hipMallocArray(&array, &cd, w, h, 0) != 0 || !array) return 0;
@@ -8801,6 +8826,29 @@ caj_v4f __cajeta_xpu_cpu_tex_fetch_rgba(void* texp, int32_t x, int32_t y) {
     int cx = x < 0 ? 0 : (x >= W ? W - 1 : x);
     int cy = y < 0 ? 0 : (y >= H ? H - 1 : y);
     return cajeta_cpu_texel(t, cx, cy);
+}
+
+// Integer texelFetch — the lowering of `tex.fetch(x, y)` on an integer-format
+// Texture2D<int32|uint32> (raw R32I/RGBA32I/…). The CPU store holds the raw
+// 32-bit integer bits verbatim (the upload's memcpy branch copies them into the
+// float-typed t->data unchanged — 4 bytes/channel either way), so reinterpret
+// t->data as int32 and read directly. No decode/filter; missing channels default
+// G/B = 0, A = 1 — the GPU integer-texture channel expansion, matching the float
+// fetch's convention. Returns <4 x i32>; uint32 textures use the same bits (the
+// signedness is a Cajeta-type distinction, identical at the bit level).
+typedef int32_t caj_v4i __attribute__((vector_size(16)));
+caj_v4i __cajeta_xpu_cpu_tex_fetch_rgba_i32(void* texp, int32_t x, int32_t y) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
+    caj_v4i zero = { 0, 0, 0, 1 };
+    if (!t || !t->data || t->w == 0 || t->h == 0) return zero;
+    int W = (int) t->w, H = (int) t->h;
+    int cx = x < 0 ? 0 : (x >= W ? W - 1 : x);
+    int cy = y < 0 ? 0 : (y >= H ? H - 1 : y);
+    const int32_t* p = (const int32_t*) t->data +
+                       ((size_t) cy * t->w + (size_t) cx) * t->channels;
+    caj_v4i c = { 0, 0, 0, 1 };
+    for (int i = 0; i < t->channels; ++i) c[i] = p[i];
+    return c;
 }
 
 // --- Launch + module registration -------------------------------------------

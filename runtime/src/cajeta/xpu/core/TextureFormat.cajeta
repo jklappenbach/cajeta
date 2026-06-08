@@ -18,13 +18,20 @@ package cajeta.xpu.core;
  * UNORM formats (quantized to bytes on store) or any range for the float
  * formats; the runtime owns the float → storage encoding.
  *
+ * **Raw-integer formats** (`R32I`/`R32UI`/`RGBA32I`/`RGBA32UI`) store 32-bit
+ * signed/unsigned integers with **no** normalization or float conversion — the
+ * texel read back IS the stored integer. They are **fetch-only**: the hardware
+ * texture sampler cannot filter integer texels, so a `Texture2D<int32>` /
+ * `Texture2D<uint32>` (the integer formats) supports `fetch` but not `sample`.
+ * The texel type parameter `T` on `Texture2D<T>` selects whether a texture is
+ * float- or integer-valued; pair the integer formats with `T = int32`/`uint32`.
+ *
  * **Ordinal values are the stable native contract** — the
  * `__cajeta_xpu_texture_*` intrinsics (see
  * [`runtime/native/cajeta_runtime.c`](../../../native/cajeta_runtime.c)) switch
  * on them to pick the per-backend image format (`VK_FORMAT_*`, HIP
  * `hipChannelFormatDesc`, CPU storage). Do **not** reorder without updating that
- * C side. Raw-integer (non-normalized, int-returning) textures are a separate
- * `fetch` surface and are intentionally not in this enum.
+ * C side.
  */
 public enum TextureFormat {
     R32F,         // 0 — 1 channel, 32-bit float           (VK_FORMAT_R32_SFLOAT)
@@ -32,5 +39,9 @@ public enum TextureFormat {
     RGBA8_UNORM,  // 2 — 4 channel, 8-bit normalized [0,1]  (VK_FORMAT_R8G8B8A8_UNORM)
     RGBA32F,      // 3 — 4 channel, 32-bit float            (VK_FORMAT_R32G32B32A32_SFLOAT)
     R16F,         // 4 — 1 channel, 16-bit half float       (VK_FORMAT_R16_SFLOAT)
-    RGBA16F       // 5 — 4 channel, 16-bit half float       (VK_FORMAT_R16G16B16A16_SFLOAT)
+    RGBA16F,      // 5 — 4 channel, 16-bit half float       (VK_FORMAT_R16G16B16A16_SFLOAT)
+    R32I,         // 6 — 1 channel, 32-bit signed int       (VK_FORMAT_R32_SINT)    — fetch-only
+    R32UI,        // 7 — 1 channel, 32-bit unsigned int     (VK_FORMAT_R32_UINT)    — fetch-only
+    RGBA32I,      // 8 — 4 channel, 32-bit signed int       (VK_FORMAT_R32G32B32A32_SINT)  — fetch-only
+    RGBA32UI      // 9 — 4 channel, 32-bit unsigned int     (VK_FORMAT_R32G32B32A32_UINT)  — fetch-only
 }

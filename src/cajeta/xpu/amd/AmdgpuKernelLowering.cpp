@@ -155,7 +155,7 @@ public:
     // float). Returns the <4 x float> texel (Texture2D.fetch is Vector<float32,4>).
     llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                               llvm::Value* texHandle, llvm::Value* x,
-                              llvm::Value* y) override {
+                              llvm::Value* y, llvm::Type* texelTy) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
@@ -165,10 +165,20 @@ public:
         llvm::Value* coord = llvm::PoisonValue::get(v2i);
         coord = b.CreateInsertElement(coord, x, uint64_t(0));
         coord = b.CreateInsertElement(coord, y, uint64_t(1), "tex.fetch.coord");
+        // ockl exposes only a v4f32-returning 2-D image load. For an integer-format
+        // image the HW image_load is RAW (no normalization / convert on a SINT/UINT
+        // SRD), so the v4f32 result holds the verbatim 32-bit integer bits — bitcast
+        // it to <4 x i32> to recover the integers. There is no int-returning ockl
+        // image-load symbol, and this matches the SPIR-V/CPU paths bit-for-bit.
         auto* fnTy = llvm::FunctionType::get(v4f, {p4, v2i}, false);
         llvm::FunctionCallee s =
             m.getOrInsertFunction("__ockl_image_load_2D", fnTy);
-        return b.CreateCall(s, {texHandle, coord}, "tex.fetch.rgba");
+        llvm::Value* rgba = b.CreateCall(s, {texHandle, coord}, "tex.fetch.rgba");
+        if (texelTy && texelTy->isIntegerTy()) {
+            auto* v4i = llvm::FixedVectorType::get(i32, 4);
+            return b.CreateBitCast(rgba, v4i, "tex.fetch.i32");
+        }
+        return rgba;
     }
 
     // (Shader clock uses the base default: llvm.readcyclecounter, which the

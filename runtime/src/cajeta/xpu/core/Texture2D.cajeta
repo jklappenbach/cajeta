@@ -97,11 +97,14 @@ public final class Texture2D<T = float32> {
 
     /**
      * Host -> device transfer of `width`*`height` row-major texels, supplied as
-     * channel-interleaved float32 (R, or R,G,B,A per texel — `count` =
-     * width*height*channels(format)). For UNORM formats the floats are in [0, 1]
-     * and quantized to bytes on store; for float formats they are stored as-is.
+     * channel-interleaved `T` values (R, or R,G,B,A per texel — `count` =
+     * width*height*channels(format)). For the default float texture (`T =
+     * float32`): UNORM formats take floats in [0, 1] (quantized to bytes on
+     * store), float/half formats store them as-is. For an integer texture (`T =
+     * int32`/`uint32` with a raw-integer format) the host supplies the exact
+     * integer texels, stored verbatim.
      */
-    public void upload(float32[] host) {
+    public void upload(T[] host) {
         this.deviceUpload(this.deviceHandle, host, this.width, this.height,
                           this.format);
     }
@@ -159,7 +162,7 @@ public final class Texture2D<T = float32> {
     private int64 deviceAlloc(uint32 width, uint32 height, int32 format);
 
     @Native("__cajeta_xpu_texture_upload")
-    private void deviceUpload(int64 handle, float32[] host, uint32 width, uint32 height,
+    private void deviceUpload(int64 handle, T[] host, uint32 width, uint32 height,
                              int32 format);
 
     @Native("__cajeta_xpu_texture_free")

@@ -464,6 +464,105 @@ TEST(XpuVulkanEmitTests, lowersTextureFetchToSpirv) {
     }
 }
 
+// B3 Step 2b: integer texelFetch. A Texture2D<int32> binds an INTEGER sampled
+// image (spirv.Image sampled-type i32) and OpImageFetch yields a <4 x i32> texel
+// — the integer-image path, distinct from the float fetch above (no convert).
+TEST(XpuVulkanEmitTests, lowersIntTextureFetchToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void fetchTex(Texture2D<int32> tex,\n"
+        "                                Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<int32,4> c = tex.fetch(i, 0); out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "fetchTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_texfetch_int_vulkan_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    llvm::Function* fn = lowerKernel(k, irModule);
+    ASSERT_NE(fn, nullptr);
+
+    std::string ir = printModule(irModule);
+    // Integer fetch: the load.level result is <4 x i32> (vs <4 x float> for the
+    // float texture), proving the texel type threaded through to the seam.
+    EXPECT_NE(ir.find("llvm.spv.resource.load.level"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("<4 x i32>"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_texfetch_int_vulkan_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpImageFetch"), std::string::npos) << text;
+    EXPECT_EQ(text.find("OpTypeSampler"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_texfetch_int_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the integer texture-fetch module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
+// B3 Step 2b: integer textures are FETCH-ONLY. Lowering a kernel that calls
+// .sample() on a Texture2D<int32> throws (XPU-N01) — the hardware texture sampler
+// cannot filter integer texels, so this is rejected at the call site, steering
+// the user to fetch(). The float-only-sample contract, enforced at compile time.
+TEST(XpuVulkanEmitTests, integerTextureSampleRejected) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void sampleTex(Texture2D<int32> tex, Sampler s,\n"
+        "                                 Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<int32,4> c = tex.sample(s, 0.0f, 0.0f); out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "sampleTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_int_sample_reject", ctx);
+    configureDeviceModule(m, *tm);
+    // The .sample() call on an integer texture is rejected during kernel lowering.
+    EXPECT_ANY_THROW(lowerKernel(k, m));
+}
+
 // Writable images: Image2D.store(x, y, value) binds a STORAGE_IMAGE descriptor
 // and lowers to a single OpImageWrite (the cajeta-spirv llvm.spv.resource.store.2d
 // intrinsic). The image declares the R32f known format (matching the runtime

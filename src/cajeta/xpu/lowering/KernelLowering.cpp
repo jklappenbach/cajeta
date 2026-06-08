@@ -298,8 +298,11 @@ public:
                 accelHandles[p.name] = v;
             } else if (p.isTexture) {
                 // Texture2D handle (Item 8): kept as the materialized backend
-                // value (a ptr on CPU); read only by `tex.sample(...)`.
+                // value (a ptr on CPU); read by `tex.sample(...)`/`tex.fetch(...)`.
+                // Also remember the texel scalar T so fetch builds the right
+                // result vector and sample can reject an integer texture.
                 textureHandles[p.name] = v;
+                textureTexelTypes[p.name] = p.type;
             } else if (p.isImage) {
                 // Image2D handle (writable images): the materialized STORAGE_IMAGE
                 // descriptor; written only by `img.store(x, y, v)`.
@@ -382,6 +385,8 @@ private:
     // handle per name. A `tex.sample(s, u, v)` looks the texture up here and the
     // sampler arg up in samplerHandles, then hands both to target.sampleTexture.
     std::map<std::string, llvm::Value*> textureHandles;  // texture name -> handle
+    std::map<std::string, llvm::Type*> textureTexelTypes; // texture name -> texel
+                                                          // scalar T (float / i32)
     std::map<std::string, llvm::Value*> imageHandles;    // image name -> storage-image handle
     std::map<std::string, llvm::Value*> samplerHandles;  // sampler name -> descriptor
     // AccelerationStructure kernel params and RayQuery body locals (cajeta-gpu
@@ -2102,6 +2107,18 @@ private:
                 const auto& args = mc->getParameters();
                 if (args.size() != 3)
                     unsupported("Texture2D.sample expects (Sampler, u, v)");
+                // Sampling is float-only: the hardware texture unit cannot filter
+                // integer texels, so a Texture2D<int32>/<uint32> (the raw-integer
+                // formats) is fetch-only. Reject .sample() on it with a clear
+                // diagnostic — fetch is the supported read for integer textures.
+                if (auto tt = textureTexelTypes.find(recv);
+                        tt != textureTexelTypes.end() &&
+                        tt->second && tt->second->isIntegerTy()) {
+                    throw cajeta::Exception(
+                        "Texture2D<int>.sample is not supported — integer textures "
+                        "cannot be filtered by the hardware sampler; use fetch(x, y) "
+                        "for an exact integer-texel read", "XPU-N01");
+                }
                 llvm::Value* samp = resolveSamplerArg(args[0].expression);
                 llvm::Value* u = toFloat(lowerExpr(args[1].expression));
                 llvm::Value* v = toFloat(lowerExpr(args[2].expression));
@@ -2120,7 +2137,14 @@ private:
                     unsupported("Texture2D.fetch expects (x, y)");
                 llvm::Value* x = toI32(lowerExpr(args[0].expression));
                 llvm::Value* y = toI32(lowerExpr(args[1].expression));
-                return target.fetchTexture(builder, mod, th->second, x, y);
+                // Texel scalar T (float by default; i32 for integer textures) —
+                // the backend builds a <4 x T> result from it.
+                llvm::Type* texelTy = llvm::Type::getFloatTy(mod.getContext());
+                if (auto tt = textureTexelTypes.find(recv);
+                        tt != textureTexelTypes.end() && tt->second)
+                    texelTy = tt->second;
+                return target.fetchTexture(builder, mod, th->second, x, y,
+                                           texelTy);
             }
         }
         // Image2D.store(x, y, value) (writable images). `recv` names a storage-
@@ -3299,7 +3323,8 @@ llvm::Value* LoweringTarget::fetchTexture(llvm::IRBuilderBase& /*b*/,
                                           llvm::Module& /*m*/,
                                           llvm::Value* /*texHandle*/,
                                           llvm::Value* /*x*/,
-                                          llvm::Value* /*y*/) {
+                                          llvm::Value* /*y*/,
+                                          llvm::Type* /*texelTy*/) {
     // Only backends with an unfiltered image read override this (CPU exact
     // texel read, Vulkan OpImageFetch, AMD __ockl_image_load_2D). The default
     // rejects a tex.fetch() in a kernel lowered for a backend (e.g. NVPTX in v1)
@@ -3540,12 +3565,26 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         if (p->getName() == "this") continue;
         CajetaTypePtr t = p->getType();
         if (isTextureType(t)) {
-            // Texture2D (Item 8): a sampled-image handle. `type` is the texel
-            // scalar (f32); the backend carries the handle itself (a ptr on CPU,
-            // a descriptor on Vulkan). isTexture routes createKernel/
-            // materializeParam and the `.sample()` lowering.
+            // Texture2D<T> (Item 8): a sampled-image handle. `type` is the texel
+            // scalar T, read off the type argument exactly like Buffer<T> — float
+            // for the float/UNORM/half formats (the default T = float32), i32 for
+            // the raw-integer formats (T = int32/uint32; `isSigned` distinguishes
+            // them). The backend carries the handle itself (a ptr on CPU, a
+            // descriptor on Vulkan). isTexture routes createKernel/
+            // materializeParam and the `.sample()`/`.fetch()` lowering; the texel
+            // type flows into the Vulkan image binding and fetchTexture's result.
+            llvm::Type* texel = nullptr;
+            bool texelSigned = true;
+            if (auto cls = std::dynamic_pointer_cast<CajetaClass>(t)) {
+                if (!cls->getTypeArguments().empty()) {
+                    CajetaTypePtr arg0 = cls->getTypeArguments()[0];
+                    texel = deviceScalarType(arg0, ctx);
+                    texelSigned = typeIsSigned(arg0);
+                }
+            }
+            if (!texel) texel = llvm::Type::getFloatTy(ctx);  // default texel (float32)
             params.push_back({p->getName(), /*isBuffer=*/false,
-                              llvm::Type::getFloatTy(ctx), /*isSigned=*/true,
+                              texel, texelSigned,
                               /*isTexture=*/true, /*isSampler=*/false});
         } else if (isImageType(t)) {
             // Image2D (writable images): the write twin of Texture2D — a 2-D

@@ -74,19 +74,28 @@ Hamilton product, vector rotation, `nlerp`/`slerp`.
 
 ### 3. Textures & images
 
-- `Texture2D` + `Sampler` — 2-D, normalized coords, nearest/bilinear, clamp/wrap; the
-  `LoweringTarget::sampleTexture` seam lowers `tex.sample(s, u, v)` per backend (CPU C
-  bilinear, VK `OpImageSampleExplicitLod`, AMD `__ockl_image_sample_2D`, NV `tex.2d`).
+- `Texture2D<T = float32>` + `Sampler` — 2-D, normalized coords, nearest/bilinear,
+  clamp/wrap; the `LoweringTarget::sampleTexture` seam lowers `tex.sample(s, u, v)` per
+  backend (CPU C bilinear, VK `OpImageSampleExplicitLod`, AMD `__ockl_image_sample_2D`,
+  NV `tex.2d`). The type parameter `T` is the texel scalar (defaults to `float32`, so
+  every bare `Texture2D` is `Texture2D<float32>`); `sample` returns `Vector<T, 4>`.
   Multi-channel formats via `TextureFormat` (R32F/R8_UNORM/RGBA8_UNORM/RGBA32F/R16F/
-  RGBA16F); `sample` returns `Vector<float32, 4>` regardless.
+  RGBA16F). **`sample` is float-only** — integer textures (below) can't be filtered.
 - **texelFetch** — `tex.fetch(x, y)` reads the texel at the **exact integer** coordinate,
   unfiltered and with **no Sampler** (LOD 0); the unfiltered twin of `sample`, for data
   textures / lookup tables. The `LoweringTarget::fetchTexture` seam lowers per backend:
   VK `OpImageFetch` (via the `llvm.spv.resource.load.level` intrinsic — the sampled-image
   `Sampled=1` branch picks Fetch, distinct from `Image2D`'s storage `OpImageRead`; the
   mandatory `Lod` operand is supplied), AMD `__ockl_image_load_2D`, CPU exact texel read.
-  Returns `Vector<float32, 4>`; CPU/Vulkan/AMD on-device. (NV emit-deferred;
-  integer-returning fetch is a follow-on.)
+  Returns `Vector<T, 4>`; CPU/Vulkan/AMD on-device. (NV emit-deferred.)
+- **Integer textures** — `Texture2D<int32>` / `Texture2D<uint32>` with a raw-integer
+  `TextureFormat` (`R32I`/`R32UI`/`RGBA32I`/`RGBA32UI`) store exact integers (no
+  normalization). They are **fetch-only** — `fetch` returns `Vector<int32|uint32, 4>`
+  verbatim; `sample` is a compile error (the hardware sampler can't filter integer
+  texels). Same `fetchTexture` seam, threading the texel type `T`: VK emits an integer
+  `OpImageFetch` (i32-sampled image), CPU reads raw i32, AMD reuses the only ockl 2-D
+  image load (v4f32) and **bitcasts** its raw result to `<4 x i32>` (the HW `image_load`
+  is raw on a non-normalized integer SRD). CPU/Vulkan/AMD on-device, bit-exact.
 - **Writable / storage images** — `Image2D` `imageStore`/`imageRead`, the writable twin
   of `Texture2D` and the bridge toward graphics. See
   [`WritableImages.md`](WritableImages.md). (Storage-image read/write needs a *known*
