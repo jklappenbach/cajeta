@@ -1,7 +1,7 @@
 //
 // MultiClassing Phase 3 — shared-diamond layout dedup (v1).
 //
-// Design: cajeta-docs/stdlib/MultiClassing.md § P-4 + § Phase 3.
+// Design: docs/stdlib/MultiClassing.md § P-4 + § Phase 3.
 //
 // Scope of v1: when D extends B, C and both B, C extend A, D's
 // layout emits A's content EXACTLY ONCE. The single shared A lives

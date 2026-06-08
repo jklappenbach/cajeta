@@ -5,7 +5,7 @@ The cajeta documentation generator — JavaDoc in capability, **plus Markdown**,
 comments in cajeta source into a hierarchical, browsable website organised by
 package.
 
-Authoritative spec: [`cajeta-docs/Documentation.md`](../../cajeta-docs/Documentation.md).
+Authoritative spec: [`docs/Documentation.md`](../../docs/Documentation.md).
 Build plan / status: [`plans/docs/cajetadoc-tool.md`](../../plans/docs/cajetadoc-tool.md).
 
 ## Two ways to run it, one engine

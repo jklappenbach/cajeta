@@ -11,7 +11,7 @@ package cajeta.coverage;
  *            entered? Catches dead-code patterns line/branch miss.
  *
  * Stored as a tag enum (the cajeta enum lowering — see
- * `cajeta-docs/stdlib/Enums.md`) so it compares as an int32 at probe
+ * `docs/stdlib/Enums.md`) so it compares as an int32 at probe
  * lookup time without string interning.
  */
 public enum Grain {

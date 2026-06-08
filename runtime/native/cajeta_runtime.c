@@ -465,7 +465,7 @@ static void __cajeta_live_set_add_locked(void* p) {
                 "Subsequent allocations won't be tracked; field auto-drop "
                 "may double-free aliased addresses past this point. "
                 "Raise CAJETA_LIVE_SET_CAPACITY in runtime/native/cajeta_runtime.c "
-                "(see cajeta-docs/FieldOwnership.md).\n",
+                "(see docs/FieldOwnership.md).\n",
                 __cajeta_live_set_count, CAJETA_LIVE_SET_CAPACITY);
             warned = 1;
         }
@@ -2663,7 +2663,7 @@ void __cajeta_lock_destroy(void* p) {
 // --- Threading sync primitives: condition variable (R7-B) ----------------
 //
 // Fiber-aware condvar, paired with a Lock handle. `Mutex<T>.withLockWhen`
-// (cajeta-docs/stdlib/Thread.md § Mutex) builds on it: wait-for-predicate
+// (docs/stdlib/Concurrency.md § Mutex) builds on it: wait-for-predicate
 // inside a held lock, with notify on every mutation. A single condvar with
 // notify-all + per-waiter predicate re-check is the v1 strategy (spurious
 // wakeups are possible but harmless — each waiter re-tests its own
@@ -2773,7 +2773,7 @@ void __cajeta_condvar_destroy(void* cvp) {
 
 // --- Threading sync primitives: reader-writer lock (R7-D) ----------------
 //
-// Fiber-aware RW lock backing `RwLock<T>` (cajeta-docs/stdlib/Thread.md §
+// Fiber-aware RW lock backing `RwLock<T>` (docs/stdlib/Concurrency.md §
 // RwLock). Many readers may hold it concurrently; a writer holds it
 // exclusively. Writer-preference: a reader blocks while any writer is
 // waiting, so a steady stream of readers can't starve a writer.
@@ -2963,7 +2963,7 @@ void __cajeta_rwlock_destroy(void* p) {
 
 // --- atomic<T> backing storage (R8 Slice 1) ---------------------------------
 //
-// Atomic<T> classes (cajeta.threading.AtomicInt32 / AtomicInt64) own a heap-
+// Atomic<T> classes (cajeta.concurrent.AtomicInt32 / AtomicInt64) own a heap-
 // allocated word that the compiler-emitted inline LLVM atomic instructions
 // (atomicrmw / cmpxchg / load atomic / store atomic) operate on directly. The
 // runtime's role is just the alloc/free of the underlying cell — the
@@ -3048,7 +3048,7 @@ struct cajeta_drop_entry {
 };
 
 // Debug-mode variant — extends the base entry with source-position
-// tags (cajeta-docs/CompilerModes.md § Source-tagged drop-chain
+// tags (docs/CompilerModes.md § Source-tagged drop-chain
 // entries). The first four fields share the base entry's layout, so
 // a debug entry passed to pop_run (which only touches obj/drop_fn/
 // prev/active) works without a separate pop helper.
@@ -4365,7 +4365,7 @@ double __cajeta_random(void) {
 // indices clamp; result is a freshly malloc'd null-terminated copy.
 //
 // Note: cajeta.lang.String (the class form) substring is view-based
-// per the never-drop rule (see cajeta-docs/stdlib/lang/String.md §
+// per the never-drop rule (see docs/stdlib/lang/String.md §
 // "Substring + slicing"). This C-string variant still copies because
 // the null-terminated ABI can't express a slice (a subspan of a longer
 // string would continue to the original terminator). The class

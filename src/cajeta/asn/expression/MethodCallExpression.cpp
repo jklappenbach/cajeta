@@ -147,7 +147,7 @@ namespace cajeta {
     //
     // The optional `<typeList>` between name and '(' is Form C explicit
     // call-site type args for method-templated callees (see
-    // cajeta-docs/stdlib/MethodLevelTemplate.md). Inference is the
+    // docs/stdlib/MethodLevelTemplate.md). Inference is the
     // common case; explicit args are required only when inference
     // can't bind every type parameter (e.g. T appears only in the
     // return type).
@@ -486,7 +486,7 @@ namespace cajeta {
         // both fields, and indirect-dispatch with captures prepended to the
         // user args. Matches when the call is bare (no receiver) AND a
         // scope lookup of methodCallName yields a function-typed field.
-        // See cajeta-docs/stdlib/Lambdas.md.
+        // See docs/stdlib/Lambdas.md.
         if (children.empty() && !module->getScopeStack().isEmpty()) {
             auto scope = module->getScopeStack().peek();
             FieldPtr field = scope ? scope->getField(methodCallName) : nullptr;
@@ -760,7 +760,7 @@ namespace cajeta {
             }
         }
 
-        // ----- Bare class-construction syntax rejected (cajeta-docs/stdlib/UnifiedClasses.md P1b) -----
+        // ----- Bare class-construction syntax rejected (docs/stdlib/UnifiedClasses.md P1b) -----
         // `MyClass(args)` without an explicit `heap` / `stack` / `new`
         // prefix is ambiguous (parses as a methodCall) and now rejected in
         // v2. Catches the case where the "method name" resolves to a class
@@ -1997,7 +1997,7 @@ namespace cajeta {
                 // `acquire()` that returns a RAII guard) will wrap them
                 // once user-defined-drop-on-class machinery lands. For
                 // now Cajeta source can use them directly. See
-                // cajeta-docs/stdlib/Thread.md § Synchronization primitives.
+                // docs/stdlib/Concurrency.md § Synchronization primitives.
                 if (ns == "Cajeta" && methodCallName == "lockNew" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_new");
                     return builder->CreateCall(fn, {});
@@ -2027,7 +2027,7 @@ namespace cajeta {
                 // condvarWait(cv, lock) atomically releases `lock`, parks the
                 // fiber (or cond_waits on the main thread), and reacquires
                 // `lock` on wake. condvarNotifyAll wakes every waiter (which
-                // re-checks its own predicate). See cajeta-docs/stdlib/Thread.md.
+                // re-checks its own predicate). See docs/stdlib/Concurrency.md.
                 if (ns == "Cajeta" && methodCallName == "condvarNew" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_new");
                     return builder->CreateCall(fn, {});
@@ -2081,8 +2081,8 @@ namespace cajeta {
                 // defeat atomicity's whole purpose and block the optimizer
                 // from reasoning about ordering. All seq_cst for v1;
                 // memory-order parameterization is R8 Slice 1b.
-                // See cajeta-docs/stdlib/Thread.md and the AtomicInt32 /
-                // AtomicInt64 wrapper classes in cajeta.threading.
+                // See docs/stdlib/Concurrency.md and the AtomicInt32 /
+                // AtomicInt64 wrapper classes in cajeta.concurrent.
                 if (ns == "Cajeta" && methodCallName == "atomicI32New" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_new");
                     llvm::Value* v = loadValue(0);
@@ -2181,7 +2181,7 @@ namespace cajeta {
                 // variable ordering would force a per-op switch (collapsed
                 // only via the inliner, perf-unpredictable at -O0). So each
                 // (op, ordering) combo is its own intrinsic + class method,
-                // matching the named-method approach in cajeta.threading.
+                // matching the named-method approach in cajeta.concurrent.
                 // AtomicInt32 / AtomicInt64. The orderings shipped now are
                 // the ones the work-stealing deque (R8.2) needs; add more
                 // when a concrete consumer surfaces.
@@ -2274,7 +2274,7 @@ namespace cajeta {
                 // deadline, 0 if the deadline expired first. deadline_ns
                 // is a CLOCK_MONOTONIC absolute timestamp; compute one via
                 // currentTimeNanos() + a duration in nanos. See R9 plan
-                // and Thread.md § withTimeout for the eventual stdlib API.
+                // and Concurrency.md § withTimeout for the eventual stdlib API.
                 if (ns == "Cajeta" && methodCallName == "taskWaitTimeout"
                         && parameters.size() == 2) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_task_wait_timeout");
@@ -2291,7 +2291,7 @@ namespace cajeta {
                     return builder->CreateCall(fn, {});
                 }
                 // R9.3 — surface the Task<T>'s done-flag address as a raw
-                // pointer so user-level withTimeout (cajeta.threading.Tasks)
+                // pointer so user-level withTimeout (cajeta.concurrent.Tasks)
                 // can feed it to taskWaitTimeout. The Task is heap-allocated
                 // and the call arg is the pointer to it; we GEP at the
                 // DONE_FIELD_INDEX defined in CajetaTask.h. The argument
@@ -2366,7 +2366,7 @@ namespace cajeta {
                 // catches the cancellation throw and stores it on
                 // task->exception; a subsequent `await` will re-raise,
                 // letting callers wrap it in try/catch. Used by
-                // cajeta.threading.Tasks.withTimeout to terminate slow
+                // cajeta.concurrent.Tasks.withTimeout to terminate slow
                 // bodies on deadline rather than letting them run to
                 // natural completion.
                 if (ns == "Cajeta" && methodCallName == "taskCancel"
@@ -4072,7 +4072,7 @@ namespace cajeta {
                 }
             }
 
-            // wildcard-materialize-in-loop (cajeta-docs/LintRules.md).
+            // wildcard-materialize-in-loop (docs/LintRules.md).
             // An element-producing call on a wildcard-typed receiver
             // inside a loop body forces template-relative vtable
             // dispatch on every iteration — the inliner can't see
@@ -4082,7 +4082,7 @@ namespace cajeta {
             // set (next / get). Suppressible per enclosing method via
             // @SuppressLint("wildcard-materialize-in-loop").
             //
-            // wildcard-crosses-hot-boundary (cajeta-docs/LintRules.md).
+            // wildcard-crosses-hot-boundary (docs/LintRules.md).
             // A wildcard-return call inside a loop pays a downcast at
             // every receive site that wants the concrete type, and
             // the call itself can't be inline-specialized. Trigger:
@@ -4164,7 +4164,7 @@ namespace cajeta {
         }
         bool isSuperCall = (superLhs != nullptr);
 
-        // MultiClassing Phase 3 v3 (cajeta-docs/stdlib/MultiClassing.md
+        // MultiClassing Phase 3 v3 (docs/stdlib/MultiClassing.md
         // § P-4): inherited-method re-adjustment for diamond. When the
         // user writes `super<C>.method()` and `method` is INHERITED from
         // an ancestor A (not declared on C itself), the dispatch lands
@@ -4372,7 +4372,7 @@ namespace cajeta {
         //
         // The cajeta-side bodies are stubs; we lower calls to direct
         // runtime helpers via the receiver's `fd` field. Matches the
-        // spec in cajeta-docs/stdlib/io/file/{FileReader,FileWriter,
+        // spec in docs/stdlib/io/file/{FileReader,FileWriter,
         // File}.md.
         if (thisValue && targetClass && targetClass->getQName()) {
             const std::string canonical = targetClass->getQName()->toCanonical();
@@ -5718,7 +5718,7 @@ namespace cajeta {
             // IdentifierExpression of a class-typed local whose Field
             // carries an active drop entry. Primitives, fresh ctors,
             // null literals, and locals without drop entries naturally
-            // pass through. See cajeta-docs/stdlib/OwnershipTransfer.md.
+            // pass through. See docs/stdlib/OwnershipTransfer.md.
             bool callFloatingX = true;
             for (auto& e : entries) {
                 if (e.label.empty()) { callFloatingX = false; break; }
@@ -5757,7 +5757,7 @@ namespace cajeta {
                             "write `#" + idExpr->getTextValue() + "` at the call site "
                             "to surrender ownership of the source local, or pass a "
                             "fresh `heap T(...)` / `stack T(...)` construction. "
-                            "See cajeta-docs/stdlib/OwnershipTransfer.md.",
+                            "See docs/stdlib/OwnershipTransfer.md.",
                         "CAJETA_ERROR_TRANSFER_REQUIRED");
                 }
             }

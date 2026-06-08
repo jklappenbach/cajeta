@@ -49,7 +49,7 @@ std::string makeSource(const std::string& body) {
            "import cajeta.net.TcpListener;\n"
            "import cajeta.net.AsyncReader;\n"
            "import cajeta.net.AsyncWriter;\n"
-           "import cajeta.threading.Tasks;\n"
+           "import cajeta.concurrent.Tasks;\n"
            "public final class NetAsyncEcho {\n"
            "    public static int32 run() {\n"
            "        () -> int32 body = () -> {\n"

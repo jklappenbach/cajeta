@@ -7,7 +7,7 @@ package cajeta.math;
  *
  * HYBRID value type. This declared class is the user-facing, Pythonic operator
  * surface — `a + b`, `a * b` (matrix multiply!), `m[r][c]`, `m.transpose()` —
- * declared per cajeta-docs/OperatorOverloading.md. But a concrete `Matrix<...>`
+ * declared per docs/OperatorOverloading.md. But a concrete `Matrix<...>`
  * type REFERENCE resolves to the compiler's flat row-major representation (a
  * `<R*C x T>`, element (r,c) at lane r*C+c — CajetaMatrix), and the operators
  * are lowered as register-native vector intrinsics in BOTH the host expression
@@ -31,7 +31,7 @@ package cajeta.math;
  *   - comparisons (`== != < <= > >=`) : a **per-lane mask** `Matrix<boolean,R,C>`
  *     (the value-type comparison rule — NOT a reduced boolean). Whole-matrix
  *     equality is `(a == b).all()`; blend with `mask.select(a, b)`. A scalar RHS
- *     broadcasts. See cajeta-docs/MaskSelect.md.
+ *     broadcasts. See docs/MaskSelect.md.
  *
  * The matrix-multiply and matrix*vector forms are shape/K-generic and so are
  * handled purely by codegen interception (they cannot be expressed as a single
@@ -54,7 +54,7 @@ package cajeta.math;
  * ```
  *
  * Runs identically on CPU, Vulkan, and AMD — see samples/Tour (LinearAlgebraDemo
- * + the XPU `linalgk` kernel) and cajeta-docs/MatrixDeterminantInverse.md.
+ * + the XPU `linalgk` kernel) and docs/MatrixDeterminantInverse.md.
  */
 public final class Matrix<T, uint32 R, uint32 C> {
     // Placeholder field. A Matrix reference resolves to the flat CajetaMatrix

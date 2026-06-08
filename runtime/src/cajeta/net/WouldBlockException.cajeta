@@ -9,7 +9,7 @@ import cajeta.lang.String;
  *
  * ## Surfaced as a value, not thrown, on the hot path
  *
- * Per the spec ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md)
+ * Per the spec ([`docs/Net.md`](../../../../../docs/Net.md)
  * §Sockets) the blocking socket primitives and the reactor (NET-3)
  * surface "would block" as a **distinct return value**, never an
  * exception, so the readiness loop costs no throw. This exception
@@ -17,7 +17,7 @@ import cajeta.lang.String;
  * the throwing variant (and so the taxonomy is complete + every
  * `kind` ordinal has a corresponding subtype); the `*Async` forms
  * and the reactor never raise it. See
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class WouldBlockException extends NetException {
     public WouldBlockException(String message) {

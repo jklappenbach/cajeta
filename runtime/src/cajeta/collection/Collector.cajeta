@@ -18,14 +18,14 @@ package cajeta.collection;
  * The class-level template parameters keep T (element type) and R
  * (result type) independent so the same `Stream` can feed any
  * compatible Collector. See `Collectors` for the standard built-in
- * collectors, and cajeta-docs/stdlib/Streams.md § collect for the
+ * collectors, and docs/stdlib/Streams.md § collect for the
  * design.
  *
  * Implementation note: the accumulator field is a function-typed
  * field (`(R, T) -> R`), invoked directly from `Stream`'s
  * `collect<R>` via `this.fold<R>(c.supplier(), c.accumulator)`. All
  * three callables are method-level-templated and monomorphize per
- * (T, R) tuple — see cajeta-docs/stdlib/MethodLevelTemplate.md.
+ * (T, R) tuple — see docs/stdlib/MethodLevelTemplate.md.
  *
  * ## Usage
  *

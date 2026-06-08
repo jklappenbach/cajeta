@@ -10,7 +10,7 @@
 //   - `shared-dependencies`  — version-constraint table merged into
 //                              every member's dependency view.
 //
-// See cajeta-docs/BuildTool.md "Workspaces" for the spec,
+// See docs/BuildTool.md "Workspaces" for the spec,
 // plans/buildtool/build-tool-plan.md Phase 12 for context.
 //
 // The workspace surfaces three uses to callers:

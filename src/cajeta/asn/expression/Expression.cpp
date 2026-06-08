@@ -88,7 +88,7 @@ namespace cajeta {
             // branch above.
             result = make_shared<MethodCallExpression>(ctx->methodCall(), token);
         } else if (ctx->HEAP()) {
-            // Unified-class allocation prefix (cajeta-docs/stdlib/UnifiedClasses.md). Phase 2a:
+            // Unified-class allocation prefix (docs/stdlib/UnifiedClasses.md). Phase 2a:
             // both forms codegen.
             // - `heap MyClass(args)` routes through NewExpression (today's
             //   `NEW creator` path; malloc + ctor).
@@ -104,7 +104,7 @@ namespace cajeta {
                 result = agg;
             }
         } else if (ctx->STACK()) {
-            // Unified-class allocation prefix (cajeta-docs/stdlib/UnifiedClasses.md). Phase 2a:
+            // Unified-class allocation prefix (docs/stdlib/UnifiedClasses.md). Phase 2a:
             // both forms now codegen.
             // - `stack MyClass { ... }` routes through aggregate-init
             //   (today's bare aggregate-init path; stack-allocated body).
@@ -767,7 +767,7 @@ namespace cajeta {
     // method taking 0 params; for `- + ! ~` (non-mutating), the lookup
     // is for a STATIC method taking 1 param. Returns the call's result
     // when dispatched, nullptr to fall through to the primitive path
-    // (cajeta-docs/OperatorOverloading.md §§3-4 + §8 dispatch table).
+    // (docs/OperatorOverloading.md §§3-4 + §8 dispatch table).
     static llvm::Value* tryDispatchUnaryClassOperator(
             CajetaModulePtr module, AbstractSyntaxNodePtr operandAst,
             llvm::Value* operandVal, const char* opSym, bool mutating) {
@@ -1594,7 +1594,7 @@ namespace cajeta {
 
     // Collect the names of outer-scope identifiers transferred into the
     // closure via `#name` in the lambda body. Rule 3 from
-    // cajeta-docs/stdlib/Lambdas.md: ownership moves into the closure and the
+    // docs/stdlib/Lambdas.md: ownership moves into the closure and the
     // outer name becomes unreadable afterwards. Uses the same statement-
     // shape recursion as collectFreeIdentifiers so block bodies pick up
     // `#name` anywhere it appears (return value, initializer, condition,
@@ -1679,7 +1679,7 @@ namespace cajeta {
         }
     }
 
-    // Rule 5 from cajeta-docs/stdlib/Lambdas.md: writing to a primitive that was
+    // Rule 5 from docs/stdlib/Lambdas.md: writing to a primitive that was
     // captured by value is a compile error — the lambda is mutating a
     // private copy, so the write would silently fail to propagate. The
     // user must use a mutable wrapper (Cell-style) to opt into shared
@@ -3495,8 +3495,8 @@ namespace cajeta {
     //     typed scope field — local, parameter, or capture): trampoline
     //     loads the closure record at fn+captures (L3-3 ABI) and
     //     indirect-dispatches. Lets `withTimeout(d, () -> compute())`
-    //     work — see cajeta-docs/stdlib/Thread.md § withTimeout, and the
-    //     #-transfer lifetime invariant in cajeta-docs/stdlib/AsyncStatus.md
+    //     work — see docs/stdlib/Concurrency.md § withTimeout, and the
+    //     #-transfer lifetime invariant in docs/stdlib/AsyncStatus.md
     //     § Plan: Task<T>.
     //   - Instance-method dispatch (`spawn obj.method()`) is still
     //     deferred — it needs the receiver captured into the ctx struct
@@ -3913,12 +3913,12 @@ namespace cajeta {
         // array-local drops already use.
         //
         // detachMode skips this — `detach` deliberately opts out of
-        // scope-anchored cleanup (cajeta-docs/stdlib/Thread.md § detach semantics).
+        // scope-anchored cleanup (docs/stdlib/Concurrency.md § detach semantics).
         // The Task wrapper leaks for the process lifetime; the body's
         // own locals still drop normally on the carrier-side chain.
         if (!detachMode) {
             // Pick the push variant + entry size based on the CompilerFlags
-            // (cajeta-docs/CompilerModes.md). Mirrors the LVD path's choice
+            // (docs/CompilerModes.md). Mirrors the LVD path's choice
             // so the chain has uniformly-shaped entries within a build.
             bool debugTags = module->getFlags().sourceTags;
             llvm::Function* dropPush = module->getRuntimeFunction(
@@ -4034,7 +4034,7 @@ namespace cajeta {
         resolvedType = CajetaType::of("void");
     }
 
-    // cajeta-docs/stdlib/Thread.md § detach semantics requires every argument to the
+    // docs/stdlib/Concurrency.md § detach semantics requires every argument to the
     // detached call to be either a #-transferred value, a primitive,
     // or a fresh allocator (NewExpression — auto-promoted in transfer
     // position per MemoryModel.md § Borrow / transfer rules). A bare
@@ -4095,7 +4095,7 @@ namespace cajeta {
         // Reuse SpawnExpression's full lowering — same trampoline, same
         // fiber enqueue, same Task struct. Detach-mode flag skips
         // scope_register and drop_push so the task escapes scope-anchored
-        // cleanup. See cajeta-docs/stdlib/Thread.md § detach semantics for the
+        // cleanup. See docs/stdlib/Concurrency.md § detach semantics for the
         // implementation-vs-spawn delta. Passing nullptr for the token
         // is fine: SpawnExpression doesn't retain it beyond extracting
         // source-position metadata for diagnostics, which here would

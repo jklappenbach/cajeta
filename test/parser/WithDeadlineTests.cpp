@@ -1,5 +1,5 @@
 //
-// cajeta.threading.Tasks.withDeadline — absolute-instant sibling of
+// cajeta.concurrent.Tasks.withDeadline — absolute-instant sibling of
 // withTimeout. Same Optional<R> reporting + cooperative cancellation;
 // differs only in how the deadline is expressed (an absolute monotonic-
 // clock nanos value rather than a Duration offset from now).
@@ -31,7 +31,7 @@ TEST(WithDeadlineTests, fastTaskReturnsPresentValue) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class D {\n"
         "    public static async int32 compute() { return 7; }\n"
         "    public static int32 run() {\n"
@@ -55,7 +55,7 @@ TEST(WithDeadlineTests, pastDeadlineReportsEmpty) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class D {\n"
         "    public static async int32 slowCompute() {\n"
         "        int32 acc = 0;\n"

@@ -87,9 +87,9 @@ TEST(EndianAlignTests, bigEndianStorageVisibleAsReversedBytes) {
 
 TEST(EndianAlignTests, hostEndianStructUnchanged) {
     // @HostEndian → host order → no bswap → buffer bytes match the
-    // little-endian encoding of the value on x86_64. The annotation is
-    // now required at the declaration (S3.4) — silent host-endian
-    // assumption is no longer permitted; the user has to opt in.
+    // little-endian encoding of the value on x86_64. @HostEndian is also the
+    // default for an unannotated view; see
+    // ViewEndiannessDefaultTests.missingAnnotationDefaultsToHost.
     auto src =
         "package test;\n"
         "@HostEndian\n"

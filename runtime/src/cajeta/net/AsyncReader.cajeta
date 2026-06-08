@@ -5,7 +5,7 @@ import cajeta.net.TcpStream;
 import cajeta.net.ByteChannel;
 import cajeta.net.RingBuffer;
 import cajeta.net.NetException;
-import cajeta.threading.AsyncIterator;
+import cajeta.concurrent.AsyncIterator;
 
 /**
  * Buffered **async byte-stream reader** over a [`TcpStream`](TcpStream.cajeta)
@@ -13,9 +13,9 @@ import cajeta.threading.AsyncIterator;
  * read *through*: it turns the raw socket's would-block-driven
  * [`readAsync`](TcpStream.cajeta#readAsync) into a small buffered API
  * (`read`, `readExact`, `readUntil`) and an
- * [`AsyncIterator`](../threading/AsyncIterator.cajeta) of chunks for the
+ * [`AsyncIterator`](../concurrent/AsyncIterator.cajeta) of chunks for the
  * `for (chunk in reader)` consumption the spec
- * ([`cajeta-docs/Net.md`](../../../../cajeta-docs/Net.md) §The async
+ * ([`docs/Net.md`](../../../../docs/Net.md) §The async
  * model) calls "streaming by default."
  *
  * ## Why a buffer in front of the socket
@@ -403,7 +403,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * until bytes arrive — or an **empty** `Optional` once the stream is
      * exhausted (buffer drained + socket closed). After the first empty
      * result every subsequent call stays empty (terminal), satisfying the
-     * [`AsyncIterator`](../threading/AsyncIterator.cajeta) contract, so a
+     * [`AsyncIterator`](../concurrent/AsyncIterator.cajeta) contract, so a
      * `while (opt.isPresent())` drain loop terminates cleanly on peer
      * close. Each present chunk is a fresh owned array sized to the bytes
      * actually read (`<= chunkSize`).

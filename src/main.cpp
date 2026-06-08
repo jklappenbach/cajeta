@@ -58,7 +58,7 @@ void printUsage(const char* progname) {
               << "  jit-run <root> <package.Class.method>   Compile + run an entry point via the JIT.\n"
               << "  dap                Debug Adapter Protocol server over stdio (for IDE debugging).\n"
               << "\n"
-              << "Mode (cajeta-docs/CompilerModes.md):\n"
+              << "Mode (docs/CompilerModes.md):\n"
               << "  --mode=debug|debug-release|release|fast|minimal\n"
               << "  --debug, --debug-release, --release, --fast, --minimal   (flavor aliases)\n"
               << "\n"
@@ -92,12 +92,12 @@ void printUsage(const char* progname) {
               << "  --profile=<name>                     Active @Profile for component gating\n"
               << "                                       (dev/test/release/...; default none).\n"
               << "\n"
-              << "Reproducible builds (cajeta-docs/BuildTool.md):\n"
+              << "Reproducible builds (docs/BuildTool.md):\n"
               << "  --source-date-epoch=<unix-ts>        Fixed build timestamp (SOURCE_DATE_EPOCH).\n"
               << "  --debug-prefix-map=<from>=<to>       Remap source paths in debug info.\n"
               << "  --seed=<hex>                         Deterministic salt for any build RNG.\n"
               << "\n"
-              << "XPU (GPU compute, cajeta-docs/CajetaXPU.md):\n"
+              << "XPU (GPU compute, docs/CajetaXPU.md):\n"
               << "  --xpu-backend=<list>                 Device backend(s) for @Kernel methods, comma-separated\n"
               << "                                       (none|nvptx|amdgpu|vulkan|cpu). Default none (host-only).\n"
               << "                                       Each embeds its kernel + registration ctor so kernel.launch(...)\n"
@@ -164,9 +164,9 @@ bool setBoolFlag(const char* flagName, const std::string& value, bool& out) {
 
 int main(int argc, const char* argv[]) {
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
-    // the archive-management surface (cajeta-docs/ArchiveManagement.md);
+    // the archive-management surface (docs/ArchiveManagement.md);
     // `cajeta info` (and eventually `build`, `test`, ...) routes to
-    // the build-tool surface (cajeta-docs/BuildTool.md). Anything not
+    // the build-tool surface (docs/BuildTool.md). Anything not
     // claimed by either falls through to the legacy compile flow below.
     if (argc >= 2 && std::string(argv[1]) == "archive") {
         return cajeta::dispatchArchive(argc, argv);
@@ -185,7 +185,7 @@ int main(int argc, const char* argv[]) {
         return cajeta::jit::dispatchJitRun(argc, argv);
     }
 
-    // `cajeta dap` — Debug Adapter Protocol server over stdio (cajeta-docs/
+    // `cajeta dap` — Debug Adapter Protocol server over stdio (docs/
     // Debugging.md). The IDE plugin spawns this and drives the debug session.
     if (argc >= 2 && std::string(argv[1]) == "dap") {
         cajeta::dap::DapServer server;
@@ -193,7 +193,7 @@ int main(int argc, const char* argv[]) {
     }
 
     // `cajeta doc <source-root> [...]` — documentation generator
-    // (cajeta-docs/Documentation.md). Forwards to the shared cajetadoc engine
+    // (docs/Documentation.md). Forwards to the shared cajetadoc engine
     // (tools/cajetadoc/), the same code as the standalone `cajetadoc` binary.
     if (argc >= 2 && std::string(argv[1]) == "doc") {
         return cajeta::doc::dispatchDoc(argc, argv);

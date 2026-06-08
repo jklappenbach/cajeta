@@ -4,7 +4,7 @@
 // The NET-4.4 backpressure mechanism
 // (runtime/src/cajeta/net/ConnectionLimiter.cajeta + ConnectionLimits.cajeta
 // + LoadShedPolicy.cajeta) is a piece of *pure admission logic* riding on a
-// primitive that already exists (cajeta.threading.AtomicInt32): a
+// primitive that already exists (cajeta.concurrent.AtomicInt32): a
 // semaphore-style permit pool, lock-free over a single atomic, that bounds
 // the live (admitted-but-not-released) connection count to a configured cap
 // — common to both server accept models (Model A fiber-per-connection,
@@ -33,7 +33,7 @@
 // can't be JIT-run deterministically yet. But the admission LOGIC the
 // limiter encodes is platform-independent and deterministically pinnable on
 // its own — exactly what this header models, one level down, with
-// std::atomic standing in for cajeta.threading.AtomicInt32. When the
+// std::atomic standing in for cajeta.concurrent.AtomicInt32. When the
 // in-scheduler JIT `ServerTests.connectionCapShedsExcess` /
 // `slowClientDoesNotStallOthers` acceptances land, this stays the native
 // analog + the contract these fixtures freeze.

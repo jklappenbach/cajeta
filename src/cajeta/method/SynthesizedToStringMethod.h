@@ -1,6 +1,6 @@
 // Compiler-synthesized `String toString()` for classes annotated `@ToString`.
 //
-// v1 surface (cajeta-docs/stdlib/Annotations.md § @ToString):
+// v1 surface (docs/stdlib/Annotations.md § @ToString):
 //   - TO_STRING_PROPERTIES (default): `ClassName(field1=val,field2=val,...)`
 //   - TO_STRING_JSON: `{"field1":val,"field2":val,...}` — String values
 //     get JSON-quoted + escaped via `__cajeta_json_quote_str`; numeric /

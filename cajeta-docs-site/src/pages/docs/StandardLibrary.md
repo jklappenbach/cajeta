@@ -35,7 +35,7 @@ implementation lands incrementally as separate `.cajeta` files under
   has its own design doc; not because reflection itself is out of scope.
 - A regex engine in this pass — defer to a later library.
 - Async primitives beyond `Thread.sleep` / `Fiber.sleep` — full reactor lives
-  in cajeta-docs/ThreadModel.md.
+  in docs/ThreadModel.md.
 
 ## Package layout
 
@@ -2361,7 +2361,7 @@ distinct capability from filesystem or network access.
 
 ## cajeta.thread
 
-Documented separately in cajeta-docs/ThreadModel.md. Stub here:
+Documented separately in docs/ThreadModel.md. Stub here:
 
 ```cajeta
 public final class Fiber {

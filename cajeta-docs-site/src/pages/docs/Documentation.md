@@ -598,7 +598,7 @@ side is invisible to it regardless.
 - **Multi-version doc sites.** Single output directory per
   build, or scaffold a `/v1.0/`, `/v1.1/` tree that
   accumulates across builds? Lean: per-build single tree; a
-  separate `cajeta-docs-aggregator` tool handles multi-version
+  separate `docs-aggregator` tool handles multi-version
   sites for projects that need them.
 - **Doc-comment validation strictness.** How aggressively should
   `cajeta test --check-docs` enforce? Required tags by visibility

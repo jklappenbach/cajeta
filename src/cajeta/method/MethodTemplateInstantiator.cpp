@@ -1,6 +1,6 @@
 //
 // Method::instantiateMethodTemplate(args) — per-call monomorphization of a
-// method-templated declaration into a concrete Method (cajeta-docs/stdlib/
+// method-templated declaration into a concrete Method (docs/stdlib/
 // MethodLevelTemplate.md). Mirrors the class-template TemplateInstantiator
 // flow: synthesize a re-parseable snippet from the captured method source +
 // the module's package / imports, parse with a fresh ANTLR pipeline, push

@@ -4,7 +4,7 @@ import cajeta.lang.String;
 import cajeta.net.ConnectionLimits;
 import cajeta.net.LoadShedPolicy;
 import cajeta.net.TooManyConnectionsException;
-import cajeta.threading.AtomicInt32;
+import cajeta.concurrent.AtomicInt32;
 import cajeta.time.Duration;
 
 /**
@@ -17,14 +17,14 @@ import cajeta.time.Duration;
  * (admitted-but-not-released) count is therefore bounded by the cap, which
  * is the precise definition of "max concurrent connections."
  *
- * ## Why not reuse [`Semaphore`](../threading/Semaphore.cajeta)?
+ * ## Why not reuse [`Semaphore`](../concurrent/Semaphore.cajeta)?
  *
- * [`Semaphore.acquire`](../threading/Semaphore.cajeta#acquire) is
+ * [`Semaphore.acquire`](../concurrent/Semaphore.cajeta#acquire) is
  * **blocking-only** — it has no non-blocking *try* path, so it cannot
  * express the [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) load-shed policy
  * (admit-or-fail) without parking the accept loop, which is exactly what
  * `REFUSE` must avoid. This limiter is instead a **lock-free permit
- * counter** over a single [`AtomicInt32`](../threading/AtomicInt32.cajeta):
+ * counter** over a single [`AtomicInt32`](../concurrent/AtomicInt32.cajeta):
  *
  *   - [`tryAdmit`](#tryAdmit) is a `compareAndSet` decrement loop — wholly
  *     non-blocking, the heart of `REFUSE`.

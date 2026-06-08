@@ -3,7 +3,7 @@
 // fields exist, can be instantiated, fields read back. String-literal
 // codegen and method surface come in later phases.
 //
-// Per cajeta-docs/stdlib/lang/String.md § Storage model:
+// Per docs/stdlib/lang/String.md § Storage model:
 //
 //     class String {
 //         int8[] bytes;          // UTF-8 payload (owner of the bytes

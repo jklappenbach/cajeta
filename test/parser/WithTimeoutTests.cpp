@@ -1,5 +1,5 @@
 //
-// R9.3 — cajeta.threading.Tasks.withTimeout. Exercises the user-facing
+// R9.3 — cajeta.concurrent.Tasks.withTimeout. Exercises the user-facing
 // timeout wrapper end-to-end: spawn → taskDonePointer → taskWaitTimeout
 // (R9.1) → Duration deadline (R9.2) → Optional<R> return.
 //
@@ -52,7 +52,7 @@ TEST(WithTimeoutTests, fastTaskReturnsPresentValue) {
         "package test;\n"
         "import cajeta.lang.Optional;\n"
         "import cajeta.time.Duration;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class D {\n"
         "    public static async int32 compute() { return 7; }\n"
         "    public static int32 run() {\n"
@@ -103,7 +103,7 @@ TEST(WithTimeoutTests, genericFormInt32) {
         "package test;\n"
         "import cajeta.lang.Optional;\n"
         "import cajeta.time.Duration;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class D {\n"
         "    public static async int32 compute() { return 9; }\n"
         "    public static int32 run() {\n"
@@ -129,7 +129,7 @@ TEST(WithTimeoutTests, slowTaskReportsEmptyOnExpiredDeadline) {
         "package test;\n"
         "import cajeta.lang.Optional;\n"
         "import cajeta.time.Duration;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class D {\n"
         "    public static async int32 slowCompute() {\n"
         "        int32 acc = 0;\n"

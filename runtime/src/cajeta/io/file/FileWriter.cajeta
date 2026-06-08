@@ -4,7 +4,7 @@ import cajeta.lang.String;
 
 /**
  * Streaming byte writer. See
- * `cajeta-docs/stdlib/io/file/FileWriter.md`.
+ * `docs/stdlib/io/file/FileWriter.md`.
  *
  * Returned by `File``.openWrite(p, mode)`. The caller hands in
  * `(data, len)` per call; internal buffering hides OS-level

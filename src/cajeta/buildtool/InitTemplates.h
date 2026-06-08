@@ -3,7 +3,7 @@
 //
 // `samples/buildtool/<type>/` is the single source of truth: the
 // directory trees there are the worked examples documented in
-// cajeta-docs/BuildTool.md AND the byte source for what the init
+// docs/BuildTool.md AND the byte source for what the init
 // command writes. EmbedInitTemplates.cmake compiles those trees
 // into cajeta_init_embedded.cpp; this header exposes them through
 // a typed API.

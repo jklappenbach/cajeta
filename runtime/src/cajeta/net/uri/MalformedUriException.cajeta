@@ -11,7 +11,7 @@ import cajeta.lang.String;
  *
  * ## Hierarchy
  *
- * The networking spec ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md)
+ * The networking spec ([`docs/Net.md`](../../../../../docs/Net.md)
  * §Error model) places `MalformedUri` under
  * [`cajeta.net.NetException`](../NetException.cajeta) (plan item
  * **NET-6.5**), the networking peer of `cajeta.io.file.IoException`.
@@ -39,7 +39,7 @@ import cajeta.lang.String;
  * a *parse* failure, not an errno-derived socket error, so it is
  * classified to [`NetException.KIND_INVALID`](../NetException.cajeta)
  * (12) — the "invalid input" bucket (the
- * [`Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md) chart
+ * [`Errors.md`](../../../../../docs/stdlib/net/Errors.md) chart
  * maps `EINVAL` and friends here). The precise byte offset still lives
  * in `position`; `kind` is the coarse cross-subtype discriminant.
  *

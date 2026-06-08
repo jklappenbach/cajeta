@@ -410,7 +410,7 @@ TEST(StreamIntermediateTests, flatMapStreamEmptyInnerStreamsSkipped) {
 //   mapOrFallback — substitutes a fixed fallback value of type R.
 // UnrecoverableException is NOT caught (would defeat the alarm
 // contract from ErrorModel.md). See
-// cajeta-docs/stdlib/StreamParallelism.ErrorHandling.md § 3.3.
+// docs/stdlib/StreamParallelism.ErrorHandling.md § 3.3.
 // =============================================================
 
 TEST(StreamIntermediateTests, mapOrSkipDropsFailingElements) {

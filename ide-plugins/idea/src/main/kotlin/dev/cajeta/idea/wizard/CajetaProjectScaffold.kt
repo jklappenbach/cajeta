@@ -64,7 +64,7 @@ object CajetaProjectScaffold {
         //   - The `#` prefix transfers ownership into a collection.
         //   - `stream().map(...).reduce(...)` mirrors Java's streams.
         //
-        // Run with `cajeta run` (see cajeta-docs/BuildTool.md).
+        // Run with `cajeta run` (see docs/BuildTool.md).
         public final class ${p.entryClass} {
 
             public static int32 main() {

@@ -158,7 +158,7 @@ namespace cajeta {
         MethodPtr currentMethod;
         StructureMetadataPtr structureMetadata;
 
-        // Incremental compilation (cajeta-docs/IncrementalCompilation.md,
+        // Incremental compilation (docs/IncrementalCompilation.md,
         // Phase 2): the set of template instantiations this module's codegen
         // drove into ANOTHER module (typically stdlib) — e.g. a method body
         // calling `xs.stream()` instantiates `ArrayStream<int32>` into the
@@ -171,7 +171,7 @@ namespace cajeta {
 
         // Compiler-level options that codegen consults. Set on the module by the
         // Compiler at creation time (so each module produces IR consistent with the
-        // current invocation's CLI flags). The CompilerFlags struct (cajeta-docs/
+        // current invocation's CLI flags). The CompilerFlags struct (docs/
         // CompilerModes.md) is the authoritative store; getFlags() / setFlags()
         // are the new accessors. boundsCheckEnabled is a backward-compat shim.
         CompilerFlags compilerFlags = CompilerFlags::defaultsForMode(CompilerMode::Debug);
@@ -552,7 +552,7 @@ namespace cajeta {
         // does NOT re-create it. Records `inst->getMapKey(false)` (which
         // carries `::`, distinguishing it from a class obligation) on
         // `triggering` IFF the host module differs. No-op when same-module or
-        // either arg is null. See cajeta-docs/IncrementalCompilation.md.
+        // either arg is null. See docs/IncrementalCompilation.md.
         static void noteCrossModuleMethodInstantiation(
             const CajetaModulePtr& triggering, const MethodPtr& inst);
         // Write this module's obligations to a sidecar next to its emitted IR

@@ -442,7 +442,7 @@ class CajetaType : public Modifiable, public Annotatable,
         // CAJETA_WILDCARDS env var (or a test override) so the existing
         // throw at the wildcard-parse site stays the default while the
         // foundation lands. Rationale, costs, and full staging plan
-        // live in cajeta-docs/TemplateWildcard.md and todo.md.
+        // live in docs/TemplateWildcard.md and todo.md.
         static bool wildcardsEnabled();
 
         // Forces the wildcard flag on/off regardless of the env var.
@@ -500,7 +500,7 @@ class CajetaType : public Modifiable, public Annotatable,
                                           CajetaTypePtr bound);
 
         // Capture conversion projection at read positions
-        // (cajeta-docs/TemplateWildcard.md § 3 Capture identity). When
+        // (docs/TemplateWildcard.md § 3 Capture identity). When
         // an expression's static type comes back from method
         // resolution as a bounded-extends wildcard — typically the
         // return type of a method on a `Foo<? extends B>` receiver —

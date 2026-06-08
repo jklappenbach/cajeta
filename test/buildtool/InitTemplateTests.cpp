@@ -1,5 +1,5 @@
 // Regression tests for the embedded `cajeta init` archetype
-// templates (cajeta-docs/BuildTool.md "Project shapes"). These
+// templates (docs/BuildTool.md "Project shapes"). These
 // guard:
 //   - that every archetype declared in src/CMakeLists.txt actually
 //     embeds (drift between the sample tree and the CMake glob),

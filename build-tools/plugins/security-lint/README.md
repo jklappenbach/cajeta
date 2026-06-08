@@ -9,7 +9,7 @@ source tree and emits findings for:
 | Banned imports      | `import` statements matching the configured glob list.  |
 | Secret patterns     | Lines matching any of the configured regex patterns.    |
 
-The user-facing spec is `cajeta-docs/BuildTool.md` §"Plugins" /
+The user-facing spec is `docs/BuildTool.md` §"Plugins" /
 "lint task"; this directory is the implementation.
 
 ## Wiring into a project

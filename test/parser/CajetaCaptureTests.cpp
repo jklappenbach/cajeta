@@ -1,6 +1,6 @@
 // Unit tests for CajetaCapture — the per-binding-site synthetic
 // capture type that backs first-class capture conversion (see
-// cajeta-docs/CaptureConversion.md). Phase 1.1 is purely the type
+// docs/CaptureConversion.md). Phase 1.1 is purely the type
 // machinery; no behavior wiring yet. These tests pin the contract:
 //
 //   - Two captures with the same bound have distinct IDs (different

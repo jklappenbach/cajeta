@@ -1164,6 +1164,20 @@ namespace cajeta {
             for (const auto& obj : objectFiles) opt.argv.push_back(obj);
             opt.argv.push_back("-o");
             opt.argv.push_back(outPath);
+            // Dead-strip unreferenced sections. The codegen emits one section
+            // per function/global (-ffunction-sections, see the comment near
+            // the top of this file), so the linker can drop everything the
+            // entry point doesn't transitively reach — including the stdlib's
+            // OpenSSL-backed TLS natives (`__cajeta_tls_*`) when the program
+            // never touches TLS, so they don't need to be resolved or have
+            // -lssl/-lcrypto on the link line. (A program that *does* use TLS
+            // still needs those libs; that wider link set is a follow-up.)
+            // Matches what samples/*/build-bin.sh has always passed.
+#if defined(__APPLE__)
+            opt.argv.push_back("-Wl,-dead_strip");
+#else
+            opt.argv.push_back("-Wl,--gc-sections");
+#endif
             // Platform libraries the cajeta runtime references (the driver adds
             // the CRT + libc itself).
 #if defined(_WIN32)

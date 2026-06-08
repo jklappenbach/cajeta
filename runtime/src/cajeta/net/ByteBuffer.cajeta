@@ -3,7 +3,7 @@ package cajeta.net;
 /**
  * Mutable byte buffer with independent **read** and **write**
  * cursors — the unit `BufferPool` hands out and reclaims. See
- * `cajeta-docs/Net.md` § *Buffer pool*.
+ * `docs/Net.md` § *Buffer pool*.
  *
  * The layout is a classic three-region span over the backing
  * `int8[] data`:

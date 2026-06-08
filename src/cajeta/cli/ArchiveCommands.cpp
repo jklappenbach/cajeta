@@ -99,7 +99,7 @@ void printArchiveUsage() {
         "  --json                              Machine-readable JSON output.\n"
         "  --quiet, -q                         Suppress non-error output.\n"
         "\n"
-        "Spec: cajeta-docs/ArchiveManagement.md\n";
+        "Spec: docs/ArchiveManagement.md\n";
 }
 
 // ---------------------------------------------------------------- stdin / stdout helpers

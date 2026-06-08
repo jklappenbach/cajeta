@@ -306,7 +306,7 @@ namespace cajeta {
         // character literal `'c'` evaluates to int32 99, `'é'` to 233,
         // `'😀'` to 0x1F600. The 8-bit byte type has perfectly good
         // names (`int8` / `uint8`); `char` doesn't need to alias them.
-        // See cajeta-docs/stdlib/lang/String.md § `char` is a 32-bit
+        // See docs/stdlib/lang/String.md § `char` is a 32-bit
         // Unicode codepoint. Redefined 2026-05-18 (was i8).
         //
         // `uchar` is kept as a deprecated alias for `uint8` so legacy
@@ -379,7 +379,7 @@ namespace cajeta {
         // C-string spell `pointer` (or, more rigorously, the new
         // encoding-prefixed byte-array literal — task #164, L-29 in
         // Features.md — once shipped). See
-        // cajeta-docs/stdlib/lang/String.md § Memory model.
+        // docs/stdlib/lang/String.md § Memory model.
     }
 
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {
@@ -492,7 +492,7 @@ namespace cajeta {
         }
         // Function type: `(T1, T2) -> R`. Resolve each component and build
         // (or look up by canonical) a CajetaFunctionType. See
-        // cajeta-docs/stdlib/Lambdas.md. The return slot is typeTypeOrVoid so
+        // docs/stdlib/Lambdas.md. The return slot is typeTypeOrVoid so
         // `(T) -> void` is a legal function-type shape (P6.5).
         if (auto* fnt = ctx->functionType()) {
             std::vector<CajetaTypePtr> paramTypes;
@@ -790,7 +790,7 @@ namespace cajeta {
                 // structure map. Handled here — before the generic
                 // template path — so we don't need to register a fake
                 // "Task" template class just to satisfy the
-                // isTemplate() check. See cajeta-docs/AsyncStatus.md §
+                // isTemplate() check. See docs/AsyncStatus.md §
                 // Plan: Task<T> as user-typeable template.
                 if (qName->getTypeName() == "Vector"
                         && targs->typeArgument().size() == 2) {
@@ -911,7 +911,7 @@ namespace cajeta {
                             // `'?' ((EXTENDS|SUPER) typeType)?` means
                             // typeType() carries the BOUND for bounded
                             // forms (not a regular type arg). Step 6
-                            // — see cajeta-docs/TemplateWildcard.md.
+                            // — see docs/TemplateWildcard.md.
                             if (targ->QUESTION() != nullptr) {
                                 if (!CajetaType::wildcardsEnabled()) {
                                     throw "wildcard type arguments not supported in v1";

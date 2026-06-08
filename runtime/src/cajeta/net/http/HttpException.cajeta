@@ -57,7 +57,7 @@ import cajeta.lang.String;
  * root, or the `NetException` root) explicitly, or declares it in its
  * `throws` clause and propagates upward — the compiler's uncaught-throws
  * check keeps it visible. The full cross-phase chart lives in
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  *
  * ## Construction
  *

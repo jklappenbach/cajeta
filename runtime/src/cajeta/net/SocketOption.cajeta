@@ -3,7 +3,7 @@ package cajeta.net;
 /**
  * Typed **socket-option key** enum (plan item **NET-1.6**) — the
  * "typed enum keys, not raw ints" the spec mandates for the socket
- * option surface ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md)
+ * option surface ([`docs/Net.md`](../../../../../docs/Net.md)
  * §Sockets).
  *
  * ## Why an enum and not bare `setsockopt(level, optname, …)`

@@ -1,6 +1,6 @@
 // Reproducible-build determinism for the embedded source-file name.
 //
-// Incremental compilation (cajeta-docs/IncrementalCompilation.md,
+// Incremental compilation (docs/IncrementalCompilation.md,
 // plan Phase 1) trusts that the same source + flags yields a
 // byte-identical module. The module's *source file name* used to be
 // the absolute on-disk path (CajetaModule ctor), which baked a

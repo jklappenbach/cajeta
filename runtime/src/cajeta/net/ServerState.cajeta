@@ -12,7 +12,7 @@ package cajeta.net;
  * ```
  *
  * The transition is **one-way and monotonic** (the ordinals only
- * increase), so a single [`AtomicInt32`](../threading/AtomicInt32.cajeta)
+ * increase), so a single [`AtomicInt32`](../concurrent/AtomicInt32.cajeta)
  * holds the state and every transition is a `compareAndSet` from the
  * expected prior state. That gives two free invariants:
  *

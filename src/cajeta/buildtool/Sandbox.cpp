@@ -57,7 +57,7 @@ namespace cajeta::buildtool {
     nativeActionCapabilities(const std::string& actionName) {
         using C = Capability;
         // Hand-tabulated catalog. Keep in sync with
-        // cajeta-docs/BuildTool.md "Native action catalog".
+        // docs/BuildTool.md "Native action catalog".
         static const std::map<std::string, std::set<C>> table = {
             {"echo",     {}},
             {"copy",     {C::Filesystem}},

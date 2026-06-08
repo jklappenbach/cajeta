@@ -39,12 +39,12 @@ import cajeta.lang.String;
  * `WouldBlock` (ordinal 1) is a special case: on the reactor /
  * non-blocking hot path it is surfaced as a *value*, never thrown
  * (see [`WouldBlockException`](WouldBlockException.cajeta) and
- * [`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md) §Sockets).
+ * [`docs/Net.md`](../../../../../docs/Net.md) §Sockets).
  * `fromErrno` still maps it to its subtype for the rare explicit
  * throwing path, so the table is total.
  *
  * The full chart lives in
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class NetErrors {
     /**

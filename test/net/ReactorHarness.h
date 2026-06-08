@@ -2,7 +2,7 @@
 // ReactorHarness.h — NET-13.4 reactor / concurrency test harness.
 //
 // The two **reactor invariants** the whole async I/O design hangs on
-// (see `cajeta-docs/Net.md` §The reactor + the plan's NET-3 acceptance)
+// (see `docs/Net.md` §The reactor + the plan's NET-3 acceptance)
 // are subtle and easy to regress silently, so the plan calls for a
 // *focused* harness that pins them deterministically:
 //

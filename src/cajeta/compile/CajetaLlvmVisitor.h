@@ -378,7 +378,7 @@ namespace cajeta {
                 structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
 
                 // Hash / equals + != / == consistency checks
-                // (cajeta-docs/OperatorOverloading.md §7). Skipped for
+                // (docs/OperatorOverloading.md §7). Skipped for
                 // templates (whose body walk is skipped above —
                 // re-runs at instantiation time).
                 bool hasOpEq = false;
@@ -407,7 +407,7 @@ namespace cajeta {
                         "operator!= is almost always a mistake. Fix: define "
                         "operator== too, and remove operator!= unless its "
                         "behavior genuinely differs from `!(a == b)`. "
-                        "See cajeta-docs/OperatorOverloading.md §7.",
+                        "See docs/OperatorOverloading.md §7.",
                         structure->getQName()->toCanonical().c_str());
                     throw Exception(buf,
                         "CAJETA_ERROR_OPERATOR_NE_WITHOUT_EQ");
@@ -420,7 +420,7 @@ namespace cajeta {
                                  "==-equal instances with different identity "
                                  "hashes. Fix: add `@AutoHash` to the class "
                                  "to synthesize structural hash, or override "
-                                 "hash() manually. See cajeta-docs/"
+                                 "hash() manually. See docs/"
                                  "OperatorOverloading.md §7. "
                                  "[CAJETA_WARN_HASH_EQUALS_MISMATCH]\n";
                 }
@@ -1147,7 +1147,7 @@ namespace cajeta {
                 memberDeclaration->onModifier(any_cast<Modifier>(visitModifier(modifierContext)));
             }
 
-            // Method-level template post-check (cajeta-docs/stdlib/
+            // Method-level template post-check (docs/stdlib/
             // MethodLevelTemplate.md): a declaration that introduces
             // method-level type parameters MUST be declared `final` or
             // `static`. The rule surfaces the non-virtuality at the
@@ -1158,7 +1158,7 @@ namespace cajeta {
             // here so per-call monomorphization can re-parse the
             // method with substitutions pushed without needing to
             // retain ANTLR contexts.
-            // Operator-overload post-check (cajeta-docs/OperatorOverloading.md §1).
+            // Operator-overload post-check (docs/OperatorOverloading.md §1).
             // Enforces the per-category staticness + arity rules AFTER
             // the modifier walk above has stamped STATIC onto the
             // method's modifier set. Per §1:
@@ -1217,7 +1217,7 @@ namespace cajeta {
                                 "operator overloads are static — both "
                                 "operands are explicit, neither is mutated, "
                                 "the return is a fresh value. See "
-                                "cajeta-docs/OperatorOverloading.md §2-3. "
+                                "docs/OperatorOverloading.md §2-3. "
                                 "Fix: rewrite as `public static T %s (...)`.",
                                 name.c_str(), arityHint, name.c_str());
                             throw Exception(buf,
@@ -1235,7 +1235,7 @@ namespace cajeta {
                                 "Mutating unary, indexed access, and compound "
                                 "assignment operators have a privileged "
                                 "receiver — the host IS the target. See "
-                                "cajeta-docs/OperatorOverloading.md §§4-6.",
+                                "docs/OperatorOverloading.md §§4-6.",
                                 name.c_str(), expected,
                                 expected == 1 ? "" : "s");
                             throw Exception(buf,
@@ -1270,7 +1270,7 @@ namespace cajeta {
                                     "operator returning a fresh value (e.g. "
                                     "`%s` -> a static op or a method returning a "
                                     "new instance). Read-only `operator[]` is "
-                                    "allowed. See cajeta-docs/"
+                                    "allowed. See docs/"
                                     "OperatorOverloading.md and "
                                     "plans/value-type-overloading-plan.md.",
                                     enclosing->toCanonical().c_str(),
@@ -1292,7 +1292,7 @@ namespace cajeta {
                                 "'static'. Method-level templates are non-"
                                 "virtual (they occupy no vtable slot) and must "
                                 "be marked explicitly to surface that property "
-                                "at the declaration site. See cajeta-docs/"
+                                "at the declaration site. See docs/"
                                 "stdlib/MethodLevelTemplate.md. Fix: add "
                                 "'final' modifier (or 'static' if no receiver "
                                 "is needed).",
@@ -1417,7 +1417,7 @@ namespace cajeta {
         virtual std::any visitMethodDeclaration(CajetaParser::MethodDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
 
-            // Method-level templates (cajeta-docs/stdlib/MethodLevelTemplate.md):
+            // Method-level templates (docs/stdlib/MethodLevelTemplate.md):
             // capture <R, ...> if present, push a placeholder substitution so
             // formals + return type referencing R resolve cleanly during this
             // pass, then capture the body source for per-call re-parse instead
@@ -1614,7 +1614,7 @@ namespace cajeta {
         // class-drop wrapper machinery (CajetaClass::getOrCreateDropFunction)
         // picks it up unchanged. The identifier between ~ and ( must
         // match the enclosing class name, same convention as the
-        // constructor's identifier. See cajeta-docs/stdlib/MemoryModel.md §
+        // constructor's identifier. See docs/stdlib/MemoryModel.md §
         // Destructors.
         virtual std::any visitDestructorDeclaration(CajetaParser::DestructorDeclarationContext* ctx) override {
             string declaredName = ctx->identifier()->getText();
@@ -1955,7 +1955,7 @@ namespace cajeta {
 
         // Try-with-resources grammar rules removed 2026-05-20 —
         // destructors fire deterministically at scope exit, see
-        // cajeta-docs/stdlib/MemoryModel.md § "No try-with-resources".
+        // docs/stdlib/MemoryModel.md § "No try-with-resources".
 
         virtual std::any
         visitSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext* ctx) override {

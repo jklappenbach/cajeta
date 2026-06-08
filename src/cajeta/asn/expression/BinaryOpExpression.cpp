@@ -1805,7 +1805,7 @@ namespace cajeta {
             case BINARY_OP_SHIFTLEFT_EQUALS:
             case BINARY_OP_MOD_EQUALS: {
                 // Operator-overload dispatch for compound assignment on
-                // class-typed LHS (cajeta-docs/OperatorOverloading.md §6).
+                // class-typed LHS (docs/OperatorOverloading.md §6).
                 // Lookup order:
                 //   1. Explicit instance `operator+=` on LHS class —
                 //      mutates `this` in place.

@@ -346,7 +346,7 @@ public class HttpServer {
     /**
      * A fluent **builder** for an `HttpServer` (**NET-9.2**) — the
      * `HttpServer.builder().bind(addr).model(...).handler(...).serve()`
-     * surface [`cajeta-docs/Net.md` §HTTP server](../../../../../cajeta-docs/Net.md#http-server)
+     * surface [`docs/Net.md` §HTTP server](../../../../../docs/Net.md#http-server)
      * shows, minus the `.route(...)` step (the minimal router is NET-9.3 —
      * this builder carries bind + model + a single handler). Defaults: the
      * fiber-per-connection model, no address (must be set), the identity-`500`

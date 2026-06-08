@@ -7,22 +7,22 @@
 > `resources/META-INF/plugin.xml`). Two intentional caveats carry forward:
 > - **Linting** ships in **degraded mode** (regex over `cajetac` stderr) —
 >   it upgrades to structured diagnostics when the compiler grows
->   `cajeta dap`/`cajeta lsp` (see Phase 2 + `cajeta-docs/Debugging.md`).
+>   `cajeta dap`/`cajeta lsp` (see Phase 2 + `docs/Debugging.md`).
 > - **Markdown comments**: caret-following render/fold + a global Settings
 >   toggle shipped; the per-comment **gutter-icon toggle** and a
 >   menu **toggle-action** are deferred (cosmetic).
 >
 > **Current work:** [Phase 2 — Debugging](#phase-2--debugging) (breakpoints,
 > launch-in-debug, stack/variables view+edit, threads/fibers), built on the
-> `cajeta dap` Debug Adapter Protocol server per `cajeta-docs/Debugging.md`.
+> `cajeta dap` Debug Adapter Protocol server per `docs/Debugging.md`.
 
 End-to-end plan to go from an empty directory to a Cajeta language
 plugin installed and running in IntelliJ IDEA. Scope of this document
 is the **syntax tier** (lexer, parser, highlighting, structure view,
 brace matching), **compiler-driven linting** (real-time squigglies
 from `cajetac --lint --json`, including wildcard / capture-conversion
-warnings — see [LintRules.md](../../cajeta-docs/LintRules.md) and
-[CaptureConversion.md](../../cajeta-docs/CaptureConversion.md)), and
+warnings — see [LintRules.md](../../docs/LintRules.md) and
+[CaptureConversion.md](../../docs/CaptureConversion.md)), and
 **Obsidian-style markdown rendering in comments** (rendered markdown
 on every comment line *except* the one the caret is on, which reverts
 to raw source for editing), plus the build, run, and install loop.
@@ -81,9 +81,9 @@ compiler propagate to the IDE without a parallel maintenance burden.
   tool window, debounced on edit, within ~300 ms of typing pause.
   Includes wildcard / capture-conversion misuse — e.g. the
   `Box<? extends Animal>` read-back patterns from
-  [CaptureConversion.md](../../cajeta-docs/CaptureConversion.md)
+  [CaptureConversion.md](../../docs/CaptureConversion.md)
   and rule IDs like `uncaught-throws` from
-  [LintRules.md](../../cajeta-docs/LintRules.md).
+  [LintRules.md](../../docs/LintRules.md).
 - **Markdown-rendered comments (Obsidian live-preview model).**
   Comments in Cajeta source are interpreted as markdown and
   rendered in place (headings, emphasis, lists, links, fenced code
@@ -704,7 +704,7 @@ class CajetaLintAnnotator : ExternalAnnotator<LintInput, List<Diagnostic>>() {
 
 `CajetacRunner` is a small helper that:
 
-- Locates `cajetac` (config setting in Settings | Languages & Frameworks | Cajeta, with a sensible default of `build/src/cajeta` relative to the project root — see [Compilation.md](../../cajeta-docs/Compilation.md)).
+- Locates `cajetac` (config setting in Settings | Languages & Frameworks | Cajeta, with a sensible default of `build/src/cajeta` relative to the project root — see [Compilation.md](../../docs/Compilation.md)).
 - Spawns it with `--lint --json --stdin --stdin-name=<path>`, writes
   the buffer to stdin, reads JSON diagnostics from stdout.
 - Deserializes via kotlinx.serialization.
@@ -790,8 +790,8 @@ plugin repo:
    the positional source-root argument. Needed because the IDE
    buffer is dirty and not on disk.
 
-Cross-reference these in `cajeta-docs/Compilation.md` and link
-the JSON schema from `cajeta-docs/LintRules.md` so the plugin and
+Cross-reference these in `docs/Compilation.md` and link
+the JSON schema from `docs/LintRules.md` so the plugin and
 compiler stay in sync over time.
 
 **Compiler-side cost estimate:** roughly 1–2 days of focused work
@@ -1114,7 +1114,7 @@ arrive with the `cajeta dap`/`lsp` structured-diagnostic work (Phase 2).*
       pause, with the rule ID and message in the tooltip. *(rule IDs
       are emitted by `cajetac` today; range is approximate.)*
 - [x] A wildcard misuse from the
-      [CaptureConversion.md](../../cajeta-docs/CaptureConversion.md)
+      [CaptureConversion.md](../../docs/CaptureConversion.md)
       examples (e.g. `holder.box.set(holder.box.get())` with
       distinct captures) is flagged with the rule ID in the message.
 - [~] Adding `@SuppressLint("uncaught-throws")` on the enclosing
@@ -1163,7 +1163,7 @@ frame's variables on a breakpoint, **view and edit** those values, and
 see **threads** (Cajeta schedules stackful **fibers** on carrier OS
 threads — `ucontext` on POSIX, Win32 Fibers on Windows).
 
-**Architecture (per [`Debugging.md`](../../cajeta-docs/Debugging.md)).**
+**Architecture (per [`Debugging.md`](../../docs/Debugging.md)).**
 The compiler ships a **Debug Adapter Protocol** server, `cajeta dap`
 (JSON over stdio, or `--port=<n>` for TCP); the IDE drives it. The plugin
 implements a **custom `XDebugProcess`** that speaks DAP — not the generic
@@ -1184,7 +1184,7 @@ with `gdb`/`lldb` + a scripted DAP session *before* any IDE wiring.
 ### Part A — Compiler prerequisites
 
 Build flavor `debug` = `-O0 --debug-info=full --bounds=on` (see
-[`BuildTool.md`](../../cajeta-docs/BuildTool.md)).
+[`BuildTool.md`](../../docs/BuildTool.md)).
 
 **A1. DWARF debug-info emission** *(the critical gap — everything depends
 on it).* Cajeta already captures what DWARF needs (source file+line on
@@ -1339,7 +1339,7 @@ lifetime in both the Variables view and inline in the editor. Full requirements
 The CP7 group depends on the CP6f line completing first; CP7-1a..1d touch
 different layers and may be authored in parallel. The language semantics being
 visualized are specified in
-[`MemoryModel.md`](../../cajeta-docs/stdlib/MemoryModel.md) (owned by a separate
+[`MemoryModel.md`](../../docs/stdlib/MemoryModel.md) (owned by a separate
 workstream); this plan covers only the debugger surfacing of them.
 
 ### Verification — Debugging tier
@@ -1407,17 +1407,17 @@ contributors know what *not* to scope-creep into the syntax tier:
   that knows Cajeta's syntax — both are v0.2.
 - **Inspections beyond what `cajetac --lint` emits.** Any check
   that isn't already a rule in
-  [LintRules.md](../../cajeta-docs/LintRules.md) is a compiler
+  [LintRules.md](../../docs/LintRules.md) is a compiler
   task, not a plugin task. Add the rule there; the plugin will
   display it for free.
 - ~~**Debugger.**~~ **Now in scope** — promoted to
   [Phase 2 — Debugging](#phase-2--debugging). Architecture is DAP via a
   compiler-shipped `cajeta dap` server (not the LLDB/MI sketch this bullet
   originally guessed), per
-  [Debugging.md](../../cajeta-docs/Debugging.md).
+  [Debugging.md](../../docs/Debugging.md).
 - **Build-tool integration.** Run configurations that invoke
   `cajeta build` / `cajeta test`; gutter "Run main" markers.
-  Wait until the build tool ([BuildTool.md](../../cajeta-docs/BuildTool.md))
+  Wait until the build tool ([BuildTool.md](../../docs/BuildTool.md))
   is stable enough that the contract won't churn.
 - **Multiple IntelliJ versions.** Pinning to 2024.2+ for v0.1;
   cross-version compatibility is its own engineering project.

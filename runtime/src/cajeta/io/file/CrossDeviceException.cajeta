@@ -24,7 +24,7 @@ import cajeta.lang.String;
  *
  * Sits alongside the rest of the hierarchy (`AlreadyExistsException`,
  * `NotFoundException`, `PermissionException`, `DiskFullException`).
- * See `cajeta-docs/stdlib/io/file/Errors.md`.
+ * See `docs/stdlib/io/file/Errors.md`.
  */
 public class CrossDeviceException extends IoException {
     /**

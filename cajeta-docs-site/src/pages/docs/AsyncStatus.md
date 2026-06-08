@@ -7,7 +7,7 @@ description: 'Tracks the R1–R5 rollout of the async runtime described in Threa
 
 Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `ImplementationStatus.md` (which covers the MemoryModel rollout).
 
-<!-- SYNC NOTE: this is the published-site mirror of cajeta-docs/stdlib/AsyncStatus.md
+<!-- SYNC NOTE: this is the published-site mirror of docs/stdlib/AsyncStatus.md
      (the in-repo source of truth). Keep the body content of the two in sync when
      editing either; this copy adds the Astro frontmatter above and uses bare doc names. -->
 
@@ -37,12 +37,12 @@ uncaught.
 > receive ships as `Tasks.selectReceive<T>(Channel<T>[])` returning
 > `Optional<SelectResult<T>>` (R9.6) — Go-style channel select over an
 > array; lowest-index-wins on simultaneous readiness; empty Optional
-> signals all channels closed+drained. `cajeta.threading.AsyncIterator<T>`
+> signals all channels closed+drained. `cajeta.concurrent.AsyncIterator<T>`
 > interface ships (R9.7) with the canonical
 > `while ((opt = iter.next()).isPresent()) ...` loop pattern — a
 > `for (T x in iter)` desugaring is the planned v2.1 surface.
 > Async I/O reactor ships (Linux epoll), with `Cajeta.io*` intrinsics for
-> non-blocking fd registration / wait. Atomics ship as `cajeta.threading.AtomicInt32/64` (R8.1).
+> non-blocking fd registration / wait. Atomics ship as `cajeta.concurrent.AtomicInt32/64` (R8.1).
 
 **R5-C / R5-D — shipped (named here precisely, since `Features.md` S-805 long read "designed"):**
 - [x] R5-C cooperative cancellation — `CancellationException extends RecoverableException`; scope sets each child fiber's `cancel_with`; `__cajeta_task_wait` re-raises it on the next park-resume (commit `fa7c7f8`).
@@ -68,7 +68,7 @@ Today the compiler synthesizes `Task<T>` at every spawn site (`CajetaTask::getOr
 - [x] **20.1** Type resolution: `Task<int32>` as a `typeType` parses through `classOrInterfaceType` already (the grammar accepts type arguments uniformly). The miss was in `CajetaType::fromContext(TypeTypeContext*)`: when the bare name `Task` is followed by `typeArguments`, route through `CajetaTask::getOrCreate(module, T)` instead of looking `Task` up as a user class. Special-case branch added ahead of the generic template path so we don't need a fake "Task" template class to satisfy `isTemplate()`.
 - [x] **20.2** Ownership transfer (option a — auto-promotion on assignment). Added a `llvm::Value* dropEntry` field on `SpawnExpression` populated when the push happens. `LocalVariableDeclaration`'s initializer path detects a `SpawnExpression` RHS via `dynamic_pointer_cast` and emits `__cajeta_drop_mark_inactive` on the entry; the local's own class-instance drop becomes the canonical owner. Bare-statement `spawn foo();` is unaffected — no assignment, no inactivation, the spawn's drop still fires at scope exit. (BinaryOpExpression ASSIGN didn't need the same: today's tests rebind via re-declaration, not via plain `=`; will revisit when that shape lands.)
 - [x] **20.3** `await someTaskLocal`. Two pieces had to land: a defensive `inner->resolveTypes(module)` re-resolve at codegen time in `AwaitExpression::generateCode` (the pre-pass runs before the local is in scope and leaves resolvedType null, which sent the dispatch into the sync-compat branch returning the raw Task ptr), AND a `SpawnExpression` preempt in `loadIfLValue` so `Task<int32> t = spawn foo();` doesn't try to load the 24-byte Task value through an 8-byte ptr slot — for class types the value IS the pointer.
-- [x] **20.4** Package question. Decided: keep `CajetaTask` package-free (the comment at `CajetaTask.cpp:17` already says so). Users write the bare name `Task<int32>`; type resolution finds it directly through the synthesized-type path. Revisit when `cajeta.threading.*` actually lands.
+- [x] **20.4** Package question. Decided: keep `CajetaTask` package-free (the comment at `CajetaTask.cpp:17` already says so). Users write the bare name `Task<int32>`; type resolution finds it directly through the synthesized-type path. Revisit when `cajeta.concurrent.*` actually lands.
 - [x] **20.5** Tests in `test/parser/TaskTypingTests.cpp` (new file): `declareAwaitOneTask`; `twoHandlesStoredThenAwaited` (the canonical use case); `differentTaskElementTypes` (Task<int32> vs Task<int64> get distinct value-field widths); `declaredTasksDropOncePerLocal` (drop count == 2 for two declared tasks, proving option-a's inactivation); `awaitedTaskStillDropsOnceAtScopeExit`.
 
 ### Race fix surfaced en route (commit `ca2b0d7`)

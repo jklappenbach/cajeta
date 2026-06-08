@@ -1,4 +1,4 @@
-// Wildcard lints from cajeta-docs/LintRules.md. The four rules
+// Wildcard lints from docs/LintRules.md. The four rules
 // (`wildcard-materialize-in-loop`, `wildcard-crosses-hot-boundary`,
 // `wildcard-field-in-small-class`, `discarded-wildcard-next`) surface
 // performance/correctness hazards that the wildcard erasure model

@@ -1,7 +1,7 @@
 // Stream<T>.collect<R>(Collector<T, R>) — terminal that reduces a
 // stream via a packaged (seed, accumulator) pair. Completes the
 // Stream pipeline story alongside reduce + fold<R>. See
-// cajeta-docs/stdlib/Streams.md § collect and
+// docs/stdlib/Streams.md § collect and
 // cajeta.collection.Collectors for the standard built-in factories.
 
 #include "gtest/gtest.h"
