@@ -8577,9 +8577,10 @@ static int64_t cajeta_xpu_hip_make_texobj(int64_t texHandle, int32_t filterMode,
 // texture unit would. On Vulkan/AMD the handle is a device image / hipArray
 // record and the kernel samples it through the native image path.
 struct cajeta_cpu_texobj {
-    float*   data;     // row-major w*h*channels DECODED float texels (owned)
+    float*   data;     // row-major w*h*d*channels DECODED float texels (owned)
     uint32_t w;
     uint32_t h;
+    uint32_t d;        // depth: 1 for a 2-D texture, >=1 for a 3-D volume
     int32_t  format;   // TextureFormat ordinal
     int      channels; // 1 (R) or 4 (RGBA)
 };
@@ -8599,6 +8600,7 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
             if (!t) return 0;
             t->w = width;
             t->h = height;
+            t->d = 1;            // 2-D texture: single depth slice
             t->format = format;
             t->channels = channels;
             // CPU stores DECODED channel-interleaved floats (channels per texel);
@@ -8671,6 +8673,82 @@ void __cajeta_xpu_texture_free(void* self, int64_t handle) {
         }
         case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
         case CAJ_XPU_HIP:    cajeta_xpu_hip_tex_free(handle); return;
+        default: return;
+    }
+}
+
+// --- Texture3D (3-D / volumetric textures) ----------------------------------
+// The volumetric sibling of Texture2D. Distinct __cajeta_xpu_texture3d_* symbols
+// because the 2-D vs 3-D image type (VK_IMAGE_TYPE_3D, hipMalloc3DArray) is fixed
+// at allocation. CPU stores a w*h*d*channels DECODED-float volume (row-major: x
+// fastest, then y, then z). Vulkan/HIP 3-D image paths land in later increments
+// (default = no-op / 0 until then, so the cajeta drop chain still works).
+
+// __cajeta_xpu_texture3d_alloc(this, width, height, depth, format) -> handle.
+int64_t __cajeta_xpu_texture3d_alloc(void* self, uint32_t width, uint32_t height,
+                                     uint32_t depth, int32_t format) {
+    (void) self;
+    if (width == 0 || height == 0 || depth == 0) return 0;
+    int channels = cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) malloc(sizeof(*t));
+            if (!t) return 0;
+            t->w = width;
+            t->h = height;
+            t->d = depth;
+            t->format = format;
+            t->channels = channels;
+            t->data = (float*) calloc(
+                (size_t) width * height * depth * channels, sizeof(float));
+            if (!t->data) { free(t); return 0; }
+            return (int64_t) (intptr_t) t;
+        }
+        // Vulkan / HIP 3-D image allocation lands in the device increments.
+        default: return 0;
+    }
+}
+
+// __cajeta_xpu_texture3d_upload(this, handle, host, width, height, depth, format).
+void __cajeta_xpu_texture3d_upload(void* self, int64_t handle, void* host,
+                                   uint32_t width, uint32_t height, uint32_t depth,
+                                   int32_t format) {
+    (void) self;
+    if (!handle || !host || width == 0 || height == 0 || depth == 0) return;
+    const float* src = (const float*) ((const char*) host + 8);
+    size_t texels = (size_t) width * height * depth * cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            if (!t->data) return;
+            if (cajeta_texfmt_is_unorm(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = (float) cajeta_texfmt_unorm8(src[i]) / 255.0f;
+            } else if (cajeta_texfmt_is_half(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = cajeta_f16_to_f32(cajeta_f32_to_f16(src[i]));
+            } else {
+                memcpy(t->data, src, texels * sizeof(float));
+            }
+            return;
+        }
+        default: return;
+    }
+}
+
+void __cajeta_xpu_texture3d_free(void* self, int64_t handle) {
+    (void) self;
+    if (!handle) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            free(t->data);
+            free(t);
+            return;
+        }
         default: return;
     }
 }
@@ -8846,6 +8924,97 @@ caj_v4i __cajeta_xpu_cpu_tex_fetch_rgba_i32(void* texp, int32_t x, int32_t y) {
     int cy = y < 0 ? 0 : (y >= H ? H - 1 : y);
     const int32_t* p = (const int32_t*) t->data +
                        ((size_t) cy * t->w + (size_t) cx) * t->channels;
+    caj_v4i c = { 0, 0, 0, 1 };
+    for (int i = 0; i < t->channels; ++i) c[i] = p[i];
+    return c;
+}
+
+// --- Texture3D CPU sample/fetch ---------------------------------------------
+// 3-D voxel read from the DECODED float volume, row-major (x fastest, then y,
+// then z): index = ((z*h + y)*w + x)*channels. The 3-D analogue of
+// cajeta_cpu_texel; missing channels default G/B = 0, A = 1.
+static inline caj_v4f cajeta_cpu_texel3d(const struct cajeta_cpu_texobj* t,
+                                         int x, int y, int z) {
+    const float* p = t->data +
+        (((size_t) z * t->h + (size_t) y) * t->w + (size_t) x) * t->channels;
+    caj_v4f c = { 0.0f, 0.0f, 0.0f, 1.0f };
+    for (int i = 0; i < t->channels; ++i) c[i] = p[i];
+    return c;
+}
+
+// CPU 3-D texture sampler — the lowering of `tex.sample(sampler, u, v, w)`.
+// (u, v, w) normalized in [0, 1]; filterMode 0 = nearest / 1 = trilinear;
+// addressMode 0 = clamp / 1 = wrap. Trilinear uses the texel-center convention
+// (coord = u*N - 0.5) matching GPU texture units, blending the 8 surrounding
+// voxels. The 3-D twin of __cajeta_xpu_cpu_tex_sample_rgba.
+caj_v4f __cajeta_xpu_cpu_tex3d_sample_rgba(void* texp, int32_t filterMode,
+                                           int32_t addressMode, float u, float v,
+                                           float w) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
+    caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
+    if (!t || !t->data || t->w == 0 || t->h == 0 || t->d == 0) return zero;
+    int W = (int) t->w, H = (int) t->h, D = (int) t->d;
+    if (filterMode == 0) {                   // nearest
+        int x = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
+        int y = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
+        int z = cajeta_tex_addr((int) floorf(w * (float) D), D, addressMode);
+        return cajeta_cpu_texel3d(t, x, y, z);
+    }
+    // trilinear (texel-center) — blend eight RGBA voxels
+    float fx = u * (float) W - 0.5f;
+    float fy = v * (float) H - 0.5f;
+    float fz = w * (float) D - 0.5f;
+    int x0 = (int) floorf(fx), y0 = (int) floorf(fy), z0 = (int) floorf(fz);
+    float dx = fx - (float) x0, dy = fy - (float) y0, dz = fz - (float) z0;
+    int cx0 = cajeta_tex_addr(x0,     W, addressMode);
+    int cx1 = cajeta_tex_addr(x0 + 1, W, addressMode);
+    int cy0 = cajeta_tex_addr(y0,     H, addressMode);
+    int cy1 = cajeta_tex_addr(y0 + 1, H, addressMode);
+    int cz0 = cajeta_tex_addr(z0,     D, addressMode);
+    int cz1 = cajeta_tex_addr(z0 + 1, D, addressMode);
+    caj_v4f c000 = cajeta_cpu_texel3d(t, cx0, cy0, cz0);
+    caj_v4f c100 = cajeta_cpu_texel3d(t, cx1, cy0, cz0);
+    caj_v4f c010 = cajeta_cpu_texel3d(t, cx0, cy1, cz0);
+    caj_v4f c110 = cajeta_cpu_texel3d(t, cx1, cy1, cz0);
+    caj_v4f c001 = cajeta_cpu_texel3d(t, cx0, cy0, cz1);
+    caj_v4f c101 = cajeta_cpu_texel3d(t, cx1, cy0, cz1);
+    caj_v4f c011 = cajeta_cpu_texel3d(t, cx0, cy1, cz1);
+    caj_v4f c111 = cajeta_cpu_texel3d(t, cx1, cy1, cz1);
+    // interpolate along x, then y, then z
+    caj_v4f a0 = c000 + (c100 - c000) * dx;
+    caj_v4f b0 = c010 + (c110 - c010) * dx;
+    caj_v4f a1 = c001 + (c101 - c001) * dx;
+    caj_v4f b1 = c011 + (c111 - c011) * dx;
+    caj_v4f e0 = a0 + (b0 - a0) * dy;
+    caj_v4f e1 = a1 + (b1 - a1) * dy;
+    return e0 + (e1 - e0) * dz;
+}
+
+// CPU 3-D texelFetch — exact voxel at integer (x, y, z), mip 0, unfiltered.
+caj_v4f __cajeta_xpu_cpu_tex3d_fetch_rgba(void* texp, int32_t x, int32_t y,
+                                          int32_t z) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
+    caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
+    if (!t || !t->data || t->w == 0 || t->h == 0 || t->d == 0) return zero;
+    int W = (int) t->w, H = (int) t->h, D = (int) t->d;
+    int cx = x < 0 ? 0 : (x >= W ? W - 1 : x);
+    int cy = y < 0 ? 0 : (y >= H ? H - 1 : y);
+    int cz = z < 0 ? 0 : (z >= D ? D - 1 : z);
+    return cajeta_cpu_texel3d(t, cx, cy, cz);
+}
+
+// CPU 3-D integer texelFetch — the int twin (raw 32-bit voxel bits read as i32).
+caj_v4i __cajeta_xpu_cpu_tex3d_fetch_rgba_i32(void* texp, int32_t x, int32_t y,
+                                              int32_t z) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
+    caj_v4i zero = { 0, 0, 0, 1 };
+    if (!t || !t->data || t->w == 0 || t->h == 0 || t->d == 0) return zero;
+    int W = (int) t->w, H = (int) t->h, D = (int) t->d;
+    int cx = x < 0 ? 0 : (x >= W ? W - 1 : x);
+    int cy = y < 0 ? 0 : (y >= H ? H - 1 : y);
+    int cz = z < 0 ? 0 : (z >= D ? D - 1 : z);
+    const int32_t* p = (const int32_t*) t->data +
+        (((size_t) cz * t->h + (size_t) cy) * t->w + (size_t) cx) * t->channels;
     caj_v4i c = { 0, 0, 0, 1 };
     for (int i = 0; i < t->channels; ++i) c[i] = p[i];
     return c;

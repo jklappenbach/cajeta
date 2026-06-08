@@ -41,6 +41,14 @@ bool isTextureCanonical(const std::string& canonical) {
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
+// Texture3D<T = float32> — the volumetric sibling; same prefix-match shape.
+bool isTexture3DCanonical(const std::string& canonical) {
+    static const std::string kPrefix = "cajeta.xpu.core.Texture3D";
+    if (canonical.size() < kPrefix.size()) return false;
+    if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
+    if (canonical.size() == kPrefix.size()) return true;
+    return canonical[kPrefix.size()] == '<';
+}
 bool isSamplerCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.core.Sampler";
 }
@@ -152,6 +160,7 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
         // admit it), but it must take the sampler-descriptor path, not the
         // by-value POD path.
         if (isTextureCanonical(canonical)) return true;
+        if (isTexture3DCanonical(canonical)) return true;
         if (isImageCanonical(canonical)) return true;
         if (isSamplerCanonical(canonical)) return true;
         if (isAccelStructCanonical(canonical)) return true;
@@ -178,6 +187,10 @@ bool isPodStructType(const CajetaTypePtr& type) {
 
 bool isTextureType(const CajetaTypePtr& type) {
     return type && isTextureCanonical(type->toCanonical());
+}
+
+bool isTexture3DType(const CajetaTypePtr& type) {
+    return type && isTexture3DCanonical(type->toCanonical());
 }
 
 bool isSamplerType(const CajetaTypePtr& type) {

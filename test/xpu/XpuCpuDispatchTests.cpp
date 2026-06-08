@@ -822,6 +822,127 @@ static const char* kR32iFetchSrcCpu() {
     return s.c_str();
 }
 
+// B3 texture dims: Texture3D fetch on CPU. A 2x2x2 R32F volume holds the linear
+// voxel index (0..7, row-major x→y→z); each voxel read back exactly by integer
+// (x, y, z). The 3-D analogue of textureFetchOnCpu.
+static const char* kTex3dFetchSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex3dFetchCpu {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture3D vol, Buffer<float32> out,\n"
+        "                             uint32 w, uint32 h, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 z = i / (w*h);\n"
+        "            uint32 r = i - z*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            Vector<float32,4> c = vol.fetch(x, y, z);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 d = 2;\n"
+        "        uint32 n = 8;\n"
+        "        float32[] voxels = heap float32[8];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { voxels[i] = (float32)(i); }\n"
+        "        Texture3D vol = heap Texture3D(w, h, d);\n"
+        "        vol.upload(voxels);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [n])(vol, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+// Texture3D sample on CPU: NEAREST at each voxel center reads the exact stored
+// value; one TRILINEAR midpoint (u=0.5 along x at y=z centers) blends voxel 0 and
+// voxel 1 to 0.5. Exercises the 3-D trilinear path + the Sampler.
+static const char* kTex3dSampleSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex3dSampleCpu {\n"
+        "    @Kernel\n"
+        "    public static void samp(Texture3D vol, Sampler sn,\n"
+        "                            Buffer<float32> out, uint32 w, uint32 h,\n"
+        "                            uint32 d, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 z = i / (w*h);\n"
+        "            uint32 r = i - z*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            float32 u = ((float32)(x) + 0.5f) / (float32)(w);\n"
+        "            float32 v = ((float32)(y) + 0.5f) / (float32)(h);\n"
+        "            float32 ww = ((float32)(z) + 0.5f) / (float32)(d);\n"
+        "            Vector<float32,4> c = vol.sample(sn, u, v, ww);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void mid(Texture3D vol, Sampler sl, Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < 1) {\n"
+        "            Vector<float32,4> c = vol.sample(sl, 0.5f, 0.25f, 0.25f);\n"
+        "            out[0] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 d = 2;\n"
+        "        uint32 n = 8;\n"
+        "        float32[] voxels = heap float32[8];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { voxels[i] = (float32)(i); }\n"
+        "        Texture3D vol = heap Texture3D(w, h, d);\n"
+        "        vol.upload(voxels);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"     // nearest, clamp
+        "        Sampler sl = heap Sampler(1, 0);\n"     // linear, clamp
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [n])(vol, sn, out, w, h, d, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        float32[] hmid = heap float32[1]; hmid[0] = -1.0f;\n"
+        "        Buffer<float32> mout = heap Buffer<float32>(1);\n"
+        "        mout.upload(hmid);\n"
+        "        mid.launch(s, grid: [1], block: [1])(vol, sl, mout);\n"
+        "        s.sync();\n"
+        "        mout.download(hmid);\n"
+        "        float32 dm = hmid[0] - 0.5f;\n"
+        "        if (dm < -0.02f || dm > 0.02f) { return (int32)(200); }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -1044,6 +1165,29 @@ TEST(XpuCpuDispatchTests, textureFetchR32iOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R32I value; 200+i: alpha default)";
+}
+
+// B3 texture dims: Texture3D fetch on CPU — a 2x2x2 volume read voxel-exact.
+TEST(XpuCpuDispatchTests, texture3dFetchOnCpu) {
+    auto jit = CajetaJit::compile(kTex3dFetchSrcCpu(), "test.Tex3dFetchCpu",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: voxel index mismatch at i)";
+}
+
+// Texture3D sample on CPU — nearest at voxel centers (exact) + a trilinear
+// midpoint (voxel 0/1 blend = 0.5).
+TEST(XpuCpuDispatchTests, texture3dSampleOnCpu) {
+    auto jit = CajetaJit::compile(kTex3dSampleSrcCpu(), "test.Tex3dSampleCpu",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: trilinear midpoint)";
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the

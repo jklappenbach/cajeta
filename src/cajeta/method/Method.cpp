@@ -1971,6 +1971,7 @@ namespace cajeta {
                 bool isDeviceResource =
                     c.rfind("cajeta.xpu.core.Buffer", 0) == 0 ||
                     c.rfind("cajeta.xpu.core.Texture2D", 0) == 0 ||
+                    c.rfind("cajeta.xpu.core.Texture3D", 0) == 0 ||
                     c == "cajeta.xpu.core.AccelerationStructure";
                 if (!isDeviceResource) continue;
                 throw Exception(
