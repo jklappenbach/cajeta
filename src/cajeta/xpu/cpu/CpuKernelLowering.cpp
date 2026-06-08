@@ -162,6 +162,29 @@ public:
                             "tex.sample");
     }
 
+    // Texture2D.fetch(x, y) (texelFetch): the unfiltered, sampler-free exact
+    // texel read. Emits a call to the C runtime `__cajeta_xpu_cpu_tex_fetch_rgba`,
+    // which indexes the decoded float store directly (no addressing/filtering) —
+    // the texel-read primitive sampleTexture's bilinear path is built on. No
+    // Sampler arg (x, y are i32 texel indices).
+    //
+    //   <4 x float> __cajeta_xpu_cpu_tex_fetch_rgba(ptr tex, i32 x, i32 y)
+    llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
+                              llvm::Value* texHandle, llvm::Value* x,
+                              llvm::Value* y) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* fnTy = llvm::FunctionType::get(
+            v4f, {llvm::PointerType::get(ctx, 0), i32, i32}, /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_tex_fetch_rgba", fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+            f->setDoesNotThrow();
+        return b.CreateCall(callee, {texHandle, x, y}, "tex.fetch");
+    }
+
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime
     // stub (width-1 scalar semantics: one work-item per host invocation). The
     // CPU registration pass then attaches a Vector Function ABI variant to each

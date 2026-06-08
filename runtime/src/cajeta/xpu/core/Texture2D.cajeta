@@ -8,7 +8,8 @@ package cajeta.xpu.core;
  * width/height) over a device image resource. Backends tag the underlying
  * storage (CUDA texture object / HIP texture object / Vulkan sampled image +
  * view); from the user's perspective it is one opaque type with the standard
- * create/upload/free operations and a device-only `sample`.
+ * create/upload/free operations and the device-only reads `sample` (filtered,
+ * via a Sampler) and `fetch` (unfiltered, by exact integer texel coordinate).
  *
  * MEMORY MODEL. The handle (this struct) is governed by the drop chain; the
  * device image is acquired by the constructor and released by ~Texture2D() at
@@ -20,9 +21,10 @@ package cajeta.xpu.core;
  * 8-bit UNORM. The default (2-arg ctor) is `R32F`, one float channel.
  * `sample(...)` always returns `Vector<float32, 4>` regardless of format.
  *
- * v1 LIMITS: 2-D, read-only, one Sampler, float-sampled formats. 3-D/cube,
- * depth/compare, mip levels, and raw-integer (texelFetch) textures are
- * follow-ups.
+ * v1 LIMITS: 2-D, read-only, one Sampler, float-sampled formats; `fetch`
+ * returns the same float `Vector<float32, 4>` as `sample`. 3-D/cube,
+ * depth/compare, mip levels, and *integer-returning* (raw-int / normalized-int)
+ * textures are follow-ups.
  */
 public final class Texture2D {
     int64 deviceHandle;
@@ -113,6 +115,33 @@ public final class Texture2D {
      * (outside a kernel) is unsupported.
      */
     public Vector<float32, 4> sample(Sampler s, float32 u, float32 v) {
+        Vector<float32, 4> result = stack Vector<float32, 4>(0.0f, 0.0f, 0.0f, 0.0f);
+        return result;
+    }
+
+    /**
+     * Device-only intrinsic: `texelFetch` — read the texel at the **exact
+     * integer** coordinate (x, y) with **no filtering and no sampler**, at mip
+     * level 0, returning the RGBA texel. The unfiltered twin of `sample`: where
+     * `sample` takes normalized [0, 1] coords through a Sampler and blends
+     * neighbouring texels, `fetch` reads one stored texel by its grid index —
+     * the right call for data textures / lookup tables, where the value wanted
+     * is the one stored, not a filtered approximation.
+     *
+     * (x, y) must be in bounds (`0 <= x < width`, `0 <= y < height`); there is
+     * no addressing-mode wrap/clamp (that is a Sampler property, and `fetch`
+     * has no Sampler). The stored encoding is still decoded to float exactly as
+     * in `sample` (UNORM byte -> [0, 1], half -> float); single-channel formats
+     * land in `.r`/`.x` (G/B = 0, A = 1).
+     *
+     * Lowered at the call site inside an @Kernel / @Device function to the
+     * backend's unfiltered image-read op (Vulkan OpImageFetch via
+     * llvm.spv.resource.load.level, AMD __ockl_image_load_2D, or the CPU exact
+     * texel read). The body here is a resolution placeholder — it is never
+     * emitted as a real call. Fetching on the host (outside a kernel) is
+     * unsupported. (NVPTX is emit-deferred; v1 fetch is CPU/Vulkan/AMD.)
+     */
+    public Vector<float32, 4> fetch(uint32 x, uint32 y) {
         Vector<float32, 4> result = stack Vector<float32, 4>(0.0f, 0.0f, 0.0f, 0.0f);
         return result;
     }

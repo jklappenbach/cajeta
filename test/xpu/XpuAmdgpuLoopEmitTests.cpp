@@ -203,6 +203,20 @@ const char* kTextureSampleSource =
     "        if (i < n) { Vector<float32,4> c = tex.sample(s, 0.5, 0.5); out[i] = c.x; }\n"
     "    }\n"
     "}\n";
+
+const char* kTextureFetchSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Texture2D;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void fetchTex(Texture2D tex,\n"
+    "                                Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { Vector<float32,4> c = tex.fetch(i, 0); out[i] = c.x; }\n"
+    "    }\n"
+    "}\n";
 } // namespace
 
 // Item 8 Stage C: tex.sample lowers to a call to the ROCm device-library
@@ -254,6 +268,54 @@ TEST(XpuAmdgpuLoopEmitTests, textureSampleEmitsImageSampleIsa) {
     // The gfx11 hardware image-sample (dim:SQ_RSRC_IMG_2D) from the linked
     // __ockl_image_sample_2D — proof the device-library path reached real ISA.
     EXPECT_NE(isa.find("image_sample"), std::string::npos) << isa;
+}
+
+// texelFetch: tex.fetch lowers to a call to the ROCm device-library function
+// __ockl_image_load_2D (the unfiltered twin of __ockl_image_sample_2D), with the
+// texture param typed as a constant (addrspace 4) pointer — and NO sampler. IR
+// shape only, before the device-library link.
+TEST(XpuAmdgpuLoopEmitTests, lowersTextureFetchToOcklLoad) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kTextureFetchSource, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "fetchTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_texfetch_amdgpu_ir", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    llvm::Function* fn = lowerKernel(k, deviceModule);
+    ASSERT_NE(fn, nullptr);
+
+    std::string ir = printModule(deviceModule);
+    EXPECT_NE(ir.find("ptr addrspace(4)"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("__ockl_image_load_2D"), std::string::npos) << ir;
+    EXPECT_EQ(ir.find("__ockl_image_sample_2D"), std::string::npos) << ir;
+}
+
+// With the ROCm device bitcode present, the link + AMDGPU codegen turn the fetch
+// call into a real gfx1151 image_load instruction (the hardware texel-fetch
+// path). Gated on a ROCm/HIP install; the GPU itself isn't exercised — ISA text.
+TEST(XpuAmdgpuLoopEmitTests, textureFetchEmitsImageLoadIsa) {
+    CAJETA_SKIP_IF_NO_HIP();
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kTextureFetchSource, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "fetchTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_texfetch_amdgpu_isa", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+
+    std::string isa = emitIsa(deviceModule, *tm);   // links ockl.bc internally
+    ASSERT_FALSE(isa.empty());
+    EXPECT_NE(isa.find(".amdhsa_kernel fetchTex"), std::string::npos) << isa;
+    // The gfx11 hardware image-load from the linked __ockl_image_load_2D.
+    EXPECT_NE(isa.find("image_load"), std::string::npos) << isa;
 }
 
 // Item 7: a POD struct passed by value as a kernel arg lowers to AMDGPU. The

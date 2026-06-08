@@ -392,6 +392,78 @@ TEST(XpuVulkanEmitTests, lowersTextureSampleToSpirv) {
     }
 }
 
+// texelFetch: Texture2D.fetch(x, y) reads the exact integer texel of the SAMPLED
+// image (no sampler), lowering to OpImageFetch (+ a Lod operand) via the fork
+// llvm.spv.resource.load.level intrinsic. Distinct from Image2D.load's
+// OpImageRead: the sampled image is Sampled=1 so the backend's read/fetch
+// selection picks Fetch. GPU-free proof it is spirv-val-clean under strict
+// spirv-val --target-env vulkan1.3.
+TEST(XpuVulkanEmitTests, lowersTextureFetchToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void fetchTex(Texture2D tex,\n"
+        "                                Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<float32,4> c = tex.fetch(i, 0); out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "fetchTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_texfetch_vulkan_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    llvm::Function* fn = lowerKernel(k, irModule);
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn->arg_size(), 0u);   // args arrive via descriptors
+
+    std::string ir = printModule(irModule);
+    // Image bound as a descriptor; fetched (unfiltered) via load.level. NO
+    // sampler descriptor or samplelevel — fetch has no Sampler.
+    EXPECT_NE(ir.find("llvm.spv.resource.handlefrombinding"),
+              std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.resource.load.level"), std::string::npos) << ir;
+    EXPECT_EQ(ir.find("llvm.spv.resource.samplelevel"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_texfetch_vulkan_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpEntryPoint GLCompute"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpTypeImage"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpImageFetch"), std::string::npos) << text;
+    EXPECT_EQ(text.find("OpTypeSampler"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_texfetch_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the texture-fetch module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // Writable images: Image2D.store(x, y, value) binds a STORAGE_IMAGE descriptor
 // and lowers to a single OpImageWrite (the cajeta-spirv llvm.spv.resource.store.2d
 // intrinsic). The image declares the R32f known format (matching the runtime

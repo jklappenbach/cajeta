@@ -175,6 +175,22 @@ namespace xpu {
             llvm::Value* texHandle, llvm::Value* samplerHandle,
             llvm::Value* u, llvm::Value* v);
 
+        // Fetch (texelFetch) the 2-D texture `texHandle` at the EXACT integer
+        // coordinate (x, y), mip level 0, unfiltered and WITHOUT a sampler,
+        // returning the texel as a <4 x float> — the lowering of
+        // `tex.fetch(x, y)`. The unfiltered twin of sampleTexture: same texture
+        // descriptor (`texHandle` from materializeParam; a *sampled* image, not
+        // a storage image — that distinguishes this from loadImage), no sampler,
+        // no addressing mode. `x`/`y` are i32 texel indices (NOT normalized).
+        // Default: unsupported (XPU-N01) — only backends with an unfiltered
+        // image read override. Vulkan emits OpImageFetch (+ Lod 0) via
+        // llvm.spv.resource.load.level (the sampled-image Sampled=1 branch of
+        // the read/fetch selection); AMD via __ockl_image_load_2D; CPU via the
+        // exact texel read. (NVPTX emit-deferred.)
+        virtual llvm::Value* fetchTexture(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* x, llvm::Value* y);
+
         // Store `value` into the 2-D storage image `imgHandle` at INTEGER texel
         // coordinate (x, y) — the lowering of `img.store(x, y, value)` (writable
         // images, the gfx bridge / twin of sampleTexture). `imgHandle` is exactly

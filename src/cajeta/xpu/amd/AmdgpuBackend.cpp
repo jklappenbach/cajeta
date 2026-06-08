@@ -87,8 +87,9 @@ bool linkRocmBitcode(llvm::Module& m, const std::string& path) {
     return true;
 }
 
-// Item 8 Stage C (hybrid): a kernel that samples a Texture2D references the
-// ROCm device-library function __ockl_image_sample_2D (emitted by AmdgpuTarget).
+// Item 8 Stage C (hybrid): a kernel that samples or fetches a Texture2D
+// references a ROCm device-library function __ockl_image_{sample,load}_2D
+// (emitted by AmdgpuTarget / the fetchTexture seam).
 // Link it — and the gfx ISA-version control global it reads — ONLY for such
 // kernels; every other AMD kernel is untouched (no device-lib dependency). If
 // the bitcode isn't installed, the declaration is left unresolved: codegen then
@@ -102,8 +103,8 @@ static bool referencesDeviceLib(llvm::Module& m, const char* prefix) {
 }
 
 void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm) {
-    bool needsOckl = m.getFunction("__ockl_image_sample_2D") &&
-                     m.getFunction("__ockl_image_sample_2D")->isDeclaration();
+    // Any __ockl_image_* declaration (sample = tex.sample, load = tex.fetch).
+    bool needsOckl = referencesDeviceLib(m, "__ockl_image_");
     bool needsOcml = referencesDeviceLib(m, "__ocml_");   // B2 transcendentals
     if (!needsOckl && !needsOcml) return;
 

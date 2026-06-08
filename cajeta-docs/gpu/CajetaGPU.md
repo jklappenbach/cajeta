@@ -74,9 +74,19 @@ Hamilton product, vector rotation, `nlerp`/`slerp`.
 
 ### 3. Textures & images
 
-- `Texture2D` + `Sampler` — 2-D, float32 texel, normalized coords, nearest/bilinear,
-  clamp/wrap; the `LoweringTarget::sampleTexture` seam lowers per backend (CPU C
+- `Texture2D` + `Sampler` — 2-D, normalized coords, nearest/bilinear, clamp/wrap; the
+  `LoweringTarget::sampleTexture` seam lowers `tex.sample(s, u, v)` per backend (CPU C
   bilinear, VK `OpImageSampleExplicitLod`, AMD `__ockl_image_sample_2D`, NV `tex.2d`).
+  Multi-channel formats via `TextureFormat` (R32F/R8_UNORM/RGBA8_UNORM/RGBA32F/R16F/
+  RGBA16F); `sample` returns `Vector<float32, 4>` regardless.
+- **texelFetch** — `tex.fetch(x, y)` reads the texel at the **exact integer** coordinate,
+  unfiltered and with **no Sampler** (LOD 0); the unfiltered twin of `sample`, for data
+  textures / lookup tables. The `LoweringTarget::fetchTexture` seam lowers per backend:
+  VK `OpImageFetch` (via the `llvm.spv.resource.load.level` intrinsic — the sampled-image
+  `Sampled=1` branch picks Fetch, distinct from `Image2D`'s storage `OpImageRead`; the
+  mandatory `Lod` operand is supplied), AMD `__ockl_image_load_2D`, CPU exact texel read.
+  Returns `Vector<float32, 4>`; CPU/Vulkan/AMD on-device. (NV emit-deferred;
+  integer-returning fetch is a follow-on.)
 - **Writable / storage images** — `Image2D` `imageStore`/`imageRead`, the writable twin
   of `Texture2D` and the bridge toward graphics. See
   [`WritableImages.md`](WritableImages.md). (Storage-image read/write needs a *known*

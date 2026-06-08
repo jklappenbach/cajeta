@@ -321,6 +321,33 @@ public:
         return rgba;
     }
 
+    // Texture2D.fetch(x, y) → OpImageFetch at the exact integer coord, mip 0,
+    // no sampler. Uses the fork intrinsic llvm.spv.resource.load.level
+    // (image, coord, lod): because `texHandle` is the *sampled* image (Sampled=1,
+    // from vkImageType), the backend's read/fetch selection picks OpImageFetch
+    // (vs OpImageRead for a Sampled=2 storage image — that is how this differs
+    // from loadImage). The Lod operand is mandatory for OpImageFetch on a
+    // non-multisampled image, and load.level supplies it (= 0 here). Returns the
+    // <4 x float> texel directly (Texture2D.fetch is typed Vector<float32,4>).
+    llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
+                              llvm::Value* texHandle, llvm::Value* x,
+                              llvm::Value* y) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v2i = llvm::FixedVectorType::get(i32, 2);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* coord = llvm::PoisonValue::get(v2i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1), "tex.fetch.coord");
+        llvm::Value* lod = llvm::ConstantInt::get(i32, 0);
+        // CreateIntrinsic infers the (result, image, coord, lod) overloads from
+        // the operand types (the same overload-inference the samplelevel path
+        // relies on).
+        return b.CreateIntrinsic(v4f, llvm::Intrinsic::spv_resource_load_level,
+                                 {texHandle, coord, lod}, nullptr, "tex.fetch");
+    }
+
     // Image2D.store(x, y, value) → a single OpImageWrite, native via the fork
     // intrinsic llvm.spv.resource.store.2d (cajeta-spirv): operands are the
     // spirv.Image storage handle (Sampled=2), the integer coord <x, y>, and the
