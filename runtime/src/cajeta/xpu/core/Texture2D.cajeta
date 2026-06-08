@@ -16,17 +16,23 @@ package cajeta.xpu.core;
  * scope exit (the Buffer/FileReader RAII convention). A launch borrows each
  * Texture2D argument until the next Stream.sync().
  *
+ * TEXEL TYPE. The type parameter `T` is the scalar a fetch/sample yields per
+ * channel; it **defaults to `float32`**, so every bare `Texture2D` spelling is
+ * exactly `Texture2D<float32>` (the float texture). `T` selects the read shape
+ * — `sample`/`fetch` return `Vector<T, 4>` — and (with the integer storage
+ * formats) lets the type carry whether a texture is float- or integer-valued.
+ * `sample` is float-only; integer textures (`T = int32`/`uint32`) are
+ * fetch-only (the hardware cannot filter integer texels).
+ *
  * FORMATS. The storage format is chosen at construction from {@link
  * TextureFormat} — single- or four-channel, 32-bit float, 16-bit half float, or
  * 8-bit UNORM. The default (2-arg ctor) is `R32F`, one float channel.
- * `sample(...)` always returns `Vector<float32, 4>` regardless of format.
+ * `sample(...)`/`fetch(...)` return `Vector<T, 4>` (T = float32 by default).
  *
- * v1 LIMITS: 2-D, read-only, one Sampler, float-sampled formats; `fetch`
- * returns the same float `Vector<float32, 4>` as `sample`. 3-D/cube,
- * depth/compare, mip levels, and *integer-returning* (raw-int / normalized-int)
- * textures are follow-ups.
+ * v1 LIMITS: 2-D, read-only, one Sampler. 3-D/cube, depth/compare, and mip
+ * levels are follow-ups.
  */
-public final class Texture2D {
+public final class Texture2D<T = float32> {
     int64 deviceHandle;
     uint32 width;
     uint32 height;
@@ -114,8 +120,8 @@ public final class Texture2D {
      * placeholder — it is never emitted as a real call. Sampling on the host
      * (outside a kernel) is unsupported.
      */
-    public Vector<float32, 4> sample(Sampler s, float32 u, float32 v) {
-        Vector<float32, 4> result = stack Vector<float32, 4>(0.0f, 0.0f, 0.0f, 0.0f);
+    public Vector<T, 4> sample(Sampler s, float32 u, float32 v) {
+        Vector<T, 4> result = stack Vector<T, 4>(0.0f, 0.0f, 0.0f, 0.0f);
         return result;
     }
 
@@ -141,8 +147,8 @@ public final class Texture2D {
      * emitted as a real call. Fetching on the host (outside a kernel) is
      * unsupported. (NVPTX is emit-deferred; v1 fetch is CPU/Vulkan/AMD.)
      */
-    public Vector<float32, 4> fetch(uint32 x, uint32 y) {
-        Vector<float32, 4> result = stack Vector<float32, 4>(0.0f, 0.0f, 0.0f, 0.0f);
+    public Vector<T, 4> fetch(uint32 x, uint32 y) {
+        Vector<T, 4> result = stack Vector<T, 4>(0.0f, 0.0f, 0.0f, 0.0f);
         return result;
     }
 
