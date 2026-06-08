@@ -434,7 +434,10 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Function* kfn = nullptr;
             try {
                 kfn = lowerKernel(method, *mod);
-            } catch (cajeta::Exception&) {
+            } catch (cajeta::Exception& e) {
+                if (getenv("CAJETA_XPU_DEBUG_LOWER"))
+                    fprintf(stderr, "[lower-skip] %s: %s (%s)\n", entryName.c_str(),
+                            e.getMessage().c_str(), e.getErrorId().c_str());
                 continue;  // unsupported construct → leave to the host path
             }
             if (!kfn) continue;

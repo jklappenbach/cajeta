@@ -190,6 +190,55 @@ public:
         return b.CreateCall(callee, {texHandle, x, y}, "tex.fetch");
     }
 
+    // Texture3D.sample(sampler, u, v, w): the 3-D trilinear sampler — calls the
+    // C runtime __cajeta_xpu_cpu_tex3d_sample_rgba (a third coord vs the 2-D
+    // sampler), returning the filtered <4 x float> voxel.
+    llvm::Value* sampleTexture3D(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* texHandle, llvm::Value* samplerHandle,
+                                 llvm::Value* u, llvm::Value* v,
+                                 llvm::Value* w) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* filterMode =
+            b.CreateExtractValue(samplerHandle, {0}, "samp.filter");
+        llvm::Value* addressMode =
+            b.CreateExtractValue(samplerHandle, {1}, "samp.addr");
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* fnTy = llvm::FunctionType::get(
+            v4f, {llvm::PointerType::get(ctx, 0), i32, i32, f32, f32, f32},
+            /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_tex3d_sample_rgba", fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+            f->setDoesNotThrow();
+        return b.CreateCall(callee, {texHandle, filterMode, addressMode, u, v, w},
+                            "tex3d.sample");
+    }
+
+    // Texture3D.fetch(x, y, z): the 3-D unfiltered voxel read — float or integer
+    // variant by texel type, mirroring the 2-D fetch.
+    //   <4 x float> __cajeta_xpu_cpu_tex3d_fetch_rgba(ptr, i32, i32, i32)
+    //   <4 x i32>   __cajeta_xpu_cpu_tex3d_fetch_rgba_i32(ptr, i32, i32, i32)
+    llvm::Value* fetchTexture3D(llvm::IRBuilderBase& b, llvm::Module& m,
+                                llvm::Value* texHandle, llvm::Value* x,
+                                llvm::Value* y, llvm::Value* z,
+                                llvm::Type* texelTy) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        bool isInt = texelTy && texelTy->isIntegerTy();
+        auto* v4t = llvm::FixedVectorType::get(
+            isInt ? i32 : (llvm::Type*) llvm::Type::getFloatTy(ctx), 4);
+        const char* sym = isInt ? "__cajeta_xpu_cpu_tex3d_fetch_rgba_i32"
+                                : "__cajeta_xpu_cpu_tex3d_fetch_rgba";
+        auto* fnTy = llvm::FunctionType::get(
+            v4t, {llvm::PointerType::get(ctx, 0), i32, i32, i32}, /*vararg=*/false);
+        llvm::FunctionCallee callee = m.getOrInsertFunction(sym, fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+            f->setDoesNotThrow();
+        return b.CreateCall(callee, {texHandle, x, y, z}, "tex3d.fetch");
+    }
+
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime
     // stub (width-1 scalar semantics: one work-item per host invocation). The
     // CPU registration pass then attaches a Vector Function ABI variant to each

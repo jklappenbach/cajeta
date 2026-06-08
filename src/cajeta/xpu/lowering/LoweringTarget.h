@@ -113,14 +113,14 @@ namespace xpu {
             llvm::Type* type;    // buffer element type, scalar type, or (sampler)
                                  // the {i32 filterMode, i32 addressMode} struct
             bool isSigned;       // scalar signedness / buffer-element signedness
-            bool isTexture = false;  // Texture2D<T> — a sampled-image handle (Item 8).
-                                     // Carried as a backend handle (ptr on CPU,
-                                     // image descriptor on Vulkan, image rsrc on
-                                     // AMD); `type` is the texel scalar T (float
-                                     // for float/UNORM/half formats, i32 for the
-                                     // raw-integer formats; `isSigned` tracks
-                                     // int32 vs uint32). The Vulkan image binding
-                                     // and fetchTexture's result vector use it.
+            bool isTexture = false;  // Texture2D<T>/Texture3D<T> — a sampled-image
+                                     // handle (Item 8). Carried as a backend handle
+                                     // (ptr on CPU, image descriptor on Vulkan,
+                                     // image rsrc on AMD); `type` is the texel
+                                     // scalar T (float for float/UNORM/half formats,
+                                     // i32 for the raw-integer formats; `isSigned`
+                                     // tracks int32 vs uint32). The Vulkan image
+                                     // binding and fetchTexture's result vector use it.
             bool isSampler = false;  // Sampler — filter/address descriptor (Item 8).
                                      // `type` is the {i32,i32} mode struct; bound
                                      // by value (CPU/SIMT) or as an OpTypeSampler
@@ -137,6 +137,12 @@ namespace xpu {
                                      // descriptor bound in GENERAL layout. `type` is
                                      // the texel scalar (f32); written by
                                      // `img.store(x, y, v)` (OpImageWrite).
+            int textureDim = 2;      // 2 = Texture2D, 3 = Texture3D (for isTexture
+                                     // params). Selects the image dimensionality
+                                     // (Vulkan spirv.Image Dim + image-type), the
+                                     // coord arity, and the 2-D vs 3-D sample/fetch
+                                     // seam. MUST stay last so the 6/8-field
+                                     // positional KernelParam inits keep their layout.
         };
 
         // Create the kernel function for `name`. Default: a void-returning
@@ -200,6 +206,23 @@ namespace xpu {
         virtual llvm::Value* fetchTexture(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* x, llvm::Value* y,
+            llvm::Type* texelTy);
+
+        // Texture3D — the 3-D (volumetric) twins of sampleTexture/fetchTexture.
+        // Same handle/contract, but a 3-component coordinate (u, v, w) / (x, y, z)
+        // and a 3-D image. `sampleTexture3D` is the trilinear filtered read
+        // (float-only); `fetchTexture3D` the unfiltered exact-voxel read returning
+        // <4 x texelTy>. Default: unsupported (XPU-N01) — only backends with 3-D
+        // image support override (CPU runtime, Vulkan 3-D OpImageSample/Fetch, AMD
+        // __ockl_image_{sample,load}_3D). NVPTX 3-D emit-deferred.
+        virtual llvm::Value* sampleTexture3D(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* samplerHandle,
+            llvm::Value* u, llvm::Value* v, llvm::Value* w);
+
+        virtual llvm::Value* fetchTexture3D(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* x, llvm::Value* y, llvm::Value* z,
             llvm::Type* texelTy);
 
         // Store `value` into the 2-D storage image `imgHandle` at INTEGER texel
