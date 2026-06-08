@@ -98,6 +98,32 @@ namespace cajeta {
             return static_pointer_cast<CajetaClass>(shared_from_this());
         }
 
+        // Default type arguments — fill omitted TRAILING parameters from their
+        // declared defaults (`class Foo<T = float32>` referenced as `Foo`,
+        // `Foo<>`, or with fewer args than params). Done here, BEFORE the cache
+        // key and arity check below, so `Foo` and `Foo<float32>` fill to the
+        // same arg list → the same canonical name and the same cached
+        // instantiation (one type identity, not two). A param whose default is
+        // empty stops the fill, leaving the arity check to reject the gap — so a
+        // non-defaulted template referenced bare still errors, and a default may
+        // only follow defaults. The default text resolves against the global
+        // canonical map (primitives like `float32`, or a registered class).
+        if (args.size() < typeParameters.size()) {
+            for (size_t i = args.size(); i < typeParameters.size(); ++i) {
+                const auto& p = typeParameters[i];
+                if (p.defaultType.empty()) break;
+                auto it = CajetaType::canonicalMap.find(p.defaultType);
+                if (it == CajetaType::canonicalMap.end() || !it->second) {
+                    throw Exception(
+                        "template " + qName->toCanonical() + ": default type '"
+                            + p.defaultType + "' for parameter '" + p.name
+                            + "' is unresolved",
+                        "CAJETA_ERROR_TYPE_PARAMETER_DEFAULT");
+                }
+                args.push_back(it->second);
+            }
+        }
+
         // Placeholder-arg short-circuit. Two flavors of placeholder
         // reach here:
         //

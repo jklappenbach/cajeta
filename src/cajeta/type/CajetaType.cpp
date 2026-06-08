@@ -971,6 +971,32 @@ namespace cajeta {
                         type = templateClass->instantiate(args);
                     }
                 }
+            } else {
+                // No explicit type arguments. If the name denotes a template
+                // whose parameters are ALL defaulted (`class Foo<T = float32>`),
+                // a bare `Foo` means `Foo<float32>` — resolve it to that
+                // instantiation, so default-bearing generics are usable without
+                // `<>` and a type that GAINS a defaulted parameter keeps its
+                // existing bare spellings working. A template with any
+                // non-defaulted parameter is left as the bare template
+                // (unchanged — its use errors elsewhere as today). Inert until a
+                // template actually declares defaults.
+                auto tmpl = dynamic_pointer_cast<CajetaClass>(type);
+                if (!tmpl || !tmpl->isTemplate()) {
+                    if (auto t = findTemplateByShortName(qName->getTypeName())) {
+                        tmpl = dynamic_pointer_cast<CajetaClass>(t);
+                    }
+                }
+                if (tmpl && tmpl->isTemplate()) {
+                    const auto& tps = tmpl->getTypeParameters();
+                    bool allDefaulted = !tps.empty();
+                    for (const auto& p : tps) {
+                        if (p.defaultType.empty()) { allDefaulted = false; break; }
+                    }
+                    if (allDefaulted) {
+                        type = tmpl->instantiate({});
+                    }
+                }
             }
         }
         // Each `[]` pair wraps the type in another CajetaArray. `int[]` -> CajetaArray<int>;
