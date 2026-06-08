@@ -2108,6 +2108,21 @@ private:
                 return target.sampleTexture(builder, mod, th->second, samp, u, v);
             }
         }
+        // Texture2D.fetch(x, y) (texelFetch): unfiltered, sampler-free read of
+        // the exact integer texel (x, y). `recv` names a texture kernel param
+        // (the same sampled-image handle as sample); no Sampler arg. Lowered to
+        // the backend unfiltered image-fetch seam (Vulkan OpImageFetch).
+        if (name == "fetch") {
+            auto th = textureHandles.find(recv);
+            if (th != textureHandles.end()) {
+                const auto& args = mc->getParameters();
+                if (args.size() != 2)
+                    unsupported("Texture2D.fetch expects (x, y)");
+                llvm::Value* x = toI32(lowerExpr(args[0].expression));
+                llvm::Value* y = toI32(lowerExpr(args[1].expression));
+                return target.fetchTexture(builder, mod, th->second, x, y);
+            }
+        }
         // Image2D.store(x, y, value) (writable images). `recv` names a storage-
         // image kernel param; (x, y) are INTEGER texel coords and value the f32
         // texel. Lowered to the backend image-write seam (Vulkan OpImageWrite).
@@ -3278,6 +3293,20 @@ llvm::Value* LoweringTarget::sampleTexture(llvm::IRBuilderBase& /*b*/,
     throw cajeta::Exception(
         "XPU kernel lowering: texture sampling not supported on backend '" +
         std::string(name()) + "'", "XPU-N01");
+}
+
+llvm::Value* LoweringTarget::fetchTexture(llvm::IRBuilderBase& /*b*/,
+                                          llvm::Module& /*m*/,
+                                          llvm::Value* /*texHandle*/,
+                                          llvm::Value* /*x*/,
+                                          llvm::Value* /*y*/) {
+    // Only backends with an unfiltered image read override this (CPU exact
+    // texel read, Vulkan OpImageFetch, AMD __ockl_image_load_2D). The default
+    // rejects a tex.fetch() in a kernel lowered for a backend (e.g. NVPTX in v1)
+    // that has not implemented it.
+    throw cajeta::Exception(
+        "XPU kernel lowering: texture fetch (texelFetch) not supported on "
+        "backend '" + std::string(name()) + "'", "XPU-N01");
 }
 
 void LoweringTarget::storeImage(llvm::IRBuilderBase& /*b*/,

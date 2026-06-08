@@ -215,6 +215,76 @@ const char* kHipR1SampleSrc(const char* fmt) {
     return s.c_str();
 }
 
+// texelFetch on the real AMD device: `tex.fetch(x, y)` reads the exact integer
+// texel of the HIP texture object with NO sampler, lowering to
+// __ockl_image_load_2D -> a gfx1151 image_load. One thread per texel decodes
+// its (x, y); all four RGBA32F channels read back exactly (unfiltered).
+const char* kHipRgbaFetchSrc(const char* fmt) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexFetchHip {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture2D tex, Buffer<float32> out,\n"
+        "                             uint32 w, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 y = i / w;\n"
+        "            uint32 x = i - y * w;\n"
+        "            Vector<float32,4> c = tex.fetch(x, y);\n"
+        "            out[i*4 + 0] = c.x;\n"
+        "            out[i*4 + 1] = c.y;\n"
+        "            out[i*4 + 2] = c.z;\n"
+        "            out[i*4 + 3] = c.w;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[16];\n"   // 2*2 RGBA
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            pixels[t*4 + 0] = r;\n"
+        "            pixels[t*4 + 1] = r + 0.05f;\n"
+        "            pixels[t*4 + 2] = r + 0.1f;\n"
+        "            pixels[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        Texture2D tex = heap Texture2D(w, h, ") + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        uint32 n = 4;\n"
+        "        uint32 m = n * 4;\n"
+        "        float32[] hexp = heap float32[m];\n"
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            hexp[t*4 + 0] = r;\n"
+        "            hexp[t*4 + 1] = r + 0.05f;\n"
+        "            hexp[t*4 + 2] = r + 0.1f;\n"
+        "            hexp[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        float32[] hout = heap float32[m];\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, m);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [64])(tex, out, w, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        out.free();\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) {\n"
+        "            float32 d = hout[i] - hexp[i];\n"
+        "            if (d < -0.02f || d > 0.02f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 } // namespace
 
 // The dispatcher routes a host-source @Kernel program to HIP on the real AMD
@@ -557,6 +627,25 @@ TEST(XpuHipDispatchDeviceTests, textureSampleRgba16fRoutesToHipOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA16F sample mismatch at i)";
+}
+
+// B3 texelFetch on the real AMD device: an RGBA32F Texture2D fetched by exact
+// integer coord on gfx1151 (__ockl_image_load_2D -> image_load), all four
+// channels bit-exact — the device twin of the CPU/Vulkan fetch tests, and proof
+// the ockl image-load link gate fires for fetch as it does for sample.
+TEST(XpuHipDispatchDeviceTests, textureFetchRgba32fRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipRgbaFetchSrc("TextureFormat.RGBA32F"),
+                                  "test.TexFetchHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F fetch mismatch at i)";
 }
 
 // Bundle BOTH amdgpu and cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU

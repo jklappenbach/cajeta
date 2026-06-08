@@ -8787,6 +8787,22 @@ caj_v4f __cajeta_xpu_cpu_tex_sample_rgba(void* texp, int32_t filterMode,
     return a + (b - a) * dy;
 }
 
+// CPU texelFetch — the lowering of `tex.fetch(x, y)`: the unfiltered, sampler-
+// free read of the exact texel at integer coordinate (x, y), mip 0. No
+// addressing mode (the caller guarantees in bounds); coords are clamped here
+// only as a defensive guard so an out-of-range index can never read out of the
+// allocation. Returns the decoded RGBA texel (G/B = 0, A = 1 for <4 channels) —
+// the same convention sampleTexture's gather uses.
+caj_v4f __cajeta_xpu_cpu_tex_fetch_rgba(void* texp, int32_t x, int32_t y) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
+    caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
+    if (!t || !t->data || t->w == 0 || t->h == 0) return zero;
+    int W = (int) t->w, H = (int) t->h;
+    int cx = x < 0 ? 0 : (x >= W ? W - 1 : x);
+    int cy = y < 0 ? 0 : (y >= H ? H - 1 : y);
+    return cajeta_cpu_texel(t, cx, cy);
+}
+
 // --- Launch + module registration -------------------------------------------
 // The compiler lowers `kernel.launch(stream, grid:, block:)(args)` to a call
 // here, passing the kernel's PTX entry name, 1-D grid/block, and the CUDA

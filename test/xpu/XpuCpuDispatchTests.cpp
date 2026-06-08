@@ -586,6 +586,124 @@ static const char* kR1SampleSrcCpu(const char* fmt) {
     return s.c_str();
 }
 
+// texelFetch on CPU (B3): a 2x2 texture read by EXACT integer coordinate via
+// `tex.fetch(x, y)` — unfiltered, no Sampler. Thread i decodes its (x, y) from
+// the row-major index and reads the stored texel, which must come back exactly
+// (no bilinear blend). RGBA variant: all four channels per texel; the per-texel
+// (r, +.05, +.1, +.15) data is in [0,1] so the same source is UNORM-safe within
+// the 0.02 tol. Exercises the format-routed CPU upload + the exact-read seam.
+static const char* kRgbaFetchSrcCpu(const char* fmt) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexFetchCpu {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture2D tex, Buffer<float32> out,\n"
+        "                             uint32 w, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 y = i / w;\n"
+        "            uint32 x = i - y * w;\n"
+        "            Vector<float32,4> c = tex.fetch(x, y);\n"
+        "            out[i*4 + 0] = c.x;\n"
+        "            out[i*4 + 1] = c.y;\n"
+        "            out[i*4 + 2] = c.z;\n"
+        "            out[i*4 + 3] = c.w;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[16];\n"   // 2*2 RGBA
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            pixels[t*4 + 0] = r;\n"
+        "            pixels[t*4 + 1] = r + 0.05f;\n"
+        "            pixels[t*4 + 2] = r + 0.1f;\n"
+        "            pixels[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        Texture2D tex = heap Texture2D(w, h, ") + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        uint32 n = 4;\n"
+        "        uint32 m = n * 4;\n"
+        "        float32[] hexp = heap float32[m];\n"
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            float32 r = (float32)(t) * 0.2f;\n"
+        "            hexp[t*4 + 0] = r;\n"
+        "            hexp[t*4 + 1] = r + 0.05f;\n"
+        "            hexp[t*4 + 2] = r + 0.1f;\n"
+        "            hexp[t*4 + 3] = r + 0.15f;\n"
+        "        }\n"
+        "        float32[] hout = heap float32[m];\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(m);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [n])(tex, out, w, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) {\n"
+        "            float32 d = hout[i] - hexp[i];\n"
+        "            if (d < -0.02f || d > 0.02f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+// texelFetch on CPU, single-channel R32F: a 2x2 image {0,1,2,3} read by integer
+// coordinate returns the EXACT stored value in .x (no filtering); G/B = 0, A = 1.
+static const char* kR1FetchSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexFetchR1Cpu {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture2D tex, Buffer<float32> out,\n"
+        "                             uint32 w, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 y = i / w;\n"
+        "            uint32 x = i - y * w;\n"
+        "            Vector<float32,4> c = tex.fetch(x, y); out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[4];\n"
+        "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
+        "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
+        "        Texture2D tex = heap Texture2D(w, h);\n"          // R32F
+        "        tex.upload(pixels);\n"
+        "        uint32 n = 4;\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [n])(tex, out, w, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -748,6 +866,31 @@ TEST(XpuCpuDispatchTests, textureSampleRgba16fOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA16F sample mismatch at i)";
+}
+
+// B3 texelFetch on CPU, single-channel R32F: `tex.fetch(x, y)` reads the exact
+// stored texel by integer coord — no Sampler, no filtering. The 2x2 {0,1,2,3}
+// image must return each value exactly in .x.
+TEST(XpuCpuDispatchTests, textureFetchOnCpu) {
+    auto jit = CajetaJit::compile(kR1FetchSrcCpu(), "test.TexFetchR1Cpu",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R32F fetch mismatch at i)";
+}
+
+// B3 texelFetch on CPU, RGBA32F: all four channels of each texel read back
+// exactly by integer coordinate (the unfiltered twin of textureSampleRgba32fOnCpu).
+TEST(XpuCpuDispatchTests, textureFetchRgba32fOnCpu) {
+    auto jit = CajetaJit::compile(kRgbaFetchSrcCpu("TextureFormat.RGBA32F"),
+                                  "test.TexFetchCpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F fetch mismatch at i)";
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the

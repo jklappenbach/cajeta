@@ -146,6 +146,31 @@ public:
         return rgba;
     }
 
+    // tex.fetch(x, y) → __ockl_image_load_2D (ROCm device library, linked by
+    // AmdgpuBackend when an __ockl_image_* symbol is referenced). The unfiltered
+    // twin of sampleTexture: it takes the image object ptr (= texHandle,
+    // addrspace 4) and the integer <x, y> coord — NO sampler (the sampler SRD is
+    // unused for a plain image load), no normalization. The image's format
+    // descriptor still decodes the stored encoding (UNORM byte → [0, 1], half →
+    // float). Returns the <4 x float> texel (Texture2D.fetch is Vector<float32,4>).
+    llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
+                              llvm::Value* texHandle, llvm::Value* x,
+                              llvm::Value* y) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v2i = llvm::FixedVectorType::get(i32, 2);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* coord = llvm::PoisonValue::get(v2i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1), "tex.fetch.coord");
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, v2i}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_load_2D", fnTy);
+        return b.CreateCall(s, {texHandle, coord}, "tex.fetch.rgba");
+    }
+
     // (Shader clock uses the base default: llvm.readcyclecounter, which the
     // AMDGPU backend lowers to s_getreg HW_REG_SHADER_CYCLES on RDNA — the GCN/
     // CDNA s_memrealtime/s_memtime intrinsics are not selectable on gfx11+.)
