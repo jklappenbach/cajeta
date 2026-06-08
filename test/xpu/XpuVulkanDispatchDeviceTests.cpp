@@ -706,6 +706,71 @@ static const char* kRgbaFetchSrc(const char* fmt) {
     return s.c_str();
 }
 
+// B3 Step 2b: integer texelFetch source — a Texture2D<int32|uint32> RGBA32I/UI
+// image whose four channels are read back as exact integers (OpImageFetch on an
+// integer-sampled image: spirv.Image sampled-type = i32, result <4 x i32>).
+static const char* kRgbaIntFetchSrc(const char* elem, const char* fmt) {
+    static std::string s;
+    std::string e(elem);
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexFetchInt {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture2D<") + e + "> tex, Buffer<" + e + "> out,\n"
+        "                             uint32 w, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 y = i / w;\n"
+        "            uint32 x = i - y * w;\n"
+        "            Vector<" + e + ",4> c = tex.fetch(x, y);\n"
+        "            out[i*4 + 0] = c.x;\n"
+        "            out[i*4 + 1] = c.y;\n"
+        "            out[i*4 + 2] = c.z;\n"
+        "            out[i*4 + 3] = c.w;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        " + e + "[] pixels = heap " + e + "[16];\n"
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            " + e + " base = (" + e + ")(t) * 10;\n"
+        "            pixels[t*4 + 0] = base + 1;\n"
+        "            pixels[t*4 + 1] = base + 2;\n"
+        "            pixels[t*4 + 2] = base + 3;\n"
+        "            pixels[t*4 + 3] = base + 4;\n"
+        "        }\n"
+        "        Texture2D<" + e + "> tex = heap Texture2D<" + e + ">(w, h, " + fmt + ");\n"
+        "        tex.upload(pixels);\n"
+        "        uint32 n = 4;\n"
+        "        uint32 m = n * 4;\n"
+        "        " + e + "[] hout = heap " + e + "[m];\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) { hout[i] = 0; }\n"
+        "        Buffer<" + e + "> out = heap Buffer<" + e + ">(0, m);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [64])(tex, out, w, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        out.free();\n"
+        "        for (uint32 t = 0; t < 4; t = t + 1) {\n"
+        "            " + e + " base = (" + e + ")(t) * 10;\n"
+        "            if (hout[t*4 + 0] != base + 1) { return (int32)(100 + t*4 + 0); }\n"
+        "            if (hout[t*4 + 1] != base + 2) { return (int32)(100 + t*4 + 1); }\n"
+        "            if (hout[t*4 + 2] != base + 3) { return (int32)(100 + t*4 + 2); }\n"
+        "            if (hout[t*4 + 3] != base + 4) { return (int32)(100 + t*4 + 3); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 // OpImageFetch on a real Vulkan device (RADV / Strix Halo): the sampled image
 // (Sampled=1) is fetched by exact integer coord — no sampler descriptor — and
 // every RGBA32F channel reads back bit-exact.
@@ -722,6 +787,24 @@ TEST(XpuVulkanDispatchDeviceTests, textureFetchRgba32fOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F fetch mismatch at i)";
+}
+
+// B3 Step 2b: integer OpImageFetch on a real Vulkan device (RADV / Strix Halo) —
+// an RGBA32I sampled image (i32 sampled type, VK_FORMAT_R32G32B32A32_SINT) fetched
+// by integer coord; every channel reads back as the exact stored signed integer.
+TEST(XpuVulkanDispatchDeviceTests, textureFetchRgba32iOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kRgbaIntFetchSrc("int32", "TextureFormat.RGBA32I"),
+                                  "test.TexFetchInt", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (RGBA32I device fetch mismatch)";
 }
 
 

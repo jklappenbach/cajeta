@@ -217,6 +217,22 @@ const char* kTextureFetchSource =
     "        if (i < n) { Vector<float32,4> c = tex.fetch(i, 0); out[i] = c.x; }\n"
     "    }\n"
     "}\n";
+
+// Integer texelFetch (B3 Step 2b): a Texture2D<int32> fetch — the lowerer calls
+// __ockl_image_load_2D (v4f32) then bitcasts the raw result to <4 x i32>.
+const char* kIntTextureFetchSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Texture2D;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void fetchTex(Texture2D<int32> tex,\n"
+    "                                Buffer<int32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { Vector<int32,4> c = tex.fetch(i, 0); out[i] = c.x; }\n"
+    "    }\n"
+    "}\n";
 } // namespace
 
 // Item 8 Stage C: tex.sample lowers to a call to the ROCm device-library
@@ -292,6 +308,31 @@ TEST(XpuAmdgpuLoopEmitTests, lowersTextureFetchToOcklLoad) {
     EXPECT_NE(ir.find("ptr addrspace(4)"), std::string::npos) << ir;
     EXPECT_NE(ir.find("__ockl_image_load_2D"), std::string::npos) << ir;
     EXPECT_EQ(ir.find("__ockl_image_sample_2D"), std::string::npos) << ir;
+}
+
+// Integer fetch (B3 Step 2b): a Texture2D<int32> still loads via the only ockl
+// 2-D image-load symbol (v4f32-returning), but the lowerer bitcasts the raw
+// result to <4 x i32> to recover the integers — the HW image_load is raw on a
+// non-normalized integer SRD. GPU-free; just the IR shape.
+TEST(XpuAmdgpuLoopEmitTests, intTextureFetchBitcastsToI32) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kIntTextureFetchSource, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "fetchTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_texfetch_int_amdgpu_ir", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    llvm::Function* fn = lowerKernel(k, deviceModule);
+    ASSERT_NE(fn, nullptr);
+
+    std::string ir = printModule(deviceModule);
+    EXPECT_NE(ir.find("__ockl_image_load_2D"), std::string::npos) << ir;
+    // The raw v4f32 image-load result reinterpreted as integers.
+    EXPECT_NE(ir.find("bitcast <4 x float>"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("to <4 x i32>"), std::string::npos) << ir;
 }
 
 // With the ROCm device bitcode present, the link + AMDGPU codegen turn the fetch

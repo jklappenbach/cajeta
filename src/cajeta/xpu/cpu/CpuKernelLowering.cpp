@@ -169,17 +169,22 @@ public:
     // Sampler arg (x, y are i32 texel indices).
     //
     //   <4 x float> __cajeta_xpu_cpu_tex_fetch_rgba(ptr tex, i32 x, i32 y)
+    //   <4 x i32>   __cajeta_xpu_cpu_tex_fetch_rgba_i32(ptr tex, i32 x, i32 y)
+    // The integer variant reinterprets the texel store as raw i32 (the upload
+    // memcpy'd the integer bits in verbatim) — for Texture2D<int32>/<uint32>.
     llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                               llvm::Value* texHandle, llvm::Value* x,
-                              llvm::Value* y) override {
+                              llvm::Value* y, llvm::Type* texelTy) override {
         llvm::LLVMContext& ctx = m.getContext();
-        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
-        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        bool isInt = texelTy && texelTy->isIntegerTy();
+        auto* v4t = llvm::FixedVectorType::get(
+            isInt ? i32 : (llvm::Type*) llvm::Type::getFloatTy(ctx), 4);
+        const char* sym = isInt ? "__cajeta_xpu_cpu_tex_fetch_rgba_i32"
+                                : "__cajeta_xpu_cpu_tex_fetch_rgba";
         auto* fnTy = llvm::FunctionType::get(
-            v4f, {llvm::PointerType::get(ctx, 0), i32, i32}, /*vararg=*/false);
-        llvm::FunctionCallee callee =
-            m.getOrInsertFunction("__cajeta_xpu_cpu_tex_fetch_rgba", fnTy);
+            v4t, {llvm::PointerType::get(ctx, 0), i32, i32}, /*vararg=*/false);
+        llvm::FunctionCallee callee = m.getOrInsertFunction(sym, fnTy);
         if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
             f->setDoesNotThrow();
         return b.CreateCall(callee, {texHandle, x, y}, "tex.fetch");

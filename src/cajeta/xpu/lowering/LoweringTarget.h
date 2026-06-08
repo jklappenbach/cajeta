@@ -113,10 +113,14 @@ namespace xpu {
             llvm::Type* type;    // buffer element type, scalar type, or (sampler)
                                  // the {i32 filterMode, i32 addressMode} struct
             bool isSigned;       // scalar signedness / buffer-element signedness
-            bool isTexture = false;  // Texture2D — a sampled-image handle (Item 8).
+            bool isTexture = false;  // Texture2D<T> — a sampled-image handle (Item 8).
                                      // Carried as a backend handle (ptr on CPU,
                                      // image descriptor on Vulkan, image rsrc on
-                                     // AMD); `type` is the texel scalar (f32).
+                                     // AMD); `type` is the texel scalar T (float
+                                     // for float/UNORM/half formats, i32 for the
+                                     // raw-integer formats; `isSigned` tracks
+                                     // int32 vs uint32). The Vulkan image binding
+                                     // and fetchTexture's result vector use it.
             bool isSampler = false;  // Sampler — filter/address descriptor (Item 8).
                                      // `type` is the {i32,i32} mode struct; bound
                                      // by value (CPU/SIMT) or as an OpTypeSampler
@@ -177,19 +181,26 @@ namespace xpu {
 
         // Fetch (texelFetch) the 2-D texture `texHandle` at the EXACT integer
         // coordinate (x, y), mip level 0, unfiltered and WITHOUT a sampler,
-        // returning the texel as a <4 x float> — the lowering of
-        // `tex.fetch(x, y)`. The unfiltered twin of sampleTexture: same texture
-        // descriptor (`texHandle` from materializeParam; a *sampled* image, not
-        // a storage image — that distinguishes this from loadImage), no sampler,
-        // no addressing mode. `x`/`y` are i32 texel indices (NOT normalized).
+        // returning the texel as a <4 x `texelTy`> — the lowering of
+        // `tex.fetch(x, y)` on a Texture2D<T> (`texelTy` is T's scalar LLVM type:
+        // float for the float/UNORM/half formats, i32 for the raw-integer
+        // formats R32I/R32UI/RGBA32I/RGBA32UI). The unfiltered twin of
+        // sampleTexture: same texture descriptor (`texHandle` from
+        // materializeParam; a *sampled* image, not a storage image — that
+        // distinguishes this from loadImage), no sampler, no addressing mode.
+        // `x`/`y` are i32 texel indices (NOT normalized).
         // Default: unsupported (XPU-N01) — only backends with an unfiltered
         // image read override. Vulkan emits OpImageFetch (+ Lod 0) via
         // llvm.spv.resource.load.level (the sampled-image Sampled=1 branch of
-        // the read/fetch selection); AMD via __ockl_image_load_2D; CPU via the
-        // exact texel read. (NVPTX emit-deferred.)
+        // the read/fetch selection); AMD via __ockl_image_load_2D (the float4
+        // result bitcast to <4 x i32> for integer formats — the HW image_load is
+        // raw for a non-normalized integer image); CPU via the exact texel read.
+        // (NVPTX emit-deferred.) sampleTexture takes no texelTy — sampling is
+        // float-only (integer textures are rejected at the call site).
         virtual llvm::Value* fetchTexture(
             llvm::IRBuilderBase& b, llvm::Module& m,
-            llvm::Value* texHandle, llvm::Value* x, llvm::Value* y);
+            llvm::Value* texHandle, llvm::Value* x, llvm::Value* y,
+            llvm::Type* texelTy);
 
         // Store `value` into the 2-D storage image `imgHandle` at INTEGER texel
         // coordinate (x, y) — the lowering of `img.store(x, y, value)` (writable

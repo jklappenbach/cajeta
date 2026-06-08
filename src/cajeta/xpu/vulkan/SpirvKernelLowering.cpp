@@ -331,12 +331,15 @@ public:
     // <4 x float> texel directly (Texture2D.fetch is typed Vector<float32,4>).
     llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                               llvm::Value* texHandle, llvm::Value* x,
-                              llvm::Value* y) override {
+                              llvm::Value* y, llvm::Type* texelTy) override {
         llvm::LLVMContext& ctx = m.getContext();
-        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         auto* v2i = llvm::FixedVectorType::get(i32, 2);
-        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        // The result is <4 x T>: <4 x float> for the float formats, <4 x i32> for
+        // the raw-integer formats. `texHandle` is already an integer-sampled image
+        // when T = i32 (materializeParam built spirv.Image with sampled type i32
+        // from p.type), so OpImageFetch on it yields integer texels natively.
+        auto* v4t = llvm::FixedVectorType::get(texelTy, 4);
         llvm::Value* coord = llvm::PoisonValue::get(v2i);
         coord = b.CreateInsertElement(coord, x, uint64_t(0));
         coord = b.CreateInsertElement(coord, y, uint64_t(1), "tex.fetch.coord");
@@ -344,7 +347,7 @@ public:
         // CreateIntrinsic infers the (result, image, coord, lod) overloads from
         // the operand types (the same overload-inference the samplelevel path
         // relies on).
-        return b.CreateIntrinsic(v4f, llvm::Intrinsic::spv_resource_load_level,
+        return b.CreateIntrinsic(v4t, llvm::Intrinsic::spv_resource_load_level,
                                  {texHandle, coord, lod}, nullptr, "tex.fetch");
     }
 
