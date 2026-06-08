@@ -1,0 +1,69 @@
+package tour.net;
+
+import tour.DemoClass;
+
+// cajeta.net — the synchronous TCP surface. This demo runs a complete loopback
+// echo on a single fiber: bind a listener on 127.0.0.1:0 (an ephemeral port),
+// connect a client, send four bytes, echo them from the server, and verify the
+// round-trip. On loopback the kernel completes the connect into the listen
+// backlog, so one fiber can drive both ends without spawning.
+//
+//   IpAddress      — an IP (here, the v4 loopback 127.0.0.1)
+//   SocketAddress  — IP + port
+//   TcpListener    — bind / boundPort / accept
+//   TcpStream      — connect / read / write / close
+//
+// (The async surface — readAsync/writeAsync/acceptAsync on the fiber reactor —
+//  is exercised by the net test suite; this keeps the tour deterministic.)
+
+import cajeta.net.IpAddress;
+import cajeta.net.SocketAddress;
+import cajeta.net.TcpListener;
+import cajeta.net.TcpStream;
+
+public class NetDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Networking: TCP loopback echo (cajeta.net) --");
+
+        // Server: bind 127.0.0.1:0, read back the kernel-assigned port.
+        IpAddress listenAddr = IpAddress.loopbackV4();
+        SocketAddress bindAddr = SocketAddress.of(#listenAddr, 0);
+        TcpListener listener = TcpListener.bind(bindAddr);
+        int32 port = listener.boundPort();
+        System.stdout.println("  bound 127.0.0.1 on an ephemeral port (port > 0 = "
+            + (port > 0) + ")");
+
+        // Client: connect to that port; server accepts the connection.
+        IpAddress clientAddr = IpAddress.loopbackV4();
+        SocketAddress connAddr = SocketAddress.of(#clientAddr, port);
+        TcpStream client = TcpStream.connect(#connAddr);
+        TcpStream server = listener.accept();
+
+        // Client writes 4 bytes: "ping" = 112,105,110,103.
+        int8[] ping = heap int8[4];
+        ping[0] = (int8) 112;
+        ping[1] = (int8) 105;
+        ping[2] = (int8) 110;
+        ping[3] = (int8) 103;
+        client.write(ping, (int64) 0, (int64) 4);
+
+        // Server reads them and echoes them straight back.
+        int8[] rbuf = heap int8[4];
+        int64 got = server.read(rbuf, (int64) 0, (int64) 4);
+        server.write(rbuf, (int64) 0, got);
+
+        // Client reads the echo and checks it byte-for-byte.
+        int8[] echo = heap int8[4];
+        int64 echoGot = client.read(echo, (int64) 0, (int64) 4);
+        boolean match = echoGot == (int64) 4
+            && echo[0] == (int8) 112 && echo[1] == (int8) 105
+            && echo[2] == (int8) 110 && echo[3] == (int8) 103;
+        System.stdout.println("  echoed " + echoGot
+            + " bytes; round-trip matches \"ping\" = " + match);
+
+        client.close();
+        server.close();
+        listener.close();
+    }
+}

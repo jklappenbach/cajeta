@@ -1,0 +1,129 @@
+package tour.wire;
+
+import tour.DemoClass;
+
+// Views — typed overlays onto a byte buffer. Reads and writes go
+// through to the buffer's bytes directly; no allocation, no copy,
+// no object graph. Endianness defaults to @HostEndian; annotate
+// @BigEndian (network order) or @LittleEndian (Intel / most file
+// formats) on any view whose bytes cross machines.
+//
+// This demo walks four flavors:
+//
+//   1. PacketHeader  — fixed-size, @BigEndian. Multi-byte fields
+//                      bswap on access; the buffer bytes stay
+//                      big-endian regardless of host byte order.
+//   2. CacheEntry    — fixed-size, no annotation → @HostEndian by
+//                      default. Native layout, bswap elided. Best
+//                      for in-process structured memory (caches,
+//                      ring buffers) that never leaves the machine.
+//   3. UserRecord    — variable-size, @LittleEndian. Trailing
+//                      Strings carry an i32 length-prefix + UTF-8
+//                      bytes; per-field offsets after the first
+//                      variable-size field are resolved at
+//                      construction time.
+//   4. Line          — nested view. Two inline Points lay out
+//                      back-to-back inside the buffer — no
+//                      indirection, no padding.
+//
+// The buffer is a `uint32[]` — raw bytes are unsigned, and the
+// 32-bit width lets us spell exact byte patterns by hand without
+// per-byte writes. Production code typically uses `uint8[]` (the
+// view doesn't care which array width backs it as long as the
+// total byte count is large enough).
+
+@BigEndian
+public view PacketHeader {
+    int32 magic;
+    int16 version;
+    int16 flags;
+    int32 payloadLength;
+}
+
+// No endianness annotation → defaults to @HostEndian (host byte
+// order, no bswap). Fine for an in-process cache that never crosses
+// machines; a wire/file format should annotate explicitly instead.
+public view CacheEntry {
+    int64 key;
+    int32 hits;
+    int32 lastTouchTick;
+}
+
+@LittleEndian
+public view UserRecord {
+    int32  id;
+    String name;
+    String email;
+}
+
+@HostEndian
+public view Pt {
+    int32 x;
+    int32 y;
+}
+
+@HostEndian
+public view Line {
+    Pt a;
+    Pt b;
+}
+
+public class ViewsDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Views and wire formats --");
+
+        // 1. @BigEndian fixed-size header.
+        // 12 bytes: i32 magic, i16 version, i16 flags, i32 length.
+        uint32[] hdrBuf = heap uint32[3];
+        PacketHeader hdr = PacketHeader(hdrBuf);
+        hdr.magic = 51966;          // 0xCAFE
+        hdr.version = 1;
+        hdr.flags = 0;
+        hdr.payloadLength = 256;
+        System.stdout.println("  @BigEndian PacketHeader.magic    = " + hdr.magic);
+        System.stdout.println("  @BigEndian PacketHeader.version  = " + hdr.version);
+        System.stdout.println("  @BigEndian PacketHeader.payload  = " + hdr.payloadLength);
+
+        // 2. Fixed-size cache entry — no annotation, so host order.
+        uint32[] cacheBuf = heap uint32[4];   // i64 + i32 + i32 = 16 bytes
+        CacheEntry e = CacheEntry(cacheBuf);
+        e.key = 100L;
+        e.hits = 7;
+        e.lastTouchTick = 42;
+        System.stdout.println("  @HostEndian CacheEntry.key       = " + e.key);
+        System.stdout.println("  @HostEndian CacheEntry.hits      = " + e.hits);
+
+        // 3. @LittleEndian variable-size record. Hand-laid layout:
+        //    bytes[0] = id              (i32)
+        //    bytes[1] = name.length     (i32, value=4)
+        //    bytes[2] = "Alex"          ('A'=0x41, 'l'=0x6C, 'e'=0x65, 'x'=0x78
+        //                                → LE i32 = 0x78656C41 = 2019912769)
+        //    bytes[3] = email.length    (i32, value=4)
+        //    bytes[4] = "a@e."          ('a'=0x61, '@'=0x40, 'e'=0x65, '.'=0x2E
+        //                                → LE i32 = 0x2E654061 = 778387553)
+        uint32[] userBuf = heap uint32[5];
+        userBuf[0] = 9001;             // id
+        userBuf[1] = 4;                // name length
+        userBuf[2] = 2019912769;       // "Alex"  little-endian
+        userBuf[3] = 4;                // email length
+        userBuf[4] = 778387553;        // "a@e."  little-endian
+        UserRecord u = UserRecord(userBuf);
+        System.stdout.println("  @LittleEndian UserRecord.id      = " + u.id);
+        System.stdout.println("  @LittleEndian UserRecord.name    = " + u.name);
+        System.stdout.println("  @LittleEndian UserRecord.email   = " + u.email);
+
+        // 4. Nested views. Line composes two Points inline — total
+        // 16 bytes, no indirection.
+        uint32[] lineBuf = heap uint32[4];
+        Line ln = Line(lineBuf);
+        ln.a.x = 1;
+        ln.a.y = 2;
+        ln.b.x = 4;
+        ln.b.y = 6;
+        int32 dx = ln.b.x - ln.a.x;
+        int32 dy = ln.b.y - ln.a.y;
+        System.stdout.println("  nested Line  dx,dy            = "
+            + dx + "," + dy);
+    }
+}

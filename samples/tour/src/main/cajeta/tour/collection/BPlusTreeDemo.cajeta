@@ -1,0 +1,26 @@
+package tour.collection;
+
+import tour.DemoClass;
+import cajeta.collection.BPlusTree;
+
+// In-memory B+ tree ordered map. Wide nodes (order 32) keep the tree
+// shallow and cache-friendly; values live in the leaves, chained for
+// in-order traversal. Inserting past the order forces leaf and
+// internal-node splits that cascade toward the root.
+public class BPlusTreeDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- BPlusTree (in-memory) --");
+
+        BPlusTree<int32, int32> t = heap BPlusTree<int32, int32>();
+        int32 i = 0;
+        while (i < 200) {
+            t.put(i, i * 3);
+            i = i + 1;
+        }
+
+        System.stdout.println("  count    = " + (int32) t.count());
+        System.stdout.println("  get(150) = " + t.get(150));
+        System.stdout.println("  min      = " + t.min());
+    }
+}

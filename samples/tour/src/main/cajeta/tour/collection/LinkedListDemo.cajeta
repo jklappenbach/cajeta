@@ -1,0 +1,22 @@
+package tour.collection;
+
+import tour.DemoClass;
+import cajeta.collection.LinkedList;
+
+// Doubly-linked list. Indexed get() is O(n) but uniform iteration via
+// add()/contains() is constant-time per element.
+public class LinkedListDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- LinkedList --");
+        LinkedList<int32> list = heap LinkedList<int32>();
+        list.add(7);
+        list.add(11);
+        list.add(13);
+        boolean has11 = list.contains(11);
+        boolean has99 = list.contains(99);
+        System.stdout.println("  count        = " + (int32) list.count());
+        System.stdout.println("  contains(11) = " + has11);
+        System.stdout.println("  contains(99) = " + has99);
+    }
+}

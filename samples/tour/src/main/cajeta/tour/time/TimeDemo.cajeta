@@ -1,0 +1,106 @@
+package tour.time;
+
+import tour.DemoClass;
+
+// cajeta.time — a java.time-shaped date/time library. Every type here is a
+// stack value (no heap, no allocation); they compose by returning new values
+// rather than mutating. This demo touches each load-bearing class once.
+//
+//   Duration          — a length of time (no calendar)
+//   Instant           — a point on the UTC epoch timeline
+//   LocalDate         — a calendar date (no time, no zone)
+//   LocalTime         — a wall-clock time (no date)
+//   LocalDateTime     — date + time (still no zone)
+//   Period            — a calendar span (years / months / days)
+//   ZoneOffset        — a fixed offset from UTC
+//   ZoneId            — a named IANA zone (resolves an offset at an instant)
+//   ZonedDateTime     — an instant seen through a zone
+//   DateTimeFormatter — strftime-style formatting
+//   Clock             — the system clock
+//
+// Note: each intermediate is bound to its own local. These are value types,
+// so we don't chain a second call onto a method's return (`a.f().g()`); we
+// name `a.f()` first, then call `.g()` on the named value.
+
+import cajeta.time.Duration;
+import cajeta.time.Instant;
+import cajeta.time.LocalDate;
+import cajeta.time.LocalTime;
+import cajeta.time.LocalDateTime;
+import cajeta.time.Period;
+import cajeta.time.ZoneOffset;
+import cajeta.time.ZoneId;
+import cajeta.time.ZonedDateTime;
+import cajeta.time.DateTimeFormatter;
+import cajeta.time.Clock;
+
+public class TimeDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Time (cajeta.time) --");
+
+        // Duration — arithmetic on lengths of time.
+        Duration mins = Duration.ofMinutes(90L);
+        Duration secs = Duration.ofSeconds(30L);
+        Duration d = mins.plus(secs);
+        System.stdout.println("  Duration 90m+30s = " + d.toSeconds()
+            + "s (" + d.toMinutes() + "m truncated)");
+
+        // Instant — a fixed epoch point, plus a Duration, and the gap between.
+        Instant t0 = Instant.ofEpochSecond(1000L);
+        Duration oneHour = Duration.ofHours(1L);
+        Instant t1 = t0.plus(oneHour);
+        Duration gap = Instant.between(t0, t1);
+        boolean before = t0.isBefore(t1);
+        System.stdout.println("  Instant 1000s +1h: gap = " + gap.toMinutes()
+            + "m, t0.isBefore(t1) = " + before);
+
+        // LocalDate — calendar math, leap-year aware.
+        LocalDate date = LocalDate.of(2024, 2, 28);
+        LocalDate next = date.plusDays(1L);
+        boolean leap = date.isLeap();
+        System.stdout.println("  LocalDate 2024-02-28 +1d = " + next.getYear()
+            + "-" + next.getMonthValue() + "-" + next.getDayOfMonth()
+            + " (2024 leap = " + leap + ")");
+
+        // LocalTime — wall-clock arithmetic that wraps past midnight.
+        LocalTime base = LocalTime.ofHms(23, 30, 0);
+        LocalTime tm = base.plusMinutes(45L);
+        System.stdout.println("  LocalTime 23:30 +45m = " + tm.getHour()
+            + ":" + tm.getMinute());
+
+        // LocalDateTime — date + time together.
+        LocalDateTime dt = LocalDateTime.of(2026, 6, 8, 14, 30);
+        LocalDateTime dt2 = dt.plusHours(12L);
+        System.stdout.println("  LocalDateTime 2026-06-08 14:30 +12h: day = "
+            + dt2.getDayOfMonth() + ", hour = " + dt2.getHour());
+
+        // Period — a calendar span, normalized to total months.
+        Period p = Period.of(1, 2, 10);
+        int64 totalMonths = p.toTotalMonths();
+        System.stdout.println("  Period 1y2m10d = " + p.getYears() + "y "
+            + p.getMonths() + "m " + p.getDays() + "d ("
+            + totalMonths + " total months)");
+
+        // ZoneOffset / ZoneId / ZonedDateTime — offsets and zones.
+        ZoneOffset minus5 = ZoneOffset.ofHours(-5);
+        System.stdout.println("  ZoneOffset -5h = " + minus5.getTotalSeconds() + "s");
+        ZoneId utc = ZoneId.of("UTC");
+        ZoneOffset utcOff = utc.offsetAt(t0);
+        ZonedDateTime zdt = ZonedDateTime.ofInstant(t0, utcOff);
+        ZoneOffset zdtOff = zdt.getOffset();
+        System.stdout.println("  ZoneId 'UTC' offset = " + utcOff.getTotalSeconds()
+            + "s; ZonedDateTime year = " + zdt.getYear()
+            + ", offset = " + zdtOff.getTotalSeconds() + "s");
+
+        // DateTimeFormatter — strftime-style pattern formatting.
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
+        String formatted = fmt.formatDateTime(dt);
+        System.stdout.println("  DateTimeFormatter = " + formatted);
+
+        // Clock — the system clock (value varies run-to-run; just prove it ticks).
+        Instant now = Clock.now();
+        int64 nowEpoch = now.getEpochSecond();
+        System.stdout.println("  Clock.now() is after the epoch = " + (nowEpoch > 0L));
+    }
+}

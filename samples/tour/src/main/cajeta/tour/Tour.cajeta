@@ -2,6 +2,21 @@ package tour;
 
 import cajeta.collection.ArrayList;
 
+// Demos now live in topic subpackages (mirroring the stdlib layout);
+// wildcard-import each so the demos[] initializer below can name them
+// by their simple class name. DemoClass and the shared support classes
+// (Point, Counter) stay in this root `tour` package.
+import tour.lang.*;
+import tour.collection.*;
+import tour.concurrent.*;
+import tour.math.*;
+import tour.error.*;
+import tour.wire.*;
+import tour.time.*;
+import tour.net.*;
+import tour.io.*;
+import tour.codec.*;
+
 // Cajeta language tour. Every load-bearing feature of the language
 // has a demo class extending DemoClass; this entry point puts one
 // instance of every demo into a list, then walks the list calling
@@ -54,6 +69,9 @@ public final class Tour {
         demos.add(heap ViewsDemo());
         demos.add(heap ParallelStreamsDemo());
         demos.add(heap AsyncDemo());
+        demos.add(heap ConcurrentDemo());
+        demos.add(heap TimeDemo());
+        demos.add(heap NetDemo());
         demos.add(heap JsonDemo());
         demos.add(heap AspectsDiDemo());
         demos.add(heap WildcardsDemo());

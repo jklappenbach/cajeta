@@ -11,10 +11,10 @@ Current focus:
   - [x] Refactor tour into proper cajeta project with build file (cajeta.json + src/main/cajeta/tour/; build.sh/run.sh drive the build tool)
   - [x] lower case Tour
   - Organize into directory reflecting major packages (optional: split flat `tour` pkg into sub-packages — see plan D1)
-  - time (demos — pending)
-  - concurrent (was "fiber"; demos — pending)
-  - net (demos — pending, gated on cajeta.net)
-  - reflection (demo — pending)
+  - [x] time (TimeDemo — every cajeta.time class exercised)
+  - [x] concurrent (ConcurrentDemo — Channel/Atomic32+64/Mutex/RwLock/Semaphore/Lock+LockGuard; async is in AsyncDemo)
+  - [x] net (NetDemo — TCP loopback echo over cajeta.net)
+  - reflection (demo — BLOCKED on building cajeta.reflect; impl plan: plans/reflection/reflection-plan.md — tour demo lands after REFL phases 1–4)
 - Views
   - [x] Default byte ordering is @HostEndian (unannotated view == @HostEndian; CajetaView rejection removed, Views.md updated, ViewEndiannessDefaultTests)
 - Profiler                          → plans/profiler/profiler-plan.md (NEW)
