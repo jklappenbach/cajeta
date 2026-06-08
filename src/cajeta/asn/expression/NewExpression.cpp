@@ -72,6 +72,31 @@ namespace cajeta {
         return CajetaQuaternion::validateAndCreate(module, typeArguments[0]);
     }
 
+    // Bare construction of a default-bearing template — `heap Box(args)` for
+    // `class Box<T = int32>` → Box<int32>. The construction-site twin of
+    // CajetaType::fromContext's default resolution (which handles type-use
+    // sites: field/param/local/return types), so `heap Texture2D(w, h)` keeps
+    // working once Texture2D gains a defaulted parameter. Returns `type`
+    // unchanged unless it names a template whose parameters are ALL defaulted.
+    // Only the no-type-arguments, non-diamond case calls this; explicit args
+    // and `<>` are handled by their own paths.
+    static CajetaTypePtr defaultedInstantiation(CajetaTypePtr type,
+                                                const string& typeName) {
+        auto klass = dynamic_pointer_cast<CajetaClass>(type);
+        if (!klass || !klass->isTemplate()) {
+            if (auto t = CajetaType::findTemplateByShortName(typeName)) {
+                klass = dynamic_pointer_cast<CajetaClass>(t);
+            }
+        }
+        if (!klass || !klass->isTemplate()) return type;
+        const auto& tps = klass->getTypeParameters();
+        if (tps.empty()) return type;
+        for (const auto& p : tps) {
+            if (p.defaultType.empty()) return type;
+        }
+        return klass->instantiate({});
+    }
+
     void NewExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (typeName.empty()) return;
@@ -107,6 +132,9 @@ namespace cajeta {
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
             }
+        } else if (!isDiamond) {
+            // Bare `heap Box(args)` of a default-bearing template → Box<defaults>.
+            type = defaultedInstantiation(type, typeName);
         }
         // For `new T[N]` / `new T[N][M]`, the value's static type is T[],
         // not T. Wrap in CajetaArray for each `[]` pair so consumers
@@ -316,6 +344,12 @@ namespace cajeta {
                 }
             }
             type = klass->instantiate(klass->inferDiamondArgs(argTypes));
+        }
+        // Bare `heap Box(args)` of a default-bearing template → Box<defaults>
+        // (mirrors resolveTypes; keeps the codegen-time type identical to the
+        // resolve-time one so both agree on the instantiation).
+        else {
+            type = defaultedInstantiation(type, typeName);
         }
         creatorRest->setTargetType(type);
         // P2a: propagate stack-alloc choice down to ClassCreatorRest so

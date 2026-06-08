@@ -40,6 +40,17 @@ namespace cajeta {
         bool isNonType = false;
         string nonTypePrimitive;         // declared primitive name when isNonType
 
+        // Default type argument — `<T = float32>`. The text of the default
+        // `typeType` (e.g. "float32"), captured at parse time (no module is
+        // available at the prescan capture site, so it can't be resolved to a
+        // CajetaType here) and resolved against `CajetaType::canonicalMap` when
+        // an instantiation omits the trailing argument. Empty = no default.
+        // Defaults must be TRAILING (a non-defaulted param can't follow a
+        // defaulted one); the instantiator fills omitted trailing args and the
+        // arity check rejects a gap that no default covers. Type params only
+        // (v1) — non-type defaults (`uint32 N = 4`) are not parsed.
+        string defaultType;
+
         TypeParameter() = default;
         TypeParameter(string name) : name(std::move(name)) {}
     };

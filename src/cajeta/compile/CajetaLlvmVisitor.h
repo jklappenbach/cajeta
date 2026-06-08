@@ -226,11 +226,17 @@ namespace cajeta {
                         // Non-type (integer-constant) parameter: `primitiveType identifier`.
                         param.isNonType = true;
                         param.nonTypePrimitive = pt->getText();
-                    } else if (auto* bound = tp->typeBound()) {
-                        for (auto* tt : bound->typeType()) {
-                            if (auto* coi = tt->classOrInterfaceType()) {
-                                param.bounds.push_back(QualifiedName::fromContext(coi));
+                    } else {
+                        if (auto* bound = tp->typeBound()) {
+                            for (auto* tt : bound->typeType()) {
+                                if (auto* coi = tt->classOrInterfaceType()) {
+                                    param.bounds.push_back(QualifiedName::fromContext(coi));
+                                }
                             }
+                        }
+                        // Default type argument `<T = float32>`.
+                        if (auto* dflt = tp->typeType()) {
+                            param.defaultType = dflt->getText();
                         }
                     }
                     params.push_back(std::move(param));
