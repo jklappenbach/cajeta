@@ -30,11 +30,16 @@ bool isBufferInstantiation(const std::string& canonical) {
     return canonical[kPrefix.size()] == '<';
 }
 
-// Texture2D / Sampler (Item 8) are matched by exact canonical name (neither is
-// a template, so no `<...>` follow-on like Buffer). Texture2D is a read-only
-// 2-D float image; Sampler is its filtering/addressing config.
+// Texture2D is now templated on its texel scalar — `Texture2D<T = float32>` —
+// so an instance's canonical is either the bare `cajeta.xpu.core.Texture2D`
+// (default-filled to `<float32>`) or `cajeta.xpu.core.Texture2D<...>`. Match the
+// prefix like Buffer. Sampler is NOT a template (exact match).
 bool isTextureCanonical(const std::string& canonical) {
-    return canonical == "cajeta.xpu.core.Texture2D";
+    static const std::string kPrefix = "cajeta.xpu.core.Texture2D";
+    if (canonical.size() < kPrefix.size()) return false;
+    if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
+    if (canonical.size() == kPrefix.size()) return true;
+    return canonical[kPrefix.size()] == '<';
 }
 bool isSamplerCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.core.Sampler";
