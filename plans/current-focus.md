@@ -1,0 +1,43 @@
+Current focus:
+- Finish the build-tool
+  - Build tool interface in Intellij Plugin
+- Continue on gpu/xpu/gfx
+- Olle
+  - Cloudflare Setup and Launch
+  - Proper icon / logo for Olle
+- Tour
+  - Organize into directory reflecting major packages
+  - time
+  - fiber
+  - net
+  - Refactor tour into proper cajeta project with build file
+  - lower case Tour
+  - reflection
+- Views
+  - Default byte ordering is @HostEndian
+- Profiler
+  - Profiler interface in IntelliJ Plugin
+  - Report format
+  - Broad Capture
+  - Specific method timing
+- Installer - finish it
+  - cvm - finish it
+- Unit Test Fx
+  - CUnit
+  - Mocks
+  - Fakes
+- Network 
+  - Workout network layer
+  - Tour examples
+  - Clients & Servers
+    - TCP Server
+    - Web Server
+    - ThreadPerConnection
+    - ThreadPooled (event driven / completion port)
+    - Zero copy
+    - View example
+    - UDP Multicast
+    - Gossip
+  - MessageDriven
+- Compiler
+  - Enhanced output (curses) to provide completion feedback
