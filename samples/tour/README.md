@@ -25,59 +25,68 @@ samples/tour/
 │   ├── run-xpu.sh        ← compile + run for any backend (default cpu)
 │   └── src/tourxpu/XpuTour.cajeta
 └── src/main/cajeta/tour/
+    │  Demos are grouped into topic subpackages that mirror the stdlib
+    │  layout (cajeta.lang, cajeta.collection, cajeta.concurrent, …).
+    │  The entry point, the shared base class, and the cross-package
+    │  support classes stay in the root `tour` package.
+    │
     ├── Tour.cajeta              ← entry point — builds the demos[] array
+    │                              (wildcard-imports each subpackage below)
     ├── DemoClass.cajeta         ← base class with virtual execute()
+    ├── Point.cajeta             ← support: class with fields + ctor (shared)
+    ├── Counter.cajeta           ← support: mutable class for lambda capture (shared)
     │
-    ├── AllocationDemo.cajeta    ← stack vs heap allocation
-    ├── OwnershipDemo.cajeta     ← #-transfer (use-after-move is a compile error)
-    ├── ClassesDemo.cajeta       ← fields, constructors, methods
-    ├── InheritanceDemo.cajeta   ← virtual dispatch via vtable
-    ├── TemplatesDemo.cajeta     ← Box<T>, Stream<T> monomorphization
-    ├── StreamsDemo.cajeta       ← filter / map / reduce
-    ├── ArrayListDemo.cajeta     ← dynamic array
-    ├── HashMapDemo.cajeta       ← open-addressing hash map
-    ├── HashSetDemo.cajeta       ← set-of-T
-    ├── LinkedListDemo.cajeta    ← doubly-linked list
-    ├── LambdasDemo.cajeta       ← closure capture by borrow
-    ├── ErrorsDemo.cajeta        ← try / catch / throw
-    ├── AnnotationsDemo.cajeta   ← @Builder + @Builder.Default + @ToString
-    ├── PrimitivesDemo.cajeta    ← int8/16/32/64, float32/64, char, boolean
-    ├── StringDemo.cajeta        ← trim / contains / substring / replace
-    ├── ControlFlowDemo.cajeta   ← if / while / for / enhanced-for
-    ├── MathDemo.cajeta          ← Math.max / min / clamp (method-level templates)
-    ├── FormatStringDemo.cajeta  ← System.stdout.println(fmt, args...) with `{}`
-    ├── ViewsDemo.cajeta         ← view types & wire formats (@BigEndian /
-    │                              @LittleEndian / @HostEndian, fixed +
-    │                              variable-size fields, nested views)
-    ├── ParallelStreamsDemo.cajeta ← .parallel() over Splittable<T>: reduce,
-    │                              fold-with-combiner, anyMatch / allMatch /
-    │                              noneMatch, findFirst→findAny, forEach
-    ├── AsyncDemo.cajeta         ← async / await / spawn / scope / detach —
-    │                              structured concurrency over stackful fibers
-    ├── JsonDemo.cajeta          ← Tier-1 JSON codec: Json.parse<T> /
-    │                              Json.toBytes<T> with per-class synthesizer
-    ├── AspectsDiDemo.cajeta     ← compile-time AOP + DI: @Aspect, @Before,
-    │                              @After, @Around, @Component, @Inject
-    ├── WildcardsDemo.cajeta     ← template wildcards <? extends T> /
-    │                              <? super T> + capture-conversion
-    │                              read-back (b.set(b.get()))
-    ├── SwitchTernaryDemo.cajeta ← switch statement + arrow-form
-    │                              switch expression + ternary + instanceof
-    ├── FileIoDemo.cajeta        ← cajeta.io.file: one-shot read/write
-    │                              + streaming FileReader / FileWriter
-    ├── OperatorOverloadDemo.cajeta ← operator+, operator*, operator==,
-    │                              operator[] / operator[]= dispatch
-    │                              on a Vec2 value class and a Grid
-    │                              subscript wrapper
+    ├── lang/                    ← package tour.lang — core language
+    │   ├── AllocationDemo.cajeta    ← stack vs heap allocation
+    │   ├── OwnershipDemo.cajeta     ← #-transfer (use-after-move is a compile error)
+    │   ├── ClassesDemo.cajeta       ← fields, constructors, methods
+    │   ├── InheritanceDemo.cajeta   ← virtual dispatch via vtable
+    │   ├── TemplatesDemo.cajeta     ← Box<T>, Stream<T> monomorphization
+    │   ├── NumericTemplatesDemo.cajeta ← Vec3<T extends Numeric> bounds
+    │   ├── WildcardsDemo.cajeta     ← <? extends T> / <? super T> + capture
+    │   ├── LambdasDemo.cajeta       ← closure capture by borrow
+    │   ├── AnnotationsDemo.cajeta   ← @Builder + @Builder.Default + @ToString
+    │   ├── PrimitivesDemo.cajeta    ← int8/16/32/64, float32/64, char, boolean
+    │   ├── StringDemo.cajeta        ← trim / contains / substring / replace
+    │   ├── ControlFlowDemo.cajeta   ← if / while / for / enhanced-for
+    │   ├── FormatStringDemo.cajeta  ← System.stdout.println(fmt, args...) with `{}`
+    │   ├── SwitchTernaryDemo.cajeta ← switch + arrow-form expr + ternary + instanceof
+    │   ├── OperatorOverloadDemo.cajeta ← operator+/*/==/[]/[]= on Vec2 + Grid
+    │   ├── AspectsDiDemo.cajeta     ← compile-time AOP + DI: @Aspect, @Inject, …
+    │   ├── Shape/Square/Circle.cajeta ← support: virtual base + overrides
+    │   ├── Book.cajeta              ← support: @Builder / @ToString target
+    │   └── Box.cajeta               ← support: Box<T> for the templates demo
     │
-    │  (support classes used by the demos above)
-    ├── Point.cajeta              ← class with fields + ctor
-    ├── Counter.cajeta            ← mutable class for lambda capture
-    ├── Shape.cajeta              ← virtual base
-    ├── Square.cajeta             ← override of Shape.area
-    ├── Circle.cajeta             ← override of Shape.area
-    ├── Book.cajeta               ← @Builder / @Builder.Default / @ToString target
-    └── Box.cajeta                ← Box<T> for the templates demo
+    ├── collection/              ← package tour.collection — containers & streams
+    │   ├── StreamsDemo.cajeta       ← filter / map / reduce
+    │   ├── ArrayListDemo.cajeta     ← dynamic array
+    │   ├── HashMapDemo.cajeta       ← open-addressing hash map
+    │   ├── HashSetDemo.cajeta       ← set-of-T
+    │   ├── LinkedListDemo.cajeta    ← doubly-linked list
+    │   ├── HeapDemo.cajeta          ← binary heap / priority queue
+    │   ├── RedBlackTreeDemo.cajeta  ← ordered map (red-black tree)
+    │   ├── BPlusTreeDemo.cajeta     ← in-memory B+ tree
+    │   ├── LtmBPlusTreeDemo.cajeta  ← larger-than-memory (paged) B+ tree
+    │   ├── ImmutableListDemo/SetDemo/MapDemo.cajeta ← persistent collections
+    │   └── Int32Encoder.cajeta      ← support: wire Encoder for LtmBPlusTree
+    │
+    ├── concurrent/              ← package tour.concurrent — concurrency
+    │   ├── AsyncDemo.cajeta         ← async / await / spawn / scope / detach
+    │   ├── ConcurrentDemo.cajeta    ← channels, atomics, mutex / rwlock / semaphore
+    │   └── ParallelStreamsDemo.cajeta ← .parallel() over Splittable<T>
+    │
+    ├── math/                    ← package tour.math
+    │   ├── MathDemo.cajeta          ← Math.max / min / clamp (method-level templates)
+    │   ├── LinearAlgebraDemo.cajeta ← matrices / vectors
+    │   └── QuaternionDemo.cajeta    ← quaternion rotation
+    │
+    ├── error/ErrorsDemo.cajeta  ← package tour.error — try / catch / throw
+    ├── wire/ViewsDemo.cajeta    ← package tour.wire — view types & wire formats
+    │                              (@BigEndian / @LittleEndian / @HostEndian)
+    ├── time/TimeDemo.cajeta     ← package tour.time — Instant / Duration / LocalDate…
+    ├── net/NetDemo.cajeta       ← package tour.net — TCP listener / stream
+    ├── io/FileIoDemo.cajeta     ← package tour.io — one-shot + streaming file I/O
+    └── codec/JsonDemo.cajeta    ← package tour.codec — Tier-1 JSON codec
 ```
 
 ## Build and run
@@ -326,9 +335,14 @@ compiler output modes.
 
 ## Adding a new demo
 
-1. Drop `samples/tour/src/main/cajeta/tour/MyFeatureDemo.cajeta` next to the others:
+1. Drop the file into the topic subpackage it belongs to — e.g.
+   `samples/tour/src/main/cajeta/tour/lang/MyFeatureDemo.cajeta`. The
+   `package` declaration must match the directory (`tour.lang` here), and
+   `DemoClass` lives in the root `tour` package, so import it:
    ```cajeta
-   package tour;
+   package tour.lang;
+
+   import tour.DemoClass;
 
    public class MyFeatureDemo extends DemoClass {
        public void execute() {
@@ -338,11 +352,15 @@ compiler output modes.
        }
    }
    ```
+   (Need a shared support class? `Point` and `Counter` are also in the root
+   package — `import tour.Point;` / `import tour.Counter;`.)
 2. In `Tour.cajeta`, append one line to the `ArrayList<DemoClass>` initializer:
    ```cajeta
    demos.add(heap MyFeatureDemo());
    ```
-   Stream iteration picks the new demo up automatically — no count to bump.
+   `Tour` wildcard-imports every subpackage (`import tour.lang.*;`, …), so a
+   demo in an existing subpackage needs no new import there. Stream iteration
+   picks the new demo up automatically — no count to bump.
 
 ## What's NOT in this tour
 

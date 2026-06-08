@@ -1,0 +1,26 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// True monomorphization, no erasure. Class-level and method-level
+// templates supported. Each (Class, type-arg) pair materializes a
+// distinct runtime type with its own vtable.
+public class TemplatesDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Templates --");
+        // Class template: Box<T> wraps a single T.
+        Box<int32> bi = heap Box<int32>(42);
+        System.stdout.println("  Box<int32>(42).get() = " + bi.get());
+
+        // Stream-level monomorphization across two element types in
+        // the same scope — Stream<int32> and Stream<float64> end up
+        // as genuinely different functions with their own vtables.
+        int32[]   ints = {1, 2, 3, 4, 5};
+        float64[] dbls = {1.5, 2.5, 3.5};
+        int32 intSum  = ints.stream().reduce(0, (a, b) -> a + b);
+        int32 dblSumI = (int32) dbls.stream().reduce(0.0, (a, b) -> a + b);
+        System.stdout.println("  Stream<int32>  sum = " + intSum);
+        System.stdout.println("  Stream<float64> sum (truncated) = " + dblSumI);
+    }
+}

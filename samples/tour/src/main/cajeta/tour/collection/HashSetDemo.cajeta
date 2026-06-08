@@ -1,0 +1,23 @@
+package tour.collection;
+
+import tour.DemoClass;
+import cajeta.collection.HashSet;
+
+// HashSet<T> = HashMap<T, bool> wrapper. Adding the same key twice is a
+// no-op (set semantics).
+public class HashSetDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- HashSet --");
+        HashSet<int32> set = heap HashSet<int32>(16);
+        set.add(10);
+        set.add(20);
+        set.add(20);   // duplicate; set absorbs it
+        set.add(30);
+        boolean has20 = set.contains(20);
+        boolean has99 = set.contains(99);
+        System.stdout.println("  count        = " + (int32) set.count());
+        System.stdout.println("  contains(20) = " + has20);
+        System.stdout.println("  contains(99) = " + has99);
+    }
+}

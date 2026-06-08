@@ -4071,6 +4071,29 @@ namespace cajeta {
                         v = coerceBuilder->CreateIntCast(v, expected, /*isSigned=*/true);
                     } else if (expected->isFloatingPointTy() && v->getType()->isFloatingPointTy()) {
                         v = coerceBuilder->CreateFPCast(v, expected);
+                    } else if (expected->isPointerTy()
+                               && (v->getType()->isStructTy()
+                                   || v->getType()->isArrayTy()
+                                   || v->getType()->isVectorTy())) {
+                        // Value-type (@ValueType struct / vector) argument
+                        // passed BY POINTER, but we hold it BY VALUE — an
+                        // rvalue temporary, e.g.
+                        // `d.plus(Duration.ofSeconds(30))` where the arg is a
+                        // freshly-returned Duration. The aggregate ABI passes
+                        // these by pointer (`this`/params are `ptr`), so spill
+                        // the value into a stack slot and pass its address.
+                        // Local-variable args already arrive as the slot
+                        // pointer and never reach this branch. Without the
+                        // spill the call passes the aggregate by value: the
+                        // LLVM verifier rejects it ("Call parameter type does
+                        // not match function signature"), and --emit=exe (which
+                        // doesn't re-verify) miscompiles it to a garbage value
+                        // or a segfault. Mirrors the value-type receiver guard
+                        // in MethodCallExpression (the `valueTypeReceiver`
+                        // case) for the argument side.
+                        llvm::Value* spill = coerceBuilder->CreateAlloca(v->getType());
+                        coerceBuilder->CreateStore(v, spill);
+                        v = spill;
                     }
                 }
             }
