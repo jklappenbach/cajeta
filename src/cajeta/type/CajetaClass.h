@@ -196,7 +196,7 @@ namespace cajeta {
         // shift after a template instantiation refresh).
         std::map<std::string, llvm::GlobalVariable*> secondaryVTables;
 
-        // MultiClassing Phase 3 v4 vbase ABI (cajeta-docs/stdlib/
+        // MultiClassing Phase 3 v4 vbase ABI (docs/stdlib/
         // MultiClassing.md § Phase 3): for every transitive non-self
         // ancestor of this class, the layout reserves a `ptr` slot at
         // the END of own-fields (after all sub-objects + own properties).
@@ -669,7 +669,7 @@ namespace cajeta {
         CajetaClassPtr instantiate(vector<CajetaTypePtr> args);
         // The actual instantiation logic; `instantiate` is a thin wrapper that
         // also records cross-module instantiation obligations (incremental
-        // compilation, Phase 2/3 — cajeta-docs/IncrementalCompilation.md).
+        // compilation, Phase 2/3 — docs/IncrementalCompilation.md).
         CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args);
 
         // Diamond-operator inference (TPL-7). Given the argument types of a
@@ -738,7 +738,7 @@ namespace cajeta {
         // when an unsupported field type is encountered.
         void synthesizeAutoHash();
 
-        // Lombok-mirror synthesizers (cajeta-docs/stdlib/Annotations.md
+        // Lombok-mirror synthesizers (docs/stdlib/Annotations.md
         // § Section 2). Each is gated on a class-level or field-level
         // annotation and runs once during generatePrototype after
         // ensureDefaultConstructor + synthesizeAutoHash. User-declared
@@ -802,7 +802,7 @@ namespace cajeta {
         // encoder owns the wire format. Phase A in v1 reserves the
         // surface + enforces mutual exclusion + emits "not yet
         // implemented" until Phase B lands the actual synthesis.
-        // See cajeta-docs/stdlib/Annotations.md § @Encoding for views.
+        // See docs/stdlib/Annotations.md § @Encoding for views.
         void synthesizeEncoding();
 
         // @Builder on class. Synthesizes a nested `Outer.Builder` class

@@ -2,7 +2,7 @@
 // Operator-overload behavioral tests. v1 scope:
 //   - Binary arithmetic / comparison operators on class types
 //     declared as `public static` with two explicit parameters
-//     (cajeta-docs/OperatorOverloading.md §2).
+//     (docs/OperatorOverloading.md §2).
 //   - Indexed access `[]` / `[]=` as instance methods.
 //
 // Deferred:

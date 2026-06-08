@@ -5,7 +5,7 @@
 // so Step 2 reduces to making the wildcard proxy class (Step 1) slot
 // into the same paths plain class types use.
 //
-// See cajeta-docs/TemplateWildcard.md and todo.md.
+// See docs/TemplateWildcard.md and todo.md.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"

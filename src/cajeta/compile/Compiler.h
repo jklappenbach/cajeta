@@ -91,7 +91,7 @@ namespace cajeta {
         llvm::TargetOptions opt;
         std::optional<llvm::Reloc::Model> RM;
         list<CajetaModulePtr> modules;
-        // Compiler mode + per-feature toggle struct (cajeta-docs/CompilerModes.md).
+        // Compiler mode + per-feature toggle struct (docs/CompilerModes.md).
         // CLI flavor flags (--debug, --release, ...) set `mode` and reset `flags`
         // to that mode's defaults; per-feature flags (--bounds=, --source-tags=, ...)
         // override individual fields after. Forwarded to each CajetaModule on creation

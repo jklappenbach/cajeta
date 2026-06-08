@@ -1,5 +1,5 @@
 // Per-module instantiation-obligation capture (incremental compilation,
-// Phase 2 — cajeta-docs/IncrementalCompilation.md).
+// Phase 2 — docs/IncrementalCompilation.md).
 //
 // When a module's codegen drives a template instantiation into ANOTHER
 // module (e.g. `xs.stream()` instantiates ArrayStream<int32> into stdlib),

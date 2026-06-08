@@ -19,7 +19,7 @@ import cajeta.lang.String;
  *
  * ## Hierarchy
  *
- * The spec ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md))
+ * The spec ([`docs/Net.md`](../../../../../docs/Net.md))
  * places the HTTP parse failures (`MalformedMessage`,
  * `HeadersTooLarge`, `InvalidChunkEncoding`, `UnexpectedEof`) under
  * `cajeta.net.NetException` as plan item **NET-7.7**. That item has now

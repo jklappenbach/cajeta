@@ -83,7 +83,7 @@ namespace cajeta {
         // module's codegen triggered us. noteCrossModuleInstantiation no-ops
         // outside codegen (currentCodegenModule null) and for same-module
         // instantiations. This is the single choke point through which every
-        // class-template instantiation flows. (cajeta-docs/IncrementalCompilation.md.)
+        // class-template instantiation flows. (docs/IncrementalCompilation.md.)
         if (result && result.get() != this) {
             CajetaModule::noteCrossModuleInstantiation(
                 CajetaModule::getCurrentCodegenModule(), result);

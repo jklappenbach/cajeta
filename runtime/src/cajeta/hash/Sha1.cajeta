@@ -56,7 +56,7 @@ import cajeta.lang.String;
  *
  * @see cajeta.hash.Hasher
  * @see cajeta.hash.Sha256
- * @see [stdlib/Hashing.md § SHA-1](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @see [stdlib/Hashing.md § SHA-1](../../../../../docs/stdlib/Hashing.md)
  */
 public final class Sha1 implements Hasher {
 

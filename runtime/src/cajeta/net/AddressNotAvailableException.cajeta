@@ -7,7 +7,7 @@ import cajeta.lang.String;
  * address (or a `connect`/`sendto` named an unassignable address).
  * POSIX `EADDRNOTAVAIL` / Winsock `WSAEADDRNOTAVAIL`.
  * `kind == NetException.KIND_ADDRESS_NOT_AVAIL` (6). See
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class AddressNotAvailableException extends NetException {
     public AddressNotAvailableException(String message) {

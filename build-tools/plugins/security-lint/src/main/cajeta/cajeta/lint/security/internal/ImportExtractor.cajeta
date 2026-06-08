@@ -5,7 +5,7 @@ import cajeta.collection.ArrayList;
 /**
  * Pulls `import` declarations out of cajeta source.
  *
- * Cajeta's `import` shape (per cajeta-docs/Compilation.md):
+ * Cajeta's `import` shape (per docs/Compilation.md):
  *
  *   import <dotted.name>;
  *   import <dotted.name>.*;

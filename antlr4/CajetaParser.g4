@@ -157,7 +157,7 @@ classBodyDeclaration
 // symbol. Subclass declarations with the same name as a method-
 // templated parent method shadow rather than override (warning
 // emitted; same model Java applies to `static` shadowing). See
-// cajeta-docs/stdlib/MethodLevelTemplate.md for the dispatch model
+// docs/stdlib/MethodLevelTemplate.md for the dispatch model
 // and constraints.
 //
 // Constructor and operator declarations remain non-templated at the
@@ -184,7 +184,7 @@ memberDeclaration
 // Per-operator staticness + arity + return-type constraints are
 // enforced semantically in CajetaLlvmVisitor's
 // visitClassBodyDeclaration post-pass (see
-// cajeta-docs/OperatorOverloading.md §10 — Option B).
+// docs/OperatorOverloading.md §10 — Option B).
 operatorOverloadDeclaration
     : typeTypeOrVoid OPERATOR ASSIGN formalParameters methodBody
     | typeTypeOrVoid OPERATOR GT formalParameters methodBody
@@ -239,7 +239,7 @@ operatorOverloadDeclaration
    for invalid return type after parsing.
 
    Optional `typeParameters` after the identifier introduces
-   method-level type parameters (cajeta-docs/stdlib/MethodLevelTemplate.md).
+   method-level type parameters (docs/stdlib/MethodLevelTemplate.md).
    When present, the method is non-virtual and monomorphized per call
    site over (receiver-class args x method-level args). The same
    typeParameters nonterminal used for classDeclaration is reused
@@ -275,7 +275,7 @@ constructorDeclaration
 // compiler validates that during the visit). The body becomes the
 // class's drop method internally — the synthesized __cajeta_<class>_drop
 // wrapper invokes it before freeing the instance, and the destructor
-// itself isn't callable from user code. See cajeta-docs/MemoryModel.md
+// itself isn't callable from user code. See docs/MemoryModel.md
 // § Destructors.
 destructorDeclaration
     : TILDE identifier '(' ')' destructorBody=block
@@ -530,7 +530,7 @@ localVariableDeclaration
 identifier
     : IDENTIFIER
     | VAR
-    // Module-system soft keywords (cajeta-docs/stdlib/Modules.md
+    // Module-system soft keywords (docs/stdlib/Modules.md
     // — pending). These tokens are reserved by the lexer for the
     // future module declaration syntax but the parser never uses
     // them in any rule today. Until the module surface lands,
@@ -576,8 +576,8 @@ statement
     // No try-with-resources rule. Destructors fire deterministically
     // at the closing `}` of the resource's declaring block, so
     // `try (R r = …) { … }` is strictly redundant with
-    // `{ R r = …; … }`. See cajeta-docs/MemoryModel.md § Destructors
-    // and cajeta-docs/stdlib/io/file/Readme.md § Design tenets for
+    // `{ R r = …; … }`. See docs/MemoryModel.md § Destructors
+    // and docs/stdlib/io/file/Readme.md § Design tenets for
     // the rationale.
     | TRY block (catchClause+ finallyBlock? | finallyBlock)
     | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
@@ -677,7 +677,7 @@ arrayLiteral
 // type arguments for method-templated callees. Inference (no type
 // args) is the common case; explicit args are only required when
 // inference can't bind every type parameter (e.g. T appears only in
-// the return type). See cajeta-docs/stdlib/MethodLevelTemplate.md.
+// the return type). See docs/stdlib/MethodLevelTemplate.md.
 //
 // This is the only call-site form: there is no Java-style
 // `Type.<TypeArgs>name(args)` alternative — that form was removed in
@@ -812,7 +812,7 @@ lambdaBody
 
 primary
     : '(' expression ')'
-    // MultiClassing Phase 2 (cajeta-docs/stdlib/MultiClassing.md § P-2):
+    // MultiClassing Phase 2 (docs/stdlib/MultiClassing.md § P-2):
     // parent-view selectors on THIS / SUPER use angle brackets,
     // reusing template-instantiation syntax: `this<Base>.field`
     // reaches the slot belonging to ancestor `Base`;
@@ -920,7 +920,7 @@ typeType
     | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' expression ']')*
     ;
 
-// First-class function type: `(T1, T2) -> R`. See cajeta-docs/Lambdas.md.
+// First-class function type: `(T1, T2) -> R`. See docs/Lambdas.md.
 // Distinct from Java's @FunctionalInterface SAM conversion; this is a real
 // type-former, callable directly, with no boxing for primitives. Return is
 // typeTypeOrVoid so `(T) -> void` is a legal type (Stream.forEach etc.).

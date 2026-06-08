@@ -7,7 +7,7 @@ import cajeta.lang.String;
  * abrupt close, distinct from an orderly FIN (which surfaces as a
  * zero-length read, not an exception). POSIX `ECONNRESET` / Winsock
  * `WSAECONNRESET`. `kind == NetException.KIND_CONNECTION_RESET` (3).
- * See [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * See [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class ConnectionResetException extends NetException {
     public ConnectionResetException(String message) {

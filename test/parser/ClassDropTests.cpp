@@ -4,7 +4,7 @@
 // that calls user.drop() then frees the heap allocation, and registers
 // a drop entry for every class-typed local so it fires at scope exit.
 // Foundation for the upcoming user-facing Lock class with RAII guard
-// (see cajeta-docs/stdlib/Thread.md § Synchronization primitives).
+// (see docs/stdlib/Concurrency.md § Synchronization primitives).
 //
 
 #include "gtest/gtest.h"

@@ -37,7 +37,7 @@ import cajeta.lang.String;
  * ```
  *
  * @See cajeta.hash.Hasher
- * @See [stdlib/Hashing.md § SipHash](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See [stdlib/Hashing.md § SipHash](../../../../../docs/stdlib/Hashing.md)
  */
 public final class SipHash implements Hasher {
 

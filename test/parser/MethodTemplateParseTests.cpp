@@ -1,4 +1,4 @@
-// Phase 1 smoke for method-level templates (cajeta-docs/stdlib/
+// Phase 1 smoke for method-level templates (docs/stdlib/
 // MethodLevelTemplate.md).
 //
 // Phase 1 deliverables only — the grammar parses, the visitor

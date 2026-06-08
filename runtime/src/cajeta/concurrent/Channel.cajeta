@@ -1,0 +1,173 @@
+package cajeta.concurrent;
+
+import cajeta.lang.Optional;
+
+/**
+ * Bounded MPMC queue — docs/stdlib/Concurrency.md § `Channel<T>`. A
+ * fixed-capacity ring buffer guarded by the lock + condition-variable
+ * intrinsics (the same primitives `Mutex`/`Semaphore` use). `send` blocks
+ * when full; `receive` blocks when empty. `close()` is one-way and
+ * idempotent.
+ *
+ * `receive()` returns a **stack** `Optional``<T>` (no per-item heap
+ * allocation — the reason stack allocation was restored for small wrappers
+ * like Optional): present while items remain (it drains buffered items even
+ * after close), empty once the channel is closed AND drained. Sending to a
+ * closed channel raises.
+ *
+ * ## Usage
+ * ```cajeta
+ * // Bounded capacity-2 channel of primitives.
+ * Channel<int32> ch = heap Channel<int32>(2);
+ * ch.send(1);          // buffered
+ * ch.send(2);          // buffered (full; a third send would block)
+ * ch.close();          // one-way; a later send() raises
+ *
+ * stack Optional<int32> a   = ch.receive();   // present -> 1 (drains after close)
+ * stack Optional<int32> b   = ch.receive();   // present -> 2
+ * stack Optional<int32> end = ch.receive();   // empty   -> closed and drained
+ *
+ * // Non-blocking poll (e.g. inside a select loop):
+ * stack Optional<int32> maybe = ch.tryReceive();
+ * boolean done = maybe.isEmpty() && ch.isClosed();
+ * ```
+ *
+ * Tested across {1P/1C, 2P/2C} fiber configurations with capacity 2
+ * (forces both full- and empty- side blocking). See ChannelTests.cpp.
+ *
+ * v1 targets value/primitive `T`. For a heap class `T`, items buffered but
+ * never received aren't dropped when the channel is destroyed (the ring
+ * buffer array frees, not its elements) — a later refinement. Workaround:
+ * drain explicitly before drop (call `receive()` in a loop until empty).
+ */
+public class Channel<T> {
+    pointer handle;
+    pointer cond;
+    T[] buf;
+    int32 capacity;
+    int32 head;
+    int32 tail;
+    int32 size;
+    boolean closed;
+
+    /**
+     * Create an open channel whose ring buffer holds at most `capacity`
+     * items before `send` blocks.
+     *
+     * ```cajeta
+     * Channel<int32> ch = heap Channel<int32>(2);   // capacity-2 MPMC queue
+     * ```
+     */
+    public Channel(int32 capacity) {
+        this.handle = Cajeta.lockNew();
+        this.cond = Cajeta.condvarNew();
+        this.capacity = capacity;
+        this.buf = heap T[capacity];
+        this.head = 0;
+        this.tail = 0;
+        this.size = 0;
+        this.closed = false;
+    }
+
+    /**
+     * Releases the underlying condition-variable and lock intrinsics. Does
+     * NOT drain buffered items — for a heap `T`, `receive()` until empty
+     * before drop (see class note).
+     */
+    public ~Channel() {
+        Cajeta.condvarDestroy(this.cond);
+        Cajeta.lockDestroy(this.handle);
+    }
+
+    /**
+     * Enqueue `item`, blocking (parking the fiber) while the buffer is
+     * full. Raises if the channel is closed.
+     */
+    public void send(T item) {
+        Cajeta.lockAcquire(this.handle);
+        while (this.size >= this.capacity && !this.closed) {
+            Cajeta.condvarWait(this.cond, this.handle);
+        }
+        if (this.closed) {
+            Cajeta.lockRelease(this.handle);
+            throw 1;
+        }
+        this.buf[this.tail] = item;
+        this.tail = (this.tail + 1) % this.capacity;
+        this.size = this.size + 1;
+        Cajeta.condvarNotifyAll(this.cond);
+        Cajeta.lockRelease(this.handle);
+    }
+
+    /**
+     * Dequeue the next item, blocking while the buffer is empty and the
+     * channel is open. Returns a present `Optional<T>` with the item, or an
+     * empty `Optional<T>` once the channel is closed and drained.
+     */
+    public Optional<T> receive() {
+        Cajeta.lockAcquire(this.handle);
+        while (this.size == 0 && !this.closed) {
+            Cajeta.condvarWait(this.cond, this.handle);
+        }
+        if (this.size == 0) {
+            // Closed and drained. The value slot is unused (present=false);
+            // reuse an in-bounds buffer slot rather than `null` so this works
+            // for primitive T too.
+            T none = this.buf[this.head];
+            Cajeta.lockRelease(this.handle);
+            return stack Optional<T>(false, none);
+        }
+        T item = this.buf[this.head];
+        this.head = (this.head + 1) % this.capacity;
+        this.size = this.size - 1;
+        Cajeta.condvarNotifyAll(this.cond);
+        Cajeta.lockRelease(this.handle);
+        return stack Optional<T>(true, #item);
+    }
+
+    /** One-way close. Wakes every blocked sender/receiver to re-check. */
+    public void close() {
+        Cajeta.lockAcquire(this.handle);
+        this.closed = true;
+        Cajeta.condvarNotifyAll(this.cond);
+        Cajeta.lockRelease(this.handle);
+    }
+
+    /**
+     * Non-blocking dequeue. Returns the next item if one is currently
+     * buffered; otherwise returns an empty `Optional<T>` without parking
+     * — even if the channel is still open. Distinguish "transiently
+     * empty" from "closed and drained" externally via `isClosed()`.
+     *
+     * Building block for `Tasks.selectReceive` (Channel.select v1): the
+     * select loop polls many channels each pass without blocking on any
+     * one of them.
+     */
+    public Optional<T> tryReceive() {
+        Cajeta.lockAcquire(this.handle);
+        if (this.size == 0) {
+            T none = this.buf[this.head];
+            Cajeta.lockRelease(this.handle);
+            return stack Optional<T>(false, none);
+        }
+        T item = this.buf[this.head];
+        this.head = (this.head + 1) % this.capacity;
+        this.size = this.size - 1;
+        Cajeta.condvarNotifyAll(this.cond);
+        Cajeta.lockRelease(this.handle);
+        return stack Optional<T>(true, #item);
+    }
+
+    /**
+     * Snapshot of the closed bit. A `true` return does NOT imply the
+     * buffer is drained — callers selecting across channels combine
+     * `isClosed()` with a prior `tryReceive()` that returned empty to
+     * detect terminal "closed and drained" per channel.
+     */
+    public boolean isClosed() {
+        Cajeta.lockAcquire(this.handle);
+        boolean c = this.closed;
+        Cajeta.lockRelease(this.handle);
+        return c;
+    }
+}

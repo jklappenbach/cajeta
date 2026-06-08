@@ -30,7 +30,7 @@ backend (SPIRV-Cross→MSL) for what MoltenVK can't do (cooperative matrix, reli
 ray query). Full strategy + sequencing in `cajeta-gpu-plan.md` § Platforms — Apple/macOS.
 **Working agreement:** one increment at a time, tests + docs + commit checkpoint;
 never a miscompile; commit only when asked; **no attribution trailer**; stage files
-explicitly. Companion docs (under `cajeta-docs/gpu/xpu/`): the capability matrix
+explicitly. Companion docs (under `docs/gpu/xpu/`): the capability matrix
 `CajetaXPU-Matrix.md`, the CPU-backend reference `CajetaCPU.md`, the XPU spec
 `CajetaXPU.md`, and the cross-backend discipline `CajetaXPU-Variance.md`.
 

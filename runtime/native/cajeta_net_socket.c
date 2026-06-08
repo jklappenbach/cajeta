@@ -82,7 +82,7 @@ typedef socklen_t cajeta_socklen_t;
 // These ordinals are the stable contract between the native layer and the
 // `cajeta.net` exception mapping (NET-1.8): the cajeta side switches on this
 // value to pick the `NetException` subtype. Keep the ordinals append-only;
-// never renumber. The mapping table lives in `cajeta-docs/stdlib/net/Errors.md`
+// never renumber. The mapping table lives in `docs/stdlib/net/Errors.md`
 // (authored by NET-1.8 / NET-11.6).
 // ---------------------------------------------------------------------------
 enum cajeta_net_err {

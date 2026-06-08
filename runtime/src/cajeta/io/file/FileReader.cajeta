@@ -4,7 +4,7 @@ import cajeta.lang.String;
 
 /**
  * Streaming byte reader. See
- * `cajeta-docs/stdlib/io/file/FileReader.md`.
+ * `docs/stdlib/io/file/FileReader.md`.
  *
  * Returned by `File.openRead(p)` (see `File`). The caller drives
  * the byte loop: call `read(buf, max)` repeatedly until it returns

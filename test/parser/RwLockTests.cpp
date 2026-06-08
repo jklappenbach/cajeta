@@ -1,11 +1,11 @@
 //
-// cajeta.threading.RwLock<T> — read-heavy shared state (R7-D). Many readers
+// cajeta.concurrent.RwLock<T> — read-heavy shared state (R7-D). Many readers
 // share the read lock; a writer holds it exclusively (writer-preference in
 // the runtime). Closure/scoped shape like Mutex<T>: read() snapshots under a
 // shared lock; withWrite((T)->T) mutates under the exclusive lock.
 //
 // Loaded from the embedded standard library
-// (runtime/src/cajeta/threading/{RwLock,WriteGuard}.cajeta).
+// (runtime/src/cajeta/concurrent/{RwLock,WriteGuard}.cajeta).
 //
 
 #include "gtest/gtest.h"
@@ -20,7 +20,7 @@ namespace {
 
 std::string rwTestSource(const std::string& dBody) {
     return std::string("package test;\n")
-        + "import cajeta.threading.RwLock;\n"
+        + "import cajeta.concurrent.RwLock;\n"
         + "public final class D {\n" + dBody + "}\n";
 }
 

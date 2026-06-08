@@ -1,9 +1,9 @@
 //
-// cajeta.threading.Semaphore (R7-E) — counting permit pool composed on
+// cajeta.concurrent.Semaphore (R7-E) — counting permit pool composed on
 // Mutex<int32>. acquire()/release() adjust the count; acquire blocks (parks
 // the fiber) until a permit is free; withPermit runs a closure holding a
 // permit with try/finally release. Loaded from the embedded stdlib
-// (runtime/src/cajeta/threading/Semaphore.cajeta).
+// (runtime/src/cajeta/concurrent/Semaphore.cajeta).
 //
 
 #include "gtest/gtest.h"
@@ -18,7 +18,7 @@ namespace {
 
 std::string semTestSource(const std::string& dBody) {
     return std::string("package test;\n")
-        + "import cajeta.threading.Semaphore;\n"
+        + "import cajeta.concurrent.Semaphore;\n"
         + "public final class D {\n" + dBody + "}\n";
 }
 

@@ -9,7 +9,7 @@ actions consumed by the `test` task:
 | `cajeta.coverage.collect`       | Reduce probe hits across all test runs into a coverage map.      |
 | `cajeta.coverage.report`        | Emit configured reports (html/sarif/lcov/console); gate on `min`. |
 
-The user-facing spec is `cajeta-docs/BuildTool.md` §"Code coverage";
+The user-facing spec is `docs/BuildTool.md` §"Code coverage";
 this directory is the implementation.
 
 ## Wiring into a project

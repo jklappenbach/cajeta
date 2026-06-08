@@ -1,7 +1,7 @@
 //
 // Virtual dispatch for value-returning methods (M5(a) in the value-return
 // roadmap). A `stack`-constructed return travels through the sret + NRVO ABI
-// (commit f9cebc3, cajeta-docs/stdlib/ValueReturns.md). The vtable slot's
+// (commit f9cebc3, docs/stdlib/ValueReturns.md). The vtable slot's
 // function-pointer type matches the sret signature on the concrete override,
 // so a call through a base-typed receiver should land on the subclass's
 // override and produce the override's value.

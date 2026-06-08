@@ -9,7 +9,7 @@ import cajeta.net.LoadShedPolicy;
  * [`SharedPoolServer`](SharedPoolServer.cajeta) (Model B) share, so the
  * backpressure surface is identical regardless of dispatch model. It groups
  * the four knobs the spec
- * ([`cajeta-docs/Net.md` §Backpressure](../../../../../cajeta-docs/Net.md#backpressure))
+ * ([`docs/Net.md` §Backpressure](../../../../../docs/Net.md#backpressure))
  * names:
  *
  *   1. **`maxConnections`** — the max-concurrent-connections cap, enforced

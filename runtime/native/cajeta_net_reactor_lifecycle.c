@@ -7,7 +7,7 @@
 // *compilation* boundary: no CMake change to the bitcode-embed path is
 // required (only the one `#include` line listed in this item's `registration`).
 //
-// ## Scope of NET-3.2 (per plan/cajeta-net-plan.md and cajeta-docs/Net.md
+// ## Scope of NET-3.2 (per plan/cajeta-net-plan.md and docs/Net.md
 // §The reactor)
 //
 // NET-3.2 is the **reactor lifecycle**, layered on the NET-3.1 engine ABI:

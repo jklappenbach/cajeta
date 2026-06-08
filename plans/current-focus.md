@@ -1,32 +1,34 @@
 Current focus:
-- Finish the build-tool
-  - Build tool interface in Intellij Plugin
-- Continue on gpu/xpu/gfx
-- Olle
-  - Cloudflare Setup and Launch
-  - Proper icon / logo for Olle
-- Tour
-  - Organize into directory reflecting major packages
-  - time
-  - fiber
-  - net
-  - Refactor tour into proper cajeta project with build file
-  - lower case Tour
-  - reflection
+- Finish the build-tool            → plans/buildtool/build-tool-plan.md
+  - Build tool interface in Intellij Plugin  → ide-plugins/idea/Plan.md (L1418, deferred until build tool ships)
+- Continue on gpu/xpu/gfx           → plans/gpu/cajeta-gpu-plan.md
+- Olle (= Olla registry)            → plans/site/cajeta-site-plan.md (§15) + cajeta-olla repo
+  - Cloudflare Setup and Launch     → cajeta-olla/plans/to-launch.md (NEW; runbook) + olla-infrastructure-plan.md §3
+  - Proper icon / logo for Olle     → plans/site/cajeta-site-plan.md §11 + plans/site/cajeta-cube-proposals.md
+- Tour                              → plans/tour/tour-refactor-plan.md (NEW)
+  - [x] switch/ternary/instanceof demo (SwitchTernaryDemo.cajeta, wired into Tour.cajeta)
+  - [x] ViewsDemo: unsigned (uint32[]) buffers; CacheEntry demonstrates the @HostEndian default
+  - [x] Refactor tour into proper cajeta project with build file (cajeta.json + src/main/cajeta/tour/; build.sh/run.sh drive the build tool)
+  - [x] lower case Tour
+  - Organize into directory reflecting major packages (optional: split flat `tour` pkg into sub-packages — see plan D1)
+  - time (demos — pending)
+  - concurrent (was "fiber"; demos — pending)
+  - net (demos — pending, gated on cajeta.net)
+  - reflection (demo — pending)
 - Views
-  - Default byte ordering is @HostEndian
-- Profiler
-  - Profiler interface in IntelliJ Plugin
+  - [x] Default byte ordering is @HostEndian (unannotated view == @HostEndian; CajetaView rejection removed, Views.md updated, ViewEndiannessDefaultTests)
+- Profiler                          → plans/profiler/profiler-plan.md (NEW)
+  - Profiler interface in IntelliJ Plugin   → ide-plugins/idea/Plan.md (Phase ≥2; consumes the report format)
   - Report format
   - Broad Capture
   - Specific method timing
-- Installer - finish it
-  - cvm - finish it
-- Unit Test Fx
+- Installer - finish it             → plans/installer/installer-plan.md
+  - cvm - finish it                 → plans/installer/installer-plan.md (§ cvm, D12)
+- Unit Test Fx                      → plans/testing/unit-test-framework-plan.md (NEW; scaffold — design forks open)
   - CUnit
   - Mocks
   - Fakes
-- Network 
+- Network                           → plans/net/cajeta-net-plan.md
   - Workout network layer
   - Tour examples
   - Clients & Servers
@@ -40,4 +42,4 @@ Current focus:
     - Gossip
   - MessageDriven
 - Compiler
-  - Enhanced output (curses) to provide completion feedback
+  - Enhanced output (curses) to provide completion feedback  → plans/compiler/curses-output-plan.md (NEW; scaffold — design forks open)

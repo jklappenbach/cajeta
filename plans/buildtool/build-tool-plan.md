@@ -1,6 +1,6 @@
 # Build tool implementation plan
 
-Companion to [`cajeta-docs/BuildTool.md`](../../cajeta-docs/BuildTool.md).
+Companion to [`docs/BuildTool.md`](../../docs/BuildTool.md).
 That document is the **spec**; this is the **plan**.
 
 Every concrete unit of work is a checkbox `- [ ]`. Mark
@@ -671,7 +671,7 @@ on the build-tool side is shipped + tested in isolation — see Phase
 
 ### Deliverables — Phase 6d (Repository protocol v2)
 
-Spec lives in `cajeta-docs/BuildTool.md` under "Repository
+Spec lives in `docs/BuildTool.md` under "Repository
 protocol — v2 enhancements". v1 (Phase 6a-c) is what initial
 release needed; v2 ships as the client-side surface against
 v2-capable registries. Backward compatibility is permanent — a
@@ -1529,7 +1529,7 @@ toolchain-mismatch failures.
       index.json schema lands alongside the registry spec doc
       below as a coordinated v1.1 ship.
 - [x] Toolchain registry protocol spec
-      (`toolchain-registry-v1.md` in cajeta-docs/specs/).
+      (`toolchain-registry-v1.md` in docs/specs/).
       *Deferred to a doc-only follow-on commit* (the protocol
       bytes — HTTP shape, signed checksums — are inherited from
       Phases 6b/10/13; the spec doc captures the index.json
@@ -1630,7 +1630,7 @@ toolchain-mismatch failures.
   `cajeta toolchain install` (today the install command lays
   the directory layout that the dispatcher consults; the
   registry-client fetch lands alongside the protocol spec doc
-  in cajeta-docs/specs/toolchain-registry-v1.md).
+  in docs/specs/toolchain-registry-v1.md).
 - Compiler-binary re-exec at top-of-main when dispatch decision
   is ReExec (today the decision is computed + surfaced via
   `cajeta toolchain show`; the dispatch action wires when the
@@ -1647,7 +1647,7 @@ toolchain-mismatch failures.
 These don't fit neatly in one phase; they run in parallel and
 contribute deliverables across multiple phases.
 
-### Open specifications (`cajeta-docs/specs/`)
+### Open specifications (`docs/specs/`)
 
 - [x] `manifest-v1.json` JSON Schema (gate: Phase 0).
 - [x] `lockfile-v1.json` JSON Schema (gate: Phase 2).
@@ -1658,7 +1658,7 @@ contribute deliverables across multiple phases.
 - [x] `extension-api-v1.md` (gate: Phase 7).
 - [x] Schema-versioning policy doc — how `manifest-v2` opt-in
       via `schema-version` field works.
-      *Ships as `cajeta-docs/specs/schema-versioning.md`.*
+      *Ships as `docs/specs/schema-versioning.md`.*
 - [x] `toolchain-registry-v1.md` (gate: Phase 14). *Captures
       the index.json shape + install flow described in the
       Phase 14 deferred-polish note.*
@@ -1669,7 +1669,7 @@ contribute deliverables across multiple phases.
       (Phase 0). *Implemented in code via `Sandbox.{h,cpp}`'s
       `Capability` enum + `capByName()` + `nativeActionCapabilities()`
       catalog; declarative spec lands as the
-      `cajeta-docs/specs/capabilities-v1.json` deliverable above.*
+      `docs/specs/capabilities-v1.json` deliverable above.*
 - [x] Action capability declaration; task runner enforces
       against `settings.capabilities` (Phase 3).
       *Implemented:* `firstDisallowedCapability(requested, allowed)`
@@ -1692,14 +1692,14 @@ contribute deliverables across multiple phases.
 ### Documentation + tour
 
 - [x] Tour entry: "Build your first cajeta package".
-      *Lives at `cajeta-docs/specs/tour-build-your-first-package.md`*
+      *Lives at `docs/specs/tour-build-your-first-package.md`*
       (gate: Phases 1–5 land; written against the shipped
       `cajeta init basic` template).
 - [x] BuildTool.md ↔ this plan ↔ Tour kept in sync (review
       cadence: each phase completion). *This plan is the
       living checklist; BuildTool.md is the spec; the tour
       doc is the user-facing walkthrough — all three sit
-      under `cajeta-docs/`. Review is implicit per-phase as
+      under `docs/`. Review is implicit per-phase as
       each ships.*
 
 ### Testing strategy
@@ -1909,7 +1909,7 @@ A v1 release means all of the following are checked:
 - [x] Documentation in sync: BuildTool.md (spec), this plan
       (status all checked through Phase 14), Tour entry.
       *Plan checkbox state reflects shipped reality; spec
-      docs land under `cajeta-docs/specs/`; Tour entry at
-      `cajeta-docs/specs/tour-build-your-first-package.md`.*
+      docs land under `docs/specs/`; Tour entry at
+      `docs/specs/tour-build-your-first-package.md`.*
 
 Anything beyond that is v1.x or v2.

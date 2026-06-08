@@ -33,7 +33,7 @@ int32_t runI32(const std::string& src) {
 TEST(RunBlockingTests, primitiveBodyNoCaptures) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        () -> int32 body = () -> { return 42; };\n"
@@ -49,7 +49,7 @@ TEST(RunBlockingTests, primitiveBodyNoCaptures) {
 TEST(RunBlockingTests, bodyDrivesNestedSpawn) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class D {\n"
         "    public static async int32 leaf() {\n"
         "        return 21;\n"

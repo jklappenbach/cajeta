@@ -103,16 +103,16 @@ escape hatch.)
 
 ## 5. Documentation (REQUIRED deliverable of this plan)
 
-- [ ] **`cajeta-docs/Debugging.md`** — the two debuggers: live in-process
+- [ ] **`docs/Debugging.md`** — the two debuggers: live in-process
       JIT/DAP debugging (`cajeta dap`, IDE plugin) vs. native DWARF debugging /
       post-mortem; what `--debug-info=off|line|full` does; how to debug a debug
       build; how to symbolicate a release crash with the archived sidecar.
-- [ ] **`cajeta-docs/Releases.md`** (or a section in `BuildTool.md`) — debug vs.
+- [ ] **`docs/Releases.md`** (or a section in `BuildTool.md`) — debug vs.
       release flavors and exactly what each binary contains (opt, bounds,
       symbols); stripping + split-debug; the symbol-server / sidecar archiving
       model; reproducible builds (`--source-date-epoch`, `--debug-prefix-map`,
       `--seed`).
-- [ ] Update `cajeta-docs/CompilerModes.md` + `BuildTool.md` "Built-in flavors" /
+- [ ] Update `docs/CompilerModes.md` + `BuildTool.md` "Built-in flavors" /
       "Property vocabulary" tables to reflect `debug-info`/`strip-symbols`/`lto`
       once they are wired (they are currently documented as *reserved /
       not-yet-plumbed*).

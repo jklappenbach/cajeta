@@ -29,7 +29,7 @@ find_package(GTest REQUIRED)
 find_package(ZLIB REQUIRED)
 # libcrypto from OpenSSL backs `cajeta archive sign` / `verify-sig`
 # (ed25519 detached signatures + PEM key parsing). See
-# cajeta-docs/ArchiveManagement.md §8.
+# docs/ArchiveManagement.md §8.
 find_package(OpenSSL REQUIRED)
 
 # libcurl powers the HTTP repository driver (Phase 6b: bearer + mTLS
@@ -466,15 +466,15 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
         ${CAJETA_STDLIB_ROOT}/cajeta/error
-        # cajeta/time before cajeta/threading: R9.3's withTimeout (a stdlib
-        # function in cajeta.threading) takes a Duration parameter, so the
+        # cajeta/time before cajeta/concurrent: R9.3's withTimeout (a stdlib
+        # function in cajeta.concurrent) takes a Duration parameter, so the
         # Duration class has to be loadable when threading parses.
         ${CAJETA_STDLIB_ROOT}/cajeta/time
         # Threading sync primitives (Lock/LockGuard today; Mutex/RwLock/
         # ConditionVariable/Channel/Semaphore land in later R7 sub-phases).
         # After cajeta/lang (needs Object) and cajeta/error (future
         # Channel close/timeout throws).
-        ${CAJETA_STDLIB_ROOT}/cajeta/threading
+        ${CAJETA_STDLIB_ROOT}/cajeta/concurrent
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection

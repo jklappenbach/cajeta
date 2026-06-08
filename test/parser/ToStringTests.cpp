@@ -1,5 +1,5 @@
 // Tests for the @ToString Lombok-mirror synthesizer
-// (cajeta-docs/stdlib/Annotations.md § @ToString). v1 ships two
+// (docs/stdlib/Annotations.md § @ToString). v1 ships two
 // formats: PROPERTIES (default) — `ClassName(field1=v1,field2=v2,...)`
 // — and JSON — `{"field1":v1,"field2":v2,...}` (String fields get
 // JSON-quoted + escaped via `__cajeta_json_quote_str`).

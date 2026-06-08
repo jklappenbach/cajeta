@@ -44,7 +44,7 @@ import cajeta.lang.String;
  *
  * @See cajeta.hash.XXHash3
  * @See cajeta.hash.Hasher
- * @See [stdlib/Hashing.md § DefaultHasher](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See [stdlib/Hashing.md § DefaultHasher](../../../../../docs/stdlib/Hashing.md)
  */
 public final class DefaultHasher implements Hasher {
 

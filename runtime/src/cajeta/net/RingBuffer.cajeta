@@ -3,10 +3,10 @@ package cajeta.net;
 /**
  * Fixed-capacity circular byte buffer with **high / low watermark**
  * backpressure signalling — the incremental-parser staging buffer.
- * See `cajeta-docs/Net.md` § *Buffer pool*.
+ * See `docs/Net.md` § *Buffer pool*.
  *
  * Bytes wrap modulo `cap` (a `head`/`tail`/`size` ring, the same
- * shape `threading.Channel` uses for items). The ring never grows:
+ * shape `concurrent.Channel` uses for items). The ring never grows:
  * its whole purpose is to bound memory and surface back-pressure
  * when the consumer falls behind the producer.
  *

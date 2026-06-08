@@ -20,7 +20,7 @@
 //   (B) the cross-package single-root invariant: a socket-layer
 //       subtype, a URI parse failure, and an address parse failure are
 //       all catchable by one `catch (NetException)` — the property the
-//       taxonomy doc (cajeta-docs/stdlib/net/Errors.md) promises.
+//       taxonomy doc (docs/stdlib/net/Errors.md) promises.
 //
 // Pure logic, no sockets — the same golden JIT harness NetExceptionTests
 // / UriMalformedExceptionTests use: compile a tiny cajeta source, call

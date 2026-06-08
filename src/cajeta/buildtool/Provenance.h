@@ -2,7 +2,7 @@
 //
 // The `publish` action generates an in-toto Statement v1 envelope
 // whose predicate is a SLSA v1 provenance record. The shape
-// matches the spec in cajeta-docs/BuildTool.md "Build attestation":
+// matches the spec in docs/BuildTool.md "Build attestation":
 //
 //   { "_type": "https://in-toto.io/Statement/v1",
 //     "subject": [ { "name": "<archive>", "digest": {"sha256": "<hex>"} } ],

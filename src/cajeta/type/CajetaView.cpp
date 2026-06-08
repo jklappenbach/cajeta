@@ -30,20 +30,12 @@ namespace cajeta {
     void CajetaView::generatePrototype() {
         string canonical = qName->toCanonical();
 
-        // Views.md § Endianness: every view declaration must carry one of
-        // @BigEndian / @LittleEndian / @HostEndian. There is no silent
-        // default — host-endian assumptions break when code moves between
-        // architectures. Reject here so the error surfaces at type
-        // registration, before any usage codegen runs.
-        if (!endiannessExplicit) {
-            char buf[256];
-            snprintf(buf, sizeof(buf),
-                "view '%s' is missing an endianness annotation; declare it "
-                "with one of @BigEndian, @LittleEndian, or @HostEndian "
-                "(see Views.md \xc2\xa7 Endianness)",
-                canonical.c_str());
-            throw Exception(buf, "CAJETA_ERROR_VIEW_ENDIANNESS_REQUIRED");
-        }
+        // Views.md § Endianness: a view declaration with no @BigEndian /
+        // @LittleEndian / @HostEndian annotation defaults to host order
+        // (`endianness` already initializes to ViewEndianness::Host, and the
+        // Host path emits no bswap). `endiannessExplicit` stays false here so
+        // a nested view with no annotation can still inherit its outer's order
+        // (Views.md § Endianness inheritance) rather than forcing host.
 
         // Create the LLVM struct type. `getOrCreateLlvmType` also stuffs a
         // plain CajetaType into the canonical map; we'll overwrite that
@@ -76,7 +68,7 @@ namespace cajeta {
         //     size field, walk K-1 prior length-prefixes to find the offset.
         //   - All variable-size fields must be trailing. Fixed fields after a
         //     variable-size field need a runtime offset cache (deferred to a
-        //     follow-up session — see cajeta-docs/history/StructsViewsStatus.md S5b notes).
+        //     follow-up session — see docs/history/StructsViewsStatus.md S5b notes).
         //
         // The shift from S4's "first var-size prefix lives in the struct" to
         // S5's "no var-size in the struct" simplifies the multi-trailing case:

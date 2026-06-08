@@ -174,7 +174,7 @@ public class Uri {
      * [`QueryParams`](QueryParams.cajeta) multi-map — the decoded,
      * order-preserving, duplicate-key view (plan item **NET-6.3**). This
      * is the `u.query()` surface the spec
-     * ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md))
+     * ([`docs/Net.md`](../../../../../docs/Net.md))
      * describes; the raw slice stays available via
      * [`getQuery`](#getQuery). Form-urlencoded by default (`+` is space)
      * — the right reading for `?key=value` query strings. Returns an

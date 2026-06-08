@@ -51,7 +51,7 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.core.Bits (+ drift fix).
 // 2026-06-06: 104 → 105 — writable images added cajeta.xpu.core.Image2D (+1).
 // --- main lineage (threading / time / json / net preludes) ---
-// 2026-05-31: 96 → 110 — cajeta.threading + Atomic + cajeta.time.Duration + #66 stream sweep.
+// 2026-05-31: 96 → 110 — cajeta.concurrent + Atomic + cajeta.time.Duration + #66 stream sweep.
 // 2026-06-02: 110 → 123 — feature/build-system merge (collection.Cache, codec.json getters, …).
 // 2026-06-06: 123 → 264 — cajeta-net merge (cajeta.net.{tcp,udp,dns,http,tls,ws}, …, +141).
 // --- merge of origin/main into cajeta-xpu ---

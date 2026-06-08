@@ -7,7 +7,7 @@ import cajeta.lang.String;
  * in-flight `accept`/`connect` was torn down by the local stack).
  * POSIX `ECONNABORTED` / Winsock `WSAECONNABORTED`.
  * `kind == NetException.KIND_CONNECTION_ABORTED` (4). See
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class ConnectionAbortedException extends NetException {
     public ConnectionAbortedException(String message) {

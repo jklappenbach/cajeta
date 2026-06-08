@@ -13,7 +13,7 @@
 // bitcode-embed path is required (only the one `#include` line listed in this
 // item's `registration`).
 //
-// ## Scope of NET-3.1 (per plan/cajeta-net-plan.md and cajeta-docs/Net.md §The
+// ## Scope of NET-3.1 (per plan/cajeta-net-plan.md and docs/Net.md §The
 // reactor)
 //
 // NET-3.1 names a fixed five-intrinsic ABI the `cajeta.net` socket types lower

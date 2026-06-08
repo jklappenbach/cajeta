@@ -1,6 +1,6 @@
 // Stream<T>.fold<R> — cross-type fold via method-level templates.
-// See cajeta-docs/stdlib/MethodLevelTemplate.md (the foundation) and
-// cajeta-docs/stdlib/Streams.md § fold. `reduce(T, (T,T) -> T)` is
+// See docs/stdlib/MethodLevelTemplate.md (the foundation) and
+// docs/stdlib/Streams.md § fold. `reduce(T, (T,T) -> T)` is
 // the same-type wrapper; fold lets the accumulator type R differ
 // from the element type T.
 

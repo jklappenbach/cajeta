@@ -1,8 +1,8 @@
 //
-// cajeta.threading.Channel<T> (R7-F) — bounded MPMC ring-buffer queue on
+// cajeta.concurrent.Channel<T> (R7-F) — bounded MPMC ring-buffer queue on
 // the lock+condvar intrinsics. send blocks while full; receive returns a
 // stack Optional<T> (present while items remain, empty once closed+drained).
-// Loaded from the embedded stdlib (runtime/src/cajeta/threading/Channel.cajeta).
+// Loaded from the embedded stdlib (runtime/src/cajeta/concurrent/Channel.cajeta).
 //
 // Main-thread tests stay within capacity / drain only after close so they
 // never block (no producer to wake them). The fiber test exercises the
@@ -21,7 +21,7 @@ namespace {
 
 std::string chanTestSource(const std::string& dBody) {
     return std::string("package test;\n")
-        + "import cajeta.threading.Channel;\n"
+        + "import cajeta.concurrent.Channel;\n"
         + "import cajeta.lang.Optional;\n"
         + "public final class D {\n" + dBody + "}\n";
 }

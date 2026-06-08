@@ -33,7 +33,7 @@ import cajeta.lang.String;
  *
  * @See cajeta.hash.Hasher
  * @See cajeta.hash.DefaultHasher
- * @See [stdlib/Hashing.md § XXHash3](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See [stdlib/Hashing.md § XXHash3](../../../../../docs/stdlib/Hashing.md)
  */
 public final class XXHash3 implements Hasher {
 

@@ -113,7 +113,7 @@ TEST(HttpsServerTests, httpsRequestEndToEnd) {
         "import cajeta.net.http.HttpResponse;\n"
         "import cajeta.net.http.HttpParserLimits;\n"
         "import cajeta.net.http.ServerLimits;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class M {\n"
         "    public static #HttpResponse handle(HttpRequest req) {\n"
         "        String s = \"hello\";\n"

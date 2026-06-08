@@ -1,7 +1,7 @@
 # Incremental compilation — plan
 
 Companion to the design doc
-[`cajeta-docs/IncrementalCompilation.md`](../../cajeta-docs/IncrementalCompilation.md).
+[`docs/IncrementalCompilation.md`](../../docs/IncrementalCompilation.md).
 That document is the **architecture**; this is the **phased work
 breakdown**. Checkbox convention: `- [ ]` open, `- [x]` shipped,
 `- [~]` deferred-with-note.
@@ -154,7 +154,7 @@ loaded `.bc` references. Declarations are still registered by parsing
       (primitives canonicalize to `int32`, not `cajeta.int32`; the earlier
       `<cajeta.int32>` worry was from the pre-choke-point array-stream capture
       site, now dead). Replay resolves a class obligation by direct map
-      lookup. See `cajeta-docs/IncrementalCompilation.md` § "Two obligation
+      lookup. See `docs/IncrementalCompilation.md` § "Two obligation
       flavors, one set."
 - [ ] Driver computes the dirty set from transitive digests; clean
       modules are codegen-skipped, dirty modules recompiled.

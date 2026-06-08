@@ -33,7 +33,7 @@ import cajeta.lang.String;
  * handshake that violates RFC 6455, an invalid-input fault, classified
  * alongside [`ProtocolViolationException`](ProtocolViolationException.cajeta)
  * and the HTTP/URI parse faults. The networking spec
- * ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md) §Error model)
+ * ([`docs/Net.md`](../../../../../docs/Net.md) §Error model)
  * lists `HandshakeRejected` as a sibling of `ProtocolViolation`,
  * `MessageTooLarge`, and `ConnectionClosed` under the WS family; the full
  * NET-10.8 hierarchy fills in the latter three, while this leaf ships with

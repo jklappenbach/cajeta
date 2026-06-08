@@ -6,14 +6,14 @@ import cajeta.lang.String;
 /**
  * Root of the `cajeta.net` exception hierarchy — the networking peer
  * of [`cajeta.io.file.IoException`](../io/file/IoException.cajeta).
- * See [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md)
+ * See [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md)
  * for the full chart (platform errno → cross-platform ordinal →
  * exception) and the throws-clause discipline.
  *
  * ## Why a peer, not a child of `IoException`
  *
  * File I/O and network I/O share the fiber model but **nothing
- * else** (see [`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md)
+ * else** (see [`docs/Net.md`](../../../../../docs/Net.md)
  * design principles): the network layer has its own error taxonomy,
  * its own event engine, and a far larger surface (HTTP / WS / TLS /
  * URI). So `NetException` roots its own tree off
@@ -60,7 +60,7 @@ import cajeta.lang.String;
  * `catch (NetException e)` be the universal net-out. The complete
  * cross-phase chart — built vs. planned per phase, plus each subtype's
  * carried discriminant — is consolidated in
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class NetException extends RecoverableException {
     /**

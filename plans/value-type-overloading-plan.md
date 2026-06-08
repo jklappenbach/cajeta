@@ -21,7 +21,7 @@ This effort changes the mechanism **once** so a value-type category can dispatch
 overloading while preserving the 5 GPU gains (by-value marshalling, register residency,
 SIMD/WMMA selection, guaranteed inlining, device-lowerer simplicity). It fixes `Vector`
 (real operator surface, zero IR change), unblocks `Matrix` as a genuine dispatch consumer,
-and frameworks every value type in [`cajeta-docs/ValueTypeCatalog.md`](../cajeta-docs/ValueTypeCatalog.md).
+and frameworks every value type in [`docs/ValueTypeCatalog.md`](../docs/ValueTypeCatalog.md).
 
 Built from a workflow audit + design + **adversarial review** (verdict: *sound-with-fixes*).
 The review's required fixes are folded into the stages below.

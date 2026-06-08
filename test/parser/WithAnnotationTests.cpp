@@ -1,5 +1,5 @@
 // Tests for the @With Lombok-mirror synthesizer
-// (cajeta-docs/stdlib/Annotations.md § Immutability friend).
+// (docs/stdlib/Annotations.md § Immutability friend).
 //
 // Naming: `withCamelCase` rather than the Cajeta size()-style (which
 // would collide with @Setter). For field `x`, the method is `withX(T v)`

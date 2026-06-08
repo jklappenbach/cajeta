@@ -43,7 +43,7 @@ import cajeta.lang.String;
  * `=`.
  *
  * @see cajeta.codec.Base64Exception
- * @see [Net.md § Supporting primitives](../../../../../cajeta-docs/Net.md)
+ * @see [Net.md § Supporting primitives](../../../../../docs/Net.md)
  */
 public final class Base64 {
 

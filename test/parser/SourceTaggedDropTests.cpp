@@ -10,7 +10,7 @@
 // read the head entry's tags so a test can assert that the LVD's source
 // line landed in the runtime struct.
 //
-// Spec: cajeta-docs/CompilerModes.md § Source-tagged drop-chain entries.
+// Spec: docs/CompilerModes.md § Source-tagged drop-chain entries.
 //
 
 #include "gtest/gtest.h"

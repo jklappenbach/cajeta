@@ -66,13 +66,13 @@ auto-drops and frees the instance. The value is the *root declaration* that subc
 
 ### 3.2 Docs (no MemoryModel.md edit from this thread)
 
-- `cajeta-docs/Debugging.md` — in the existing drop-breakpoint section, state that a
+- `docs/Debugging.md` — in the existing drop-breakpoint section, state that a
   drop breakpoint is an **ordinary source breakpoint on `~T()`** (no special type), and
   that overriding `~T()` is how you make a class's destruction observable.
 - `ide-plugins/idea/ide-plugin-debug-fr-1.md` — mark CP7-6 done with this approach;
   record that the synthesized-wrapper safepoint and bespoke breakpoint type were
   **dropped by decision** in favor of `~Object` + breakpoint-on-dtor.
-- **Hand-off note (do NOT edit here):** `cajeta-docs/stdlib/MemoryModel.md §
+- **Hand-off note (do NOT edit here):** `docs/stdlib/MemoryModel.md §
   Destructors` and `stdlib/Lang.md § Object` should document `~Object` — that surface
   is owned by the **memory-management workstream**; flag it for them rather than editing
   from this (debugger) thread.

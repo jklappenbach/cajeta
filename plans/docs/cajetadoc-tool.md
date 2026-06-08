@@ -5,7 +5,7 @@
 > `/** … */` doc comments in cajeta source into a **hierarchical, browsable
 > website organized by package** — JavaDoc in capability, **plus Markdown bodies**,
 > **plus** a themeable, React-adoptable HTML output.
-> Authoritative spec: **`cajeta-docs/Documentation.md`** (comment syntax, tag
+> Authoritative spec: **`docs/Documentation.md`** (comment syntax, tag
 > catalog, processor goals, CLI, output layout). This plan is the **build plan**
 > for that spec. Site integration: **`plans/site/cajeta-site-plan.md` §18 / §21**.
 
@@ -783,7 +783,7 @@ regression suite so the tool stays fast and stable as the stdlib grows.
 
 ## 17. Dependencies, ordering & cross-references
 
-- **Spec:** `cajeta-docs/Documentation.md` (authoritative for syntax/tags/CLI/
+- **Spec:** `docs/Documentation.md` (authoritative for syntax/tags/CLI/
   output). This plan implements it test-first.
 - **Site:** `plans/site/cajeta-site-plan.md` — §18 (cajetadoc → generated reference),
   §21 (guides + Tour examples + generated reference compose `/docs`), §16 (doc

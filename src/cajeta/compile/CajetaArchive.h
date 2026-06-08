@@ -1,5 +1,5 @@
 // `.cja` (Cajeta ARchive) writer — v1 minimum-viable implementation
-// of the container format spelled out in cajeta-docs/Compilation.md
+// of the container format spelled out in docs/Compilation.md
 // § Archive format § Minimum-viable v1.
 //
 // Layout produced by writeTo():

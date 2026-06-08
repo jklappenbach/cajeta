@@ -53,7 +53,7 @@ package cajeta.hash;
  * ```
  *
  * @See cajeta.lang.Object
- * @See [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See [stdlib/Hashing.md](../../../../../docs/stdlib/Hashing.md)
  */
 public final class Hash {
 

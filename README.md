@@ -243,7 +243,7 @@ MyClass e = stack MyClass();                    // default ctor
 MyClass f;                                       // null reference; rejected on read until assigned
 ```
 
-`MyClass` is one type whether the instance lives on the stack or the heap — the borrow checker tracks lifetime, not the type system. Class instances always pass and return by pointer, never by value (no slicing). See [`UnifiedClasses.md`](cajeta-docs/stdlib/UnifiedClasses.md).
+`MyClass` is one type whether the instance lives on the stack or the heap — the borrow checker tracks lifetime, not the type system. Class instances always pass and return by pointer, never by value (no slicing). See [`UnifiedClasses.md`](docs/stdlib/UnifiedClasses.md).
 
 ### Ownership and `#`-transfer
 
@@ -267,7 +267,7 @@ CAJETA_ERROR_VARIABLE_NOT_ASSIGNED
 CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM
 ```
 
-The drop chain is a per-thread linked list of stack-allocated entries; entries fire in reverse declaration order at scope exit, and the throw path unwinds the chain to a try-frame's watermark so drops fire on the exceptional path too. See [`MemoryModel.md`](cajeta-docs/stdlib/MemoryModel.md) and [`FieldOwnership.md`](cajeta-docs/stdlib/FieldOwnership.md).
+The drop chain is a per-thread linked list of stack-allocated entries; entries fire in reverse declaration order at scope exit, and the throw path unwinds the chain to a try-frame's watermark so drops fire on the exceptional path too. See [`MemoryModel.md`](docs/stdlib/MemoryModel.md) and [`FieldOwnership.md`](docs/stdlib/FieldOwnership.md).
 
 ### Classes, inheritance, and dispatch
 
@@ -318,7 +318,7 @@ public class Algo {
 }
 ```
 
-**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](cajeta-docs/TemplateWildcard.md) and [`CaptureConversion.md`](cajeta-docs/CaptureConversion.md), and a runnable PECS + capture-read-back walk in [`samples/Tour/src/tour/WildcardsDemo.cajeta`](samples/Tour/src/tour/WildcardsDemo.cajeta).
+**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](docs/TemplateWildcard.md) and [`CaptureConversion.md`](docs/CaptureConversion.md), and a runnable PECS + capture-read-back walk in [`samples/Tour/src/tour/WildcardsDemo.cajeta`](samples/Tour/src/tour/WildcardsDemo.cajeta).
 
 ```cajeta
 public void inspect(Box<? extends Animal> b) {
@@ -352,7 +352,7 @@ public void parse(byte[] buf) {
 }
 ```
 
-Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views, fixed-size and variable-size trailing fields, and ownership-transferred (`stack View(#buf)`) and borrow (`stack View(buf)`) construction forms. Views participate in interface dispatch via fat-pointer kind tags. See [`Views.md`](cajeta-docs/stdlib/Views.md) and a runnable end-to-end walk through all three endianness flavors plus nested views in [`samples/Tour/src/tour/ViewsDemo.cajeta`](samples/Tour/src/tour/ViewsDemo.cajeta).
+Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views, fixed-size and variable-size trailing fields, and ownership-transferred (`stack View(#buf)`) and borrow (`stack View(buf)`) construction forms. Views participate in interface dispatch via fat-pointer kind tags. See [`Views.md`](docs/stdlib/Views.md) and a runnable end-to-end walk through all three endianness flavors plus nested views in [`samples/Tour/src/tour/ViewsDemo.cajeta`](samples/Tour/src/tour/ViewsDemo.cajeta).
 
 ### Lambdas and method references
 
@@ -368,7 +368,7 @@ xs.forEach((x) -> { total = total + x; });   // total captured by reference
 Stream<String> names = ps.stream().map<String>(Person::getName);
 ```
 
-Block-body lambdas, return-type inference, capture-by-borrow with lifetime tracking, and parameter-type inference from method-template formals are all working. See [`Lambdas.md`](cajeta-docs/stdlib/Lambdas.md).
+Block-body lambdas, return-type inference, capture-by-borrow with lifetime tracking, and parameter-type inference from method-template formals are all working. See [`Lambdas.md`](docs/stdlib/Lambdas.md).
 
 ### Streams and parallel terminals
 
@@ -390,7 +390,7 @@ int64 sum = xs.stream().parallel()
         (a, b)   -> a + b);
 ```
 
-See [`Streams.md`](cajeta-docs/stdlib/Streams.md) and [`StreamParallelism.md`](cajeta-docs/stdlib/StreamParallelism.md). A runnable walk through `reduce`, fold-with-combiner, the predicate terminals, `findFirst`→`findAny`, and `forEach` accumulation under `.parallel()` lives in [`samples/Tour/src/tour/ParallelStreamsDemo.cajeta`](samples/Tour/src/tour/ParallelStreamsDemo.cajeta).
+See [`Streams.md`](docs/stdlib/Streams.md) and [`StreamParallelism.md`](docs/stdlib/StreamParallelism.md). A runnable walk through `reduce`, fold-with-combiner, the predicate terminals, `findFirst`→`findAny`, and `forEach` accumulation under `.parallel()` lives in [`samples/Tour/src/tour/ParallelStreamsDemo.cajeta`](samples/Tour/src/tour/ParallelStreamsDemo.cajeta).
 
 ### Annotations
 
@@ -411,7 +411,7 @@ A Lombok-style annotation system layered over the language's reflection. Highlig
 | `@SuppressLint("rule-id")`                  | ✅      | Per-decl lint suppression. |
 | `@Aspect` / `@Inject` / `@Component` / `@Around` / `@Before` / `@After` | ✅ | DI + aspect weaving. |
 
-See [`Annotations.md`](cajeta-docs/stdlib/Annotations.md) for the full catalog.
+See [`Annotations.md`](docs/stdlib/Annotations.md) for the full catalog.
 
 ```cajeta
 @Builder
@@ -430,7 +430,7 @@ Connection c = Connection.builder()
 
 ### Aspects, DI, advice
 
-Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](cajeta-docs/stdlib/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/Tour/src/tour/AspectsDiDemo.cajeta`](samples/Tour/src/tour/AspectsDiDemo.cajeta).
+Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](docs/stdlib/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/Tour/src/tour/AspectsDiDemo.cajeta`](samples/Tour/src/tour/AspectsDiDemo.cajeta).
 
 ```cajeta
 @Aspect
@@ -447,7 +447,7 @@ public class TimingAspect {
 
 ### Concurrency (`async`, `scope`, `spawn`)
 
-Structured concurrency in the style of Rust's `tokio::scope` / Kotlin's `coroutineScope`. `async fn` declares a suspendable function; `scope { ... }` is a join-on-exit block; `spawn` launches a child fiber inside a scope. Today's runtime is a cooperative single-carrier scheduler — the topology is fork-ready; once a multi-carrier scheduler lands, the same code yields wall-clock parallelism without source changes. See [`Thread.md`](cajeta-docs/stdlib/Thread.md).
+Structured concurrency in the style of Rust's `tokio::scope` / Kotlin's `coroutineScope`. `async fn` declares a suspendable function; `scope { ... }` is a join-on-exit block; `spawn` launches a child fiber inside a scope. Today's runtime is a cooperative single-carrier scheduler — the topology is fork-ready; once a multi-carrier scheduler lands, the same code yields wall-clock parallelism without source changes. See [`Concurrency.md`](docs/stdlib/Concurrency.md).
 
 ```cajeta
 public static async int32 fetchAll(String[] urls) {
@@ -479,7 +479,7 @@ try {
 }
 ```
 
-The error model is in [`ErrorModel.md`](cajeta-docs/stdlib/ErrorModel.md).
+The error model is in [`ErrorModel.md`](docs/stdlib/ErrorModel.md).
 
 ### JSON codec
 
@@ -497,7 +497,7 @@ User u = Json.parse<User>(bytes, bytes.length);   // {7, "alice", true}
 byte[] out = Json.toBytes<User>(u);               // round-trip
 ```
 
-Tier-3 `Json.toBytes(JsonValue)` for ad-hoc tree manipulation. See [`Json.md`](cajeta-docs/stdlib/codec/Json.md) and the runnable parse + round-trip + nested-class walk in [`samples/Tour/src/tour/JsonDemo.cajeta`](samples/Tour/src/tour/JsonDemo.cajeta).
+Tier-3 `Json.toBytes(JsonValue)` for ad-hoc tree manipulation. See [`Json.md`](docs/stdlib/codec/Json.md) and the runnable parse + round-trip + nested-class walk in [`samples/Tour/src/tour/JsonDemo.cajeta`](samples/Tour/src/tour/JsonDemo.cajeta).
 
 ---
 
@@ -520,7 +520,7 @@ Cajeta supports `--debug`, `--release`, and `--debug-release` mode preselects th
 | `--emit=ir/exe`               | ir      | Output format: LLVM IR text or native binary. |
 | `--archive=archive/exploded`  | exploded | Output layout: 7z archive or flat directory tree. |
 
-See [`CompilerModes.md`](cajeta-docs/CompilerModes.md) for the full table and per-mode defaults.
+See [`CompilerModes.md`](docs/CompilerModes.md) for the full table and per-mode defaults.
 
 ---
 
@@ -534,37 +534,37 @@ float4 / float6 / float8                  (storage-only, for ML kernels)
 boolean   char   byte (alias int8)
 ```
 
-Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See [`Primitives.md`](cajeta-docs/stdlib/Primitives.md) and [`FloatingPointModel.md`](cajeta-docs/stdlib/FloatingPointModel.md).
+Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See [`Primitives.md`](docs/stdlib/Primitives.md) and [`FloatingPointModel.md`](docs/stdlib/FloatingPointModel.md).
 
 ---
 
 ## Documentation map
 
-The deep-dive specs live in `cajeta-docs/`. Start here:
+The deep-dive specs live in `docs/`. Start here:
 
 | Topic                       | Doc |
 |-----------------------------|-----|
-| Class model + allocation    | [`UnifiedClasses.md`](cajeta-docs/stdlib/UnifiedClasses.md) |
-| System I/O + env + properties | [`lang/System.md`](cajeta-docs/stdlib/lang/System.md) |
-| Memory + ownership          | [`MemoryModel.md`](cajeta-docs/stdlib/MemoryModel.md) |
-| Field ownership / auto-drop | [`FieldOwnership.md`](cajeta-docs/stdlib/FieldOwnership.md) |
-| Templates + wildcards       | [`TemplateWildcard.md`](cajeta-docs/TemplateWildcard.md), [`CaptureConversion.md`](cajeta-docs/CaptureConversion.md) |
-| Lambdas + method refs       | [`Lambdas.md`](cajeta-docs/stdlib/Lambdas.md) |
-| Streams                     | [`Streams.md`](cajeta-docs/stdlib/Streams.md), [`StreamParallelism.md`](cajeta-docs/stdlib/StreamParallelism.md) |
-| Annotations (Lombok-style)  | [`Annotations.md`](cajeta-docs/stdlib/Annotations.md) |
-| Views / wire formats        | [`Views.md`](cajeta-docs/stdlib/Views.md) |
-| Aspects + DI                | [`AspectModel.md`](cajeta-docs/stdlib/AspectModel.md) |
-| Concurrency                 | [`Thread.md`](cajeta-docs/stdlib/Thread.md), [`AsyncStatus.md`](cajeta-docs/stdlib/AsyncStatus.md) |
-| Errors                      | [`ErrorModel.md`](cajeta-docs/stdlib/ErrorModel.md) |
-| Lints                       | [`LintRules.md`](cajeta-docs/LintRules.md) |
-| Compiler modes              | [`CompilerModes.md`](cajeta-docs/CompilerModes.md) |
-| Embedded targets (roadmap)  | [`Embedded.md`](cajeta-docs/Embedded.md) |
-| JSON codec                  | [`stdlib/codec/Json.md`](cajeta-docs/stdlib/codec/Json.md) |
-| Method-level templates      | [`MethodLevelTemplate.md`](cajeta-docs/stdlib/MethodLevelTemplate.md) |
-| Multi-classing              | [`MultiClassing.md`](cajeta-docs/stdlib/MultiClassing.md) |
-| Reflection                  | [`Reflection.md`](cajeta-docs/stdlib/Reflection.md) |
-| Hashing                     | [`Hashing.md`](cajeta-docs/stdlib/Hashing.md) |
-| I/O                         | [`stdlib/io/`](cajeta-docs/stdlib/io/) |
-| Time                        | [`Time.md`](cajeta-docs/stdlib/Time.md) |
+| Class model + allocation    | [`UnifiedClasses.md`](docs/stdlib/UnifiedClasses.md) |
+| System I/O + env + properties | [`lang/System.md`](docs/stdlib/lang/System.md) |
+| Memory + ownership          | [`MemoryModel.md`](docs/stdlib/MemoryModel.md) |
+| Field ownership / auto-drop | [`FieldOwnership.md`](docs/stdlib/FieldOwnership.md) |
+| Templates + wildcards       | [`TemplateWildcard.md`](docs/TemplateWildcard.md), [`CaptureConversion.md`](docs/CaptureConversion.md) |
+| Lambdas + method refs       | [`Lambdas.md`](docs/stdlib/Lambdas.md) |
+| Streams                     | [`Streams.md`](docs/stdlib/Streams.md), [`StreamParallelism.md`](docs/stdlib/StreamParallelism.md) |
+| Annotations (Lombok-style)  | [`Annotations.md`](docs/stdlib/Annotations.md) |
+| Views / wire formats        | [`Views.md`](docs/stdlib/Views.md) |
+| Aspects + DI                | [`AspectModel.md`](docs/stdlib/AspectModel.md) |
+| Concurrency                 | [`Concurrency.md`](docs/stdlib/Concurrency.md), [`AsyncStatus.md`](docs/stdlib/AsyncStatus.md) |
+| Errors                      | [`ErrorModel.md`](docs/stdlib/ErrorModel.md) |
+| Lints                       | [`LintRules.md`](docs/LintRules.md) |
+| Compiler modes              | [`CompilerModes.md`](docs/CompilerModes.md) |
+| Embedded targets (roadmap)  | [`Embedded.md`](docs/Embedded.md) |
+| JSON codec                  | [`stdlib/codec/Json.md`](docs/stdlib/codec/Json.md) |
+| Method-level templates      | [`MethodLevelTemplate.md`](docs/stdlib/MethodLevelTemplate.md) |
+| Multi-classing              | [`MultiClassing.md`](docs/stdlib/MultiClassing.md) |
+| Reflection                  | [`Reflection.md`](docs/stdlib/Reflection.md) |
+| Hashing                     | [`Hashing.md`](docs/stdlib/Hashing.md) |
+| I/O                         | [`stdlib/io/`](docs/stdlib/io/) |
+| Time                        | [`Time.md`](docs/stdlib/Time.md) |
 
-Open work is tracked in [`todo.md`](todo.md). Historical implementation milestones are under [`cajeta-docs/history/`](cajeta-docs/history/).
+Open work is tracked in [`todo.md`](todo.md). Historical implementation milestones are under [`docs/history/`](docs/history/).

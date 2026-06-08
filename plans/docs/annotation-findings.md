@@ -3,7 +3,7 @@
 ## Summary
 
 The 15 Cajeta-specific `@`-tags were **documentation conventions only** — defined in
-`cajeta-docs/Documentation.md` as a doc-comment vocabulary, but never wired into the
+`docs/Documentation.md` as a doc-comment vocabulary, but never wired into the
 compiler. No C/C++/header source parses any of them, and no doc-comment processor exists
 (`cajetadoc` is only a plan: `plans/docs/cajetadoc-tool.md`). Of the 15, only `@complexity`
 was ever used in real `.cajeta` source. The audit kept the semantic subset (renamed to
@@ -14,21 +14,21 @@ cajetadoc plan, and added a directive to apply the kept tags to real stdlib doc 
 
 | Original tag | Origin | Where found | Used in real code? | Compiler support? | Verdict | New name |
 |---|---|---|---|---|---|---|
-| `@borrows` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Borrows` |
-| `@moves` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Moves` |
-| `@owns` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Owns` |
-| `@drops` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Drops` |
-| `@fiber-safe` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@FiberSafe` |
-| `@fiber-unsafe` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@FiberUnsafe` |
-| `@blocks` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Blocks` |
-| `@nonblocking` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@NonBlocking` |
-| `@complexity` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy, **`runtime/src/cajeta/hash/Hash.cajeta` (x3), `runtime/src/cajeta/lang/Object.cajeta` (x1)** | **Yes — the only applied tag** | No | Keep + rename | `@Complexity` |
-| `@allocates` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
-| `@no-alloc` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
-| `@stability` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
-| `@platform` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
-| `@panics` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
-| `@aspect-affects` | `cajeta-docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
+| `@borrows` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Borrows` |
+| `@moves` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Moves` |
+| `@owns` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Owns` |
+| `@drops` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Drops` |
+| `@fiber-safe` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@FiberSafe` |
+| `@fiber-unsafe` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@FiberUnsafe` |
+| `@blocks` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@Blocks` |
+| `@nonblocking` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Keep + rename | `@NonBlocking` |
+| `@complexity` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy, **`runtime/src/cajeta/hash/Hash.cajeta` (x3), `runtime/src/cajeta/lang/Object.cajeta` (x1)** | **Yes — the only applied tag** | No | Keep + rename | `@Complexity` |
+| `@allocates` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
+| `@no-alloc` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
+| `@stability` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
+| `@platform` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
+| `@panics` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
+| `@aspect-affects` | `docs/Documentation.md` | spec, cajetadoc plan, stale Astro copy | No | No | Pruned (unused/speculative) | — |
 
 ## Naming convention
 
@@ -42,7 +42,7 @@ Judgment call: `@nonblocking` was treated as two segments, `non` + `blocking`, y
 
 ## Changes applied
 
-### `cajeta-docs/Documentation.md` (canonical spec — origin)
+### `docs/Documentation.md` (canonical spec — origin)
 
 - **Renamed** all 9 kept tags to CamelCase across the tag table, the `push()` example,
   prose bullets, and the style-guide ordering line.
@@ -91,7 +91,7 @@ Judgment call: `@nonblocking` was treated as two segments, `non` + `blocking`, y
 After the cajeta-specific cleanup above, **all JavaDoc doc-comment tags were also
 converted to CamelCase** so the entire doc-tag vocabulary is spelled consistently. Only
 the spelling changes; every tag keeps its standard JavaDoc meaning (recorded in the spec,
-`cajeta-docs/Documentation.md`).
+`docs/Documentation.md`).
 
 ### Mapping
 
@@ -135,7 +135,7 @@ Applied across the **cajeta documentation system** only — a deterministic `sed
 
 - **22 `.cajeta` source files** under `runtime/src/cajeta/**` (doc comments in
   `collection/**`, `hash/**`, `lang/Object`, `threading/{LockGuard,WriteGuard}`, …).
-- **Doc + plan `.md`:** `cajeta-docs/Documentation.md`, `cajeta-docs/BuildTool.md`,
+- **Doc + plan `.md`:** `docs/Documentation.md`, `docs/BuildTool.md`,
   `plans/docs/cajetadoc-tool.md`, `plans/site/cajeta-site-plan.md`, and the two stale Astro copies
   (`cajeta-docs-site/src/pages/docs/{Documentation,BuildTool}.md`, deletion-bound).
 
@@ -149,7 +149,7 @@ Applied across the **cajeta documentation system** only — a deterministic `sed
   of scope for cajeta doc tooling. (Note: most `@`-tokens in C++ files are cajeta
   *annotations* embedded in test fixtures / example code — e.g. `@Component`, `@Inject`,
   `@Kernel` — already CamelCase and not doc-comment tags.)
-- **JSON spec schemas** (`cajeta-docs/specs/manifest-v1.json`, `lockfile-v1.json`). Their
+- **JSON spec schemas** (`docs/specs/manifest-v1.json`, `lockfile-v1.json`). Their
   matches are `"name@version"` *strings*, not doc tags.
 
 ### Naming-collision notes (context-distinguished, intentional)

@@ -1,13 +1,13 @@
 //
-// User-facing Lock and LockGuard classes — the cajeta.threading API
+// User-facing Lock and LockGuard classes — the cajeta.concurrent API
 // that wraps the low-level lock intrinsics with RAII semantics.
 // LockGuard's user-defined drop() calls release; the class-drop
-// infrastructure auto-fires it at scope exit. See cajeta-docs/stdlib/Thread.md §
+// infrastructure auto-fires it at scope exit. See docs/stdlib/Concurrency.md §
 // Synchronization primitives.
 //
 // As of R7-A these classes are part of the preloaded standard library
-// (runtime/src/cajeta/threading/{Lock,LockGuard}.cajeta), auto-embedded
-// into the compiler. The tests now `import cajeta.threading.*` rather
+// (runtime/src/cajeta/concurrent/{Lock,LockGuard}.cajeta), auto-embedded
+// into the compiler. The tests now `import cajeta.concurrent.*` rather
 // than inlining the source — exercising the real stdlib types and the
 // embed/auto-load path end-to-end.
 //
@@ -39,8 +39,8 @@ namespace {
 // plus the user-supplied class body for D.
 std::string lockTestSource(const std::string& dBody) {
     return std::string("package test;\n")
-        + "import cajeta.threading.Lock;\n"
-        + "import cajeta.threading.LockGuard;\n"
+        + "import cajeta.concurrent.Lock;\n"
+        + "import cajeta.concurrent.LockGuard;\n"
         + "public final class D {\n" + dBody + "}\n";
 }
 
