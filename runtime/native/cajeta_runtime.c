@@ -7828,6 +7828,12 @@ static void cajeta_xpu_vk_accel_free(int64_t handle) {
 #define CAJ_VKB_SAMPLER 2   // bindings[i] = (int64) VkSampler    -> SAMPLER
 #define CAJ_VKB_ACCEL   3   // bindings[i] = accel-table handle   -> ACCELERATION_STRUCTURE_KHR
 #define CAJ_VKB_STORAGE_IMAGE 4 // bindings[i] = texture-table handle (storage) -> STORAGE_IMAGE
+#define CAJ_VKB_BUFFER_ARRAY  5 // bindings[i] = ptr to [int64 count, int64 h0…] -> STORAGE_BUFFER array
+// Fixed bindless descriptor-array size — MUST equal the SPIR-V handlefrombinding
+// `range` (kMaxBindlessBuffers in SpirvKernelLowering.cpp) and the launch
+// marshalling cap (CallExpression.cpp). The layout binds this many descriptors;
+// the runtime fills `count` real + pads the rest with a valid buffer.
+#define CAJ_VK_BINDLESS_MAX 16
 
 static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
     if (kind == CAJ_VKB_TEXTURE) return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -7870,7 +7876,8 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     for (int i = 0; i < n; ++i) {
         binds[i].binding = (uint32_t) i;
         binds[i].descriptorType = cajeta_vkb_desc_type(kinds[i]);
-        binds[i].descriptorCount = 1;
+        binds[i].descriptorCount =
+            (kinds[i] == CAJ_VKB_BUFFER_ARRAY) ? CAJ_VK_BINDLESS_MAX : 1;
         binds[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
     VkDescriptorSetLayoutCreateInfo slci;
@@ -7927,6 +7934,7 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
         else if (kinds[i] == CAJ_VKB_STORAGE_IMAGE) ++nStor;
         else if (kinds[i] == CAJ_VKB_SAMPLER) ++nSamp;
         else if (kinds[i] == CAJ_VKB_ACCEL) ++nAccel;
+        else if (kinds[i] == CAJ_VKB_BUFFER_ARRAY) nBuf += CAJ_VK_BINDLESS_MAX;
         else ++nBuf;
     }
     VkDescriptorPoolSize poolSizes[5];
@@ -7961,6 +7969,9 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
             != VK_SUCCESS) goto done;
 
     VkDescriptorBufferInfo bufInfos[64];
+    // Per-array-binding descriptor infos (CAJ_VK_BINDLESS_MAX each). One row per
+    // binding index; only buffer-array bindings use their row.
+    VkDescriptorBufferInfo arrInfos[64 * CAJ_VK_BINDLESS_MAX];
     VkDescriptorImageInfo imgInfos[64];
     VkWriteDescriptorSet writes[64];
     // Acceleration-structure writes chain their AS handle in via pNext; both the
@@ -8004,6 +8015,26 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
             imgInfos[i].sampler = (VkSampler) (uintptr_t) bindings[i];
             if (imgInfos[i].sampler == VK_NULL_HANDLE) goto done;
             writes[i].pImageInfo = &imgInfos[i];
+        } else if (kinds[i] == CAJ_VKB_BUFFER_ARRAY) {
+            // bindings[i] points at the launch-marshalled [int64 count, int64
+            // h0 … h(count-1)]. Bind CAJ_VK_BINDLESS_MAX descriptors: the first
+            // `count` real, the rest padded with handle[0] (a valid buffer) so
+            // every descriptor in the array is bound (avoids PARTIALLY_BOUND).
+            // The kernel only reads bufs[0..count).
+            const int64_t* arr = (const int64_t*) (intptr_t) bindings[i];
+            int64_t cnt = arr ? arr[0] : 0;
+            if (cnt < 1 || cnt > CAJ_VK_BINDLESS_MAX) goto done;
+            VkDescriptorBufferInfo* row = &arrInfos[i * CAJ_VK_BINDLESS_MAX];
+            for (int e = 0; e < CAJ_VK_BINDLESS_MAX; ++e) {
+                int64_t h = arr[1 + (e < (int) cnt ? e : 0)];   // pad with elem 0
+                struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(h);
+                if (!r) goto done;
+                row[e].buffer = r->buffer;
+                row[e].offset = r->view_offset;
+                row[e].range = VK_WHOLE_SIZE;
+            }
+            writes[i].descriptorCount = CAJ_VK_BINDLESS_MAX;
+            writes[i].pBufferInfo = row;
         } else {
             struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(bindings[i]);
             if (!r) goto done;
@@ -10358,6 +10389,13 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
             case CAJETA_KP_BUFFER:
                 bindings[i] = *(int64_t*) argv[i];    // existing storage buffer
                 bkinds[i] = CAJ_VKB_BUFFER;
+                break;
+            case CAJETA_KP_BUFFER_ARRAY:
+                // argv[i] points at the marshalled [int64 count, int64 h0 …]
+                // handle array; pass that pointer through to the descriptor-array
+                // write (which reads the count + handles).
+                bindings[i] = (int64_t) (intptr_t) argv[i];
+                bkinds[i] = CAJ_VKB_BUFFER_ARRAY;
                 break;
             case CAJETA_KP_TEXTURE:
                 // argv slot holds the Texture2D deviceHandle = texture-table index.
