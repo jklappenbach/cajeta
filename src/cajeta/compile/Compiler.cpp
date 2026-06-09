@@ -8,11 +8,13 @@
 #include "CajetaLlvmVisitor.h"
 #include "Optimizer.h"
 #include "StdlibEmbedded.h"
+#include "cajeta/runtime/EmbeddedTls.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "../asn/AbstractSyntaxNode.h"
@@ -1155,13 +1157,49 @@ namespace cajeta {
         drivers.emplace_back("clang");
         drivers.emplace_back("gcc");
 
+        // Prefer LLD for the final link when it's available. GNU ld's section
+        // GC is conservative — on COFF it keeps unreferenced external COMDAT
+        // sections, and across platforms it dead-strips less than lld — so
+        // preferring lld measurably shrinks `--emit=exe` output (a HelloWorld
+        // drops ~30% on Windows). We pass `-fuse-ld=lld` to the C driver rather
+        // than calling lld directly so the driver still supplies the CRT/libc
+        // and lld picks the right flavor (lld-link/MinGW for PE, ld.lld for
+        // ELF, ld64.lld for Mach-O). Gated on lld actually being locatable so
+        // we degrade to the platform default linker instead of failing when
+        // lld is absent.
+        bool haveLld = (bool) llvm::sys::findProgramByName("ld.lld")
+                    || (bool) llvm::sys::findProgramByName("lld");
+#if defined(_WIN32)
+        if (!haveLld) haveLld = (bool) llvm::sys::findProgramByName("lld-link");
+#endif
+
+#if defined(_WIN32)
+        // Materialize the embedded TLS native object beside the output so it can
+        // be added to the link. The produced exe references `__cajeta_tls_*` from
+        // the always-linked stdlib TlsConnection thunks, but those natives live in
+        // a standalone object kept out of the embedded JIT bitcode (see
+        // EmbeddedTls.h / src/CMakeLists.txt). The build machine has the mingw
+        // toolchain but not cajeta's runtime source, so the bytes ride along in
+        // the compiler binary.
+        std::string tlsObjPath = archiveRootPath + "__cajeta_tls.o";
+        {
+            std::ofstream tlsOut(tlsObjPath, std::ios::binary);
+            tlsOut.write(reinterpret_cast<const char*>(cajeta_tls_o),
+                         (std::streamsize) cajeta_tls_o_len);
+        }
+#endif
+
         buildtool::SubprocessResult res;
         bool launched = false;
         std::string usedDriver;
         for (const auto& drv : drivers) {
             buildtool::SubprocessOptions opt;
             opt.argv.push_back(drv);
+            if (haveLld) opt.argv.push_back("-fuse-ld=lld");
             for (const auto& obj : objectFiles) opt.argv.push_back(obj);
+#if defined(_WIN32)
+            opt.argv.push_back(tlsObjPath);
+#endif
             opt.argv.push_back("-o");
             opt.argv.push_back(outPath);
             // Dead-strip unreferenced sections. The codegen emits one section
@@ -1181,8 +1219,23 @@ namespace cajeta {
             // Platform libraries the cajeta runtime references (the driver adds
             // the CRT + libc itself).
 #if defined(_WIN32)
+            // Per-mode link policy: an `--emit=exe` is a deliverable, so it
+            // STATICALLY links the mingw runtime (libgcc / libstdc++ / winpthread)
+            // and OpenSSL — the produced binary then depends only on Windows
+            // SYSTEM DLLs (kernel32, ws2_32, crypt32, bcrypt, advapi32, user32,
+            // msvcrt), all present on every install, and runs with no extra
+            // install or PATH setup. (cja / uber artifacts deliberately stay
+            // dynamic: they execute inside cajeta's JIT host, which already
+            // provides the runtime + these libs in-process — see the JIT path.)
+            opt.argv.push_back("-static");    // libgcc / libstdc++ / winpthread
+            opt.argv.push_back("-lssl");      // TLS engine (__cajeta_tls_*, cajeta_tls.o)
+            opt.argv.push_back("-lcrypto");
+            opt.argv.push_back("-lws2_32");   // Winsock (cajeta.net natives in the bitcode)
+            opt.argv.push_back("-lcrypt32");  // OS trust-store shim (cajeta_tls.c)
             opt.argv.push_back("-lbcrypt");   // BCryptGenRandom (runtime RNG)
-            opt.argv.push_back("-lpthread");  // winpthreads
+            opt.argv.push_back("-ladvapi32"); // OpenSSL CryptoAPI dependencies
+            opt.argv.push_back("-luser32");
+            opt.argv.push_back("-lpthread");  // winpthreads (resolved static via -static)
 #elif defined(__APPLE__)
             opt.argv.push_back("-lpthread");
 #else
