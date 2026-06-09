@@ -157,7 +157,11 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       returning a borrow must not be reflected this way — documented on
       `Method.invokeObject`). Verified: invokeObjectReturnsReference (reflective
       `make()` → real Cell, field reads 42). Primitive boxing into a wrapper
-      Object: TODO if a boxed surface is wanted.
+      Object: designed — see `plans/lang/wrapper-types-plan.md` (Phase W5 is the
+      `invokeBoxed`/`getBoxed` wiring; W1–W4 build the wrapper family it needs,
+      which doesn't exist yet). The one new compiler/runtime surface boxing
+      needs is a method-return-type-kind RTTI native; field boxing reuses the
+      REFL-2A `typeFlags`.
 - [x] REFL-4.2 `Constructor.heapInstance` — `heapInstance()` / `heapInstance(int64[] args)`
       (renamed 2026-06-09 from `newInstance` — allocation site is now explicit;
       `stackInstance`/unsafe-placement reserved in the same namespace)
