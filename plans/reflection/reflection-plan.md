@@ -115,7 +115,14 @@ methods/ctors use synthesized switch-over-index adapters reached through `#Rtti`
       surfaced yet — borrow-return-multi-param needs the receiver form.)
 - [ ] REFL-3.3 Visibility enforcement (throws on `private` when `@Sealed`,
       decision D1) — TODO; today access is unchecked, caller must match the type.
-- float/double + remaining primitive accessors — TODO (i32/i64/boolean landed).
+- [x] **float/double field accessors** (shipped 2026-06-09): `getFloat32/setFloat32/
+      getFloat64/setFloat64(o[, idx], v)` on both `Class` (index form) and `Field`
+      (object form), backed by natives `__cajeta_field_get/set_f32/f64` (same
+      byteOffset path as the integer accessors; FP values cross the native boundary
+      in their own ABI registers — no bit-casting). 26/26 reflection green (3 new
+      float roundtrip tests; fixture `User` gained `float32 ratio`/`float64 precise`
+      at field idx 3/4, field count 3→5). Remaining primitive accessors (int8/int16/
+      uint*) — TODO if needed.
 
 ### Phase 4 — `Method.invoke` + `Constructor.heapInstance` (REFL-4)  ← object model + marshalling shipped 2026-06-09
 Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects**
@@ -124,7 +131,11 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
 - [x] REFL-4.1 `Method.invoke` — `Method.invokeScalar(o)` (no-arg) and
       `invokeScalar(o, int64[] args)` (raw-packed args, one int64/user param) route
       through the REFL-2B per-class invoke adapter (direct call). Native
-      `__cajeta_object_invoke_scalar(0)`. Typed `invokeInt32`/boxed variants: TODO.
+      `__cajeta_object_invoke_scalar(0)`. Typed `invokeInt32` (narrowed) and
+      FP-return `invokeFloat32`/`invokeFloat64` variants shipped 2026-06-09 —
+      FP returns read the adapter's `ret` buffer in the FP register via natives
+      `__cajeta_object_invoke_f32/f64` (verified: invokeFloat32/64ReturnsRealValue,
+      invokeInt32Narrows). Boxed/Object-return variants: TODO.
 - [x] REFL-4.2 `Constructor.heapInstance` — `heapInstance()` / `heapInstance(int64[] args)`
       (renamed 2026-06-09 from `newInstance` — allocation site is now explicit;
       `stackInstance`/unsafe-placement reserved in the same namespace)

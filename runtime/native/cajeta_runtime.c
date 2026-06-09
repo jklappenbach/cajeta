@@ -3780,6 +3780,29 @@ void __cajeta_field_set_bool(void* obj, void* rtti, int32_t idx, int32_t v) {
     if (!obj || off < 0) return;
     *(int8_t*) ((char*) obj + off) = (int8_t) (v != 0 ? 1 : 0);
 }
+// float (f32) / double (f64) fields. Same byteOffset path as the integer
+// accessors; the value is passed across the native boundary in its own FP ABI
+// register, so no bit-casting is needed here.
+float __cajeta_field_get_f32(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0.0f;
+    return *(float*) ((char*) obj + off);
+}
+void __cajeta_field_set_f32(void* obj, void* rtti, int32_t idx, float v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(float*) ((char*) obj + off) = v;
+}
+double __cajeta_field_get_f64(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0.0;
+    return *(double*) ((char*) obj + off);
+}
+void __cajeta_field_set_f64(void* obj, void* rtti, int32_t idx, double v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(double*) ((char*) obj + off) = v;
+}
 // Reference (object/pointer) field: a borrow of whatever the slot points to.
 void* __cajeta_field_get_ref(void* obj, void* rtti, int32_t idx) {
     int32_t off = cajeta_field_offset(rtti, idx);
@@ -3858,6 +3881,45 @@ int64_t __cajeta_object_invoke_scalar(void* obj, int32_t idx, void* argArray) {
     if (!adapter) return 0;
     void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
     int64_t ret = 0;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+
+// REFL-4 typed FP return paths. The per-class invoke adapter already stores a
+// float/double result into the 8-byte `ret` buffer (emitReflectInvokeBody
+// marshals floating-point returns); these variants read that buffer in the FP
+// register so the value crosses the native boundary as a real float/double
+// instead of as raw bits widened to int64. `argArray` is the same int64[]
+// element-region convention as the scalar path. Resolve the adapter once via a
+// shared helper to avoid duplicating the vtable->classObject->rtti walk.
+static void* cajeta_resolve_invoke_adapter(void* obj) {
+    if (!obj) return NULL;
+    void* vtable = *(void**) obj;
+    if (!vtable) return NULL;
+    void* classObject = *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return NULL;
+    void* rtti = *(void**) ((char*) classObject + 8);
+    if (!rtti) return NULL;
+    return ((CajetaRtti*) rtti)->invokeAdapter;
+}
+float __cajeta_object_invoke_f32(void* obj, int32_t idx, void* argArray) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0.0f;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    // 8-byte buffer; the adapter stores a 4-byte float into its low bytes.
+    int64_t retBits = 0;
+    adapter(obj, idx, args, &retBits);
+    float out;
+    memcpy(&out, &retBits, sizeof(out));
+    return out;
+}
+double __cajeta_object_invoke_f64(void* obj, int32_t idx, void* argArray) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0.0;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    double ret = 0.0;
     adapter(obj, idx, args, &ret);
     return ret;
 }
