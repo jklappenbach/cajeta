@@ -5240,9 +5240,19 @@ int64_t __cajeta_hash_guid(int64_t hi, int64_t lo) {
     return (int64_t) h;
 }
 
-// Fill `n` bytes with entropy: /dev/urandom (strong), else rand() fallback.
+// Fill `n` bytes with cryptographic entropy: BCryptGenRandom (Windows) /
+// /dev/urandom (POSIX), with a rand() fallback only if the OS CSPRNG is
+// unavailable. Mirrors the per-process hash-seed init above so Guid.random()
+// is strong on every platform, not just where /dev/urandom exists.
 static void cajeta_fill_entropy(unsigned char* b, int n) {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#  include <bcrypt.h>
+#  pragma comment(lib, "bcrypt.lib")
+    if (BCryptGenRandom(NULL, (PUCHAR) b, (ULONG) n,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 /* STATUS_SUCCESS */) {
+        return;
+    }
+#else
     int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd >= 0) {
         int got = 0;
