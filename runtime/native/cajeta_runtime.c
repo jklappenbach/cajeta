@@ -7021,8 +7021,10 @@ static struct cajeta_vk_tex* cajeta_xpu_vk_tex_rec(int64_t handle) {
 // (Image2D) usable as an OpImageWrite target and readable back to the host
 // (TRANSFER_SRC) — its texels start undefined and are produced by a kernel.
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
-                                       int32_t format, uint32_t depth, int is3d) {
+                                       int32_t format, uint32_t depth, int is3d,
+                                       uint32_t mipLevels) {
     if (w == 0 || h == 0 || depth == 0) return 0;
+    if (mipLevels == 0) mipLevels = 1;
     // Storage images (Image2D) are R32F only; sampled images (Texture2D) pick a
     // VkFormat from the TextureFormat ordinal. All sample to float in the shader,
     // so the descriptor format is the only thing that varies.
@@ -7048,7 +7050,7 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
     ici.format = vkfmt;
     ici.extent.width = w; ici.extent.height = h;
     ici.extent.depth = is3d ? depth : 1;
-    ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.mipLevels = mipLevels; ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
     ici.usage = storage
@@ -7090,7 +7092,7 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
     vci.viewType = is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
     vci.format = vkfmt;
     vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.levelCount = mipLevels;
     vci.subresourceRange.layerCount = 1;
     VkImageView view = VK_NULL_HANDLE;
     if (g_xpu_vk.vkCreateImageView(g_xpu_vk.device, &vci, NULL, &view)
@@ -7126,18 +7128,22 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
     return (int64_t) (slot + 1);
 }
 
-// Stage `data` (w*h row-major float32 texels) into the image, leaving it in
-// SHADER_READ_ONLY_OPTIMAL ready to sample. Uses a transient host-visible
-// staging buffer + a one-time command buffer (barrier / copy / barrier).
-static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
-                                     uint32_t w, uint32_t h, int32_t format) {
-    struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
-    if (!t || !src || w != t->w || h != t->h) return;
-    uint32_t dd = t->d ? t->d : 1;   // depth (1 for 2-D images)
-    size_t texels = (size_t) w * h * dd * cajeta_texfmt_channels(format);
-    uint64_t bytes = (uint64_t) w * h * dd * cajeta_texfmt_texel_bytes(format);
+// Copy `src` (lw*lh*ld row-major float32 texels) into mip `level` of image `t`,
+// leaving that subresource in SHADER_READ_ONLY_OPTIMAL ready to sample. Transient
+// host-visible staging buffer + a one-time command buffer (barrier / copy /
+// barrier) on the shared VkQueue (this routine takes g_xpu_vk_submit_mu itself).
+// Returns 1 on success, 0 if the command buffer couldn't be recorded/submitted
+// (the subresource is left uninitialized). The per-level barriers use
+// baseMipLevel=level/levelCount=1, so each level is transitioned independently —
+// uploading every level of a mip chain leaves the whole image SHADER_READ.
+static int cajeta_xpu_vk_tex_copy_region(struct cajeta_vk_tex* t, const float* src,
+                                         uint32_t lw, uint32_t lh, uint32_t ld,
+                                         uint32_t level, int32_t format) {
+    if (!t || !src || lw == 0 || lh == 0 || ld == 0) return 0;
+    size_t texels = (size_t) lw * lh * ld * cajeta_texfmt_channels(format);
+    uint64_t bytes = (uint64_t) lw * lh * ld * cajeta_texfmt_texel_bytes(format);
     int64_t staging = cajeta_xpu_vk_alloc(bytes);   // host-visible+coherent
-    if (!staging) return;
+    if (!staging) return 0;
     void* m = cajeta_xpu_vk_mapped(staging);
     if (m) cajeta_texfmt_encode(m, src, texels, format);   // float memcpy / UNORM quantize
     struct cajeta_vk_buf* sb = cajeta_xpu_vk_rec(staging);
@@ -7152,10 +7158,10 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    int texUploaded = 0;
+    int ok = 0;
     if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
             == VK_SUCCESS && sb) {
-        texUploaded = 1;
+        ok = 1;
         VkCommandBufferBeginInfo cbbi;
         memset(&cbbi, 0, sizeof(cbbi));
         cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -7171,6 +7177,7 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
         toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         toDst.image = t->image;
         toDst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toDst.subresourceRange.baseMipLevel = level;
         toDst.subresourceRange.levelCount = 1;
         toDst.subresourceRange.layerCount = 1;
         toDst.srcAccessMask = 0;
@@ -7182,10 +7189,11 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
         VkBufferImageCopy region;
         memset(&region, 0, sizeof(region));
         region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = level;
         region.imageSubresource.layerCount = 1;
-        region.imageExtent.width = w;
-        region.imageExtent.height = h;
-        region.imageExtent.depth = dd;
+        region.imageExtent.width = lw;
+        region.imageExtent.height = lh;
+        region.imageExtent.depth = ld;
         g_xpu_vk.vkCmdCopyBufferToImage(cmd, sb->buffer, t->image,
                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                         1, &region);
@@ -7211,13 +7219,36 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
     }
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     cajeta_xpu_vk_free(staging);
-    // M7: if the upload command buffer couldn't be allocated, the image stays in
-    // UNDEFINED layout but a later launch binds it as SHADER_READ_ONLY_OPTIMAL —
-    // a validation error / undefined texels. Surface it rather than fail silently.
-    if (!texUploaded)
+    return ok;
+}
+
+// Stage `data` (w*h row-major float32 texels) into mip level 0, leaving it in
+// SHADER_READ_ONLY_OPTIMAL ready to sample.
+static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
+                                     uint32_t w, uint32_t h, int32_t format) {
+    struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
+    if (!t || !src || w != t->w || h != t->h) return;
+    uint32_t dd = t->d ? t->d : 1;   // depth (1 for 2-D images)
+    // M7: if the upload couldn't be recorded the image stays UNDEFINED but a
+    // later launch binds it as SHADER_READ_ONLY_OPTIMAL — surface, don't fail
+    // silently.
+    if (!cajeta_xpu_vk_tex_copy_region(t, src, w, h, dd, 0, format))
         fprintf(stderr, "cajeta.xpu: texture upload could not record/submit "
                 "(handle %lld); the image is left uninitialized\n",
                 (long long) handle);
+}
+
+// Stage one mip level: `src` is lw*lh row-major float32 texels for `level`
+// (depth 1 — mip Texture2D only). Each level is an independent copy_region.
+static void cajeta_xpu_vk_tex_upload_level(int64_t handle, const float* src,
+                                           uint32_t lw, uint32_t lh,
+                                           uint32_t level, int32_t format) {
+    struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
+    if (!t || !src) return;
+    if (!cajeta_xpu_vk_tex_copy_region(t, src, lw, lh, 1, level, format))
+        fprintf(stderr, "cajeta.xpu: texture mip-level upload could not "
+                "record/submit (handle %lld, level %u)\n",
+                (long long) handle, level);
 }
 
 static void cajeta_xpu_vk_tex_free(int64_t handle) {
@@ -7331,7 +7362,11 @@ static int64_t cajeta_xpu_vk_make_sampler(int32_t filterMode,
     sci.mipmapMode = filterMode == 1 ? VK_SAMPLER_MIPMAP_MODE_LINEAR
                                      : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     sci.addressModeU = a; sci.addressModeV = a; sci.addressModeW = a;
-    sci.minLod = 0.0f; sci.maxLod = 0.0f;
+    // maxLod must admit the highest mip level an explicit-LOD sample can request;
+    // 0.0 clamps every LOD to level 0 (so sampleLod(.., lod>0) never reaches the
+    // smaller mips). VK_LOD_CLAMP_NONE (1000.0) imposes no clamp — single-level
+    // (non-mip) Texture2D is unaffected (only level 0 exists to sample).
+    sci.minLod = 0.0f; sci.maxLod = VK_LOD_CLAMP_NONE;
     sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     sci.unnormalizedCoordinates = VK_FALSE;
     VkSampler s = VK_NULL_HANDLE;
@@ -7899,13 +7934,20 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
-                                       int32_t format, uint32_t depth, int is3d) {
+                                       int32_t format, uint32_t depth, int is3d,
+                                       uint32_t mipLevels) {
     (void) w; (void) h; (void) storage; (void) format; (void) depth; (void) is3d;
+    (void) mipLevels;
     return 0;
 }
 static void cajeta_xpu_vk_tex_upload(int64_t h, const float* src,
                                      uint32_t w, uint32_t ht, int32_t format) {
     (void) h; (void) src; (void) w; (void) ht; (void) format;
+}
+static void cajeta_xpu_vk_tex_upload_level(int64_t h, const float* src,
+                                           uint32_t lw, uint32_t lh,
+                                           uint32_t level, int32_t format) {
+    (void) h; (void) src; (void) lw; (void) lh; (void) level; (void) format;
 }
 static void cajeta_xpu_vk_tex_download(int64_t h, void* d,
                                        uint32_t w, uint32_t ht) {
@@ -8714,7 +8756,7 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 0); // sampled 2-D
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 0, 1); // sampled 2-D
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex_alloc(width, height, format);   // hipArray
         // CUDA texture objects land in Stage D (emit-only).
@@ -8814,7 +8856,11 @@ int64_t __cajeta_xpu_texture_alloc_mip(void* self, uint32_t width, uint32_t heig
             if (!t->data) { free(t); return 0; }
             return (int64_t) (intptr_t) t;
         }
-        // Vulkan / HIP mipmapped image paths land in later increments.
+        case CAJ_XPU_VULKAN:
+            // A sampled 2-D image with `levels` mip levels; per-level texels are
+            // staged by __cajeta_xpu_texture_upload_level.
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 0, levels);
+        // HIP mipmapped-array path lands in a later increment.
         default: return 0;
     }
 }
@@ -8844,6 +8890,9 @@ void __cajeta_xpu_texture_upload_level(void* self, int64_t handle, void* host,
             }
             return;
         }
+        case CAJ_XPU_VULKAN:
+            cajeta_xpu_vk_tex_upload_level(handle, src, lw, lh, level, format);
+            return;
         default: return;
     }
 }
@@ -8879,7 +8928,7 @@ int64_t __cajeta_xpu_texture3d_alloc(void* self, uint32_t width, uint32_t height
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, depth, 1);
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, depth, 1, 1);
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex3d_alloc(width, height, depth, format);
         default: return 0;
@@ -8952,7 +9001,7 @@ int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return 0;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F, 1, 0);  // storage 2-D (R32F)
+            return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F, 1, 0, 1);  // storage 2-D (R32F)
         default: return 0;
     }
 }
