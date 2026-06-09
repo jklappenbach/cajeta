@@ -142,9 +142,16 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       (today args are a caller-built `int64[]`).
 - [ ] **Async bridge (D5)** — reflective invoke of an `async` method routing through
       the fiber pool — TODO (design alongside the typed-invoke refinement).
-- [ ] **Tour `ReflectionDemo`** (the milestone): construct via `heapInstance`, call via
-      `invoke`, enumerate `getParameters()`; wire into `samples/tour/.../Tour.cajeta`.
-      All building blocks now exist — NEXT.
+- [x] **Tour `ReflectionDemo`** (the milestone, shipped 2026-06-09): reflects over
+      `tour.Counter` — `Class.of` → identity (name/field/method/ctor counts) →
+      enumerate fields → walk methods down to each `getParameter(i)`
+      (name + type) → construct via `Constructor.heapInstance()` → reflective
+      `Field.setInt32` → reflective `Method.invokeScalar(obj, args)` (bumpBy(2),
+      v 40→42). `samples/tour/.../lang/ReflectionDemo.cajeta`, wired into
+      `Tour.cajeta` after `AnnotationsDemo`. Verified by running the tour with the
+      demo hoisted early (output exact); restored to intended order after.
+      NOTE: the full tour hangs later in `LinkedListDemo` (pre-existing, unrelated
+      to reflection — it never reaches the reflection demo in list order).
 
 ### Phase 5 — `MethodHandle.bindCallSite` (REFL-5)
 - [ ] REFL-5.1 Per-signature-shape concrete `MethodHandle` subclasses,
