@@ -183,6 +183,19 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
             llvm::Type* elemTy, llvm::Value* index);
 
+        // Bindless descriptor array (Buffer<T>[]): select descriptor `descIndex`
+        // of the buffer-array param bound at `binding`, returning a per-buffer
+        // base the caller then feeds to bufferElementPtr for the inner `[i]`. The
+        // first subscript of `bufs[idx][i]`. `arrayBase` is the materialized arg
+        // for pointer backends (the [count, h…] handle array; null on Vulkan
+        // where the descriptor is bound here via resource.handlefrombinding).
+        // Default: unsupported (XPU-N01) — Vulkan + CPU override. `descIndex` is
+        // i32.
+        virtual llvm::Value* bufferArrayElement(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Function* fn,
+            unsigned binding, llvm::Value* arrayBase, llvm::Type* elemTy,
+            llvm::Value* descIndex);
+
         // Sample the 2-D texture `texHandle` at normalized coords (u, v) in
         // [0, 1] through `samplerHandle`, returning the filtered texel (f32) —
         // the lowering of `tex.sample(sampler, u, v)` (Item 8). `texHandle` and

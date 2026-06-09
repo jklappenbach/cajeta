@@ -295,6 +295,20 @@ public:
         // NVPTX/AMDGPU read fn->getArg(idx); Vulkan binds a descriptor here.
         unsigned idx = 0;
         for (auto& p : kparams) {
+            // Bindless buffer array (Buffer<T>[]): NO single descriptor to bind —
+            // `bufs[idx]` selects one per access (bufferArrayElement). Record the
+            // binding (= param index) + element type; on CPU the materialized arg
+            // is the [count, h…] handle-array base pointer.
+            if (p.isBufferArray) {
+                bufferArrayBindings[p.name] = {idx, p.type, p.isSigned};
+                // Pointer backends (CPU/NVPTX/AMD) pass the [count, h…] handle
+                // array as a plain fn arg; Vulkan binds per-access via
+                // handlefrombinding (no prologue value), so base stays null.
+                bufferArrayBases[p.name] =
+                    paramsAsArgs ? fn->getArg(idx) : nullptr;
+                ++idx;
+                continue;
+            }
             // Kernel params go through the backend (descriptor binds on Vulkan);
             // helper params are plain fn args, taken directly (setParamsAsArgs).
             llvm::Value* v = paramsAsArgs
@@ -391,6 +405,12 @@ private:
     std::map<std::string, bool> signedness;
     std::map<std::string, llvm::Value*> bufferBases;  // buffer name -> addrspace(1) ptr
     std::map<std::string, llvm::Type*> bufferElems;   // buffer name -> element type
+    // Bindless buffer-array params (Buffer<T>[]): the descriptor-array binding +
+    // element type per name, plus (CPU) the materialized handle-array base. There
+    // is NO single base — `bufs[idx]` selects a descriptor via bufferArrayElement.
+    struct BufferArrayInfo { unsigned binding; llvm::Type* elemTy; bool isSigned; };
+    std::map<std::string, BufferArrayInfo> bufferArrayBindings;
+    std::map<std::string, llvm::Value*> bufferArrayBases;  // CPU handle-array ptr
     // Texture2D / Sampler kernel params (Item 8): the materialized backend
     // handle per name. A `tex.sample(s, u, v)` looks the texture up here and the
     // sampler arg up in samplerHandles, then hands both to target.sampleTexture.
@@ -1783,6 +1803,37 @@ private:
         }
         auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(e);
         if (!ai) unsupported("l-value that isn't a buffer index or local");
+        // Bindless `bufs[idx][i]`: the base of this index is itself an index on a
+        // Buffer<T>[] param. Select descriptor `idx` (bufferArrayElement), then
+        // address element `i` through the normal bufferElementPtr seam.
+        if (auto baseAi = std::dynamic_pointer_cast<ArrayIndexExpression>(
+                exprChild(ai, 0))) {
+            if (auto arrId = std::dynamic_pointer_cast<IdentifierExpression>(
+                    exprChild(baseAi, 0))) {
+                auto bab = bufferArrayBindings.find(arrId->getTextValue());
+                if (bab != bufferArrayBindings.end()) {
+                    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+                    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+                    ExpressionPtr dIdxExpr = exprChild(baseAi, 1);
+                    llvm::Value* dIdx = lowerExpr(dIdxExpr);
+                    if (dIdx->getType() != i32)
+                        dIdx = builder.CreateIntCast(dIdx, i32,
+                                                     exprSigned(dIdxExpr));
+                    llvm::Value* handle = target.bufferArrayElement(
+                        builder, mod, fn, bab->second.binding,
+                        bufferArrayBases[arrId->getTextValue()],
+                        bab->second.elemTy, dIdx);
+                    ExpressionPtr eIdxExpr = exprChild(ai, 1);
+                    llvm::Value* eIdx = lowerExpr(eIdxExpr);
+                    if (eIdx->getType() != i64)
+                        eIdx = builder.CreateIntCast(eIdx, i64,
+                                                     exprSigned(eIdxExpr));
+                    llvm::Value* addr = target.bufferElementPtr(
+                        builder, mod, handle, bab->second.elemTy, eIdx);
+                    return {addr, bab->second.elemTy};
+                }
+            }
+        }
         auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
             exprChild(ai, 0));
         if (!baseId) unsupported("buffer index on a non-identifier base");
@@ -3401,6 +3452,30 @@ llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
     // addrspace-preserving GEP — the base pointer carries its address space
     // (1 for global buffers, 3 for shared globals); correct on NVPTX/AMDGPU.
     return b.CreateGEP(elemTy, base, {index}, "idx");
+}
+
+llvm::Value* LoweringTarget::bufferArrayElement(llvm::IRBuilderBase& b,
+                                                llvm::Module& /*m*/,
+                                                llvm::Function* /*fn*/,
+                                                unsigned /*binding*/,
+                                                llvm::Value* arrayBase,
+                                                llvm::Type* /*elemTy*/,
+                                                llvm::Value* descIndex) {
+    // Pointer backends (CPU / NVPTX / AMDGPU): `arrayBase` points to the
+    // [i64 count, i64 h0 …] handle array the launch marshalled. bufs[idx] is the
+    // (1 + idx)-th handle reinterpreted as a device pointer; the inner [i] then
+    // GEPs it via the default bufferElementPtr. (Vulkan overrides to bind a
+    // descriptor-array element instead.)
+    if (!arrayBase) return nullptr;
+    llvm::LLVMContext& ctx = b.getContext();
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Value* idx64 = b.CreateIntCast(descIndex, i64, /*isSigned=*/false);
+    llvm::Value* slotIdx =
+        b.CreateAdd(idx64, llvm::ConstantInt::get(i64, 1), "bufarr.slotidx");
+    llvm::Value* hPtr = b.CreateGEP(i64, arrayBase, {slotIdx}, "bufarr.h.ptr");
+    llvm::Value* handle = b.CreateLoad(i64, hPtr, "bufarr.h");
+    return b.CreateIntToPtr(handle, llvm::PointerType::get(ctx, 0),
+                            "bufarr.base");
 }
 
 llvm::Value* LoweringTarget::sampleTexture(llvm::IRBuilderBase& /*b*/,
