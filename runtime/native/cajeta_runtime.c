@@ -3529,10 +3529,14 @@ int64_t __cajeta_signature_hash(const char* s) {
 //   [16..23] ptr drop_fn              (this class's synthesized drop wrapper —
 //                                      __cajeta_class_virtual_drop loads this
 //                                      to route drops through the dynamic type)
-//   [24..]   [count x { i64 hash, ptr fn }] entries
+//   [24..31] ptr classObject          (this class's cached cajeta.reflect.Class
+//                                      instance — Object.getClass() loads it;
+//                                      NULL for value types / pre-reflect classes)
+//   [32..]   [count x { i64 hash, ptr fn }] entries
 #define CAJETA_VTABLE_PARENT_OFFSET 8
 #define CAJETA_VTABLE_DROP_FN_OFFSET 16
-#define CAJETA_VTABLE_ENTRIES_OFFSET 24
+#define CAJETA_VTABLE_CLASSOBJECT_OFFSET 24
+#define CAJETA_VTABLE_ENTRIES_OFFSET 32
 
 // Gap-1 fix — virtual dispatch on drop. Heap class locals push this as
 // their drop fn (in place of the static per-class drop wrapper). At
@@ -3580,6 +3584,208 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
         else return entries[mid].fn;
     }
     return NULL;
+}
+
+// ---- Reflection (cajeta.reflect) — REFL-1 -------------------------------
+//
+// Fixed-layout C mirrors of the RTTI structs emitted by
+// StructureMetadata.cpp (getRttiStructType / getFieldStructType /
+// getMethodStructType / getParameterStructType). These MUST stay in
+// lock-step with those LLVM struct shapes — the compiler builds the data,
+// these readers walk it. All variable-length data (names, tables, annotation
+// and parent lists) is referenced by pointer, so every field below sits at a
+// fixed offset regardless of the class.
+
+// Parameter descriptor — the ORIGINAL 5-field shape (#ParameterDesc). Kept
+// separate from CajetaFieldDesc, which gained byteOffset/typeFlags for fields.
+typedef struct {
+    const char*  name;
+    const char*  type;
+    int32_t      modifiers;
+    int16_t      annotationCount;
+    const char** annotations;
+} CajetaParamDesc;
+
+// Field descriptor (#FieldDesc). MUST match getFieldStructType() in
+// StructureMetadata.cpp: { ptr, ptr, i32, i16, ptr, i32, i64 }.
+typedef struct {
+    const char*  name;
+    const char*  type;
+    int32_t      modifiers;
+    int16_t      annotationCount;
+    const char** annotations;
+    int32_t      byteOffset;        // offset in the instance struct; -1 if static
+    int64_t      typeFlags;         // field type's CajetaType TYPE_ID flag word
+} CajetaFieldDesc;
+
+typedef struct {
+    const char*            name;           // canonical signature
+    const char*            returnType;
+    int64_t                sigHash;        // FNV-1a of toCanonical(false)
+    int32_t                modifiers;
+    int16_t                parameterCount;
+    const CajetaParamDesc* parameters;
+} CajetaMethodDesc;
+
+typedef struct {
+    int64_t                 allocationSize;
+    const char*             typeName;
+    int32_t                 modifiers;
+    int16_t                 classAnnotationCount;
+    const char**            classAnnotations;
+    int16_t                 propertyCount;
+    const CajetaFieldDesc*  properties;
+    int16_t                 methodCount;
+    const CajetaMethodDesc* methods;
+    int16_t                 parentCount;
+    const char**            parentNames;
+    void*                   vtable;
+    void*                   invokeAdapter;       // REFL-2 reflective invoke adapter (or NULL)
+    void*                   newInstanceAdapter;  // REFL-2C reflective ctor adapter (or NULL)
+} CajetaRtti;
+
+// Object.getClass(): obj -> its cached #ClassObject (the cajeta.reflect.Class
+// instance) through the vtable's classObject slot. The returned pointer is a
+// borrow of a process-lifetime static; the caller never frees it.
+void* __cajeta_object_get_class(void* obj) {
+    if (!obj) return NULL;
+    void* vtable = *(void**) obj;                 // header slot 0
+    if (!vtable) return NULL;
+    return *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+}
+
+// RTTI scalar readers — `rtti` is a CajetaRtti* (the #RttiGlobal address a
+// Class instance holds in its `rtti` field).
+int32_t __cajeta_rtti_field_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->propertyCount : 0;
+}
+int32_t __cajeta_rtti_method_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->methodCount : 0;
+}
+int32_t __cajeta_rtti_parent_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->parentCount : 0;
+}
+int32_t __cajeta_rtti_modifiers(void* rtti) {
+    return rtti ? ((CajetaRtti*) rtti)->modifiers : 0;
+}
+int64_t __cajeta_rtti_alloc_size(void* rtti) {
+    return rtti ? ((CajetaRtti*) rtti)->allocationSize : 0;
+}
+int32_t __cajeta_rtti_name_len(void* rtti) {
+    if (!rtti) return 0;
+    const char* n = ((CajetaRtti*) rtti)->typeName;
+    return n ? (int32_t) strlen(n) : 0;
+}
+// Copy the canonical type name into a caller-allocated int8[] (`out` =
+// { i64 count, [count x i8] }), clamped to the array's capacity. Out-param
+// rather than a returned int8[] because a `@Native` int8[] return isn't
+// drop-tracked (see Sha256.cajeta); the caller does
+// `int8[] out = heap int8[len]; nameInto(rtti, out); heap String(#out, len)`.
+void __cajeta_rtti_name_into(void* rtti, void* out) {
+    if (!out) return;
+    const char* n = rtti ? ((CajetaRtti*) rtti)->typeName : "";
+    if (!n) n = "";
+    int64_t cap = *((int64_t*) out);
+    int64_t len = (int64_t) strlen(n);
+    if (len > cap) len = cap;
+    if (len > 0) memcpy((char*) out + 8, n, (size_t) len);
+}
+// Copy the declared field name at `idx` into a caller-allocated int8[].
+void __cajeta_rtti_field_name_into(void* rtti, int32_t idx, void* out) {
+    if (!out) return;
+    const char* n = "";
+    if (rtti) {
+        CajetaRtti* r = (CajetaRtti*) rtti;
+        if (idx >= 0 && idx < r->propertyCount && r->properties)
+            n = r->properties[idx].name ? r->properties[idx].name : "";
+    }
+    int64_t cap = *((int64_t*) out);
+    int64_t len = (int64_t) strlen(n);
+    if (len > cap) len = cap;
+    if (len > 0) memcpy((char*) out + 8, n, (size_t) len);
+}
+int32_t __cajeta_rtti_field_name_len(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
+    const char* n = r->properties[idx].name;
+    return n ? (int32_t) strlen(n) : 0;
+}
+int32_t __cajeta_rtti_field_modifiers(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
+    return r->properties[idx].modifiers;
+}
+// Byte offset of field `idx` within the instance struct (-1 if static / out of
+// range). The data-driven hook reflective field get/set keys off — see
+// StructureMetadata getFieldStructType / emitFieldTable.
+int32_t __cajeta_rtti_field_offset(void* rtti, int32_t idx) {
+    if (!rtti) return -1;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return -1;
+    return r->properties[idx].byteOffset;
+}
+// Field `idx`'s type-flag word (CajetaType TYPE_ID: size / int-vs-float /
+// signed / primitive-vs-reference bits). 0 if out of range.
+int64_t __cajeta_rtti_field_type_flags(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
+    return r->properties[idx].typeFlags;
+}
+// Method `idx`'s canonical signature name length / copy (parallel to the field
+// name readers). Used to locate a method by name and for diagnostics.
+int32_t __cajeta_rtti_method_name_len(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return 0;
+    const char* n = r->methods[idx].name;
+    return n ? (int32_t) strlen(n) : 0;
+}
+void __cajeta_rtti_method_name_into(void* rtti, int32_t idx, void* out) {
+    if (!out) return;
+    const char* n = "";
+    if (rtti) {
+        CajetaRtti* r = (CajetaRtti*) rtti;
+        if (idx >= 0 && idx < r->methodCount && r->methods)
+            n = r->methods[idx].name ? r->methods[idx].name : "";
+    }
+    int64_t cap = *((int64_t*) out);
+    int64_t len = (int64_t) strlen(n);
+    if (len > cap) len = cap;
+    if (len > 0) memcpy((char*) out + 8, n, (size_t) len);
+}
+// Declared parameter count of method `idx` (-1 if out of range). Lets a caller
+// pick out no-arg methods before a reflective invoke.
+int32_t __cajeta_rtti_method_param_count(void* rtti, int32_t idx) {
+    if (!rtti) return -1;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return -1;
+    return r->methods[idx].parameterCount;
+}
+
+// REFL-2 reflective invoke (no-arg, scalar return path). Resolves `obj`'s
+// per-class invoke adapter through its vtable -> #ClassObject -> #Rtti, then
+// dispatches method `idx` with no arguments, returning the result widened to
+// int64 (smaller scalars occupy the low bytes; pointers fit whole). Returns 0
+// if obj/adapter is null or the index isn't a marshallable method.
+//   vtable.classObject (offset 24) -> #ClassObject{ Class#VTable, rtti }
+//   so rtti = *(classObject + 8).
+int64_t __cajeta_object_invoke_scalar0(void* obj, int32_t idx) {
+    if (!obj) return 0;
+    void* vtable = *(void**) obj;
+    if (!vtable) return 0;
+    void* classObject = *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return 0;
+    void* rtti = *(void**) ((char*) classObject + 8);
+    if (!rtti) return 0;
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
+    if (!adapter) return 0;
+    int64_t ret = 0;
+    adapter(obj, idx, NULL, &ret);
+    return ret;
 }
 
 // UnrecoverableException's vtable address, published by codegen.

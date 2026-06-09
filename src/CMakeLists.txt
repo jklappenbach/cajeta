@@ -465,6 +465,9 @@ set(CAJETA_STDLIB_ROOT ${PROJECT_SOURCE_DIR}/runtime/src)
 set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
+        # cajeta.reflect (REFL-1): Class + RTTI introspection. Depends only on
+        # cajeta.lang (Object, String), already in the prelude above.
+        ${CAJETA_STDLIB_ROOT}/cajeta/reflect
         ${CAJETA_STDLIB_ROOT}/cajeta/error
         # cajeta/time before cajeta/concurrent: R9.3's withTimeout (a stdlib
         # function in cajeta.concurrent) takes a Duration parameter, so the
