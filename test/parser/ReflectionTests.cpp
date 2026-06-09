@@ -28,6 +28,8 @@ std::string prog(const std::string& body) {
         "    public int32 id;\n"
         "    public int64 score;\n"
         "    public boolean active;\n"
+        "    public float32 ratio;\n"
+        "    public float64 precise;\n"
         "    public User() { return; }\n"
         "    public User(int32 startId) { this.id = startId; return; }\n"
         "    public int32 bump() { this.id = this.id + 1; return this.id; }\n"
@@ -46,6 +48,16 @@ int32_t runI32(const std::string& body) {
     return fn();
 }
 
+// Compile + run a complete module that defines its own classes and a
+// `test.M.run() -> int32` entry. Used where the shared `User` fixture's
+// method-scan tests would be perturbed (e.g. FP-return invoke needs a class
+// with a single, index-stable FP-returning method).
+int32_t runCustomI32(const std::string& fullSource) {
+    auto jit = CajetaJit::compile(fullSource, "test.M");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+
 }  // namespace
 
 // getClass() reaches the cached Class via the vtable's classObject slot.
@@ -53,7 +65,7 @@ TEST(ReflectionTests, getClassFieldCount) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
         "Class c = Class.of(u);\n"
-        "return c.getFieldCount();\n"), 3);
+        "return c.getFieldCount();\n"), 5);
 }
 
 // The class declares at least bump(); method count is non-zero.
@@ -168,6 +180,34 @@ TEST(ReflectionTests, fieldBooleanRoundtrip) {
         "return c.getBoolean(u, 2) ? 1 : 0;\n"), 1);
 }
 
+// REFL-3: float32 `ratio` (field 3) roundtrip. Written/read through the FP-typed
+// accessor; checked by scaling to an int the harness can assert exactly.
+TEST(ReflectionTests, fieldFloat32Roundtrip) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "c.setFloat32(u, 3, 2.5f);\n"
+        "return (int32) (c.getFloat32(u, 3) * 4.0f);\n"), 10);
+}
+
+// REFL-3: float64 `precise` (field 4) roundtrip (returned scaled for the harness).
+TEST(ReflectionTests, fieldFloat64Roundtrip) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "c.setFloat64(u, 4, 1.25);\n"
+        "return (int32) (c.getFloat64(u, 4) * 8.0);\n"), 10);
+}
+
+// REFL-3 object model: Field object float32 roundtrip on `ratio` (field 3).
+TEST(ReflectionTests, fieldObjectFloat32Roundtrip) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Field f = Class.of(u).getField(3);\n"
+        "f.setFloat32(u, 3.5f);\n"
+        "return (int32) (f.getFloat32(u) * 2.0f);\n"), 7);
+}
+
 // REFL-3 × REFL-2B: a reflectively-set field is observed by a reflective
 // invoke. Set id=41, then the no-arg bump() (returns id+1) must yield 42 —
 // proving the field offset the setter writes matches what the method reads.
@@ -250,7 +290,7 @@ TEST(ReflectionTests, constructorObjectNewInstance) {
         "User seed = heap User();\n"
         "Constructor ctor = Class.of(seed).getConstructor(0);\n"
         "Object o = ctor.heapInstance();\n"
-        "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 3);
+        "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 5);
 }
 
 // REFL-2C: User declares two constructors (User() and User(int32)).
@@ -312,7 +352,7 @@ TEST(ReflectionTests, newInstanceProducesValidObject) {
         "User seed = heap User();\n"
         "Class c = Class.of(seed);\n"
         "Object o = c.heapInstance(0);\n"
-        "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 3);
+        "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 5);
 }
 
 // REFL-2C: a heapInstance'd object is functional — reflectively invoking the
@@ -332,4 +372,68 @@ TEST(ReflectionTests, newInstanceObjectIsFunctional) {
         "    i = i + 1;\n"
         "}\n"
         "return found;\n"), 1);
+}
+
+// REFL-4.1 typed invoke: a float64-returning method comes back as a real FP
+// value through Method.invokeFloat64 (the adapter stores the double in its FP
+// register; the typed native reads it as a double, not int64-widened bits).
+// Box has a single method (index 0) so the index is unambiguous.
+TEST(ReflectionTests, invokeFloat64ReturnsRealValue) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class Box {\n"
+        "    public float64 d;\n"
+        "    public Box() { return; }\n"
+        "    public float64 getD() { return this.d; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Box bx = heap Box();\n"
+        "        Class c = Class.of(bx);\n"
+        "        c.setFloat64(bx, 0, 3.25);\n"
+        "        Method m = c.getMethod(0);\n"
+        "        return (int32) (m.invokeFloat64(bx) * 4.0);\n"
+        "    }\n"
+        "}\n"), 13);
+}
+
+// REFL-4.1 typed invoke: float32 return via Method.invokeFloat32.
+TEST(ReflectionTests, invokeFloat32ReturnsRealValue) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class Half {\n"
+        "    public Half() { return; }\n"
+        "    public float32 getHalf() { return 0.5f; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Half h = heap Half();\n"
+        "        Method m = Class.of(h).getMethod(0);\n"
+        "        return (int32) (m.invokeFloat32(h) * 6.0f);\n"
+        "    }\n"
+        "}\n"), 3);
+}
+
+// REFL-4.1 typed invoke: invokeInt32 narrows the int64 path for an
+// int32-returning method.
+TEST(ReflectionTests, invokeInt32Narrows) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class Seven {\n"
+        "    public Seven() { return; }\n"
+        "    public int32 get() { return 7; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Seven s = heap Seven();\n"
+        "        Method m = Class.of(s).getMethod(0);\n"
+        "        return m.invokeInt32(s);\n"
+        "    }\n"
+        "}\n"), 7);
 }

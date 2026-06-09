@@ -33,6 +33,14 @@ public final class Field {
     private static int32 getBoolNative(Object o, pointer rtti, int32 idx);
     @Native("__cajeta_field_set_bool")
     private static void setBoolNative(Object o, pointer rtti, int32 idx, int32 v);
+    @Native("__cajeta_field_get_f32")
+    private static float32 getF32(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_f32")
+    private static void setF32(Object o, pointer rtti, int32 idx, float32 v);
+    @Native("__cajeta_field_get_f64")
+    private static float64 getF64(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_f64")
+    private static void setF64(Object o, pointer rtti, int32 idx, float64 v);
 
     public Field(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -61,4 +69,8 @@ public final class Field {
     public void setInt64(Object o, int64 v) { setI64(o, this.rtti, this.index, v); }
     public boolean getBoolean(Object o) { return getBoolNative(o, this.rtti, this.index) != 0; }
     public void setBoolean(Object o, boolean v) { setBoolNative(o, this.rtti, this.index, v ? 1 : 0); }
+    public float32 getFloat32(Object o) { return getF32(o, this.rtti, this.index); }
+    public void setFloat32(Object o, float32 v) { setF32(o, this.rtti, this.index, v); }
+    public float64 getFloat64(Object o) { return getF64(o, this.rtti, this.index); }
+    public void setFloat64(Object o, float64 v) { setF64(o, this.rtti, this.index, v); }
 }

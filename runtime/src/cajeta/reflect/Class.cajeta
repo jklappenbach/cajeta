@@ -82,6 +82,14 @@ public final class Class {
     private static int32 fieldGetBool(Object o, pointer rtti, int32 idx);
     @Native("__cajeta_field_set_bool")
     private static void fieldSetBool(Object o, pointer rtti, int32 idx, int32 v);
+    @Native("__cajeta_field_get_f32")
+    private static float32 fieldGetF32(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_f32")
+    private static void fieldSetF32(Object o, pointer rtti, int32 idx, float32 v);
+    @Native("__cajeta_field_get_f64")
+    private static float64 fieldGetF64(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_f64")
+    private static void fieldSetF64(Object o, pointer rtti, int32 idx, float64 v);
 
     @Native("__cajeta_rtti_method_param_count")
     private static int32 methodParamCountOf(pointer rtti, int32 idx);
@@ -178,6 +186,22 @@ public final class Class {
     /** Write `value` to the boolean field at `index` of instance `o`. */
     public void setBoolean(Object o, int32 index, boolean value) {
         fieldSetBool(o, this.rtti, index, value ? 1 : 0);
+    }
+    /** Read the float32 field at `index` from instance `o`. */
+    public float32 getFloat32(Object o, int32 index) {
+        return fieldGetF32(o, this.rtti, index);
+    }
+    /** Write `value` to the float32 field at `index` of instance `o`. */
+    public void setFloat32(Object o, int32 index, float32 value) {
+        fieldSetF32(o, this.rtti, index, value);
+    }
+    /** Read the float64 field at `index` from instance `o`. */
+    public float64 getFloat64(Object o, int32 index) {
+        return fieldGetF64(o, this.rtti, index);
+    }
+    /** Write `value` to the float64 field at `index` of instance `o`. */
+    public void setFloat64(Object o, int32 index, float64 value) {
+        fieldSetF64(o, this.rtti, index, value);
     }
 
     /** Number of declared methods. */

@@ -23,6 +23,10 @@ public final class Method {
     private static int64 invoke0(Object o, int32 idx);
     @Native("__cajeta_object_invoke_scalar")
     private static int64 invokeN(Object o, int32 idx, int64[] args);
+    @Native("__cajeta_object_invoke_f32")
+    private static float32 invokeF32(Object o, int32 idx, int64[] args);
+    @Native("__cajeta_object_invoke_f64")
+    private static float64 invokeF64(Object o, int32 idx, int64[] args);
 
     public Method(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -63,5 +67,29 @@ public final class Method {
      */
     public int64 invokeScalar(Object o, int64[] args) {
         return invokeN(o, this.index, args);
+    }
+
+    /** Invoke a NO-ARGUMENT int32-returning method, narrowed from the int64 path. */
+    public int32 invokeInt32(Object o) { return (int32) invoke0(o, this.index); }
+
+    /** Invoke an int32-returning method with raw-packed `args`, narrowed. */
+    public int32 invokeInt32(Object o, int64[] args) {
+        return (int32) invokeN(o, this.index, args);
+    }
+
+    /**
+     * Invoke a float32-returning method. The per-class adapter stores the
+     * floating-point result in its own ABI register, so this returns the real
+     * value (not int64-widened bits). No-arg form passes a null arg buffer.
+     */
+    public float32 invokeFloat32(Object o) { return invokeF32(o, this.index, null); }
+    public float32 invokeFloat32(Object o, int64[] args) {
+        return invokeF32(o, this.index, args);
+    }
+
+    /** Invoke a float64-returning method (real FP value; see invokeFloat32). */
+    public float64 invokeFloat64(Object o) { return invokeF64(o, this.index, null); }
+    public float64 invokeFloat64(Object o, int64[] args) {
+        return invokeF64(o, this.index, args);
     }
 }
