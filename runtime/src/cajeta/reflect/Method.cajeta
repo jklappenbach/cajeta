@@ -264,9 +264,14 @@ public final class Method {
         if (kind == 14) {                                  // char (i32)
             return Char.of((char) invokeN(o, this.index, args));
         }
-        // kind == 7: a primitive with no wrapper yet (int128/uint128, the
-        // half/quad/ML floats — plan W3-W4).
+        // kind == 7: int128/uint128, the half/quad (float16/bfloat16/float128)
+        // and ML fp8/sub-byte floats, or `pointer`. The W3/W4 wrapper CLASSES
+        // exist now, but reflective auto-boxing of these RETURNS is not wired:
+        // the invoke adapter stores into an 8-byte ret buffer (a float128 would
+        // overflow it) and there are no half/bfloat/sub-byte return natives yet.
+        // Box manually off the typed-invoke surface, e.g.
+        // `Float128.of((float128) ...)`, until those paths land.
         throw heap UnsupportedReflectionException(
-            "invokeBoxed: this primitive return type has no wrapper yet (plan W3-W4)");
+            "invokeBoxed: reflective boxing of this return type (128-bit int, half/quad/ML float, or pointer) is not wired yet; use the typed invoke surface and box manually");
     }
 }

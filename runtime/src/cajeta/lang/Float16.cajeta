@@ -1,0 +1,35 @@
+package cajeta.lang;
+
+/**
+ * Boxed `float16` (IEEE-754 binary16 / LLVM `half`). Immutable,
+ * heap-allocatable, reflection-introspectable; boxed value is field index 0.
+ * See `plans/lang/wrapper-types-plan.md` (W3).
+ *
+ * Equality is **bitwise** like the other float wrappers, realized by widening
+ * to `float64` and hashing those bits: half → double is lossless and injective
+ * over finite values (distinct halfs never collide), and the float64 native
+ * canonicalizes `-0.0` to `+0.0`. `asFloat64()` / `asInt64()` use the ordinary
+ * fp casts (LLVM supports half ↔ double / half → int directly).
+ */
+public class Float16 extends Number {
+    float16 value;
+
+    @Native("__cajeta_hash_float64")
+    private static int64 hashF64(float64 value);
+
+    public Float16(float16 value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Float16 of(float16 value) { return heap Float16(value); }
+
+    /** The wrapped primitive. */
+    public float16 value() { return this.value; }
+
+    public int64   asInt64()   { return (int64) this.value; }
+    public float64 asFloat64() { return (float64) this.value; }
+
+    /** Bitwise value hash (via lossless float64 widening). */
+    public int64 hash() { return hashF64((float64) this.value); }
+
+    public #String toString() { return this.formatFloat(this.asFloat64()); }
+}
