@@ -162,10 +162,12 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       reference→`invokeObject`, void→null, unsupported primitive→
       `UnsupportedReflectionException`. Uses the existing
       `CajetaMethodDesc.returnType` string via new native
-      `__cajeta_rtti_method_return_kind` (no compiler change). Wrapper family +
-      design: `plans/lang/wrapper-types-plan.md` (W1 shipped; W2-W4 = remaining
-      wrappers; W5b = `Field.getBoxed`/`Class.getBoxed`, field type via REFL-2A
-      `typeFlags`).
+      `__cajeta_rtti_method_return_kind` (no compiler change). `Field.getBoxed` /
+      `Class.getBoxed` SHIPPED too (W5b, `__cajeta_rtti_field_kind`) — primitive
+      fields box; reference fields throw `UnsupportedReflectionException`
+      (ownership-unsafe without a borrow-return surface). Wrapper family +
+      design: `plans/lang/wrapper-types-plan.md` (W1 + W5 shipped; W2-W4 =
+      remaining wrappers, which auto-expand the boxable set).
 - [x] REFL-4.2 `Constructor.heapInstance` — `heapInstance()` / `heapInstance(int64[] args)`
       (renamed 2026-06-09 from `newInstance` — allocation site is now explicit;
       `stackInstance`/unsafe-placement reserved in the same namespace)

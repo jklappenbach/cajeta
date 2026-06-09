@@ -231,7 +231,7 @@ REFL-4.1/4.4; the only new compiler/runtime surface is the return-kind native.
       `toString` **deferred** until the fp-conversion runtime helpers land
       (documented stub that returns raw-bits-widened or throws — decide when the
       helpers exist). Log the limitation; don't silently mis-convert.
-- [~] **W5 — reflection boxing (REFL-4.1).** `Method.invokeBoxed` DONE
+- [x] **W5 — reflection boxing (REFL-4.1).** `Method.invokeBoxed` DONE
       2026-06-09. No compiler change needed: `CajetaMethodDesc.returnType` is
       already a canonical type-name string; new native
       `__cajeta_rtti_method_return_kind` maps it to a compact kind
@@ -243,9 +243,15 @@ REFL-4.1/4.4; the only new compiler/runtime surface is the return-kind native.
       lie). Tests (ReflectionTests, 3/3): invokeBoxedPrimitiveReturns
       (Int32/Float64/Boolean), invokeBoxedReferenceAndVoid (#Cell + void→null
       w/ side effect), invokeBoxedUnsupportedThrows (int8→exception).
-      **Remaining W5b (TODO):** `Field.getBoxed` + `Class.getBoxed` (field type
-      via the REFL-2A `typeFlags`/the field-desc `type` string — same kind
-      switch); the unsupported set shrinks automatically as W2-W4 wrappers land.
+      **W5b DONE 2026-06-09:** `Field.getBoxed(o)` + `Class.getBoxed(o, index)`
+      (delegates to `Field`). New native `__cajeta_rtti_field_kind` (same
+      classifier over the field-desc `type` string). Primitive fields box;
+      **reference fields throw** `UnsupportedReflectionException` — handing a
+      held reference back as an owned `#Object` would double-drop, and there's
+      no borrow-return reflection surface yet. Tests (ReflectionTests, 2/2):
+      getBoxedPrimitiveFields (all 5 W1 types), getBoxedReferenceFieldThrows.
+      The unsupported set shrinks automatically as W2-W4 wrappers land.
+      **W5 COMPLETE.**
 - [ ] **W6 (optional) — `toString` + small-value cache.** Number→`String`
       natives wired through `asInt64`/`asFloat64`; `Boolean`/small-`Int*` cache
       behind `of()`.

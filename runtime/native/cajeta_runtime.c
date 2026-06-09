@@ -4103,6 +4103,17 @@ int32_t __cajeta_rtti_method_return_kind(void* rtti, int32_t idx) {
     if (idx < 0 || idx >= r->methodCount || !r->methods) return CAJETA_RK_REFERENCE;
     return cajeta_return_kind(r->methods[idx].returnType);
 }
+// W5b: same classification for a field's declared type, so Field.getBoxed can
+// pick the wrapper / refuse a reference field (which can't be handed back as an
+// owned #Object without a borrow-return surface). Reuses the field-desc `type`
+// string (CajetaFieldDesc also carries typeFlags, but the string keeps one
+// shared classifier with the method path).
+int32_t __cajeta_rtti_field_kind(void* rtti, int32_t idx) {
+    if (!rtti) return CAJETA_RK_REFERENCE;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return CAJETA_RK_REFERENCE;
+    return cajeta_return_kind(r->properties[idx].type);
+}
 
 // REFL-2C constructor introspection + reflective construction.
 int32_t __cajeta_rtti_constructor_count(void* rtti) {
