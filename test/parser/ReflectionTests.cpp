@@ -793,9 +793,10 @@ TEST(ReflectionTests, invokeBoxedReferenceAndVoid) {
         "}\n"), 2);
 }
 
-// REFL-4.1 boxing: a primitive with no W1 wrapper (int8) raises
-// UnsupportedReflectionException rather than widening or returning null. The
-// method takes 4 params so the scan ignores the inherited 0-param methods.
+// REFL-4.1 boxing: a primitive with no wrapper (int128 — doesn't fit the 64-bit
+// boxing paths) raises UnsupportedReflectionException rather than widening or
+// returning null. The method takes 4 params so the scan ignores the inherited
+// 0-param methods. (int8/int16 etc. are now boxable as of W2.)
 TEST(ReflectionTests, invokeBoxedUnsupportedThrows) {
     EXPECT_EQ(runCustomI32(
         "package test;\n"
@@ -805,7 +806,7 @@ TEST(ReflectionTests, invokeBoxedUnsupportedThrows) {
         "import cajeta.reflect.UnsupportedReflectionException;\n"
         "public class Narrow {\n"
         "    public Narrow() { return; }\n"
-        "    public int8 small(int32 a, int32 b, int32 c, int32 d) { return 5; }\n"
+        "    public int128 small(int32 a, int32 b, int32 c, int32 d) { return (int128) 5; }\n"
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
@@ -902,4 +903,131 @@ TEST(ReflectionTests, getBoxedReferenceFieldThrows) {
         "        }\n"
         "    }\n"
         "}\n"), 1);
+}
+
+// W2 boxing: invokeBoxed yields the right wrapper for narrow/unsigned/char
+// returns. Type checked via Class.of(result).getName(); value via a Number
+// downcast (asInt64) / a Char downcast. i16->-300, u32->200000, ch->'Z'. ok==3.
+TEST(ReflectionTests, invokeBoxedW2Returns) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.lang.Number;\n"
+        "import cajeta.lang.Char;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class P {\n"
+        "    public P() { return; }\n"
+        "    public int16 i16(int32 a) { return (int16) -300; }\n"
+        "    public uint32 u32(int32 a, int32 b) { return (uint32) 200000; }\n"
+        "    public char ch(int32 a, int32 b, int32 c) { return 'Z'; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P();\n"
+        "        Class c = Class.of(p);\n"
+        "        int32 ok = 0;\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getMethodCount();\n"
+        "        while (i < n) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            int32 pc = m.getParameterCount();\n"
+        "            if (pc == 1) {\n"
+        "                int64[] a = heap int64[1];\n"
+        "                a[0] = (int64) 0;\n"
+        "                Object o = m.invokeBoxed(p, a);\n"
+        "                if (Class.of(o).getName() == \"cajeta.lang.Int16\") {\n"
+        "                    Number nb = (Number) o;\n"
+        "                    if (nb.asInt64() == -300L) { ok = ok + 1; }\n"
+        "                }\n"
+        "            }\n"
+        "            if (pc == 2) {\n"
+        "                int64[] a = heap int64[2];\n"
+        "                a[0] = (int64) 0;\n"
+        "                a[1] = (int64) 0;\n"
+        "                Object o = m.invokeBoxed(p, a);\n"
+        "                if (Class.of(o).getName() == \"cajeta.lang.UInt32\") {\n"
+        "                    Number nb = (Number) o;\n"
+        "                    if (nb.asInt64() == 200000L) { ok = ok + 1; }\n"
+        "                }\n"
+        "            }\n"
+        "            if (pc == 3) {\n"
+        "                int64[] a = heap int64[3];\n"
+        "                a[0] = (int64) 0;\n"
+        "                a[1] = (int64) 0;\n"
+        "                a[2] = (int64) 0;\n"
+        "                Object o = m.invokeBoxed(p, a);\n"
+        "                if (Class.of(o).getName() == \"cajeta.lang.Char\") {\n"
+        "                    Char cc = (Char) o;\n"
+        "                    if (cc.value() == 'Z') { ok = ok + 1; }\n"
+        "                }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ok;\n"
+        "    }\n"
+        "}\n"), 3);
+}
+
+// W2 boxing: getBoxed reads each narrow/unsigned/char field as the right wrapper
+// (width-correct loads). Type via getName, value via a Number/Char downcast.
+// All seven W2 field types round-trip; ok == 7.
+TEST(ReflectionTests, getBoxedW2Fields) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.lang.Number;\n"
+        "import cajeta.lang.Char;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class Bag2 {\n"
+        "    public int8 i8;\n"
+        "    public int16 i16;\n"
+        "    public uint8 u8;\n"
+        "    public uint16 u16;\n"
+        "    public uint32 u32;\n"
+        "    public uint64 u64;\n"
+        "    public char ch;\n"
+        "    public Bag2(int8 i8, int16 i16, uint8 u8, uint16 u16,\n"
+        "                uint32 u32, uint64 u64, char ch) {\n"
+        "        this.i8 = i8; this.i16 = i16; this.u8 = u8; this.u16 = u16;\n"
+        "        this.u32 = u32; this.u64 = u64; this.ch = ch; return;\n"
+        "    }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Bag2 x = heap Bag2((int8) -5, (int16) -300, (uint8) 200,\n"
+        "            (uint16) 60000, (uint32) 200000, (uint64) 9000000000L, 'Q');\n"
+        "        Class c = Class.of(x);\n"
+        "        int32 ok = 0;\n"
+        "        Object o0 = c.getBoxed(x, 0);\n"
+        "        if (Class.of(o0).getName() == \"cajeta.lang.Int8\") {\n"
+        "            Number nb = (Number) o0; if (nb.asInt64() == -5L) { ok = ok + 1; }\n"
+        "        }\n"
+        "        Object o1 = c.getBoxed(x, 1);\n"
+        "        if (Class.of(o1).getName() == \"cajeta.lang.Int16\") {\n"
+        "            Number nb = (Number) o1; if (nb.asInt64() == -300L) { ok = ok + 1; }\n"
+        "        }\n"
+        "        Object o2 = c.getBoxed(x, 2);\n"
+        "        if (Class.of(o2).getName() == \"cajeta.lang.UInt8\") {\n"
+        "            Number nb = (Number) o2; if (nb.asInt64() == 200L) { ok = ok + 1; }\n"
+        "        }\n"
+        "        Object o3 = c.getBoxed(x, 3);\n"
+        "        if (Class.of(o3).getName() == \"cajeta.lang.UInt16\") {\n"
+        "            Number nb = (Number) o3; if (nb.asInt64() == 60000L) { ok = ok + 1; }\n"
+        "        }\n"
+        "        Object o4 = c.getBoxed(x, 4);\n"
+        "        if (Class.of(o4).getName() == \"cajeta.lang.UInt32\") {\n"
+        "            Number nb = (Number) o4; if (nb.asInt64() == 200000L) { ok = ok + 1; }\n"
+        "        }\n"
+        "        Object o5 = c.getBoxed(x, 5);\n"
+        "        if (Class.of(o5).getName() == \"cajeta.lang.UInt64\") {\n"
+        "            Number nb = (Number) o5; if (nb.asInt64() == 9000000000L) { ok = ok + 1; }\n"
+        "        }\n"
+        "        Object o6 = c.getBoxed(x, 6);\n"
+        "        if (Class.of(o6).getName() == \"cajeta.lang.Char\") {\n"
+        "            Char cc = (Char) o6; if (cc.value() == 'Q') { ok = ok + 1; }\n"
+        "        }\n"
+        "        return ok;\n"
+        "    }\n"
+        "}\n"), 7);
 }

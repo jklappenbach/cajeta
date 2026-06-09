@@ -220,10 +220,22 @@ REFL-4.1/4.4; the only new compiler/runtime surface is the return-kind native.
       slots). cajeta monomorphizes generics, so primitives flow through
       `HashMap<int32,V>`/`ArrayList<int32>` natively — no boxing needed there
       (unlike Java's erased generics). See [[templates-not-generics]].
-- [ ] **W2 — remaining integers + `Char`.** `Int8`/`Int16`/`Int128`,
-      `UInt8`/`UInt16`/`UInt32`/`UInt64`/`UInt128`, `Char`. Tests mirror W1;
-      unsigned `asInt64` zero-extends, signed sign-extends; `Char` round-trips a
-      codepoint (`'😀'` → 0x1F600).
+- [x] **W2 — narrow/unsigned integers + `Char`.** DONE 2026-06-09.
+      `Int8`/`Int16`, `UInt8`/`UInt16`/`UInt32`/`UInt64`, `Char` (i32-backed,
+      extends `Object`). Wired into `invokeBoxed` (truncating cast off the int64
+      scalar path — no new natives) and `getBoxed` (new width-correct field
+      natives `__cajeta_field_get_i8/u8/i16/u16`; 32/64-bit reuse `getI32/getI64`).
+      Kind enum extended (CAJETA_RK_INT8…CHAR, mirrored in Method/Field). Tests:
+      WrapperTypesTests.w2RoundTrip, ReflectionTests.invokeBoxedW2Returns /
+      getBoxedW2Fields. **`Int128`/`UInt128` DEFERRED** — they don't fit the
+      64-bit invoke/field machinery (own phase later).
+      **Compiler bug found & FIXED (root cause):** `(int32) uint8` (and any
+      unsigned→wider int / int→fp) used the *destination's* signedness to choose
+      sext/zext, so `uint8 200` sign-extended to `-56`. Fixed in
+      `Expression.cpp` cast lowering to follow the SOURCE operand's signedness;
+      regression tests in `UnaryAndCastTests` (CastTests.unsigned*). This was a
+      general cajeta correctness bug affecting all unsigned-narrow code, not just
+      wrappers.
 - [ ] **W3 — wide/half IEEE floats.** `Float16`, `BFloat16`, `Float128`.
       `asFloat64` via the existing fp casts where LLVM supports them.
 - [ ] **W4 — ML sub-byte/fp8 floats.** `Float4E2M1` … `Float8E5M2Fnuz`. Store

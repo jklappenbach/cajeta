@@ -1,0 +1,24 @@
+package cajeta.lang;
+
+/**
+ * Boxed `int16` (16-bit signed). Immutable, heap-allocatable,
+ * reflection-introspectable; value equality via the `hash()` override. Boxed
+ * value is field index 0. See `plans/lang/wrapper-types-plan.md` (W2).
+ */
+public class Int16 extends Number {
+    int16 value;
+
+    public Int16(int16 value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Int16 of(int16 value) { return heap Int16(value); }
+
+    /** The wrapped primitive. */
+    public int16 value() { return this.value; }
+
+    public int64   asInt64()   { return (int64) this.value; }
+    public float64 asFloat64() { return (float64) this.value; }
+
+    /** Value-based hash → equal values compare equal via Object.operator==. */
+    public int64 hash() { return (int64) this.value; }
+}

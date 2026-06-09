@@ -3,8 +3,15 @@ package cajeta.reflect;
 import cajeta.lang.Object;
 import cajeta.lang.String;
 import cajeta.lang.Boolean;
+import cajeta.lang.Int8;
+import cajeta.lang.Int16;
 import cajeta.lang.Int32;
 import cajeta.lang.Int64;
+import cajeta.lang.UInt8;
+import cajeta.lang.UInt16;
+import cajeta.lang.UInt32;
+import cajeta.lang.UInt64;
+import cajeta.lang.Char;
 import cajeta.lang.Float32;
 import cajeta.lang.Float64;
 
@@ -52,6 +59,16 @@ public final class Field {
     // REFL-4.1 boxing (W5b): this field's type kind (CAJETA_RK_* mirror).
     @Native("__cajeta_rtti_field_kind")
     private static int32 fieldKind(pointer rtti, int32 idx);
+    // W2 boxing: width-correct 8/16-bit field reads (the i32 load over-reads a
+    // 1/2-byte field). Signed sign-extend, unsigned zero-extend into int32.
+    @Native("__cajeta_field_get_i8")
+    private static int32 getI8(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_get_u8")
+    private static int32 getU8(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_get_i16")
+    private static int32 getI16(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_get_u16")
+    private static int32 getU16(Object o, pointer rtti, int32 idx);
 
     public Field(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -129,8 +146,32 @@ public final class Field {
         if (kind == 5) {                               // float64
             return Float64.of(getF64(o, this.rtti, this.index));
         }
-        // kind 6 (reference — ownership-unsafe) or 7 (primitive w/o a wrapper).
+        // W2 widths — 8/16-bit need width-correct loads; 32/64-bit reuse the
+        // i32/i64 loads (same width, reinterpreted to the exact wrapper type).
+        if (kind == 8) {                               // int8
+            return Int8.of((int8) getI8(o, this.rtti, this.index));
+        }
+        if (kind == 9) {                               // int16
+            return Int16.of((int16) getI16(o, this.rtti, this.index));
+        }
+        if (kind == 10) {                              // uint8
+            return UInt8.of((uint8) getU8(o, this.rtti, this.index));
+        }
+        if (kind == 11) {                              // uint16
+            return UInt16.of((uint16) getU16(o, this.rtti, this.index));
+        }
+        if (kind == 12) {                              // uint32
+            return UInt32.of((uint32) getI32(o, this.rtti, this.index));
+        }
+        if (kind == 13) {                              // uint64
+            return UInt64.of((uint64) getI64(o, this.rtti, this.index));
+        }
+        if (kind == 14) {                              // char (i32)
+            return Char.of((char) getI32(o, this.rtti, this.index));
+        }
+        // kind 6 (reference — ownership-unsafe) or 7 (primitive w/o a wrapper:
+        // int128/uint128, half/quad/ML floats — plan W3-W4).
         throw heap UnsupportedReflectionException(
-            "getBoxed: only primitive fields with a W1 wrapper are boxable (not reference/unwrapped fields)");
+            "getBoxed: this field type is not boxable (reference, or a primitive without a wrapper yet)");
     }
 }
