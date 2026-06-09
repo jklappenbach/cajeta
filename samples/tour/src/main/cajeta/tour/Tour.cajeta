@@ -61,6 +61,7 @@ public final class Tour {
         demos.add(heap LambdasDemo());
         demos.add(heap ErrorsDemo());
         demos.add(heap AnnotationsDemo());
+        demos.add(heap ReflectionDemo());
         demos.add(heap PrimitivesDemo());
         demos.add(heap StringDemo());
         demos.add(heap ControlFlowDemo());

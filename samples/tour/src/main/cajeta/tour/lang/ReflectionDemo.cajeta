@@ -1,0 +1,89 @@
+package tour.lang;
+
+import tour.DemoClass;
+import tour.Counter;
+import cajeta.reflect.Class;
+import cajeta.reflect.Field;
+import cajeta.reflect.Method;
+import cajeta.reflect.Constructor;
+import cajeta.reflect.Parameter;
+
+// Runtime reflection over cajeta.reflect. Every class carries fixed-layout
+// RTTI (name, fields, methods, constructors, parameters); `Class.of(obj)`
+// hands back the cached Class for an object's dynamic type. From there we can
+// introspect down to each parameter, construct a fresh instance, write a
+// field, and invoke a method — all without naming the type statically.
+//
+// Reflective construction is always heap (`heapInstance`): the type, hence its
+// size and escape, isn't known at the call site, so no stack alloca can be
+// emitted. Field access and invocation are data-driven / adapter-dispatched, so
+// there is no per-class reflection codegen tax for classes that are never
+// reflected over.
+public class ReflectionDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Reflection --");
+
+        // A live object whose dynamic Class we introspect.
+        Counter seed = heap Counter();
+        Class c = Class.of(seed);
+
+        // Identity, straight off the RTTI header.
+        System.stdout.println("  class        = " + c.getName());
+        System.stdout.println("  fields       = " + c.getFieldCount());
+        System.stdout.println("  methods      = " + c.getMethodCount());
+        System.stdout.println("  constructors = " + c.getConstructorCount());
+
+        // Enumerate declared fields by name.
+        int32 fcount = c.getFieldCount();
+        int32 fi = 0;
+        while (fi < fcount) {
+            System.stdout.println("  field[" + fi + "]     = " + c.getFieldName(fi));
+            fi = fi + 1;
+        }
+
+        // Walk methods — down to each parameter's name and type.
+        int32 mcount = c.getMethodCount();
+        int32 mi = 0;
+        while (mi < mcount) {
+            Method m = c.getMethod(mi);
+            int32 pcount = m.getParameterCount();
+            System.stdout.println("  method[" + mi + "]    = " + m.getName()
+                + " (" + pcount + " params)");
+            int32 pi = 0;
+            while (pi < pcount) {
+                Parameter p = m.getParameter(pi);
+                System.stdout.println("      param[" + pi + "] = "
+                    + p.getName() + " : " + p.getTypeName());
+                pi = pi + 1;
+            }
+            mi = mi + 1;
+        }
+
+        // Construct a fresh Counter reflectively via its no-arg constructor.
+        // The result is an owned heap object (dropped at scope exit).
+        Constructor ctor = c.getConstructor(0);
+        Object obj = ctor.heapInstance();
+        System.stdout.println("  heapInstance -> Counter with "
+            + Class.of(obj).getFieldCount() + " field(s)");
+
+        // Reflective field write: set v = 40 directly through the Field object.
+        Field vf = c.getField(0);
+        vf.setInt32(obj, 40);
+        System.stdout.println("  reflective set v = " + vf.getInt32(obj));
+
+        // Reflective call: find the one-parameter method (bumpBy) and invoke it
+        // on the constructed instance with a packed argument. v: 40 -> 42.
+        int32 k = 0;
+        while (k < mcount) {
+            Method m = c.getMethod(k);
+            if (m.getParameterCount() == 1) {
+                int64[] args = heap int64[1];
+                args[0] = (int64) 2;
+                m.invokeScalar(obj, args);
+            }
+            k = k + 1;
+        }
+        System.stdout.println("  after reflective bumpBy(2), v = " + vf.getInt32(obj));
+    }
+}
