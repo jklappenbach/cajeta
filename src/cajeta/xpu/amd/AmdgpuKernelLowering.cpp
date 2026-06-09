@@ -344,6 +344,33 @@ public:
         return rgba;
     }
 
+    // TextureCube.sample(sampler, x, y, z) → __ockl_image_sample_CM (the cube-map
+    // twin of __ockl_image_sample_2D/3D). The cube ockl coord is a <4 x float>
+    // {x, y, z, 0} DIRECTION — the HW picks the face + projects. The sampler object
+    // rides the texture object at +48, as in 2-D/3-D. Returns the <4 x float> gather.
+    llvm::Value* sampleTextureCube(llvm::IRBuilderBase& b, llvm::Module& m,
+                                   llvm::Value* texHandle,
+                                   llvm::Value* /*samplerHandle*/, llvm::Value* x,
+                                   llvm::Value* y, llvm::Value* z) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* sampPtr =
+            b.CreateConstGEP1_32(i8, texHandle, 48, "tex.samp.obj");
+        llvm::Value* zero = llvm::ConstantFP::get(f32, 0.0);
+        llvm::Value* coord = llvm::PoisonValue::get(v4f);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1));
+        coord = b.CreateInsertElement(coord, z, uint64_t(2));
+        coord = b.CreateInsertElement(coord, zero, uint64_t(3), "texcube.dir");
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, p4, v4f}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_sample_CM", fnTy);
+        return b.CreateCall(s, {texHandle, sampPtr, coord}, "texcube.sample.rgba");
+    }
+
     // (Shader clock uses the base default: llvm.readcyclecounter, which the
     // AMDGPU backend lowers to s_getreg HW_REG_SHADER_CYCLES on RDNA — the GCN/
     // CDNA s_memrealtime/s_memtime intrinsics are not selectable on gfx11+.)
