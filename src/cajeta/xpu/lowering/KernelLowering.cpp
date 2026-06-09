@@ -2163,6 +2163,13 @@ private:
                     return target.sampleTexture2DArray(builder, mod, th->second,
                                                        samp, u, v, layer);
                 }
+                // Cube: (x, y, z) direction vector — three float coords, like 3-D
+                // but routed to the cube seam (the image is Dim=Cube, not 3-D).
+                if (dim == 5) {
+                    llvm::Value* z = toFloat(lowerExpr(args[3].expression));
+                    return target.sampleTextureCube(builder, mod, th->second, samp,
+                                                    u, v, z);
+                }
                 if (dim == 3) {
                     llvm::Value* w = toFloat(lowerExpr(args[3].expression));
                     return target.sampleTexture3D(builder, mod, th->second, samp,
@@ -3500,6 +3507,19 @@ llvm::Value* LoweringTarget::fetchTexture2DArray(llvm::IRBuilderBase& /*b*/,
         "backend '" + std::string(name()) + "'", "XPU-N01");
 }
 
+llvm::Value* LoweringTarget::sampleTextureCube(llvm::IRBuilderBase& /*b*/,
+                                               llvm::Module& /*m*/,
+                                               llvm::Value* /*texHandle*/,
+                                               llvm::Value* /*samplerHandle*/,
+                                               llvm::Value* /*x*/,
+                                               llvm::Value* /*y*/,
+                                               llvm::Value* /*z*/) {
+    // Only backends with cube-map image sampling override this.
+    throw cajeta::Exception(
+        "XPU kernel lowering: cube texture sampling not supported on "
+        "backend '" + std::string(name()) + "'", "XPU-N01");
+}
+
 void LoweringTarget::storeImage(llvm::IRBuilderBase& /*b*/,
                                 llvm::Module& /*m*/,
                                 llvm::Value* /*imgHandle*/,
@@ -3731,7 +3751,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         if (p->getName() == "this") continue;
         CajetaTypePtr t = p->getType();
         if (isTextureType(t) || isTexture3DType(t) || isTexture1DType(t) ||
-            isTexture2DArrayType(t)) {
+            isTexture2DArrayType(t) || isTextureCubeType(t)) {
             // Texture2D<T> / Texture3D<T> (Item 8): a sampled-image handle. `type`
             // is the texel scalar T, read off the type argument exactly like
             // Buffer<T> — float for the float/UNORM/half formats (the default
@@ -3756,7 +3776,8 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
                                            /*isTexture=*/true, /*isSampler=*/false};
             kp.textureDim = isTexture3DType(t) ? 3
                           : (isTexture1DType(t) ? 1
-                          : (isTexture2DArrayType(t) ? 4 : 2));
+                          : (isTexture2DArrayType(t) ? 4
+                          : (isTextureCubeType(t) ? 5 : 2)));
             params.push_back(kp);
         } else if (isImageType(t)) {
             // Image2D (writable images): the write twin of Texture2D — a 2-D

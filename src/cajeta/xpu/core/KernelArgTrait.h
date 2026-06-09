@@ -78,6 +78,9 @@ namespace xpu {
     // of Texture2D (N 2-D planes)? Matched by canonical name; takes the texture-
     // image path with an Arrayed image and a (u,v,layer)/(x,y,layer) coord.
     bool isTexture2DArrayType(const CajetaTypePtr& type);
+    // Is `type` the cajeta.xpu.core.TextureCube<T> type — the cube-map sibling (6
+    // faces, sampled by a direction vector, no fetch)? Matched by canonical name.
+    bool isTextureCubeType(const CajetaTypePtr& type);
     bool isSamplerType(const CajetaTypePtr& type);
 
     // Is `type` the cajeta.xpu.core.Image2D type (writable images)? Matched by

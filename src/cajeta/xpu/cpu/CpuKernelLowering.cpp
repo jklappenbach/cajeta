@@ -308,6 +308,36 @@ public:
         return fetchTexture3D(b, m, texHandle, x, y, layer, texelTy);
     }
 
+    // TextureCube.sample(sampler, x, y, z): project the direction onto a cube face
+    // (major-axis selection, the standard +X,-X,+Y,-Y,+Z,-Z order) then bilinear
+    // within that face. The 6 faces are stored like a 6-layer array (the cube
+    // texobj's d = 6), so the C runtime does the projection + the per-face bilinear.
+    //   <4 x float> __cajeta_xpu_cpu_texcube_sample_rgba(ptr, i32 filt, i32 addr,
+    //                                                    float x, float y, float z)
+    llvm::Value* sampleTextureCube(llvm::IRBuilderBase& b, llvm::Module& m,
+                                   llvm::Value* texHandle, llvm::Value* samplerHandle,
+                                   llvm::Value* x, llvm::Value* y,
+                                   llvm::Value* z) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* filterMode =
+            b.CreateExtractValue(samplerHandle, {0}, "samp.filter");
+        llvm::Value* addressMode =
+            b.CreateExtractValue(samplerHandle, {1}, "samp.addr");
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* fnTy = llvm::FunctionType::get(
+            v4f, {llvm::PointerType::get(ctx, 0), i32, i32, f32, f32, f32},
+            /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_texcube_sample_rgba", fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+            f->setDoesNotThrow();
+        return b.CreateCall(callee,
+                            {texHandle, filterMode, addressMode, x, y, z},
+                            "texcube.sample");
+    }
+
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime
     // stub (width-1 scalar semantics: one work-item per host invocation). The
     // CPU registration pass then attaches a Vector Function ABI variant to each

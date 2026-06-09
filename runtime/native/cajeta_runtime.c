@@ -9341,6 +9341,86 @@ void __cajeta_xpu_texture2darray_free(void* self, int64_t handle) {
     }
 }
 
+// --- TextureCube (read-only cube maps, 6 faces) -----------------------------
+// A cube is 6 square faces in +X,-X,+Y,-Y,+Z,-Z order. On the CPU it is a
+// cajeta_cpu_texobj whose `d` is 6 (the faces are the z slices), so the CPU
+// sampler reuses the volume storage + does the direction→face projection.
+// Vulkan/HIP cube images are wired in B2/B3.
+
+// __cajeta_xpu_texturecube_alloc(this, size, format) -> handle.
+int64_t __cajeta_xpu_texturecube_alloc(void* self, uint32_t size, int32_t format) {
+    (void) self;
+    if (size == 0) return 0;
+    int channels = cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) malloc(sizeof(*t));
+            if (!t) return 0;
+            t->w = size;
+            t->h = size;
+            t->d = 6;            // the 6 faces are the z slices
+            t->format = format;
+            t->channels = channels;
+            t->levels = 1;
+            t->mipoff[0] = 0; t->mipw[0] = size; t->miph[0] = size;
+            t->data = (float*) calloc(
+                (size_t) size * size * 6 * channels, sizeof(float));
+            if (!t->data) { free(t); return 0; }
+            return (int64_t) (intptr_t) t;
+        }
+        case CAJ_XPU_VULKAN: return 0;  // B2: a CUBE_COMPATIBLE Vulkan image
+        case CAJ_XPU_HIP:    return 0;  // B3: a cubemap hipArray
+        default: return 0;
+    }
+}
+
+// __cajeta_xpu_texturecube_upload(this, handle, host, size, format).
+void __cajeta_xpu_texturecube_upload(void* self, int64_t handle, void* host,
+                                     uint32_t size, int32_t format) {
+    (void) self;
+    if (!handle || !host || size == 0) return;
+    const float* src = (const float*) ((const char*) host + 8);
+    size_t texels = (size_t) size * size * 6 * cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            if (!t->data) return;
+            if (cajeta_texfmt_is_unorm(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = (float) cajeta_texfmt_unorm8(src[i]) / 255.0f;
+            } else if (cajeta_texfmt_is_half(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = cajeta_f16_to_f32(cajeta_f32_to_f16(src[i]));
+            } else {
+                memcpy(t->data, src, texels * sizeof(float));
+            }
+            return;
+        }
+        case CAJ_XPU_VULKAN: return;  // B2
+        case CAJ_XPU_HIP:    return;  // B3
+        default: return;
+    }
+}
+
+void __cajeta_xpu_texturecube_free(void* self, int64_t handle) {
+    (void) self;
+    if (!handle) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            free(t->data);
+            free(t);
+            return;
+        }
+        case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
+        case CAJ_XPU_HIP:    cajeta_xpu_hip_tex_free(handle); return;
+        default: return;
+    }
+}
+
 // --- Image2D (writable storage images) --------------------------------------
 // Image2D is the writable twin of Texture2D: a 2-D R32_SFLOAT storage image a
 // kernel writes via `img.store(x, y, value)` (OpImageWrite), and the host reads
@@ -9648,6 +9728,60 @@ caj_v4f __cajeta_xpu_cpu_tex2da_sample_rgba(void* texp, int32_t filterMode,
     caj_v4f t11 = cajeta_cpu_texel3d(t, cx1, cy1, z);
     caj_v4f a = t00 + (t10 - t00) * dx;
     caj_v4f b = t01 + (t11 - t01) * dx;
+    return a + (b - a) * dy;
+}
+
+// --- TextureCube CPU sample -------------------------------------------------
+// Sample a cube map by a DIRECTION vector. The 6 faces are stored like a 6-layer
+// volume (face = the z slice) in the canonical +X,-X,+Y,-Y,+Z,-Z order. This does
+// the standard major-axis face projection (matching the GPU cube convention),
+// then bilinear within the selected face. The lowering of
+// `cube.sample(sampler, x, y, z)`; the direction need not be normalized.
+caj_v4f __cajeta_xpu_cpu_texcube_sample_rgba(void* texp, int32_t filterMode,
+                                             int32_t addressMode, float x, float y,
+                                             float z) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
+    caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
+    if (!t || !t->data || t->w == 0 || t->h == 0 || t->d < 6) return zero;
+    float ax = fabsf(x), ay = fabsf(y), az = fabsf(z);
+    int face; float sc, tc, ma;
+    if (ax >= ay && ax >= az) {            // major axis X
+        ma = ax;
+        if (x >= 0.0f) { face = 0; sc = -z; tc = -y; }   // +X
+        else           { face = 1; sc =  z; tc = -y; }   // -X
+    } else if (ay >= ax && ay >= az) {     // major axis Y
+        ma = ay;
+        if (y >= 0.0f) { face = 2; sc =  x; tc =  z; }   // +Y
+        else           { face = 3; sc =  x; tc = -z; }   // -Y
+    } else {                               // major axis Z
+        ma = az;
+        if (z >= 0.0f) { face = 4; sc =  x; tc = -y; }   // +Z
+        else           { face = 5; sc = -x; tc = -y; }   // -Z
+    }
+    if (ma == 0.0f) ma = 1.0f;             // degenerate (0,0,0) → face 0 center
+    float u = 0.5f * (sc / ma + 1.0f);
+    float v = 0.5f * (tc / ma + 1.0f);
+    int W = (int) t->w, H = (int) t->h;
+    if (filterMode == 0) {                 // nearest
+        int xi = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
+        int yi = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
+        return cajeta_cpu_texel3d(t, xi, yi, face);
+    }
+    // bilinear (texel-center) within the selected face
+    float fx = u * (float) W - 0.5f;
+    float fy = v * (float) H - 0.5f;
+    int x0 = (int) floorf(fx), y0 = (int) floorf(fy);
+    float dx = fx - (float) x0, dy = fy - (float) y0;
+    int cx0 = cajeta_tex_addr(x0,     W, addressMode);
+    int cx1 = cajeta_tex_addr(x0 + 1, W, addressMode);
+    int cy0 = cajeta_tex_addr(y0,     H, addressMode);
+    int cy1 = cajeta_tex_addr(y0 + 1, H, addressMode);
+    caj_v4f c00 = cajeta_cpu_texel3d(t, cx0, cy0, face);
+    caj_v4f c10 = cajeta_cpu_texel3d(t, cx1, cy0, face);
+    caj_v4f c01 = cajeta_cpu_texel3d(t, cx0, cy1, face);
+    caj_v4f c11 = cajeta_cpu_texel3d(t, cx1, cy1, face);
+    caj_v4f a = c00 + (c10 - c00) * dx;
+    caj_v4f b = c01 + (c11 - c01) * dx;
     return a + (b - a) * dy;
 }
 

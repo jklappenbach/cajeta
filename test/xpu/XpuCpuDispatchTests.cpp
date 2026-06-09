@@ -1235,6 +1235,68 @@ static const char* kTex2daSampleSrcCpu() {
     return s.c_str();
 }
 
+// B3 texture dims: TextureCube sample on CPU. Each of the 6 faces is filled with
+// a constant equal to its face index (+X=0, -X=1, +Y=2, -Y=3, +Z=4, -Z=5);
+// sampling the 6 axis directions must select the matching face (the direction →
+// major-axis face projection). A constant-per-face fill makes the test depend
+// only on FACE SELECTION (not within-face orientation), so it agrees across
+// CPU/Vulkan/AMD.
+static const char* kTexCubeSampleSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.TextureCube;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexCubeSampleCpu {\n"
+        "    @Kernel\n"
+        "    public static void samp(TextureCube cube, Sampler sn,\n"
+        "                            Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 axis = i / 2;\n"
+        "            float32 sgn = 1.0f;\n"
+        "            if (i % 2 == 1) { sgn = -1.0f; }\n"
+        "            float32 x = 0.0f; float32 y = 0.0f; float32 z = 0.0f;\n"
+        "            if (axis == 0) { x = sgn; }\n"
+        "            if (axis == 1) { y = sgn; }\n"
+        "            if (axis == 2) { z = sgn; }\n"
+        "            Vector<float32,4> c = cube.sample(sn, x, y, z);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 sz = 2; uint32 n = 6;\n"
+        "        uint32 faceTexels = sz * sz;\n"
+        "        uint32 total = faceTexels * 6;\n"
+        "        float32[] faces = heap float32[24];\n"
+        "        for (uint32 f = 0; f < 6; f = f + 1) {\n"
+        "            for (uint32 k = 0; k < faceTexels; k = k + 1) {\n"
+        "                faces[f*faceTexels + k] = (float32)(f);\n"
+        "            }\n"
+        "        }\n"
+        "        TextureCube cube = heap TextureCube(sz);\n"
+        "        cube.upload(faces);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"     // nearest, clamp
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [n])(cube, sn, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 // B3: two Sampler params in one kernel — sample the SAME texture through a
 // nearest sampler AND a linear sampler. A 2x2 R32F texture {0,1,2,3}; at the
 // center (u=v=0.5) nearest picks texel (1,1)=3 while linear averages all four to
@@ -1626,6 +1688,18 @@ TEST(XpuCpuDispatchTests, texture2dArraySampleOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: layer-1 linear midpoint)";
+}
+
+// B3 texture dims: TextureCube sample on CPU — the 6 axis directions select the 6
+// faces (constant-per-face fill, face f = f).
+TEST(XpuCpuDispatchTests, textureCubeSampleOnCpu) {
+    auto jit = CajetaJit::compile(kTexCubeSampleSrcCpu(), "test.TexCubeSampleCpu",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: cube face selection mismatch at dir i)";
 }
 
 // B3: mipmaps on CPU — fetchLod reads a chosen mip level exactly (L0=3, L1=99),
