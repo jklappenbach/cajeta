@@ -11,6 +11,7 @@
 
 #include "CpuRegistration.h"
 #include "CpuKernelLowering.h"
+#include "../lowering/KernelLowering.h"   // collectKernelParamInfo / KernelParamInfo
 #include "CpuBackend.h"
 #include "CpuBarrierFission.h"
 #include "cajeta/compile/Optimizer.h"
@@ -652,6 +653,12 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Value* argvArg = thunk->getArg(0);
             llvm::Value* coordArg = thunk->getArg(1);
 
+            // Param kinds — a bindless Buffer<T>[] param is passed as the
+            // [count, h…] slot POINTER itself (the device default
+            // bufferArrayElement loads handles out of it), unlike a normal
+            // arg whose value is loaded FROM the slot.
+            auto pinfo = collectKernelParamInfo(method, ctx,
+                                                hostModule.getDataLayout());
             llvm::BasicBlock* tb = llvm::BasicBlock::Create(ctx, "entry", thunk);
             b.SetInsertPoint(tb);
             std::vector<llvm::Value*> callArgs;
@@ -660,7 +667,15 @@ void foldWaveVariants(llvm::Function& f) {
                 llvm::Value* slotPtr = b.CreateInBoundsGEP(
                     ptrTy, argvArg, llvm::ConstantInt::get(i64, i), "argv.slot");
                 llvm::Value* slot = b.CreateLoad(ptrTy, slotPtr, "argv.ptr");
-                callArgs.push_back(b.CreateLoad(kfnTy->getParamType(i), slot, "arg"));
+                if (i < pinfo.size() &&
+                    pinfo[i].kind == KernelParamInfo::BufferArray) {
+                    // argv[i] already points at [i64 count, i64 h0 …]; pass it
+                    // straight through (the kernel's ptr param IS that array).
+                    callArgs.push_back(slot);
+                } else {
+                    callArgs.push_back(
+                        b.CreateLoad(kfnTy->getParamType(i), slot, "arg"));
+                }
             }
             for (unsigned j = 3; j < kNumCoordParams; ++j) {   // ctaid+ntid+nctaid xyz
                 llvm::Value* cPtr = b.CreateInBoundsGEP(

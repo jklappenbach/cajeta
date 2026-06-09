@@ -301,11 +301,18 @@ public:
             // is the [count, h…] handle-array base pointer.
             if (p.isBufferArray) {
                 bufferArrayBindings[p.name] = {idx, p.type, p.isSigned};
-                // Pointer backends (CPU/NVPTX/AMD) pass the [count, h…] handle
-                // array as a plain fn arg; Vulkan binds per-access via
-                // handlefrombinding (no prologue value), so base stays null.
+                // Pointer backends (CPU/NVPTX/AMD) take the marshalled [count, h…]
+                // handle array as the param's value (materializeParam → fn->getArg
+                // for the kernel, or the plain helper arg); Vulkan binds
+                // per-access via handlefrombinding (no prologue value), so base
+                // stays null. NOTE: `paramsAsArgs` is the @Device-helper flag, NOT
+                // the kernel/Vulkan distinction — use descriptorBoundParams().
                 bufferArrayBases[p.name] =
-                    paramsAsArgs ? fn->getArg(idx) : nullptr;
+                    target.descriptorBoundParams()
+                        ? nullptr
+                        : (paramsAsArgs
+                               ? fn->getArg(idx)
+                               : target.materializeParam(builder, mod, fn, idx, p));
                 ++idx;
                 continue;
             }

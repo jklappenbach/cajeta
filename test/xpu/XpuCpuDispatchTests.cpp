@@ -1693,6 +1693,66 @@ TEST(XpuCpuDispatchTests, asyncCopyPipelineOnCpu) {
                       << " (100+i: out[i] != i+1 — async pipeline broke)";
 }
 
+// Bindless / multi-buffer descriptor sets (Stage B4) — portability on the CPU.
+// The same Buffer<int32>[] gather kernel: bufs[b][i] across `count` buffers
+// indexed at runtime. On the CPU a buffer-array param is the [count, h…] handle
+// array (the launcher thunk passes the slot pointer straight through; the device
+// default bufferArrayElement loads the (1+idx)-th handle and inttoptrs it).
+// Buffer b = (b+1)*10 + i, so out[i] = 60 + 3i for 3 buffers. (The real bindless
+// descriptor array is the Vulkan path; the CPU shares the same source.)
+const char* kBindlessSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class Bindless {\n"
+    "    @Kernel\n"
+    "    public static void gather(Buffer<int32>[] bufs, uint32 count,\n"
+    "                              Buffer<int32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            int32 s = 0;\n"
+    "            for (uint32 b = 0; b < count; b = b + 1) {\n"
+    "                s = s + bufs[b][i];\n"
+    "            }\n"
+    "            out[i] = s;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 64;\n"
+    "        uint32 k = 3;\n"
+    "        Buffer<int32>[] bufs = heap Buffer<int32>[k];\n"
+    "        for (uint32 b = 0; b < k; b = b + 1) {\n"
+    "            int32[] h = heap int32[n];\n"
+    "            for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "                h[i] = (int32)((b + 1) * 10 + i);\n"
+    "            }\n"
+    "            bufs[b] = heap Buffer<int32>(n);\n"
+    "            bufs[b].upload(h);\n"
+    "        }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        Stream s = Stream.current();\n"
+    "        gather.launch(s, grid: [1], block: [64])(bufs, k, out, n);\n"
+    "        s.sync();\n"
+    "        int32[] ho = heap int32[n];\n"
+    "        out.download(ho);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (ho[i] != (int32)(60 + 3 * i)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCpuDispatchTests, bindlessBufferArrayOnCpu) {
+    auto jit = CajetaJit::compile(kBindlessSource, "test.Bindless", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != 60+3i — CPU bindless indexing wrong)";
+}
+
 // Item 7: a POD struct passed by value as a kernel arg runs on CPU. The struct
 // is marshalled field-by-field; the kernel reads p.mul/p.add to compute
 // out[i] = i*3 + 7 for every work-item.
