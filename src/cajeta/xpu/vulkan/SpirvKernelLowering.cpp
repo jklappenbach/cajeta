@@ -183,6 +183,9 @@ llvm::Value* bindResource(llvm::IRBuilderBase& b, llvm::Module& m,
 class SpirvTarget : public LoweringTarget {
 public:
     const char* name() const override { return "spirv"; }
+    // Vulkan kernel params arrive as descriptors (no-param void main()), so a
+    // bindless buffer-array binds per-access via handlefrombinding, not fn->getArg.
+    bool descriptorBoundParams() const override { return true; }
 
     // Function (private) storage class — SPIR-V allocas live in addrspace 0.
     unsigned allocaAddressSpace() const override { return 0; }

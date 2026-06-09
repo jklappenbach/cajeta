@@ -48,6 +48,14 @@ namespace xpu {
         // (cajeta-amd.md §2) — an AS-0 alloca there is invalid.
         virtual unsigned allocaAddressSpace() const = 0;
 
+        // True when kernel params arrive as DESCRIPTORS bound in the kernel body
+        // (Vulkan: a no-param `void main()`, args via handlefrombinding), false
+        // when they are real function arguments (CPU/NVPTX/AMDGPU: fn->getArg).
+        // Drives the bindless buffer-array base: a descriptor-bound backend binds
+        // per-access (no prologue value), an fn-arg backend takes the marshalled
+        // [count, h…] handle array as fn->getArg.
+        virtual bool descriptorBoundParams() const { return false; }
+
         // Leaf coordinate reads (dim 0/1/2 = x/y/z). Build into `b`'s current
         // insert point; insert any intrinsic decls into `m`.
         virtual llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module& m,
