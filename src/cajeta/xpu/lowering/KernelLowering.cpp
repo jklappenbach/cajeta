@@ -2104,21 +2104,27 @@ private:
         // texture kernel param; the first arg is a sampler kernel param, then the
         // normalized coords (2 for a 2-D texture, 3 for a 3-D volume). Lowered to
         // the backend image-sample seam (sampleTexture / sampleTexture3D).
-        if (name == "sample") {
+        if (name == "sample" || name == "sampleLod") {
             auto th = textureHandles.find(recv);
             if (th != textureHandles.end()) {
+                bool isLod = (name == "sampleLod");
                 int dim = 2;
                 if (auto d = textureDims.find(recv); d != textureDims.end())
                     dim = d->second;
+                if (isLod && dim != 2)
+                    unsupported("sampleLod is supported on Texture2D only");
                 const auto& args = mc->getParameters();
-                if ((size_t) args.size() != (size_t)(dim + 1))
-                    unsupported(dim == 3
-                                ? "Texture3D.sample expects (Sampler, u, v, w)"
-                                : "Texture2D.sample expects (Sampler, u, v)");
+                // sample(2-D): (Sampler,u,v)=3; sample(3-D): +w=4;
+                // sampleLod(2-D): (Sampler,u,v,lod)=4.
+                size_t expected = isLod ? (size_t)(dim + 2) : (size_t)(dim + 1);
+                if ((size_t) args.size() != expected)
+                    unsupported(isLod
+                                ? "Texture2D.sampleLod expects (Sampler, u, v, lod)"
+                                : (dim == 3
+                                   ? "Texture3D.sample expects (Sampler, u, v, w)"
+                                   : "Texture2D.sample expects (Sampler, u, v)"));
                 // Sampling is float-only: the hardware texture unit cannot filter
-                // integer texels, so a Texture<int32>/<uint32> (the raw-integer
-                // formats) is fetch-only. Reject .sample() on it with a clear
-                // diagnostic — fetch is the supported read for integer textures.
+                // integer texels, so a Texture<int32>/<uint32> is fetch-only.
                 if (auto tt = textureTexelTypes.find(recv);
                         tt != textureTexelTypes.end() &&
                         tt->second && tt->second->isIntegerTy()) {
@@ -2135,23 +2141,35 @@ private:
                     return target.sampleTexture3D(builder, mod, th->second, samp,
                                                   u, v, w);
                 }
-                return target.sampleTexture(builder, mod, th->second, samp, u, v);
+                // 2-D: explicit mip level (0.0 for plain sample).
+                llvm::Value* lod = isLod
+                    ? toFloat(lowerExpr(args[3].expression))
+                    : llvm::ConstantFP::get(llvm::Type::getFloatTy(mod.getContext()), 0.0);
+                return target.sampleTexture(builder, mod, th->second, samp, u, v,
+                                            lod);
             }
         }
         // Texture{2D,3D}.fetch(x, y[, z]) (texelFetch): unfiltered, sampler-free
         // read of the exact integer texel/voxel. `recv` names a texture kernel
         // param (the same sampled-image handle as sample); no Sampler arg. Lowered
         // to the backend unfiltered image-fetch seam (fetchTexture / fetchTexture3D).
-        if (name == "fetch") {
+        if (name == "fetch" || name == "fetchLod") {
             auto th = textureHandles.find(recv);
             if (th != textureHandles.end()) {
+                bool isLod = (name == "fetchLod");
                 int dim = 2;
                 if (auto d = textureDims.find(recv); d != textureDims.end())
                     dim = d->second;
+                if (isLod && dim != 2)
+                    unsupported("fetchLod is supported on Texture2D only");
                 const auto& args = mc->getParameters();
-                if ((size_t) args.size() != (size_t) dim)
-                    unsupported(dim == 3 ? "Texture3D.fetch expects (x, y, z)"
-                                         : "Texture2D.fetch expects (x, y)");
+                // fetch(2-D): (x,y)=2; fetch(3-D): +z=3; fetchLod(2-D): (x,y,lod)=3.
+                size_t expected = isLod ? (size_t)(dim + 1) : (size_t) dim;
+                if ((size_t) args.size() != expected)
+                    unsupported(isLod
+                                ? "Texture2D.fetchLod expects (x, y, lod)"
+                                : (dim == 3 ? "Texture3D.fetch expects (x, y, z)"
+                                            : "Texture2D.fetch expects (x, y)"));
                 llvm::Value* x = toI32(lowerExpr(args[0].expression));
                 llvm::Value* y = toI32(lowerExpr(args[1].expression));
                 // Texel scalar T (float by default; i32 for integer textures) —
@@ -2165,8 +2183,12 @@ private:
                     return target.fetchTexture3D(builder, mod, th->second, x, y, z,
                                                  texelTy);
                 }
+                // 2-D: explicit mip level (0 for plain fetch).
+                llvm::Value* lod = isLod
+                    ? toI32(lowerExpr(args[2].expression))
+                    : llvm::ConstantInt::get(llvm::Type::getInt32Ty(mod.getContext()), 0);
                 return target.fetchTexture(builder, mod, th->second, x, y,
-                                           texelTy);
+                                           texelTy, lod);
             }
         }
         // Image2D.store(x, y, value) (writable images). `recv` names a storage-
@@ -3332,7 +3354,8 @@ llvm::Value* LoweringTarget::sampleTexture(llvm::IRBuilderBase& /*b*/,
                                            llvm::Value* /*texHandle*/,
                                            llvm::Value* /*samplerHandle*/,
                                            llvm::Value* /*u*/,
-                                           llvm::Value* /*v*/) {
+                                           llvm::Value* /*v*/,
+                                           llvm::Value* /*lod*/) {
     // Only backends with hardware image sampling override this (CPU emulation,
     // Vulkan OpImageSampleExplicitLod, AMD image_sample). The default rejects a
     // tex.sample() in a kernel lowered for a backend that has not implemented it.
@@ -3346,7 +3369,8 @@ llvm::Value* LoweringTarget::fetchTexture(llvm::IRBuilderBase& /*b*/,
                                           llvm::Value* /*texHandle*/,
                                           llvm::Value* /*x*/,
                                           llvm::Value* /*y*/,
-                                          llvm::Type* /*texelTy*/) {
+                                          llvm::Type* /*texelTy*/,
+                                          llvm::Value* /*lod*/) {
     // Only backends with an unfiltered image read override this (CPU exact
     // texel read, Vulkan OpImageFetch, AMD __ockl_image_load_2D). The default
     // rejects a tex.fetch() in a kernel lowered for a backend (e.g. NVPTX in v1)

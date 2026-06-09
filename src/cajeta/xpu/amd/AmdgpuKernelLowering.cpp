@@ -123,7 +123,7 @@ public:
     llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* texHandle,
                                llvm::Value* /*samplerHandle*/, llvm::Value* u,
-                               llvm::Value* v) override {
+                               llvm::Value* v, llvm::Value* /*lod*/) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
@@ -155,7 +155,8 @@ public:
     // float). Returns the <4 x float> texel (Texture2D.fetch is Vector<float32,4>).
     llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                               llvm::Value* texHandle, llvm::Value* x,
-                              llvm::Value* y, llvm::Type* texelTy) override {
+                              llvm::Value* y, llvm::Type* texelTy,
+                              llvm::Value* /*lod*/) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
