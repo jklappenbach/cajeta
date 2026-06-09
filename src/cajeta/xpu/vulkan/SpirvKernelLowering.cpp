@@ -77,9 +77,13 @@ llvm::TargetExtType* vkBufferType(llvm::LLVMContext& ctx, llvm::Type* elemTy,
 // Texture2D. Dim=1 → 2D, Depth=2 → not-a-depth-image, Arrayed=0, MS=0,
 // Sampled=1 → used with a sampler, Format=0 → Unknown. Matches the upstream
 // SampleLevel recipe (OpTypeImage <texel> 2D 2 0 0 1 Unknown). (Item 8 Stage B.)
-llvm::TargetExtType* vkImageType(llvm::LLVMContext& ctx, llvm::Type* texelTy) {
+// `dimOperand` is the SPIR-V Dim: 1 = 2D, 2 = 3D (the texture's textureDim maps
+// 2→1, 3→2). A 3-D sampled image binds the same way; only Dim + the coord arity
+// differ.
+llvm::TargetExtType* vkImageType(llvm::LLVMContext& ctx, llvm::Type* texelTy,
+                                 unsigned dimOperand = 1) {
     return llvm::TargetExtType::get(ctx, "spirv.Image", {texelTy},
-                                    {1, 2, 0, 0, 1, 0});
+                                    {dimOperand, 2, 0, 0, 1, 0});
 }
 
 // The same OpTypeImage with Sampled=2 → a writable STORAGE image (no sampler) —
@@ -256,8 +260,10 @@ public:
         // Texture2D (Item 8): a SAMPLED_IMAGE descriptor; the handle is consumed
         // only by `tex.sample(...)` via sampleTexture. (set 0, binding = idx.)
         if (p.isTexture) {
-            return bindResource(b, m, vkImageType(m.getContext(), p.type), idx,
-                                p.name);
+            return bindResource(b, m,
+                                vkImageType(m.getContext(), p.type,
+                                            p.textureDim == 3 ? 2u : 1u),
+                                idx, p.name);
         }
         // Image2D (writable images): a STORAGE_IMAGE descriptor; the handle is
         // consumed only by `img.store(...)` via storeImage. (set 0, binding = idx.)
@@ -349,6 +355,49 @@ public:
         // relies on).
         return b.CreateIntrinsic(v4t, llvm::Intrinsic::spv_resource_load_level,
                                  {texHandle, coord, lod}, nullptr, "tex.fetch");
+    }
+
+    // Texture3D.sample(sampler, u, v, w) → OpImageSampleExplicitLod on a 3-D image
+    // — the 3-coord twin of sampleTexture. texHandle is the 3-D spirv.Image (Dim=2,
+    // bound by materializeParam from textureDim). coord = <u, v, w>; explicit LOD 0;
+    // the constant offset is a <3 x i32> for a 3-D image.
+    llvm::Value* sampleTexture3D(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* texHandle, llvm::Value* samplerHandle,
+                                 llvm::Value* u, llvm::Value* v,
+                                 llvm::Value* w) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v3f = llvm::FixedVectorType::get(f32, 3);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* v3i = llvm::FixedVectorType::get(i32, 3);
+        llvm::Value* coord = llvm::PoisonValue::get(v3f);
+        coord = b.CreateInsertElement(coord, u, uint64_t(0));
+        coord = b.CreateInsertElement(coord, v, uint64_t(1));
+        coord = b.CreateInsertElement(coord, w, uint64_t(2), "tex3d.coord");
+        llvm::Value* lod = llvm::ConstantFP::get(f32, 0.0);
+        llvm::Value* offset = llvm::ConstantAggregateZero::get(v3i);
+        return b.CreateIntrinsic(v4f, llvm::Intrinsic::spv_resource_samplelevel,
+                                 {texHandle, samplerHandle, coord, lod, offset});
+    }
+
+    // Texture3D.fetch(x, y, z) → OpImageFetch on a 3-D image at the exact integer
+    // voxel, mip 0, no sampler — the 3-coord twin of fetchTexture. Result <4 x T>.
+    llvm::Value* fetchTexture3D(llvm::IRBuilderBase& b, llvm::Module& m,
+                                llvm::Value* texHandle, llvm::Value* x,
+                                llvm::Value* y, llvm::Value* z,
+                                llvm::Type* texelTy) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v3i = llvm::FixedVectorType::get(i32, 3);
+        auto* v4t = llvm::FixedVectorType::get(texelTy, 4);
+        llvm::Value* coord = llvm::PoisonValue::get(v3i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1));
+        coord = b.CreateInsertElement(coord, z, uint64_t(2), "tex3d.fetch.coord");
+        llvm::Value* lod = llvm::ConstantInt::get(i32, 0);
+        return b.CreateIntrinsic(v4t, llvm::Intrinsic::spv_resource_load_level,
+                                 {texHandle, coord, lod}, nullptr, "tex3d.fetch");
     }
 
     // Image2D.store(x, y, value) → a single OpImageWrite, native via the fork

@@ -6975,7 +6975,7 @@ struct cajeta_vk_tex {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
-    uint32_t w, h;
+    uint32_t w, h, d;       // d = depth: 1 for a 2-D image, >=1 for a 3-D image
     int live;
     int storage;            // 1 = writable STORAGE_IMAGE (Image2D), 0 = sampled
     int32_t format;         // TextureFormat ordinal (sampled images; storage = R32F)
@@ -7000,8 +7000,8 @@ static struct cajeta_vk_tex* cajeta_xpu_vk_tex_rec(int64_t handle) {
 // (Image2D) usable as an OpImageWrite target and readable back to the host
 // (TRANSFER_SRC) — its texels start undefined and are produced by a kernel.
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
-                                       int32_t format) {
-    if (w == 0 || h == 0) return 0;
+                                       int32_t format, uint32_t depth, int is3d) {
+    if (w == 0 || h == 0 || depth == 0) return 0;
     // Storage images (Image2D) are R32F only; sampled images (Texture2D) pick a
     // VkFormat from the TextureFormat ordinal. All sample to float in the shader,
     // so the descriptor format is the only thing that varies.
@@ -7023,9 +7023,10 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
     VkImageCreateInfo ici;
     memset(&ici, 0, sizeof(ici));
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.imageType = is3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     ici.format = vkfmt;
-    ici.extent.width = w; ici.extent.height = h; ici.extent.depth = 1;
+    ici.extent.width = w; ici.extent.height = h;
+    ici.extent.depth = is3d ? depth : 1;
     ici.mipLevels = 1; ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -7065,7 +7066,7 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
     memset(&vci, 0, sizeof(vci));
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image = img;
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.viewType = is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
     vci.format = vkfmt;
     vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     vci.subresourceRange.levelCount = 1;
@@ -7095,6 +7096,7 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
     g_vk_texs[slot].memory = mem;
     g_vk_texs[slot].view = view;
     g_vk_texs[slot].w = w; g_vk_texs[slot].h = h;
+    g_vk_texs[slot].d = is3d ? depth : 1;
     g_vk_texs[slot].live = 1;
     g_vk_texs[slot].storage = storage;
     g_vk_texs[slot].format = storage ? CAJ_TEXFMT_R32F : format;
@@ -7110,8 +7112,9 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
                                      uint32_t w, uint32_t h, int32_t format) {
     struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
     if (!t || !src || w != t->w || h != t->h) return;
-    size_t texels = (size_t) w * h * cajeta_texfmt_channels(format);
-    uint64_t bytes = (uint64_t) w * h * cajeta_texfmt_texel_bytes(format);
+    uint32_t dd = t->d ? t->d : 1;   // depth (1 for 2-D images)
+    size_t texels = (size_t) w * h * dd * cajeta_texfmt_channels(format);
+    uint64_t bytes = (uint64_t) w * h * dd * cajeta_texfmt_texel_bytes(format);
     int64_t staging = cajeta_xpu_vk_alloc(bytes);   // host-visible+coherent
     if (!staging) return;
     void* m = cajeta_xpu_vk_mapped(staging);
@@ -7161,7 +7164,7 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const float* src,
         region.imageSubresource.layerCount = 1;
         region.imageExtent.width = w;
         region.imageExtent.height = h;
-        region.imageExtent.depth = 1;
+        region.imageExtent.depth = dd;
         g_xpu_vk.vkCmdCopyBufferToImage(cmd, sb->buffer, t->image,
                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                         1, &region);
@@ -7875,8 +7878,9 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
-                                       int32_t format) {
-    (void) w; (void) h; (void) storage; (void) format; return 0;
+                                       int32_t format, uint32_t depth, int is3d) {
+    (void) w; (void) h; (void) storage; (void) format; (void) depth; (void) is3d;
+    return 0;
 }
 static void cajeta_xpu_vk_tex_upload(int64_t h, const float* src,
                                      uint32_t w, uint32_t ht, int32_t format) {
@@ -8611,7 +8615,7 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 0, format); // sampled image
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 0); // sampled 2-D
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex_alloc(width, height, format);   // hipArray
         // CUDA texture objects land in Stage D (emit-only).
@@ -8705,7 +8709,9 @@ int64_t __cajeta_xpu_texture3d_alloc(void* self, uint32_t width, uint32_t height
             if (!t->data) { free(t); return 0; }
             return (int64_t) (intptr_t) t;
         }
-        // Vulkan / HIP 3-D image allocation lands in the device increments.
+        case CAJ_XPU_VULKAN:
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, depth, 1);
+        // HIP 3-D image allocation lands in the AMD increment (3c).
         default: return 0;
     }
 }
@@ -8734,6 +8740,11 @@ void __cajeta_xpu_texture3d_upload(void* self, int64_t handle, void* host,
             }
             return;
         }
+        case CAJ_XPU_VULKAN:
+            // cajeta_xpu_vk_tex_upload reads the depth from the texture record,
+            // so the 2-D upload path covers 3-D images unchanged.
+            cajeta_xpu_vk_tex_upload(handle, src, width, height, format);
+            return;
         default: return;
     }
 }
@@ -8749,6 +8760,7 @@ void __cajeta_xpu_texture3d_free(void* self, int64_t handle) {
             free(t);
             return;
         }
+        case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
         default: return;
     }
 }
@@ -8766,7 +8778,7 @@ int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return 0;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F);  // storage image (R32F)
+            return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F, 1, 0);  // storage 2-D (R32F)
         default: return 0;
     }
 }

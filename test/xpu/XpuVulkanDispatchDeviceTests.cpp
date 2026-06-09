@@ -771,6 +771,124 @@ static const char* kRgbaIntFetchSrc(const char* elem, const char* fmt) {
     return s.c_str();
 }
 
+// B3 texture dims: Texture3D fetch on a real Vulkan device — a 2x2x2 R32F volume
+// (VK_IMAGE_TYPE_3D, OpImageFetch on a Dim=3 image) read voxel-exact by integer
+// (x, y, z). The device twin of texture3dFetchOnCpu.
+static const char* kTex3dFetchSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex3dFetch {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture3D vol, Buffer<float32> out,\n"
+        "                             uint32 w, uint32 h, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 z = i / (w*h);\n"
+        "            uint32 r = i - z*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            Vector<float32,4> c = vol.fetch(x, y, z);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 d = 2; uint32 n = 8;\n"
+        "        float32[] voxels = heap float32[8];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { voxels[i] = (float32)(i); }\n"
+        "        Texture3D vol = heap Texture3D(w, h, d);\n"
+        "        vol.upload(voxels);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [64])(vol, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
+// Texture3D trilinear sample on a real Vulkan device: nearest at voxel centers is
+// exact; a trilinear midpoint (u=0.5 between voxel 0 and 1) reads 0.5.
+static const char* kTex3dSampleSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex3dSamp {\n"
+        "    @Kernel\n"
+        "    public static void samp(Texture3D vol, Sampler sn, Buffer<float32> out,\n"
+        "                            uint32 w, uint32 h, uint32 d, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 z = i / (w*h);\n"
+        "            uint32 r = i - z*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            float32 u = ((float32)(x) + 0.5f) / (float32)(w);\n"
+        "            float32 v = ((float32)(y) + 0.5f) / (float32)(h);\n"
+        "            float32 ww = ((float32)(z) + 0.5f) / (float32)(d);\n"
+        "            Vector<float32,4> c = vol.sample(sn, u, v, ww);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void mid(Texture3D vol, Sampler sl, Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < 1) {\n"
+        "            Vector<float32,4> c = vol.sample(sl, 0.5f, 0.25f, 0.25f);\n"
+        "            out[0] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 d = 2; uint32 n = 8;\n"
+        "        float32[] voxels = heap float32[8];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { voxels[i] = (float32)(i); }\n"
+        "        Texture3D vol = heap Texture3D(w, h, d);\n"
+        "        vol.upload(voxels);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"
+        "        Sampler sl = heap Sampler(1, 0);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [64])(vol, sn, out, w, h, d, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 dv = hout[i] - (float32)(i);\n"
+        "            if (dv < -0.02f || dv > 0.02f) { out.free(); return (int32)(100 + i); }\n"
+        "        }\n"
+        "        float32[] hmid = heap float32[1]; hmid[0] = -1.0f;\n"
+        "        Buffer<float32> mo = heap Buffer<float32>(0, 1);\n"
+        "        mo.allocate(); mo.upload(hmid);\n"
+        "        mid.launch(s, grid: [1], block: [1])(vol, sl, mo);\n"
+        "        s.sync();\n"
+        "        mo.download(hmid); mo.free(); out.free();\n"
+        "        float32 dm = hmid[0] - 0.5f;\n"
+        "        if (dm < -0.02f || dm > 0.02f) { return (int32)(200); }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
 // OpImageFetch on a real Vulkan device (RADV / Strix Halo): the sampled image
 // (Sampled=1) is fetched by exact integer coord — no sampler descriptor — and
 // every RGBA32F channel reads back bit-exact.
@@ -805,6 +923,38 @@ TEST(XpuVulkanDispatchDeviceTests, textureFetchRgba32iOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (RGBA32I device fetch mismatch)";
+}
+
+// B3 texture dims: Texture3D fetch on a real Vulkan device — VK_IMAGE_TYPE_3D
+// sampled image, OpImageFetch on a Dim=3 image, 2x2x2 volume voxel-exact.
+TEST(XpuVulkanDispatchDeviceTests, texture3dFetchOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kTex3dFetchSrc(), "test.Tex3dFetch", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: 3D voxel fetch mismatch)";
+}
+
+// Texture3D trilinear sample on a real Vulkan device — nearest at voxel centers
+// (exact) + a trilinear midpoint (voxel 0/1 blend = 0.5).
+TEST(XpuVulkanDispatchDeviceTests, texture3dSampleOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kTex3dSampleSrc(), "test.Tex3dSamp", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: trilinear midpoint)";
 }
 
 
