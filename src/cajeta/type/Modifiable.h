@@ -23,7 +23,17 @@ namespace cajeta {
         // In the sync-lowering MVP, only the modifier bit is recorded; codegen
         // ignores it. The real scheduler / state-machine lowering keys off this
         // bit to pick the async ABI.
-        ASYNC = 0x80
+        ASYNC = 0x80,
+        // REFL-3.3 — set on a class annotated `@Sealed` (decision D1). Bars
+        // reflective access to the class's PRIVATE members: the synthesized
+        // invoke/newInstance adapters omit private cases, and the reflect API
+        // throws IllegalAccessException. Recorded as a class modifier so it
+        // rides into the RTTI header's `modifiers` word for free. Not a source
+        // keyword — it is derived from the `@Sealed` annotation in
+        // visitClassDeclaration (distinct from Java's `sealed` subclassing).
+        // Named REFLECT_SEALED (not SEALED) to avoid colliding with the
+        // ReservedIdentifiers::SEALED enumerator (both unscoped, namespace cajeta).
+        REFLECT_SEALED = 0x100
     };
 
     class Modifiable {

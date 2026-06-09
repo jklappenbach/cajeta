@@ -3719,6 +3719,49 @@ int32_t __cajeta_rtti_field_modifiers(void* rtti, int32_t idx) {
     if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
     return r->properties[idx].modifiers;
 }
+int32_t __cajeta_rtti_method_modifiers(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return 0;
+    return r->methods[idx].modifiers;
+}
+int32_t __cajeta_rtti_constructor_modifiers(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->constructorCount || !r->constructors) return 0;
+    return r->constructors[idx].modifiers;
+}
+
+// REFL-3.3 (decision D1): reflective access is DEFAULT-OPEN, but a `@Sealed`
+// class bars access to its PRIVATE members. These helpers fold "is the owning
+// class sealed AND is this member private" into one boolean the reflect API
+// (Field/Method/Constructor) checks before reading/writing/invoking — it throws
+// IllegalAccessException when set. The modifier bits mirror cajeta.type.Modifier
+// (PRIVATE=0x04) and the synthesized class modifier SEALED=0x100.
+#define CAJETA_MOD_PRIVATE 0x04
+#define CAJETA_MOD_SEALED  0x100
+static int32_t cajeta_reflect_blocked(int32_t classMods, int32_t memberMods) {
+    return ((classMods & CAJETA_MOD_SEALED) && (memberMods & CAJETA_MOD_PRIVATE))
+        ? 1 : 0;
+}
+int32_t __cajeta_reflect_field_blocked(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
+    return cajeta_reflect_blocked(r->modifiers, r->properties[idx].modifiers);
+}
+int32_t __cajeta_reflect_method_blocked(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return 0;
+    return cajeta_reflect_blocked(r->modifiers, r->methods[idx].modifiers);
+}
+int32_t __cajeta_reflect_ctor_blocked(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->constructorCount || !r->constructors) return 0;
+    return cajeta_reflect_blocked(r->modifiers, r->constructors[idx].modifiers);
+}
 // Byte offset of field `idx` within the instance struct (-1 if static / out of
 // range). The data-driven hook reflective field get/set keys off — see
 // StructureMetadata getFieldStructType / emitFieldTable.

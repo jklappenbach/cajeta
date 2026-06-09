@@ -2664,10 +2664,17 @@ namespace cajeta {
         auto& methods = getMethodList();
         llvm::SwitchInst* sw = b.CreateSwitch(idxArg, end, (unsigned) methods.size());
 
+        // REFL-3.3 (decision D1): a `@Sealed` class bars reflective access to
+        // its private members. Omit private methods' cases here so a reflective
+        // invoke of one falls through to the default (the reflect API also
+        // throws IllegalAccessException before reaching the adapter).
+        bool sealed = getModifiers().count(REFLECT_SEALED) != 0;
+
         int i = -1;
         for (auto& m : methods) {
             i++;
             if (!m || m->isConstructor()) continue;       // ctors handled by newInstance
+            if (sealed && m->getModifiers().count(PRIVATE)) continue;
             llvm::Function* callee = m->getLlvmFunction();
             if (!callee) continue;
             // Only reference DEFINED functions. Referencing a declaration-only
@@ -2802,10 +2809,16 @@ namespace cajeta {
             return t->isIntegerTy() || t->isFloatingPointTy() || t->isPointerTy();
         };
 
+        // REFL-3.3 (decision D1): a `@Sealed` class bars reflective construction
+        // through a private constructor — omit those cases (the reflect API also
+        // throws IllegalAccessException before reaching the adapter).
+        bool sealed = getModifiers().count(REFLECT_SEALED) != 0;
+
         int i = -1;
         for (auto& ctor : ctors) {
             i++;
             if (!ctor || !st || !allocFn) continue;
+            if (sealed && ctor->getModifiers().count(PRIVATE)) continue;
             llvm::Function* callee = ctor->getLlvmFunction();
             if (!callee || callee->isDeclaration()) continue;
             llvm::FunctionType* cTy = callee->getFunctionType();

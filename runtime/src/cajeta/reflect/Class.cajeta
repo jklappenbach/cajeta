@@ -60,6 +60,13 @@ public final class Class {
     @Native("__cajeta_rtti_field_modifiers")
     private static int32 fieldModifiersOf(pointer rtti, int32 idx);
 
+    // REFL-3.3 (D1): 1 if the member at `idx` is private AND this class is
+    // @Sealed — the index-form accessors below gate on these before touching it.
+    @Native("__cajeta_reflect_field_blocked")
+    private static int32 fieldBlocked(pointer rtti, int32 idx);
+    @Native("__cajeta_reflect_ctor_blocked")
+    private static int32 ctorBlocked(pointer rtti, int32 idx);
+
     @Native("__cajeta_rtti_field_offset")
     private static int32 fieldOffsetOf(pointer rtti, int32 idx);
 
@@ -163,44 +170,66 @@ public final class Class {
     // The accessor's type must match the field's type — a mismatch is unchecked
     // (type/visibility enforcement arrives with the Field API / REFL-3.3).
 
+    /**
+     * REFL-3.3 visibility gate (decision D1). The index-form field accessors
+     * are default-open; a `@Sealed` class bars access to its private fields.
+     * Throws IllegalAccessException for a sealed-off field.
+     */
+    private void checkFieldAccess(int32 index) {
+        if (fieldBlocked(this.rtti, index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective access to a private field of a @Sealed class is denied");
+        }
+    }
+
     /** Read the int32 field at `index` from instance `o`. */
     public int32 getInt32(Object o, int32 index) {
+        checkFieldAccess(index);
         return fieldGetI32(o, this.rtti, index);
     }
     /** Write `value` to the int32 field at `index` of instance `o`. */
     public void setInt32(Object o, int32 index, int32 value) {
+        checkFieldAccess(index);
         fieldSetI32(o, this.rtti, index, value);
     }
     /** Read the int64 field at `index` from instance `o`. */
     public int64 getInt64(Object o, int32 index) {
+        checkFieldAccess(index);
         return fieldGetI64(o, this.rtti, index);
     }
     /** Write `value` to the int64 field at `index` of instance `o`. */
     public void setInt64(Object o, int32 index, int64 value) {
+        checkFieldAccess(index);
         fieldSetI64(o, this.rtti, index, value);
     }
     /** Read the boolean field at `index` from instance `o`. */
     public boolean getBoolean(Object o, int32 index) {
+        checkFieldAccess(index);
         return fieldGetBool(o, this.rtti, index) != 0;
     }
     /** Write `value` to the boolean field at `index` of instance `o`. */
     public void setBoolean(Object o, int32 index, boolean value) {
+        checkFieldAccess(index);
         fieldSetBool(o, this.rtti, index, value ? 1 : 0);
     }
     /** Read the float32 field at `index` from instance `o`. */
     public float32 getFloat32(Object o, int32 index) {
+        checkFieldAccess(index);
         return fieldGetF32(o, this.rtti, index);
     }
     /** Write `value` to the float32 field at `index` of instance `o`. */
     public void setFloat32(Object o, int32 index, float32 value) {
+        checkFieldAccess(index);
         fieldSetF32(o, this.rtti, index, value);
     }
     /** Read the float64 field at `index` from instance `o`. */
     public float64 getFloat64(Object o, int32 index) {
+        checkFieldAccess(index);
         return fieldGetF64(o, this.rtti, index);
     }
     /** Write `value` to the float64 field at `index` of instance `o`. */
     public void setFloat64(Object o, int32 index, float64 value) {
+        checkFieldAccess(index);
         fieldSetF64(o, this.rtti, index, value);
     }
 
@@ -311,6 +340,10 @@ public final class Class {
      * lands in REFL-4.
      */
     public #Object heapInstance(int32 index) {
+        if (ctorBlocked(this.rtti, index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective construction via a private constructor of a @Sealed class is denied");
+        }
         return new0Native(this.rtti, index);
     }
 }
