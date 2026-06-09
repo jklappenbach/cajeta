@@ -6,6 +6,7 @@
 #include "Identifier.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/StructureProperty.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/error/Exception.h"
@@ -202,13 +203,25 @@ namespace cajeta {
             // first field), but the launch borrows it just like a Buffer/Texture2D.
             bool isAccel = xpu::isAccelStructType(argExpr->getResolvedType());
 
+            // Buffer<T>[] arg (bindless) — a descriptor ARRAY of buffers. Resolved
+            // type is a CajetaArray whose element is a Buffer<T> (so `klass` above
+            // is null). Marshalled as [i64 count, i64 h0 … h(count-1)] into one
+            // fixed slot; the runtime binds `count` descriptors at this binding.
+            auto arrTy = std::dynamic_pointer_cast<CajetaArray>(
+                argExpr->getResolvedType());
+            auto bufElemKlass = arrTy ? std::dynamic_pointer_cast<CajetaClass>(
+                                            arrTy->getElementType())
+                                      : nullptr;
+            bool isBufferArray = bufElemKlass &&
+                bufElemKlass->toCanonical().rfind("cajeta.xpu.core.Buffer", 0) == 0;
+
             // Launch borrow scope (CajetaXPU §3.5/§11): a launch borrows each
             // device-resource arg (Buffer / Texture2D / AccelerationStructure)
             // until the next Stream.sync() / Event.waitHost(); record it so a
             // free/reassign/drop-before-sync is caught (XPU-K02). Hoisted out of
             // the kind-specific marshalling below so AS (a POD-marshalled handle)
             // is covered too.
-            if (isBuffer || isTexture || isAccel) {
+            if (isBuffer || isTexture || isAccel || isBufferArray) {
                 if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
                     if (auto sc = module->getScopeStack().peek()) {
                         sc->recordLaunchBorrow(id->getTextValue());
@@ -217,7 +230,80 @@ namespace cajeta {
             }
 
             llvm::Value* slot;
-            if (isBuffer || isTexture) {
+            if (isBufferArray) {
+                // Marshal a descriptor array: a fixed [kMaxBindlessBuffers+1 x i64]
+                // slot holding [count, h0 … h(count-1)]. `v` is the array header
+                // pointer ({ i64 size, [0 x ptr] data }); each element is a
+                // Buffer<T> object pointer whose deviceHandle (field idx) is the
+                // device handle. A runtime loop copies the handles. v1 caps the
+                // count at kMaxBindlessBuffers (the fixed descriptor-array size).
+                const unsigned kMaxBindlessBuffers = 16;
+                llvm::Type* arrSlotTy =
+                    llvm::ArrayType::get(i64Ty, kMaxBindlessBuffers + 1);
+                slot = builder->CreateAlloca(arrSlotTy, nullptr, "arg.bufarray");
+                llvm::Type* headerTy = arrTy->getLlvmType();
+                auto& bprops = bufElemKlass->getProperties();
+                auto bit = bprops.find("deviceHandle");
+                if (bit == bprops.end()) {
+                    throw Exception("Buffer is missing deviceHandle field",
+                                    "XPU-N02");
+                }
+                unsigned dhIdx =
+                    (unsigned) bufElemKlass->getFieldLlvmIndex(bit->second);
+                llvm::Type* bufTy = bufElemKlass->getLlvmType();
+                llvm::Value* zero = llvm::ConstantInt::get(i64Ty, 0);
+                // count = header->size
+                llvm::Value* sizePtr = builder->CreateStructGEP(
+                    headerTy, v, 0, "bufarr.size.ptr");
+                llvm::Value* count =
+                    builder->CreateLoad(i64Ty, sizePtr, "bufarr.count");
+                // slot[0] = count
+                builder->CreateStore(count, builder->CreateInBoundsGEP(
+                    arrSlotTy, slot, {zero, zero}, "bufarr.count.slot"));
+                // for (b = 0; b < count; ++b) slot[1+b] = data[b]->deviceHandle
+                llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                llvm::BasicBlock* condBB =
+                    llvm::BasicBlock::Create(ctx, "bufarr.cond", curFn);
+                llvm::BasicBlock* bodyBB =
+                    llvm::BasicBlock::Create(ctx, "bufarr.body", curFn);
+                llvm::BasicBlock* endBB =
+                    llvm::BasicBlock::Create(ctx, "bufarr.end", curFn);
+                llvm::Value* bVar =
+                    builder->CreateAlloca(i64Ty, nullptr, "bufarr.b");
+                builder->CreateStore(zero, bVar);
+                builder->CreateBr(condBB);
+                builder->SetInsertPoint(condBB);
+                llvm::Value* bCur = builder->CreateLoad(i64Ty, bVar, "bufarr.b.cur");
+                builder->CreateCondBr(
+                    builder->CreateICmpULT(bCur, count, "bufarr.more"),
+                    bodyBB, endBB);
+                builder->SetInsertPoint(bodyBB);
+                // elemPtr = &data[b] (holds a Buffer* pointer)
+                llvm::Value* elemPtr = builder->CreateInBoundsGEP(
+                    headerTy, v,
+                    {zero, llvm::ConstantInt::get(
+                               llvm::Type::getInt32Ty(ctx),
+                               cajeta::CajetaArray::DATA_FIELD_INDEX),
+                     bCur},
+                    "bufarr.elem.ptr");
+                llvm::Value* bufObj =
+                    builder->CreateLoad(ptrTy, elemPtr, "bufarr.elem");
+                llvm::Value* hPtr = builder->CreateStructGEP(
+                    bufTy, bufObj, dhIdx, "bufarr.handle.ptr");
+                llvm::Value* handle =
+                    builder->CreateLoad(i64Ty, hPtr, "bufarr.handle");
+                // slot[1 + b] = handle
+                llvm::Value* oneB = builder->CreateAdd(
+                    bCur, llvm::ConstantInt::get(i64Ty, 1), "bufarr.slotidx");
+                builder->CreateStore(handle, builder->CreateInBoundsGEP(
+                    arrSlotTy, slot, {zero, oneB}, "bufarr.h.slot"));
+                builder->CreateStore(
+                    builder->CreateAdd(bCur,
+                                       llvm::ConstantInt::get(i64Ty, 1)),
+                    bVar);
+                builder->CreateBr(condBB);
+                builder->SetInsertPoint(endBB);
+            } else if (isBuffer || isTexture) {
                 auto& props = klass->getProperties();
                 auto it = props.find("deviceHandle");
                 if (it == props.end()) {

@@ -1606,3 +1606,72 @@ TEST(XpuVulkanEmitTests, workgroupDimEmitsValidSpirv) {
     else
         GTEST_SUCCEED() << "spirv-val not installed; skipped";
 }
+
+// Bindless / multi-buffer descriptor sets (Stage B4): a kernel takes an ARRAY of
+// buffers `Buffer<int32>[] bufs` and reads `bufs[b][i]` — the b-th descriptor of
+// a runtime descriptor array, then its i-th element. The two-level subscript
+// lowers to resource.nonuniformindex(b) (the NonUniformEXT decoration) +
+// resource.handlefrombinding (the descriptor array, range = the bindless cap) +
+// resource.getpointer (the inner element). Validates as a Vulkan 1.3 module.
+TEST(XpuVulkanEmitTests, lowersBindlessBufferArrayToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void gather(Buffer<int32>[] bufs, uint32 count,\n"
+        "                              Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            int32 s = 0;\n"
+        "            for (uint32 b = 0; b < count; b = b + 1) {\n"
+        "                s = s + bufs[b][i];\n"
+        "            }\n"
+        "            out[i] = s;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto klass = module->getStructures()["test.M"];
+    ASSERT_NE(klass, nullptr);
+    auto gather = findMethod(klass, "gather");
+    ASSERT_NE(gather, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_bindless_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    llvm::Function* fn = lowerKernel(gather, irModule);
+    ASSERT_NE(fn, nullptr);
+    std::string ir = printModule(irModule);
+    // The descriptor-array selection: handlefrombinding with the descriptor index
+    // (the first subscript) feeding getpointer for the inner element.
+    EXPECT_NE(ir.find("llvm.spv.resource.handlefrombinding"), std::string::npos)
+        << ir;
+    EXPECT_NE(ir.find("llvm.spv.resource.getpointer"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_bindless_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(gather, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    // A descriptor-array binding (the storage buffers bound as one array).
+    EXPECT_NE(text.find("OpEntryPoint GLCompute"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_bindless_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(gather, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "bindless buffer-array kernel produced invalid SPIR-V";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped";
+}

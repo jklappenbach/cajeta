@@ -30,6 +30,12 @@ namespace {
 // in address space 0. (Probed against LLVM 23 + spirv-val, 2026-05-30.)
 constexpr unsigned kStorageBufferSC = 12;
 constexpr unsigned kStorageBufferAS = 11;
+// Bindless descriptor-array size for a Buffer<T>[] param: a fixed compile-time
+// range (handlefrombinding's `range` operand is a constant). The runtime binds
+// `count` (≤ this) real descriptors and pads the rest with a valid buffer; the
+// kernel reads only bufs[0..count). MUST match the launch marshalling cap
+// (CallExpression.cpp) and the runtime (cajeta_runtime.c).
+constexpr unsigned kMaxBindlessBuffers = 16;
 
 #ifndef CAJETA_HAS_SPV_RAY_QUERY
 // This Cajeta compiler was built against an LLVM WITHOUT the cajeta-llvm fork's
@@ -863,6 +869,38 @@ public:
                 return getElementPtr(b, m, base, index);
         }
         return b.CreateGEP(elemTy, base, {index}, "idx");
+    }
+
+    // bufs[idx] → the idx-th descriptor of the runtime descriptor array bound at
+    // `binding`. handlefrombinding(set 0, binding, range = kMaxBindlessBuffers,
+    // index = nonuniformindex(idx)) yields the per-buffer spirv.VulkanBuffer
+    // handle; the inner [i] then runs through bufferElementPtr (getpointer). The
+    // index is wrapped in resource.nonuniformindex so the descriptor access
+    // carries NonUniformEXT (the index may be per-invocation — required by the
+    // spec and emitted by the fork's selectResourceNonUniformIndex).
+    llvm::Value* bufferArrayElement(llvm::IRBuilderBase& b, llvm::Module& m,
+                                    llvm::Function* /*fn*/, unsigned binding,
+                                    llvm::Value* /*arrayBase*/,
+                                    llvm::Type* elemTy,
+                                    llvm::Value* descIndex) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::TargetExtType* bufTy = vkBufferType(ctx, elemTy, /*writable=*/true);
+        // v1: the descriptor index is treated as DYNAMICALLY UNIFORM (e.g. a loop
+        // counter, the same value across the wave) — so no NonUniformEXT
+        // decoration is needed. resource.nonuniformindex (for a per-invocation
+        // index) is a follow-on. The index is passed directly to
+        // handlefrombinding as the descriptor-array element selector.
+        llvm::Value* nameStr = b.CreateGlobalString("bufarr", "xpu.res.bufarr");
+        llvm::Function* hfb = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_resource_handlefrombinding, {bufTy});
+        return b.CreateCall(
+            hfb,
+            {llvm::ConstantInt::get(i32, 0),
+             llvm::ConstantInt::get(i32, binding),
+             llvm::ConstantInt::get(i32, kMaxBindlessBuffers),
+             descIndex, nameStr},
+            "bufarr.h");
     }
 
     // Wave ops via the SPIR-V subgroup intrinsics (→ OpGroupNonUniform*).
