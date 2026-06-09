@@ -6142,6 +6142,22 @@ struct caj_hip_texture_desc {
     float minMipmapLevelClamp;
     float maxMipmapLevelClamp;
 };
+// 3-D array ABI mirrors (Texture3D). Byte-exact with HIP driver_types.h.
+struct caj_hip_extent { size_t w, h, d; };          // hipExtent {width,height,depth}
+struct caj_hip_pos { size_t x, y, z; };             // hipPos
+struct caj_hip_pitched_ptr {                        // hipPitchedPtr
+    void* ptr; size_t pitch; size_t xsize; size_t ysize;
+};
+struct caj_hip_memcpy3d_parms {                     // hipMemcpy3DParms
+    void* srcArray;
+    struct caj_hip_pos srcPos;
+    struct caj_hip_pitched_ptr srcPtr;
+    void* dstArray;
+    struct caj_hip_pos dstPos;
+    struct caj_hip_pitched_ptr dstPtr;
+    struct caj_hip_extent extent;
+    int kind;
+};
 
 struct cajeta_hip_api {
     int loaded;             // 0 untried, 1 ready, -1 unavailable
@@ -6169,13 +6185,16 @@ struct cajeta_hip_api {
     int (*hipCreateTextureObject)(void**, const void*, const void*,
                                   const void*);
     int (*hipDestroyTextureObject)(void*);
+    // 3-D array path (Texture3D); optional — absent → 3-D textures unavailable on AMD.
+    int (*hipMalloc3DArray)(void**, const void*, struct caj_hip_extent, unsigned);
+    int (*hipMemcpy3D)(const void*);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
 // HIP texture record: a Texture2D's device handle on AMD is a 1-based-... no, a
 // pointer to one of these (the hipArray + dims). The hipTextureObject is built
 // per launch from this array + the paired Sampler's modes.
-struct cajeta_hip_tex { void* array; uint32_t w, h; int32_t format; };
+struct cajeta_hip_tex { void* array; uint32_t w, h, d; int32_t format; };
 
 // --- Texture format table ----------------------------------------------------
 // TextureFormat ordinals — MUST match runtime/src/cajeta/xpu/core/TextureFormat.cajeta.
@@ -6357,6 +6376,8 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipMemcpy2DToArray, "hipMemcpy2DToArray");
     CAJ_HBIND_OPT(hipCreateTextureObject, "hipCreateTextureObject");
     CAJ_HBIND_OPT(hipDestroyTextureObject, "hipDestroyTextureObject");
+    CAJ_HBIND_OPT(hipMalloc3DArray, "hipMalloc3DArray");
+    CAJ_HBIND_OPT(hipMemcpy3D, "hipMemcpy3D");
     #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
@@ -8511,8 +8532,78 @@ static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h, int32_t format) 
     struct cajeta_hip_tex* t =
         (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
-    t->array = array; t->w = w; t->h = h; t->format = format;
+    t->array = array; t->w = w; t->h = h; t->d = 1; t->format = format;
     return (int64_t) (intptr_t) t;
+}
+
+// Build the channel-format descriptor for a TextureFormat (shared by 2-D + 3-D).
+static struct caj_hip_channel_format_desc cajeta_hip_channel_desc(int32_t format) {
+    int channels = cajeta_texfmt_channels(format);
+    int bits = cajeta_texfmt_is_unorm(format) ? 8
+             : cajeta_texfmt_is_half(format)  ? 16 : 32;
+    struct caj_hip_channel_format_desc cd;
+    memset(&cd, 0, sizeof(cd));
+    cd.x = bits;
+    if (channels == 4) { cd.y = bits; cd.z = bits; cd.w = bits; }
+    cd.f = cajeta_texfmt_is_integer(format)
+               ? (cajeta_texfmt_is_unsigned(format) ? CAJ_HIP_CHANNEL_UNSIGNED
+                                                     : CAJ_HIP_CHANNEL_SIGNED)
+         : cajeta_texfmt_is_unorm(format) ? CAJ_HIP_CHANNEL_UNSIGNED
+                                          : CAJ_HIP_CHANNEL_FLOAT;
+    return cd;
+}
+
+// Texture3D on AMD: a 3-D hipArray (hipMalloc3DArray) + per-launch hipTextureObject
+// (dimension-agnostic). Upload via hipMemcpy3D from a linear host volume.
+static int cajeta_hip_tex3d_supported(void) {
+    return g_xpu_hip.hipMalloc3DArray && g_xpu_hip.hipMemcpy3D &&
+           g_xpu_hip.hipCreateTextureObject && g_xpu_hip.hipDestroyTextureObject;
+}
+
+static int64_t cajeta_xpu_hip_tex3d_alloc(uint32_t w, uint32_t h, uint32_t d,
+                                          int32_t format) {
+    if (!cajeta_hip_tex3d_supported()) return 0;
+    struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
+    struct caj_hip_extent ext; ext.w = w; ext.h = h; ext.d = d;
+    void* array = NULL;
+    if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, 0) != 0 || !array) return 0;
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
+    if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    t->array = array; t->w = w; t->h = h; t->d = d; t->format = format;
+    return (int64_t) (intptr_t) t;
+}
+
+static void cajeta_xpu_hip_tex3d_upload(int64_t handle, const float* src,
+                                        uint32_t w, uint32_t h, uint32_t d,
+                                        int32_t format) {
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
+    if (!t || !t->array || w != t->w || h != t->h || d != t->d) return;
+    size_t channels = (size_t) cajeta_texfmt_channels(format);
+    size_t texelBytes = cajeta_texfmt_texel_bytes(format);
+    size_t texels = (size_t) w * h * d * channels;
+    // Encode into a packed temp for UNORM/half (1/2 bytes/channel); for f32 / raw
+    // integer the float[] source bytes ARE the storage, so copy directly.
+    void* hostBytes = (void*) src;
+    void* tmp = NULL;
+    if (cajeta_texfmt_is_unorm(format) || cajeta_texfmt_is_half(format)) {
+        tmp = malloc(texels * cajeta_texfmt_channel_bytes(format));
+        if (!tmp) return;
+        cajeta_texfmt_encode(tmp, src, texels, format);
+        hostBytes = tmp;
+    }
+    struct caj_hip_memcpy3d_parms p;
+    memset(&p, 0, sizeof(p));
+    p.srcPtr.ptr = hostBytes;
+    p.srcPtr.pitch = (size_t) w * texelBytes;   // row pitch in bytes
+    p.srcPtr.xsize = w;                          // logical width  (elements)
+    p.srcPtr.ysize = h;                          // logical height (elements)
+    p.dstArray = t->array;
+    p.extent.w = w;                              // array-element extents
+    p.extent.h = h;
+    p.extent.d = d;
+    p.kind = CAJ_HIP_MEMCPY_HTOD;
+    g_xpu_hip.hipMemcpy3D(&p);
+    if (tmp) free(tmp);
 }
 
 static void cajeta_xpu_hip_tex_upload(int64_t handle, const float* src,
@@ -8711,7 +8802,8 @@ int64_t __cajeta_xpu_texture3d_alloc(void* self, uint32_t width, uint32_t height
         }
         case CAJ_XPU_VULKAN:
             return cajeta_xpu_vk_tex_alloc(width, height, 0, format, depth, 1);
-        // HIP 3-D image allocation lands in the AMD increment (3c).
+        case CAJ_XPU_HIP:
+            return cajeta_xpu_hip_tex3d_alloc(width, height, depth, format);
         default: return 0;
     }
 }
@@ -8745,6 +8837,9 @@ void __cajeta_xpu_texture3d_upload(void* self, int64_t handle, void* host,
             // so the 2-D upload path covers 3-D images unchanged.
             cajeta_xpu_vk_tex_upload(handle, src, width, height, format);
             return;
+        case CAJ_XPU_HIP:
+            cajeta_xpu_hip_tex3d_upload(handle, src, width, height, depth, format);
+            return;
         default: return;
     }
 }
@@ -8761,6 +8856,7 @@ void __cajeta_xpu_texture3d_free(void* self, int64_t handle) {
             return;
         }
         case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
+        case CAJ_XPU_HIP:    cajeta_xpu_hip_tex_free(handle); return;
         default: return;
     }
 }

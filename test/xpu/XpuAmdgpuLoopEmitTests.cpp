@@ -335,6 +335,55 @@ TEST(XpuAmdgpuLoopEmitTests, intTextureFetchBitcastsToI32) {
     EXPECT_NE(ir.find("to <4 x i32>"), std::string::npos) << ir;
 }
 
+// B3 texture dims: Texture3D on AMD — fetch lowers to __ockl_image_load_3D and
+// sample to __ockl_image_sample_3D (the 3-D ockl twins), each with a 4-component
+// coord. GPU-free; just the IR shape, before the device-library link.
+TEST(XpuAmdgpuLoopEmitTests, lowers3dTextureToOckl3D) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void fetchVol(Texture3D vol, Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { Vector<float32,4> c = vol.fetch(i, 0, 0); out[i] = c.x; }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void sampVol(Texture3D vol, Sampler s, Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { Vector<float32,4> c = vol.sample(s, 0.5f, 0.5f, 0.5f); out[i] = c.x; }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+
+    {
+        auto k = findMethod(module->getStructures()["test.M"], "fetchVol");
+        ASSERT_NE(k, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module dm("xpu_tex3d_fetch_amdgpu", ctx);
+        configureDeviceModule(dm, *tm);
+        ASSERT_NE(lowerKernel(k, dm), nullptr);
+        std::string ir = printModule(dm);
+        EXPECT_NE(ir.find("__ockl_image_load_3D"), std::string::npos) << ir;
+    }
+    {
+        auto k = findMethod(module->getStructures()["test.M"], "sampVol");
+        ASSERT_NE(k, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module dm("xpu_tex3d_sample_amdgpu", ctx);
+        configureDeviceModule(dm, *tm);
+        ASSERT_NE(lowerKernel(k, dm), nullptr);
+        std::string ir = printModule(dm);
+        EXPECT_NE(ir.find("__ockl_image_sample_3D"), std::string::npos) << ir;
+    }
+}
+
 // With the ROCm device bitcode present, the link + AMDGPU codegen turn the fetch
 // call into a real gfx1151 image_load instruction (the hardware texel-fetch
 // path). Gated on a ROCm/HIP install; the GPU itself isn't exercised — ISA text.

@@ -351,6 +351,104 @@ const char* kHipRgbaIntFetchSrc(const char* elem, const char* fmt) {
     return s.c_str();
 }
 
+// B3 texture dims: Texture3D on the real AMD device. A 2x2x2 R32F volume
+// (hipMalloc3DArray + hipMemcpy3D), fetched via __ockl_image_load_3D voxel-exact
+// and trilinearly sampled via __ockl_image_sample_3D.
+const char* kHipTex3dFetchSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex3dFetchHip {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture3D vol, Buffer<float32> out,\n"
+        "                             uint32 w, uint32 h, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 z = i / (w*h);\n"
+        "            uint32 r = i - z*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            Vector<float32,4> c = vol.fetch(x, y, z);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 d = 2; uint32 n = 8;\n"
+        "        float32[] voxels = heap float32[8];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { voxels[i] = (float32)(i); }\n"
+        "        Texture3D vol = heap Texture3D(w, h, d);\n"
+        "        vol.upload(voxels);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [64])(vol, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
+const char* kHipTex3dSampleSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex3dSampHip {\n"
+        "    @Kernel\n"
+        "    public static void samp(Texture3D vol, Sampler sn, Buffer<float32> out,\n"
+        "                            uint32 w, uint32 h, uint32 d, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 z = i / (w*h);\n"
+        "            uint32 r = i - z*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            float32 u = ((float32)(x) + 0.5f) / (float32)(w);\n"
+        "            float32 v = ((float32)(y) + 0.5f) / (float32)(h);\n"
+        "            float32 ww = ((float32)(z) + 0.5f) / (float32)(d);\n"
+        "            Vector<float32,4> c = vol.sample(sn, u, v, ww);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 d = 2; uint32 n = 8;\n"
+        "        float32[] voxels = heap float32[8];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { voxels[i] = (float32)(i); }\n"
+        "        Texture3D vol = heap Texture3D(w, h, d);\n"
+        "        vol.upload(voxels);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"   // nearest, clamp
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [64])(vol, sn, out, w, h, d, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
 } // namespace
 
 // The dispatcher routes a host-source @Kernel program to HIP on the real AMD
@@ -731,6 +829,38 @@ TEST(XpuHipDispatchDeviceTests, textureFetchRgba32iRoutesToHipOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (RGBA32I device fetch mismatch)";
+}
+
+// B3 texture dims: Texture3D fetch on the real AMD device (gfx1151) — a 2x2x2
+// hipMalloc3DArray volume, __ockl_image_load_3D voxel-exact.
+TEST(XpuHipDispatchDeviceTests, texture3dFetchRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipTex3dFetchSrc(), "test.Tex3dFetchHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: 3D voxel fetch mismatch)";
+}
+
+// Texture3D trilinear sample on the real AMD device — nearest at voxel centers
+// (exact) via __ockl_image_sample_3D on a 3-D hipArray texture object.
+TEST(XpuHipDispatchDeviceTests, texture3dSampleRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipTex3dSampleSrc(), "test.Tex3dSampHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: 3D nearest sample mismatch)";
 }
 
 // Bundle BOTH amdgpu and cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU
