@@ -36,10 +36,16 @@ package cajeta.xpu.core;
 public final class Buffer<T> {
     int64 deviceHandle;
     uint64 elementCount;
+    // Ownership of the underlying device storage. An allocating Buffer owns it
+    // (true) and releases it at drop; a *view* produced by `slice()` borrows a
+    // sub-range of a parent's storage (false) and never frees — so the drop
+    // chain can't double-free a parent's memory through a view. See `slice()`.
+    boolean owned;
 
     Buffer(int64 deviceHandle, uint64 elementCount) {
         this.deviceHandle = deviceHandle;
         this.elementCount = elementCount;
+        this.owned = true;
     }
 
     /**
@@ -58,6 +64,7 @@ public final class Buffer<T> {
      */
     public Buffer(uint64 elementCount) {
         this.elementCount = elementCount;
+        this.owned = true;
         this.deviceHandle = this.deviceAlloc(elementCount * elementBytes());
     }
 
@@ -71,7 +78,7 @@ public final class Buffer<T> {
      * (XPU-K02), the same rule that guards an explicit free().
      */
     ~Buffer() {
-        if (this.deviceHandle != 0) {
+        if (this.owned && this.deviceHandle != 0) {
             this.deviceFree(this.deviceHandle);
             this.deviceHandle = 0;
         }
@@ -165,9 +172,53 @@ public final class Buffer<T> {
      * Null-guards + clears the handle so the destructor then no-ops.
      */
     public void free() {
-        if (this.deviceHandle != 0) {
+        if (this.owned && this.deviceHandle != 0) {
             this.deviceFree(this.deviceHandle);
             this.deviceHandle = 0;
         }
     }
+
+    /**
+     * Sub-buffer view: a non-owning Buffer over `count` elements of this
+     * buffer starting at element `offset`. The view shares this buffer's
+     * device storage — it allocates nothing and frees nothing — so it can be
+     * uploaded/downloaded through and passed to a kernel as a sub-range:
+     *
+     *     Buffer<float32> all = heap Buffer<float32>(n);
+     *     all.upload(host);
+     *     Buffer<float32> tail = all.slice(n / 2, n / 2);   // second half
+     *     kernel.launch(s, n / 2)(tail, ...);               // touches the tail
+     *     s.sync();
+     *
+     * The offset is folded into the device address at the backend boundary
+     * (`deviceSlice`): pointer backends (CPU / HIP / CUDA) advance the device
+     * pointer by `offset * elementBytes()`; the Vulkan path resolves the byte
+     * offset into the bound descriptor (a view of the parent's `VkBuffer`).
+     *
+     * BORROW / LIFETIME: a view borrows the parent's storage — the parent must
+     * outlive every view of it (a view dangles if the parent drops first). The
+     * view itself is non-owning (`owned = false`), so `~Buffer()`/`free()` on
+     * the view no-op and the parent's memory is released exactly once, by the
+     * parent. The launch-borrow rule (XPU-K02) still applies to the view value
+     * passed at a launch site. Parent-outlives-view is interim lint / debug-
+     * runtime territory (the same borrow-soundness deferral as field-stored /
+     * captured borrows), not a hard compile error yet.
+     *
+     * v1: contiguous sub-range only (no stride / gather), no bounds check
+     * (matches in-kernel `buf[i]`), and `offset + count <= length()` is the
+     * caller's responsibility.
+     */
+    public #Buffer<T> slice(uint64 offset, uint64 count) {
+        int64 base = this.deviceSlice(this.deviceHandle, offset * elementBytes());
+        Buffer<T> sub = heap Buffer<T>(base, count);
+        sub.owned = false;           // non-owning: shares the parent's storage
+        return #sub;                 // move out; the source dtor no-ops
+    }
+
+    // Backend-aware sub-range address resolution. Pointer backends fold the
+    // byte offset into the device pointer; Vulkan (handle = buffer-table index)
+    // resolves it into a view record carrying the descriptor offset. byteOffset
+    // is `offset * elementBytes()`, computed caller-side.
+    @Native("__cajeta_xpu_buffer_slice")
+    private int64 deviceSlice(int64 handle, uint64 byteOffset);
 }
