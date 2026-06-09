@@ -7038,10 +7038,14 @@ static struct cajeta_vk_tex* cajeta_xpu_vk_tex_rec(int64_t handle) {
 // until cajeta_xpu_vk_tex_upload). `storage`=1 makes a writable STORAGE_IMAGE
 // (Image2D) usable as an OpImageWrite target and readable back to the host
 // (TRANSFER_SRC) — its texels start undefined and are produced by a kernel.
+// `imageDim` is the image dimensionality (1/2/3 = VK_IMAGE_TYPE_1D/2D/3D) — the
+// single axis selecting the image + view type and the extent's used components
+// (a 1-D image has h = depth = 1; a 2-D image has depth = 1).
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
-                                       int32_t format, uint32_t depth, int is3d,
+                                       int32_t format, uint32_t depth, int imageDim,
                                        uint32_t mipLevels) {
     if (w == 0 || h == 0 || depth == 0) return 0;
+    int is3d = (imageDim == 3);
     if (mipLevels == 0) mipLevels = 1;
     // Storage images (Image2D) are R32F only; sampled images (Texture2D) pick a
     // VkFormat from the TextureFormat ordinal. All sample to float in the shader,
@@ -7064,7 +7068,8 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
     VkImageCreateInfo ici;
     memset(&ici, 0, sizeof(ici));
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ici.imageType = is3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+    ici.imageType = is3d ? VK_IMAGE_TYPE_3D
+                         : (imageDim == 1 ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D);
     ici.format = vkfmt;
     ici.extent.width = w; ici.extent.height = h;
     ici.extent.depth = is3d ? depth : 1;
@@ -7107,7 +7112,9 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
     memset(&vci, 0, sizeof(vci));
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image = img;
-    vci.viewType = is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
+    vci.viewType = is3d ? VK_IMAGE_VIEW_TYPE_3D
+                        : (imageDim == 1 ? VK_IMAGE_VIEW_TYPE_1D
+                                         : VK_IMAGE_VIEW_TYPE_2D);
     vci.format = vkfmt;
     vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     vci.subresourceRange.levelCount = mipLevels;
@@ -7952,9 +7959,9 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
-                                       int32_t format, uint32_t depth, int is3d,
+                                       int32_t format, uint32_t depth, int imageDim,
                                        uint32_t mipLevels) {
-    (void) w; (void) h; (void) storage; (void) format; (void) depth; (void) is3d;
+    (void) w; (void) h; (void) storage; (void) format; (void) depth; (void) imageDim;
     (void) mipLevels;
     return 0;
 }
@@ -8849,7 +8856,7 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 0, 1); // sampled 2-D
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 2, 1); // sampled 2-D
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex_alloc(width, height, format);   // hipArray
         // CUDA texture objects land in Stage D (emit-only).
@@ -8952,7 +8959,7 @@ int64_t __cajeta_xpu_texture_alloc_mip(void* self, uint32_t width, uint32_t heig
         case CAJ_XPU_VULKAN:
             // A sampled 2-D image with `levels` mip levels; per-level texels are
             // staged by __cajeta_xpu_texture_upload_level.
-            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 0, levels);
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 2, levels);
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex_alloc_mip(width, height, format, levels);
         default: return 0;
@@ -9025,7 +9032,7 @@ int64_t __cajeta_xpu_texture3d_alloc(void* self, uint32_t width, uint32_t height
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, depth, 1, 1);
+            return cajeta_xpu_vk_tex_alloc(width, height, 0, format, depth, 3, 1);
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex3d_alloc(width, height, depth, format);
         default: return 0;
@@ -9113,9 +9120,10 @@ int64_t __cajeta_xpu_texture1d_alloc(void* self, uint32_t width, int32_t format)
             if (!t->data) { free(t); return 0; }
             return (int64_t) (intptr_t) t;
         }
-        // 3b/3c: a 1-D Vulkan image / 1-D hipArray.
-        case CAJ_XPU_VULKAN: return 0;
-        case CAJ_XPU_HIP:    return 0;
+        case CAJ_XPU_VULKAN:
+            // A 1-D sampled image (height = depth = 1, no mips).
+            return cajeta_xpu_vk_tex_alloc(width, 1, 0, format, 1, 1, 1);
+        case CAJ_XPU_HIP:    return 0;  // 3c: a 1-D hipArray
         default: return 0;
     }
 }
@@ -9143,7 +9151,10 @@ void __cajeta_xpu_texture1d_upload(void* self, int64_t handle, void* host,
             }
             return;
         }
-        case CAJ_XPU_VULKAN: return;  // 3b
+        case CAJ_XPU_VULKAN:
+            // A 1-D image is height 1; the upload reads depth (= 1) from the record.
+            cajeta_xpu_vk_tex_upload(handle, src, width, 1, format);
+            return;
         case CAJ_XPU_HIP:    return;  // 3c
         default: return;
     }
@@ -9179,7 +9190,7 @@ int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return 0;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F, 1, 0, 1);  // storage 2-D (R32F)
+            return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F, 1, 2, 1);  // storage 2-D (R32F)
         default: return 0;
     }
 }
