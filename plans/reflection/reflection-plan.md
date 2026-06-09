@@ -150,7 +150,14 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       FP-return `invokeFloat32`/`invokeFloat64` variants shipped 2026-06-09 —
       FP returns read the adapter's `ret` buffer in the FP register via natives
       `__cajeta_object_invoke_f32/f64` (verified: invokeFloat32/64ReturnsRealValue,
-      invokeInt32Narrows). Boxed/Object-return variants: TODO.
+      invokeInt32Narrows). Reference-return `invokeObject` shipped 2026-06-09 —
+      reads the adapter's `ret` buffer as a pointer via `__cajeta_object_invoke_obj`
+      and returns an owned `#Object` (drop-tracked); ownership follows the invoked
+      method's signature (a method returning `heap T` transfers ownership; a method
+      returning a borrow must not be reflected this way — documented on
+      `Method.invokeObject`). Verified: invokeObjectReturnsReference (reflective
+      `make()` → real Cell, field reads 42). Primitive boxing into a wrapper
+      Object: TODO if a boxed surface is wanted.
 - [x] REFL-4.2 `Constructor.heapInstance` — `heapInstance()` / `heapInstance(int64[] args)`
       (renamed 2026-06-09 from `newInstance` — allocation site is now explicit;
       `stackInstance`/unsafe-placement reserved in the same namespace)

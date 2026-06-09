@@ -27,6 +27,8 @@ public final class Method {
     private static float32 invokeF32(Object o, int32 idx, int64[] args);
     @Native("__cajeta_object_invoke_f64")
     private static float64 invokeF64(Object o, int32 idx, int64[] args);
+    @Native("__cajeta_object_invoke_obj")
+    private static #Object invokeObj(Object o, int32 idx, int64[] args);
     // REFL-3.3 (D1): 1 if this method is private AND its class is @Sealed.
     @Native("__cajeta_reflect_method_blocked")
     private static int32 accessBlocked(pointer rtti, int32 idx);
@@ -110,5 +112,23 @@ public final class Method {
     public float64 invokeFloat64(Object o, int64[] args) {
         checkAccess();
         return invokeF64(o, this.index, args);
+    }
+
+    /**
+     * Invoke a reference-returning method and hand back the result as an owned
+     * `#Object`. The per-class adapter stores the returned pointer to its ret
+     * buffer, so this returns the real reference (not an int64-widened bit
+     * pattern) and the result is drop-tracked like any owned object.
+     *
+     * Ownership follows the invoked method's signature: a method returning
+     * `heap T` transfers ownership to the caller (the common, safe case). A
+     * method that returns a *borrow* must NOT be reached this way — reflection
+     * can't see the borrow's lifetime, so treating it as owned would risk a
+     * double free. No-arg form passes a null arg buffer.
+     */
+    public #Object invokeObject(Object o) { checkAccess(); return invokeObj(o, this.index, null); }
+    public #Object invokeObject(Object o, int64[] args) {
+        checkAccess();
+        return invokeObj(o, this.index, args);
     }
 }

@@ -3966,6 +3966,22 @@ double __cajeta_object_invoke_f64(void* obj, int32_t idx, void* argArray) {
     adapter(obj, idx, args, &ret);
     return ret;
 }
+// REFL-4: invoke a method whose return type is a reference (object/pointer).
+// The per-class adapter stores the returned pointer to the ret buffer (the
+// marshaller accepts isPointerTy returns); we read it back whole. Ownership
+// transfers per the invoked method's signature — a method returning `heap T`
+// hands the caller an owned reference (Method.invokeObject is typed #Object so
+// the result is drop-tracked); a method returning a borrow would be unsafe to
+// reflect this way (documented on Method.invokeObject).
+void* __cajeta_object_invoke_obj(void* obj, int32_t idx, void* argArray) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return NULL;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    void* ret = NULL;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
 
 // REFL-4 parameter introspection. `isCtor` selects the constructor table vs
 // the method table; memberIdx is the method/constructor index; paramIdx is the
