@@ -3736,6 +3736,56 @@ int64_t __cajeta_rtti_field_type_flags(void* rtti, int32_t idx) {
     if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
     return r->properties[idx].typeFlags;
 }
+
+// REFL-3 data-driven field read/write. Each resolves field `idx`'s byteOffset
+// from the #FieldDesc table (REFL-2A) and loads/stores at obj+offset — no
+// per-class accessor codegen. Returns -1 offset (static / out of range) ⇒
+// read yields 0/null and write is a no-op. The CALLER is responsible for
+// matching the field's type (typed accessors); a size mismatch is unchecked
+// (REFL-3.3 visibility/type enforcement is a later sub-task).
+static int32_t cajeta_field_offset(void* rtti, int32_t idx) {
+    if (!rtti) return -1;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return -1;
+    return r->properties[idx].byteOffset;
+}
+int32_t __cajeta_field_get_i32(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return *(int32_t*) ((char*) obj + off);
+}
+void __cajeta_field_set_i32(void* obj, void* rtti, int32_t idx, int32_t v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(int32_t*) ((char*) obj + off) = v;
+}
+int64_t __cajeta_field_get_i64(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return *(int64_t*) ((char*) obj + off);
+}
+void __cajeta_field_set_i64(void* obj, void* rtti, int32_t idx, int64_t v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(int64_t*) ((char*) obj + off) = v;
+}
+// boolean is a 1-byte field (i1 stored as i8). Read as 0/1.
+int32_t __cajeta_field_get_bool(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (*(int8_t*) ((char*) obj + off)) != 0 ? 1 : 0;
+}
+void __cajeta_field_set_bool(void* obj, void* rtti, int32_t idx, int32_t v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(int8_t*) ((char*) obj + off) = (int8_t) (v != 0 ? 1 : 0);
+}
+// Reference (object/pointer) field: a borrow of whatever the slot points to.
+void* __cajeta_field_get_ref(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return NULL;
+    return *(void**) ((char*) obj + off);
+}
 // Method `idx`'s canonical signature name length / copy (parallel to the field
 // name readers). Used to locate a method by name and for diagnostics.
 int32_t __cajeta_rtti_method_name_len(void* rtti, int32_t idx) {

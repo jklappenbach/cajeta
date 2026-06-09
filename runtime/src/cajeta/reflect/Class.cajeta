@@ -66,6 +66,23 @@ public final class Class {
     @Native("__cajeta_rtti_field_type_flags")
     private static int64 fieldTypeFlagsOf(pointer rtti, int32 idx);
 
+    // REFL-3 data-driven typed field accessors (read/write at the field's
+    // byteOffset; no per-class codegen).
+    @Native("__cajeta_field_get_i32")
+    private static int32 fieldGetI32(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_i32")
+    private static void fieldSetI32(Object o, pointer rtti, int32 idx, int32 v);
+    @Native("__cajeta_field_get_i64")
+    private static int64 fieldGetI64(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_i64")
+    private static void fieldSetI64(Object o, pointer rtti, int32 idx, int64 v);
+    // boolean routed through int32 at the native boundary (0/1) to keep the
+    // ABI unambiguous; the public accessors convert.
+    @Native("__cajeta_field_get_bool")
+    private static int32 fieldGetBool(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_bool")
+    private static void fieldSetBool(Object o, pointer rtti, int32 idx, int32 v);
+
     @Native("__cajeta_rtti_method_param_count")
     private static int32 methodParamCountOf(pointer rtti, int32 idx);
 
@@ -131,6 +148,36 @@ public final class Class {
     /** Number of declared fields (properties). */
     public int32 getFieldCount() {
         return fieldCountOf(this.rtti);
+    }
+
+    // --- typed field read/write (REFL-3; data-driven over the byte offset) --
+    // The index is the declared-field index (as getFieldName/getFieldOffset).
+    // The accessor's type must match the field's type — a mismatch is unchecked
+    // (type/visibility enforcement arrives with the Field API / REFL-3.3).
+
+    /** Read the int32 field at `index` from instance `o`. */
+    public int32 getInt32(Object o, int32 index) {
+        return fieldGetI32(o, this.rtti, index);
+    }
+    /** Write `value` to the int32 field at `index` of instance `o`. */
+    public void setInt32(Object o, int32 index, int32 value) {
+        fieldSetI32(o, this.rtti, index, value);
+    }
+    /** Read the int64 field at `index` from instance `o`. */
+    public int64 getInt64(Object o, int32 index) {
+        return fieldGetI64(o, this.rtti, index);
+    }
+    /** Write `value` to the int64 field at `index` of instance `o`. */
+    public void setInt64(Object o, int32 index, int64 value) {
+        fieldSetI64(o, this.rtti, index, value);
+    }
+    /** Read the boolean field at `index` from instance `o`. */
+    public boolean getBoolean(Object o, int32 index) {
+        return fieldGetBool(o, this.rtti, index) != 0;
+    }
+    /** Write `value` to the boolean field at `index` of instance `o`. */
+    public void setBoolean(Object o, int32 index, boolean value) {
+        fieldSetBool(o, this.rtti, index, value ? 1 : 0);
     }
 
     /** Number of declared methods. */
