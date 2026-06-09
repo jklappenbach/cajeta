@@ -2114,15 +2114,17 @@ private:
                 if (isLod && dim != 2)
                     unsupported("sampleLod is supported on Texture2D only");
                 const auto& args = mc->getParameters();
-                // sample(2-D): (Sampler,u,v)=3; sample(3-D): +w=4;
-                // sampleLod(2-D): (Sampler,u,v,lod)=4.
+                // sample(1-D): (Sampler,u)=2; sample(2-D): (Sampler,u,v)=3;
+                // sample(3-D): +w=4; sampleLod(2-D): (Sampler,u,v,lod)=4.
                 size_t expected = isLod ? (size_t)(dim + 2) : (size_t)(dim + 1);
                 if ((size_t) args.size() != expected)
                     unsupported(isLod
                                 ? "Texture2D.sampleLod expects (Sampler, u, v, lod)"
                                 : (dim == 3
                                    ? "Texture3D.sample expects (Sampler, u, v, w)"
-                                   : "Texture2D.sample expects (Sampler, u, v)"));
+                                   : (dim == 1
+                                      ? "Texture1D.sample expects (Sampler, u)"
+                                      : "Texture2D.sample expects (Sampler, u, v)")));
                 // Sampling is float-only: the hardware texture unit cannot filter
                 // integer texels, so a Texture<int32>/<uint32> is fetch-only.
                 if (auto tt = textureTexelTypes.find(recv);
@@ -2135,6 +2137,9 @@ private:
                 }
                 llvm::Value* samp = resolveSamplerArg(args[0].expression);
                 llvm::Value* u = toFloat(lowerExpr(args[1].expression));
+                // 1-D: single coord, no v/w, no lod — dispatch before reading v.
+                if (dim == 1)
+                    return target.sampleTexture1D(builder, mod, th->second, samp, u);
                 llvm::Value* v = toFloat(lowerExpr(args[2].expression));
                 if (dim == 3) {
                     llvm::Value* w = toFloat(lowerExpr(args[3].expression));
@@ -2163,21 +2168,26 @@ private:
                 if (isLod && dim != 2)
                     unsupported("fetchLod is supported on Texture2D only");
                 const auto& args = mc->getParameters();
-                // fetch(2-D): (x,y)=2; fetch(3-D): +z=3; fetchLod(2-D): (x,y,lod)=3.
+                // fetch(1-D): (x)=1; fetch(2-D): (x,y)=2; fetch(3-D): +z=3;
+                // fetchLod(2-D): (x,y,lod)=3.
                 size_t expected = isLod ? (size_t)(dim + 1) : (size_t) dim;
                 if ((size_t) args.size() != expected)
                     unsupported(isLod
                                 ? "Texture2D.fetchLod expects (x, y, lod)"
                                 : (dim == 3 ? "Texture3D.fetch expects (x, y, z)"
-                                            : "Texture2D.fetch expects (x, y)"));
+                                   : (dim == 1 ? "Texture1D.fetch expects (x)"
+                                               : "Texture2D.fetch expects (x, y)")));
                 llvm::Value* x = toI32(lowerExpr(args[0].expression));
-                llvm::Value* y = toI32(lowerExpr(args[1].expression));
                 // Texel scalar T (float by default; i32 for integer textures) —
                 // the backend builds a <4 x T> result from it.
                 llvm::Type* texelTy = llvm::Type::getFloatTy(mod.getContext());
                 if (auto tt = textureTexelTypes.find(recv);
                         tt != textureTexelTypes.end() && tt->second)
                     texelTy = tt->second;
+                // 1-D: single coord, no y/z, no lod — dispatch before reading y.
+                if (dim == 1)
+                    return target.fetchTexture1D(builder, mod, th->second, x, texelTy);
+                llvm::Value* y = toI32(lowerExpr(args[1].expression));
                 if (dim == 3) {
                     llvm::Value* z = toI32(lowerExpr(args[2].expression));
                     return target.fetchTexture3D(builder, mod, th->second, x, y, z,
@@ -3406,6 +3416,28 @@ llvm::Value* LoweringTarget::fetchTexture3D(llvm::IRBuilderBase& /*b*/,
         std::string(name()) + "'", "XPU-N01");
 }
 
+llvm::Value* LoweringTarget::sampleTexture1D(llvm::IRBuilderBase& /*b*/,
+                                             llvm::Module& /*m*/,
+                                             llvm::Value* /*texHandle*/,
+                                             llvm::Value* /*samplerHandle*/,
+                                             llvm::Value* /*u*/) {
+    // Only backends with 1-D hardware image sampling override this.
+    throw cajeta::Exception(
+        "XPU kernel lowering: 1-D texture sampling not supported on backend '" +
+        std::string(name()) + "'", "XPU-N01");
+}
+
+llvm::Value* LoweringTarget::fetchTexture1D(llvm::IRBuilderBase& /*b*/,
+                                            llvm::Module& /*m*/,
+                                            llvm::Value* /*texHandle*/,
+                                            llvm::Value* /*x*/,
+                                            llvm::Type* /*texelTy*/) {
+    // Only backends with a 1-D unfiltered image read override this.
+    throw cajeta::Exception(
+        "XPU kernel lowering: 1-D texture fetch not supported on backend '" +
+        std::string(name()) + "'", "XPU-N01");
+}
+
 void LoweringTarget::storeImage(llvm::IRBuilderBase& /*b*/,
                                 llvm::Module& /*m*/,
                                 llvm::Value* /*imgHandle*/,
@@ -3636,7 +3668,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         if (!p) continue;
         if (p->getName() == "this") continue;
         CajetaTypePtr t = p->getType();
-        if (isTextureType(t) || isTexture3DType(t)) {
+        if (isTextureType(t) || isTexture3DType(t) || isTexture1DType(t)) {
             // Texture2D<T> / Texture3D<T> (Item 8): a sampled-image handle. `type`
             // is the texel scalar T, read off the type argument exactly like
             // Buffer<T> — float for the float/UNORM/half formats (the default
@@ -3645,7 +3677,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             // (a ptr on CPU, a descriptor on Vulkan). isTexture routes createKernel/
             // materializeParam and the `.sample()`/`.fetch()` lowering; the texel
             // type flows into the Vulkan image binding and fetchTexture's result;
-            // textureDim (2 or 3) selects the image dimensionality + coord arity.
+            // textureDim (1, 2, or 3) selects the image dimensionality + coord arity.
             llvm::Type* texel = nullptr;
             bool texelSigned = true;
             if (auto cls = std::dynamic_pointer_cast<CajetaClass>(t)) {
@@ -3659,7 +3691,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             LoweringTarget::KernelParam kp{p->getName(), /*isBuffer=*/false,
                                            texel, texelSigned,
                                            /*isTexture=*/true, /*isSampler=*/false};
-            kp.textureDim = isTexture3DType(t) ? 3 : 2;
+            kp.textureDim = isTexture3DType(t) ? 3 : (isTexture1DType(t) ? 1 : 2);
             params.push_back(kp);
         } else if (isImageType(t)) {
             // Image2D (writable images): the write twin of Texture2D — a 2-D

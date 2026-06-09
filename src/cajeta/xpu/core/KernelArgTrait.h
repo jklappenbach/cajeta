@@ -70,6 +70,10 @@ namespace xpu {
     // Texture2D? Matched by canonical name; takes the same texture-image path as
     // Texture2D but with a 3-D image and 3-coord sample/fetch.
     bool isTexture3DType(const CajetaTypePtr& type);
+    // Is `type` the cajeta.xpu.core.Texture1D<T> type — the linear sibling of
+    // Texture2D? Matched by canonical name; takes the same texture-image path as
+    // Texture2D but with a 1-D image and 1-coord sample/fetch (no lod).
+    bool isTexture1DType(const CajetaTypePtr& type);
     bool isSamplerType(const CajetaTypePtr& type);
 
     // Is `type` the cajeta.xpu.core.Image2D type (writable images)? Matched by

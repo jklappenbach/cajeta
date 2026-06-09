@@ -1,0 +1,145 @@
+package cajeta.xpu.core;
+
+/**
+ * Texture1D — a read-only 1-D image of texels, sampled in a kernel through a
+ * {@link Sampler} with hardware linear filtering. The line sibling of {@link
+ * Texture2D}/{@link Texture3D}: where a 2-D texture indexes a (width, height)
+ * plane and a 3-D texture a (width, height, depth) volume, a 1-D texture indexes
+ * a single (width) row — the natural carrier for gradients, transfer functions,
+ * tone curves, and other 1-D lookup tables where hardware-filtered interpolation
+ * between adjacent entries is wanted (a {@link Buffer} read gives the exact entry
+ * but no interpolation/addressing).
+ *
+ * Like {@link Buffer}/{@link Texture2D}, this is a small host-side handle
+ * (deviceHandle + the width) over a device image resource. Backends tag the
+ * underlying storage (HIP 1-D array / Vulkan 1-D sampled image + view); from the
+ * user's perspective it is one opaque type with the standard create/upload/free
+ * operations and the device-only reads `sample` (filtered, via a Sampler) and
+ * `fetch` (unfiltered, by exact integer texel coordinate).
+ *
+ * MEMORY MODEL. The handle (this struct) is governed by the drop chain; the
+ * device image is acquired by the constructor and released by ~Texture1D() at
+ * scope exit (the Buffer/Texture2D RAII convention). A launch borrows each
+ * Texture1D argument until the next Stream.sync().
+ *
+ * TEXEL TYPE. The type parameter `T` is the scalar a fetch/sample yields per
+ * channel; it **defaults to `float32`**, so every bare `Texture1D` spelling is
+ * exactly `Texture1D<float32>` (the float row). `T` selects the read shape —
+ * `sample`/`fetch` return `Vector<T, 4>` — and (with the integer storage
+ * formats) lets the type carry whether a texture is float- or integer-valued.
+ * `sample` is float-only; integer textures (`T = int32`/`uint32`) are fetch-only
+ * (the hardware cannot filter integer texels). Same rules as Texture2D.
+ *
+ * FORMATS. The storage format is chosen at construction from {@link
+ * TextureFormat}. The default (1-arg ctor) is `R32F`, one float channel.
+ * `sample(...)`/`fetch(...)` return `Vector<T, 4>` (T = float32 by default).
+ *
+ * v1 LIMITS: read-only, one Sampler, LOD 0. Cube/array, depth/compare, and mip
+ * levels are follow-ups (mipmaps are 2-D only today).
+ */
+public final class Texture1D<T = float32> {
+    int64 deviceHandle;
+    uint32 width;
+    int32 format;        // a TextureFormat ordinal; the native alloc/upload contract
+
+    Texture1D(int64 deviceHandle, uint32 width) {
+        this.deviceHandle = deviceHandle;
+        this.width = width;
+        this.format = 0;     // TextureFormat.R32F
+    }
+
+    /**
+     * RAII constructor: allocate a `width` float32 device image. The constructor
+     * acquires the device image and ~Texture1D() releases it.
+     *
+     *     Texture1D ramp = heap Texture1D(w);                          // R32F
+     *     Texture1D rgba = heap Texture1D(w, TextureFormat.RGBA32F);
+     *     ramp.upload(entries);               // channel-interleaved, width texels
+     *     kernel.launch(s, ...)(ramp, samp, ...);
+     *     s.sync();
+     *     // device image freed automatically at scope exit
+     */
+    public Texture1D(uint32 width) {
+        this.width = width;
+        this.format = 0;     // TextureFormat.R32F
+        this.deviceHandle = this.deviceAlloc(width, 0);
+    }
+
+    /**
+     * RAII constructor with an explicit storage {@link TextureFormat}, e.g.
+     * `heap Texture1D(w, TextureFormat.RGBA32F)`. `format` is a `TextureFormat`
+     * ordinal (the enum constant resolves to its i32 ordinal).
+     */
+    public Texture1D(uint32 width, int32 format) {
+        this.width = width;
+        this.format = format;
+        this.deviceHandle = this.deviceAlloc(width, format);
+    }
+
+    /**
+     * Destructor — release the device image. Runs via the drop chain at scope
+     * exit. Null-guarded and idempotent: a prior free(), or a moved-from handle
+     * (`#tex`), makes this a no-op.
+     */
+    ~Texture1D() {
+        if (this.deviceHandle != 0) {
+            this.deviceFree(this.deviceHandle);
+            this.deviceHandle = 0;
+        }
+    }
+
+    public uint32 textureWidth() {
+        return this.width;
+    }
+
+    /**
+     * Host -> device transfer of `width` texels, supplied as channel-interleaved
+     * `T` values. The encoding rules match {@link Texture2D#upload}: UNORM in
+     * [0, 1], float/half stored as-is, integer texels verbatim.
+     */
+    public void upload(T[] host) {
+        this.deviceUpload(this.deviceHandle, host, this.width, this.format);
+    }
+
+    /**
+     * Device-only intrinsic: sample this row at the normalized coordinate `u` in
+     * [0, 1] through `s`, returning the linearly-filtered RGBA texel. The 1-D twin
+     * of {@link Texture2D#sample}; lowered at the call site to the backend's 1-D
+     * image-sample op (Vulkan OpImageSampleExplicitLod on a 1-D image, AMD
+     * __ockl_image_sample_1D, or CPU linear emulation). The body here is a
+     * resolution placeholder — never emitted as a real call. Sampling on the host
+     * (outside a kernel) is unsupported. Float-only (integer rows are fetch-only).
+     */
+    public Vector<T, 4> sample(Sampler s, float32 u) {
+        Vector<T, 4> result = stack Vector<T, 4>(0.0f, 0.0f, 0.0f, 0.0f);
+        return result;
+    }
+
+    /**
+     * Device-only intrinsic: `texelFetch` — read the texel at the **exact integer**
+     * coordinate `x` with **no filtering and no sampler**, at mip level 0. The
+     * unfiltered twin of `sample` and the 1-D analogue of {@link Texture2D#fetch};
+     * for LUT / transfer-function data. Lowered to the backend's 1-D unfiltered
+     * image-read op (Vulkan OpImageFetch on a 1-D image, AMD __ockl_image_load_1D,
+     * or the CPU exact texel read). The body here is a resolution placeholder —
+     * never emitted. Fetching on the host is unsupported. (NVPTX is emit-deferred.)
+     */
+    public Vector<T, 4> fetch(uint32 x) {
+        Vector<T, 4> result = stack Vector<T, 4>(0.0f, 0.0f, 0.0f, 0.0f);
+        return result;
+    }
+
+    // Device-image primitives. Instance @Native methods (the Buffer convention):
+    // pointer-shaped at the ABI boundary, so one C symbol per name serves the
+    // type. The leading `this` the forwarder passes is ignored by the C side.
+    // Distinct __cajeta_xpu_texture1d_* symbols from the 2-D/3-D set: the image
+    // type (VK_IMAGE_TYPE_1D, a 1-D hipArray) must be chosen at alloc.
+    @Native("__cajeta_xpu_texture1d_alloc")
+    private int64 deviceAlloc(uint32 width, int32 format);
+
+    @Native("__cajeta_xpu_texture1d_upload")
+    private void deviceUpload(int64 handle, T[] host, uint32 width, int32 format);
+
+    @Native("__cajeta_xpu_texture1d_free")
+    private void deviceFree(int64 handle);
+}

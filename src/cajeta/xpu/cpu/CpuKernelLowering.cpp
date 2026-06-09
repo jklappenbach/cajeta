@@ -242,6 +242,32 @@ public:
         return b.CreateCall(callee, {texHandle, x, y, z}, "tex3d.fetch");
     }
 
+    // Texture1D.sample(sampler, u): the 1-D linear sampler. On the CPU a 1-D
+    // texture is just a 2-D texture with height = 1 (the alloc/upload runtime
+    // builds it that way), so we reuse the 2-D sampler symbol with a constant
+    // v = 0.5 (the center of the single row) and lod = 0 — no new C math. The
+    // 2-D bilinear collapses to a 1-D lerp along u when there is one row.
+    llvm::Value* sampleTexture1D(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* texHandle, llvm::Value* samplerHandle,
+                                 llvm::Value* u) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Value* v = llvm::ConstantFP::get(f32, 0.5);
+        llvm::Value* lod = llvm::ConstantFP::get(f32, 0.0);
+        return sampleTexture(b, m, texHandle, samplerHandle, u, v, lod);
+    }
+
+    // Texture1D.fetch(x): the 1-D unfiltered exact-texel read. Same height-1
+    // reuse — call the 2-D fetch with y = 0, lod = 0.
+    llvm::Value* fetchTexture1D(llvm::IRBuilderBase& b, llvm::Module& m,
+                                llvm::Value* texHandle, llvm::Value* x,
+                                llvm::Type* texelTy) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* y = llvm::ConstantInt::get(i32, 0);
+        llvm::Value* lod = llvm::ConstantInt::get(i32, 0);
+        return fetchTexture(b, m, texHandle, x, y, texelTy, lod);
+    }
+
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime
     // stub (width-1 scalar semantics: one work-item per host invocation). The
     // CPU registration pass then attaches a Vector Function ABI variant to each
