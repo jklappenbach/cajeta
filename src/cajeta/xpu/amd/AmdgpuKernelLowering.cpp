@@ -286,6 +286,64 @@ public:
         return rgba;
     }
 
+    // Texture2DArray.sample(sampler, u, v, layer) → __ockl_image_sample_2Da (the
+    // layered twin of __ockl_image_sample_2D). The 2-D-array ockl coord is a
+    // <4 x float> {u, v, layer, 0} — the 3rd lane is the (un-normalized) array
+    // layer; `layer` arrives as i32 and is converted to float. The sampler object
+    // rides the texture object at +48, as in 2-D. Returns the <4 x float> gather.
+    llvm::Value* sampleTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* texHandle,
+                                      llvm::Value* /*samplerHandle*/,
+                                      llvm::Value* u, llvm::Value* v,
+                                      llvm::Value* layer) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* sampPtr =
+            b.CreateConstGEP1_32(i8, texHandle, 48, "tex.samp.obj");
+        llvm::Value* layerF = b.CreateSIToFP(layer, f32, "layer.f");
+        llvm::Value* zero = llvm::ConstantFP::get(f32, 0.0);
+        llvm::Value* coord = llvm::PoisonValue::get(v4f);
+        coord = b.CreateInsertElement(coord, u, uint64_t(0));
+        coord = b.CreateInsertElement(coord, v, uint64_t(1));
+        coord = b.CreateInsertElement(coord, layerF, uint64_t(2));
+        coord = b.CreateInsertElement(coord, zero, uint64_t(3), "tex2da.coord");
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, p4, v4f}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_sample_2Da", fnTy);
+        return b.CreateCall(s, {texHandle, sampPtr, coord}, "tex2da.sample.rgba");
+    }
+
+    // Texture2DArray.fetch(x, y, layer) → __ockl_image_load_2Da (unfiltered layered
+    // twin). The 2-D-array ockl load coord is a <4 x i32> {x, y, layer, 0}. Float
+    // result; bitcast to <4 x i32> for an integer array (raw image_load, as in 2-D).
+    llvm::Value* fetchTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* texHandle, llvm::Value* x,
+                                     llvm::Value* y, llvm::Value* layer,
+                                     llvm::Type* texelTy) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v4i = llvm::FixedVectorType::get(i32, 4);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* zero = llvm::ConstantInt::get(i32, 0);
+        llvm::Value* coord = llvm::PoisonValue::get(v4i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1));
+        coord = b.CreateInsertElement(coord, layer, uint64_t(2));
+        coord = b.CreateInsertElement(coord, zero, uint64_t(3), "tex2da.fetch.coord");
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, v4i}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_load_2Da", fnTy);
+        llvm::Value* rgba = b.CreateCall(s, {texHandle, coord}, "tex2da.fetch.rgba");
+        if (texelTy && texelTy->isIntegerTy())
+            return b.CreateBitCast(rgba, v4i, "tex2da.fetch.i32");
+        return rgba;
+    }
+
     // (Shader clock uses the base default: llvm.readcyclecounter, which the
     // AMDGPU backend lowers to s_getreg HW_REG_SHADER_CYCLES on RDNA — the GCN/
     // CDNA s_memrealtime/s_memtime intrinsics are not selectable on gfx11+.)

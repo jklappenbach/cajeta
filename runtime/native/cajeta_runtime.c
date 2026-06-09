@@ -6117,6 +6117,9 @@ enum { CAJ_HIP_FILTER_POINT = 0, CAJ_HIP_FILTER_LINEAR = 1 };  // filter mode
 enum { CAJ_HIP_READ_ELEMENT = 0 };      // hipReadModeElementType
 enum { CAJ_HIP_READ_NORMALIZED_FLOAT = 1 };  // hipReadModeNormalizedFloat (UNORM→[0,1])
 enum { CAJ_HIP_MEMCPY_HTOD = 1 };       // hipMemcpyHostToDevice
+// hipArray creation flags (driver_types.h; mirror the CUDA values).
+enum { CAJ_HIP_ARRAY_LAYERED = 0x01 };  // hipArrayLayered (2-D array)
+enum { CAJ_HIP_ARRAY_CUBEMAP = 0x04 };  // hipArrayCubemap (6-face cube)
 
 struct caj_hip_channel_format_desc { int x, y, z, w; int f; };
 struct caj_hip_resource_desc {
@@ -8685,6 +8688,26 @@ static int64_t cajeta_xpu_hip_tex3d_alloc(uint32_t w, uint32_t h, uint32_t d,
     return (int64_t) (intptr_t) t;
 }
 
+// Texture2DArray on AMD: a layered hipArray (hipMalloc3DArray + hipArrayLayered),
+// whose extent.depth carries the LAYER count (not a true depth). The per-launch
+// hipTextureObject is dimension-agnostic (RES_ARRAY), and the upload reuses the
+// 3-D memcpy3D path with d = layers (a layered memcpy3D copies all layers).
+static int64_t cajeta_xpu_hip_tex2darray_alloc(uint32_t w, uint32_t h,
+                                               uint32_t layers, int32_t format) {
+    if (!cajeta_hip_tex3d_supported()) return 0;
+    struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
+    struct caj_hip_extent ext; ext.w = w; ext.h = h; ext.d = layers;
+    void* array = NULL;
+    if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, CAJ_HIP_ARRAY_LAYERED) != 0 ||
+        !array)
+        return 0;
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
+    if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = layers;
+    t->format = format; t->levels = 1;
+    return (int64_t) (intptr_t) t;
+}
+
 static void cajeta_xpu_hip_tex3d_upload(int64_t handle, const float* src,
                                         uint32_t w, uint32_t h, uint32_t d,
                                         int32_t format) {
@@ -9257,7 +9280,8 @@ int64_t __cajeta_xpu_texture2darray_alloc(void* self, uint32_t width,
         case CAJ_XPU_VULKAN:
             // A layered 2-D sampled image: imageKind 4, arrayLayers = layers.
             return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 4, layers, 1);
-        case CAJ_XPU_HIP:    return 0;  // A3: a layered hipArray
+        case CAJ_XPU_HIP:
+            return cajeta_xpu_hip_tex2darray_alloc(width, height, layers, format);
         default: return 0;
     }
 }
@@ -9292,7 +9316,10 @@ void __cajeta_xpu_texture2darray_upload(void* self, int64_t handle, void* host,
             // reads layer count + layered flag from the texture record.
             cajeta_xpu_vk_tex_upload(handle, src, width, height, format);
             return;
-        case CAJ_XPU_HIP:    return;  // A3
+        case CAJ_XPU_HIP:
+            // A layered hipArray's memcpy3D copies all layers with d = layers.
+            cajeta_xpu_hip_tex3d_upload(handle, src, width, height, layers, format);
+            return;
         default: return;
     }
 }
