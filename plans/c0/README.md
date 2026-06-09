@@ -95,9 +95,15 @@ break. C0 must replace that distro-LLVM step in each release leg with the LLVM-2
    vendors (see runners). Build this one now.
 2. `aarch64-linux-gnu` next — double-serves release **and** Jetson Orin / cradle (arm64).
 3. `aarch64-apple-darwin` — release parity.
-4. **`x86_64-w64-mingw32` — RELEASE-ONLY, DEFERRED.** Native Windows is the fiddliest
-   leg (mingw-w64 LLVM build) and tangles with MSVC-centric CUDA. **Not** needed for NV
-   bring-up (see below). Do it only when shipping Windows binaries with 23-only features.
+4. **`x86_64-w64-mingw32` — NOW ACTIVE (was deferred).** Forced active because cajeta's
+   Tier-1 SPIR-V codegen began referencing fork-only intrinsic enums that stock MSYS2
+   LLVM 22 lacks — so the Windows build no longer even *compiles* against distro LLVM,
+   let alone lowers 23-only features. Built natively under MSYS2/MinGW-w64 by
+   `fork-build-llvm.yml`'s dedicated `build-windows` job (NOT the apt matrix — different
+   shell/pm/ccache/tar). Still the fiddliest leg (libstdc++ ABI parity with cajeta's
+   `c++`/g++ build; clang+lld must come from the fork, not mingw). Prefer a self-hosted
+   Windows runner — a full clang+lld+llvm build can exceed the GH-hosted 6 h cap / OOM
+   at link. cajeta-side consumption (release.yml) is already wired.
 
 ### Self-hosted runners (two boxes, both Linux-flavored)
 | Box | Role | Toolchain it uses |

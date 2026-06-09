@@ -68,7 +68,11 @@ rem --- Install MinGW-w64 toolchain + libraries via pacman -------------------
 rem Mirrors the install list in .github/workflows/release.yml. `vim` is for
 rem xxd, used to embed the runtime bitcode (src/CMakeLists.txt CAJETA_XXD).
 echo [setup] Installing MinGW-w64 packages via pacman (this can take a while)...
-"%BASH%" -lc "pacman -Sy --noconfirm && pacman -S --needed --noconfirm mingw-w64-x86_64-clang mingw-w64-x86_64-llvm mingw-w64-x86_64-lld mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-antlr4-runtime-cpp mingw-w64-x86_64-zstd mingw-w64-x86_64-xxhash mingw-w64-x86_64-glog mingw-w64-x86_64-gtest mingw-w64-x86_64-openssl vim"
+rem mingw-w64-x86_64-vulkan-headers: provides <vulkan/vulkan.h> so the runtime's
+rem Vulkan compute path (cajeta_runtime.c) compiles in. The loader itself
+rem (vulkan-1.dll) ships with the GPU driver / Vulkan runtime and is dlopen'd at
+rem run time — no link dependency.
+"%BASH%" -lc "pacman -Sy --noconfirm && pacman -S --needed --noconfirm mingw-w64-x86_64-clang mingw-w64-x86_64-llvm mingw-w64-x86_64-lld mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-antlr4-runtime-cpp mingw-w64-x86_64-zstd mingw-w64-x86_64-xxhash mingw-w64-x86_64-glog mingw-w64-x86_64-gtest mingw-w64-x86_64-openssl mingw-w64-x86_64-vulkan-headers vim"
 if errorlevel 1 (
     echo [setup] ERROR: pacman package install failed.
     exit /b 1
