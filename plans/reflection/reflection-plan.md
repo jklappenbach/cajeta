@@ -109,24 +109,40 @@ methods/ctors use synthesized switch-over-index adapters reached through `#Rtti`
       field path). Verified: roundtrips + a reflectively-set field is observed by a
       reflective invoke (16/16 reflection + 49/49 regression green). Note: int64
       literals need an explicit `(int64)` cast at the call site (cajeta idiom).
-- [ ] REFL-3.1 `Field.get`/`set` on a real `Field` object — TODO (needs REFL-1.7
-      `Field` objects; today access is via per-index `Class` accessors). `__cajeta_field_get_ref`
-      native exists but isn't surfaced (borrow-return-multi-param rule needs the
-      `Field` receiver form).
+- [x] REFL-3.1 `Field.get`/`set` on a real `Field` object — DONE via REFL-4's
+      object model: `Class.getField(idx) -> #Field`; `Field.getInt32/setInt32/...`.
+      (`__cajeta_field_get_ref` native exists but the reference getter isn't
+      surfaced yet — borrow-return-multi-param needs the receiver form.)
 - [ ] REFL-3.3 Visibility enforcement (throws on `private` when `@Sealed`,
       decision D1) — TODO; today access is unchecked, caller must match the type.
 - float/double + remaining primitive accessors — TODO (i32/i64/boolean landed).
 
-### Phase 4 — `Method.invoke` + `Constructor.newInstance` (REFL-4)  ← unblocks the tour demo
-- [ ] REFL-4.1 `Method.invoke` (vtable-hash lookup + arg marshalling) and the
-      typed `invokeInt32`/… variants.
-- [ ] REFL-4.2 `Constructor.newInstance` (allocate + run ctor + super chain).
-- [ ] REFL-4.3 `Parameter` introspection (`getName`/`getType`/`getIndex`/
-      `isThis`/annotations) — the "access down to the parameter" the tour asks for.
-- [ ] REFL-4.4 Fiber-stack arg buffers for small calls (spec Strategy 6).
-- **Accept:** the spec's "annotation-driven DI scan" example runs; **write the
-  tour `ReflectionDemo`** (construct via `newInstance`, call via `invoke`,
-  enumerate `getParameters()`).
+### Phase 4 — `Method.invoke` + `Constructor.newInstance` (REFL-4)  ← object model + marshalling shipped 2026-06-09
+Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects**
+(the Java-like model), not per-index accessors. Shipped in two increments
+(`61ed3e3` object model, marshalling next), 23/23 reflection + 49/49 regression green.
+- [x] REFL-4.1 `Method.invoke` — `Method.invokeScalar(o)` (no-arg) and
+      `invokeScalar(o, int64[] args)` (raw-packed args, one int64/user param) route
+      through the REFL-2B per-class invoke adapter (direct call). Native
+      `__cajeta_object_invoke_scalar(0)`. Typed `invokeInt32`/boxed variants: TODO.
+- [x] REFL-4.2 `Constructor.newInstance` — `newInstance()` / `newInstance(int64[] args)`
+      route through the REFL-2C adapter (alloc + vtable + ctor). Native
+      `__cajeta_class_new(0)`. The 2C adapter mirrors `heap T(...)` incl. vtable
+      install; super-chain runs inside the ctor as usual.
+- [x] REFL-4.3 `Parameter` introspection — `Method/Constructor.getParameter(i) ->
+      #Parameter`; `Parameter.getName/getTypeName/getIndex`. Natives
+      `__cajeta_rtti_param_name/type_*` (method/ctor table selectable). `isThis`
+      excluded by construction (the implicit `this` is dropped from the tables);
+      param annotations: TODO.
+- **Object model**: new `cajeta.reflect` classes Field/Method/Constructor/Parameter;
+  `Class.getField/getMethod/getConstructor(idx)` return owned objects.
+- [ ] REFL-4.4 Fiber-stack arg buffers for small calls (spec Strategy 6) — TODO
+      (today args are a caller-built `int64[]`).
+- [ ] **Async bridge (D5)** — reflective invoke of an `async` method routing through
+      the fiber pool — TODO (design alongside the typed-invoke refinement).
+- [ ] **Tour `ReflectionDemo`** (the milestone): construct via `newInstance`, call via
+      `invoke`, enumerate `getParameters()`; wire into `samples/tour/.../Tour.cajeta`.
+      All building blocks now exist — NEXT.
 
 ### Phase 5 — `MethodHandle.bindCallSite` (REFL-5)
 - [ ] REFL-5.1 Per-signature-shape concrete `MethodHandle` subclasses,

@@ -29,6 +29,7 @@ std::string prog(const std::string& body) {
         "    public int64 score;\n"
         "    public boolean active;\n"
         "    public User() { return; }\n"
+        "    public User(int32 startId) { this.id = startId; return; }\n"
         "    public int32 bump() { this.id = this.id + 1; return this.id; }\n"
         "    public int32 addId(int32 delta) { return this.id + delta; }\n"
         "}\n"
@@ -252,11 +253,55 @@ TEST(ReflectionTests, constructorObjectNewInstance) {
         "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 3);
 }
 
-// REFL-2C: User declares one no-arg constructor.
-TEST(ReflectionTests, constructorCountIsOne) {
+// REFL-2C: User declares two constructors (User() and User(int32)).
+TEST(ReflectionTests, constructorCountIsTwo) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "return Class.of(u).getConstructorCount();\n"), 1);
+        "return Class.of(u).getConstructorCount();\n"), 2);
+}
+
+// REFL-4 marshalling: invoke addId(delta) through a Method object with one
+// argument. id=10, delta=5 -> 15. Proves the args buffer reaches the call.
+TEST(ReflectionTests, methodInvokeWithArg) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "c.setInt32(u, 0, 10);\n"
+        "int32 count = c.getMethodCount();\n"
+        "int32 result = -1;\n"
+        "int32 i = 0;\n"
+        "while (i < count) {\n"
+        "    Method m = c.getMethod(i);\n"
+        "    if (m.getParameterCount() == 1) {\n"
+        "        int64[] args = heap int64[1];\n"
+        "        args[0] = (int64) 5;\n"
+        "        result = (int32) m.invokeScalar(u, args);\n"
+        "    }\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "return result;\n"), 15);
+}
+
+// REFL-4 marshalling: construct via the 1-arg User(int32 startId) through a
+// Constructor object; the new instance's id is the passed argument (99).
+TEST(ReflectionTests, constructorNewInstanceWithArg) {
+    EXPECT_EQ(runI32(
+        "User seed = heap User();\n"
+        "Class c = Class.of(seed);\n"
+        "int32 cc = c.getConstructorCount();\n"
+        "int32 result = -1;\n"
+        "int32 i = 0;\n"
+        "while (i < cc) {\n"
+        "    Constructor ctor = c.getConstructor(i);\n"
+        "    if (ctor.getParameterCount() == 1) {\n"
+        "        int64[] args = heap int64[1];\n"
+        "        args[0] = (int64) 99;\n"
+        "        Object o = ctor.newInstance(args);\n"
+        "        result = c.getInt32(o, 0);\n"
+        "    }\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "return result;\n"), 99);
 }
 
 // REFL-2C: reflectively construct a User via the synthesized newInstance

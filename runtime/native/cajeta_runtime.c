@@ -3840,6 +3840,28 @@ int64_t __cajeta_object_invoke_scalar0(void* obj, int32_t idx) {
     return ret;
 }
 
+// REFL-4 reflective invoke WITH arguments. `argArray` is a cajeta int64[]
+// ({ i64 count, [i64 elems...] }) or NULL — each element is one raw user
+// argument (scalars zero/sign-extended, pointers whole), in declared order.
+// The per-class adapter reads them from an 8-byte-strided buffer, so we hand
+// it the element region (skip the 8-byte count header). Result widened to int64.
+int64_t __cajeta_object_invoke_scalar(void* obj, int32_t idx, void* argArray) {
+    if (!obj) return 0;
+    void* vtable = *(void**) obj;
+    if (!vtable) return 0;
+    void* classObject = *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return 0;
+    void* rtti = *(void**) ((char*) classObject + 8);
+    if (!rtti) return 0;
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
+    if (!adapter) return 0;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    int64_t ret = 0;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+
 // REFL-4 parameter introspection. `isCtor` selects the constructor table vs
 // the method table; memberIdx is the method/constructor index; paramIdx is the
 // USER parameter index (the implicit `this` is excluded from the table).
@@ -3899,6 +3921,16 @@ void* __cajeta_class_new0(void* rtti, int32_t ctorIdx) {
         (void* (*)(int32_t, void*)) ((CajetaRtti*) rtti)->newInstanceAdapter;
     if (!adapter) return NULL;
     return adapter(ctorIdx, NULL);
+}
+// REFL-4 reflective construction WITH arguments. `argArray` is a cajeta
+// int64[] ({ count, elems }) or NULL; hand the adapter the element region.
+void* __cajeta_class_new(void* rtti, int32_t ctorIdx, void* argArray) {
+    if (!rtti) return NULL;
+    void* (*adapter)(int32_t, void*) =
+        (void* (*)(int32_t, void*)) ((CajetaRtti*) rtti)->newInstanceAdapter;
+    if (!adapter) return NULL;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    return adapter(ctorIdx, args);
 }
 
 // UnrecoverableException's vtable address, published by codegen.
