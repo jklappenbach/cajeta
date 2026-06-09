@@ -528,6 +528,57 @@ TEST(XpuVulkanEmitTests, lowersIntTextureFetchToSpirv) {
     }
 }
 
+// B3 texture dims: Texture3D fetch lowers to OpImageFetch on a 3-D image
+// (OpTypeImage … 3D), via load.level with a <3 x i32> coord. spirv-val confirms
+// the 3-D sampled-image module is well-formed.
+TEST(XpuVulkanEmitTests, lowers3dTextureFetchToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void fetchVol(Texture3D vol,\n"
+        "                                Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<float32,4> c = vol.fetch(i, 0, 0); out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "fetchVol");
+    ASSERT_NE(k, nullptr);
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_tex3d_vulkan_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpImageFetch"), std::string::npos) << text;
+    EXPECT_NE(text.find(" 3D "), std::string::npos) << text;  // OpTypeImage … 3D
+    EXPECT_EQ(text.find("OpTypeSampler"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_tex3d_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the 3-D texture-fetch module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // B3 Step 2b: integer textures are FETCH-ONLY. Lowering a kernel that calls
 // .sample() on a Texture2D<int32> throws (XPU-N01) — the hardware texture sampler
 // cannot filter integer texels, so this is rejected at the call site, steering
