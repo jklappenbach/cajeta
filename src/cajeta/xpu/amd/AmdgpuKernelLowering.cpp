@@ -243,6 +243,49 @@ public:
         return rgba;
     }
 
+    // Texture1D.sample(sampler, u) → __ockl_image_sample_1D (the 1-D twin of
+    // __ockl_image_sample_2D). Unlike 2-D/3-D, the 1-D ockl coord is a SCALAR
+    // float (not a vector); the sampler object rides the texture object at +48,
+    // as in 2-D. Returns the <4 x float> linear gather. No lod variant — mipmaps
+    // are 2-D only.
+    llvm::Value* sampleTexture1D(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* texHandle,
+                                 llvm::Value* /*samplerHandle*/,
+                                 llvm::Value* u) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* sampPtr =
+            b.CreateConstGEP1_32(i8, texHandle, 48, "tex.samp.obj");
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, p4, f32}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_sample_1D", fnTy);
+        return b.CreateCall(s, {texHandle, sampPtr, u}, "tex1d.sample.rgba");
+    }
+
+    // Texture1D.fetch(x) → __ockl_image_load_1D (unfiltered 1-D twin). The 1-D
+    // ockl load coord is a SCALAR i32. Float result; bitcast to <4 x i32> for an
+    // integer row (raw image_load, as in 2-D).
+    llvm::Value* fetchTexture1D(llvm::IRBuilderBase& b, llvm::Module& m,
+                                llvm::Value* texHandle, llvm::Value* x,
+                                llvm::Type* texelTy) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v4i = llvm::FixedVectorType::get(i32, 4);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, i32}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_load_1D", fnTy);
+        llvm::Value* rgba = b.CreateCall(s, {texHandle, x}, "tex1d.fetch.rgba");
+        if (texelTy && texelTy->isIntegerTy())
+            return b.CreateBitCast(rgba, v4i, "tex1d.fetch.i32");
+        return rgba;
+    }
+
     // (Shader clock uses the base default: llvm.readcyclecounter, which the
     // AMDGPU backend lowers to s_getreg HW_REG_SHADER_CYCLES on RDNA — the GCN/
     // CDNA s_memrealtime/s_memtime intrinsics are not selectable on gfx11+.)

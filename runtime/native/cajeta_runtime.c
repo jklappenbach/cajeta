@@ -8621,6 +8621,23 @@ static struct caj_hip_channel_format_desc cajeta_hip_channel_desc(int32_t format
     return cd;
 }
 
+// Texture1D on AMD: a 1-D hipArray. hipMallocArray with height 0 makes a 1-D
+// array, which yields a 1-D image SRD through the same dimension-agnostic
+// RES_ARRAY texobj path — so the kernel's __ockl_image_{sample,load}_1D address
+// it correctly. Upload + free reuse the 2-D paths (a 1-D array is a height-1
+// hipMemcpy2DToArray).
+static int64_t cajeta_xpu_hip_tex1d_alloc(uint32_t w, int32_t format) {
+    if (!cajeta_hip_tex_supported()) return 0;
+    struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
+    void* array = NULL;
+    if (g_xpu_hip.hipMallocArray(&array, &cd, w, 0, 0) != 0 || !array) return 0;
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
+    if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    t->array = array; t->mipmap = NULL; t->w = w; t->h = 1; t->d = 1;
+    t->format = format; t->levels = 1;
+    return (int64_t) (intptr_t) t;
+}
+
 // Texture3D on AMD: a 3-D hipArray (hipMalloc3DArray) + per-launch hipTextureObject
 // (dimension-agnostic). Upload via hipMemcpy3D from a linear host volume.
 static int cajeta_hip_tex3d_supported(void) {
@@ -9123,7 +9140,7 @@ int64_t __cajeta_xpu_texture1d_alloc(void* self, uint32_t width, int32_t format)
         case CAJ_XPU_VULKAN:
             // A 1-D sampled image (height = depth = 1, no mips).
             return cajeta_xpu_vk_tex_alloc(width, 1, 0, format, 1, 1, 1);
-        case CAJ_XPU_HIP:    return 0;  // 3c: a 1-D hipArray
+        case CAJ_XPU_HIP:    return cajeta_xpu_hip_tex1d_alloc(width, format);
         default: return 0;
     }
 }
@@ -9155,7 +9172,10 @@ void __cajeta_xpu_texture1d_upload(void* self, int64_t handle, void* host,
             // A 1-D image is height 1; the upload reads depth (= 1) from the record.
             cajeta_xpu_vk_tex_upload(handle, src, width, 1, format);
             return;
-        case CAJ_XPU_HIP:    return;  // 3c
+        case CAJ_XPU_HIP:
+            // A 1-D hipArray is a height-1 2-D copy — reuse the 2-D upload.
+            cajeta_xpu_hip_tex_upload(handle, src, width, 1, format);
+            return;
         default: return;
     }
 }
