@@ -1743,3 +1743,121 @@ TEST(XpuVulkanDispatchDeviceTests, rayQuerySpatialIndexOnDevice) {
                       << " (101: inside-box query saw no candidate; "
                          "102: outside-box query saw a candidate)";
 }
+
+// Buffer.slice (Stage B4) on Vulkan — device-verify the borrowing view-slot
+// path (the CPU pointer-fold twin is XpuCpuDispatchTests.bufferSliceKernelOnCpu).
+// A 128-element parent is filled with -1; the tail half [64,128) is sliced and a
+// kernel writes globalIdX (0..63) through the view. On Vulkan the handle is a
+// buffer-table index, so slice() allocates a view slot carrying the byte offset
+// (256 B = 64*4, a multiple of RADV's minStorageBufferOffsetAlignment) into
+// VkDescriptorBufferInfo.offset. Proves the descriptor offset lands the writes
+// at parent[64+i] and leaves the head untouched; the view is non-owning so only
+// the parent frees (no double-free).
+TEST(XpuVulkanDispatchDeviceTests, bufferSliceKernelOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Slice {\n"
+        "    @Kernel\n"
+        "    public static void fill(Buffer<int32> b, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { b[i] = (int32) i; }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 128;\n"
+        "        uint32 half = 64;\n"
+        "        int32[] h = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }\n"
+        "        Buffer<int32> all = heap Buffer<int32>(n);\n"
+        "        all.upload(h);\n"
+        "        Buffer<int32> tail = all.slice(half, half);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(tail, half);\n"
+        "        s.sync();\n"
+        "        all.download(h);\n"
+        "        for (uint32 i = 0; i < half; i = i + 1) {\n"
+        "            if (h[i] != -1) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        for (uint32 i = 0; i < half; i = i + 1) {\n"
+        "            if (h[half + i] != (int32) i) { return (int32)(200 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.Slice", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (1xx: head element overwritten — bad offset; "
+                         "2xx: tail element wrong — view base off)";
+}
+
+// Buffer.slice upload visibility through a kernel on Vulkan: a distinct pattern
+// is uploaded INTO a mid-buffer view [32,96) of a 128-element parent (filled 5)
+// — exercising the offset-folded `mapped` pointer on the host upload path — then
+// a kernel doubles the WHOLE parent in place. Downloading the parent proves the
+// slice upload landed at the byte offset (128 B = 32*4) and the head/tail the
+// slice didn't cover keep the parent fill (5 -> 10).
+TEST(XpuVulkanDispatchDeviceTests, bufferSliceUploadDownloadOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class SliceIO {\n"
+        "    @Kernel\n"
+        "    public static void dbl(Buffer<int32> b, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { b[i] = b[i] * 2; }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 128;\n"
+        "        uint32 off = 32;\n"
+        "        uint32 len = 64;\n"
+        "        int32[] h = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = 5; }\n"
+        "        Buffer<int32> all = heap Buffer<int32>(n);\n"
+        "        all.upload(h);\n"
+        "        int32[] mid = heap int32[len];\n"
+        "        for (uint32 i = 0; i < len; i = i + 1) { mid[i] = (int32)(1000 + i); }\n"
+        "        Buffer<int32> sub = all.slice(off, len);\n"
+        "        sub.upload(mid);\n"
+        "        Stream s = Stream.current();\n"
+        "        dbl.launch(s, grid: [2], block: [64])(all, n);\n"
+        "        s.sync();\n"
+        "        all.download(h);\n"
+        "        for (uint32 i = 0; i < off; i = i + 1) {\n"
+        "            if (h[i] != 10) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        for (uint32 i = 0; i < len; i = i + 1) {\n"
+        "            if (h[off + i] != (int32)(2 * (1000 + i))) { return (int32)(300 + i); }\n"
+        "        }\n"
+        "        for (uint32 i = off + len; i < n; i = i + 1) {\n"
+        "            if (h[i] != 10) { return (int32)(200 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.SliceIO", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (1xx: head not doubled; 3xx: mid slice-upload wrong "
+                         "offset; 2xx: tail not doubled)";
+}
