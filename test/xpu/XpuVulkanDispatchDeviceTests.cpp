@@ -948,6 +948,54 @@ static const char* kTex3dIntFetchSrc(const char* elem, const char* fmt) {
     return s.c_str();
 }
 
+// B3: two Sampler descriptors in one kernel on a real Vulkan device — nearest +
+// linear bound to distinct bindings, both sampling the same image. 2x2 {0,1,2,3}
+// at the center: nearest -> 3.0, linear -> 1.5.
+static const char* kTwoSamplersSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TwoSamp {\n"
+        "    @Kernel\n"
+        "    public static void both(Texture2D tex, Sampler sn, Sampler sl,\n"
+        "                            Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < 1) {\n"
+        "            Vector<float32,4> a = tex.sample(sn, 0.5f, 0.5f);\n"
+        "            Vector<float32,4> b = tex.sample(sl, 0.5f, 0.5f);\n"
+        "            out[0] = a.x; out[1] = b.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2;\n"
+        "        float32[] pixels = heap float32[4];\n"
+        "        pixels[0] = 0.0f; pixels[1] = 1.0f; pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
+        "        Texture2D tex = heap Texture2D(w, h);\n"
+        "        tex.upload(pixels);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"
+        "        Sampler sl = heap Sampler(1, 0);\n"
+        "        float32[] hout = heap float32[2]; hout[0] = -1.0f; hout[1] = -1.0f;\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, 2);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        both.launch(s, grid: [1], block: [1])(tex, sn, sl, out);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        float32 dn = hout[0] - 3.0f;\n"
+        "        float32 dl = hout[1] - 1.5f;\n"
+        "        if (dn < -0.02f || dn > 0.02f) { return (int32)(100); }\n"
+        "        if (dl < -0.02f || dl > 0.02f) { return (int32)(200); }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
 // OpImageFetch on a real Vulkan device (RADV / Strix Halo): the sampled image
 // (Sampled=1) is fetched by exact integer coord — no sampler descriptor — and
 // every RGBA32F channel reads back bit-exact.
@@ -1031,6 +1079,23 @@ TEST(XpuVulkanDispatchDeviceTests, texture3dFetchRgba32iOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (3D RGBA32I device fetch mismatch)";
+}
+
+// B3: two Sampler descriptors in one kernel on a real Vulkan device (RADV) — both
+// bound to distinct set-0 bindings, sampling the same image (nearest -> 3.0,
+// linear -> 1.5). Confirms multiple sampler descriptors per dispatch.
+TEST(XpuVulkanDispatchDeviceTests, twoSamplersInOneKernelOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kTwoSamplersSrc(), "test.TwoSamp", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100: nearest=3.0; 200: linear=1.5)";
 }
 
 
