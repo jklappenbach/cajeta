@@ -488,6 +488,32 @@ public:
                                  {texHandle, coord, lod}, nullptr, "tex2da.fetch");
     }
 
+    // TextureCube.sample(sampler, x, y, z) → OpImageSampleExplicitLod on a cube
+    // image (Dim=Cube, bound by materializeParam from textureDim 5). The coord is
+    // a <3 x float> DIRECTION (x, y, z) — the HW picks the face + projects; no
+    // normalization needed. Explicit LOD 0. The <3 x i32> offset is constant zero,
+    // which the backend drops (a ConstOffset is illegal on a cube image — but a
+    // zero offset is elided by generateSampleImage, so this stays spirv-val clean).
+    llvm::Value* sampleTextureCube(llvm::IRBuilderBase& b, llvm::Module& m,
+                                   llvm::Value* texHandle, llvm::Value* samplerHandle,
+                                   llvm::Value* x, llvm::Value* y,
+                                   llvm::Value* z) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v3f = llvm::FixedVectorType::get(f32, 3);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* v3i = llvm::FixedVectorType::get(i32, 3);
+        llvm::Value* coord = llvm::PoisonValue::get(v3f);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1));
+        coord = b.CreateInsertElement(coord, z, uint64_t(2), "texcube.dir");
+        llvm::Value* lod = llvm::ConstantFP::get(f32, 0.0);
+        llvm::Value* offset = llvm::ConstantAggregateZero::get(v3i);
+        return b.CreateIntrinsic(v4f, llvm::Intrinsic::spv_resource_samplelevel,
+                                 {texHandle, samplerHandle, coord, lod, offset});
+    }
+
     // Image2D.store(x, y, value) → a single OpImageWrite, native via the fork
     // intrinsic llvm.spv.resource.store.2d (cajeta-spirv): operands are the
     // spirv.Image storage handle (Sampled=2), the integer coord <x, y>, and the
