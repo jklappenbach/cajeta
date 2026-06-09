@@ -123,7 +123,7 @@ public:
     llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* texHandle,
                                llvm::Value* /*samplerHandle*/, llvm::Value* u,
-                               llvm::Value* v, llvm::Value* /*lod*/) override {
+                               llvm::Value* v, llvm::Value* lod) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
@@ -136,10 +136,13 @@ public:
         llvm::Value* coord = llvm::PoisonValue::get(v2f);
         coord = b.CreateInsertElement(coord, u, uint64_t(0));
         coord = b.CreateInsertElement(coord, v, uint64_t(1), "tex.coord");
-        auto* fnTy = llvm::FunctionType::get(v4f, {p4, p4, v2f}, false);
+        // Explicit-LOD variant (lod is the float mip level; 0.0 for plain sample
+        // → level 0, exactly as on a single-level image). sampleLod threads the
+        // user LOD here; the mipmapped texobj's maxMipmapLevelClamp admits it.
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, p4, v2f, f32}, false);
         llvm::FunctionCallee s =
-            m.getOrInsertFunction("__ockl_image_sample_2D", fnTy);
-        llvm::Value* rgba = b.CreateCall(s, {texHandle, sampPtr, coord},
+            m.getOrInsertFunction("__ockl_image_sample_lod_2D", fnTy);
+        llvm::Value* rgba = b.CreateCall(s, {texHandle, sampPtr, coord, lod},
                                          "tex.sample.rgba");
         // Return the full <4 x float> RGBA — Texture2D.sample is typed
         // Vector<float32,4>; the caller picks a channel with .r/.x.
@@ -156,7 +159,7 @@ public:
     llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                               llvm::Value* texHandle, llvm::Value* x,
                               llvm::Value* y, llvm::Type* texelTy,
-                              llvm::Value* /*lod*/) override {
+                              llvm::Value* lod) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
@@ -171,10 +174,13 @@ public:
         // SRD), so the v4f32 result holds the verbatim 32-bit integer bits — bitcast
         // it to <4 x i32> to recover the integers. There is no int-returning ockl
         // image-load symbol, and this matches the SPIR-V/CPU paths bit-for-bit.
-        auto* fnTy = llvm::FunctionType::get(v4f, {p4, v2i}, false);
+        // Explicit-LOD variant (lod is the i32 mip level; 0 for plain fetch →
+        // level 0). fetchLod threads the user LOD here.
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, v2i, i32}, false);
         llvm::FunctionCallee s =
-            m.getOrInsertFunction("__ockl_image_load_2D", fnTy);
-        llvm::Value* rgba = b.CreateCall(s, {texHandle, coord}, "tex.fetch.rgba");
+            m.getOrInsertFunction("__ockl_image_load_lod_2D", fnTy);
+        llvm::Value* rgba = b.CreateCall(s, {texHandle, coord, lod},
+                                         "tex.fetch.rgba");
         if (texelTy && texelTy->isIntegerTy()) {
             auto* v4i = llvm::FixedVectorType::get(i32, 4);
             return b.CreateBitCast(rgba, v4i, "tex.fetch.i32");

@@ -6111,6 +6111,7 @@ enum { CAJ_HIP_CHANNEL_SIGNED = 0 };    // hipChannelFormatKindSigned (R32I stor
 enum { CAJ_HIP_CHANNEL_UNSIGNED = 1 };  // hipChannelFormatKindUnsigned (UNORM / R32UI store)
 enum { CAJ_HIP_CHANNEL_FLOAT = 2 };     // hipChannelFormatKindFloat
 enum { CAJ_HIP_RES_ARRAY = 0 };         // hipResourceTypeArray
+enum { CAJ_HIP_RES_MIPMAPPED_ARRAY = 1 };  // hipResourceTypeMipmappedArray
 enum { CAJ_HIP_ADDR_WRAP = 0, CAJ_HIP_ADDR_CLAMP = 1 };  // hipTextureAddressMode
 enum { CAJ_HIP_FILTER_POINT = 0, CAJ_HIP_FILTER_LINEAR = 1 };  // filter mode
 enum { CAJ_HIP_READ_ELEMENT = 0 };      // hipReadModeElementType
@@ -6188,13 +6189,27 @@ struct cajeta_hip_api {
     // 3-D array path (Texture3D); optional — absent → 3-D textures unavailable on AMD.
     int (*hipMalloc3DArray)(void**, const void*, struct caj_hip_extent, unsigned);
     int (*hipMemcpy3D)(const void*);
+    // Mipmapped-array path (mip Texture2D); optional — absent → mip textures
+    // unavailable on AMD. hipMallocMipmappedArray takes the extent by value
+    // ({w, h, 0} for 2-D), the level count, and flags; hipGetMipmappedArrayLevel
+    // yields a plain hipArray for one level (copied into via hipMemcpy2DToArray).
+    int (*hipMallocMipmappedArray)(void**, const void*, struct caj_hip_extent,
+                                   unsigned, unsigned);
+    int (*hipGetMipmappedArrayLevel)(void**, void*, unsigned);
+    int (*hipFreeMipmappedArray)(void*);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
 // HIP texture record: a Texture2D's device handle on AMD is a 1-based-... no, a
 // pointer to one of these (the hipArray + dims). The hipTextureObject is built
 // per launch from this array + the paired Sampler's modes.
-struct cajeta_hip_tex { void* array; uint32_t w, h, d; int32_t format; };
+// `array` is the (level-0) plain hipArray for non-mip 2-D/3-D; `mipmap` is the
+// hipMipmappedArray for a mip Texture2D (NULL otherwise) and `levels` its level
+// count (1 = no mipmaps). A mip texture keeps `array` NULL — its per-level arrays
+// come from hipGetMipmappedArrayLevel; the texobj binds the mipmapped array.
+struct cajeta_hip_tex {
+    void* array; void* mipmap; uint32_t w, h, d; int32_t format; int levels;
+};
 
 // --- Texture format table ----------------------------------------------------
 // TextureFormat ordinals — MUST match runtime/src/cajeta/xpu/core/TextureFormat.cajeta.
@@ -6378,6 +6393,9 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipDestroyTextureObject, "hipDestroyTextureObject");
     CAJ_HBIND_OPT(hipMalloc3DArray, "hipMalloc3DArray");
     CAJ_HBIND_OPT(hipMemcpy3D, "hipMemcpy3D");
+    CAJ_HBIND_OPT(hipMallocMipmappedArray, "hipMallocMipmappedArray");
+    CAJ_HBIND_OPT(hipGetMipmappedArrayLevel, "hipGetMipmappedArrayLevel");
+    CAJ_HBIND_OPT(hipFreeMipmappedArray, "hipFreeMipmappedArray");
     #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
@@ -8574,7 +8592,8 @@ static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h, int32_t format) 
     struct cajeta_hip_tex* t =
         (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
-    t->array = array; t->w = w; t->h = h; t->d = 1; t->format = format;
+    t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = 1;
+    t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
 }
 
@@ -8611,7 +8630,8 @@ static int64_t cajeta_xpu_hip_tex3d_alloc(uint32_t w, uint32_t h, uint32_t d,
     if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, 0) != 0 || !array) return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
-    t->array = array; t->w = w; t->h = h; t->d = d; t->format = format;
+    t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = d;
+    t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
 }
 
@@ -8670,10 +8690,70 @@ static void cajeta_xpu_hip_tex_upload(int64_t handle, const float* src,
     }
 }
 
+// Mipmapped Texture2D on AMD: a hipMipmappedArray (numLevels) whose per-level
+// texels are staged by hipGetMipmappedArrayLevel → hipMemcpy2DToArray (the 2-D
+// upload path per level); the per-launch hipTextureObject binds it via
+// RES_MIPMAPPED_ARRAY (cajeta_xpu_hip_make_texobj).
+static int cajeta_hip_tex_mip_supported(void) {
+    return g_xpu_hip.hipMallocMipmappedArray &&
+           g_xpu_hip.hipGetMipmappedArrayLevel && g_xpu_hip.hipMemcpy2DToArray &&
+           g_xpu_hip.hipCreateTextureObject && g_xpu_hip.hipDestroyTextureObject;
+}
+
+static int64_t cajeta_xpu_hip_tex_alloc_mip(uint32_t w, uint32_t h, int32_t format,
+                                            uint32_t levels) {
+    if (!cajeta_hip_tex_mip_supported()) return 0;
+    struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
+    struct caj_hip_extent ext; ext.w = w; ext.h = h; ext.d = 0;  // 2-D mip array
+    void* mipmap = NULL;
+    // NB: on gfx1151 / ROCm 7.2 this returns hipErrorNotSupported (801) — AMD
+    // mipmapped arrays are unimplemented on that APU, so mip Texture2D degrades to
+    // "no device texture" (handle 0 → the kernel doesn't launch). The path is
+    // correct for ROCm/hardware that does support mipmapped arrays.
+    if (g_xpu_hip.hipMallocMipmappedArray(&mipmap, &cd, ext, levels, 0) != 0 ||
+        !mipmap)
+        return 0;
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
+    if (!t) {
+        if (g_xpu_hip.hipFreeMipmappedArray) g_xpu_hip.hipFreeMipmappedArray(mipmap);
+        return 0;
+    }
+    t->array = NULL; t->mipmap = mipmap; t->w = w; t->h = h; t->d = 1;
+    t->format = format; t->levels = (int) levels;
+    return (int64_t) (intptr_t) t;
+}
+
+static void cajeta_xpu_hip_tex_upload_level(int64_t handle, const float* src,
+                                            uint32_t lw, uint32_t lh,
+                                            uint32_t level, int32_t format) {
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
+    if (!t || !t->mipmap || (int) level >= t->levels) return;
+    void* levelArray = NULL;   // owned by the mipmapped array; not freed here
+    if (g_xpu_hip.hipGetMipmappedArrayLevel(&levelArray, t->mipmap, level) != 0 ||
+        !levelArray)
+        return;
+    size_t rowBytes = (size_t) lw * cajeta_texfmt_texel_bytes(format);
+    if (cajeta_texfmt_is_unorm(format) || cajeta_texfmt_is_half(format)) {
+        size_t texels = (size_t) lw * lh * cajeta_texfmt_channels(format);
+        unsigned char* tmp =
+            (unsigned char*) malloc(texels * cajeta_texfmt_channel_bytes(format));
+        if (!tmp) return;
+        cajeta_texfmt_encode(tmp, src, texels, format);
+        g_xpu_hip.hipMemcpy2DToArray(levelArray, 0, 0, tmp, rowBytes, rowBytes, lh,
+                                     CAJ_HIP_MEMCPY_HTOD);
+        free(tmp);
+    } else {
+        g_xpu_hip.hipMemcpy2DToArray(levelArray, 0, 0, src, rowBytes, rowBytes, lh,
+                                     CAJ_HIP_MEMCPY_HTOD);
+    }
+}
+
 static void cajeta_xpu_hip_tex_free(int64_t handle) {
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
     if (!t) return;
     if (t->array && g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(t->array);
+    if (t->mipmap && g_xpu_hip.hipFreeMipmappedArray)
+        g_xpu_hip.hipFreeMipmappedArray(t->mipmap);
     free(t);
 }
 
@@ -8683,21 +8763,34 @@ static void cajeta_xpu_hip_tex_free(int64_t handle) {
 static int64_t cajeta_xpu_hip_make_texobj(int64_t texHandle, int32_t filterMode,
                                           int32_t addressMode) {
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) texHandle;
-    if (!t || !t->array || !cajeta_hip_tex_supported()) return 0;
+    if (!t || (!t->array && !t->mipmap) || !cajeta_hip_tex_supported()) return 0;
     struct caj_hip_resource_desc rd;
     memset(&rd, 0, sizeof(rd));
-    rd.resType = CAJ_HIP_RES_ARRAY;
-    rd.res.array.array = t->array;
+    if (t->mipmap) {   // mip Texture2D — bind the whole mipmapped array
+        rd.resType = CAJ_HIP_RES_MIPMAPPED_ARRAY;
+        rd.res.mipmap.mipmap = t->mipmap;
+    } else {
+        rd.resType = CAJ_HIP_RES_ARRAY;
+        rd.res.array.array = t->array;
+    }
     struct caj_hip_texture_desc td;
     memset(&td, 0, sizeof(td));
     int hipAddr = addressMode == 1 ? CAJ_HIP_ADDR_WRAP : CAJ_HIP_ADDR_CLAMP;
     td.addressMode[0] = hipAddr; td.addressMode[1] = hipAddr;
     td.addressMode[2] = hipAddr;
-    td.filterMode = filterMode == 1 ? CAJ_HIP_FILTER_LINEAR : CAJ_HIP_FILTER_POINT;
+    int hipFilter = filterMode == 1 ? CAJ_HIP_FILTER_LINEAR : CAJ_HIP_FILTER_POINT;
+    td.filterMode = hipFilter;
     // UNORM arrays read back as normalized float [0,1]; float arrays read raw.
     td.readMode = cajeta_texfmt_is_unorm(t->format) ? CAJ_HIP_READ_NORMALIZED_FLOAT
                                                     : CAJ_HIP_READ_ELEMENT;
     td.normalizedCoords = 1;
+    // Mip clamp: maxMipmapLevelClamp must admit the highest level an explicit-LOD
+    // sample can request — 0 would clamp every __ockl_image_sample_lod_2D to level
+    // 0 (the AMD analog of the Vulkan sampler maxLod=0 bug). Inter-level filter
+    // mirrors the magnify filter; harmless for non-mip (levels=1 → clamp 0).
+    td.mipmapFilterMode = hipFilter;
+    td.minMipmapLevelClamp = 0.0f;
+    td.maxMipmapLevelClamp = t->levels > 1 ? (float) (t->levels - 1) : 0.0f;
     void* texObj = NULL;
     if (g_xpu_hip.hipCreateTextureObject(&texObj, &rd, &td, NULL) != 0)
         return 0;
@@ -8860,7 +8953,8 @@ int64_t __cajeta_xpu_texture_alloc_mip(void* self, uint32_t width, uint32_t heig
             // A sampled 2-D image with `levels` mip levels; per-level texels are
             // staged by __cajeta_xpu_texture_upload_level.
             return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 0, levels);
-        // HIP mipmapped-array path lands in a later increment.
+        case CAJ_XPU_HIP:
+            return cajeta_xpu_hip_tex_alloc_mip(width, height, format, levels);
         default: return 0;
     }
 }
@@ -8892,6 +8986,9 @@ void __cajeta_xpu_texture_upload_level(void* self, int64_t handle, void* host,
         }
         case CAJ_XPU_VULKAN:
             cajeta_xpu_vk_tex_upload_level(handle, src, lw, lh, level, format);
+            return;
+        case CAJ_XPU_HIP:
+            cajeta_xpu_hip_tex_upload_level(handle, src, lw, lh, level, format);
             return;
         default: return;
     }
