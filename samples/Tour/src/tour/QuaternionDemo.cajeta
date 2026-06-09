@@ -16,7 +16,7 @@ public class QuaternionDemo extends DemoClass {
         System.stdout.println("");
         System.stdout.println("-- Quaternions (3-D rotation) --");
 
-        Vector<float32,3> xAxis = new Vector<float32,3>(1.0f, 0.0f, 0.0f);
+        Vector<float32,3> xAxis = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
 
         // 1. Rotate (1,0,0) by 90 degrees about z -> (0,1,0).
         Quaternion<float32> qz90 = heap Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);

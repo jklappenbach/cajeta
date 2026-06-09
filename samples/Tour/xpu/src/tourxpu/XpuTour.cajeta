@@ -6,6 +6,10 @@ import cajeta.xpu.core.Thread;
 import cajeta.xpu.core.Wave;
 import cajeta.xpu.core.Bits;
 import cajeta.xpu.core.Texture2D;
+import cajeta.xpu.core.Texture1D;
+import cajeta.xpu.core.Texture3D;
+import cajeta.xpu.core.Texture2DArray;
+import cajeta.xpu.core.TextureCube;
 import cajeta.xpu.core.Sampler;
 import cajeta.xpu.core.TextureFormat;
 import cajeta.lang.Math;
@@ -87,9 +91,9 @@ public final class XpuTour {
     public static void reluReg(Buffer<float32> out, uint32 n) {
         uint32 i = Thread.globalIdX();
         if (i < n) {
-            Vector<float32,4> v = new Vector<float32,4>(
+            Vector<float32,4> v = stack Vector<float32,4>(
                 (float32) i - 2.0f, -1.0f, 3.0f, -4.0f);
-            Vector<float32,4> zeros = new Vector<float32,4>(0.0f, 0.0f, 0.0f, 0.0f);
+            Vector<float32,4> zeros = stack Vector<float32,4>(0.0f, 0.0f, 0.0f, 0.0f);
             Vector<float32,4> relu = (v > 0.0f).select(v, zeros);   // branchless
             out[i] = relu.x + relu.y + relu.z + relu.w;
         }
@@ -125,12 +129,12 @@ public final class XpuTour {
     public static void dp4aReg(Buffer<int32> out, uint32 n) {
         uint32 i = Thread.globalIdX();
         if (i < n) {
-            Vector<int8,4> a = new Vector<int8,4>(1, 2, 3, 4);
-            Vector<int8,4> b = new Vector<int8,4>(5, 6, 7, 8);
+            Vector<int8,4> a = stack Vector<int8,4>(1, 2, 3, 4);
+            Vector<int8,4> b = stack Vector<int8,4>(5, 6, 7, 8);
             int32 d = a.dot(b);            // signed dot                = 70
             int32 e = a.dot(b, 100);       // fused dot-add: 100 + 70   = 170
-            Vector<uint8,4> u = new Vector<uint8,4>(200, 100, 50, 25);
-            Vector<uint8,4> w = new Vector<uint8,4>(2, 3, 4, 5);
+            Vector<uint8,4> u = stack Vector<uint8,4>(200, 100, 50, 25);
+            Vector<uint8,4> w = stack Vector<uint8,4>(2, 3, 4, 5);
             out[i] = d + e + u.dot(w);     // 70 + 170 + 1025           = 1265
         }
     }
@@ -227,6 +231,160 @@ public final class XpuTour {
         }
     }
 
+    // ---- texelFetch: exact, sampler-free texel reads (B3) ---------------------
+    // texFetch: read the EXACT texel (LOD 0), not a filtered blend — the twin of
+    // sample(), for data textures / LUTs where the wanted value is the one
+    // stored. No Sampler; integer texel coords. Vulkan OpImageFetch / AMD
+    // __ockl_image_load / CPU exact read. See cajeta-docs/gpu (texture fetch).
+    @Kernel
+    public static void texFetch(Texture2D tex, Buffer<float32> out,
+                                uint32 w, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            uint32 y = i / w;
+            uint32 x = i - y * w;
+            Vector<float32,4> c = tex.fetch(x, y);
+            out[i] = c.x;
+        }
+    }
+
+    // texFetchInt: INTEGER textures — `Texture2D<int32>` stores raw integers
+    // (no normalize/convert) and is fetch-ONLY (the hardware sampler can't filter
+    // integer texels). fetch returns the stored integer verbatim as a
+    // Vector<int32,4>. The texel type parameter selects float- vs integer-valued.
+    @Kernel
+    public static void texFetchInt(Texture2D<int32> tex, Buffer<int32> out,
+                                   uint32 w, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            uint32 y = i / w;
+            uint32 x = i - y * w;
+            Vector<int32,4> c = tex.fetch(x, y);
+            out[i] = c.x;
+        }
+    }
+
+    // ---- Texture dimensions: 1-D / 3-D / array / cube (B3) --------------------
+    // The texture-dimension ladder beyond 2-D. Same sample/fetch verbs, the
+    // coordinate arity follows the shape; all float-sampled (-> Vector<T,4>).
+
+    // tex1d: a linear (1-D) texture — gradients / transfer functions / tone
+    // curves / 1-D LUTs. fetch reads the exact texel; sample lerps between
+    // adjacent entries.
+    @Kernel
+    public static void tex1d(Texture1D row, Sampler lin, Buffer<float32> out) {
+        uint32 i = Thread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = row.fetch(0);          // first texel (exact)
+            Vector<float32,4> b = row.fetch(3);          // last texel (exact)
+            Vector<float32,4> c = row.sample(lin, 0.5f); // linear blend at midpoint
+            out[0] = a.x;
+            out[1] = b.x;
+            out[2] = c.x;
+        }
+    }
+
+    // tex3d: a volumetric (3-D) texture — fetch reads the exact voxel, sample
+    // trilinearly interpolates across all three axes.
+    @Kernel
+    public static void tex3d(Texture3D vol, Sampler lin, Buffer<float32> out) {
+        uint32 i = Thread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = vol.fetch(0, 0, 0);                // first voxel
+            Vector<float32,4> b = vol.fetch(1, 1, 1);                // last voxel
+            Vector<float32,4> c = vol.sample(lin, 0.5f, 0.5f, 0.5f); // trilinear center
+            out[0] = a.x;
+            out[1] = b.x;
+            out[2] = c.x;
+        }
+    }
+
+    // texArray: a layered (2-D array) texture — sprite sheets / atlases-by-index
+    // / map cascades. The layer is an integer INDEX, not a coord: sample filters
+    // WITHIN the selected layer (no cross-layer blend).
+    @Kernel
+    public static void texArray(Texture2DArray arr, Sampler lin,
+                                Buffer<float32> out) {
+        uint32 i = Thread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = arr.fetch(0, 0, 0);              // layer 0, first texel
+            Vector<float32,4> b = arr.fetch(1, 1, 2);              // layer 2, last texel
+            Vector<float32,4> c = arr.sample(lin, 0.5f, 0.5f, 1);  // bilinear center, layer 1
+            out[0] = a.x;
+            out[1] = b.x;
+            out[2] = c.x;
+        }
+    }
+
+    // texCube: a cube map sampled by a DIRECTION vector (skyboxes / environment
+    // / reflection probes) — the hardware projects the direction onto one of the
+    // six faces. A cube has no fetch (no single integer texel for a direction).
+    @Kernel
+    public static void texCube(TextureCube cube, Sampler near,
+                               Buffer<float32> out) {
+        uint32 i = Thread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> px = cube.sample(near, 1.0f, 0.0f, 0.0f);    // +X face
+            Vector<float32,4> nx = cube.sample(near, -1.0f, 0.0f, 0.0f);   // -X face
+            Vector<float32,4> py = cube.sample(near, 0.0f, 1.0f, 0.0f);    // +Y face
+            Vector<float32,4> ny = cube.sample(near, 0.0f, -1.0f, 0.0f);   // -Y face
+            Vector<float32,4> pz = cube.sample(near, 0.0f, 0.0f, 1.0f);    // +Z face
+            Vector<float32,4> nz = cube.sample(near, 0.0f, 0.0f, -1.0f);   // -Z face
+            out[0] = px.x;
+            out[1] = nx.x;
+            out[2] = py.x;
+            out[3] = ny.x;
+            out[4] = pz.x;
+            out[5] = nz.x;
+        }
+    }
+
+    // ---- Mipmaps + explicit LOD (B3) -----------------------------------------
+    // texMip: a mip-aware texture with per-level data. fetchLod / sampleLod read
+    // a chosen LOD explicitly (vs implicit derivative LOD, which is fragment-only
+    // and N/A for compute). level L is max(1, w>>L) x max(1, h>>L).
+    @Kernel
+    public static void texMip(Texture2D tex, Sampler lin, Buffer<float32> out) {
+        uint32 i = Thread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = tex.fetchLod(1, 1, 0);                 // level 0 texel (1,1)
+            Vector<float32,4> b = tex.fetchLod(0, 0, 1);                 // level 1 texel (0,0)
+            Vector<float32,4> c = tex.sampleLod(lin, 0.5f, 0.5f, 1.0f);  // sample at LOD 1
+            out[0] = a.x;
+            out[1] = b.x;
+            out[2] = c.x;
+        }
+    }
+
+    // ---- Multiple samplers per kernel (B3) -----------------------------------
+    // texTwoSamplers: sample ONE texture through TWO independent Sampler params —
+    // a nearest sampler (picks a single texel) and a linear one (4-texel blend) —
+    // each materializing its own descriptor.
+    @Kernel
+    public static void texTwoSamplers(Texture2D tex, Sampler near, Sampler lin,
+                                      Buffer<float32> out) {
+        uint32 i = Thread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = tex.sample(near, 0.5f, 0.5f);   // nearest -> one texel
+            Vector<float32,4> b = tex.sample(lin, 0.5f, 0.5f);    // linear  -> 4-texel avg
+            out[0] = a.x;
+            out[1] = b.x;
+        }
+    }
+
+    // ---- Sub-buffer views (B4): Buffer.slice ---------------------------------
+    // sliceFill: write the global index through a non-owning SLICE of a parent
+    // buffer. The view shares the parent's storage (allocates/frees nothing);
+    // writes land at parent[offset + i]. The offset is folded into the device
+    // address at slice() time, so the kernel sees an ordinary Buffer.
+    @Kernel
+    public static void sliceFill(Buffer<int32> b, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            b[i] = (int32) i;
+        }
+    }
+
     // ---- Transforms: quaternions, determinant, inverse -----------------------
     // 3-D rotation algebra and small-matrix solves, the same source on every
     // backend. See cajeta-docs/Quaternions.md + MatrixDeterminantInverse.md.
@@ -239,7 +397,7 @@ public final class XpuTour {
     public static void quatk(Buffer<float32> out, uint32 n) {
         uint32 i = Thread.globalIdX();
         if (i < n) {
-            Vector<float32,3> x = new Vector<float32,3>(1.0f, 0.0f, 0.0f);
+            Vector<float32,3> x = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
             Quaternion<float32> qz90 = heap Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);
             Vector<float32,3> rot = qz90 * x;                 // (0,1,0)
             Quaternion<float32> q45 = heap Quaternion<float32>(0.92387953f, 0.0f, 0.0f, 0.38268343f);
@@ -262,7 +420,7 @@ public final class XpuTour {
             float32 det = g.determinant();          // 10
             Matrix<float32,2,2> gi = g.inverse();
             Matrix<float32,2,2> p = g * gi;          // identity
-            Vector<float32,2> rhs = new Vector<float32,2>(18.0f, 14.0f);
+            Vector<float32,2> rhs = stack Vector<float32,2>(18.0f, 14.0f);
             Vector<float32,2> x = gi * rhs;          // (1,2)
             out[i] = det + p[0][0] + p[1][1] + x[0] + x[1];
         }
@@ -291,7 +449,7 @@ public final class XpuTour {
     public static void vecMath(Buffer<float32> out, uint32 n) {
         uint32 i = Thread.globalIdX();
         if (i < n) {
-            Vector<float32,4> q = new Vector<float32,4>(4.0f, 9.0f, 16.0f, 25.0f);
+            Vector<float32,4> q = stack Vector<float32,4>(4.0f, 9.0f, 16.0f, 25.0f);
             Vector<float32,4> r = Math.sqrt(q);
             out[i] = r.x + r.y + r.z + r.w + (float32) i;
         }
@@ -304,9 +462,9 @@ public final class XpuTour {
     public static void floatTypes(Buffer<float32> out, uint32 n) {
         uint32 i = Thread.globalIdX();
         if (i < n) {
-            Vector<float16,4> h = new Vector<float16,4>(1.0f, 2.0f, 3.0f, 4.0f);
+            Vector<float16,4> h = stack Vector<float16,4>(1.0f, 2.0f, 3.0f, 4.0f);
             Vector<float16,4> h2 = h + h;
-            Vector<bfloat16,2> b = new Vector<bfloat16,2>(10.0f, 20.0f);
+            Vector<bfloat16,2> b = stack Vector<bfloat16,2>(10.0f, 20.0f);
             Vector<bfloat16,2> b2 = b + b;
             out[i] = (float32) h2.w + (float32) b2.y + (float32) i;
         }
@@ -445,6 +603,7 @@ public final class XpuTour {
         System.stdout.println("  bundled+available backend (CPU when no GPU).");
         runSaxpy();
         runVecAdd();
+        runBufferSlice();
         runTransform();
         runMaskSelect();
         runIntegerDot();
@@ -453,6 +612,13 @@ public final class XpuTour {
         runShaderClock();
         runBitOps();
         runTexture();
+        runTextureFetch();
+        runTexture1D();
+        runTexture3D();
+        runTextureArray();
+        runTextureCube();
+        runTextureMip();
+        runMultiSampler();
         runTransforms();
         runPrecision();
         runCoopMatrix();
@@ -744,6 +910,217 @@ public final class XpuTour {
         float32 sum = hout[0] + hout[1] + hout[2] + hout[3];
         System.stdout.println("  per-texel channel sums (0.8t + 0.3), total = "
                             + (int32)(sum + 0.5f) + "   (expect 6)");
+    }
+
+    // texelFetch: the exact, sampler-free texel read — for a float texture
+    // (R32F) and an INTEGER texture (Texture2D<int32>, fetch-only). Texels
+    // 0,10,20,30 (float) / 10,20,30,40 (int), row-major 2x2.
+    static void runTextureFetch() {
+        System.stdout.println("");
+        System.stdout.println("-- texelFetch: exact texel reads (float R32F + integer R32I) --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        uint32 n = 4;
+        float32[] fpix = heap float32[n];
+        for (uint32 t = 0; t < n; t = t + 1) { fpix[t] = (float32)(t * 10); }
+        Texture2D ftex = heap Texture2D(w, hgt);   // R32F (default)
+        ftex.upload(fpix);
+        float32[] fout = heap float32[n];
+        Buffer<float32> fb = heap Buffer<float32>(n);
+        fb.upload(fout);
+        int32[] ipix = heap int32[n];
+        for (uint32 t = 0; t < n; t = t + 1) { ipix[t] = (int32)((t + 1) * 10); }
+        Texture2D<int32> itex = heap Texture2D<int32>(w, hgt, TextureFormat.R32I);
+        itex.upload(ipix);
+        int32[] iout = heap int32[n];
+        Buffer<int32> ib = heap Buffer<int32>(n);
+        ib.upload(iout);
+        Stream s = Stream.current();
+        texFetch.launch(s, grid: [1], block: [64])(ftex, fb, w, n);
+        texFetchInt.launch(s, grid: [1], block: [64])(itex, ib, w, n);
+        s.sync();
+        fb.download(fout);
+        ib.download(iout);
+        System.stdout.println("  float  R32F fetch(0,0)=" + (int32) fout[0]
+                            + " fetch(1,1)=" + (int32) fout[3] + "  (expect 0, 30)");
+        System.stdout.println("  integer R32I   fetch(0,0)=" + iout[0]
+                            + " fetch(1,1)=" + iout[3] + "  (expect 10, 40)");
+    }
+
+    // Texture1D: a width-4 linear texture {0,10,20,30}. fetch reads exact texels;
+    // sample at u=0.5 lerps to the row midpoint.
+    static void runTexture1D() {
+        System.stdout.println("");
+        System.stdout.println("-- Texture1D: linear texture (gradient / 1-D LUT) --");
+        uint32 w = 4;
+        float32[] texels = heap float32[w];
+        for (uint32 t = 0; t < w; t = t + 1) { texels[t] = (float32)(t * 10); }
+        Texture1D row = heap Texture1D(w);
+        row.upload(texels);
+        Sampler lin = heap Sampler(1, 0);   // linear, clamp
+        float32[] hout = heap float32[3];
+        Buffer<float32> out = heap Buffer<float32>(3);
+        out.upload(hout);
+        Stream s = Stream.current();
+        tex1d.launch(s, grid: [1], block: [64])(row, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  fetch[0]=" + (int32) hout[0] + " fetch[3]=" + (int32) hout[1]
+                            + " sample(0.5,linear)=" + (int32) hout[2] + "  (expect 0, 30, 15)");
+    }
+
+    // Texture3D: a 2x2x2 volume {0,10,...,70}. fetch reads exact voxels; sample
+    // at the center trilinearly averages all 8 -> 35.
+    static void runTexture3D() {
+        System.stdout.println("");
+        System.stdout.println("-- Texture3D: volumetric texture (trilinear) --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        uint32 d = 2;
+        uint32 n = 8;
+        float32[] voxels = heap float32[n];
+        for (uint32 t = 0; t < n; t = t + 1) { voxels[t] = (float32)(t * 10); }
+        Texture3D vol = heap Texture3D(w, hgt, d);
+        vol.upload(voxels);
+        Sampler lin = heap Sampler(1, 0);
+        float32[] hout = heap float32[3];
+        Buffer<float32> out = heap Buffer<float32>(3);
+        out.upload(hout);
+        Stream s = Stream.current();
+        tex3d.launch(s, grid: [1], block: [64])(vol, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  fetch(0,0,0)=" + (int32) hout[0] + " fetch(1,1,1)=" + (int32) hout[1]
+                            + " sample(center,trilinear)=" + (int32) hout[2] + "  (expect 0, 70, 35)");
+    }
+
+    // Texture2DArray: 3 layers of a 2x2 texture, texels 0..110. fetch by
+    // (x,y,layer); sample filters WITHIN layer 1 ({40,50,60,70}) -> center 55.
+    static void runTextureArray() {
+        System.stdout.println("");
+        System.stdout.println("-- Texture2DArray: layered texture (sprite sheet / atlas) --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        uint32 layers = 3;
+        uint32 n = 12;
+        float32[] texels = heap float32[n];
+        for (uint32 t = 0; t < n; t = t + 1) { texels[t] = (float32)(t * 10); }
+        Texture2DArray arr = heap Texture2DArray(w, hgt, layers);
+        arr.upload(texels);
+        Sampler lin = heap Sampler(1, 0);
+        float32[] hout = heap float32[3];
+        Buffer<float32> out = heap Buffer<float32>(3);
+        out.upload(hout);
+        Stream s = Stream.current();
+        texArray.launch(s, grid: [1], block: [64])(arr, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  fetch(L0)=" + (int32) hout[0] + " fetch(L2 last)=" + (int32) hout[1]
+                            + " sample(center,L1)=" + (int32) hout[2] + "  (expect 0, 110, 55)");
+    }
+
+    // TextureCube: 6 faces filled with face*10 (+X,-X,+Y,-Y,+Z,-Z). Sampling by
+    // each of the 6 axis directions selects the corresponding face.
+    static void runTextureCube() {
+        System.stdout.println("");
+        System.stdout.println("-- TextureCube: cube map sampled by a direction (skybox / env probe) --");
+        uint32 sz = 2;
+        uint32 faceTexels = sz * sz;
+        uint32 total = faceTexels * 6;
+        float32[] faces = heap float32[total];
+        for (uint32 f = 0; f < 6; f = f + 1) {
+            for (uint32 k = 0; k < faceTexels; k = k + 1) {
+                faces[f * faceTexels + k] = (float32)(f * 10);
+            }
+        }
+        TextureCube cube = heap TextureCube(sz);
+        cube.upload(faces);
+        Sampler near = heap Sampler(0, 0);   // nearest, clamp
+        float32[] hout = heap float32[6];
+        Buffer<float32> out = heap Buffer<float32>(6);
+        out.upload(hout);
+        Stream s = Stream.current();
+        texCube.launch(s, grid: [1], block: [64])(cube, near, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  faces +X -X +Y -Y +Z -Z = "
+                            + (int32) hout[0] + " " + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + " " + (int32) hout[4] + " " + (int32) hout[5]
+                            + "  (expect 0 10 20 30 40 50)");
+    }
+
+    // Mipmaps + explicit LOD: a 2-level R32F texture (L0 {0,10,20,30}, L1 {990}).
+    // fetchLod / sampleLod read a chosen level explicitly.
+    static void runTextureMip() {
+        System.stdout.println("");
+        System.stdout.println("-- Mipmaps + explicit LOD: per-level upload, fetchLod / sampleLod --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        Texture2D tex = heap Texture2D(w, hgt, TextureFormat.R32F, 2);   // 2 mip levels
+        float32[] l0 = heap float32[4];
+        l0[0] = 0.0f; l0[1] = 10.0f; l0[2] = 20.0f; l0[3] = 30.0f;        // level 0: 2x2
+        float32[] l1 = heap float32[1];
+        l1[0] = 990.0f;                                                  // level 1: 1x1
+        tex.uploadLevel(0, l0);
+        tex.uploadLevel(1, l1);
+        Sampler lin = heap Sampler(1, 0);
+        float32[] hout = heap float32[3];
+        Buffer<float32> out = heap Buffer<float32>(3);
+        out.upload(hout);
+        Stream s = Stream.current();
+        texMip.launch(s, grid: [1], block: [64])(tex, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  fetchLod(1,1,L0)=" + (int32) hout[0]
+                            + " fetchLod(0,0,L1)=" + (int32) hout[1]
+                            + " sampleLod(L1)=" + (int32) hout[2] + "  (expect 30, 990, 990)");
+    }
+
+    // Multiple samplers in one kernel: a nearest and a linear Sampler sampling
+    // one R32F texture {0,10,20,30} at the (0.5,0.5) center — nearest picks one
+    // texel (30), linear averages all four (15).
+    static void runMultiSampler() {
+        System.stdout.println("");
+        System.stdout.println("-- multiple samplers in one kernel: nearest vs linear --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        float32[] pix = heap float32[4];
+        pix[0] = 0.0f; pix[1] = 10.0f; pix[2] = 20.0f; pix[3] = 30.0f;
+        Texture2D tex = heap Texture2D(w, hgt);   // R32F
+        tex.upload(pix);
+        Sampler near = heap Sampler(0, 0);   // nearest
+        Sampler lin = heap Sampler(1, 0);    // linear
+        float32[] hout = heap float32[2];
+        Buffer<float32> out = heap Buffer<float32>(2);
+        out.upload(hout);
+        Stream s = Stream.current();
+        texTwoSamplers.launch(s, grid: [1], block: [64])(tex, near, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  center (0.5,0.5): nearest=" + (int32) hout[0]
+                            + " linear=" + (int32) hout[1] + "  (expect 30, 15)");
+    }
+
+    // Buffer.slice: a non-owning sub-view over a parent buffer. A view of the
+    // second half is filled by a kernel (b[i]=i over the view), landing at
+    // parent[64+i]; the head stays untouched. Shares storage, frees nothing.
+    static void runBufferSlice() {
+        System.stdout.println("");
+        System.stdout.println("-- Buffer.slice: a non-owning sub-view of a parent buffer --");
+        uint32 n = 128;
+        uint32 half = 64;
+        int32[] h = heap int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }
+        Buffer<int32> all = heap Buffer<int32>(n);
+        all.upload(h);
+        Buffer<int32> tail = all.slice(half, half);   // second-half view
+        Stream s = Stream.current();
+        sliceFill.launch(s, grid: [1], block: [64])(tail, half);
+        s.sync();
+        all.download(h);
+        System.stdout.println("  head[10]=" + h[10] + " (untouched)  tail->parent[64]="
+                            + h[64] + " parent[127]=" + h[127]
+                            + "  (expect -1, 0, 63)");
     }
 
     // Quaternion rotation algebra + small-matrix determinant/inverse/solve, run

@@ -21,7 +21,7 @@ package cajeta.xpu.core;
  *     Image2D img = heap Image2D(w, h);
  *     kernel.launch(s, ...)(img, ...);          // kernel writes img.store(x,y,v)
  *     s.sync();
- *     float32[] out = new float32[w * h];
+ *     float32[] out = heap float32[w * h];
  *     img.download(out);                        // row-major width*height
  *     // device image freed automatically at scope exit
  *
