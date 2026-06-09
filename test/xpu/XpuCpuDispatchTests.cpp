@@ -1003,6 +1003,114 @@ static const char* kTex3dIntFetchSrcCpu(const char* elem, const char* fmt) {
     return s.c_str();
 }
 
+// B3 texture dims: Texture1D fetch on CPU. A width-4 R32F row holds the linear
+// texel index (0..3); each texel read back exactly by integer x. The 1-D
+// analogue of textureFetchOnCpu / texture3dFetchOnCpu (single coord, no lod).
+static const char* kTex1dFetchSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture1D;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex1dFetchCpu {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture1D row, Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<float32,4> c = row.fetch(i);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 4; uint32 n = 4;\n"
+        "        float32[] texels = heap float32[4];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { texels[i] = (float32)(i); }\n"
+        "        Texture1D row = heap Texture1D(w);\n"
+        "        row.upload(texels);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [n])(row, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+// Texture1D sample on CPU: NEAREST at each texel center reads the exact stored
+// value; one LINEAR midpoint (u=0.5 between texel 0 and 1 of a width-2 row)
+// blends them to 0.5. Exercises the 1-D filtered path (the CPU reuses the 2-D
+// sampler with v=0.5) + the Sampler.
+static const char* kTex1dSampleSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture1D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex1dSampleCpu {\n"
+        "    @Kernel\n"
+        "    public static void samp(Texture1D row, Sampler sn, Buffer<float32> out,\n"
+        "                            uint32 w, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            float32 u = ((float32)(i) + 0.5f) / (float32)(w);\n"
+        "            Vector<float32,4> c = row.sample(sn, u);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void mid(Texture1D row, Sampler sl, Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < 1) {\n"
+        "            Vector<float32,4> c = row.sample(sl, 0.5f);\n"
+        "            out[0] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 n = 2;\n"
+        "        float32[] texels = heap float32[2];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { texels[i] = (float32)(i); }\n"
+        "        Texture1D row = heap Texture1D(w);\n"
+        "        row.upload(texels);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"     // nearest, clamp
+        "        Sampler sl = heap Sampler(1, 0);\n"     // linear, clamp
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [n])(row, sn, out, w, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        float32[] hmid = heap float32[1]; hmid[0] = -1.0f;\n"
+        "        Buffer<float32> mout = heap Buffer<float32>(1);\n"
+        "        mout.upload(hmid);\n"
+        "        mid.launch(s, grid: [1], block: [1])(row, sl, mout);\n"
+        "        s.sync();\n"
+        "        mout.download(hmid);\n"
+        "        float32 dm = hmid[0] - 0.5f;\n"
+        "        if (dm < -0.02f || dm > 0.02f) { return (int32)(200); }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 // B3: two Sampler params in one kernel — sample the SAME texture through a
 // nearest sampler AND a linear sampler. A 2x2 R32F texture {0,1,2,3}; at the
 // center (u=v=0.5) nearest picks texel (1,1)=3 while linear averages all four to
@@ -1348,6 +1456,29 @@ TEST(XpuCpuDispatchTests, texture3dSampleOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: trilinear midpoint)";
+}
+
+// B3 texture dims: Texture1D fetch on CPU — a width-4 row read texel-exact.
+TEST(XpuCpuDispatchTests, texture1dFetchOnCpu) {
+    auto jit = CajetaJit::compile(kTex1dFetchSrcCpu(), "test.Tex1dFetchCpu",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: texel index mismatch at i)";
+}
+
+// Texture1D sample on CPU — nearest at texel centers (exact) + a linear midpoint
+// (texel 0/1 blend = 0.5).
+TEST(XpuCpuDispatchTests, texture1dSampleOnCpu) {
+    auto jit = CajetaJit::compile(kTex1dSampleSrcCpu(), "test.Tex1dSampleCpu",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: linear midpoint)";
 }
 
 // B3: mipmaps on CPU — fetchLod reads a chosen mip level exactly (L0=3, L1=99),

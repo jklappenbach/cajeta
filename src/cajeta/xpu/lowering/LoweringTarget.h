@@ -137,8 +137,8 @@ namespace xpu {
                                      // descriptor bound in GENERAL layout. `type` is
                                      // the texel scalar (f32); written by
                                      // `img.store(x, y, v)` (OpImageWrite).
-            int textureDim = 2;      // 2 = Texture2D, 3 = Texture3D (for isTexture
-                                     // params). Selects the image dimensionality
+            int textureDim = 2;      // 2 = Texture2D, 3 = Texture3D, 1 = Texture1D
+                                     // (for isTexture params). Selects the image dimensionality
                                      // (Vulkan spirv.Image Dim + image-type), the
                                      // coord arity, and the 2-D vs 3-D sample/fetch
                                      // seam. MUST stay last so the 6/8-field
@@ -228,6 +228,22 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* x, llvm::Value* y, llvm::Value* z,
             llvm::Type* texelTy);
+
+        // Texture1D — the 1-D (linear) twins of sampleTexture/fetchTexture. Same
+        // handle/contract, but a single-component coordinate (u) / (x) and a 1-D
+        // image. `sampleTexture1D` is the linear filtered read (float-only);
+        // `fetchTexture1D` the unfiltered exact-texel read returning <4 x texelTy>.
+        // No `lod` operand — mipmaps are 2-D only. Default: unsupported (XPU-N01) —
+        // only backends with 1-D image support override (CPU runtime reuse of the
+        // 2-D path with height=1, Vulkan 1-D OpImageSample/Fetch, AMD
+        // __ockl_image_{sample,load}_1D — scalar coords). NVPTX 1-D emit-deferred.
+        virtual llvm::Value* sampleTexture1D(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* samplerHandle, llvm::Value* u);
+
+        virtual llvm::Value* fetchTexture1D(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* x, llvm::Type* texelTy);
 
         // Store `value` into the 2-D storage image `imgHandle` at INTEGER texel
         // coordinate (x, y) — the lowering of `img.store(x, y, value)` (writable

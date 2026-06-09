@@ -9085,6 +9085,87 @@ void __cajeta_xpu_texture3d_free(void* self, int64_t handle) {
     }
 }
 
+// --- Texture1D (read-only 1-D images) ---------------------------------------
+// Texture1D is the linear sibling of Texture2D/Texture3D: a single (width) row.
+// On the CPU it is exactly a 2-D texobj with height = 1, so the alloc/upload
+// below build that shape and every CPU read reuses the 2-D sample/fetch path
+// (the 2-D bilinear collapses to a 1-D lerp when there is one row). Vulkan/HIP
+// are stubbed for 3a and wired in 3b/3c.
+
+// __cajeta_xpu_texture1d_alloc(this, width, format) -> handle.
+int64_t __cajeta_xpu_texture1d_alloc(void* self, uint32_t width, int32_t format) {
+    (void) self;
+    if (width == 0) return 0;
+    int channels = cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) malloc(sizeof(*t));
+            if (!t) return 0;
+            t->w = width;
+            t->h = 1;
+            t->d = 1;
+            t->format = format;
+            t->channels = channels;
+            t->levels = 1;
+            t->mipoff[0] = 0; t->mipw[0] = width; t->miph[0] = 1;
+            t->data = (float*) calloc((size_t) width * channels, sizeof(float));
+            if (!t->data) { free(t); return 0; }
+            return (int64_t) (intptr_t) t;
+        }
+        // 3b/3c: a 1-D Vulkan image / 1-D hipArray.
+        case CAJ_XPU_VULKAN: return 0;
+        case CAJ_XPU_HIP:    return 0;
+        default: return 0;
+    }
+}
+
+// __cajeta_xpu_texture1d_upload(this, handle, host, width, format).
+void __cajeta_xpu_texture1d_upload(void* self, int64_t handle, void* host,
+                                   uint32_t width, int32_t format) {
+    (void) self;
+    if (!handle || !host || width == 0) return;
+    const float* src = (const float*) ((const char*) host + 8);
+    size_t texels = (size_t) width * cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            if (!t->data) return;
+            if (cajeta_texfmt_is_unorm(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = (float) cajeta_texfmt_unorm8(src[i]) / 255.0f;
+            } else if (cajeta_texfmt_is_half(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = cajeta_f16_to_f32(cajeta_f32_to_f16(src[i]));
+            } else {
+                memcpy(t->data, src, texels * sizeof(float));
+            }
+            return;
+        }
+        case CAJ_XPU_VULKAN: return;  // 3b
+        case CAJ_XPU_HIP:    return;  // 3c
+        default: return;
+    }
+}
+
+void __cajeta_xpu_texture1d_free(void* self, int64_t handle) {
+    (void) self;
+    if (!handle) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            free(t->data);
+            free(t);
+            return;
+        }
+        case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
+        case CAJ_XPU_HIP:    cajeta_xpu_hip_tex_free(handle); return;
+        default: return;
+    }
+}
+
 // --- Image2D (writable storage images) --------------------------------------
 // Image2D is the writable twin of Texture2D: a 2-D R32_SFLOAT storage image a
 // kernel writes via `img.store(x, y, value)` (OpImageWrite), and the host reads
