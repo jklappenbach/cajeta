@@ -7,12 +7,12 @@
 # find_program(clang-${LLVM_VERSION_MAJOR}) finds the bundled clang on PATH.
 #
 # ┌─────────────────────────────────────────────────────────────────────────────┐
-# │ PARKED — DO NOT ACTIVATE UNTIL RELEASE r3 EXISTS.                            │
-# │ The current latest release (r2, tag b1425f80) PREDATES the ray-query        │
-# │ lowering (commit 436a7fd6) — it contains NO SPIR-V ray-query codegen. This  │
-# │ step is pinned to r3, which must be cut from cajeta-spirv HEAD (>= 436a7fd6,│
-# │ ideally ad584d2d) FIRST. Activating before r3 is published 404s the         │
-# │ download and breaks the release. See plans/c0/README.md + the C0 audit.     │
+# │ INTEGRATED — this is now a SUPERSEDED REFERENCE TEMPLATE, not a TODO.        │
+# │ The step below is LIVE in .github/workflows/release.yml as of commit         │
+# │ 24cf6283 (2026-06-06), pinned to cajeta-llvm-23-r3 (cut 2026-06-03 — the    │
+# │ first release containing the ray-query lowering 436a7fd6). Edit the live     │
+# │ release.yml, not this file, when re-pinning the tag or expanding the gate.   │
+# │ Kept here as the documented pattern + the per-leg activation checklist.      │
 # └─────────────────────────────────────────────────────────────────────────────┘
 #
 # ARTIFACT COVERAGE (gate the `if:` to match what the fork has actually built):

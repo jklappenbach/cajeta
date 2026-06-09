@@ -63,9 +63,13 @@ Copy `fork-build-llvm.yml` (this dir) into the fork at
 - Produces a Release with `cajeta-llvm-23-r1-linux-x64.tar.zst` (+ `.sha256`).
 
 ## Step 5 — Point cajeta at the artifact
-- **CI:** add the step from `cajeta-ci-consume.yml` to cajeta's CI job *before* the
-  cmake configure. Update `LLVM_ASSET_URL` to the Step-4 asset. No cajeta source change
-  (find_package honors the `LLVM_DIR` env var; bundled clang lands on PATH).
+- **CI — DONE (`24cf6283`, 2026-06-06):** the step is live in `.github/workflows/release.yml`
+  on the `x86_64-linux-gnu` leg, pinned to `cajeta-llvm-23-r3` (first release carrying the
+  ray-query lowering), fetched *before* the Configure step and exposed via `LLVM_DIR`+PATH;
+  the distro-LLVM install is gated to the other legs. No cajeta source change (find_package
+  honors the `LLVM_DIR` env var; bundled clang lands on PATH). `cajeta-ci-consume.yml` in this
+  dir is now a superseded reference template. Remaining legs (aarch64/macOS/Windows) keep
+  distro LLVM until their fork artifact is built.
 - **Local (optional):** `export LLVM_DIR=.../lib/cmake/llvm` + add `.../bin` to PATH,
   then `./build.sh`. Your current local source build keeps working untouched otherwise.
 
