@@ -1861,3 +1861,67 @@ TEST(XpuVulkanDispatchDeviceTests, bufferSliceUploadDownloadOnDevice) {
                       << " (1xx: head not doubled; 3xx: mid slice-upload wrong "
                          "offset; 2xx: tail not doubled)";
 }
+
+// Bindless / multi-buffer descriptor sets (Stage B4) on Vulkan/RADV: a kernel
+// takes an ARRAY of buffers `Buffer<int32>[] bufs` bound as one descriptor array
+// and sums `bufs[b][i]` across `count` buffers indexed at runtime. Buffer b is
+// filled with (b+1)*10 + i, so out[i] = sum_b ((b+1)*10 + i) = 60 + 3i for 3
+// buffers. Proves the descriptor-array binding (handlefrombinding range=16,
+// descriptorCount=16, count real + padded) and the two-level subscript on-device.
+TEST(XpuVulkanDispatchDeviceTests, bindlessBufferArrayOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Bindless {\n"
+        "    @Kernel\n"
+        "    public static void gather(Buffer<int32>[] bufs, uint32 count,\n"
+        "                              Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            int32 s = 0;\n"
+        "            for (uint32 b = 0; b < count; b = b + 1) {\n"
+        "                s = s + bufs[b][i];\n"
+        "            }\n"
+        "            out[i] = s;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        uint32 k = 3;\n"
+        "        Buffer<int32>[] bufs = heap Buffer<int32>[k];\n"
+        "        for (uint32 b = 0; b < k; b = b + 1) {\n"
+        "            int32[] h = heap int32[n];\n"
+        "            for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "                h[i] = (int32)((b + 1) * 10 + i);\n"
+        "            }\n"
+        "            bufs[b] = heap Buffer<int32>(n);\n"
+        "            bufs[b].upload(h);\n"
+        "        }\n"
+        "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+        "        Stream s = Stream.current();\n"
+        "        gather.launch(s, grid: [1], block: [64])(bufs, k, out, n);\n"
+        "        s.sync();\n"
+        "        int32[] ho = heap int32[n];\n"
+        "        out.download(ho);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (ho[i] != (int32)(60 + 3 * i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.Bindless", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != 60+3i — bindless descriptor array "
+                         "indexing wrong)";
+}
