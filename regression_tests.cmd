@@ -27,6 +27,24 @@ if not exist "%EXE%" (
     popd & exit /b 2
 )
 
+rem --- Runtime DLLs on PATH --------------------------------------------------
+rem cajeta_test.exe needs the MinGW runtime (libstdc++, antlr4-runtime, ...) and,
+rem since the dylib slim-down, the cajeta-llvm fork's libLLVM-<ver>.dll. Put both
+rem on PATH so the binary launches; without the latter it dies at startup with
+rem 0xC0000135 (STATUS_DLL_NOT_FOUND). See cajeta_tests.cmd for the full rationale.
+if not defined MSYS2_ROOT set "MSYS2_ROOT=C:\msys64"
+if exist "%MSYS2_ROOT%\mingw64\bin" set "PATH=%MSYS2_ROOT%\mingw64\bin;%PATH%"
+set "LLVM_BIN="
+if defined CAJETA_LLVM_ROOT if exist "%CAJETA_LLVM_ROOT%\bin\libLLVM*.dll" set "LLVM_BIN=%CAJETA_LLVM_ROOT%\bin"
+if not defined LLVM_BIN if exist "build\CMakeCache.txt" (
+    for /f "usebackq tokens=2 delims==" %%D in (`findstr /B /C:"LLVM_DIR:" "build\CMakeCache.txt"`) do set "LLVM_DIR_RAW=%%D"
+    if defined LLVM_DIR_RAW (
+        set "LLVM_DIR_RAW=!LLVM_DIR_RAW:/=\!"
+        set "LLVM_BIN=!LLVM_DIR_RAW:\lib\cmake\llvm=!\bin"
+    )
+)
+if defined LLVM_BIN if exist "!LLVM_BIN!\libLLVM*.dll" set "PATH=!LLVM_BIN!;%PATH%"
+
 set "OUT=%TEMP%\cajeta_sweep"
 set "LOGS=%OUT%\logs"
 if exist "%OUT%" rmdir /s /q "%OUT%"
