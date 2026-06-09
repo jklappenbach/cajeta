@@ -28,8 +28,8 @@ public class LinearAlgebraDemo extends DemoClass {
         System.stdout.println("-- Linear algebra (Vector / Matrix value types) --");
 
         // Vector geometry: length (a unit-3-4-5 style triple) and dot product.
-        Vector<float32,3> v = new Vector<float32,3>(1.0f, 2.0f, 2.0f);
-        Vector<float32,3> w = new Vector<float32,3>(4.0f, 5.0f, 6.0f);
+        Vector<float32,3> v = stack Vector<float32,3>(1.0f, 2.0f, 2.0f);
+        Vector<float32,3> w = stack Vector<float32,3>(4.0f, 5.0f, 6.0f);
         int32 len = (int32) v.length();   // sqrt(1+4+4) = 3
         int32 dot = (int32) v.dot(w);     // 4 + 10 + 12 = 26
         System.stdout.println("  v=(1,2,2): length=" + len + "  v.dot((4,5,6))="
@@ -47,7 +47,7 @@ public class LinearAlgebraDemo extends DemoClass {
         // Matrix * Vector (matVec): [1 2 3;4 5 6] * (1,2,3) = (14, 32).
         Matrix<float32,2,3> m = stack Matrix<float32,2,3>(
             1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f);
-        Vector<float32,3> x = new Vector<float32,3>(1.0f, 2.0f, 3.0f);
+        Vector<float32,3> x = stack Vector<float32,3>(1.0f, 2.0f, 3.0f);
         Vector<float32,2> mv = m * x;
         System.stdout.println("  [1 2 3;4 5 6] * (1,2,3) = ("
                             + (int32) mv[0] + ", " + (int32) mv[1]
@@ -85,7 +85,7 @@ public class LinearAlgebraDemo extends DemoClass {
 
         // inverse solves a linear system: g * x = rhs  ->  x = g^-1 * rhs.
         // g=[4 7;2 6], rhs=(18,16): x = (1,2) since 4*1+7*2=18, 2*1+6*2=14? -> use (1,2).
-        Vector<float32,2> rhs = new Vector<float32,2>(18.0f, 14.0f);
+        Vector<float32,2> rhs = stack Vector<float32,2>(18.0f, 14.0f);
         Vector<float32,2> x = gi * rhs;   // solves g*x = rhs
         System.stdout.println("  solve g*x=(18,14): x = (" + (int32)(x[0] + 0.5f)
                             + "," + (int32)(x[1] + 0.5f) + ")   (expect (1,2))");
