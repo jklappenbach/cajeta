@@ -198,7 +198,7 @@ dynamic typing.
             +---------------------+
 ```
 
-NVPTX, AMDGPU, and SPIR-V are all in-tree targets in LLVM 22, so the
+NVPTX, AMDGPU, and SPIR-V are all in-tree targets in LLVM 23, so the
 build does not depend on the out-of-tree Khronos translator (it
 remains a fallback for SPIR-V extensions LLVM is slow to pick up —
 see §6.2).
@@ -485,7 +485,7 @@ see §5–6.
 ## 5. Native backends — `cajeta.xpu.nvidia` and `cajeta.xpu.amd`
 
 The two native vendor backends share a shape: each emits LLVM IR
-through an in-tree LLVM 22 target (NVPTX, AMDGPU), each links against
+through an in-tree LLVM 23 target (NVPTX, AMDGPU), each links against
 a vendor driver runtime (CUDA, HIP), and each exposes vendor-only
 features its target hardware supports.
 

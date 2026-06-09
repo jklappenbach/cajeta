@@ -190,7 +190,7 @@ dispatcher uses must be wired *in C* there:
   cross-lane, so `LoopVectorize` bails on them (5B left them width-1). 5C makes the wave = the
   SIMD vector: each `Wave.*` lowers to a **scalar call** to its `__cajeta_xpu_wave_*` stub, and
   the CPU registration pass gives that stub a **Vector Function ABI variant** — a small SIMD
-  function LLVM 22's `VFDatabase` reads off the `vector-function-abi-variant` attribute and
+  function LLVM 23's `VFDatabase` reads off the `vector-function-abi-variant` attribute and
   `LoopVectorize` *substitutes* when it widens the per-block work-item loop. We write no
   vectorizer — only the per-op variant bodies (synthesized in IR, so they legalize to real SIMD
   on any host):
@@ -549,7 +549,7 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
     runtime init. Fix: `opt.UseInitArray = true` (one line) — what clang/llc set. The CPU
     tour kernel then runs as a native binary; this also un-breaks AOT static init generally.
   - **Vulkan multi-kernel SPIR-V codegen crash.** `vulkan::emitKernelRegistration` created one
-    SPIR-V `TargetMachine` and reused it across all kernels' `emitSpirv`. LLVM 22's SPIR-V
+    SPIR-V `TargetMachine` and reused it across all kernels' `emitSpirv`. LLVM 23's SPIR-V
     backend carries codegen state (`SPIRVGlobalRegistry`) on the TargetMachine, so the second
     kernel crashed in `SPIRVEmitIntrinsics::buildAssignPtr` (a segfault, sometimes an abort —
     classic state corruption). Never hit before because every prior Vulkan test compiled a
