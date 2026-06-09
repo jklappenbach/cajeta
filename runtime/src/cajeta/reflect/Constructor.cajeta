@@ -1,0 +1,40 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+
+/**
+ * A declared constructor of a class (REFL-4). Reflective construction routes
+ * through the synthesized per-class newInstance adapter (REFL-2C). The
+ * no-argument path is here; argument marshalling lands next.
+ */
+public final class Constructor {
+    pointer rtti;
+    int32 index;
+
+    @Native("__cajeta_rtti_constructor_param_count")
+    private static int32 paramCountOf(pointer rtti, int32 idx);
+    @Native("__cajeta_class_new0")
+    private static #Object new0(pointer rtti, int32 idx);
+
+    public Constructor(pointer rtti, int32 index) {
+        this.rtti = rtti;
+        this.index = index;
+    }
+
+    public int32 getIndex() { return this.index; }
+
+    /** Number of user-visible parameters (the implicit `this` is excluded). */
+    public int32 getParameterCount() { return paramCountOf(this.rtti, this.index); }
+
+    /** The parameter at `i` (0-based, user-visible). */
+    public #Parameter getParameter(int32 i) {
+        return heap Parameter(this.rtti, 1, this.index, i);
+    }
+
+    /**
+     * Construct a new instance via this NO-ARGUMENT constructor (allocates,
+     * installs the vtable, runs the ctor). Returns the new owned object.
+     * Argument-passing variants land with REFL-4 marshalling.
+     */
+    public #Object newInstance() { return new0(this.rtti, this.index); }
+}
