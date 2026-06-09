@@ -17,6 +17,9 @@ public final class Constructor {
     private static #Object new0(pointer rtti, int32 idx);
     @Native("__cajeta_class_new")
     private static #Object newN(pointer rtti, int32 idx, int64[] args);
+    // REFL-3.3 (D1): 1 if this constructor is private AND its class is @Sealed.
+    @Native("__cajeta_reflect_ctor_blocked")
+    private static int32 accessBlocked(pointer rtti, int32 idx);
 
     public Constructor(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -34,6 +37,18 @@ public final class Constructor {
     }
 
     /**
+     * REFL-3.3 visibility gate (decision D1). Reflective construction is
+     * default-open; a `@Sealed` class bars constructing through its private
+     * constructors. Both heapInstance forms run this first and throw if sealed-off.
+     */
+    private void checkAccess() {
+        if (accessBlocked(this.rtti, this.index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective construction via a private constructor of a @Sealed class is denied");
+        }
+    }
+
+    /**
      * Construct a new HEAP instance via this NO-ARGUMENT constructor (allocates
      * on the heap, installs the vtable, runs the ctor). Returns the new owned
      * object. Named `heapInstance` to make the allocation site explicit —
@@ -41,7 +56,7 @@ public final class Constructor {
      * escape, is unknown at the call site, so a stack alloca can't be emitted);
      * a future `stackInstance`/unsafe-placement form can join this namespace.
      */
-    public #Object heapInstance() { return new0(this.rtti, this.index); }
+    public #Object heapInstance() { checkAccess(); return new0(this.rtti, this.index); }
 
     /**
      * Construct a HEAP instance via this constructor with raw arguments packed
@@ -49,6 +64,7 @@ public final class Constructor {
      * new owned object.
      */
     public #Object heapInstance(int64[] args) {
+        checkAccess();
         return newN(this.rtti, this.index, args);
     }
 }

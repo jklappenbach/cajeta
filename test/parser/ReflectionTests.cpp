@@ -437,3 +437,162 @@ TEST(ReflectionTests, invokeInt32Narrows) {
         "    }\n"
         "}\n"), 7);
 }
+
+// --- REFL-3.3: @Sealed visibility enforcement (decision D1) ------------------
+// Reflection is DEFAULT-OPEN; a @Sealed class bars reflective access to its
+// PRIVATE members only. The reflect API throws IllegalAccessException; the
+// program catches it and returns 1 (a missing throw falls through to 0).
+
+// A private field of a @Sealed class is blocked via the Field-object API.
+TEST(ReflectionTests, sealedPrivateFieldThrows) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Field;\n"
+        "import cajeta.reflect.IllegalAccessException;\n"
+        "@Sealed\n"
+        "public class Vault {\n"
+        "    private int32 secret;\n"
+        "    public int32 open;\n"
+        "    public Vault() { this.secret = 42; this.open = 7; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Vault v = heap Vault();\n"
+        "        Field f = Class.of(v).getField(0);\n"   // secret (private)
+        "        try {\n"
+        "            int32 x = f.getInt32(v);\n"
+        "            return 0;\n"
+        "        } catch (IllegalAccessException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// A PUBLIC field of a @Sealed class stays reachable (only private is barred).
+TEST(ReflectionTests, sealedPublicFieldStillReadable) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Field;\n"
+        "@Sealed\n"
+        "public class Vault {\n"
+        "    private int32 secret;\n"
+        "    public int32 open;\n"
+        "    public Vault() { this.secret = 42; this.open = 7; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Vault v = heap Vault();\n"
+        "        Field f = Class.of(v).getField(1);\n"   // open (public)
+        "        return f.getInt32(v);\n"
+        "    }\n"
+        "}\n"), 7);
+}
+
+// The Class index-form accessor enforces the same gate.
+TEST(ReflectionTests, sealedPrivateFieldIndexFormThrows) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.IllegalAccessException;\n"
+        "@Sealed\n"
+        "public class Vault {\n"
+        "    private int32 secret;\n"
+        "    public int32 open;\n"
+        "    public Vault() { this.secret = 42; this.open = 7; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Vault v = heap Vault();\n"
+        "        Class c = Class.of(v);\n"
+        "        try {\n"
+        "            int32 x = c.getInt32(v, 0);\n"
+        "            return 0;\n"
+        "        } catch (IllegalAccessException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// Default-open: a private field of a NON-sealed class is reflectively readable.
+TEST(ReflectionTests, unsealedPrivateFieldReadable) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Field;\n"
+        "public class Open {\n"
+        "    private int32 secret;\n"
+        "    public Open() { this.secret = 9; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Open o = heap Open();\n"
+        "        Field f = Class.of(o).getField(0);\n"   // secret (private, but not sealed)
+        "        return f.getInt32(o);\n"
+        "    }\n"
+        "}\n"), 9);
+}
+
+// Invoking a private method of a @Sealed class throws.
+TEST(ReflectionTests, sealedPrivateMethodInvokeThrows) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "import cajeta.reflect.IllegalAccessException;\n"
+        "@Sealed\n"
+        "public class Svc {\n"
+        "    public Svc() { return; }\n"
+        "    private int32 hidden() { return 5; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Svc s = heap Svc();\n"
+        "        Method m = Class.of(s).getMethod(0);\n"   // hidden (private)
+        "        try {\n"
+        "            int32 x = m.invokeInt32(s);\n"
+        "            return 0;\n"
+        "        } catch (IllegalAccessException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// Constructing through a private constructor of a @Sealed class throws.
+TEST(ReflectionTests, sealedPrivateConstructorThrows) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Constructor;\n"
+        "import cajeta.reflect.IllegalAccessException;\n"
+        "@Sealed\n"
+        "public class Locked {\n"
+        "    private Locked() { return; }\n"
+        "    public Locked(int32 x) { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Locked seed = heap Locked(1);\n"
+        "        Class c = Class.of(seed);\n"
+        "        int32 count = c.getConstructorCount();\n"
+        "        int32 i = 0;\n"
+        "        int32 noArg = -1;\n"
+        "        while (i < count) {\n"
+        "            if (c.getConstructorParamCount(i) == 0) { noArg = i; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Constructor ctor = c.getConstructor(noArg);\n"   // private no-arg
+        "        try {\n"
+        "            Object o = ctor.heapInstance();\n"
+        "            return 0;\n"
+        "        } catch (IllegalAccessException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 1);
+}

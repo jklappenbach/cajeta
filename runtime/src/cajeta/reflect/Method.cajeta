@@ -27,6 +27,9 @@ public final class Method {
     private static float32 invokeF32(Object o, int32 idx, int64[] args);
     @Native("__cajeta_object_invoke_f64")
     private static float64 invokeF64(Object o, int32 idx, int64[] args);
+    // REFL-3.3 (D1): 1 if this method is private AND its class is @Sealed.
+    @Native("__cajeta_reflect_method_blocked")
+    private static int32 accessBlocked(pointer rtti, int32 idx);
 
     public Method(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -52,11 +55,23 @@ public final class Method {
     }
 
     /**
+     * REFL-3.3 visibility gate (decision D1). Reflective invocation is
+     * default-open; a `@Sealed` class bars invoking its private methods. Every
+     * invoke path runs this first and throws if the method is sealed-off.
+     */
+    private void checkAccess() {
+        if (accessBlocked(this.rtti, this.index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective invoke of a private method of a @Sealed class is denied");
+        }
+    }
+
+    /**
      * Invoke this NO-ARGUMENT method on `o`, returning the result widened to
      * int64 (smaller scalars in the low bytes, pointers whole, void → 0).
      * Argument-passing variants land with REFL-4 marshalling.
      */
-    public int64 invokeScalar(Object o) { return invoke0(o, this.index); }
+    public int64 invokeScalar(Object o) { checkAccess(); return invoke0(o, this.index); }
 
     /**
      * Invoke this method on `o` with raw arguments packed into `args` (one
@@ -66,14 +81,16 @@ public final class Method {
      * (typed/boxed marshalling refinements land later).
      */
     public int64 invokeScalar(Object o, int64[] args) {
+        checkAccess();
         return invokeN(o, this.index, args);
     }
 
     /** Invoke a NO-ARGUMENT int32-returning method, narrowed from the int64 path. */
-    public int32 invokeInt32(Object o) { return (int32) invoke0(o, this.index); }
+    public int32 invokeInt32(Object o) { checkAccess(); return (int32) invoke0(o, this.index); }
 
     /** Invoke an int32-returning method with raw-packed `args`, narrowed. */
     public int32 invokeInt32(Object o, int64[] args) {
+        checkAccess();
         return (int32) invokeN(o, this.index, args);
     }
 
@@ -82,14 +99,16 @@ public final class Method {
      * floating-point result in its own ABI register, so this returns the real
      * value (not int64-widened bits). No-arg form passes a null arg buffer.
      */
-    public float32 invokeFloat32(Object o) { return invokeF32(o, this.index, null); }
+    public float32 invokeFloat32(Object o) { checkAccess(); return invokeF32(o, this.index, null); }
     public float32 invokeFloat32(Object o, int64[] args) {
+        checkAccess();
         return invokeF32(o, this.index, args);
     }
 
     /** Invoke a float64-returning method (real FP value; see invokeFloat32). */
-    public float64 invokeFloat64(Object o) { return invokeF64(o, this.index, null); }
+    public float64 invokeFloat64(Object o) { checkAccess(); return invokeF64(o, this.index, null); }
     public float64 invokeFloat64(Object o, int64[] args) {
+        checkAccess();
         return invokeF64(o, this.index, args);
     }
 }

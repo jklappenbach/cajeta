@@ -1,0 +1,39 @@
+package cajeta.reflect;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by reflective access (REFL-3.3, decision D1) when a caller tries to
+ * read, write, or invoke a PRIVATE member of a class marked `@Sealed`.
+ *
+ * Reflection is DEFAULT-OPEN: by default `Field.get/set`, `Method.invoke`, and
+ * `Constructor.heapInstance` reach any member regardless of visibility. A
+ * class-level `@Sealed` annotation opts that class out for its private members
+ * only — the compiler omits their cases from the synthesized reflect adapters,
+ * and the reflect API raises this exception rather than silently missing the
+ * member, so the caller can tell "sealed off" apart from "no such member".
+ *
+ * A `RecoverableException`: a tool walking members can catch it and skip the
+ * sealed ones rather than aborting.
+ *
+ * ```cajeta
+ * try {
+ *     u.getClass().getField(secretIdx).getInt32(u);
+ * } catch (IllegalAccessException e) {
+ *     log(e.message);   // "...is private in a @Sealed class"
+ * }
+ * ```
+ *
+ * See plans/reflection/reflection-plan.md § REFL-3.3 and decision D1.
+ */
+public class IllegalAccessException extends RecoverableException {
+    /**
+     * Wrap a heap `#String` message into a throwable access violation. The
+     * message ownership transfers in; `cause` is left unset.
+     */
+    public IllegalAccessException(#String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

@@ -19,6 +19,9 @@ public final class Field {
     private static void nameInto(pointer rtti, int32 idx, int8[] out);
     @Native("__cajeta_rtti_field_modifiers")
     private static int32 modsOf(pointer rtti, int32 idx);
+    // REFL-3.3 (D1): 1 if this field is private AND its class is @Sealed.
+    @Native("__cajeta_reflect_field_blocked")
+    private static int32 accessBlocked(pointer rtti, int32 idx);
     @Native("__cajeta_rtti_field_type_flags")
     private static int64 typeFlagsOf(pointer rtti, int32 idx);
     @Native("__cajeta_field_get_i32")
@@ -63,14 +66,26 @@ public final class Field {
     /** Field type-flag word (CajetaType TYPE_ID bits). */
     public int64 getTypeFlags() { return typeFlagsOf(this.rtti, this.index); }
 
-    public int32 getInt32(Object o) { return getI32(o, this.rtti, this.index); }
-    public void setInt32(Object o, int32 v) { setI32(o, this.rtti, this.index, v); }
-    public int64 getInt64(Object o) { return getI64(o, this.rtti, this.index); }
-    public void setInt64(Object o, int64 v) { setI64(o, this.rtti, this.index, v); }
-    public boolean getBoolean(Object o) { return getBoolNative(o, this.rtti, this.index) != 0; }
-    public void setBoolean(Object o, boolean v) { setBoolNative(o, this.rtti, this.index, v ? 1 : 0); }
-    public float32 getFloat32(Object o) { return getF32(o, this.rtti, this.index); }
-    public void setFloat32(Object o, float32 v) { setF32(o, this.rtti, this.index, v); }
-    public float64 getFloat64(Object o) { return getF64(o, this.rtti, this.index); }
-    public void setFloat64(Object o, float64 v) { setF64(o, this.rtti, this.index, v); }
+    /**
+     * REFL-3.3 visibility gate (decision D1). Reflective field access is
+     * default-open; a `@Sealed` class bars access to its private fields. Every
+     * get/set runs this first and throws if the field is sealed-off.
+     */
+    private void checkAccess() {
+        if (accessBlocked(this.rtti, this.index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective access to a private field of a @Sealed class is denied");
+        }
+    }
+
+    public int32 getInt32(Object o) { checkAccess(); return getI32(o, this.rtti, this.index); }
+    public void setInt32(Object o, int32 v) { checkAccess(); setI32(o, this.rtti, this.index, v); }
+    public int64 getInt64(Object o) { checkAccess(); return getI64(o, this.rtti, this.index); }
+    public void setInt64(Object o, int64 v) { checkAccess(); setI64(o, this.rtti, this.index, v); }
+    public boolean getBoolean(Object o) { checkAccess(); return getBoolNative(o, this.rtti, this.index) != 0; }
+    public void setBoolean(Object o, boolean v) { checkAccess(); setBoolNative(o, this.rtti, this.index, v ? 1 : 0); }
+    public float32 getFloat32(Object o) { checkAccess(); return getF32(o, this.rtti, this.index); }
+    public void setFloat32(Object o, float32 v) { checkAccess(); setF32(o, this.rtti, this.index, v); }
+    public float64 getFloat64(Object o) { checkAccess(); return getF64(o, this.rtti, this.index); }
+    public void setFloat64(Object o, float64 v) { checkAccess(); setF64(o, this.rtti, this.index, v); }
 }

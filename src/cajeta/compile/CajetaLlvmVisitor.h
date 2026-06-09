@@ -292,6 +292,15 @@ namespace cajeta {
                 }
             }
 
+            // REFL-3.3 (decision D1): `@Sealed` bars reflective access to the
+            // class's private members. Record it as the SEALED class modifier
+            // so it both (a) rides into the RTTI header's modifiers word the
+            // reflect API reads, and (b) is visible to the invoke/newInstance
+            // adapter codegen, which omits private cases for a sealed class.
+            if (structure->findAnnotation("Sealed")) {
+                structure->addModifier(REFLECT_SEALED);
+            }
+
             pModule->getStructureStack().push_back(structure);
             // Aspect registration (AspectModel.md § A2). A class
             // annotated `@Aspect` joins the process-global aspect

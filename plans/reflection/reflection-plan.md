@@ -113,8 +113,23 @@ methods/ctors use synthesized switch-over-index adapters reached through `#Rtti`
       object model: `Class.getField(idx) -> #Field`; `Field.getInt32/setInt32/...`.
       (`__cajeta_field_get_ref` native exists but the reference getter isn't
       surfaced yet — borrow-return-multi-param needs the receiver form.)
-- [ ] REFL-3.3 Visibility enforcement (throws on `private` when `@Sealed`,
-      decision D1) — TODO; today access is unchecked, caller must match the type.
+- [x] REFL-3.3 Visibility enforcement (shipped 2026-06-09, decision D1):
+      reflection is DEFAULT-OPEN; a class-level `@Sealed` annotation bars
+      reflective access to its PRIVATE members only. `@Sealed` is recorded as the
+      synthesized `REFLECT_SEALED` (0x100) class modifier (derived from the
+      annotation in visitClassDeclaration — NOT the Java `sealed` keyword), so it
+      rides into the RTTI header `modifiers` word for free. Enforcement is twofold:
+      (a) the synthesized invoke/newInstance adapters OMIT private cases for a
+      sealed class (compile-time hardening); (b) the reflect API (Field/Method/
+      Constructor + the `Class` index-form accessors) calls a `*_blocked` native
+      (`__cajeta_reflect_field/method/ctor_blocked` = class sealed && member
+      private) and throws `cajeta.reflect.IllegalAccessException` (new,
+      RecoverableException) before touching the member — so callers distinguish
+      "sealed off" from "no such member". Verified (6 tests): private field/method/
+      ctor all throw (object + `Class` index forms), public field of a sealed class
+      stays readable, and a private field of a NON-sealed class is readable
+      (default-open). Public/protected members and non-private access are
+      unaffected.
 - [x] **float/double field accessors** (shipped 2026-06-09): `getFloat32/setFloat32/
       getFloat64/setFloat64(o[, idx], v)` on both `Class` (index form) and `Field`
       (object form), backed by natives `__cajeta_field_get/set_f32/f64` (same
