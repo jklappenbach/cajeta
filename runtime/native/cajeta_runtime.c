@@ -4060,6 +4060,50 @@ void __cajeta_rtti_param_type_into(void* rtti, int32_t isCtor, int32_t mIdx, int
     cajeta_copy_into(p ? p->type : "", out);
 }
 
+// REFL-4.1 (boxing, plan W5): classify a method's return type into a compact
+// kind so Method.invokeBoxed can pick the right wrapper / invoke path without
+// re-parsing the type string in cajeta. The kinds the W1 wrapper family boxes
+// exactly map to their own value; OTHER is a primitive with no W1 wrapper yet
+// (int8/16/128, unsigned, char, ML floats, raw pointer) — invokeBoxed throws
+// for those until W2-W4 land. A non-primitive return is REFERENCE (boxed via
+// the existing invokeObject path). Keep these constants in sync with the
+// REFLECT_KIND_* mirror in Method.cajeta.
+#define CAJETA_RK_VOID       0
+#define CAJETA_RK_BOOLEAN    1
+#define CAJETA_RK_INT32      2
+#define CAJETA_RK_INT64      3
+#define CAJETA_RK_FLOAT32    4
+#define CAJETA_RK_FLOAT64    5
+#define CAJETA_RK_REFERENCE  6
+#define CAJETA_RK_OTHER      7
+static int32_t cajeta_return_kind(const char* t) {
+    if (!t) return CAJETA_RK_REFERENCE;
+    if (!strcmp(t, "void"))    return CAJETA_RK_VOID;
+    if (!strcmp(t, "boolean")) return CAJETA_RK_BOOLEAN;
+    if (!strcmp(t, "int32"))   return CAJETA_RK_INT32;
+    if (!strcmp(t, "int64"))   return CAJETA_RK_INT64;
+    if (!strcmp(t, "float32")) return CAJETA_RK_FLOAT32;
+    if (!strcmp(t, "float64")) return CAJETA_RK_FLOAT64;
+    // Known primitives without a W1 wrapper — not boxable yet (honest about it
+    // rather than widening and lying about the boxed type's identity).
+    if (!strcmp(t, "int8")    || !strcmp(t, "int16")   || !strcmp(t, "int128")  ||
+        !strcmp(t, "uint8")   || !strcmp(t, "uint16")  || !strcmp(t, "uint32")  ||
+        !strcmp(t, "uint64")  || !strcmp(t, "uint128") || !strcmp(t, "uchar")   ||
+        !strcmp(t, "char")    || !strcmp(t, "float16") || !strcmp(t, "bfloat16")||
+        !strcmp(t, "float128")|| !strcmp(t, "pointer") ||
+        !strcmp(t, "float4e2m1")     || !strcmp(t, "float6e2m3")     ||
+        !strcmp(t, "float6e3m2")     || !strcmp(t, "float8e4m3")     ||
+        !strcmp(t, "float8e5m2")     || !strcmp(t, "float8e4m3fnuz") ||
+        !strcmp(t, "float8e5m2fnuz")) return CAJETA_RK_OTHER;
+    return CAJETA_RK_REFERENCE;
+}
+int32_t __cajeta_rtti_method_return_kind(void* rtti, int32_t idx) {
+    if (!rtti) return CAJETA_RK_REFERENCE;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return CAJETA_RK_REFERENCE;
+    return cajeta_return_kind(r->methods[idx].returnType);
+}
+
 // REFL-2C constructor introspection + reflective construction.
 int32_t __cajeta_rtti_constructor_count(void* rtti) {
     return rtti ? (int32_t) ((CajetaRtti*) rtti)->constructorCount : 0;

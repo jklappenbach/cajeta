@@ -2,6 +2,11 @@ package cajeta.reflect;
 
 import cajeta.lang.Object;
 import cajeta.lang.String;
+import cajeta.lang.Boolean;
+import cajeta.lang.Int32;
+import cajeta.lang.Int64;
+import cajeta.lang.Float32;
+import cajeta.lang.Float64;
 
 /**
  * A declared method of a class (REFL-4). Reflective invocation routes through
@@ -39,6 +44,10 @@ public final class Method {
     // REFL-3.3 (D1): 1 if this method is private AND its class is @Sealed.
     @Native("__cajeta_reflect_method_blocked")
     private static int32 accessBlocked(pointer rtti, int32 idx);
+    // REFL-4.1 boxing (W5): the method's return-type kind. Mirrors the
+    // CAJETA_RK_* constants in cajeta_runtime.c.
+    @Native("__cajeta_rtti_method_return_kind")
+    private static int32 returnKind(pointer rtti, int32 idx);
 
     public Method(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -176,5 +185,57 @@ public final class Method {
     public #Object invokeObject(Object o, int64[] args) {
         checkAccess();
         return invokeObj(o, this.index, args);
+    }
+
+    /**
+     * REFL-4.1 boxing (plan W5). Invoke this method and hand back the result as
+     * a uniform owned `#Object`, regardless of the return type — the operation
+     * generic, type-erased reflection consumers (serializers, DI containers,
+     * inspectors) need when they hold members whose types they don't know.
+     *
+     * A primitive return is boxed into its `cajeta.lang` wrapper
+     * (`int32`→`Int32`, `float64`→`Float64`, `boolean`→`Boolean`, …); a
+     * reference return passes through `invokeObject` (ownership follows the
+     * method's signature — see that method's caveat); a `void` method returns
+     * `null` after running for its side effects. A primitive without a wrapper
+     * yet (int8/16/128, the unsigned ints, `char`, half/quad/ML floats — plan
+     * W2-W4) raises `UnsupportedReflectionException` rather than widening (which
+     * would misreport the boxed type) — catch it and fall back to the typed
+     * invoke surface for that member.
+     *
+     * Note FP returns route through the FP-register natives (`invokeF32/F64`),
+     * not the int64 scalar path, so the value crosses correctly.
+     */
+    public #Object invokeBoxed(Object o) { return invokeBoxedImpl(o, null); }
+    public #Object invokeBoxed(Object o, int64[] args) { return invokeBoxedImpl(o, args); }
+
+    private #Object invokeBoxedImpl(Object o, int64[] args) {
+        checkAccess();
+        int32 kind = returnKind(this.rtti, this.index);
+        if (kind == 0) {                                   // void
+            invokeN(o, this.index, args);                  // run for side effects
+            return null;
+        }
+        if (kind == 1) {                                   // boolean
+            return Boolean.of(invokeN(o, this.index, args) != 0L);
+        }
+        if (kind == 2) {                                   // int32
+            return Int32.of((int32) invokeN(o, this.index, args));
+        }
+        if (kind == 3) {                                   // int64
+            return Int64.of(invokeN(o, this.index, args));
+        }
+        if (kind == 4) {                                   // float32
+            return Float32.of(invokeF32(o, this.index, args));
+        }
+        if (kind == 5) {                                   // float64
+            return Float64.of(invokeF64(o, this.index, args));
+        }
+        if (kind == 6) {                                   // reference
+            return invokeObj(o, this.index, args);
+        }
+        // kind == 7: a primitive with no W1 wrapper (W2-W4 pending).
+        throw heap UnsupportedReflectionException(
+            "invokeBoxed: this primitive return type has no wrapper yet (plan W2-W4)");
     }
 }

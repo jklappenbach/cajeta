@@ -683,3 +683,154 @@ TEST(ReflectionTests, invokeObjectReturnsReference) {
         "    }\n"
         "}\n"), 42);
 }
+
+// REFL-4.1 boxing (W5): invokeBoxed hands back the right cajeta.lang wrapper for
+// each primitive return, read back through the wrapper's field-0 value via the
+// matching typed accessor. base=100: asI(5)->Int32(105), asD->Float64(2.5),
+// asB->Boolean(true). Three distinct param counts keep the scan off the
+// inherited 0-param methods (hash/toString/clone). ok reaches 3.
+TEST(ReflectionTests, invokeBoxedPrimitiveReturns) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class Producer {\n"
+        "    public int32 base;\n"
+        "    public Producer() { return; }\n"
+        "    public int32 asI(int32 x) { return this.base + x; }\n"
+        "    public float64 asD(int32 x, int32 y) { return 2.5; }\n"
+        "    public boolean asB(int32 a, int32 b, int32 c) { return true; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Producer p = heap Producer();\n"
+        "        Class c = Class.of(p);\n"
+        "        c.setInt32(p, 0, 100);\n"
+        "        int32 ok = 0;\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getMethodCount();\n"
+        "        while (i < n) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            int32 pc = m.getParameterCount();\n"
+        "            if (pc == 1) {\n"
+        "                int64[] a = heap int64[1];\n"
+        "                a[0] = (int64) 5;\n"
+        "                Object o = m.invokeBoxed(p, a);\n"
+        "                if (Class.of(o).getInt32(o, 0) == 105) { ok = ok + 1; }\n"
+        "            }\n"
+        "            if (pc == 2) {\n"
+        "                int64[] a = heap int64[2];\n"
+        "                a[0] = (int64) 1;\n"
+        "                a[1] = (int64) 2;\n"
+        "                Object o = m.invokeBoxed(p, a);\n"
+        "                if (Class.of(o).getFloat64(o, 0) == 2.5) { ok = ok + 1; }\n"
+        "            }\n"
+        "            if (pc == 3) {\n"
+        "                int64[] a = heap int64[3];\n"
+        "                a[0] = (int64) 1;\n"
+        "                a[1] = (int64) 2;\n"
+        "                a[2] = (int64) 3;\n"
+        "                Object o = m.invokeBoxed(p, a);\n"
+        "                if (Class.of(o).getBoolean(o, 0)) { ok = ok + 1; }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ok;\n"
+        "    }\n"
+        "}\n"), 3);
+}
+
+// REFL-4.1 boxing: a reference return passes through invokeObject (the boxed
+// #Object IS the returned instance), and a void method boxes to null while still
+// running its side effect.
+TEST(ReflectionTests, invokeBoxedReferenceAndVoid) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class Cell {\n"
+        "    public int32 v;\n"
+        "    public Cell(int32 x) { this.v = x; return; }\n"
+        "}\n"
+        "public class Maker {\n"
+        "    public int32 tag;\n"
+        "    public Maker() { return; }\n"
+        "    public #Cell mk(int32 x) { return heap Cell(x); }\n"          // 1 param: reference
+        "    public void stamp(int32 a, int32 b) { this.tag = a + b; return; }\n" // 2 params: void
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Maker p = heap Maker();\n"
+        "        Class c = Class.of(p);\n"
+        "        int32 ok = 0;\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getMethodCount();\n"
+        "        while (i < n) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            int32 pc = m.getParameterCount();\n"
+        "            if (pc == 1) {\n"
+        "                int64[] a = heap int64[1];\n"
+        "                a[0] = (int64) 42;\n"
+        "                Object o = m.invokeBoxed(p, a);\n"
+        "                if (o == null) { return -1; }\n"
+        "                if (Class.of(o).getInt32(o, 0) == 42) { ok = ok + 1; }\n"
+        "            }\n"
+        "            if (pc == 2) {\n"
+        "                int64[] a = heap int64[2];\n"
+        "                a[0] = (int64) 3;\n"
+        "                a[1] = (int64) 4;\n"
+        "                Object o = m.invokeBoxed(p, a);\n"
+        "                if (o == null) {\n"                                // void -> null
+        "                    if (c.getInt32(p, 0) == 7) { ok = ok + 1; }\n" // side effect ran
+        "                }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ok;\n"
+        "    }\n"
+        "}\n"), 2);
+}
+
+// REFL-4.1 boxing: a primitive with no W1 wrapper (int8) raises
+// UnsupportedReflectionException rather than widening or returning null. The
+// method takes 4 params so the scan ignores the inherited 0-param methods.
+TEST(ReflectionTests, invokeBoxedUnsupportedThrows) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "import cajeta.reflect.UnsupportedReflectionException;\n"
+        "public class Narrow {\n"
+        "    public Narrow() { return; }\n"
+        "    public int8 small(int32 a, int32 b, int32 c, int32 d) { return 5; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Narrow p = heap Narrow();\n"
+        "        Class c = Class.of(p);\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getMethodCount();\n"
+        "        while (i < n) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            if (m.getParameterCount() == 4) {\n"
+        "                int64[] a = heap int64[4];\n"
+        "                a[0] = (int64) 1;\n"
+        "                a[1] = (int64) 2;\n"
+        "                a[2] = (int64) 3;\n"
+        "                a[3] = (int64) 4;\n"
+        "                try {\n"
+        "                    Object o = m.invokeBoxed(p, a);\n"
+        "                    return 0;\n"                                   // should not reach
+        "                } catch (UnsupportedReflectionException e) {\n"
+        "                    return 1;\n"
+        "                }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return -1;\n"
+        "    }\n"
+        "}\n"), 1);
+}

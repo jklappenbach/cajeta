@@ -157,11 +157,15 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       returning a borrow must not be reflected this way — documented on
       `Method.invokeObject`). Verified: invokeObjectReturnsReference (reflective
       `make()` → real Cell, field reads 42). Primitive boxing into a wrapper
-      Object: designed — see `plans/lang/wrapper-types-plan.md` (Phase W5 is the
-      `invokeBoxed`/`getBoxed` wiring; W1–W4 build the wrapper family it needs,
-      which doesn't exist yet). The one new compiler/runtime surface boxing
-      needs is a method-return-type-kind RTTI native; field boxing reuses the
-      REFL-2A `typeFlags`.
+      Object: `Method.invokeBoxed` SHIPPED 2026-06-09 — boxes primitive returns
+      into the `cajeta.lang` W1 wrappers (Int32/Int64/Float32/Float64/Boolean),
+      reference→`invokeObject`, void→null, unsupported primitive→
+      `UnsupportedReflectionException`. Uses the existing
+      `CajetaMethodDesc.returnType` string via new native
+      `__cajeta_rtti_method_return_kind` (no compiler change). Wrapper family +
+      design: `plans/lang/wrapper-types-plan.md` (W1 shipped; W2-W4 = remaining
+      wrappers; W5b = `Field.getBoxed`/`Class.getBoxed`, field type via REFL-2A
+      `typeFlags`).
 - [x] REFL-4.2 `Constructor.heapInstance` — `heapInstance()` / `heapInstance(int64[] args)`
       (renamed 2026-06-09 from `newInstance` — allocation site is now explicit;
       `stackInstance`/unsafe-placement reserved in the same namespace)
