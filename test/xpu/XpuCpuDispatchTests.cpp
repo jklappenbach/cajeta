@@ -1052,6 +1052,57 @@ static const char* kTwoSamplersSrcCpu() {
     return s.c_str();
 }
 
+// B3: mipmaps. A 2-level R32F texture — level 0 = 2x2 {0,1,2,3}, level 1 = 1x1
+// {99}. fetchLod reads the exact texel of a chosen level; sampleLod filters at an
+// explicit level. Confirms per-level upload + the LOD-threaded fetch/sample.
+static const char* kMipSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class MipCpu {\n"
+        "    @Kernel\n"
+        "    public static void mip(Texture2D tex, Sampler sl, Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < 1) {\n"
+        "            Vector<float32,4> a = tex.fetchLod(1, 1, 0);\n"   // L0 texel (1,1) = 3
+        "            Vector<float32,4> b = tex.fetchLod(0, 0, 1);\n"   // L1 texel (0,0) = 99
+        "            Vector<float32,4> c = tex.sampleLod(sl, 0.5f, 0.5f, 1.0f);\n" // L1 -> 99
+        "            out[0] = a.x; out[1] = b.x; out[2] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2;\n"
+        "        Texture2D tex = heap Texture2D(w, h, TextureFormat.R32F, 2);\n"
+        "        float32[] l0 = heap float32[4];\n"
+        "        l0[0] = 0.0f; l0[1] = 1.0f; l0[2] = 2.0f; l0[3] = 3.0f;\n"
+        "        float32[] l1 = heap float32[1]; l1[0] = 99.0f;\n"
+        "        tex.uploadLevel(0, l0);\n"
+        "        tex.uploadLevel(1, l1);\n"
+        "        Sampler sl = heap Sampler(1, 0);\n"   // linear, clamp
+        "        float32[] hout = heap float32[3];\n"
+        "        for (uint32 i = 0; i < 3; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(3);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        mip.launch(s, grid: [1], block: [1])(tex, sl, out);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        if (hout[0] != 3.0f) { return (int32)(100); }\n"   // L0 fetch
+        "        if (hout[1] != 99.0f) { return (int32)(200); }\n"  // L1 fetch
+        "        float32 dc = hout[2] - 99.0f;\n"
+        "        if (dc < -0.02f || dc > 0.02f) { return (int32)(300); }\n"  // L1 sample
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -1297,6 +1348,17 @@ TEST(XpuCpuDispatchTests, texture3dSampleOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: trilinear midpoint)";
+}
+
+// B3: mipmaps on CPU — fetchLod reads a chosen mip level exactly (L0=3, L1=99),
+// sampleLod filters at an explicit level. Per-level upload + LOD threading.
+TEST(XpuCpuDispatchTests, mipmapFetchAndSampleLodOnCpu) {
+    auto jit = CajetaJit::compile(kMipSrcCpu(), "test.MipCpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100: L0 fetch; 200: L1 fetch; 300: L1 sample)";
 }
 
 // B3: two Sampler params in one kernel both bind + work (nearest vs linear on the

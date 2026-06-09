@@ -304,7 +304,8 @@ public:
     // <4 x float> gather (Texture2D's texel is a scalar float in v1). (Stage B.)
     llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* texHandle, llvm::Value* samplerHandle,
-                               llvm::Value* u, llvm::Value* v) override {
+                               llvm::Value* u, llvm::Value* v,
+                               llvm::Value* lod) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
@@ -314,7 +315,7 @@ public:
         llvm::Value* coord = llvm::PoisonValue::get(v2f);
         coord = b.CreateInsertElement(coord, u, uint64_t(0));
         coord = b.CreateInsertElement(coord, v, uint64_t(1), "tex.coord");
-        llvm::Value* lod = llvm::ConstantFP::get(f32, 0.0);
+        // Explicit LOD (0.0 for plain sample; the user's value for sampleLod).
         llvm::Value* offset = llvm::ConstantAggregateZero::get(v2i);
         // CreateIntrinsic infers the (result, image, sampler, coord, offset)
         // overloads from the operand types, exactly as clang's HLSL SampleLevel.
@@ -337,7 +338,8 @@ public:
     // <4 x float> texel directly (Texture2D.fetch is typed Vector<float32,4>).
     llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                               llvm::Value* texHandle, llvm::Value* x,
-                              llvm::Value* y, llvm::Type* texelTy) override {
+                              llvm::Value* y, llvm::Type* texelTy,
+                              llvm::Value* lod) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         auto* v2i = llvm::FixedVectorType::get(i32, 2);
@@ -349,10 +351,8 @@ public:
         llvm::Value* coord = llvm::PoisonValue::get(v2i);
         coord = b.CreateInsertElement(coord, x, uint64_t(0));
         coord = b.CreateInsertElement(coord, y, uint64_t(1), "tex.fetch.coord");
-        llvm::Value* lod = llvm::ConstantInt::get(i32, 0);
-        // CreateIntrinsic infers the (result, image, coord, lod) overloads from
-        // the operand types (the same overload-inference the samplelevel path
-        // relies on).
+        // Explicit mip LOD (0 for plain fetch; the user value for fetchLod) — the
+        // mandatory OpImageFetch Lod operand load.level supplies.
         return b.CreateIntrinsic(v4t, llvm::Intrinsic::spv_resource_load_level,
                                  {texHandle, coord, lod}, nullptr, "tex.fetch");
     }

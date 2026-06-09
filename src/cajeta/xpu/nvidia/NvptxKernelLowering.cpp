@@ -155,7 +155,7 @@ public:
     llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* texHandle,
                                llvm::Value* /*samplerHandle*/, llvm::Value* u,
-                               llvm::Value* v) override {
+                               llvm::Value* v, llvm::Value* /*lod*/) override {
         llvm::Function* tex = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_tex_unified_2d_v4f32_f32);
         llvm::Value* rgba = b.CreateCall(tex, {texHandle, u, v}, "tex.rgba");

@@ -8671,13 +8671,19 @@ static int64_t cajeta_xpu_hip_make_texobj(int64_t texHandle, int32_t filterMode,
 // __cajeta_xpu_cpu_tex_sample, which does the addressing + filtering the GPU
 // texture unit would. On Vulkan/AMD the handle is a device image / hipArray
 // record and the kernel samples it through the native image path.
+#define CAJ_MAX_MIP 16
 struct cajeta_cpu_texobj {
-    float*   data;     // row-major w*h*d*channels DECODED float texels (owned)
-    uint32_t w;
-    uint32_t h;
+    float*   data;     // row-major DECODED float texels (owned). Level 0 starts at
+                       // offset 0 (mipoff[0]=0), so non-mip code reads t->data
+                       // directly; mip levels follow at mipoff[l].
+    uint32_t w;        // level-0 width
+    uint32_t h;        // level-0 height
     uint32_t d;        // depth: 1 for a 2-D texture, >=1 for a 3-D volume
     int32_t  format;   // TextureFormat ordinal
     int      channels; // 1 (R) or 4 (RGBA)
+    int      levels;   // mip level count (1 = no mipmaps)
+    size_t   mipoff[CAJ_MAX_MIP];  // element offset (in floats) of each mip level
+    uint32_t mipw[CAJ_MAX_MIP], miph[CAJ_MAX_MIP];  // per-level dims
 };
 
 // __cajeta_xpu_texture_alloc(this, width, height) -> int64 handle.
@@ -8698,6 +8704,8 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
             t->d = 1;            // 2-D texture: single depth slice
             t->format = format;
             t->channels = channels;
+            t->levels = 1;       // no mipmaps; level 0 at offset 0
+            t->mipoff[0] = 0; t->mipw[0] = width; t->miph[0] = height;
             // CPU stores DECODED channel-interleaved floats (channels per texel);
             // UNORM precision is emulated at upload, so the sampler is float-only.
             t->data = (float*) calloc((size_t) width * height * channels,
@@ -8772,6 +8780,74 @@ void __cajeta_xpu_texture_free(void* self, int64_t handle) {
     }
 }
 
+// --- Mipmapped Texture2D ----------------------------------------------------
+// A mip chain: level 0 = w x h, level L = max(1, w>>L) x max(1, h>>L). The CPU
+// stores all levels in one buffer with per-level offsets (level 0 at offset 0, so
+// the non-mip read path is unchanged). Vulkan/HIP mip paths land in later
+// increments (default = 1-level fallback so the drop chain still works).
+
+// __cajeta_xpu_texture_alloc_mip(this, w, h, format, levels) -> handle.
+int64_t __cajeta_xpu_texture_alloc_mip(void* self, uint32_t width, uint32_t height,
+                                       int32_t format, uint32_t levels) {
+    (void) self;
+    if (width == 0 || height == 0 || levels == 0) return 0;
+    if (levels > CAJ_MAX_MIP) levels = CAJ_MAX_MIP;
+    int channels = cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) malloc(sizeof(*t));
+            if (!t) return 0;
+            t->w = width; t->h = height; t->d = 1;
+            t->format = format; t->channels = channels;
+            t->levels = (int) levels;
+            // Lay the mip levels out back-to-back; record each offset + dims.
+            size_t off = 0;
+            for (uint32_t l = 0; l < levels; ++l) {
+                uint32_t lw = width >> l;  if (lw == 0) lw = 1;
+                uint32_t lh = height >> l; if (lh == 0) lh = 1;
+                t->mipoff[l] = off;
+                t->mipw[l] = lw; t->miph[l] = lh;
+                off += (size_t) lw * lh * channels;
+            }
+            t->data = (float*) calloc(off, sizeof(float));
+            if (!t->data) { free(t); return 0; }
+            return (int64_t) (intptr_t) t;
+        }
+        // Vulkan / HIP mipmapped image paths land in later increments.
+        default: return 0;
+    }
+}
+
+// __cajeta_xpu_texture_upload_level(this, handle, host, lw, lh, level, format).
+void __cajeta_xpu_texture_upload_level(void* self, int64_t handle, void* host,
+                                       uint32_t lw, uint32_t lh, uint32_t level,
+                                       int32_t format) {
+    (void) self;
+    if (!handle || !host || lw == 0 || lh == 0) return;
+    const float* src = (const float*) ((const char*) host + 8);
+    size_t texels = (size_t) lw * lh * cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            if (!t->data || (int) level >= t->levels) return;
+            float* dst = t->data + t->mipoff[level];
+            if (cajeta_texfmt_is_unorm(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    dst[i] = (float) cajeta_texfmt_unorm8(src[i]) / 255.0f;
+            } else if (cajeta_texfmt_is_half(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    dst[i] = cajeta_f16_to_f32(cajeta_f32_to_f16(src[i]));
+            } else {
+                memcpy(dst, src, texels * sizeof(float));
+            }
+            return;
+        }
+        default: return;
+    }
+}
+
 // --- Texture3D (3-D / volumetric textures) ----------------------------------
 // The volumetric sibling of Texture2D. Distinct __cajeta_xpu_texture3d_* symbols
 // because the 2-D vs 3-D image type (VK_IMAGE_TYPE_3D, hipMalloc3DArray) is fixed
@@ -8795,6 +8871,8 @@ int64_t __cajeta_xpu_texture3d_alloc(void* self, uint32_t width, uint32_t height
             t->d = depth;
             t->format = format;
             t->channels = channels;
+            t->levels = 1;
+            t->mipoff[0] = 0; t->mipw[0] = width; t->miph[0] = height;
             t->data = (float*) calloc(
                 (size_t) width * height * depth * channels, sizeof(float));
             if (!t->data) { free(t); return 0; }
@@ -8952,35 +9030,46 @@ static inline int cajeta_tex_addr(int c, int n, int32_t addressMode) {
 // returning `<4 x float>` and use the result as a Vector<float32,4> directly.
 typedef float caj_v4f __attribute__((vector_size(16)));
 
-// Fetch texel (x,y) as RGBA from the DECODED float store: read `channels` stored
-// floats; missing channels default to G/B = 0, A = 1 (the GPU R/RG-format
-// expansion). (x,y) are already addressed (in-bounds).
-static inline caj_v4f cajeta_cpu_texel(const struct cajeta_cpu_texobj* t,
-                                       int x, int y) {
-    const float* p = t->data + ((size_t) y * t->w + (size_t) x) * t->channels;
+// Clamp a requested mip level into [0, levels-1].
+static inline int cajeta_cpu_lod(const struct cajeta_cpu_texobj* t, int lod) {
+    if (lod < 0) return 0;
+    if (lod >= t->levels) return t->levels - 1;
+    return lod;
+}
+
+// Fetch texel (x,y) of mip level `lod` as RGBA from the DECODED float store: read
+// `channels` floats from that level's sub-buffer (offset mipoff[lod], width
+// mipw[lod]); missing channels default G/B = 0, A = 1. (x,y) are already addressed
+// (in-bounds). Level 0 has mipoff 0, so non-mip reads are unchanged.
+static inline caj_v4f cajeta_cpu_texel_lod(const struct cajeta_cpu_texobj* t,
+                                           int x, int y, int lod) {
+    size_t lw = t->mipw[lod];
+    const float* p = t->data + t->mipoff[lod] +
+                     ((size_t) y * lw + (size_t) x) * t->channels;
     caj_v4f c = { 0.0f, 0.0f, 0.0f, 1.0f };
     for (int i = 0; i < t->channels; ++i) c[i] = p[i];
     return c;
 }
 
-// CPU texture sampler — the lowering of `tex.sample(sampler, u, v)`, returning
-// the filtered RGBA texel. (u, v) are normalized coords in [0, 1]; filterMode
-// 0 = nearest, 1 = bilinear; addressMode 0 = clamp, 1 = wrap. Bilinear uses the
-// texel-center convention (coord = u*W - 0.5) matching GPU texture units.
-// Out-of-range texels are resolved by the addressing mode, so the gather is
-// always in-bounds. Works for any channel count (G/B/A default per channel).
+// CPU texture sampler — the lowering of `tex.sample(sampler, u, v)` (lod 0) and
+// `tex.sampleLod(sampler, u, v, lod)`. (u, v) normalized in [0, 1]; filterMode
+// 0 = nearest / 1 = bilinear; addressMode 0 = clamp / 1 = wrap. `lod` selects the
+// mip level (CPU v1: nearest mip = floor(lod), clamped; fractional cross-level
+// blend is a refinement). The bilinear gather uses the chosen level's dims.
 caj_v4f __cajeta_xpu_cpu_tex_sample_rgba(void* texp, int32_t filterMode,
-                                         int32_t addressMode, float u, float v) {
+                                         int32_t addressMode, float u, float v,
+                                         float lod) {
     struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
     caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
     if (!t || !t->data || t->w == 0 || t->h == 0) return zero;
-    int W = (int) t->w, H = (int) t->h;
+    int L = cajeta_cpu_lod(t, (int) floorf(lod));
+    int W = (int) t->mipw[L], H = (int) t->miph[L];
     if (filterMode == 0) {                   // nearest
         int x = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
         int y = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
-        return cajeta_cpu_texel(t, x, y);
+        return cajeta_cpu_texel_lod(t, x, y, L);
     }
-    // bilinear (texel-center) — blend four RGBA texels
+    // bilinear (texel-center) — blend four RGBA texels of level L
     float fx = u * (float) W - 0.5f;
     float fy = v * (float) H - 0.5f;
     int x0 = (int) floorf(fx), y0 = (int) floorf(fy);
@@ -8989,49 +9078,43 @@ caj_v4f __cajeta_xpu_cpu_tex_sample_rgba(void* texp, int32_t filterMode,
     int cx1 = cajeta_tex_addr(x0 + 1, W, addressMode);
     int cy0 = cajeta_tex_addr(y0,     H, addressMode);
     int cy1 = cajeta_tex_addr(y0 + 1, H, addressMode);
-    caj_v4f t00 = cajeta_cpu_texel(t, cx0, cy0);
-    caj_v4f t10 = cajeta_cpu_texel(t, cx1, cy0);
-    caj_v4f t01 = cajeta_cpu_texel(t, cx0, cy1);
-    caj_v4f t11 = cajeta_cpu_texel(t, cx1, cy1);
+    caj_v4f t00 = cajeta_cpu_texel_lod(t, cx0, cy0, L);
+    caj_v4f t10 = cajeta_cpu_texel_lod(t, cx1, cy0, L);
+    caj_v4f t01 = cajeta_cpu_texel_lod(t, cx0, cy1, L);
+    caj_v4f t11 = cajeta_cpu_texel_lod(t, cx1, cy1, L);
     caj_v4f a = t00 + (t10 - t00) * dx;
     caj_v4f b = t01 + (t11 - t01) * dx;
     return a + (b - a) * dy;
 }
 
-// CPU texelFetch — the lowering of `tex.fetch(x, y)`: the unfiltered, sampler-
-// free read of the exact texel at integer coordinate (x, y), mip 0. No
-// addressing mode (the caller guarantees in bounds); coords are clamped here
-// only as a defensive guard so an out-of-range index can never read out of the
-// allocation. Returns the decoded RGBA texel (G/B = 0, A = 1 for <4 channels) —
-// the same convention sampleTexture's gather uses.
-caj_v4f __cajeta_xpu_cpu_tex_fetch_rgba(void* texp, int32_t x, int32_t y) {
+// CPU texelFetch — `tex.fetch(x, y)` (lod 0) / `tex.fetchLod(x, y, lod)`: the
+// unfiltered, sampler-free read of the exact texel at integer (x, y) in mip level
+// `lod`. Coords clamped to the level's dims defensively. G/B = 0, A = 1 for <4 ch.
+caj_v4f __cajeta_xpu_cpu_tex_fetch_rgba(void* texp, int32_t x, int32_t y,
+                                        int32_t lod) {
     struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
     caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
     if (!t || !t->data || t->w == 0 || t->h == 0) return zero;
-    int W = (int) t->w, H = (int) t->h;
+    int L = cajeta_cpu_lod(t, lod);
+    int W = (int) t->mipw[L], H = (int) t->miph[L];
     int cx = x < 0 ? 0 : (x >= W ? W - 1 : x);
     int cy = y < 0 ? 0 : (y >= H ? H - 1 : y);
-    return cajeta_cpu_texel(t, cx, cy);
+    return cajeta_cpu_texel_lod(t, cx, cy, L);
 }
 
-// Integer texelFetch — the lowering of `tex.fetch(x, y)` on an integer-format
-// Texture2D<int32|uint32> (raw R32I/RGBA32I/…). The CPU store holds the raw
-// 32-bit integer bits verbatim (the upload's memcpy branch copies them into the
-// float-typed t->data unchanged — 4 bytes/channel either way), so reinterpret
-// t->data as int32 and read directly. No decode/filter; missing channels default
-// G/B = 0, A = 1 — the GPU integer-texture channel expansion, matching the float
-// fetch's convention. Returns <4 x i32>; uint32 textures use the same bits (the
-// signedness is a Cajeta-type distinction, identical at the bit level).
+// Integer texelFetch — the int twin (raw 32-bit bits read as i32) at mip `lod`.
 typedef int32_t caj_v4i __attribute__((vector_size(16)));
-caj_v4i __cajeta_xpu_cpu_tex_fetch_rgba_i32(void* texp, int32_t x, int32_t y) {
+caj_v4i __cajeta_xpu_cpu_tex_fetch_rgba_i32(void* texp, int32_t x, int32_t y,
+                                            int32_t lod) {
     struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
     caj_v4i zero = { 0, 0, 0, 1 };
     if (!t || !t->data || t->w == 0 || t->h == 0) return zero;
-    int W = (int) t->w, H = (int) t->h;
+    int L = cajeta_cpu_lod(t, lod);
+    int W = (int) t->mipw[L], H = (int) t->miph[L];
     int cx = x < 0 ? 0 : (x >= W ? W - 1 : x);
     int cy = y < 0 ? 0 : (y >= H ? H - 1 : y);
-    const int32_t* p = (const int32_t*) t->data +
-                       ((size_t) cy * t->w + (size_t) cx) * t->channels;
+    const int32_t* p = (const int32_t*) t->data + t->mipoff[L] +
+                       ((size_t) cy * (size_t) W + (size_t) cx) * t->channels;
     caj_v4i c = { 0, 0, 0, 1 };
     for (int i = 0; i < t->channels; ++i) c[i] = p[i];
     return c;

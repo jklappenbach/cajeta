@@ -37,12 +37,14 @@ public final class Texture2D<T = float32> {
     uint32 width;
     uint32 height;
     int32 format;        // a TextureFormat ordinal; the native alloc/upload contract
+    uint32 levels;       // mip level count (1 = no mipmaps; the default)
 
     Texture2D(int64 deviceHandle, uint32 width, uint32 height) {
         this.deviceHandle = deviceHandle;
         this.width = width;
         this.height = height;
         this.format = 0;     // TextureFormat.R32F
+        this.levels = 1;
     }
 
     /**
@@ -60,6 +62,7 @@ public final class Texture2D<T = float32> {
         this.width = width;
         this.height = height;
         this.format = 0;     // TextureFormat.R32F
+        this.levels = 1;
         this.deviceHandle = this.deviceAlloc(width, height, 0);
     }
 
@@ -72,7 +75,25 @@ public final class Texture2D<T = float32> {
         this.width = width;
         this.height = height;
         this.format = format;
+        this.levels = 1;
         this.deviceHandle = this.deviceAlloc(width, height, format);
+    }
+
+    /**
+     * RAII constructor with explicit mip levels — a mipmapped texture. `levels`
+     * is the mip chain length (level 0 = `width`x`height`, level L =
+     * max(1, width>>L) x max(1, height>>L)). Upload each level with {@link
+     * #uploadLevel}; read a level with {@link #fetchLod} / {@link #sampleLod}.
+     *
+     *     Texture2D tex = heap Texture2D(w, h, TextureFormat.R32F, 3);
+     *     tex.uploadLevel(0, level0);  tex.uploadLevel(1, level1); ...
+     */
+    public Texture2D(uint32 width, uint32 height, int32 format, uint32 levels) {
+        this.width = width;
+        this.height = height;
+        this.format = format;
+        this.levels = levels;
+        this.deviceHandle = this.deviceAllocMip(width, height, format, levels);
     }
 
     /**
@@ -107,6 +128,17 @@ public final class Texture2D<T = float32> {
     public void upload(T[] host) {
         this.deviceUpload(this.deviceHandle, host, this.width, this.height,
                           this.format);
+    }
+
+    /**
+     * Host -> device transfer of one mip `level` (dims max(1, width>>level) x
+     * max(1, height>>level)), channel-interleaved `T` values. For a mipmapped
+     * texture (the 4-arg ctor); call once per level.
+     */
+    public void uploadLevel(uint32 level, T[] host) {
+        uint32 lw = this.width >> level;   if (lw == 0) { lw = 1; }
+        uint32 lh = this.height >> level;  if (lh == 0) { lh = 1; }
+        this.deviceUploadLevel(this.deviceHandle, host, lw, lh, level, this.format);
     }
 
     /**
@@ -155,15 +187,51 @@ public final class Texture2D<T = float32> {
         return result;
     }
 
+    /**
+     * Device-only intrinsic: explicit-LOD `texelFetch` — read the texel at the
+     * exact integer (x, y) in mip level `lod`, unfiltered and sampler-free. The
+     * mip-aware twin of {@link #fetch} (which is `lod` 0). (x, y) are in the
+     * level's own grid (max(1, width>>lod) x max(1, height>>lod)). Lowered to the
+     * backend image-fetch op with the LOD operand (Vulkan OpImageFetch + Lod, AMD
+     * __ockl_image_load_lod_2D, CPU per-level read). A resolution placeholder —
+     * never emitted as a real call.
+     */
+    public Vector<T, 4> fetchLod(uint32 x, uint32 y, uint32 lod) {
+        Vector<T, 4> result = stack Vector<T, 4>(0.0f, 0.0f, 0.0f, 0.0f);
+        return result;
+    }
+
+    /**
+     * Device-only intrinsic: explicit-LOD sample — filter at normalized (u, v)
+     * through `s` at the explicit mip level `lod` (fractional LODs blend two
+     * levels, trilinear). The mip-aware twin of {@link #sample} (which is `lod`
+     * 0). Lowered to the backend explicit-LOD image-sample op (Vulkan
+     * OpImageSampleExplicitLod with the given Lod, AMD __ockl_image_sample_lod_2D,
+     * CPU per-level filtered read). A resolution placeholder — never emitted.
+     * Float-only (like sample).
+     */
+    public Vector<T, 4> sampleLod(Sampler s, float32 u, float32 v, float32 lod) {
+        Vector<T, 4> result = stack Vector<T, 4>(0.0f, 0.0f, 0.0f, 0.0f);
+        return result;
+    }
+
     // Device-image primitives. Instance @Native methods (the Buffer convention):
     // pointer-shaped at the ABI boundary, so one C symbol per name serves the
     // type. The leading `this` the forwarder passes is ignored by the C side.
     @Native("__cajeta_xpu_texture_alloc")
     private int64 deviceAlloc(uint32 width, uint32 height, int32 format);
 
+    @Native("__cajeta_xpu_texture_alloc_mip")
+    private int64 deviceAllocMip(uint32 width, uint32 height, int32 format,
+                                uint32 levels);
+
     @Native("__cajeta_xpu_texture_upload")
     private void deviceUpload(int64 handle, T[] host, uint32 width, uint32 height,
                              int32 format);
+
+    @Native("__cajeta_xpu_texture_upload_level")
+    private void deviceUploadLevel(int64 handle, T[] host, uint32 width,
+                                  uint32 height, uint32 level, int32 format);
 
     @Native("__cajeta_xpu_texture_free")
     private void deviceFree(int64 handle);

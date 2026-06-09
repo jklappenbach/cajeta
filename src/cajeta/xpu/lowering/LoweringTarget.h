@@ -180,10 +180,12 @@ namespace xpu {
         // Default: unsupported (XPU-N01) — only backends with image sampling
         // override. Sampling at explicit LOD 0 (compute-valid; Vulkan requires
         // explicit LOD outside a fragment shader).
+        // `lod` is the explicit mip level (float): the plain `tex.sample` passes
+        // a constant 0.0; `tex.sampleLod(s, u, v, lod)` passes the user value.
         virtual llvm::Value* sampleTexture(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle,
-            llvm::Value* u, llvm::Value* v);
+            llvm::Value* u, llvm::Value* v, llvm::Value* lod);
 
         // Fetch (texelFetch) the 2-D texture `texHandle` at the EXACT integer
         // coordinate (x, y), mip level 0, unfiltered and WITHOUT a sampler,
@@ -203,10 +205,12 @@ namespace xpu {
         // raw for a non-normalized integer image); CPU via the exact texel read.
         // (NVPTX emit-deferred.) sampleTexture takes no texelTy — sampling is
         // float-only (integer textures are rejected at the call site).
+        // `lod` is the explicit mip level (i32): `tex.fetch` passes a constant 0;
+        // `tex.fetchLod(x, y, lod)` passes the user value.
         virtual llvm::Value* fetchTexture(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* x, llvm::Value* y,
-            llvm::Type* texelTy);
+            llvm::Type* texelTy, llvm::Value* lod);
 
         // Texture3D — the 3-D (volumetric) twins of sampleTexture/fetchTexture.
         // Same handle/contract, but a 3-component coordinate (u, v, w) / (x, y, z)
