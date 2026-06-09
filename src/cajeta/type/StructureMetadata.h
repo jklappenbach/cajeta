@@ -78,9 +78,9 @@ namespace cajeta {
         CajetaModulePtr module;
         llvm::Type* llvmInt16Type;
         llvm::Type* llvmInt8Type;
+        llvm::Type* llvmInt32Type;
+        llvm::Type* llvmInt64Type;
         llvm::Type* llvmPointerType;
-        llvm::StructType* llvmPropertiesType;
-        vector<llvm::StructType*> llvmParametersType;
         llvm::StructType* llvmRttiType;
 
     public:
@@ -93,7 +93,10 @@ namespace cajeta {
             this->module = module;
             llvmInt16Type = llvm::IntegerType::getInt16Ty(*module->getLlvmContext());
             llvmInt8Type = llvm::IntegerType::getInt8Ty(*module->getLlvmContext());
-            llvmPointerType = llvm::PointerType::getVoidTy(*module->getLlvmContext());
+            llvmInt32Type = llvm::IntegerType::getInt32Ty(*module->getLlvmContext());
+            llvmInt64Type = llvm::IntegerType::getInt64Ty(*module->getLlvmContext());
+            llvmPointerType = llvm::PointerType::get(*module->getLlvmContext(), 0);
+            llvmRttiType = nullptr;
         }
 
         /**
@@ -116,72 +119,43 @@ namespace cajeta {
 
     private:
 
+        // ---- Fixed-layout RTTI (REFL-1) -------------------------------------
+        //
+        // The emitted #RttiGlobal is a FIXED-offset header (same LLVM struct
+        // type for every class) whose variable-length data — the type name,
+        // the property/method/parameter descriptor tables, annotation and
+        // parent-name lists — live in separately-emitted private globals,
+        // referenced by pointer. This is what lets generic C natives in the
+        // runtime (`__cajeta_rtti_*`) walk the metadata without per-class
+        // offset knowledge. The C-side mirror structs (CajetaRtti / CajetaField
+        // / CajetaMethod / CajetaParameter in cajeta_runtime.c) must stay in
+        // lock-step with the struct shapes built here.
+        //
+        // Nothing read the old variable-length blob at runtime, so this layout
+        // change is safe (AspectModel reads the compiler's CajetaClass model,
+        // not the emitted global).
+
+        // emit a private, null-terminated C string global; returns i8* to it.
+        llvm::Constant* emitCString(const std::string& s);
+        // emit a private array of i8* (one per string); returns ptr to the
+        // array, or a null ptr constant when the list is empty.
+        llvm::Constant* emitCStringArray(const vector<std::string>& strings);
+        // OR the Modifier enum bits of a Modifiable into a packed int32.
+        int32_t packModifiers(const std::set<Modifier>& modifiers);
+
+        // Cached fixed descriptor struct types (built once, reused per class).
+        llvm::StructType* getParameterStructType();
+        llvm::StructType* getFieldStructType();
+        llvm::StructType* getMethodStructType();
+        llvm::StructType* getRttiStructType();
+
+        // Build the per-class descriptor-table globals; return ptr to the
+        // table (or null ptr constant when empty).
+        llvm::Constant* emitFieldTable(CajetaClassPtr structure);
+        llvm::Constant* emitMethodTable(CajetaClassPtr structure);
+        llvm::Constant* emitParameterTable(MethodPtr method);
+
         llvm::Type* createAnnotationType(CajetaClassPtr structure);
-        /**
-         * 1. Parameter Name (string, array)
-         * 2. Parameter Type (string, array)
-         * 3. Modifier Count (int16)
-         * 4. Modifiers (int16, array)
-         * 5. Annotation Count (int16)
-         * 6. Annotation Types (array of strings)
-         *
-         * @param module
-         */
-        llvm::Type* createPropertyType(CajetaClassPtr structure, StructurePropertyPtr property);
-
-        /**
-         *
-         * @param field
-         * @param module
-         * @return
-         */
-        llvm::Constant* createPropertyConstant(StructurePropertyPtr property, llvm::StructType* propertyType);
-
-        /**
-         * 1. Parameter Name (string, array)
-         * 2. Parameter Type (string, array)
-         * 3. Modifier Count (int8)
-         * 4. Modifiers (int8, array)
-         * 5. Annotation Count (int8)
-         * 6. Structure annotations (array of strings)
-         *
-         * @param module
-         */
-        llvm::StructType* createParameterType(FormalParameterPtr parameter);
-
-        /**
-         * 1. Parameter name
-         * 2. Type canonical
-         * 3. Modifier count
-         * 4. Array of modifiers
-         * 5. Annotation count
-         * 6. Structure of annotations
-         *
-         * @param parameter
-         * @return
-         */
-        llvm::Constant* createParameterConstant(FormalParameterPtr parameter, llvm::StructType* parameterType);
-
-        /**
-         * 1. name: String
-         * 2. returnType: Type
-         * 3. annotationCount: uint8
-         * 4. annotationInstances: AnnotationInstances[]
-         * 5. parameterCount: uint8
-         * 6. parameters: Parameter[]
-         *
-         * @param module
-         */
-        llvm::StructType* createMethodType(MethodPtr method);
-
-        /**
-         *
-         * @param method
-         * @param module
-         * @return
-         */
-        llvm::Constant* createMethodConstant(MethodPtr method, llvm::StructType* methodType);
-
 
         /**
          * TODO: Need to create a custom structure for the vtable for a given class, needs to use the FunctionType for each method

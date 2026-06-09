@@ -12,6 +12,8 @@
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/type/CajetaType.h"
+#include "cajeta/type/CajetaClass.h"
 #include "cajeta/compile/Optimizer.h"   // optimizeModule — runs AlwaysInlinerPass at O0
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
@@ -299,6 +301,16 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     for (auto& m : compiler->getModules()) {
         for (auto& [name, klass] : m->getStructures()) {
             if (klass) klass->generateStaticInitializers();
+        }
+    }
+
+    // REFL-2 — fill the reflective invoke-adapter bodies now that every
+    // method's LLVM function exists (mirrors Compiler::compile's AOT pass).
+    // Must run before the merge so each adapter lands in its class's own
+    // module alongside the methods it calls.
+    for (auto& [key, type] : cajeta::CajetaType::getCanonicalMap()) {
+        if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(type)) {
+            klass->emitReflectInvokeBody();
         }
     }
 

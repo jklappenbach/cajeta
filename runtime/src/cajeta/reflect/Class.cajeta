@@ -1,0 +1,195 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+
+/**
+ * Runtime representation of a class — the entry point to `cajeta.reflect`.
+ *
+ * Obtain one via `obj.getClass()` (the object's dynamic type) or `T.class`
+ * (a statically-known type). Each is a **borrow** of a process-lifetime
+ * cached instance — one `Class` per declared type, emitted by the compiler
+ * next to the type's RTTI (Reflection.md Strategy 7). The caller never frees
+ * it; assigning `Class c = obj.getClass();` registers no drop entry.
+ *
+ * REFL-1 surface: read-only introspection backed by the fixed-layout RTTI
+ * (`cajeta.reflect.#Rtti`) the compiler emits for every class. Reflective
+ * value access (Field.get/set, Method.invoke, Constructor.newInstance) lands
+ * in later phases.
+ *
+ * `Class` is `final` so its accessors dispatch statically — the cached
+ * instance's vtable slot is never consulted, which is what lets `T.class` /
+ * `getClass()` hand back a constant with a null vtable header safely.
+ */
+public final class Class {
+
+    // Address of this class's #RttiGlobal (a cajeta.reflect.#Rtti header).
+    // Initialized by the compiler in the cached #ClassObject constant
+    // { Class#VTable, rtti } — never mutated at runtime.
+    pointer rtti;
+
+    // --- @Native RTTI bridges (operate on the raw #Rtti pointer) ----------
+
+    @Native("__cajeta_rtti_name_into")
+    private static void nameInto(pointer rtti, int8[] out);
+
+    @Native("__cajeta_rtti_name_len")
+    private static int32 nameLength(pointer rtti);
+
+    @Native("__cajeta_rtti_field_count")
+    private static int32 fieldCountOf(pointer rtti);
+
+    @Native("__cajeta_rtti_method_count")
+    private static int32 methodCountOf(pointer rtti);
+
+    @Native("__cajeta_rtti_parent_count")
+    private static int32 parentCountOf(pointer rtti);
+
+    @Native("__cajeta_rtti_modifiers")
+    private static int32 modifiersOf(pointer rtti);
+
+    @Native("__cajeta_rtti_alloc_size")
+    private static int64 allocSizeOf(pointer rtti);
+
+    @Native("__cajeta_rtti_field_name_into")
+    private static void fieldNameInto(pointer rtti, int32 idx, int8[] out);
+
+    @Native("__cajeta_rtti_field_name_len")
+    private static int32 fieldNameLength(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_field_modifiers")
+    private static int32 fieldModifiersOf(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_field_offset")
+    private static int32 fieldOffsetOf(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_field_type_flags")
+    private static int64 fieldTypeFlagsOf(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_method_param_count")
+    private static int32 methodParamCountOf(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_method_name_len")
+    private static int32 methodNameLength(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_method_name_into")
+    private static void methodNameInto(pointer rtti, int32 idx, int8[] out);
+
+    @Native("__cajeta_object_invoke_scalar0")
+    private static int64 invokeScalar0Native(Object o, int32 idx);
+
+    // --- entry points -----------------------------------------------------
+
+    /**
+     * The runtime `Class` of `o` (its dynamic type) — equivalent to the
+     * spec's `o.getClass()`. Offered as a static factory so the root
+     * `Object` need not depend on `cajeta.reflect`. The result is a borrow
+     * of a cached per-type instance reached through `o`'s vtable.
+     */
+    @Native("__cajeta_object_get_class")
+    public static Class of(Object o);
+
+    // --- identity ---------------------------------------------------------
+
+    /** The fully-qualified canonical class name, e.g. `"test.User"`. */
+    public #String getName() {
+        int32 len = nameLength(this.rtti);
+        int8[] out = heap int8[len];
+        nameInto(this.rtti, out);
+        return heap String(#out, len);
+    }
+
+    /** Heap size of an instance in bytes (the RTTI allocationSize). */
+    public int64 getInstanceSize() {
+        return allocSizeOf(this.rtti);
+    }
+
+    /**
+     * Raw modifier bit field for the class. Bits follow `cajeta.type.Modifier`:
+     * PACKAGE=0x01, PUBLIC=0x02, PRIVATE=0x04, PROTECTED=0x08, STATIC=0x10,
+     * FINAL=0x20, SYNCHRONIZED=0x40, ASYNC=0x80. A typed `Modifiers` wrapper
+     * lands later; this is the underlying data.
+     */
+    public int32 getModifierFlags() {
+        return modifiersOf(this.rtti);
+    }
+
+    public boolean isPublic() { return (modifiersOf(this.rtti) & 0x02) != 0; }
+    public boolean isFinal()  { return (modifiersOf(this.rtti) & 0x20) != 0; }
+
+    // --- members (counts + per-index access; Field/Method objects later) --
+
+    /** Number of declared fields (properties). */
+    public int32 getFieldCount() {
+        return fieldCountOf(this.rtti);
+    }
+
+    /** Number of declared methods. */
+    public int32 getMethodCount() {
+        return methodCountOf(this.rtti);
+    }
+
+    /** Number of direct superclasses (1 for most classes, 0 for Object). */
+    public int32 getParentCount() {
+        return parentCountOf(this.rtti);
+    }
+
+    /** Declared field name at `index` (0-based); empty if out of range. */
+    public #String getFieldName(int32 index) {
+        int32 len = fieldNameLength(this.rtti, index);
+        int8[] out = heap int8[len];
+        fieldNameInto(this.rtti, index, out);
+        return heap String(#out, len);
+    }
+
+    /** Raw modifier bit field for the field at `index`. */
+    public int32 getFieldModifierFlags(int32 index) {
+        return fieldModifiersOf(this.rtti, index);
+    }
+
+    /**
+     * Byte offset of the field at `index` within an instance, or -1 for a
+     * static field (which lives in a global, not the instance). This is the
+     * data-driven hook reflective field get/set uses — no per-class accessor
+     * code is generated for fields.
+     */
+    public int32 getFieldOffset(int32 index) {
+        return fieldOffsetOf(this.rtti, index);
+    }
+
+    /**
+     * The field's type-flag word (`cajeta.type` TYPE_ID bits: size,
+     * int-vs-float, signed, primitive-vs-reference). Used by typed reflective
+     * accessors to validate and size a get/set.
+     */
+    public int64 getFieldTypeFlags(int32 index) {
+        return fieldTypeFlagsOf(this.rtti, index);
+    }
+
+    // --- methods: invocation (REFL-2 infra; full Method API in REFL-4) -----
+
+    /** Number of declared parameters of the method at `index`. */
+    public int32 getMethodParamCount(int32 index) {
+        return methodParamCountOf(this.rtti, index);
+    }
+
+    /** Canonical signature of the method at `index` (e.g. `"bump()"`). */
+    public #String getMethodName(int32 index) {
+        int32 len = methodNameLength(this.rtti, index);
+        int8[] out = heap int8[len];
+        methodNameInto(this.rtti, index, out);
+        return heap String(#out, len);
+    }
+
+    /**
+     * REFL-2 infrastructure: reflectively invoke the NO-ARGUMENT method at
+     * `index` on `o` (the object's dynamic-class adapter is used), returning
+     * its result widened to int64 — a smaller scalar occupies the low bytes, a
+     * pointer fits whole, `void` yields 0. The typed `Method.invoke` surface
+     * with full argument marshalling lands in REFL-4; this is the minimal
+     * entry that proves the synthesized per-class adapter end to end.
+     */
+    public static int64 invokeScalar0(Object o, int32 index) {
+        return invokeScalar0Native(o, index);
+    }
+}

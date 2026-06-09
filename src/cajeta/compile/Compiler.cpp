@@ -792,6 +792,17 @@ namespace cajeta {
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
+        // REFL-2 — emit the reflective adapter bodies now that Phase 1/2 has
+        // quiesced and every method's LLVM function exists. Each class that had
+        // an invoke adapter forward-declared into its #Rtti (during prototype
+        // generation) gets its switch-over-index body filled here; classes
+        // without a decl are a no-op. Runs once, before clinit/emit.
+        for (auto& [key, type] : CajetaType::getCanonicalMap()) {
+            if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
+                klass->emitReflectInvokeBody();
+            }
+        }
+
         // P6.2 — after Phase 1/2 quiescence, emit any per-class clinit
         // for static fields whose initializers didn't constant-fold.
         // Runs once at this point (not inside the loop) so the

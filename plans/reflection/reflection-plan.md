@@ -32,24 +32,67 @@ So: the infrastructure (RTTI) is paid for; the surface is missing. This is a
 
 ## Phases (from spec § "Implementation sequence")
 
-### Phase 1 — `Class<T>` + read-only introspection (REFL-1)
-- [ ] REFL-1.1 `cajeta.reflect.Class<T>`: `getName`/`getShortName`/`getPackage`/
-      `getModifiers`/`getSuperclass`/`getInterfaces`/`getFields`/`getMethods`/
-      `getConstructors`, reading existing RTTI. No codegen changes.
-- [ ] REFL-1.2 `cajeta.reflect.registry` — map canonical name → `Class<?>`,
-      built from the data the compiler already emits.
-- [ ] REFL-1.3 Per-class integer-indexed lookup tables (spec Strategy 1).
-- [ ] REFL-1.4 `T.class` literal lowering → cached `Class<?>` instance; and
-      `Object.getClass()` (one vtable→RttiGlobal hop). One `Class<?>` per type
-      in static storage (spec § open question "Object.getClass() performance").
-- **Accept:** `obj.getClass().getName()` and field/method enumeration return
-  correct metadata; TDD via JIT tests over a fixture class.
+### Phase 1 — `Class<T>` + read-only introspection (REFL-1)  ← foundation shipped 2026-06-08
+- [x] REFL-1.1 `cajeta.reflect.Class` (non-generic v1): `getName`/`getFieldCount`/
+      `getMethodCount`/`getParentCount`/`getModifierFlags`/`isPublic`/`isFinal`/
+      `getFieldName`/`getFieldModifierFlags`/`getInstanceSize`, reading RTTI via
+      `@Native __cajeta_rtti_*`. (getShortName/getPackage/getSuperclass/Field/
+      Method *objects* still TODO — counts + per-index access landed.)
+- [x] REFL-1.3 **RTTI redesigned to a fixed-offset header** (`cajeta.reflect.#Rtti`,
+      same struct for every class) with pointer-referenced descriptor tables
+      (`#FieldDesc`/`#MethodDesc`/`#ParameterDesc`) + packed-int32 modifiers +
+      per-method signature hash. C mirrors in `cajeta_runtime.c`. The old
+      variable-length inline blob couldn't be walked by generic natives; nothing
+      read it at runtime, so the change was safe.
+- [x] REFL-1.4 `getClass()` via the static factory `Class.of(obj)` (avoids a root
+      `Object`→reflect bootstrap cycle); reaches the cached **`#ClassObject`**
+      (one `Class` instance per type, `{Class#VTable, rtti}`) through a NEW
+      **`classObject` slot in `#VTable`** (entries shifted 24→32; runtime offsets
+      updated). `populate()` forward-declares vtable/rtti/classObject to break the
+      vtable→classObject→rtti→vtable cycle; slot-0 resolves the real `Class#VTable`
+      (stdlib compiles before user code) so virtual dispatch on `Class` lands.
+- [x] **Accept met:** `Class.of(obj).getName()`/`getFieldCount()`/`getFieldName(0)`/
+      `getModifierFlags()`/`getInstanceSize()` all correct — 6 JIT tests pass
+      (`test/parser/ReflectionTests.cpp`).
+- [ ] REFL-1.2 `cajeta.reflect.registry` (canonical name → `Class`) — for `forName`,
+      deferred to Phase 8.
+- [ ] REFL-1.5 `T.class` literal lowering (grammar `typeTypeOrVoid '.' CLASS` →
+      address of `#ClassObject`) — TODO; `Class.of(obj)` covers the dynamic path.
+- [ ] REFL-1.6 `Object.getClass()` proper (needs the `Object`→reflect edge; the
+      `Class.of` factory is the interim) — TODO.
+- [ ] REFL-1.7 `Class<T>` generic parameter + `Field`/`Method`/`Constructor`/
+      `Parameter`/`Modifiers` objects (currently counts + per-index accessors).
 
-### Phase 2 — per-class reflection adapters (REFL-2)
-- [ ] REFL-2.1 Compiler-synthesized `T_reflect_getField` /
-      `T_reflect_invokeMethod` / `T_reflect_newInstance` (switch over field/
-      method index → direct load / direct call), reached through RttiGlobal.
-      Foundation for Phases 3–5.
+### Phase 2 — per-class reflection adapters (REFL-2)  ← hybrid design, 2A+2B shipped 2026-06-08
+Decision: **HYBRID** (fastest). Fields are data-driven (no per-class codegen);
+methods/ctors use synthesized switch-over-index adapters reached through `#Rtti`.
+- [x] REFL-2A **Data-driven field access**: `#FieldDesc` gained `i32 byteOffset` +
+      `i64 typeFlags` (CajetaType TYPE_ID), computed from the instance struct
+      layout. No per-class field accessor code is generated — REFL-3 `Field.get/set`
+      reads offset+typeFlags from a generic native. Natives
+      `__cajeta_rtti_field_offset` / `_type_flags`; `Class.getFieldOffset/
+      getFieldTypeFlags`. (StructureMetadata getFieldStructType/emitFieldTable;
+      C mirror split CajetaFieldDesc / CajetaParamDesc.)
+- [x] REFL-2B **Synthesized invokeMethod adapter**: `#Rtti` gained slot 12
+      `invokeAdapter` (+ slot 13 `newInstanceAdapter`, null until 2C). Per class,
+      `void __cajeta_<canon>_reflect_invoke(ptr obj, i32 idx, ptr args, ptr ret)` —
+      a switch over the method-list index that marshals scalar/pointer args from an
+      8-byte-strided buffer and makes a DIRECT call (skips ctors, varargs,
+      aggregate/sret shapes, and declaration-only callees so the JIT doesn't drag
+      dead stdlib code). Forward-declared in `createRttiConstant`; body filled by
+      `CajetaClass::emitReflectInvokeBody` in a post-Phase-1/2 pass (added to BOTH
+      Compiler::compile AND JitTestHelper). Entry: `Class.invokeScalar0(o, idx)` /
+      native `__cajeta_object_invoke_scalar0`; `Class.getMethodParamCount/
+      getMethodName`. Fixed two latent bugs: uninitialized `Method::llvmFunction`
+      (garbage ptr) and the reflected param count/table wrongly counting implicit
+      `this`. 9/9 reflection + 61/61 regression green.
+- [ ] REFL-2C **Synthesized newInstance adapter** (NEXT): per-class
+      `ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)` — `__cajeta_alloc`
+      (allocationSize) + zero + store vtable global + dispatch the constructor by
+      index (ctors live in `labeled/unlabeledConstructorMap`, NOT `methodList`, so
+      this needs a constructor index space + `getConstructorCount` surface). Fills
+      `#Rtti` slot 13. Mirror `heap X()` construction (see CreatorRest /
+      Expression.cpp `__cajeta_alloc`). Pattern follows 2B's adapter machinery.
 
 ### Phase 3 — `Field` read/write (REFL-3)
 - [ ] REFL-3.1 `Field.get`/`set` via the Phase-2 adapter.

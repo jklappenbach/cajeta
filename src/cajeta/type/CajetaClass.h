@@ -144,6 +144,12 @@ namespace cajeta {
         llvm::StructType* llvmRttiType = nullptr;
         llvm::StructType* llvmReferenceType = nullptr;
         llvm::GlobalVariable* llvmRttiGlobal = nullptr;
+        // Cached per-class reflection object — a constant
+        // `cajeta.reflect.Class` instance { ptr Class#VTable, ptr rtti }.
+        // `T.class` lowers to its address; `getClass()` reaches it through
+        // the vtable's classObject slot. One per type, no allocation
+        // (Reflection.md Strategy 7).
+        llvm::GlobalVariable* llvmClassObjectGlobal = nullptr;
         // Synthesized drop wrapper for this class — see getOrCreateDropFunction.
         // Cached on first request so LocalVariableDeclaration's drop-entry
         // registration is a constant-time lookup per declaration site.
@@ -159,6 +165,15 @@ namespace cajeta {
         // multiple heap-class local sites all see a no-op after the
         // first patch.
         bool llvmDropFunctionPatched = false;
+
+        // REFL-2: synthesized per-class reflection adapters. The invoke adapter
+        // is `void(ptr obj, i32 methodIndex, ptr args, ptr ret)` — a switch over
+        // the class's method-list index that marshals args and makes a direct
+        // call. Forward-declared (no body) when the #Rtti constant is built so
+        // it can take the address; emitReflectInvokeBody fills the body in a
+        // post-quiescence pass once every method's LLVM function exists.
+        llvm::Function* llvmReflectInvokeFunction = nullptr;
+        bool llvmReflectInvokeBodyEmitted = false;
 
         // Per-(class, interface) vtable globals. Keyed by interface
         // canonical name; value is a `[N x ptr]` constant whose entries
@@ -508,6 +523,18 @@ namespace cajeta {
         // owned by the stack frame, not the heap allocator.
         llvm::Function* getOrCreateStackDropFunction();
 
+        // REFL-2: return (creating on first call) the DECLARATION of this
+        // class's reflective invoke adapter — `void(ptr obj, i32 methodIndex,
+        // ptr args, ptr ret)`. No body is emitted here; the #Rtti constant
+        // references the declaration, and emitReflectInvokeBody fills it in
+        // later. Returns null only if creation isn't possible.
+        llvm::Function* getOrCreateReflectInvokeDecl();
+
+        // REFL-2: emit the body of the reflective invoke adapter (idempotent).
+        // Called once per class after the Phase-1/2 codegen loop quiesces, so
+        // every method's getLlvmFunction() is available for a direct call.
+        void emitReflectInvokeBody();
+
         // Implicit destructor chaining helpers (MemoryModel.md § 140,
         // C++ semantics).
         //
@@ -605,6 +632,14 @@ namespace cajeta {
 
         llvm::GlobalVariable* getRttiGlobal() {
             return llvmRttiGlobal;
+        }
+
+        void setClassObjectGlobal(llvm::GlobalVariable* g) {
+            this->llvmClassObjectGlobal = g;
+        }
+
+        llvm::GlobalVariable* getClassObjectGlobal() {
+            return llvmClassObjectGlobal;
         }
 
         void setClassBody(ClassBodyDeclarationPtr classBody);
