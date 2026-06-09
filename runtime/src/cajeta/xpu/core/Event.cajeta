@@ -20,8 +20,16 @@ public final class Event {
         this.handle = handle;
     }
 
-    @Native("__cajeta_xpu_event_create")
-    public static Event create();
+    /**
+     * Create a fresh event — a real backend event object (cuEvent /
+     * hipEvent) on CUDA/HIP, an always-signaled sentinel on the
+     * synchronous CPU/Vulkan paths. The caller owns it and must
+     * `destroy()` it when done.
+     */
+    public static #Event create() {
+        Event e = heap Event(nativeCreate());
+        return #e;                                 // move out; source dtor no-ops
+    }
 
     /**
      * Record this event at `stream`'s current tail. After this
@@ -31,23 +39,47 @@ public final class Event {
      * Named `recordOn` rather than the spec's `record` because
      * `record` is a Cajeta keyword (record-type declarations).
      */
-    @Native("__cajeta_xpu_event_record")
-    public void recordOn(Stream stream);
+    public void recordOn(Stream stream) {
+        int64 sh = stream.handle;
+        this.nativeRecord(this.handle, sh);
+    }
 
     /**
      * Block the host until this event has been signaled on the
      * device. Use sparingly — prefer cross-stream waits via
      * `Stream.waitFor(event)`.
      */
-    @Native("__cajeta_xpu_event_wait")
-    public void waitHost();
+    public void waitHost() {
+        this.nativeWait(this.handle);
+    }
 
     /**
      * Non-blocking poll. True iff the event has been signaled.
      */
+    public boolean query() {
+        return this.nativeQuery(this.handle);
+    }
+
+    public void destroy() {
+        this.nativeDestroy(this.handle);
+    }
+
+    // Native event primitives. The handle (int64) IS the backend event object;
+    // create() returns it wrapped in an Event and the instance ops pass both
+    // `this.handle` and (for record) the stream handle so the C side speaks only
+    // handles.
+    @Native("__cajeta_xpu_event_create")
+    private static int64 nativeCreate();
+
+    @Native("__cajeta_xpu_event_record")
+    private void nativeRecord(int64 handle, int64 streamHandle);
+
+    @Native("__cajeta_xpu_event_wait")
+    private void nativeWait(int64 handle);
+
     @Native("__cajeta_xpu_event_query")
-    public boolean query();
+    private boolean nativeQuery(int64 handle);
 
     @Native("__cajeta_xpu_event_destroy")
-    public void destroy();
+    private void nativeDestroy(int64 handle);
 }

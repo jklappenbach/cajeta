@@ -6044,6 +6044,15 @@ struct cajeta_cuda_api {
     int (*cuStreamDestroy)(void*);
     int (*cuMemcpyHtoDAsync)(cajeta_cudeviceptr, const void*, size_t, void*);
     int (*cuMemcpyDtoHAsync)(void*, cajeta_cudeviceptr, size_t, void*);
+    // Events (Event/Fence); optional. cuEventQuery returns CUDA_SUCCESS(0) when
+    // complete, CUDA_ERROR_NOT_READY otherwise; cuStreamWaitEvent is the device-
+    // side cross-stream wait.
+    int (*cuEventCreate)(void**, unsigned);
+    int (*cuEventRecord)(void*, void*);
+    int (*cuEventSynchronize)(void*);
+    int (*cuEventQuery)(void*);
+    int (*cuStreamWaitEvent)(void*, void*, unsigned);
+    int (*cuEventDestroy)(void*);
     int (*cuLaunchKernel)(void*, unsigned, unsigned, unsigned,
                           unsigned, unsigned, unsigned, unsigned,
                           void*, void**, void**);
@@ -6106,6 +6115,18 @@ static int cajeta_xpu_cuda_init_locked(void) {
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyHtoDAsync_v2");
     *(void**) (&g_xpu_cuda.cuMemcpyDtoHAsync) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyDtoHAsync_v2");
+    *(void**) (&g_xpu_cuda.cuEventCreate) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventCreate");
+    *(void**) (&g_xpu_cuda.cuEventRecord) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventRecord");
+    *(void**) (&g_xpu_cuda.cuEventSynchronize) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventSynchronize");
+    *(void**) (&g_xpu_cuda.cuEventQuery) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventQuery");
+    *(void**) (&g_xpu_cuda.cuStreamWaitEvent) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamWaitEvent");
+    *(void**) (&g_xpu_cuda.cuEventDestroy) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventDestroy_v2");
     CAJ_BIND(cuLaunchKernel, "cuLaunchKernel");
     CAJ_BIND(cuCtxSynchronize, "cuCtxSynchronize");
     #undef CAJ_BIND
@@ -6251,6 +6272,16 @@ struct cajeta_hip_api {
     int (*hipStreamDestroy)(void*);
     int (*hipMemcpyHtoDAsync)(void*, const void*, size_t, void*);
     int (*hipMemcpyDtoHAsync)(void*, void*, size_t, void*);
+    // Events (Event/Fence cross-stream + host sync); optional — absent → the
+    // synchronous fallback (record/wait no-op, query true). hipEventQuery returns
+    // hipSuccess(0) when complete, hipErrorNotReady otherwise; hipStreamWaitEvent
+    // makes a stream wait on another stream's recorded event (device-side).
+    int (*hipEventCreate)(void**);
+    int (*hipEventRecord)(void*, void*);
+    int (*hipEventSynchronize)(void*);
+    int (*hipEventQuery)(void*);
+    int (*hipStreamWaitEvent)(void*, void*, unsigned);
+    int (*hipEventDestroy)(void*);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
@@ -6458,6 +6489,12 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipStreamDestroy, "hipStreamDestroy");
     CAJ_HBIND_OPT(hipMemcpyHtoDAsync, "hipMemcpyHtoDAsync");
     CAJ_HBIND_OPT(hipMemcpyDtoHAsync, "hipMemcpyDtoHAsync");
+    CAJ_HBIND_OPT(hipEventCreate, "hipEventCreate");
+    CAJ_HBIND_OPT(hipEventRecord, "hipEventRecord");
+    CAJ_HBIND_OPT(hipEventSynchronize, "hipEventSynchronize");
+    CAJ_HBIND_OPT(hipEventQuery, "hipEventQuery");
+    CAJ_HBIND_OPT(hipStreamWaitEvent, "hipStreamWaitEvent");
+    CAJ_HBIND_OPT(hipEventDestroy, "hipEventDestroy");
     #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
@@ -8210,30 +8247,9 @@ static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name) {
 static void cajeta_xpu_sync_active(void);
 
 int64_t __cajeta_xpu_stream_current(void) { return 0; }   // the default stream
-void __cajeta_xpu_stream_wait_for(void* self, void* event) {
-    (void)self; (void)event;
-}
-// __cajeta_xpu_stream_{create,sync,destroy} are defined further below, after the
-// backend enum + cajeta_xpu_active_backend() they switch on (alongside the
-// buffer async-copy functions).
-
-// --- Event -----------------------------------------------------------------
-void* __cajeta_xpu_event_create(void) { return NULL; }
-void __cajeta_xpu_event_record(void* self, void* stream) {
-    (void)self; (void)stream;
-}
-void __cajeta_xpu_event_wait(void* self) { (void)self; }
-bool __cajeta_xpu_event_query(void* self) { (void)self; return false; }
-void __cajeta_xpu_event_destroy(void* self) { (void)self; }
-
-// --- Fence -----------------------------------------------------------------
-void* __cajeta_xpu_fence_create(void) { return NULL; }
-void __cajeta_xpu_fence_signal(void* self, void* stream) {
-    (void)self; (void)stream;
-}
-void __cajeta_xpu_fence_wait(void* self) { (void)self; }
-bool __cajeta_xpu_fence_query(void* self) { (void)self; return false; }
-void __cajeta_xpu_fence_destroy(void* self) { (void)self; }
+// __cajeta_xpu_stream_{create,sync,destroy,wait_for} and the Event/Fence natives
+// are defined further below, after the backend enum + cajeta_xpu_active_backend()
+// they switch on (alongside the buffer async-copy functions).
 
 // --- Thread / Workgroup coordinate readers ---------------------------------
 // Returns zero in v1; step 7 plumbs these into TLS set by the emulation
@@ -8876,6 +8892,133 @@ void __cajeta_xpu_stream_destroy(void* self, int64_t handle) {
             return;
         default: return;
     }
+}
+
+// --- Event -----------------------------------------------------------------
+// Cross-stream + host synchronisation. The handle (int64) IS the backend event
+// object; create() returns it (0 = unavailable). On CUDA/HIP these wrap a real
+// cuEvent/hipEvent so a second stream can wait on a first stream's recorded
+// point device-side; on CPU/Vulkan work is synchronous, so an event is a
+// sentinel (handle 1) that is always already-signaled (record/wait no-op, query
+// true). Event and Fence share the backend mechanism — Event is the device-
+// facing surface (Stream.waitFor), Fence the host-facing one.
+int64_t __cajeta_xpu_event_create(void) {
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA: {
+            void* e = NULL;
+            if (g_xpu_cuda.cuEventCreate &&
+                g_xpu_cuda.cuEventCreate(&e, 0) == 0)
+                return (int64_t) (intptr_t) e;
+            return 0;
+        }
+        case CAJ_XPU_HIP: {
+            void* e = NULL;
+            if (g_xpu_hip.hipEventCreate &&
+                g_xpu_hip.hipEventCreate(&e) == 0)
+                return (int64_t) (intptr_t) e;
+            return 0;
+        }
+        default: return 1;   // CPU/Vulkan: synchronous, always-signaled sentinel
+    }
+}
+void __cajeta_xpu_event_record(void* self, int64_t handle, int64_t streamHandle) {
+    (void) self;
+    void* e = (void*) (intptr_t) handle;
+    void* st = (void*) (intptr_t) streamHandle;   // 0 = default stream
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (e && g_xpu_cuda.cuEventRecord) g_xpu_cuda.cuEventRecord(e, st);
+            return;
+        case CAJ_XPU_HIP:
+            if (e && g_xpu_hip.hipEventRecord) g_xpu_hip.hipEventRecord(e, st);
+            return;
+        default: return;   // CPU/Vulkan: nothing to record (synchronous)
+    }
+}
+void __cajeta_xpu_event_wait(void* self, int64_t handle) {
+    (void) self;
+    void* e = (void*) (intptr_t) handle;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (e && g_xpu_cuda.cuEventSynchronize)
+                g_xpu_cuda.cuEventSynchronize(e);
+            return;
+        case CAJ_XPU_HIP:
+            if (e && g_xpu_hip.hipEventSynchronize)
+                g_xpu_hip.hipEventSynchronize(e);
+            return;
+        default: return;   // CPU/Vulkan: work already done
+    }
+}
+bool __cajeta_xpu_event_query(void* self, int64_t handle) {
+    (void) self;
+    void* e = (void*) (intptr_t) handle;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (e && g_xpu_cuda.cuEventQuery)
+                return g_xpu_cuda.cuEventQuery(e) == 0;
+            return true;
+        case CAJ_XPU_HIP:
+            if (e && g_xpu_hip.hipEventQuery)
+                return g_xpu_hip.hipEventQuery(e) == 0;
+            return true;
+        default: return true;   // CPU/Vulkan: always complete
+    }
+}
+void __cajeta_xpu_event_destroy(void* self, int64_t handle) {
+    (void) self;
+    void* e = (void*) (intptr_t) handle;
+    if (!e) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (g_xpu_cuda.cuEventDestroy) g_xpu_cuda.cuEventDestroy(e);
+            return;
+        case CAJ_XPU_HIP:
+            if (g_xpu_hip.hipEventDestroy) g_xpu_hip.hipEventDestroy(e);
+            return;
+        default: return;
+    }
+}
+
+// Stream.waitFor(event): insert a device-side wait on `event` into `stream`, so
+// future launches on `stream` start only after `event` is signaled on its source
+// stream. Synchronous backends (CPU/Vulkan) need no wait — ordering already holds.
+void __cajeta_xpu_stream_wait_for(void* self, int64_t streamHandle,
+                                  int64_t eventHandle) {
+    (void) self;
+    void* st = (void*) (intptr_t) streamHandle;   // 0 = default stream
+    void* e = (void*) (intptr_t) eventHandle;
+    if (!e) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (g_xpu_cuda.cuStreamWaitEvent)
+                g_xpu_cuda.cuStreamWaitEvent(st, e, 0);
+            return;
+        case CAJ_XPU_HIP:
+            if (g_xpu_hip.hipStreamWaitEvent)
+                g_xpu_hip.hipStreamWaitEvent(st, e, 0);
+            return;
+        default: return;
+    }
+}
+
+// --- Fence -----------------------------------------------------------------
+// Host-observable signal. v1 backs Fence with the same backend event object as
+// Event (an event IS host-waitable via cuEvent/hipEventSynchronize/Query):
+// signal(stream) records the event at the stream's tail; waitHost()/query()
+// block/poll the host on it. On CPU/Vulkan the synchronous sentinel applies.
+int64_t __cajeta_xpu_fence_create(void) { return __cajeta_xpu_event_create(); }
+void __cajeta_xpu_fence_signal(void* self, int64_t handle, int64_t streamHandle) {
+    __cajeta_xpu_event_record(self, handle, streamHandle);
+}
+void __cajeta_xpu_fence_wait(void* self, int64_t handle) {
+    __cajeta_xpu_event_wait(self, handle);
+}
+bool __cajeta_xpu_fence_query(void* self, int64_t handle) {
+    return __cajeta_xpu_event_query(self, handle);
+}
+void __cajeta_xpu_fence_destroy(void* self, int64_t handle) {
+    __cajeta_xpu_event_destroy(self, handle);
 }
 void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
                                 uint64_t byteCount) {

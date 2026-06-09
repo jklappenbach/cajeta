@@ -19,23 +19,52 @@ public final class Fence {
         this.handle = handle;
     }
 
-    @Native("__cajeta_xpu_fence_create")
-    public static Fence create();
+    /**
+     * Create a fresh fence. v1 backs it with the same backend event
+     * object as Event (host-waitable); the caller owns it and must
+     * `destroy()` it when done.
+     */
+    public static #Fence create() {
+        Fence f = heap Fence(nativeCreate());
+        return #f;                                 // move out; source dtor no-ops
+    }
 
     /**
      * Signal this fence after every launch currently queued on
      * `stream` completes. The host can poll `query()` or block in
      * `waitHost()` to observe the signal.
      */
+    public void signal(Stream stream) {
+        int64 sh = stream.handle;
+        this.nativeSignal(this.handle, sh);
+    }
+
+    public void waitHost() {
+        this.nativeWait(this.handle);
+    }
+
+    public boolean query() {
+        return this.nativeQuery(this.handle);
+    }
+
+    public void destroy() {
+        this.nativeDestroy(this.handle);
+    }
+
+    // Native fence primitives — the handle (int64) IS the backend event object
+    // (Fence is the host-facing twin of Event); the instance ops pass handles.
+    @Native("__cajeta_xpu_fence_create")
+    private static int64 nativeCreate();
+
     @Native("__cajeta_xpu_fence_signal")
-    public void signal(Stream stream);
+    private void nativeSignal(int64 handle, int64 streamHandle);
 
     @Native("__cajeta_xpu_fence_wait")
-    public void waitHost();
+    private void nativeWait(int64 handle);
 
     @Native("__cajeta_xpu_fence_query")
-    public boolean query();
+    private boolean nativeQuery(int64 handle);
 
     @Native("__cajeta_xpu_fence_destroy")
-    public void destroy();
+    private void nativeDestroy(int64 handle);
 }
