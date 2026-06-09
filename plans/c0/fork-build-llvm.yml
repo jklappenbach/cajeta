@@ -181,7 +181,7 @@ jobs:
             -DLLVM_ENABLE_RTTI=ON \
             -DLLVM_TARGETS_TO_BUILD="X86;NVPTX;AMDGPU;SPIRV" \
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
-            -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_LINK_LLVM_DYLIB=OFF \
+            -DLLVM_BUILD_LLVM_DYLIB=ON -DLLVM_LINK_LLVM_DYLIB=ON \
             -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_DOCS=OFF \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
@@ -193,6 +193,35 @@ jobs:
 
       - name: Build + install
         run: ninja -C build install
+
+      # Slim the install to a dylib-only distribution. cajeta on Windows links
+      # the monolithic libLLVM-<ver>.dll (src/CMakeLists.txt: WIN32 +
+      # LLVM_LINK_LLVM_DYLIB), so the static component archives, the ~100 LLVM
+      # tool binaries, and the libclang* libs/DLLs are all dead weight. Keep only:
+      # the dylib + its import lib, the LLVM/clang/lld headers, the cmake export
+      # config, the lld static libs (cajeta links those for --emit=exe), clang.exe
+      # + its resource dir (the runtime-bitcode step), and llvm-config. This drops
+      # the artifact from ~1.2 GB to ~70 MB compressed. (The Linux build job stays
+      # static — cajeta on Linux links the static components.)
+      - name: Slim install to dylib distribution
+        run: |
+          set -euo pipefail
+          D="$PWD/llvm-install"
+          # Static component archives — keep import libs (*.dll.a), drop the rest.
+          find "$D/lib" -maxdepth 1 -name 'libLLVM*.a'  ! -name '*.dll.a' -delete
+          find "$D/lib" -maxdepth 1 -name 'libclang*.a' ! -name '*.dll.a' -delete
+          # Tool binaries: cajeta needs only clang (bitcode) + llvm-config; the
+          # libLLVM/libclang DLLs clang.exe does NOT depend on (only the dylib).
+          find "$D/bin" -maxdepth 1 -name '*.exe' ! -name 'clang.exe' ! -name 'llvm-config.exe' -delete
+          rm -f "$D"/bin/libclang-cpp.dll "$D"/bin/libclang.dll \
+                "$D"/bin/libLTO.dll "$D"/bin/libRemarks.dll
+          rm -rf "$D/share" "$D/libexec"
+          # LLVMExports.cmake verifies every exported target's file exists; the
+          # pruned static-lib/tool targets are unused (cajeta links only the `LLVM`
+          # dylib target, intact), so neuter that one existence check.
+          sed -i 's|if(NOT EXISTS "${_cmake_file}")|if(FALSE)  # slimmed dylib distribution|' \
+            "$D/lib/cmake/llvm/LLVMExports.cmake"
+          du -sh "$D"
 
       - name: Package
         id: pack

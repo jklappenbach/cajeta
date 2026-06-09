@@ -7,7 +7,14 @@ vendors LLVM source. This is the gate for every later Part C backend patch (ray 
 **Build contract** (must match — from `cpp/llvm-project/build/CMakeCache.txt`):
 - Pinned base commit: **`203c0668d4b098714d1748de766e890fe6296891`** (LLVM 23-git)
 - `CMAKE_BUILD_TYPE=Release` · `LLVM_ENABLE_RTTI=ON` · `LLVM_ENABLE_ASSERTIONS=OFF`
-- `LLVM_TARGETS_TO_BUILD=X86;NVPTX;AMDGPU;SPIRV` · static libs (no dylib)
+- `LLVM_TARGETS_TO_BUILD=X86;NVPTX;AMDGPU;SPIRV` · static libs (no dylib) on Linux/macOS
+- **Windows is the exception:** `LLVM_BUILD_LLVM_DYLIB=ON LLVM_LINK_LLVM_DYLIB=ON`, then
+  the install is slimmed to a dylib-only distribution (static component archives + the
+  ~100 LLVM tools + libclang* pruned; keep the dylib + import lib + headers + cmake
+  exports + lld libs + clang.exe + llvm-config). cajeta on Windows links the monolithic
+  `libLLVM-<ver>.dll` (src/CMakeLists.txt: `WIN32 AND LLVM_LINK_LLVM_DYLIB`), so the
+  static soup is dead weight. Drops the windows-x64 artifact from ~1.2 GB to ~70 MB
+  compressed. See fork-build-llvm.yml's `build-windows` "Slim install" step.
 - **`LLVM_ENABLE_PROJECTS=clang;lld`** — the artifact MUST bundle a version-matched
   `clang-23` (cajeta compiles its runtime to bitcode via
   `find_program(clang-${LLVM_VERSION_MAJOR})`; there is no clang-23 on the dev box today).
