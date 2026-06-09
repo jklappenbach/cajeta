@@ -146,6 +146,8 @@ namespace cajeta {
             ptrTy,          // 11 vtable
             ptrTy,          // 12 invokeAdapter
             ptrTy,          // 13 newInstanceAdapter
+            llvmInt16Type,  // 14 constructorCount
+            ptrTy,          // 15 constructors (#MethodDesc[])
         }, "cajeta.reflect.#Rtti");
         return llvmRttiType;
     }
@@ -249,6 +251,37 @@ namespace cajeta {
             llvm::ConstantArray::get(arrTy, rows), ".rtti.methods");
     }
 
+    // REFL-2C: constructor descriptor table, reusing the #MethodDesc shape.
+    // Ordered by getReflectConstructorList so its index matches the newInstance
+    // adapter's switch.
+    llvm::Constant* StructureMetadata::emitConstructorTable(CajetaClassPtr structure) {
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        auto ctors = structure->getReflectConstructorList();
+        if (ctors.empty())
+            return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        llvm::StructType* descTy = getMethodStructType();
+        vector<llvm::Constant*> rows;
+        for (auto& m : ctors) {
+            int64_t hash = signatureHash(m->toCanonical(/*labeled=*/false));
+            const auto& mp = m->getParameterList();
+            size_t userParams = mp.size();
+            if (!mp.empty() && mp.front()->getName() == "this") userParams -= 1;
+            rows.push_back(llvm::ConstantStruct::get(descTy, {
+                emitCString(m->toCanonical()),
+                emitCString(m->getReturnType()->toCanonical()),
+                llvm::ConstantInt::get(llvmInt64Type, (uint64_t) hash),
+                llvm::ConstantInt::get(llvmInt32Type, (uint64_t) packModifiers(m->getModifiers())),
+                llvm::ConstantInt::get(llvmInt16Type, userParams),
+                emitParameterTable(m),
+            }));
+        }
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(descTy, rows.size());
+        return new llvm::GlobalVariable(*module->getLlvmModule(), arrTy, true,
+            llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(arrTy, rows), ".rtti.ctors");
+    }
+
     // ---- RTTI: per-class metadata blob (fixed-offset header) ----------------
     //
     // #RttiGlobal is the FIXED-layout `cajeta.reflect.#Rtti` header (the same
@@ -297,7 +330,9 @@ namespace cajeta {
         // (Compiler post-quiescence pass) once every method function exists.
         llvm::Constant* invokeAdapter = structure->getOrCreateReflectInvokeDecl();
         if (!invokeAdapter) invokeAdapter = nullPtr;
-        llvm::Constant* newInstanceAdapter = nullPtr;   // REFL-2C fills this slot
+        llvm::Constant* newInstanceAdapter = structure->getOrCreateReflectNewDecl();
+        if (!newInstanceAdapter) newInstanceAdapter = nullPtr;
+        size_t ctorCount = structure->getReflectConstructorList().size();
 
         args.clear();
         return llvm::ConstantStruct::get(rttiTy, {
@@ -318,6 +353,8 @@ namespace cajeta {
             vtable,                                                           // 11
             invokeAdapter,                                                    // 12
             newInstanceAdapter,                                              // 13
+            llvm::ConstantInt::get(llvmInt16Type, ctorCount),                // 14
+            emitConstructorTable(structure),                                 // 15
         });
     }
 

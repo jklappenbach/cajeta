@@ -153,6 +153,10 @@ namespace cajeta {
         // table (or null ptr constant when empty).
         llvm::Constant* emitFieldTable(CajetaClassPtr structure);
         llvm::Constant* emitMethodTable(CajetaClassPtr structure);
+        // REFL-2C: per-class constructor descriptor table (#MethodDesc[] shape),
+        // ordered by getReflectConstructorList — the index space the newInstance
+        // adapter switches over.
+        llvm::Constant* emitConstructorTable(CajetaClassPtr structure);
         llvm::Constant* emitParameterTable(MethodPtr method);
 
         llvm::Type* createAnnotationType(CajetaClassPtr structure);

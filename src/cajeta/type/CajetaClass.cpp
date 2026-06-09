@@ -2724,6 +2724,149 @@ namespace cajeta {
         b.CreateRetVoid();
     }
 
+    // REFL-2C: this class's constructors in a deterministic order (sorted by
+    // canonical signature). Constructors live in the `methods` map (keyed for
+    // overload resolution) but NOT in methodList; this is the stable index
+    // space the newInstance adapter and the #Rtti constructor table share.
+    std::vector<MethodPtr> CajetaClass::getReflectConstructorList() {
+        std::vector<MethodPtr> ctors;
+        for (auto& entry : methods) {
+            if (entry.second && entry.second->isConstructor())
+                ctors.push_back(entry.second);
+        }
+        std::sort(ctors.begin(), ctors.end(),
+            [](const MethodPtr& a, const MethodPtr& b) {
+                return a->toCanonical() < b->toCanonical();
+            });
+        return ctors;
+    }
+
+    // REFL-2C: declaration of the reflective newInstance adapter. Body filled
+    // by emitReflectNewBody (post-quiescence). Shape:
+    //   ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)
+    llvm::Function* CajetaClass::getOrCreateReflectNewDecl() {
+        if (llvmReflectNewFunction) return llvmReflectNewFunction;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            (llvm::Type*) ptrTy, {i32Ty, (llvm::Type*) ptrTy}, /*isVarArg=*/false);
+        std::string name = std::string("__cajeta_") + qName->toCanonical() + "_reflect_new";
+        for (char& c : name) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') c = '_';
+        }
+        if (llvm::Function* existing = lmod->getFunction(name)) {
+            llvmReflectNewFunction = existing;
+            return existing;
+        }
+        llvmReflectNewFunction = llvm::Function::Create(
+            fnTy, llvm::Function::ExternalLinkage, name, lmod);
+        return llvmReflectNewFunction;
+    }
+
+    // REFL-2C: emit the newInstance adapter body — a switch over the
+    // constructor index that mirrors `heap T(...)` construction (CreatorRest):
+    // __cajeta_alloc(allocationSize) + zero + install primary/secondary vtables
+    // + patch the virtual drop slot + run the chosen constructor, returning the
+    // new instance. Unknown/unmarshallable constructors fall to a null return.
+    void CajetaClass::emitReflectNewBody() {
+        if (llvmReflectNewBodyEmitted) return;
+        llvm::Function* fn = llvmReflectNewFunction;   // created in createRttiConstant
+        if (!fn) return;
+        llvmReflectNewBodyEmitted = true;
+        if (!fn->empty()) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::IntegerType* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        llvm::Value* idxArg = fn->getArg(0);
+        llvm::Value* argsArg = fn->getArg(1);
+
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        llvm::BasicBlock* fail = llvm::BasicBlock::Create(ctx, "fail", fn);
+        llvm::IRBuilder<> b(entry);
+
+        auto ctors = getReflectConstructorList();
+        auto* st = llvm::dyn_cast_or_null<llvm::StructType>(getLlvmType());
+        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
+        uint64_t allocSize = st ? lmod->getDataLayout().getTypeAllocSize(st) : 0;
+
+        llvm::SwitchInst* sw = b.CreateSwitch(idxArg, fail, (unsigned) ctors.size());
+
+        auto marshallable = [](llvm::Type* t) {
+            return t->isIntegerTy() || t->isFloatingPointTy() || t->isPointerTy();
+        };
+
+        int i = -1;
+        for (auto& ctor : ctors) {
+            i++;
+            if (!ctor || !st || !allocFn) continue;
+            llvm::Function* callee = ctor->getLlvmFunction();
+            if (!callee || callee->isDeclaration()) continue;
+            llvm::FunctionType* cTy = callee->getFunctionType();
+            if (cTy->isVarArg()) continue;
+            auto pl = ctor->getParameterList();
+            if (cTy->getNumParams() != pl.size()) continue;
+            bool hasThis = !pl.empty() && pl.front()->getName() == "this";
+            unsigned userStart = hasThis ? 1u : 0u;
+            bool ok = true;
+            for (unsigned p = 0; p < cTy->getNumParams() && ok; ++p)
+                ok = marshallable(cTy->getParamType(p));
+            if (!ok) continue;
+
+            llvm::BasicBlock* caseBB = llvm::BasicBlock::Create(
+                ctx, std::string("new_") + std::to_string(i), fn);
+            sw->addCase(llvm::ConstantInt::get(i32Ty, (uint64_t) i), caseBB);
+            b.SetInsertPoint(caseBB);
+
+            llvm::Value* inst = b.CreateCall(allocFn,
+                {llvm::ConstantInt::get(i64Ty, allocSize)}, "inst");
+            b.CreateMemSet(inst, llvm::ConstantInt::get(i8Ty, 0),
+                llvm::ConstantInt::get(i64Ty, allocSize), llvm::MaybeAlign(8));
+
+            if (hasVtablePointerAtSlotZero()) {
+                if (llvm::GlobalVariable* vt = getVirtualTableGlobal()) {
+                    llvm::Constant* vtRef =
+                        CajetaModule::ensureGlobalInModule(lmod, vt);
+                    llvm::Value* slot0 = b.CreateStructGEP(st, inst, 0, "vtable_slot");
+                    b.CreateStore(vtRef, slot0);
+                }
+                for (auto& sub : getNonFirstSubObjects()) {
+                    llvm::GlobalVariable* secVT = getOrCreateSecondaryVTable(sub.ancestor);
+                    if (!secVT) continue;
+                    llvm::Constant* secRef =
+                        CajetaModule::ensureGlobalInModule(lmod, secVT);
+                    llvm::Value* secSlot = b.CreateStructGEP(
+                        st, inst, (unsigned) sub.slot, "sec_vtable_slot");
+                    b.CreateStore(secRef, secSlot);
+                }
+                patchVirtualTableDropFn();
+            }
+
+            llvm::Function* calleeInMod = CajetaModule::ensureFunctionInModule(lmod, callee);
+            std::vector<llvm::Value*> callArgs;
+            if (hasThis) callArgs.push_back(inst);
+            for (unsigned p = userStart; p < cTy->getNumParams(); ++p) {
+                llvm::Type* pt = cTy->getParamType(p);
+                llvm::Value* slot = b.CreateInBoundsGEP(i64Ty, argsArg,
+                    llvm::ConstantInt::get(i64Ty, p - userStart),
+                    std::string("argslot_") + std::to_string(p - userStart));
+                callArgs.push_back(b.CreateLoad(pt, slot,
+                    std::string("arg_") + std::to_string(p - userStart)));
+            }
+            b.CreateCall(calleeInMod->getFunctionType(), calleeInMod, callArgs);
+            b.CreateRet(inst);
+        }
+
+        b.SetInsertPoint(fail);
+        b.CreateRet(llvm::ConstantPointerNull::get(ptrTy));
+    }
+
     struct MethodEntry {
         MethodPtr method;
         int score;

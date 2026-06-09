@@ -78,6 +78,15 @@ public final class Class {
     @Native("__cajeta_object_invoke_scalar0")
     private static int64 invokeScalar0Native(Object o, int32 idx);
 
+    @Native("__cajeta_rtti_constructor_count")
+    private static int32 constructorCountOf(pointer rtti);
+
+    @Native("__cajeta_rtti_constructor_param_count")
+    private static int32 constructorParamCountOf(pointer rtti, int32 idx);
+
+    @Native("__cajeta_class_new0")
+    private static #Object new0Native(pointer rtti, int32 ctorIdx);
+
     // --- entry points -----------------------------------------------------
 
     /**
@@ -191,5 +200,29 @@ public final class Class {
      */
     public static int64 invokeScalar0(Object o, int32 index) {
         return invokeScalar0Native(o, index);
+    }
+
+    // --- construction (REFL-2C infra; full Constructor API in REFL-4) ------
+
+    /** Number of declared constructors. */
+    public int32 getConstructorCount() {
+        return constructorCountOf(this.rtti);
+    }
+
+    /** Number of declared parameters of the constructor at `index`. */
+    public int32 getConstructorParamCount(int32 index) {
+        return constructorParamCountOf(this.rtti, index);
+    }
+
+    /**
+     * REFL-2C infrastructure: reflectively construct a new instance via the
+     * NO-ARGUMENT constructor at `index` — allocates, installs the vtable, and
+     * runs the constructor through the synthesized per-class adapter. Returns
+     * the new (owned) object, or null if the index isn't a no-arg constructor.
+     * The typed `Constructor.newInstance` surface with argument marshalling
+     * lands in REFL-4.
+     */
+    public #Object newInstance(int32 index) {
+        return new0Native(this.rtti, index);
     }
 }

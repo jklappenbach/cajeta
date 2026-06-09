@@ -3642,6 +3642,8 @@ typedef struct {
     void*                   vtable;
     void*                   invokeAdapter;       // REFL-2 reflective invoke adapter (or NULL)
     void*                   newInstanceAdapter;  // REFL-2C reflective ctor adapter (or NULL)
+    int16_t                 constructorCount;
+    const CajetaMethodDesc* constructors;        // #MethodDesc[] for constructors
 } CajetaRtti;
 
 // Object.getClass(): obj -> its cached #ClassObject (the cajeta.reflect.Class
@@ -3786,6 +3788,28 @@ int64_t __cajeta_object_invoke_scalar0(void* obj, int32_t idx) {
     int64_t ret = 0;
     adapter(obj, idx, NULL, &ret);
     return ret;
+}
+
+// REFL-2C constructor introspection + reflective construction.
+int32_t __cajeta_rtti_constructor_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->constructorCount : 0;
+}
+int32_t __cajeta_rtti_constructor_param_count(void* rtti, int32_t idx) {
+    if (!rtti) return -1;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->constructorCount || !r->constructors) return -1;
+    return r->constructors[idx].parameterCount;
+}
+// Reflectively construct an instance via the class's newInstance adapter
+// (no-arg constructor path). `rtti` is the class's #Rtti pointer (a Class
+// instance's `rtti` field). Returns the new object (owned by the caller) or
+// NULL if there's no adapter / the index isn't a marshallable constructor.
+void* __cajeta_class_new0(void* rtti, int32_t ctorIdx) {
+    if (!rtti) return NULL;
+    void* (*adapter)(int32_t, void*) =
+        (void* (*)(int32_t, void*)) ((CajetaRtti*) rtti)->newInstanceAdapter;
+    if (!adapter) return NULL;
+    return adapter(ctorIdx, NULL);
 }
 
 // UnrecoverableException's vtable address, published by codegen.

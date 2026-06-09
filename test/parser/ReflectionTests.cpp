@@ -134,3 +134,40 @@ TEST(ReflectionTests, invokeReachesNoArgMethod) {
         "}\n"
         "return found;\n"), 1);
 }
+
+// REFL-2C: User declares one no-arg constructor.
+TEST(ReflectionTests, constructorCountIsOne) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "return Class.of(u).getConstructorCount();\n"), 1);
+}
+
+// REFL-2C: reflectively construct a User via the synthesized newInstance
+// adapter, then confirm the result is a valid, fully-formed instance — its
+// vtable->classObject->rtti chain resolves and reports the right field count.
+TEST(ReflectionTests, newInstanceProducesValidObject) {
+    EXPECT_EQ(runI32(
+        "User seed = heap User();\n"
+        "Class c = Class.of(seed);\n"
+        "Object o = c.newInstance(0);\n"
+        "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 3);
+}
+
+// REFL-2C: a newInstance'd object is functional — reflectively invoking the
+// no-arg bump() on it returns 1 (its id was zero-initialized by construction).
+TEST(ReflectionTests, newInstanceObjectIsFunctional) {
+    EXPECT_EQ(runI32(
+        "User seed = heap User();\n"
+        "Class c = Class.of(seed);\n"
+        "Object o = c.newInstance(0);\n"
+        "int32 count = c.getMethodCount();\n"
+        "int32 found = 0;\n"
+        "int32 i = 0;\n"
+        "while (i < count) {\n"
+        "    if (c.getMethodParamCount(i) == 0) {\n"
+        "        if (((int32) Class.invokeScalar0(o, i)) == 1) { found = 1; }\n"
+        "    }\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "return found;\n"), 1);
+}

@@ -86,13 +86,20 @@ methods/ctors use synthesized switch-over-index adapters reached through `#Rtti`
       getMethodName`. Fixed two latent bugs: uninitialized `Method::llvmFunction`
       (garbage ptr) and the reflected param count/table wrongly counting implicit
       `this`. 9/9 reflection + 61/61 regression green.
-- [ ] REFL-2C **Synthesized newInstance adapter** (NEXT): per-class
-      `ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)` — `__cajeta_alloc`
-      (allocationSize) + zero + store vtable global + dispatch the constructor by
-      index (ctors live in `labeled/unlabeledConstructorMap`, NOT `methodList`, so
-      this needs a constructor index space + `getConstructorCount` surface). Fills
-      `#Rtti` slot 13. Mirror `heap X()` construction (see CreatorRest /
-      Expression.cpp `__cajeta_alloc`). Pattern follows 2B's adapter machinery.
+- [x] REFL-2C **Synthesized newInstance adapter** (shipped 2026-06-09): per-class
+      `ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)` — switch over the
+      constructor index that mirrors `heap T(...)` (CreatorRest): `__cajeta_alloc`
+      + zero + install primary/secondary vtables + `patchVirtualTableDropFn` + run
+      the chosen ctor, returning the instance. Fills `#Rtti` slot 13; added slots
+      14/15 (constructorCount + constructor `#MethodDesc[]` table).
+      `CajetaClass::getReflectConstructorList` (ctors live in the `methods` map,
+      sorted by canonical → stable index) / `getOrCreateReflectNewDecl` /
+      `emitReflectNewBody`. Entry `Class.newInstance(idx)` (returns `#Object`,
+      owned) + `getConstructorCount`/`getConstructorParamCount`; native
+      `__cajeta_class_new0`. 12/12 reflection + 61/61 regression green.
+- **REFL-2 (per-class adapters) COMPLETE.** Next: REFL-3 (`Field.get/set` over the
+  REFL-2A data-driven offsets) and REFL-4 (typed `Method.invoke`/`newInstance` arg
+  marshalling over the 2B/2C adapters → unblocks the tour `ReflectionDemo`).
 
 ### Phase 3 — `Field` read/write (REFL-3)
 - [ ] REFL-3.1 `Field.get`/`set` via the Phase-2 adapter.
