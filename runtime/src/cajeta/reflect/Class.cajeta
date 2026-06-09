@@ -14,7 +14,7 @@ import cajeta.lang.String;
  *
  * REFL-1 surface: read-only introspection backed by the fixed-layout RTTI
  * (`cajeta.reflect.#Rtti`) the compiler emits for every class. Reflective
- * value access (Field.get/set, Method.invoke, Constructor.newInstance) lands
+ * value access (Field.get/set, Method.invoke, Constructor.heapInstance) lands
  * in later phases.
  *
  * `Class` is `final` so its accessors dispatch statically — the cached
@@ -283,10 +283,10 @@ public final class Class {
      * NO-ARGUMENT constructor at `index` — allocates, installs the vtable, and
      * runs the constructor through the synthesized per-class adapter. Returns
      * the new (owned) object, or null if the index isn't a no-arg constructor.
-     * The typed `Constructor.newInstance` surface with argument marshalling
+     * The typed `Constructor.heapInstance` surface with argument marshalling
      * lands in REFL-4.
      */
-    public #Object newInstance(int32 index) {
+    public #Object heapInstance(int32 index) {
         return new0Native(this.rtti, index);
     }
 }

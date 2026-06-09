@@ -11,7 +11,7 @@ wants a demo showing "access down to the parameter, invoke a constructor, make
 a call." That demo is **gated on this** — there is no reflection API today, so
 there is nothing to demo. This plan builds the API; the tour `ReflectionDemo`
 lands once Phases 1–4 are in (enough for `getClass` → `getField`/`getMethod` →
-`newInstance`/`invoke` → parameter introspection).
+`heapInstance`/`invoke` → parameter introspection).
 
 ## Current state (baseline)
 
@@ -94,11 +94,11 @@ methods/ctors use synthesized switch-over-index adapters reached through `#Rtti`
       14/15 (constructorCount + constructor `#MethodDesc[]` table).
       `CajetaClass::getReflectConstructorList` (ctors live in the `methods` map,
       sorted by canonical → stable index) / `getOrCreateReflectNewDecl` /
-      `emitReflectNewBody`. Entry `Class.newInstance(idx)` (returns `#Object`,
+      `emitReflectNewBody`. Entry `Class.heapInstance(idx)` (returns `#Object`,
       owned) + `getConstructorCount`/`getConstructorParamCount`; native
       `__cajeta_class_new0`. 12/12 reflection + 61/61 regression green.
 - **REFL-2 (per-class adapters) COMPLETE.** Next: REFL-3 (`Field.get/set` over the
-  REFL-2A data-driven offsets) and REFL-4 (typed `Method.invoke`/`newInstance` arg
+  REFL-2A data-driven offsets) and REFL-4 (typed `Method.invoke`/`heapInstance` arg
   marshalling over the 2B/2C adapters → unblocks the tour `ReflectionDemo`).
 
 ### Phase 3 — `Field` read/write (REFL-3)  ← typed accessors shipped 2026-06-09
@@ -117,7 +117,7 @@ methods/ctors use synthesized switch-over-index adapters reached through `#Rtti`
       decision D1) — TODO; today access is unchecked, caller must match the type.
 - float/double + remaining primitive accessors — TODO (i32/i64/boolean landed).
 
-### Phase 4 — `Method.invoke` + `Constructor.newInstance` (REFL-4)  ← object model + marshalling shipped 2026-06-09
+### Phase 4 — `Method.invoke` + `Constructor.heapInstance` (REFL-4)  ← object model + marshalling shipped 2026-06-09
 Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects**
 (the Java-like model), not per-index accessors. Shipped in two increments
 (`61ed3e3` object model, marshalling next), 23/23 reflection + 49/49 regression green.
@@ -125,7 +125,9 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       `invokeScalar(o, int64[] args)` (raw-packed args, one int64/user param) route
       through the REFL-2B per-class invoke adapter (direct call). Native
       `__cajeta_object_invoke_scalar(0)`. Typed `invokeInt32`/boxed variants: TODO.
-- [x] REFL-4.2 `Constructor.newInstance` — `newInstance()` / `newInstance(int64[] args)`
+- [x] REFL-4.2 `Constructor.heapInstance` — `heapInstance()` / `heapInstance(int64[] args)`
+      (renamed 2026-06-09 from `newInstance` — allocation site is now explicit;
+      `stackInstance`/unsafe-placement reserved in the same namespace)
       route through the REFL-2C adapter (alloc + vtable + ctor). Native
       `__cajeta_class_new(0)`. The 2C adapter mirrors `heap T(...)` incl. vtable
       install; super-chain runs inside the ctor as usual.
@@ -140,7 +142,7 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       (today args are a caller-built `int64[]`).
 - [ ] **Async bridge (D5)** — reflective invoke of an `async` method routing through
       the fiber pool — TODO (design alongside the typed-invoke refinement).
-- [ ] **Tour `ReflectionDemo`** (the milestone): construct via `newInstance`, call via
+- [ ] **Tour `ReflectionDemo`** (the milestone): construct via `heapInstance`, call via
       `invoke`, enumerate `getParameters()`; wire into `samples/tour/.../Tour.cajeta`.
       All building blocks now exist — NEXT.
 
