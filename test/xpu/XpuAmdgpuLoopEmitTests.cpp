@@ -256,8 +256,9 @@ TEST(XpuAmdgpuLoopEmitTests, lowersTextureSampleToOcklCall) {
     std::string ir = printModule(deviceModule);
     // The texture param is a constant-AS pointer (the HIP texture object).
     EXPECT_NE(ir.find("ptr addrspace(4)"), std::string::npos) << ir;
-    // The sample call targets the ROCm device-library image-sample function.
-    EXPECT_NE(ir.find("__ockl_image_sample_2D"), std::string::npos) << ir;
+    // The sample call targets the ROCm device-library explicit-LOD image-sample
+    // function (the seam always uses the _lod variant; plain sample passes lod 0).
+    EXPECT_NE(ir.find("__ockl_image_sample_lod_2D"), std::string::npos) << ir;
 }
 
 // With the ROCm device bitcode present, the device-library link + AMDGPU codegen
@@ -306,8 +307,8 @@ TEST(XpuAmdgpuLoopEmitTests, lowersTextureFetchToOcklLoad) {
 
     std::string ir = printModule(deviceModule);
     EXPECT_NE(ir.find("ptr addrspace(4)"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("__ockl_image_load_2D"), std::string::npos) << ir;
-    EXPECT_EQ(ir.find("__ockl_image_sample_2D"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("__ockl_image_load_lod_2D"), std::string::npos) << ir;
+    EXPECT_EQ(ir.find("__ockl_image_sample_lod_2D"), std::string::npos) << ir;
 }
 
 // Integer fetch (B3 Step 2b): a Texture2D<int32> still loads via the only ockl
@@ -329,7 +330,7 @@ TEST(XpuAmdgpuLoopEmitTests, intTextureFetchBitcastsToI32) {
     ASSERT_NE(fn, nullptr);
 
     std::string ir = printModule(deviceModule);
-    EXPECT_NE(ir.find("__ockl_image_load_2D"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("__ockl_image_load_lod_2D"), std::string::npos) << ir;
     // The raw v4f32 image-load result reinterpreted as integers.
     EXPECT_NE(ir.find("bitcast <4 x float>"), std::string::npos) << ir;
     EXPECT_NE(ir.find("to <4 x i32>"), std::string::npos) << ir;
