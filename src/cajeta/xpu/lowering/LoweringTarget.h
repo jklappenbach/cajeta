@@ -266,6 +266,17 @@ namespace xpu {
             llvm::Value* texHandle, llvm::Value* x, llvm::Value* y,
             llvm::Value* layer, llvm::Type* texelTy);
 
+        // TextureCube — sampled by a DIRECTION vector (x, y, z), not a planar
+        // coordinate: the hardware picks the face the vector points at and projects
+        // onto it. The filtered read (float-only); a cube has NO fetch (no single
+        // integer texel for a direction). Default: unsupported (XPU-N01). On the
+        // image side a cube is Dim=Cube (Vulkan VIEW_TYPE_CUBE + CUBE_COMPATIBLE,
+        // AMD __ockl_image_sample_CM, CPU direction→face projection + bilinear).
+        virtual llvm::Value* sampleTextureCube(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* samplerHandle,
+            llvm::Value* x, llvm::Value* y, llvm::Value* z);
+
         // Store `value` into the 2-D storage image `imgHandle` at INTEGER texel
         // coordinate (x, y) — the lowering of `img.store(x, y, value)` (writable
         // images, the gfx bridge / twin of sampleTexture). `imgHandle` is exactly

@@ -65,6 +65,14 @@ bool isTexture2DArrayCanonical(const std::string& canonical) {
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
+// TextureCube<T = float32> — the cube-map sibling (6 faces, direction-sampled).
+bool isTextureCubeCanonical(const std::string& canonical) {
+    static const std::string kPrefix = "cajeta.xpu.core.TextureCube";
+    if (canonical.size() < kPrefix.size()) return false;
+    if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
+    if (canonical.size() == kPrefix.size()) return true;
+    return canonical[kPrefix.size()] == '<';
+}
 bool isSamplerCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.core.Sampler";
 }
@@ -179,6 +187,7 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
         if (isTexture3DCanonical(canonical)) return true;
         if (isTexture1DCanonical(canonical)) return true;
         if (isTexture2DArrayCanonical(canonical)) return true;
+        if (isTextureCubeCanonical(canonical)) return true;
         if (isImageCanonical(canonical)) return true;
         if (isSamplerCanonical(canonical)) return true;
         if (isAccelStructCanonical(canonical)) return true;
@@ -217,6 +226,10 @@ bool isTexture1DType(const CajetaTypePtr& type) {
 
 bool isTexture2DArrayType(const CajetaTypePtr& type) {
     return type && isTexture2DArrayCanonical(type->toCanonical());
+}
+
+bool isTextureCubeType(const CajetaTypePtr& type) {
+    return type && isTextureCubeCanonical(type->toCanonical());
 }
 
 bool isSamplerType(const CajetaTypePtr& type) {

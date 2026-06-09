@@ -166,7 +166,8 @@ namespace cajeta {
             bool isTexture = klass &&
                 (klass->toCanonical().rfind("cajeta.xpu.core.Texture2D", 0) == 0 ||
                  klass->toCanonical().rfind("cajeta.xpu.core.Texture3D", 0) == 0 ||
-                 klass->toCanonical().rfind("cajeta.xpu.core.Texture1D", 0) == 0);
+                 klass->toCanonical().rfind("cajeta.xpu.core.Texture1D", 0) == 0 ||
+                 klass->toCanonical().rfind("cajeta.xpu.core.TextureCube", 0) == 0);
             // NB: the Texture2D prefix above already matches Texture2DArray.
             // AccelerationStructure (Part C): a descriptor-bound device BVH. It
             // marshals via the POD-by-value path below (its deviceHandle is the
