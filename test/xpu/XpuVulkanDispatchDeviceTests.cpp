@@ -999,6 +999,74 @@ static const char* kTwoSamplersSrc() {
 // OpImageFetch on a real Vulkan device (RADV / Strix Halo): the sampled image
 // (Sampled=1) is fetched by exact integer coord — no sampler descriptor — and
 // every RGBA32F channel reads back bit-exact.
+// B3 mipmaps: the combined mip kernel on a real Vulkan device (RADV / Strix Halo)
+// — the device twin of XpuCpuDispatchTests.mipmapFetchAndSampleLodOnCpu and the
+// shape that originally appeared to "hang" (it was the pre-reboot bad build, not
+// the mip path). One 2-level R32F Texture2D(2,2,R32F,2): L0 fetch=3, L1 fetch=99,
+// L1 sampleLod=99 (the sampler's maxLod=VK_LOD_CLAMP_NONE lets explicit LOD reach
+// level 1; maxLod=0 would clamp every sample to level 0).
+static const char* kMipSrcDevice() {
+    static std::string s;
+    s = std::string("package test;\n")
+        + "import cajeta.xpu.core.Buffer;\n"
+        + "import cajeta.xpu.core.Texture2D;\n"
+        + "import cajeta.xpu.core.TextureFormat;\n"
+        + "import cajeta.xpu.core.Sampler;\n"
+        + "import cajeta.xpu.core.Stream;\n"
+        + "import cajeta.xpu.core.Thread;\n"
+        + "public class MipDev {\n"
+        + "    @Kernel\n"
+        + "    public static void mip(Texture2D tex, Sampler sl, Buffer<float32> out) {\n"
+        + "        uint32 i = Thread.globalIdX();\n"
+        + "        if (i < 1) {\n"
+        + "            Vector<float32,4> a = tex.fetchLod(1, 1, 0);\n"
+        + "            Vector<float32,4> b = tex.fetchLod(0, 0, 1);\n"
+        + "            Vector<float32,4> c = tex.sampleLod(sl, 0.5f, 0.5f, 1.0f);\n"
+        + "            out[0] = a.x; out[1] = b.x; out[2] = c.x;\n"
+        + "        }\n"
+        + "    }\n"
+        + "    public static int32 run() {\n"
+        + "        uint32 w = 2; uint32 h = 2;\n"
+        + "        Texture2D tex = heap Texture2D(w, h, TextureFormat.R32F, 2);\n"
+        + "        float32[] l0 = heap float32[4];\n"
+        + "        l0[0] = 0.0f; l0[1] = 1.0f; l0[2] = 2.0f; l0[3] = 3.0f;\n"
+        + "        float32[] l1 = heap float32[1]; l1[0] = 99.0f;\n"
+        + "        tex.uploadLevel(0, l0);\n"
+        + "        tex.uploadLevel(1, l1);\n"
+        + "        Sampler sl = heap Sampler(1, 0);\n"
+        + "        float32[] hout = heap float32[3];\n"
+        + "        for (uint32 i = 0; i < 3; i = i + 1) { hout[i] = -1.0f; }\n"
+        + "        Buffer<float32> out = heap Buffer<float32>(3);\n"
+        + "        out.upload(hout);\n"
+        + "        Stream s = Stream.current();\n"
+        + "        mip.launch(s, grid: [1], block: [1])(tex, sl, out);\n"
+        + "        s.sync();\n"
+        + "        out.download(hout);\n"
+        + "        if (hout[0] != 3.0f) { return (int32)(100); }\n"
+        + "        if (hout[1] != 99.0f) { return (int32)(200); }\n"
+        + "        float32 dc = hout[2] - 99.0f;\n"
+        + "        if (dc < -0.02f || dc > 0.02f) { return (int32)(300); }\n"
+        + "        return 777;\n"
+        + "    }\n"
+        + "}\n";
+    return s.c_str();
+}
+
+TEST(XpuVulkanDispatchDeviceTests, mipmapFetchAndSampleLodOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kMipSrcDevice(), "test.MipDev", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100: L0 fetch; 200: L1 fetch; 300: L1 sampleLod)";
+}
+
 TEST(XpuVulkanDispatchDeviceTests, textureFetchRgba32fOnDevice) {
     if (!VulkanDriver::available()) {
         GTEST_SKIP() << "no Vulkan device/driver available";
