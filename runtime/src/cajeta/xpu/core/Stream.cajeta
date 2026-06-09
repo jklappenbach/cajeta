@@ -64,8 +64,10 @@ public final class Stream {
      * this stream will not start until `e` has been recorded on its
      * source stream and signaled.
      */
-    @Native("__cajeta_xpu_stream_wait_for")
-    public void waitFor(Event e);
+    public void waitFor(Event e) {
+        int64 eh = e.handle;
+        this.nativeWaitFor(this.handle, eh);
+    }
 
     /**
      * Destroy this stream's backend object. No-op for the default stream
@@ -89,4 +91,7 @@ public final class Stream {
 
     @Native("__cajeta_xpu_stream_destroy")
     private void nativeDestroy(int64 handle);
+
+    @Native("__cajeta_xpu_stream_wait_for")
+    private void nativeWaitFor(int64 streamHandle, int64 eventHandle);
 }

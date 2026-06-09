@@ -1693,6 +1693,69 @@ TEST(XpuCpuDispatchTests, asyncCopyPipelineOnCpu) {
                       << " (100+i: out[i] != i+1 — async pipeline broke)";
 }
 
+// Event / Fence (Stage B4 async follow-on) — cross-stream + host sync on the CPU.
+// Two streams increment the same buffer; an Event records s1's tail and s2
+// waitFor(e)s it, so s2's +1 is ordered after s1's +1 (out[i] == i+2). A Fence
+// then signals s2 and the host waitHost()/query()s it. On CPU everything is
+// synchronous (the event is an always-signaled sentinel) so this is the
+// portability/compile proof; HIP exercises the real hipEvent ordering.
+const char* kEventFenceSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Event;\n"
+    "import cajeta.xpu.core.Fence;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class Sync {\n"
+    "    @Kernel\n"
+    "    public static void inc(Buffer<int32> b, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { b[i] = b[i] + 1; }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 256;\n"
+    "        int32[] h = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = (int32) i; }\n"
+    "        Buffer<int32> b = heap Buffer<int32>(n);\n"
+    "        Stream s1 = Stream.create();\n"
+    "        Stream s2 = Stream.create();\n"
+    "        Event e = Event.create();\n"
+    "        b.uploadAsync(h, s1);\n"
+    "        inc.launch(s1, grid: [4], block: [64])(b, n);\n"   // s1: +1
+    "        e.recordOn(s1);\n"                                 // mark s1's tail
+    "        s2.waitFor(e);\n"                                  // s2 waits on s1
+    "        inc.launch(s2, grid: [4], block: [64])(b, n);\n"   // s2: +1, after s1
+    "        int32[] out = heap int32[n];\n"
+    "        b.downloadAsync(out, s2);\n"
+    "        Fence f = Fence.create();\n"
+    "        f.signal(s2);\n"                                   // fence at s2's tail
+    "        f.waitHost();\n"                                   // host blocks
+    "        boolean done = f.query();\n"
+    "        s1.sync();\n"                                      // release borrows
+    "        s2.sync();\n"
+    "        e.destroy();\n"
+    "        f.destroy();\n"
+    "        s1.destroy();\n"
+    "        s2.destroy();\n"
+    "        if (!done) { return 1; }\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (out[i] != (int32)(i + 2)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCpuDispatchTests, eventFenceSyncOnCpu) {
+    auto jit = CajetaJit::compile(kEventFenceSource, "test.Sync", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (1: fence not signaled; 100+i: out[i] != i+2 — "
+                         "event/fence sync broke)";
+}
+
 // Bindless / multi-buffer descriptor sets (Stage B4) — portability on the CPU.
 // The same Buffer<int32>[] gather kernel: bufs[b][i] across `count` buffers
 // indexed at runtime. On the CPU a buffer-array param is the [count, h…] handle
