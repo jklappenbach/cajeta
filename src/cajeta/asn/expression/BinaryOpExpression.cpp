@@ -1427,6 +1427,54 @@ namespace cajeta {
                         }
                     }
                 }
+                // Ownership transfer into a class-typed FIELD slot.
+                // `this.field = local` (or `recv.field = local`) storing a
+                // heap-owned class/array pointer hands the reference to the
+                // field; the source local's drop must NOT fire at end-of-scope
+                // (which would free the instance the field still points at,
+                // leaving it dangling). This is the field-store twin of the
+                // array-slot transfer above and AggregateInitializer's
+                // ownership-into-field move — without it a `LinkedListNode`
+                // linked in via `this.tailNode = node` is freed when the
+                // enclosing method returns, and the list reads freed memory.
+                // Like the array case, we deactivate the dropEntry but do NOT
+                // markMoved (the local may be reassigned on the next loop
+                // iteration or read again on an unrelated path); deactivation
+                // is the necessary half. Fields stored INLINE (primitives,
+                // views, interface fat pointers) aren't owned pointers and
+                // are skipped.
+                if (lhsAst && dynamic_pointer_cast<DotExpression>(lhsAst)
+                        && rhsAst) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    CajetaTypePtr fieldType = lhsAst->getResolvedType();
+                    auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
+                    bool fieldIsArr =
+                        dynamic_pointer_cast<CajetaArray>(fieldType) != nullptr;
+                    bool fieldIsIface = fieldClass && fieldClass->isInterface();
+                    bool fieldIsView =
+                        dynamic_pointer_cast<CajetaView>(fieldType) != nullptr;
+                    bool fieldStoresAsPointer =
+                        fieldIsArr || (fieldClass && !fieldIsView && !fieldIsIface);
+                    if (fieldStoresAsPointer) {
+                        if (auto idExpr =
+                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)) {
+                            if (auto sc = module->getScopeStack().peek()) {
+                                FieldPtr srcField = sc->getField(
+                                    idExpr->getTextValue());
+                                if (srcField) {
+                                    if (llvm::Value* entry =
+                                            srcField->getDropEntry()) {
+                                        if (llvm::Function* mark =
+                                                module->getRuntimeFunction(
+                                                    "__cajeta_drop_mark_inactive")) {
+                                            builder->CreateCall(mark, {entry});
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // P3 — definite-assignment: if the LHS is a bare identifier,
                 // mark it assigned. Subsequent reads no longer trip the
                 // CAJETA_ERROR_VARIABLE_NOT_ASSIGNED check. Compound LHS
