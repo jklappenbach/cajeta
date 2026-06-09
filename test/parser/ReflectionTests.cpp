@@ -135,6 +135,53 @@ TEST(ReflectionTests, invokeReachesNoArgMethod) {
         "return found;\n"), 1);
 }
 
+// REFL-3: data-driven typed field write/read roundtrip on int32 `id` (field 0).
+TEST(ReflectionTests, fieldInt32Roundtrip) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "c.setInt32(u, 0, 41);\n"
+        "return c.getInt32(u, 0);\n"), 41);
+}
+
+// REFL-3: int64 `score` (field 1) roundtrip (returned narrowed for the harness).
+TEST(ReflectionTests, fieldInt64Roundtrip) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "c.setInt64(u, 1, (int64) 1000000);\n"
+        "return (int32) c.getInt64(u, 1);\n"), 1000000);
+}
+
+// REFL-3: boolean `active` (field 2) roundtrip.
+TEST(ReflectionTests, fieldBooleanRoundtrip) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "c.setBoolean(u, 2, true);\n"
+        "return c.getBoolean(u, 2) ? 1 : 0;\n"), 1);
+}
+
+// REFL-3 × REFL-2B: a reflectively-set field is observed by a reflective
+// invoke. Set id=41, then the no-arg bump() (returns id+1) must yield 42 —
+// proving the field offset the setter writes matches what the method reads.
+TEST(ReflectionTests, reflectiveSetVisibleToReflectiveInvoke) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "c.setInt32(u, 0, 41);\n"
+        "int32 count = c.getMethodCount();\n"
+        "int32 found = 0;\n"
+        "int32 i = 0;\n"
+        "while (i < count) {\n"
+        "    if (c.getMethodParamCount(i) == 0) {\n"
+        "        if (((int32) Class.invokeScalar0(u, i)) == 42) { found = 1; }\n"
+        "    }\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "return found;\n"), 1);
+}
+
 // REFL-2C: User declares one no-arg constructor.
 TEST(ReflectionTests, constructorCountIsOne) {
     EXPECT_EQ(runI32(

@@ -101,11 +101,21 @@ methods/ctors use synthesized switch-over-index adapters reached through `#Rtti`
   REFL-2A data-driven offsets) and REFL-4 (typed `Method.invoke`/`newInstance` arg
   marshalling over the 2B/2C adapters → unblocks the tour `ReflectionDemo`).
 
-### Phase 3 — `Field` read/write (REFL-3)
-- [ ] REFL-3.1 `Field.get`/`set` via the Phase-2 adapter.
-- [ ] REFL-3.2 Typed primitive accessors (`getInt32`/`setInt64`/…) — no boxing.
-- [ ] REFL-3.3 Visibility enforcement (throws on `private` without
-      `@Reflectable` — see Phase 9 / decision D1).
+### Phase 3 — `Field` read/write (REFL-3)  ← typed accessors shipped 2026-06-09
+- [x] REFL-3.2 **Typed primitive accessors, data-driven, no boxing**: `Class`
+      `getInt32/setInt32/getInt64/setInt64/getBoolean/setBoolean(o, fieldIndex[, v])`
+      backed by natives `__cajeta_field_get/set_i32/i64/bool` that load/store at the
+      field's REFL-2A `byteOffset` — NO per-class accessor codegen (the hybrid's
+      field path). Verified: roundtrips + a reflectively-set field is observed by a
+      reflective invoke (16/16 reflection + 49/49 regression green). Note: int64
+      literals need an explicit `(int64)` cast at the call site (cajeta idiom).
+- [ ] REFL-3.1 `Field.get`/`set` on a real `Field` object — TODO (needs REFL-1.7
+      `Field` objects; today access is via per-index `Class` accessors). `__cajeta_field_get_ref`
+      native exists but isn't surfaced (borrow-return-multi-param rule needs the
+      `Field` receiver form).
+- [ ] REFL-3.3 Visibility enforcement (throws on `private` when `@Sealed`,
+      decision D1) — TODO; today access is unchecked, caller must match the type.
+- float/double + remaining primitive accessors — TODO (i32/i64/boolean landed).
 
 ### Phase 4 — `Method.invoke` + `Constructor.newInstance` (REFL-4)  ← unblocks the tour demo
 - [ ] REFL-4.1 `Method.invoke` (vtable-hash lookup + arg marshalling) and the
