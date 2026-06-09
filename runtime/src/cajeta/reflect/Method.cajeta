@@ -21,6 +21,8 @@ public final class Method {
     private static int32 paramCountOf(pointer rtti, int32 idx);
     @Native("__cajeta_object_invoke_scalar0")
     private static int64 invoke0(Object o, int32 idx);
+    @Native("__cajeta_object_invoke_scalar")
+    private static int64 invokeN(Object o, int32 idx, int64[] args);
 
     public Method(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -51,4 +53,15 @@ public final class Method {
      * Argument-passing variants land with REFL-4 marshalling.
      */
     public int64 invokeScalar(Object o) { return invoke0(o, this.index); }
+
+    /**
+     * Invoke this method on `o` with raw arguments packed into `args` (one
+     * int64 element per user parameter, in declared order: scalars as their
+     * bits, objects/pointers whole). Result widened to int64. The caller must
+     * supply exactly getParameterCount() elements with matching types
+     * (typed/boxed marshalling refinements land later).
+     */
+    public int64 invokeScalar(Object o, int64[] args) {
+        return invokeN(o, this.index, args);
+    }
 }

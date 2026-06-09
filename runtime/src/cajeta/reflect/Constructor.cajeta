@@ -15,6 +15,8 @@ public final class Constructor {
     private static int32 paramCountOf(pointer rtti, int32 idx);
     @Native("__cajeta_class_new0")
     private static #Object new0(pointer rtti, int32 idx);
+    @Native("__cajeta_class_new")
+    private static #Object newN(pointer rtti, int32 idx, int64[] args);
 
     public Constructor(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -37,4 +39,13 @@ public final class Constructor {
      * Argument-passing variants land with REFL-4 marshalling.
      */
     public #Object newInstance() { return new0(this.rtti, this.index); }
+
+    /**
+     * Construct via this constructor with raw arguments packed into `args`
+     * (one int64 per user parameter, declared order). Returns the new owned
+     * object.
+     */
+    public #Object newInstance(int64[] args) {
+        return newN(this.rtti, this.index, args);
+    }
 }
