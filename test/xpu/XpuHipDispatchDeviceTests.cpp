@@ -1505,3 +1505,56 @@ TEST(XpuHipDispatchDeviceTests, memoryKindPinnedZeroCopyRoutesToHipOnDevice) {
                       << " (100+i: out[i] != i+1 — pinned host<->device "
                          "sharing broke)";
 }
+
+// Async copies / transfer queues (Stage B4) on HIP/AMD — the full async pipeline
+// on a REAL stream (hipStreamCreate). Three operations are queued on one stream:
+// an async H2D upload, a kernel launch (now stream-ordered — the launch site
+// threads the stream's handle through __cajeta_xpu_launch into
+// hipModuleLaunchKernel), and an async D2H download. A SINGLE stream.sync()
+// drains the whole pipeline. Correctness is the ordering proof: if the launch
+// ran before the upload finished, or the download before the launch, out[i]
+// would not be i+1. (gfx1151; uses a real per-stream queue, not the default.)
+TEST(XpuHipDispatchDeviceTests, asyncCopyPipelineRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Pipe {\n"
+        "    @Kernel\n"
+        "    public static void inc(Buffer<int32> b, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { b[i] = b[i] + 1; }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 256;\n"
+        "        int32[] h = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = (int32) i; }\n"
+        "        Buffer<int32> b = heap Buffer<int32>(n);\n"
+        "        Stream s = Stream.create();\n"
+        "        b.uploadAsync(h, s);\n"                     // async H2D on s
+        "        inc.launch(s, grid: [4], block: [64])(b, n);\n"  // launch on s
+        "        int32[] out = heap int32[n];\n"
+        "        b.downloadAsync(out, s);\n"                 // async D2H on s
+        "        s.sync();\n"                                // one sync drains all 3
+        "        s.destroy();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (out[i] != (int32)(i + 1)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(src, "test.Pipe", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != i+1 — async pipeline mis-ordered "
+                         "on the stream)";
+}

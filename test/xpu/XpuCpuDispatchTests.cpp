@@ -1647,6 +1647,52 @@ TEST(XpuCpuDispatchTests, memoryKindUnifiedHostCopyOnCpu) {
                       << " (100+i: out[i] != i+1 — host<->device sharing broke)";
 }
 
+// Async copies / transfer queues (Stage B4) — the full async pipeline on the
+// CPU (portability). Stream.create() is the default stream (handle 0) on the CPU
+// rung, and async copies + the launch run synchronously, but the SAME source —
+// uploadAsync / launch(s) / downloadAsync / one sync — compiles and is correct
+// everywhere. The HIP twin proves a real per-stream async queue on gfx1151.
+const char* kAsyncPipelineSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class Pipe {\n"
+    "    @Kernel\n"
+    "    public static void inc(Buffer<int32> b, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { b[i] = b[i] + 1; }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 256;\n"
+    "        int32[] h = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = (int32) i; }\n"
+    "        Buffer<int32> b = heap Buffer<int32>(n);\n"
+    "        Stream s = Stream.create();\n"
+    "        b.uploadAsync(h, s);\n"
+    "        inc.launch(s, grid: [4], block: [64])(b, n);\n"
+    "        int32[] out = heap int32[n];\n"
+    "        b.downloadAsync(out, s);\n"
+    "        s.sync();\n"
+    "        s.destroy();\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (out[i] != (int32)(i + 1)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCpuDispatchTests, asyncCopyPipelineOnCpu) {
+    auto jit = CajetaJit::compile(kAsyncPipelineSource, "test.Pipe",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != i+1 — async pipeline broke)";
+}
+
 // Item 7: a POD struct passed by value as a kernel arg runs on CPU. The struct
 // is marshalled field-by-field; the kernel reads p.mul/p.add to compute
 // out[i] = i*3 + 7 for every work-item.

@@ -124,6 +124,7 @@ namespace cajeta {
         llvm::Value* block[3] = {nullptr, nullptr, nullptr};
         bool haveGrid = false, haveBlock = false;
         llvm::Value* sharedBytes = nullptr;   // dynamic shared memory; 0 if absent
+        ExpressionPtr streamExpr;             // the unlabeled first param: the Stream
         for (auto& p : callee->getParameters()) {
             std::string label = stripColon(p.label);
             if (label == "grid")  haveGrid  = lowerDims(p.expression, grid);
@@ -132,7 +133,9 @@ namespace cajeta {
                 llvm::Value* sb[3];
                 if (lowerDims(p.expression, sb)) sharedBytes = sb[0];
             }
-            // The unlabeled first param is the stream — accepted, not yet plumbed.
+            // The unlabeled first param is the stream — its `handle` field is
+            // threaded to the runtime so copies + this launch order on it.
+            else if (label.empty()) streamExpr = p.expression;
         }
         if (!haveGrid || !haveBlock) {
             throw Exception("launch requires grid: and block: dimensions",
@@ -142,6 +145,31 @@ namespace cajeta {
         // sharedMemBytes). Optional — kernels using only static shared memory
         // (or none) omit it; default 0.
         if (!sharedBytes) sharedBytes = llvm::ConstantInt::get(i32Ty, 0);
+
+        // Stream handle (i64): the unlabeled launch arg's `handle` field. 0 = the
+        // default stream (preserves the original NULL-stream launch). A real
+        // stream orders this launch with the async copies queued on it.
+        llvm::Value* streamHandle = nullptr;
+        if (streamExpr) {
+            llvm::Value* sv = streamExpr->generateCode(module);
+            sv = loadIfLValue(module, sv, streamExpr);
+            if (!streamExpr->getResolvedType()) streamExpr->resolveTypes(module);
+            auto sklass = std::dynamic_pointer_cast<CajetaClass>(
+                streamExpr->getResolvedType());
+            if (sklass && sklass->toCanonical() == "cajeta.xpu.core.Stream") {
+                auto& sprops = sklass->getProperties();
+                auto it = sprops.find("handle");
+                if (it != sprops.end()) {
+                    unsigned idx =
+                        (unsigned) sklass->getFieldLlvmIndex(it->second);
+                    llvm::Value* hPtr = builder->CreateStructGEP(
+                        sklass->getLlvmType(), sv, idx, "stream.handle.ptr");
+                    streamHandle =
+                        builder->CreateLoad(i64Ty, hPtr, "stream.handle");
+                }
+            }
+        }
+        if (!streamHandle) streamHandle = llvm::ConstantInt::get(i64Ty, 0);
 
         // Marshal kernel args into argv = [N x ptr]; each entry points to a
         // stack slot holding that argument's value.
@@ -255,13 +283,14 @@ namespace cajeta {
 
         // void __cajeta_xpu_launch(i8* name, i32 gridX, i32 gridY, i32 gridZ,
         //                          i32 blockX, i32 blockY, i32 blockZ,
-        //                          i32 sharedBytes, ptr argv)
+        //                          i32 sharedBytes, ptr argv, i64 streamHandle)
         llvm::Function* launchFn =
             module->getRuntimeFunction("__cajeta_xpu_launch");
         if (!launchFn) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(ctx),
-                {ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, ptrTy},
+                {ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, ptrTy,
+                 i64Ty},
                 /*vararg=*/false);
             launchFn = llvm::cast<llvm::Function>(
                 module->getLlvmModule()
@@ -271,7 +300,7 @@ namespace cajeta {
         builder->CreateCall(launchFn,
                             {nameStr, grid[0], grid[1], grid[2],
                              block[0], block[1], block[2], sharedBytes,
-                             argvBase});
+                             argvBase, streamHandle});
         return nullptr;  // launch is a void statement
     }
 
