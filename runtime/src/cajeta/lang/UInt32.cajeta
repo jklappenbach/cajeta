@@ -22,4 +22,6 @@ public class UInt32 extends Number {
 
     /** Value-based hash → equal values compare equal via Object.operator==. */
     public int64 hash() { return (int64) this.value; }
+
+    public #String toString() { return this.formatUnsigned((uint64) this.value); }
 }

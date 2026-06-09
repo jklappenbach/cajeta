@@ -236,13 +236,28 @@ REFL-4.1/4.4; the only new compiler/runtime surface is the return-kind native.
       regression tests in `UnaryAndCastTests` (CastTests.unsigned*). This was a
       general cajeta correctness bug affecting all unsigned-narrow code, not just
       wrappers.
-- [ ] **W3 — wide/half IEEE floats.** `Float16`, `BFloat16`, `Float128`.
-      `asFloat64` via the existing fp casts where LLVM supports them.
-- [ ] **W4 — ML sub-byte/fp8 floats.** `Float4E2M1` … `Float8E5M2Fnuz`. Store
-      raw bits (iN); `value()` returns the opaque primitive. `asFloat64`/
-      `toString` **deferred** until the fp-conversion runtime helpers land
-      (documented stub that returns raw-bits-widened or throws — decide when the
-      helpers exist). Log the limitation; don't silently mis-convert.
+- [x] **W3 — wide/half IEEE floats.** DONE 2026-06-09. `Float16` (half),
+      `BFloat16` (bfloat), `Float128` (fp128), all `extends Number`. `asInt64`/
+      `asFloat64` via the ordinary fp casts (Expression.cpp `CreateFPCast` /
+      `CreateFPToSI` already handle half/bfloat/fp128). **Hashing:** Float16 /
+      BFloat16 widen to `float64` and reuse `__cajeta_hash_float64` (half→double
+      is lossless + injective over finite values, so distinct halfs never
+      collide and `-0.0` canonicalizes). Float128 does NOT widen (binary128→
+      double is *lossy* → collisions would break `==`); it uses a new
+      `__cajeta_hash_float128(__float128)` native that mixes the full 128 bits
+      (verified: the fp128 by-value @Native ABI crosses the JIT correctly).
+      Tests (WrapperTypesTests): w3RoundTrip, w3FloatEquality.
+- [x] **W4 — ML sub-byte/fp8 floats.** DONE 2026-06-09. `Float4E2M1`,
+      `Float6E2M3`, `Float6E3M2`, `Float8E4M3`, `Float8E5M2`, `Float8E4M3Fnuz`,
+      `Float8E5M2Fnuz` — opaque `iN` storage (incl. i4 / i6, which round-trip
+      through fields, ctors, and `value()` returns — verified). `value()`
+      returns the opaque primitive; `asInt64()` returns the **raw storage bits**
+      widened (documented as bits, not a decoded value); `asFloat64()`
+      **throws** `cajeta.error.Exception` rather than mis-converting bits via an
+      int→fp numeric cast; `hash()` is over the raw bits; `toString()` is
+      inherited (deferred) for the same decode reason. The fp-decode natives are
+      future work; when they land, `asFloat64`/`toString` get real bodies.
+      Tests (WrapperTypesTests): w4RawBitsRoundTrip, w4RawBitsEquality.
 - [x] **W5 — reflection boxing (REFL-4.1).** `Method.invokeBoxed` DONE
       2026-06-09. No compiler change needed: `CajetaMethodDesc.returnType` is
       already a canonical type-name string; new native
@@ -264,9 +279,23 @@ REFL-4.1/4.4; the only new compiler/runtime surface is the return-kind native.
       getBoxedPrimitiveFields (all 5 W1 types), getBoxedReferenceFieldThrows.
       The unsupported set shrinks automatically as W2-W4 wrappers land.
       **W5 COMPLETE.**
-- [ ] **W6 (optional) — `toString` + small-value cache.** Number→`String`
-      natives wired through `asInt64`/`asFloat64`; `Boolean`/small-`Int*` cache
-      behind `of()`.
+- [x] **W6 — `toString`.** DONE 2026-06-09 (toString); **cache DEFERRED** (see
+      below). New length-then-fill natives (`__cajeta_{int64,uint64,float64,
+      bool}_to_str_{len,into}`) mirror the reflection name idiom and build a heap
+      `String`. Shared `Number.format{Signed,Unsigned,Float}(...)` helpers are
+      inherited by every numeric wrapper; `Boolean` (extends `Object`) carries
+      its own. Wiring: signed ints → `formatSigned(asInt64())`; unsigned ints →
+      `formatUnsigned((uint64) value)` (true magnitude, NOT a negative `%lld`);
+      Float16/BFloat16/Float32/Float64/Float128 → `formatFloat(asFloat64())`
+      (Float128 display is the rounded double); Boolean → `"true"`/`"false"`.
+      `Char` and the W4 ML floats keep the inherited (deferred) toString.
+      Test: WrapperTypesTests.w6ToString.
+      **Small-value cache DEFERRED — blocked by the ownership model.** A cached
+      `Boolean.TRUE`/small-`Int*` singleton returned from `of()` would hand the
+      same owned `#` reference to many callers → double-drop. There's no
+      borrow-returning surface yet (the *same* gap that makes reference-field
+      `getBoxed` unsafe — W5b). Revisit once borrow-return / refcount lands;
+      `of()` is still the seam where a cache slots in without changing callers.
 
 ## Open questions (not blocking W1)
 

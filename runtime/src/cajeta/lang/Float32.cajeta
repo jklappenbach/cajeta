@@ -31,4 +31,6 @@ public class Float32 extends Number {
 
     /** Bitwise value hash → equal values compare equal via Object.operator==. */
     public int64 hash() { return hashBits(this.value); }
+
+    public #String toString() { return this.formatFloat(this.asFloat64()); }
 }

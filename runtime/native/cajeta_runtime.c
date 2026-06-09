@@ -4636,6 +4636,66 @@ const char* __cajeta_bool_to_str(int32_t v) {
     return v ? "true" : "false";
 }
 
+// --- wrapper-type toString() formatters (plan W6) ----------------------------
+//
+// `cajeta.lang` numeric/Boolean wrappers render their value into a heap
+// `cajeta.lang.String` using the same length-then-fill idiom the reflection
+// API uses for names (Method.getName / Field.getName): a `_len` native sizes
+// the decimal/`true`/`false` text, then an `_into` native copies it into a
+// caller-allocated `int8[]` whose layout is `{ int64 capacity; bytes... }`
+// (the cajeta array header is the 8-byte count, data follows). No allocation
+// crosses the boundary, so there's nothing to leak — unlike the `_to_str`
+// concat helpers above. Signed/unsigned/float are split so a `uint64` with the
+// high bit set formats as its true magnitude (%llu), not a negative %lld.
+static void cajeta_str_into(void* out, const char* src, int n) {
+    if (!out) return;
+    if (n < 0) n = 0;
+    int64_t cap = *((int64_t*) out);
+    if ((int64_t) n > cap) n = (int) cap;
+    if (n > 0) memcpy((char*) out + 8, src, (size_t) n);
+}
+
+int32_t __cajeta_int64_to_str_len(int64_t v) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long) v);
+    return n < 0 ? 0 : n;
+}
+void __cajeta_int64_to_str_into(int64_t v, void* out) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long) v);
+    cajeta_str_into(out, buf, n);
+}
+
+int32_t __cajeta_uint64_to_str_len(uint64_t v) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long) v);
+    return n < 0 ? 0 : n;
+}
+void __cajeta_uint64_to_str_into(uint64_t v, void* out) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long) v);
+    cajeta_str_into(out, buf, n);
+}
+
+int32_t __cajeta_float64_to_str_len(double v) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%g", v);
+    return n < 0 ? 0 : n;
+}
+void __cajeta_float64_to_str_into(double v, void* out) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%g", v);
+    cajeta_str_into(out, buf, n);
+}
+
+int32_t __cajeta_bool_to_str_len(int32_t v) {
+    return v ? 4 : 5;   // "true" / "false"
+}
+void __cajeta_bool_to_str_into(int32_t v, void* out) {
+    const char* s = v ? "true" : "false";
+    cajeta_str_into(out, s, (int) strlen(s));
+}
+
 // Copy `length` bytes from `data` into a freshly malloc'd null-terminated
 // string. Used by struct-view field reads on `String`-typed fields: the
 // inline bytes in the buffer aren't null-terminated, so we materialize an
@@ -5140,6 +5200,28 @@ int64_t __cajeta_hash_float32(float value) {
     memcpy(&bits, &value, sizeof(bits));
     if (bits == 0x80000000U) bits = 0;
     return (int64_t) splitmix64_finalize((uint64_t) bits ^ __cajeta_hash_seed_load());
+}
+
+// Bitwise hash of an IEEE-754 binary128 (LLVM fp128 / C __float128), plan W3.
+// float16/bfloat16 hash by widening to float64 (lossless, injective) and
+// reusing __cajeta_hash_float64, but float128 → float64 is *lossy*, so distinct
+// float128 values could collide and wrongly compare equal (Object.operator== is
+// hash-equality). Hash the full 128 bits instead: canonicalize -0.0 to +0.0
+// (IEEE says +0 == -0) and mix both 64-bit halves through the shared SplitMix
+// finalizer. x86-64 is little-endian, so the sign bit is the MSB of the high
+// half (bits[15] & 0x80); -0.0 is sign-only with an all-zero significand/exp.
+int64_t __cajeta_hash_float128(__float128 value) {
+    unsigned char bits[16];
+    memcpy(bits, &value, sizeof(bits));
+    int signOnly = (bits[15] == 0x80);
+    for (int i = 0; i < 15 && signOnly; i++) if (bits[i]) signOnly = 0;
+    if (signOnly) bits[15] = 0;            // -0.0 -> +0.0
+    uint64_t lo, hi;
+    memcpy(&lo, bits, 8);
+    memcpy(&hi, bits + 8, 8);
+    uint64_t h = splitmix64_finalize(lo ^ __cajeta_hash_seed_load());
+    h = splitmix64_finalize(h ^ hi);
+    return (int64_t) h;
 }
 
 int64_t __cajeta_hash_boolean(int8_t value) {

@@ -28,8 +28,19 @@ std::string prog(const std::string& body) {
         "import cajeta.lang.UInt32;\n"
         "import cajeta.lang.UInt64;\n"
         "import cajeta.lang.Char;\n"
+        "import cajeta.lang.Float16;\n"
+        "import cajeta.lang.BFloat16;\n"
         "import cajeta.lang.Float32;\n"
         "import cajeta.lang.Float64;\n"
+        "import cajeta.lang.Float128;\n"
+        "import cajeta.lang.Float8E4M3;\n"
+        "import cajeta.lang.Float8E5M2;\n"
+        "import cajeta.lang.Float8E4M3Fnuz;\n"
+        "import cajeta.lang.Float8E5M2Fnuz;\n"
+        "import cajeta.lang.Float6E2M3;\n"
+        "import cajeta.lang.Float6E3M2;\n"
+        "import cajeta.lang.Float4E2M1;\n"
+        "import cajeta.lang.String;\n"
         "import cajeta.reflect.Class;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
@@ -127,5 +138,86 @@ TEST(WrapperTypesTests, w2RoundTrip) {
         "if ((int32) g.value() != 65) { return 7; }\n"
         "Number n = Int8.of((int8) 7);\n"                      // upcast + virtual dispatch
         "if (n.asInt64() != 7L) { return 8; }\n"
+        "return 0;\n"), 0);
+}
+
+// W3 wrappers: the wide/half IEEE floats. of/value round-trip + asFloat64
+// (lossless for half/bfloat; rounded for binary128) via a Number upcast.
+TEST(WrapperTypesTests, w3RoundTrip) {
+    EXPECT_EQ(runI32(
+        "Float16 a = Float16.of((float16) 1.5f);\n"
+        "if (a.asFloat64() != 1.5) { return 1; }\n"            // half 1.5 is exact
+        "BFloat16 b = BFloat16.of((bfloat16) 2.5f);\n"
+        "if (b.asFloat64() != 2.5) { return 2; }\n"            // bfloat 2.5 is exact
+        "Float128 c = Float128.of((float128) 3.5);\n"
+        "if (c.asFloat64() != 3.5) { return 3; }\n"
+        "if (c.asInt64() != 3L) { return 4; }\n"               // truncating
+        "Number n = Float16.of((float16) 4.0f);\n"             // upcast + virtual dispatch
+        "if (n.asFloat64() != 4.0) { return 5; }\n"
+        "return 0;\n"), 0);
+}
+
+// W3 equality is value/bitwise: equal values compare equal, distinct distinct.
+// Float128 hashes the full 128 bits (no lossy float64 collapse), so two values
+// that round to the same double still compare unequal.
+TEST(WrapperTypesTests, w3FloatEquality) {
+    EXPECT_EQ(runI32(
+        "if (Float16.of((float16) 1.5f) == Float16.of((float16) 1.25f)) { return 1; }\n"
+        "if (Float128.of((float128) 1.5) == Float128.of((float128) 1.2)) { return 2; }\n"
+        "if (Float16.of((float16) 1.5f) == Float16.of((float16) 1.5f)) {\n"
+        "    if (Float128.of((float128) 7.5) == Float128.of((float128) 7.5)) {\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"
+        "return 3;\n"), 0);
+}
+
+// W4 wrappers: the opaque ML fp8/sub-byte floats. value()/asInt64() expose the
+// RAW STORAGE BITS (no fp decode yet — plan W4); construct from a small bit
+// pattern and read it back. Uses < 2^(bits-1) so the sign-extending widen is a
+// no-op and the comparison is exact.
+TEST(WrapperTypesTests, w4RawBitsRoundTrip) {
+    EXPECT_EQ(runI32(
+        "Float8E4M3 a = Float8E4M3.of((float8e4m3) 42);\n"
+        "if ((int32) a.value() != 42) { return 1; }\n"
+        "if (a.asInt64() != 42L) { return 2; }\n"
+        "Float8E5M2 b = Float8E5M2.of((float8e5m2) 100);\n"
+        "if ((int32) b.value() != 100) { return 3; }\n"
+        "Float8E4M3Fnuz c = Float8E4M3Fnuz.of((float8e4m3fnuz) 7);\n"
+        "if ((int32) c.value() != 7) { return 4; }\n"
+        "Float8E5M2Fnuz d = Float8E5M2Fnuz.of((float8e5m2fnuz) 9);\n"
+        "if ((int32) d.value() != 9) { return 5; }\n"
+        "Float6E2M3 e = Float6E2M3.of((float6e2m3) 20);\n"
+        "if ((int32) e.value() != 20) { return 6; }\n"
+        "Float6E3M2 f = Float6E3M2.of((float6e3m2) 15);\n"
+        "if ((int32) f.value() != 15) { return 7; }\n"
+        "Float4E2M1 g = Float4E2M1.of((float4e2m1) 5);\n"
+        "if ((int32) g.value() != 5) { return 8; }\n"
+        "return 0;\n"), 0);
+}
+
+// W4 hash is over the raw bits: identical storage compares equal, distinct not.
+TEST(WrapperTypesTests, w4RawBitsEquality) {
+    EXPECT_EQ(runI32(
+        "if (Float8E4M3.of((float8e4m3) 12) == Float8E4M3.of((float8e4m3) 13)) { return 1; }\n"
+        "if (Float8E4M3.of((float8e4m3) 12) == Float8E4M3.of((float8e4m3) 12)) {\n"
+        "    return 0;\n"
+        "}\n"
+        "return 2;\n"), 0);
+}
+
+// W6 toString: decimal text for signed/unsigned/float wrappers, true/false for
+// Boolean. Unsigned uses the true magnitude (a uint64 with the high bit set
+// must NOT print negative).
+TEST(WrapperTypesTests, w6ToString) {
+    EXPECT_EQ(runI32(
+        "if (!Int32.of(-42).toString().equals(\"-42\")) { return 1; }\n"
+        "if (!Int64.of(9000000000L).toString().equals(\"9000000000\")) { return 2; }\n"
+        "if (!Int8.of((int8) -5).toString().equals(\"-5\")) { return 3; }\n"
+        "if (!UInt8.of((uint8) 200).toString().equals(\"200\")) { return 4; }\n"
+        "if (!UInt64.of((uint64) -1L).toString().equals(\"18446744073709551615\")) { return 5; }\n"
+        "if (!Float64.of(1.5).toString().equals(\"1.5\")) { return 6; }\n"
+        "if (!Boolean.of(true).toString().equals(\"true\")) { return 7; }\n"
+        "if (!Boolean.of(false).toString().equals(\"false\")) { return 8; }\n"
         "return 0;\n"), 0);
 }

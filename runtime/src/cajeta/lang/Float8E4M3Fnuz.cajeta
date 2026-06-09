@@ -1,0 +1,48 @@
+package cajeta.lang;
+
+import cajeta.error.Exception;
+
+/**
+ * Boxed `float8e4m3fnuz` (fp8 E4M3 finite/no-unsigned-zero variant, 8-bit storage). Immutable, heap-allocatable,
+ * reflection-introspectable; boxed value is field index 0.
+ * See `plans/lang/wrapper-types-plan.md` (W4).
+ *
+ * ## Conversions are deferred
+ *
+ * The OCP-microscaling sub-byte / fp8 formats have **no LLVM IR float type** —
+ * cajeta stores them as opaque `iN` bit patterns and there is no runtime
+ * decode helper yet (future work). So:
+ *
+ *  - `value()` returns the raw opaque primitive (the stored bits).
+ *  - `asInt64()` returns those **raw storage bits** widened — NOT the decoded
+ *    numeric value. Useful to inspect/serialize the bit pattern.
+ *  - `asFloat64()` **throws** rather than silently mis-converting the bits as
+ *    an integer-to-float numeric cast (which would be meaningless).
+ *  - `hash()` is over the raw bits, so two boxes with identical storage compare
+ *    equal; `toString()` is inherited (deferred) for the same decode reason.
+ *
+ * When the fp-conversion natives land, `asFloat64()`/`toString()` get real
+ * implementations and this caveat goes away.
+ */
+public class Float8E4M3Fnuz extends Number {
+    float8e4m3fnuz value;
+
+    public Float8E4M3Fnuz(float8e4m3fnuz value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Float8E4M3Fnuz of(float8e4m3fnuz value) { return heap Float8E4M3Fnuz(value); }
+
+    /** The wrapped opaque primitive (raw stored bits). */
+    public float8e4m3fnuz value() { return this.value; }
+
+    /** Raw storage bits widened — NOT a decoded numeric value (see class doc). */
+    public int64 asInt64() { return (int64) this.value; }
+
+    /** Deferred: no fp-decode helper for this format yet (see class doc). */
+    public float64 asFloat64() {
+        throw heap Exception("Float8E4M3Fnuz.asFloat64: fp decode for float8e4m3fnuz is not implemented yet (no runtime conversion helper); use value()/asInt64() for the raw bits");
+    }
+
+    /** Raw-bits value hash → identical storage compares equal. */
+    public int64 hash() { return (int64) this.value; }
+}

@@ -169,9 +169,13 @@ public final class Field {
         if (kind == 14) {                              // char (i32)
             return Char.of((char) getI32(o, this.rtti, this.index));
         }
-        // kind 6 (reference — ownership-unsafe) or 7 (primitive w/o a wrapper:
-        // int128/uint128, half/quad/ML floats — plan W3-W4).
+        // kind 6 (reference — ownership-unsafe, would double-drop) or 7 (128-bit
+        // int, half/quad/ML float, or pointer). The W3/W4 wrapper CLASSES exist
+        // now, but reflective auto-boxing of these FIELDS isn't wired — the
+        // width-correct loads (2-byte half/bfloat, 16-byte float128, sub-byte
+        // ML) have no field-read natives yet. Read with the typed accessors and
+        // box manually until those land.
         throw heap UnsupportedReflectionException(
-            "getBoxed: this field type is not boxable (reference, or a primitive without a wrapper yet)");
+            "getBoxed: this field type is not auto-boxable (reference, 128-bit int, half/quad/ML float, or pointer); read it with a typed accessor and box manually");
     }
 }

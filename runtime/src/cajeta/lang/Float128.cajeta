@@ -1,0 +1,36 @@
+package cajeta.lang;
+
+/**
+ * Boxed `float128` (IEEE-754 binary128 / LLVM `fp128`). Immutable,
+ * heap-allocatable, reflection-introspectable; boxed value is field index 0.
+ * See `plans/lang/wrapper-types-plan.md` (W3).
+ *
+ * Equality is **bitwise** over the full 128 bits via the dedicated
+ * `__cajeta_hash_float128` native. Unlike `Float16`/`BFloat16`, this wrapper
+ * does NOT hash through a `float64` widening: binary128 → double is *lossy*, so
+ * distinct values would collide and wrongly compare equal (`Object.operator==`
+ * is hash-equality). `asInt64()` truncates toward zero; `asFloat64()` rounds to
+ * the nearest double (lossy — for display / coarse use, not round-tripping).
+ */
+public class Float128 extends Number {
+    float128 value;
+
+    @Native("__cajeta_hash_float128")
+    private static int64 hashBits(float128 value);
+
+    public Float128(float128 value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Float128 of(float128 value) { return heap Float128(value); }
+
+    /** The wrapped primitive. */
+    public float128 value() { return this.value; }
+
+    public int64   asInt64()   { return (int64) this.value; }
+    public float64 asFloat64() { return (float64) this.value; }   // lossy narrowing
+
+    /** Full-width bitwise value hash → equal values compare equal. */
+    public int64 hash() { return hashBits(this.value); }
+
+    public #String toString() { return this.formatFloat(this.asFloat64()); }
+}

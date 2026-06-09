@@ -21,4 +21,6 @@ public class Int64 extends Number {
 
     /** Value-based hash → equal values compare equal via Object.operator==. */
     public int64 hash() { return this.value; }
+
+    public #String toString() { return this.formatSigned(this.asInt64()); }
 }
