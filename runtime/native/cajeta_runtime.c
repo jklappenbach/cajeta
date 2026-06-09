@@ -5229,6 +5229,53 @@ int64_t __cajeta_hash_boolean(int8_t value) {
         (value ? 1ULL : 0ULL) ^ __cajeta_hash_seed_load());
 }
 
+// cajeta.lang.Guid hash — mixes both 64-bit halves of the 128-bit value through
+// the shared SplitMix finalizer (same construction as __cajeta_hash_float128).
+// 128 bits of identity can't inject into a 64-bit hash, so Object.operator==
+// (hash equality) carries the usual ~2^-64 collision caveat; Guid.equals() is
+// the exact 128-bit comparison.
+int64_t __cajeta_hash_guid(int64_t hi, int64_t lo) {
+    uint64_t h = splitmix64_finalize((uint64_t) hi ^ __cajeta_hash_seed_load());
+    h = splitmix64_finalize(h ^ (uint64_t) lo);
+    return (int64_t) h;
+}
+
+// Fill `n` bytes with entropy: /dev/urandom (strong), else rand() fallback.
+static void cajeta_fill_entropy(unsigned char* b, int n) {
+#if !defined(_WIN32)
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        int got = 0;
+        while (got < n) {
+            ssize_t r = read(fd, b + got, (size_t) (n - got));
+            if (r <= 0) break;
+            got += (int) r;
+        }
+        close(fd);
+        if (got == n) return;
+    }
+#endif
+    for (int i = 0; i < n; i++) b[i] = (unsigned char) (rand() & 0xFF);
+}
+
+// cajeta.lang.Guid.random() — generate a RFC 4122 version-4 (random) UUID.
+// `out` is a cajeta int64[2] ({ i64 count; i64 hi; i64 lo }); we fill the two
+// element slots with the big-endian-packed high/low 64 bits. Version nibble (4)
+// and variant bits (10xx) are forced per the spec.
+void __cajeta_guid_random_fill(void* out) {
+    if (!out) return;
+    unsigned char b[16];
+    cajeta_fill_entropy(b, 16);
+    b[6] = (unsigned char) ((b[6] & 0x0F) | 0x40);   // version 4
+    b[8] = (unsigned char) ((b[8] & 0x3F) | 0x80);   // variant 10xx
+    uint64_t hi = 0, lo = 0;
+    for (int i = 0; i < 8; i++)  hi = (hi << 8) | b[i];
+    for (int i = 8; i < 16; i++) lo = (lo << 8) | b[i];
+    int64_t* o = (int64_t*) out;
+    o[1] = (int64_t) hi;   // o[0] is the array's count header
+    o[2] = (int64_t) lo;
+}
+
 // Pointer-identity hash. Used by IdentityHashMap, observer registries,
 // weak-ref tables. Same mixer as the primitive variants so the
 // distribution properties match.
