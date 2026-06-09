@@ -9197,6 +9197,91 @@ void __cajeta_xpu_texture1d_free(void* self, int64_t handle) {
     }
 }
 
+// --- Texture2DArray (read-only layered 2-D images) --------------------------
+// A 2-D array is N (width, height) planes. On the CPU it is a cajeta_cpu_texobj
+// whose `d` field is the layer count and whose storage is laid out exactly like
+// a 3-D volume's z slices (so the CPU fetch reuses the 3-D path with z = layer,
+// and sample bilinearly filters within one layer). Vulkan/HIP layered images are
+// wired in A2/A3.
+
+// __cajeta_xpu_texture2darray_alloc(this, width, height, layers, format) -> handle.
+int64_t __cajeta_xpu_texture2darray_alloc(void* self, uint32_t width,
+                                          uint32_t height, uint32_t layers,
+                                          int32_t format) {
+    (void) self;
+    if (width == 0 || height == 0 || layers == 0) return 0;
+    int channels = cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) malloc(sizeof(*t));
+            if (!t) return 0;
+            t->w = width;
+            t->h = height;
+            t->d = layers;       // layer count stored in the volume's depth slot
+            t->format = format;
+            t->channels = channels;
+            t->levels = 1;
+            t->mipoff[0] = 0; t->mipw[0] = width; t->miph[0] = height;
+            t->data = (float*) calloc(
+                (size_t) width * height * layers * channels, sizeof(float));
+            if (!t->data) { free(t); return 0; }
+            return (int64_t) (intptr_t) t;
+        }
+        case CAJ_XPU_VULKAN: return 0;  // A2: a layered 2-D Vulkan image
+        case CAJ_XPU_HIP:    return 0;  // A3: a layered hipArray
+        default: return 0;
+    }
+}
+
+// __cajeta_xpu_texture2darray_upload(this, handle, host, width, height, layers, format).
+void __cajeta_xpu_texture2darray_upload(void* self, int64_t handle, void* host,
+                                        uint32_t width, uint32_t height,
+                                        uint32_t layers, int32_t format) {
+    (void) self;
+    if (!handle || !host || width == 0 || height == 0 || layers == 0) return;
+    const float* src = (const float*) ((const char*) host + 8);
+    size_t texels =
+        (size_t) width * height * layers * cajeta_texfmt_channels(format);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            if (!t->data) return;
+            if (cajeta_texfmt_is_unorm(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = (float) cajeta_texfmt_unorm8(src[i]) / 255.0f;
+            } else if (cajeta_texfmt_is_half(format)) {
+                for (size_t i = 0; i < texels; ++i)
+                    t->data[i] = cajeta_f16_to_f32(cajeta_f32_to_f16(src[i]));
+            } else {
+                memcpy(t->data, src, texels * sizeof(float));
+            }
+            return;
+        }
+        case CAJ_XPU_VULKAN: return;  // A2
+        case CAJ_XPU_HIP:    return;  // A3
+        default: return;
+    }
+}
+
+void __cajeta_xpu_texture2darray_free(void* self, int64_t handle) {
+    (void) self;
+    if (!handle) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            free(t->data);
+            free(t);
+            return;
+        }
+        case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
+        case CAJ_XPU_HIP:    cajeta_xpu_hip_tex_free(handle); return;
+        default: return;
+    }
+}
+
 // --- Image2D (writable storage images) --------------------------------------
 // Image2D is the writable twin of Texture2D: a 2-D R32_SFLOAT storage image a
 // kernel writes via `img.store(x, y, value)` (OpImageWrite), and the host reads
@@ -9467,6 +9552,44 @@ caj_v4i __cajeta_xpu_cpu_tex3d_fetch_rgba_i32(void* texp, int32_t x, int32_t y,
     caj_v4i c = { 0, 0, 0, 1 };
     for (int i = 0; i < t->channels; ++i) c[i] = p[i];
     return c;
+}
+
+// --- Texture2DArray CPU sample ----------------------------------------------
+// A 2-D array stores its `layers` planes exactly like a 3-D volume's z slices
+// (index = ((layer*h + y)*w + x)*channels), so `fetch` reuses the 3-D exact-voxel
+// read with z = layer. Only `sample` differs: it filters bilinearly WITHIN the
+// integer-selected layer (no cross-layer blend — unlike the 3-D trilinear). The
+// lowering of `arr.sample(sampler, u, v, layer)`; `layer` is the integer array
+// index (clamped), (u, v) normalized.
+caj_v4f __cajeta_xpu_cpu_tex2da_sample_rgba(void* texp, int32_t filterMode,
+                                            int32_t addressMode, float u, float v,
+                                            int32_t layer) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
+    caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
+    if (!t || !t->data || t->w == 0 || t->h == 0 || t->d == 0) return zero;
+    int W = (int) t->w, H = (int) t->h, D = (int) t->d;
+    int z = layer < 0 ? 0 : (layer >= D ? D - 1 : layer);   // clamp layer index
+    if (filterMode == 0) {                   // nearest
+        int x = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
+        int y = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
+        return cajeta_cpu_texel3d(t, x, y, z);
+    }
+    // bilinear (texel-center) within layer z — blend four RGBA texels
+    float fx = u * (float) W - 0.5f;
+    float fy = v * (float) H - 0.5f;
+    int x0 = (int) floorf(fx), y0 = (int) floorf(fy);
+    float dx = fx - (float) x0, dy = fy - (float) y0;
+    int cx0 = cajeta_tex_addr(x0,     W, addressMode);
+    int cx1 = cajeta_tex_addr(x0 + 1, W, addressMode);
+    int cy0 = cajeta_tex_addr(y0,     H, addressMode);
+    int cy1 = cajeta_tex_addr(y0 + 1, H, addressMode);
+    caj_v4f t00 = cajeta_cpu_texel3d(t, cx0, cy0, z);
+    caj_v4f t10 = cajeta_cpu_texel3d(t, cx1, cy0, z);
+    caj_v4f t01 = cajeta_cpu_texel3d(t, cx0, cy1, z);
+    caj_v4f t11 = cajeta_cpu_texel3d(t, cx1, cy1, z);
+    caj_v4f a = t00 + (t10 - t00) * dx;
+    caj_v4f b = t01 + (t11 - t01) * dx;
+    return a + (b - a) * dy;
 }
 
 // --- Launch + module registration -------------------------------------------
