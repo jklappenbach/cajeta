@@ -997,6 +997,125 @@ static const char* kTex1dSampleSrc() {
     return s.c_str();
 }
 
+// B3 texture dims: Texture2DArray fetch on a real Vulkan device — a 2x2x3 R32F
+// layered image (VK_IMAGE_VIEW_TYPE_2D_ARRAY, OpImageFetch on an Arrayed image)
+// read texel-exact by (x, y, layer). The device twin of texture2dArrayFetchOnCpu.
+static const char* kTex2daFetchSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2DArray;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex2daFetch {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture2DArray arr, Buffer<float32> out,\n"
+        "                             uint32 w, uint32 h, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 layer = i / (w*h);\n"
+        "            uint32 r = i - layer*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            Vector<float32,4> c = arr.fetch(x, y, layer);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 layers = 3; uint32 n = 12;\n"
+        "        float32[] texels = heap float32[12];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { texels[i] = (float32)(i); }\n"
+        "        Texture2DArray arr = heap Texture2DArray(w, h, layers);\n"
+        "        arr.upload(texels);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [64])(arr, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
+// Texture2DArray sample on a real Vulkan device: nearest at texel centers per
+// layer is exact; a within-layer-1 bilinear midpoint (u=0.5 between texel 4 and
+// 5) reads 4.5. Exercises the Arrayed OpImageSampleExplicitLod (3-comp coord,
+// layer as the 3rd component) + a Sampler.
+static const char* kTex2daSampleSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2DArray;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex2daSamp {\n"
+        "    @Kernel\n"
+        "    public static void samp(Texture2DArray arr, Sampler sn, Buffer<float32> out,\n"
+        "                            uint32 w, uint32 h, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 layer = i / (w*h);\n"
+        "            uint32 r = i - layer*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            float32 u = ((float32)(x) + 0.5f) / (float32)(w);\n"
+        "            float32 v = ((float32)(y) + 0.5f) / (float32)(h);\n"
+        "            Vector<float32,4> c = arr.sample(sn, u, v, layer);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void mid(Texture2DArray arr, Sampler sl, Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < 1) {\n"
+        "            Vector<float32,4> c = arr.sample(sl, 0.5f, 0.25f, 1);\n"
+        "            out[0] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 layers = 3; uint32 n = 12;\n"
+        "        float32[] texels = heap float32[12];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { texels[i] = (float32)(i); }\n"
+        "        Texture2DArray arr = heap Texture2DArray(w, h, layers);\n"
+        "        arr.upload(texels);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"
+        "        Sampler sl = heap Sampler(1, 0);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [64])(arr, sn, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 dv = hout[i] - (float32)(i);\n"
+        "            if (dv < -0.02f || dv > 0.02f) { out.free(); return (int32)(100 + i); }\n"
+        "        }\n"
+        "        float32[] hmid = heap float32[1]; hmid[0] = -1.0f;\n"
+        "        Buffer<float32> mo = heap Buffer<float32>(0, 1);\n"
+        "        mo.allocate(); mo.upload(hmid);\n"
+        "        mid.launch(s, grid: [1], block: [1])(arr, sl, mo);\n"
+        "        s.sync();\n"
+        "        mo.download(hmid); mo.free(); out.free();\n"
+        "        float32 dm = hmid[0] - 4.5f;\n"
+        "        if (dm < -0.02f || dm > 0.02f) { return (int32)(200); }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
 // Integer Texture3D fetch source — a Texture3D<int32|uint32> RGBA32I/UI volume
 // (VK_FORMAT_R32G32B32A32_SINT 3-D image, OpImageFetch → <4 x i32>).
 static const char* kTex3dIntFetchSrc(const char* elem, const char* fmt) {
@@ -1271,6 +1390,38 @@ TEST(XpuVulkanDispatchDeviceTests, texture1dSampleOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: linear midpoint)";
+}
+
+// B3 texture dims: Texture2DArray fetch on a real Vulkan device — a layered 2-D
+// image (VIEW_TYPE_2D_ARRAY), OpImageFetch on an Arrayed image, 2x2x3 texel-exact.
+TEST(XpuVulkanDispatchDeviceTests, texture2dArrayFetchOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kTex2daFetchSrc(), "test.Tex2daFetch", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: layered texel fetch mismatch)";
+}
+
+// Texture2DArray sample on a real Vulkan device — nearest per layer (exact) + a
+// within-layer-1 bilinear midpoint (texel 4/5 blend = 4.5).
+TEST(XpuVulkanDispatchDeviceTests, texture2dArraySampleOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kTex2daSampleSrc(), "test.Tex2daSamp", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: layer-1 midpoint)";
 }
 
 // Integer Texture3D fetch on a real Vulkan device — RGBA32I 3-D image

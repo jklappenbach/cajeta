@@ -77,14 +77,17 @@ llvm::TargetExtType* vkBufferType(llvm::LLVMContext& ctx, llvm::Type* elemTy,
 // Texture2D. Dim=1 → 2D, Depth=2 → not-a-depth-image, Arrayed=0, MS=0,
 // Sampled=1 → used with a sampler, Format=0 → Unknown. Matches the upstream
 // SampleLevel recipe (OpTypeImage <texel> 2D 2 0 0 1 Unknown). (Item 8 Stage B.)
-// `dimOperand` is the SPIR-V Dim: 0 = 1D, 1 = 2D, 2 = 3D (the texture's
-// textureDim maps 1→0, 2→1, 3→2). A 1-D / 3-D sampled image binds the same way;
-// only Dim + the coord arity differ. (A 1-D sampled image needs the Sampled1D
-// capability, which the SPIR-V backend emits when it sees Dim=1D, Sampled=1.)
+// `dimOperand` is the SPIR-V Dim: 0 = 1D, 1 = 2D, 2 = 3D, 3 = Cube (the texture's
+// textureDim kind maps 1→0, 2→1, 3→2, 4→1 (2D-array), 5→3 (cube)). `arrayed` is
+// the Arrayed operand (1 for a 2-D array — the 3rd OpTypeImage int). A 1-D /
+// 3-D / array / cube sampled image binds the same way; only Dim + Arrayed + the
+// coord arity differ. (A 1-D sampled image needs the Sampled1D capability, and a
+// cube the SampledCubeArray-adjacent caps, which the SPIR-V backend emits from
+// the Dim/Arrayed it sees.)
 llvm::TargetExtType* vkImageType(llvm::LLVMContext& ctx, llvm::Type* texelTy,
-                                 unsigned dimOperand = 1) {
+                                 unsigned dimOperand = 1, unsigned arrayed = 0) {
     return llvm::TargetExtType::get(ctx, "spirv.Image", {texelTy},
-                                    {dimOperand, 2, 0, 0, 1, 0});
+                                    {dimOperand, 2, arrayed, 0, 1, 0});
 }
 
 // The same OpTypeImage with Sampled=2 → a writable STORAGE image (no sampler) —
@@ -261,10 +264,14 @@ public:
         // Texture2D (Item 8): a SAMPLED_IMAGE descriptor; the handle is consumed
         // only by `tex.sample(...)` via sampleTexture. (set 0, binding = idx.)
         if (p.isTexture) {
+            // textureDim kind → (SPIR-V Dim, Arrayed): 1D=(0,0), 2D=(1,0),
+            // 3D=(2,0), 2D-array=(1,1), cube=(3,0).
+            unsigned dimOp = p.textureDim == 3 ? 2u
+                           : (p.textureDim == 1 ? 0u
+                           : (p.textureDim == 5 ? 3u : 1u));
+            unsigned arrayed = (p.textureDim == 4) ? 1u : 0u;
             return bindResource(b, m,
-                                vkImageType(m.getContext(), p.type,
-                                            p.textureDim == 3 ? 2u
-                                                : (p.textureDim == 1 ? 0u : 1u)),
+                                vkImageType(m.getContext(), p.type, dimOp, arrayed),
                                 idx, p.name);
         }
         // Image2D (writable images): a STORAGE_IMAGE descriptor; the handle is
@@ -432,6 +439,53 @@ public:
         llvm::Value* lod = llvm::ConstantInt::get(i32, 0);
         return b.CreateIntrinsic(v4t, llvm::Intrinsic::spv_resource_load_level,
                                  {texHandle, x, lod}, nullptr, "tex1d.fetch");
+    }
+
+    // Texture2DArray.sample(sampler, u, v, layer) → OpImageSampleExplicitLod on an
+    // Arrayed 2-D image — the layered twin of sampleTexture. The coord is a
+    // <3 x float> {u, v, layer} where the 3rd component is the (un-normalized)
+    // array layer; `layer` arrives as i32 and is converted to float. The image is
+    // Arrayed=1 (materializeParam), so the backend reads the 3rd coord as the
+    // layer, not a 3-D w. Explicit LOD 0; <3 x i32> offset.
+    llvm::Value* sampleTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* texHandle,
+                                      llvm::Value* samplerHandle, llvm::Value* u,
+                                      llvm::Value* v, llvm::Value* layer) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v3f = llvm::FixedVectorType::get(f32, 3);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* v3i = llvm::FixedVectorType::get(i32, 3);
+        llvm::Value* layerF = b.CreateSIToFP(layer, f32, "layer.f");
+        llvm::Value* coord = llvm::PoisonValue::get(v3f);
+        coord = b.CreateInsertElement(coord, u, uint64_t(0));
+        coord = b.CreateInsertElement(coord, v, uint64_t(1));
+        coord = b.CreateInsertElement(coord, layerF, uint64_t(2), "tex2da.coord");
+        llvm::Value* lod = llvm::ConstantFP::get(f32, 0.0);
+        llvm::Value* offset = llvm::ConstantAggregateZero::get(v3i);
+        return b.CreateIntrinsic(v4f, llvm::Intrinsic::spv_resource_samplelevel,
+                                 {texHandle, samplerHandle, coord, lod, offset});
+    }
+
+    // Texture2DArray.fetch(x, y, layer) → OpImageFetch on an Arrayed 2-D image at
+    // the exact integer texel of `layer`, mip 0, no sampler — the layered twin of
+    // fetchTexture. coord = <3 x i32> {x, y, layer}. Result <4 x T>.
+    llvm::Value* fetchTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* texHandle, llvm::Value* x,
+                                     llvm::Value* y, llvm::Value* layer,
+                                     llvm::Type* texelTy) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v3i = llvm::FixedVectorType::get(i32, 3);
+        auto* v4t = llvm::FixedVectorType::get(texelTy, 4);
+        llvm::Value* coord = llvm::PoisonValue::get(v3i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1));
+        coord = b.CreateInsertElement(coord, layer, uint64_t(2), "tex2da.fetch.coord");
+        llvm::Value* lod = llvm::ConstantInt::get(i32, 0);
+        return b.CreateIntrinsic(v4t, llvm::Intrinsic::spv_resource_load_level,
+                                 {texHandle, coord, lod}, nullptr, "tex2da.fetch");
     }
 
     // Image2D.store(x, y, value) → a single OpImageWrite, native via the fork
