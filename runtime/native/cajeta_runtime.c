@@ -6045,6 +6045,18 @@ static void* cajeta_xpu_libsym(void* lib, const char* name) {
 #endif
 }
 
+// Portable shared-library open (the open twin of cajeta_xpu_libsym). The CUDA/HIP
+// backends inline LoadLibraryA/dlopen at their single load site; the Vulkan path
+// loops over candidate ICD names, so it shares this helper. RTLD_NOW|RTLD_LOCAL on
+// POSIX matches those backends.
+static void* cajeta_xpu_libopen(const char* name) {
+#if defined(_WIN32)
+    return (void*) LoadLibraryA(name);
+#else
+    return dlopen(name, RTLD_NOW | RTLD_LOCAL);
+#endif
+}
+
 // Resolve the driver and create a context. Returns 1 on success. Caller holds
 // g_xpu_cuda_lock. Idempotent via the `loaded` tri-state. The driver API
 // exposes size-versioned symbols (cuMemAlloc_v2, …); we bind those explicitly.
@@ -6053,9 +6065,9 @@ static int cajeta_xpu_cuda_init_locked(void) {
     if (g_xpu_cuda.loaded == -1) return 0;
     g_xpu_cuda.loaded = -1;  // assume failure until everything resolves
 #if defined(_WIN32)
-    g_xpu_cuda.lib = (void*) LoadLibraryA("nvcuda.dll");
+    g_xpu_cuda.lib = cajeta_xpu_libopen("nvcuda.dll");
 #else
-    g_xpu_cuda.lib = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    g_xpu_cuda.lib = cajeta_xpu_libopen("libcuda.so.1");
 #endif
     if (!g_xpu_cuda.lib) return 0;
     #define CAJ_BIND(fp, nm)                                                  \
@@ -6325,7 +6337,19 @@ static struct cajeta_kparams* cajeta_xpu_find_kparams(const char* name) {
 #  endif
 #endif
 
-#if defined(CAJETA_RT_HAS_VULKAN) && !defined(_WIN32)
+// Per-binding resource kind, after launch_vulkan has wrapped scalars into SSBOs.
+// Defined unconditionally (not inside the Vulkan block below): the kernel-param
+// dispatch loop tags every binding with one of these regardless of whether the
+// real Vulkan path or the no-op stub is compiled. Keeping them out of the
+// CAJETA_RT_HAS_VULKAN guard is what makes the Windows build (where that guard
+// is off) link — see cajeta_xpu_vk_launch's two definitions.
+#define CAJ_VKB_BUFFER  0   // bindings[i] = buffer-table handle  -> STORAGE_BUFFER
+#define CAJ_VKB_TEXTURE 1   // bindings[i] = texture-table handle -> SAMPLED_IMAGE
+#define CAJ_VKB_SAMPLER 2   // bindings[i] = (int64) VkSampler    -> SAMPLER
+#define CAJ_VKB_ACCEL   3   // bindings[i] = accel-table handle   -> ACCELERATION_STRUCTURE_KHR
+#define CAJ_VKB_STORAGE_IMAGE 4 // bindings[i] = texture-table handle (storage) -> STORAGE_IMAGE
+
+#if defined(CAJETA_RT_HAS_VULKAN)
 #include <vulkan/vulkan.h>
 
 struct cajeta_vk {
@@ -6472,15 +6496,19 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // libMoltenVK.dylib. (On-device validation is gated on Apple hardware.)
     const char* libnames[] = {"libvulkan.1.dylib", "libvulkan.dylib",
                               "libMoltenVK.dylib"};
+#elif defined(_WIN32)
+    // The Vulkan loader the GPU driver / Vulkan runtime installs into System32
+    // (on PATH via the default DLL search). LoadLibraryA resolves it there.
+    const char* libnames[] = {"vulkan-1.dll"};
 #else
     const char* libnames[] = {"libvulkan.so.1", "libvulkan.so"};
 #endif
     const int nlibs = (int) (sizeof(libnames) / sizeof(libnames[0]));
     for (int i = 0; i < nlibs && !g_xpu_vk.lib; ++i)
-        g_xpu_vk.lib = dlopen(libnames[i], RTLD_NOW | RTLD_LOCAL);
+        g_xpu_vk.lib = cajeta_xpu_libopen(libnames[i]);
     if (!g_xpu_vk.lib) return 0;
     g_xpu_vk.getInstanceProcAddr =
-        (PFN_vkGetInstanceProcAddr) dlsym(g_xpu_vk.lib, "vkGetInstanceProcAddr");
+        (PFN_vkGetInstanceProcAddr) cajeta_xpu_libsym(g_xpu_vk.lib, "vkGetInstanceProcAddr");
     if (!g_xpu_vk.getInstanceProcAddr) return 0;
 
     g_xpu_vk.vkCreateInstance = (PFN_vkCreateInstance)
@@ -6616,6 +6644,27 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         }
     }
 
+    // shaderInt8 probe: SPIR-V the device backend emits can declare the Int8
+    // capability (e.g. byte-addressed loads, the ray-query candidate-type read),
+    // which VUID-VkShaderModuleCreateInfo-pCode-08740 requires shaderInt8 to back.
+    // Enable it when supported; left off (no chain) otherwise so vkCreateDevice
+    // still succeeds on devices lacking it.
+    // shaderInt64 (core feature) is the same story for kernels that touch 64-bit
+    // ints (e.g. device handles); read it from the same features2 query.
+    int wantInt8 = 0, wantInt64 = 0;
+    if (getFeatures2) {
+        VkPhysicalDeviceShaderFloat16Int8Features qi8;
+        memset(&qi8, 0, sizeof(qi8));
+        qi8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        VkPhysicalDeviceFeatures2 qf2;
+        memset(&qf2, 0, sizeof(qf2));
+        qf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        qf2.pNext = &qi8;
+        getFeatures2(g_xpu_vk.phys, &qf2);
+        wantInt8 = qi8.shaderInt8 ? 1 : 0;
+        wantInt64 = qf2.features.shaderInt64 ? 1 : 0;
+    }
+
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci;
     memset(&qci, 0, sizeof(qci));
@@ -6654,6 +6703,24 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         dci.pNext = &enBdaf;
         dci.enabledExtensionCount = 4;
         dci.ppEnabledExtensionNames = rtExts;
+    }
+
+    // Prepend shaderInt8 to whatever feature chain is set (the RT chain, or NULL).
+    VkPhysicalDeviceShaderFloat16Int8Features enInt8;
+    if (wantInt8) {
+        memset(&enInt8, 0, sizeof(enInt8));
+        enInt8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        enInt8.shaderInt8 = VK_TRUE;
+        enInt8.pNext = (void*) dci.pNext;
+        dci.pNext = &enInt8;
+    }
+    // shaderInt64 is a CORE feature -> pEnabledFeatures (legal alongside the pNext
+    // extension-feature chain, which carries no VkPhysicalDeviceFeatures2).
+    VkPhysicalDeviceFeatures coreFeats;
+    memset(&coreFeats, 0, sizeof(coreFeats));
+    if (wantInt64) {
+        coreFeats.shaderInt64 = VK_TRUE;
+        dci.pEnabledFeatures = &coreFeats;
     }
 
     if (g_xpu_vk.vkCreateDevice(g_xpu_vk.phys, &dci, NULL, &g_xpu_vk.device)
@@ -7186,9 +7253,15 @@ static void cajeta_xpu_vk_destroy_sampler(int64_t handle) {
 // in a kernel as VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR (see the launch
 // path). Only reached when g_xpu_vk.rayQuery == 1.
 struct cajeta_vk_accel {
-    VkAccelerationStructureKHR accel;
-    VkBuffer asBuf;          // AS backing store (must outlive the AS)
+    // `accel` is the TOP-LEVEL AS — the only thing a ray-query descriptor may bind
+    // (VUID-VkWriteDescriptorSetAccelerationStructureKHR-pAccelerationStructures-03579).
+    // It instances the bottom-level AS, which must outlive it, so we own both here.
+    VkAccelerationStructureKHR accel;   // TLAS (bound by the descriptor)
+    VkBuffer asBuf;                     // TLAS backing store (must outlive the AS)
     VkDeviceMemory asMem;
+    VkAccelerationStructureKHR blas;    // BLAS the TLAS references (must outlive it)
+    VkBuffer blasBuf;
+    VkDeviceMemory blasMem;
     int live;
 };
 #define CAJETA_VK_MAX_ACCELS 256
@@ -7271,11 +7344,16 @@ static VkDeviceAddress cajeta_xpu_vk_buf_addr(VkBuffer b) {
     return g_xpu_vk.vkGetBufferDeviceAddress(g_xpu_vk.device, &i);
 }
 
-// Build a bottom-level AS over `count` AABBs, each packed as 6 float32
+// Build a ray-traceable scene over `count` AABBs, each packed as 6 float32
 // (minX,minY,minZ,maxX,maxY,maxZ) — byte-identical to VkAabbPositionsKHR, so the
-// cajeta float32[] uploads straight in. Returns a 1-based table handle (0 on
-// failure / no RT device). The AS + its backing store outlive this call; the
-// AABB input and scratch are transient and freed before returning.
+// cajeta float32[] uploads straight in. A ray-query descriptor can ONLY bind a
+// TOP-LEVEL AS (VUID-...-03579), so we build a bottom-level AS over the AABBs and
+// then a top-level AS with one identity-transform instance referencing it. Both
+// survive in the table (the TLAS references the BLAS by device address); the AABB
+// input, instance buffer, and scratch are transient and freed before returning.
+// (Binding the BLAS directly happens to traverse on AMD but yields zero hits on
+// NVIDIA — caught by the validation layer.) Returns a 1-based table handle (0 on
+// failure / no RT device).
 static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t count) {
     if (!g_xpu_vk.rayQuery || !aabbs || count == 0) return 0;
 
@@ -7283,97 +7361,181 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
     // mutates the g_vk_accels table (slot-find + count++), both of which race
     // a concurrent launch/build/free from another OS thread without this.
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
-    VkBuffer aabbBuf = VK_NULL_HANDLE, asBuf = VK_NULL_HANDLE,
-             scratchBuf = VK_NULL_HANDLE;
-    VkDeviceMemory aabbMem = VK_NULL_HANDLE, asMem = VK_NULL_HANDLE,
-                   scratchMem = VK_NULL_HANDLE;
-    VkAccelerationStructureKHR accel = VK_NULL_HANDLE;
+    // Transient build inputs/scratch (freed at accel_done).
+    VkBuffer aabbBuf = VK_NULL_HANDLE, instBuf = VK_NULL_HANDLE,
+             blScratch = VK_NULL_HANDLE, tlScratch = VK_NULL_HANDLE;
+    VkDeviceMemory aabbMem = VK_NULL_HANDLE, instMem = VK_NULL_HANDLE,
+                   blScratchMem = VK_NULL_HANDLE, tlScratchMem = VK_NULL_HANDLE;
+    void* aabbMapped = NULL; void* instMapped = NULL;
+    // BLAS + TLAS (survive on success; torn down on failure).
+    VkBuffer blasBuf = VK_NULL_HANDLE, tlasBuf = VK_NULL_HANDLE;
+    VkDeviceMemory blasMem = VK_NULL_HANDLE, tlasMem = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR blas = VK_NULL_HANDLE, tlas = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     int64_t result = 0;
+    // Scratch device addresses must be aligned to minAccelerationStructureScratch
+    // OffsetAlignment (VUID-...-scratchData-03710); over-allocate by (align-1) and
+    // round the address up. A power of two (Vulkan requires it).
+    VkDeviceSize scratchAlign = g_xpu_vk.scratchAlign ? g_xpu_vk.scratchAlign : 256;
 
-    // 1. AABB input buffer (count * 24 bytes), filled from the host.
+    // ===== Bottom-level AS over the AABBs =====
     uint64_t aabbBytes = (uint64_t) count * sizeof(VkAabbPositionsKHR);
-    void* aabbMapped = NULL;
     if (!cajeta_xpu_vk_make_addr_buffer(
             aabbBytes,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            &aabbBuf, &aabbMem, &aabbMapped))   // host-mapped: filled by memcpy
+            &aabbBuf, &aabbMem, &aabbMapped))
         goto accel_done;
     memcpy(aabbMapped, aabbs, (size_t) aabbBytes);
 
-    // 2. Geometry descriptor (opaque procedural AABBs).
-    VkAccelerationStructureGeometryKHR geom;
-    memset(&geom, 0, sizeof(geom));
-    geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-    geom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
-    geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
-    geom.geometry.aabbs.sType =
+    VkAccelerationStructureGeometryKHR blGeom;
+    memset(&blGeom, 0, sizeof(blGeom));
+    blGeom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    blGeom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+    blGeom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    blGeom.geometry.aabbs.sType =
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
-    geom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
-    geom.geometry.aabbs.data.deviceAddress = cajeta_xpu_vk_buf_addr(aabbBuf);
+    blGeom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
+    blGeom.geometry.aabbs.data.deviceAddress = cajeta_xpu_vk_buf_addr(aabbBuf);
 
-    // 3. Build-geometry info (sizes query needs geometry but not yet dst/scratch).
-    VkAccelerationStructureBuildGeometryInfoKHR bgi;
-    memset(&bgi, 0, sizeof(bgi));
-    bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
-    bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-    bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    bgi.geometryCount = 1;
-    bgi.pGeometries = &geom;
+    VkAccelerationStructureBuildGeometryInfoKHR blBgi;
+    memset(&blBgi, 0, sizeof(blBgi));
+    blBgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    blBgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    blBgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    blBgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    blBgi.geometryCount = 1;
+    blBgi.pGeometries = &blGeom;
 
-    uint32_t primCount = count;
-    VkAccelerationStructureBuildSizesInfoKHR sizes;
-    memset(&sizes, 0, sizeof(sizes));
-    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    uint32_t blPrim = count;
+    VkAccelerationStructureBuildSizesInfoKHR blSizes;
+    memset(&blSizes, 0, sizeof(blSizes));
+    blSizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
     g_xpu_vk.vkGetAccelerationStructureBuildSizesKHR(
-        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bgi,
-        &primCount, &sizes);
-    if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0)
+        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &blBgi,
+        &blPrim, &blSizes);
+    if (blSizes.accelerationStructureSize == 0 || blSizes.buildScratchSize == 0)
         goto accel_done;
 
-    // 4. AS backing store + the AS object over it.
     if (!cajeta_xpu_vk_make_addr_buffer(
-            sizes.accelerationStructureSize,
+            blSizes.accelerationStructureSize,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,   // device-only (host never touches)
-            &asBuf, &asMem, NULL))
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &blasBuf, &blasMem, NULL))
         goto accel_done;
-    VkAccelerationStructureCreateInfoKHR aci;
-    memset(&aci, 0, sizeof(aci));
-    aci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-    aci.buffer = asBuf;
-    aci.size = sizes.accelerationStructureSize;
-    aci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &aci, NULL,
-                                                  &accel) != VK_SUCCESS)
+    VkAccelerationStructureCreateInfoKHR blAci;
+    memset(&blAci, 0, sizeof(blAci));
+    blAci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    blAci.buffer = blasBuf;
+    blAci.size = blSizes.accelerationStructureSize;
+    blAci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &blAci, NULL,
+                                                  &blas) != VK_SUCCESS)
         goto accel_done;
 
-    // 5. Scratch buffer; complete the build-geometry info. The scratch device
-    // address MUST be aligned to minAccelerationStructureScratchOffsetAlignment
-    // (VUID-VkAccelerationStructureBuildGeometryInfoKHR-scratchData-03710) — a raw
-    // buffer base is not guaranteed to satisfy it, so over-allocate by (align-1)
-    // and round the address up. scratchAlign is a power of two (Vulkan requires it).
-    VkDeviceSize scratchAlign = g_xpu_vk.scratchAlign ? g_xpu_vk.scratchAlign : 256;
-    if (!cajeta_xpu_vk_make_addr_buffer(sizes.buildScratchSize + scratchAlign - 1,
+    if (!cajeta_xpu_vk_make_addr_buffer(blSizes.buildScratchSize + scratchAlign - 1,
                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                        &scratchBuf, &scratchMem, NULL))
+                                        &blScratch, &blScratchMem, NULL))
         goto accel_done;
-    bgi.dstAccelerationStructure = accel;
+    blBgi.dstAccelerationStructure = blas;
     {
-        VkDeviceAddress sAddr = cajeta_xpu_vk_buf_addr(scratchBuf);
-        sAddr = (sAddr + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
-        bgi.scratchData.deviceAddress = sAddr;
+        VkDeviceAddress s = cajeta_xpu_vk_buf_addr(blScratch);
+        s = (s + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
+        blBgi.scratchData.deviceAddress = s;
     }
+    VkAccelerationStructureBuildRangeInfoKHR blRange;
+    memset(&blRange, 0, sizeof(blRange));
+    blRange.primitiveCount = count;
+    const VkAccelerationStructureBuildRangeInfoKHR* blRanges = &blRange;
 
-    // 6. Record + submit the build.
-    VkAccelerationStructureBuildRangeInfoKHR range;
-    memset(&range, 0, sizeof(range));
-    range.primitiveCount = count;
-    const VkAccelerationStructureBuildRangeInfoKHR* pranges = &range;
+    // ===== Top-level AS over one instance referencing the BLAS =====
+    VkAccelerationStructureDeviceAddressInfoKHR blAddrInfo;
+    memset(&blAddrInfo, 0, sizeof(blAddrInfo));
+    blAddrInfo.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    blAddrInfo.accelerationStructure = blas;   // valid once the AS object exists
+    VkDeviceAddress blasAddr =
+        g_xpu_vk.vkGetAccelerationStructureDeviceAddressKHR(g_xpu_vk.device,
+                                                            &blAddrInfo);
 
+    VkAccelerationStructureInstanceKHR inst;
+    memset(&inst, 0, sizeof(inst));
+    inst.transform.matrix[0][0] = 1.0f;        // identity 3x4 (row-major)
+    inst.transform.matrix[1][1] = 1.0f;
+    inst.transform.matrix[2][2] = 1.0f;
+    inst.mask = 0xFF;                          // matches the kernel's cullMask
+    inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    inst.accelerationStructureReference = (uint64_t) blasAddr;
+
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            sizeof(inst),
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &instBuf, &instMem, &instMapped))
+        goto accel_done;
+    memcpy(instMapped, &inst, sizeof(inst));
+
+    VkAccelerationStructureGeometryKHR tlGeom;
+    memset(&tlGeom, 0, sizeof(tlGeom));
+    tlGeom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    tlGeom.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    tlGeom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    tlGeom.geometry.instances.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    tlGeom.geometry.instances.arrayOfPointers = VK_FALSE;
+    tlGeom.geometry.instances.data.deviceAddress = cajeta_xpu_vk_buf_addr(instBuf);
+
+    VkAccelerationStructureBuildGeometryInfoKHR tlBgi;
+    memset(&tlBgi, 0, sizeof(tlBgi));
+    tlBgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    tlBgi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    tlBgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    tlBgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    tlBgi.geometryCount = 1;
+    tlBgi.pGeometries = &tlGeom;
+
+    uint32_t tlPrim = 1;
+    VkAccelerationStructureBuildSizesInfoKHR tlSizes;
+    memset(&tlSizes, 0, sizeof(tlSizes));
+    tlSizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    g_xpu_vk.vkGetAccelerationStructureBuildSizesKHR(
+        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlBgi,
+        &tlPrim, &tlSizes);
+    if (tlSizes.accelerationStructureSize == 0 || tlSizes.buildScratchSize == 0)
+        goto accel_done;
+
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            tlSizes.accelerationStructureSize,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &tlasBuf, &tlasMem, NULL))
+        goto accel_done;
+    VkAccelerationStructureCreateInfoKHR tlAci;
+    memset(&tlAci, 0, sizeof(tlAci));
+    tlAci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    tlAci.buffer = tlasBuf;
+    tlAci.size = tlSizes.accelerationStructureSize;
+    tlAci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &tlAci, NULL,
+                                                  &tlas) != VK_SUCCESS)
+        goto accel_done;
+
+    if (!cajeta_xpu_vk_make_addr_buffer(tlSizes.buildScratchSize + scratchAlign - 1,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                        &tlScratch, &tlScratchMem, NULL))
+        goto accel_done;
+    tlBgi.dstAccelerationStructure = tlas;
+    {
+        VkDeviceAddress s = cajeta_xpu_vk_buf_addr(tlScratch);
+        s = (s + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
+        tlBgi.scratchData.deviceAddress = s;
+    }
+    VkAccelerationStructureBuildRangeInfoKHR tlRange;
+    memset(&tlRange, 0, sizeof(tlRange));
+    tlRange.primitiveCount = 1;
+    const VkAccelerationStructureBuildRangeInfoKHR* tlRanges = &tlRange;
+
+    // ===== Record both builds in one command buffer: BLAS, barrier, TLAS =====
     VkCommandBufferAllocateInfo cbai;
     memset(&cbai, 0, sizeof(cbai));
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -7388,7 +7550,34 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
-    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &bgi, &pranges);
+    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &blBgi, &blRanges);
+    // BLAS write -> TLAS-build read: the TLAS build reads the just-built BLAS.
+    {
+        VkMemoryBarrier b;
+        memset(&b, 0, sizeof(b));
+        b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        b.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        b.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        g_xpu_vk.vkCmdPipelineBarrier(
+            cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &b, 0,
+            NULL, 0, NULL);
+    }
+    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &tlBgi, &tlRanges);
+    // TLAS write -> ray-query read. vkQueueWaitIdle below guarantees the builds
+    // EXECUTED, but the memory model still needs this availability/visibility
+    // dependency before the read. dst stage is COMPUTE because ray *query* (vs. a
+    // ray-tracing pipeline) runs in the compute shader.
+    {
+        VkMemoryBarrier b;
+        memset(&b, 0, sizeof(b));
+        b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        b.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        b.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        g_xpu_vk.vkCmdPipelineBarrier(
+            cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &b, 0, NULL, 0, NULL);
+    }
     g_xpu_vk.vkEndCommandBuffer(cmd);
     VkSubmitInfo si;
     memset(&si, 0, sizeof(si));
@@ -7400,8 +7589,8 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
         goto accel_done;
     g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
 
-    // 7. Record the AS in the table (asBuf/asMem/accel survive; clear locals so
-    // the cleanup below doesn't tear them down).
+    // Record in the table (TLAS bound by the descriptor; BLAS kept alive). Clear
+    // the survivors so the cleanup below doesn't tear them down.
     {
         int slot = -1;
         for (int i = 0; i < g_vk_accel_count; ++i)
@@ -7410,27 +7599,38 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
             if (g_vk_accel_count >= CAJETA_VK_MAX_ACCELS) goto accel_done;
             slot = g_vk_accel_count++;
         }
-        g_vk_accels[slot].accel = accel;
-        g_vk_accels[slot].asBuf = asBuf;
-        g_vk_accels[slot].asMem = asMem;
+        g_vk_accels[slot].accel = tlas;
+        g_vk_accels[slot].asBuf = tlasBuf;
+        g_vk_accels[slot].asMem = tlasMem;
+        g_vk_accels[slot].blas = blas;
+        g_vk_accels[slot].blasBuf = blasBuf;
+        g_vk_accels[slot].blasMem = blasMem;
         g_vk_accels[slot].live = 1;
         result = (int64_t) (slot + 1);
-        accel = VK_NULL_HANDLE; asBuf = VK_NULL_HANDLE; asMem = VK_NULL_HANDLE;
+        tlas = VK_NULL_HANDLE; tlasBuf = VK_NULL_HANDLE; tlasMem = VK_NULL_HANDLE;
+        blas = VK_NULL_HANDLE; blasBuf = VK_NULL_HANDLE; blasMem = VK_NULL_HANDLE;
     }
 
 accel_done:
     if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1,
                                            &cmd);
-    if (scratchBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, scratchBuf, NULL);
-    if (scratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, scratchMem, NULL);
+    if (blScratch) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, blScratch, NULL);
+    if (blScratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, blScratchMem, NULL);
+    if (tlScratch) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, tlScratch, NULL);
+    if (tlScratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, tlScratchMem, NULL);
     if (aabbMapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, aabbMem);
     if (aabbBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, aabbBuf, NULL);
     if (aabbMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, aabbMem, NULL);
-    // On failure these are still set (success cleared them); tear them down.
-    if (accel) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, accel,
-                                                          NULL);
-    if (asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, asBuf, NULL);
-    if (asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, asMem, NULL);
+    if (instMapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, instMem);
+    if (instBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, instBuf, NULL);
+    if (instMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, instMem, NULL);
+    // On failure these survive (success cleared them); tear them down.
+    if (tlas) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, tlas, NULL);
+    if (tlasBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, tlasBuf, NULL);
+    if (tlasMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, tlasMem, NULL);
+    if (blas) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, blas, NULL);
+    if (blasBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, blasBuf, NULL);
+    if (blasMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, blasMem, NULL);
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return result;
 }
@@ -7439,24 +7639,24 @@ static void cajeta_xpu_vk_accel_free(int64_t handle) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);   // serialize vs build/launch + table
     struct cajeta_vk_accel* a = cajeta_xpu_vk_accel_rec(handle);
     if (!a) { pthread_mutex_unlock(&g_xpu_vk_submit_mu); return; }
+    // Tear down the TLAS then the BLAS it referenced (+ each one's backing store).
     if (a->accel)
         g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, a->accel, NULL);
     if (a->asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, a->asBuf, NULL);
     if (a->asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, a->asMem, NULL);
-    a->accel = VK_NULL_HANDLE; a->asBuf = VK_NULL_HANDLE;
-    a->asMem = VK_NULL_HANDLE; a->live = 0;
+    if (a->blas)
+        g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, a->blas, NULL);
+    if (a->blasBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, a->blasBuf, NULL);
+    if (a->blasMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, a->blasMem, NULL);
+    a->accel = VK_NULL_HANDLE; a->asBuf = VK_NULL_HANDLE; a->asMem = VK_NULL_HANDLE;
+    a->blas = VK_NULL_HANDLE; a->blasBuf = VK_NULL_HANDLE; a->blasMem = VK_NULL_HANDLE;
+    a->live = 0;
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
 // One dispatch: shader module + descriptor set (binding i = bindings[i]) +
 // pipeline + command buffer + submit + wait. `bindings` are 1-based table
 // handles, in kernel-parameter order. Mirrors VulkanDriver::launch.
-// Per-binding resource kind, after launch_vulkan has wrapped scalars into SSBOs.
-#define CAJ_VKB_BUFFER  0   // bindings[i] = buffer-table handle  -> STORAGE_BUFFER
-#define CAJ_VKB_TEXTURE 1   // bindings[i] = texture-table handle -> SAMPLED_IMAGE
-#define CAJ_VKB_SAMPLER 2   // bindings[i] = (int64) VkSampler    -> SAMPLER
-#define CAJ_VKB_ACCEL   3   // bindings[i] = accel-table handle   -> ACCELERATION_STRUCTURE_KHR
-#define CAJ_VKB_STORAGE_IMAGE 4 // bindings[i] = texture-table handle (storage) -> STORAGE_IMAGE
 
 static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
     if (kind == CAJ_VKB_TEXTURE) return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;

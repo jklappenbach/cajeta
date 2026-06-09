@@ -88,14 +88,17 @@ constexpr unsigned kSharedAS = 3;
 // is bound to the host context). Returns nullptr for non-primitives.
 llvm::Type* deviceScalarType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
     if (!t) return nullptr;
-    unsigned long f = t->getTypeFlags();
+    CajetaTypeFlags f = t->getTypeFlags();
     if (!(f & PRIMITIVE_FLAG)) return nullptr;
     if (f & FLOAT_FLAG) {
         if (f & BIT_64_FLAG) return llvm::Type::getDoubleTy(ctx);
         if (f & BIT_16_FLAG) {
             // float16 (binary16) -> half; bfloat16 -> bfloat. Distinguished by
             // the type-ID byte (both are FLOAT|BIT_16).
-            constexpr unsigned long kIdMask = 0x000000FF00000000UL;
+            // 64-bit: the type-ID byte lives in bits 32-39, so the mask must be a
+            // 64-bit type. `unsigned long` is 32-bit on Windows (LLP64) — it would
+            // truncate this constant to 0 and misclassify bfloat16 as half.
+            constexpr CajetaTypeFlags kIdMask = 0x000000FF00000000ULL;
             return (f & kIdMask) == BFLOAT16_ID
                 ? llvm::Type::getBFloatTy(ctx) : llvm::Type::getHalfTy(ctx);
         }
