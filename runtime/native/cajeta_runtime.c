@@ -3983,6 +3983,44 @@ void* __cajeta_object_invoke_obj(void* obj, int32_t idx, void* argArray) {
     return ret;
 }
 
+// REFL-4.4 (Strategy 6): fiber-stack argument buffers. For a small, statically
+// known argument count the caller hands the raw args as discrete int64
+// parameters instead of building a heap int64[]. Each native assembles the
+// adapter's 8-byte-strided arg buffer (`buf`) on its own C stack frame — which
+// IS the calling fiber's stack — so there is no heap allocation and no count
+// header to skip past. Result is widened to int64; the cajeta layer narrows to
+// int32 where wanted, exactly as the int64[]-path variants do. (FP-return and
+// reference-return stack-arg siblings are a mechanical extension of this same
+// `buf` pattern, reading the ret buffer as float/double/pointer instead.)
+int64_t __cajeta_object_invoke_scalar1(void* obj, int32_t idx, int64_t a0) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0;
+    int64_t buf[1] = { a0 };
+    int64_t ret = 0;
+    adapter(obj, idx, buf, &ret);
+    return ret;
+}
+int64_t __cajeta_object_invoke_scalar2(void* obj, int32_t idx, int64_t a0, int64_t a1) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0;
+    int64_t buf[2] = { a0, a1 };
+    int64_t ret = 0;
+    adapter(obj, idx, buf, &ret);
+    return ret;
+}
+int64_t __cajeta_object_invoke_scalar3(void* obj, int32_t idx,
+                                       int64_t a0, int64_t a1, int64_t a2) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0;
+    int64_t buf[3] = { a0, a1, a2 };
+    int64_t ret = 0;
+    adapter(obj, idx, buf, &ret);
+    return ret;
+}
+
 // REFL-4 parameter introspection. `isCtor` selects the constructor table vs
 // the method table; memberIdx is the method/constructor index; paramIdx is the
 // USER parameter index (the implicit `this` is excluded from the table).

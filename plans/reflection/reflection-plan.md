@@ -171,8 +171,18 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       param annotations: TODO.
 - **Object model**: new `cajeta.reflect` classes Field/Method/Constructor/Parameter;
   `Class.getField/getMethod/getConstructor(idx)` return owned objects.
-- [ ] REFL-4.4 Fiber-stack arg buffers for small calls (spec Strategy 6) — TODO
-      (today args are a caller-built `int64[]`).
+- [x] REFL-4.4 Fiber-stack arg buffers for small calls (spec Strategy 6) —
+      DONE 2026-06-09. Small-arity overloads `invokeScalar`/`invokeInt32(o, a0[,
+      a1[, a2]])` pass raw args as discrete `int64` params to natives
+      `__cajeta_object_invoke_scalar1/2/3`, which assemble the adapter's
+      8-byte-strided arg buffer on their own C stack frame (= the calling fiber's
+      stack) — no heap `int64[]`, no count header to skip. The heap-`int64[]`
+      path stays for large/dynamic arg lists (Java's shape). Verified:
+      methodInvokeStackArg1 (addId(5)→15), methodInvokeStackArgsMulti
+      (sum2(7,9)→116, sum3(7,9,4)→120). Scope: scalar/int32 return (the spec's
+      `invoke(obj, a, b)` example); FP-return/reference-return stack-arg siblings
+      are a mechanical extension of the same `buf` pattern (read the ret buffer as
+      float/double/pointer) — TODO if a typed stack-arg FP/obj surface is wanted.
 - [ ] **Async bridge (D5)** — reflective invoke of an `async` method routing through
       the fiber pool — TODO (design alongside the typed-invoke refinement).
 - [x] **Tour `ReflectionDemo`** (the milestone, shipped 2026-06-09): reflects over
