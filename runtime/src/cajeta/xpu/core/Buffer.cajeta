@@ -41,11 +41,17 @@ public final class Buffer<T> {
     // sub-range of a parent's storage (false) and never frees — so the drop
     // chain can't double-free a parent's memory through a view. See `slice()`.
     boolean owned;
+    // Memory residency (a MemoryKind ordinal): Device (0, default), Pinned (1),
+    // or Unified (2). Selected at construction; threaded to the native
+    // allocator/deallocator (the right per-backend alloc + matching free) and to
+    // the zero-copy host-access path. See MemoryKind.
+    int32 kind;
 
     Buffer(int64 deviceHandle, uint64 elementCount) {
         this.deviceHandle = deviceHandle;
         this.elementCount = elementCount;
         this.owned = true;
+        this.kind = 0;       // MemoryKind.Device
     }
 
     /**
@@ -65,7 +71,8 @@ public final class Buffer<T> {
     public Buffer(uint64 elementCount) {
         this.elementCount = elementCount;
         this.owned = true;
-        this.deviceHandle = this.deviceAlloc(elementCount * elementBytes());
+        this.kind = 0;       // MemoryKind.Device
+        this.deviceHandle = this.deviceAlloc(elementCount * elementBytes(), 0);
     }
 
     /**
@@ -79,7 +86,7 @@ public final class Buffer<T> {
      */
     ~Buffer() {
         if (this.owned && this.deviceHandle != 0) {
-            this.deviceFree(this.deviceHandle);
+            this.deviceFree(this.deviceHandle, this.kind);
             this.deviceHandle = 0;
         }
     }
@@ -107,7 +114,7 @@ public final class Buffer<T> {
     // symbol per name serves every Buffer<T>; the element size is folded into
     // the byte counts the callers pass.
     @Native("__cajeta_xpu_buffer_alloc")
-    private int64 deviceAlloc(uint64 byteCount);
+    private int64 deviceAlloc(uint64 byteCount, int32 kind);
 
     @Native("__cajeta_xpu_buffer_upload")
     private void deviceUpload(int64 handle, T[] host, uint64 byteCount);
@@ -116,7 +123,15 @@ public final class Buffer<T> {
     private void deviceDownload(int64 handle, T[] host, uint64 byteCount);
 
     @Native("__cajeta_xpu_buffer_free")
-    private void deviceFree(int64 handle);
+    private void deviceFree(int64 handle, int32 kind);
+
+    // Zero-copy host access for a host-accessible buffer (Pinned/Unified, or the
+    // CPU/Vulkan-mapped storage): a plain memcpy in the shared address space, no
+    // device-transfer API. dir != 0 stores host[]→buffer; dir == 0 loads
+    // buffer→host[]. No-ops for a Device buffer on a discrete GPU.
+    @Native("__cajeta_xpu_buffer_host_copy")
+    private void deviceHostCopy(int64 handle, T[] host, uint64 byteCount,
+                               int32 dir, int32 kind);
 
     /**
      * Allocate a device buffer of `n` elements and return a heap handle.
@@ -142,10 +157,34 @@ public final class Buffer<T> {
      */
     public void allocate() {
         if (this.deviceHandle != 0) {
-            this.deviceFree(this.deviceHandle);   // free before re-alloc; no leak
+            this.deviceFree(this.deviceHandle, this.kind);   // free before re-alloc; no leak
         }
         uint64 bytes = this.elementCount * elementBytes();
-        this.deviceHandle = this.deviceAlloc(bytes);
+        this.deviceHandle = this.deviceAlloc(bytes, this.kind);
+    }
+
+    /**
+     * Allocate storage with a chosen memory residency (a {@link MemoryKind}).
+     * Mirrors the `Buffer(0, n)` + `allocate()` idiom, adding the kind:
+     *
+     *     Buffer<float32> u = heap Buffer<float32>(0, n);
+     *     u.allocate(MemoryKind.Unified);          // managed, host-accessible
+     *     u.hostStore(hx);                         // zero-copy on an APU
+     *     kernel.launch(s, ...)(u, ...);           // kernel reads the same memory
+     *     s.sync();
+     *     u.hostLoad(hx);                          // zero-copy read-back
+     *
+     * `Unified` (managed) and `Pinned` (page-locked) storage is host-accessible:
+     * write/read it directly with {@link #hostStore}/{@link #hostLoad} (no device
+     * transfer). `Device` keeps the explicit `upload`/`download` model. `kind` is
+     * a `MemoryKind` ordinal (the enum constant resolves to its i32 ordinal); it
+     * is taken as a separate overload (not a 2-arg constructor) to stay distinct
+     * from the `Buffer(int64 deviceHandle, uint64 elementCount)` form. See {@link
+     * MemoryKind}.
+     */
+    public void allocate(int32 kind) {
+        this.kind = kind;
+        this.allocate();
     }
 
     /**
@@ -173,9 +212,33 @@ public final class Buffer<T> {
      */
     public void free() {
         if (this.owned && this.deviceHandle != 0) {
-            this.deviceFree(this.deviceHandle);
+            this.deviceFree(this.deviceHandle, this.kind);
             this.deviceHandle = 0;
         }
+    }
+
+    /**
+     * Zero-copy host → buffer write for a host-accessible buffer (constructed
+     * with `MemoryKind.Unified` or `.Pinned`). Copies `host` directly into this
+     * buffer's shared storage with NO device transfer — a plain memcpy in the
+     * unified address space (genuine zero-copy on an APU). The kernel then reads
+     * the same memory; pair with {@link #hostLoad} to read results back. The
+     * host array's element count must equal `length()`. For a `Device` buffer on
+     * a discrete GPU (no host mapping) this no-ops — use {@link #upload} there.
+     */
+    public void hostStore(T[] host) {
+        uint64 bytes = this.elementCount * elementBytes();
+        this.deviceHostCopy(this.deviceHandle, host, bytes, 1, this.kind);
+    }
+
+    /**
+     * Zero-copy buffer → host read, the twin of {@link #hostStore}: copies this
+     * buffer's shared storage directly into `host` with no device transfer.
+     * No-ops for a `Device` buffer on a discrete GPU — use {@link #download}.
+     */
+    public void hostLoad(T[] host) {
+        uint64 bytes = this.elementCount * elementBytes();
+        this.deviceHostCopy(this.deviceHandle, host, bytes, 0, this.kind);
     }
 
     /**
@@ -212,6 +275,7 @@ public final class Buffer<T> {
         int64 base = this.deviceSlice(this.deviceHandle, offset * elementBytes());
         Buffer<T> sub = heap Buffer<T>(base, count);
         sub.owned = false;           // non-owning: shares the parent's storage
+        sub.kind = this.kind;        // inherit residency (host-accessible if parent is)
         return #sub;                 // move out; the source dtor no-ops
     }
 

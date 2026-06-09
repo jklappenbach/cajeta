@@ -1424,3 +1424,84 @@ TEST(XpuHipDispatchDeviceTests, bufferSliceKernelRoutesToHipOnDevice) {
                       << " (1xx: head overwritten — bad offset; "
                          "2xx: tail wrong — view base off)";
 }
+
+// Buffer MemoryKind (Stage B4) on HIP/AMD — genuine zero-copy UNIFIED (managed)
+// memory on gfx1151. hipMallocManaged gives one pointer the host AND device both
+// address; on this APU (Strix Halo, shared physical RAM) there is no transfer at
+// all. The host writes the buffer directly with hostStore (a memcpy into managed
+// memory, NO hipMemcpyHtoD), a kernel increments every element reading that same
+// memory, and the host reads results with hostLoad (NO hipMemcpyDtoH). That the
+// kernel saw the host's writes and the host saw the kernel's writes — with no
+// device-transfer call anywhere — is the zero-copy proof. `kind` ordinal 2.
+static const char* hipMemKindSource(const char* kindExpr) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.MemoryKind;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class MemKind {\n"
+        "    @Kernel\n"
+        "    public static void inc(Buffer<int32> b, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { b[i] = b[i] + 1; }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        int32[] h = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = (int32) i; }\n"
+        "        Buffer<int32> u = heap Buffer<int32>(0, n);\n"
+        "        u.allocate(") + kindExpr + ");\n"
+        "        u.hostStore(h);\n"             // zero-copy host write (no upload)
+        "        Stream s = Stream.current();\n"
+        "        inc.launch(s, grid: [1], block: [64])(u, n);\n"
+        "        s.sync();\n"
+        "        int32[] out = heap int32[n];\n"
+        "        u.hostLoad(out);\n"            // zero-copy host read (no download)
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (out[i] != (int32)(i + 1)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+TEST(XpuHipDispatchDeviceTests, memoryKindUnifiedZeroCopyRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(hipMemKindSource("MemoryKind.Unified"),
+                                  "test.MemKind", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != i+1 — managed host<->device "
+                         "sharing broke)";
+}
+
+// PINNED (page-locked, device-accessible host) memory on HIP/AMD: hipHostMalloc
+// gives host memory the kernel reads directly through the unified address space.
+// Same zero-copy hostStore→inc→hostLoad shape; also exercises the kind-aware
+// free routing to hipHostFree (a Device/Unified free would be hipFree). kind 1.
+TEST(XpuHipDispatchDeviceTests, memoryKindPinnedZeroCopyRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(hipMemKindSource("MemoryKind.Pinned"),
+                                  "test.MemKind", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != i+1 — pinned host<->device "
+                         "sharing broke)";
+}

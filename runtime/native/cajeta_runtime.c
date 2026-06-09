@@ -6029,6 +6029,14 @@ struct cajeta_cuda_api {
     int (*cuMemcpyHtoD)(cajeta_cudeviceptr, const void*, size_t);
     int (*cuMemcpyDtoH)(void*, cajeta_cudeviceptr, size_t);
     int (*cuMemFree)(cajeta_cudeviceptr);
+    // Pinned / unified (managed) memory (Buffer MemoryKind); optional — a missing
+    // entry just falls that kind back to plain cuMemAlloc/cuMemFree. Managed
+    // memory (cuMemAllocManaged) is one pointer host AND device see; pinned host
+    // memory (cuMemHostAlloc) is page-locked + device-accessible, freed with
+    // cuMemFreeHost (managed frees with plain cuMemFree).
+    int (*cuMemAllocManaged)(cajeta_cudeviceptr*, size_t, unsigned);
+    int (*cuMemHostAlloc)(void**, size_t, unsigned);
+    int (*cuMemFreeHost)(void*);
     int (*cuLaunchKernel)(void*, unsigned, unsigned, unsigned,
                           unsigned, unsigned, unsigned, unsigned,
                           void*, void**, void**);
@@ -6072,6 +6080,14 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
     CAJ_BIND(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
     CAJ_BIND(cuMemFree, "cuMemFree_v2");
+    // Pinned / unified memory — optional (bound non-fatally; null → kind falls
+    // back to plain device alloc/free).
+    *(void**) (&g_xpu_cuda.cuMemAllocManaged) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemAllocManaged");
+    *(void**) (&g_xpu_cuda.cuMemHostAlloc) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemHostAlloc");
+    *(void**) (&g_xpu_cuda.cuMemFreeHost) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemFreeHost");
     CAJ_BIND(cuLaunchKernel, "cuLaunchKernel");
     CAJ_BIND(cuCtxSynchronize, "cuCtxSynchronize");
     #undef CAJ_BIND
@@ -6200,6 +6216,15 @@ struct cajeta_hip_api {
                                    unsigned, unsigned);
     int (*hipGetMipmappedArrayLevel)(void**, void*, unsigned);
     int (*hipFreeMipmappedArray)(void*);
+    // Pinned / unified (managed) memory (Buffer MemoryKind); optional — absent →
+    // those kinds fall back to plain hipMalloc. hipMallocManaged gives one
+    // pointer accessible from host AND device (zero-copy on an APU like Strix
+    // Halo); hipHostMalloc gives page-locked, device-accessible host memory
+    // (fast/async DMA); hipHostFree releases the latter (managed memory frees
+    // with plain hipFree).
+    int (*hipMallocManaged)(void**, size_t, unsigned);
+    int (*hipHostMalloc)(void**, size_t, unsigned);
+    int (*hipHostFree)(void*);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
@@ -6399,6 +6424,9 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipMallocMipmappedArray, "hipMallocMipmappedArray");
     CAJ_HBIND_OPT(hipGetMipmappedArrayLevel, "hipGetMipmappedArrayLevel");
     CAJ_HBIND_OPT(hipFreeMipmappedArray, "hipFreeMipmappedArray");
+    CAJ_HBIND_OPT(hipMallocManaged, "hipMallocManaged");
+    CAJ_HBIND_OPT(hipHostMalloc, "hipHostMalloc");
+    CAJ_HBIND_OPT(hipHostFree, "hipHostFree");
     #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
@@ -8562,28 +8590,98 @@ static void cajeta_xpu_launch_cpu(const char* name,
 // computed caller-side.
 // `self` is the Buffer instance pointer the instance-method forwarder passes;
 // the device side is keyed on the int64 handle, so self is ignored.
-int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount) {
+// Buffer MemoryKind ordinals — the stable native contract; MUST match
+// runtime/src/cajeta/xpu/core/MemoryKind.cajeta. Device = device-local memory
+// with explicit upload/download (the default, original behaviour); Pinned =
+// page-locked, device-accessible host memory; Unified = managed memory one
+// pointer host AND device see (zero-copy on an integrated GPU).
+enum {
+    CAJ_MEMKIND_DEVICE  = 0,
+    CAJ_MEMKIND_PINNED  = 1,
+    CAJ_MEMKIND_UNIFIED = 2
+};
+int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) {
     (void) self;
     if (byteCount == 0) return 0;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA: {
             cajeta_cudeviceptr p = 0;
+            if (kind == CAJ_MEMKIND_UNIFIED && g_xpu_cuda.cuMemAllocManaged) {
+                // CU_MEM_ATTACH_GLOBAL = 1
+                if (g_xpu_cuda.cuMemAllocManaged(&p, (size_t) byteCount, 1) != 0) return 0;
+                return (int64_t) p;
+            }
+            if (kind == CAJ_MEMKIND_PINNED && g_xpu_cuda.cuMemHostAlloc) {
+                void* hp = NULL;
+                // CU_MEMHOSTALLOC_DEVICEMAP = 2 → device-accessible
+                if (g_xpu_cuda.cuMemHostAlloc(&hp, (size_t) byteCount, 2) != 0) return 0;
+                return (int64_t) (intptr_t) hp;
+            }
             if (g_xpu_cuda.cuMemAlloc(&p, (size_t) byteCount) != 0) return 0;
             return (int64_t) p;
         }
         case CAJ_XPU_HIP: {
             void* p = NULL;
+            if (kind == CAJ_MEMKIND_UNIFIED && g_xpu_hip.hipMallocManaged) {
+                // hipMemAttachGlobal = 1
+                if (g_xpu_hip.hipMallocManaged(&p, (size_t) byteCount, 1) != 0) return 0;
+                return (int64_t) (intptr_t) p;
+            }
+            if (kind == CAJ_MEMKIND_PINNED && g_xpu_hip.hipHostMalloc) {
+                // hipHostMallocMapped = 0x2 → device-accessible
+                if (g_xpu_hip.hipHostMalloc(&p, (size_t) byteCount, 0x2) != 0) return 0;
+                return (int64_t) (intptr_t) p;
+            }
             if (g_xpu_hip.hipMalloc(&p, (size_t) byteCount) != 0) return 0;
             return (int64_t) (intptr_t) p;
         }
         case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_alloc(byteCount);   // handle = buffer-table index
+            // Vulkan buffers are already host-visible + coherent on this device
+            // (effectively unified); kind needs no distinct path. handle =
+            // buffer-table index.
+            (void) kind;
+            return cajeta_xpu_vk_alloc(byteCount);
         case CAJ_XPU_CPU: {
-            void* p = malloc((size_t) byteCount);   // CPU "device" memory = host
+            // CPU "device" memory = host; every kind is host-accessible already.
+            void* p = malloc((size_t) byteCount);
             return (int64_t) (intptr_t) p;
         }
         default: return 0;   // none: diagnostic emitted
     }
+}
+// Direct host access to a host-accessible buffer (Pinned/Unified, or CPU/Vulkan
+// mapped) with NO device-transfer API — a plain memcpy in the shared address
+// space (zero-copy: no PCIe copy / no managed migration on a discrete GPU, a
+// host memcpy on an APU). dir != 0 stores host[]→buffer; dir == 0 loads
+// buffer→host[]. A plain Device buffer on a discrete GPU has no host mapping, so
+// this no-ops (use upload/download there). `host` is a cajeta array (8-byte
+// header skipped); kind selects whether the HIP/CUDA handle is host-accessible.
+void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
+                                   uint64_t byteCount, int32_t dir, int32_t kind) {
+    (void) self;
+    if (!handle || !host || byteCount == 0) return;
+    void* hostArr = (void*) ((char*) host + 8);   // skip cajeta array header
+    void* hp = NULL;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU:
+            hp = (void*) (intptr_t) handle;
+            break;
+        case CAJ_XPU_HIP:
+        case CAJ_XPU_CUDA:
+            // managed (Unified) and pinned host handles are host-accessible
+            // pointers; plain Device memory is not.
+            if (kind == CAJ_MEMKIND_UNIFIED || kind == CAJ_MEMKIND_PINNED)
+                hp = (void*) (intptr_t) handle;
+            break;
+        case CAJ_XPU_VULKAN:
+            hp = cajeta_xpu_vk_mapped(handle);   // host-coherent mapping
+            break;
+        default:
+            break;
+    }
+    if (!hp) return;   // not host-accessible (Device on a discrete GPU)
+    if (dir) memcpy(hp, hostArr, (size_t) byteCount);
+    else     memcpy(hostArr, hp, (size_t) byteCount);
 }
 void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
                                 uint64_t byteCount) {
@@ -8635,14 +8733,28 @@ void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
         default: return;
     }
 }
-void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
+void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind) {
     (void) self;
     if (!handle) return;
     switch (cajeta_xpu_active_backend()) {
-        case CAJ_XPU_CUDA:   g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle); return;
-        case CAJ_XPU_HIP:    g_xpu_hip.hipFree((void*) (intptr_t) handle); return;
-        case CAJ_XPU_VULKAN: cajeta_xpu_vk_free(handle); return;
-        case CAJ_XPU_CPU:    free((void*) (intptr_t) handle); return;
+        case CAJ_XPU_CUDA:
+            // Pinned host memory frees with cuMemFreeHost; device + managed
+            // (Unified) free with cuMemFree.
+            if (kind == CAJ_MEMKIND_PINNED && g_xpu_cuda.cuMemFreeHost)
+                g_xpu_cuda.cuMemFreeHost((void*) (intptr_t) handle);
+            else
+                g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle);
+            return;
+        case CAJ_XPU_HIP:
+            // Pinned host memory frees with hipHostFree; device + managed
+            // (Unified) free with hipFree.
+            if (kind == CAJ_MEMKIND_PINNED && g_xpu_hip.hipHostFree)
+                g_xpu_hip.hipHostFree((void*) (intptr_t) handle);
+            else
+                g_xpu_hip.hipFree((void*) (intptr_t) handle);
+            return;
+        case CAJ_XPU_VULKAN: (void) kind; cajeta_xpu_vk_free(handle); return;
+        case CAJ_XPU_CPU:    (void) kind; free((void*) (intptr_t) handle); return;
         default: return;
     }
 }
