@@ -8708,6 +8708,30 @@ static int64_t cajeta_xpu_hip_tex2darray_alloc(uint32_t w, uint32_t h,
     return (int64_t) (intptr_t) t;
 }
 
+// TextureCube on AMD: a cubemap hipArray (hipMalloc3DArray + hipArrayCubemap),
+// 6 faces in the extent's depth slot. Like the layered array, the texobj is
+// dimension-agnostic (RES_ARRAY) and the upload reuses the 3-D memcpy3D path
+// with d = 6 (a cubemap memcpy3D copies all 6 faces).
+static int64_t cajeta_xpu_hip_texcube_alloc(uint32_t size, int32_t format) {
+    if (!cajeta_hip_tex3d_supported()) return 0;
+    struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
+    struct caj_hip_extent ext; ext.w = size; ext.h = size; ext.d = 6;
+    void* array = NULL;
+    // NB: on gfx1151 / ROCm 7.2.2 this returns hipErrorInvalidValue — cubemap
+    // arrays are unimplemented on this APU (as with mipmapped arrays), so cube
+    // TextureCube on AMD degrades to "no device texture" (handle 0 → the kernel
+    // doesn't launch). The path is correct for ROCm/hardware that supports cubemap
+    // arrays.
+    if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, CAJ_HIP_ARRAY_CUBEMAP) != 0 ||
+        !array)
+        return 0;
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
+    if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    t->array = array; t->mipmap = NULL; t->w = size; t->h = size; t->d = 6;
+    t->format = format; t->levels = 1;
+    return (int64_t) (intptr_t) t;
+}
+
 static void cajeta_xpu_hip_tex3d_upload(int64_t handle, const float* src,
                                         uint32_t w, uint32_t h, uint32_t d,
                                         int32_t format) {
@@ -9372,7 +9396,7 @@ int64_t __cajeta_xpu_texturecube_alloc(void* self, uint32_t size, int32_t format
         case CAJ_XPU_VULKAN:
             // A CUBE_COMPATIBLE 2-D image with 6 array layers (the faces).
             return cajeta_xpu_vk_tex_alloc(size, size, 0, format, 1, 5, 6, 1);
-        case CAJ_XPU_HIP:    return 0;  // B3: a cubemap hipArray
+        case CAJ_XPU_HIP:    return cajeta_xpu_hip_texcube_alloc(size, format);
         default: return 0;
     }
 }
@@ -9405,7 +9429,10 @@ void __cajeta_xpu_texturecube_upload(void* self, int64_t handle, void* host,
             // layer count + layered flag from the texture record (layers = 6).
             cajeta_xpu_vk_tex_upload(handle, src, size, size, format);
             return;
-        case CAJ_XPU_HIP:    return;  // B3
+        case CAJ_XPU_HIP:
+            // A cubemap hipArray's memcpy3D copies all 6 faces with d = 6.
+            cajeta_xpu_hip_tex3d_upload(handle, src, size, size, 6, format);
+            return;
         default: return;
     }
 }
