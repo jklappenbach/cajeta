@@ -63,6 +63,7 @@ public final class Tour {
         demos.add(heap AnnotationsDemo());
         demos.add(heap ReflectionDemo());
         demos.add(heap PrimitivesDemo());
+        demos.add(heap GuidDemo());
         demos.add(heap StringDemo());
         demos.add(heap ControlFlowDemo());
         demos.add(heap MathDemo());
