@@ -127,9 +127,10 @@ TEST(XpuLaunchCodegenTests, sharedConfigLowersByteCount) {
     ASSERT_NO_THROW(codegenAll(compiler));
 
     std::string ir = moduleIR(module);
-    // 9-arg runtime signature: name, gridX/Y/Z, blockX/Y/Z, sharedBytes, argv.
+    // 10-arg runtime signature: name, gridX/Y/Z, blockX/Y/Z, sharedBytes, argv,
+    // streamHandle (the Stream's i64 handle, threaded for stream-ordered launch).
     EXPECT_NE(ir.find(
-                  "@__cajeta_xpu_launch(ptr, i32, i32, i32, i32, i32, i32, i32, ptr)"),
+                  "@__cajeta_xpu_launch(ptr, i32, i32, i32, i32, i32, i32, i32, ptr, i64)"),
               std::string::npos) << ir;
     // The requested dynamic-shared byte count reaches the call.
     EXPECT_NE(ir.find("i32 2048"), std::string::npos) << ir;

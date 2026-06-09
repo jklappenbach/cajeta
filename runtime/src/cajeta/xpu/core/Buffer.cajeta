@@ -122,6 +122,14 @@ public final class Buffer<T> {
     @Native("__cajeta_xpu_buffer_download")
     private void deviceDownload(int64 handle, T[] host, uint64 byteCount);
 
+    @Native("__cajeta_xpu_buffer_upload_async")
+    private void deviceUploadAsync(int64 handle, T[] host, uint64 byteCount,
+                                  int64 stream);
+
+    @Native("__cajeta_xpu_buffer_download_async")
+    private void deviceDownloadAsync(int64 handle, T[] host, uint64 byteCount,
+                                    int64 stream);
+
     @Native("__cajeta_xpu_buffer_free")
     private void deviceFree(int64 handle, int32 kind);
 
@@ -202,6 +210,30 @@ public final class Buffer<T> {
         uint64 bytes = this.elementCount * elementBytes();
         int64 h = this.deviceHandle;
         this.deviceDownload(h, host, bytes);
+    }
+
+    /**
+     * Asynchronous host → device upload, enqueued on `stream`. Unlike {@link
+     * #upload} (which uses the default stream), the copy is ordered on `stream`
+     * and returns without blocking — it completes by the next `stream.sync()`,
+     * so it overlaps work queued elsewhere. Best paired with `MemoryKind.Pinned`
+     * host memory (the precondition for true async DMA). The host array must
+     * equal `length()` and must stay alive until the stream syncs. CUDA/HIP
+     * issue the real async copy; CPU and the Vulkan coherent map copy
+     * synchronously (semantically identical — done by the time sync returns).
+     */
+    public void uploadAsync(T[] host, Stream stream) {
+        uint64 bytes = this.elementCount * elementBytes();
+        this.deviceUploadAsync(this.deviceHandle, host, bytes, stream.handle);
+    }
+
+    /**
+     * Asynchronous device → host download, the twin of {@link #uploadAsync}:
+     * enqueued on `stream`, completing by the next `stream.sync()`.
+     */
+    public void downloadAsync(T[] host, Stream stream) {
+        uint64 bytes = this.elementCount * elementBytes();
+        this.deviceDownloadAsync(this.deviceHandle, host, bytes, stream.handle);
     }
 
     /**

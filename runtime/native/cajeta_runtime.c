@@ -6037,6 +6037,13 @@ struct cajeta_cuda_api {
     int (*cuMemAllocManaged)(cajeta_cudeviceptr*, size_t, unsigned);
     int (*cuMemHostAlloc)(void**, size_t, unsigned);
     int (*cuMemFreeHost)(void*);
+    // Real streams + async copies; optional (bound non-fatally; null → default
+    // stream + synchronous-memcpy fallback).
+    int (*cuStreamCreate)(void**, unsigned);
+    int (*cuStreamSynchronize)(void*);
+    int (*cuStreamDestroy)(void*);
+    int (*cuMemcpyHtoDAsync)(cajeta_cudeviceptr, const void*, size_t, void*);
+    int (*cuMemcpyDtoHAsync)(void*, cajeta_cudeviceptr, size_t, void*);
     int (*cuLaunchKernel)(void*, unsigned, unsigned, unsigned,
                           unsigned, unsigned, unsigned, unsigned,
                           void*, void**, void**);
@@ -6088,6 +6095,17 @@ static int cajeta_xpu_cuda_init_locked(void) {
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemHostAlloc");
     *(void**) (&g_xpu_cuda.cuMemFreeHost) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemFreeHost");
+    // Real streams + async copies — optional (non-fatal).
+    *(void**) (&g_xpu_cuda.cuStreamCreate) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamCreate");
+    *(void**) (&g_xpu_cuda.cuStreamSynchronize) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamSynchronize");
+    *(void**) (&g_xpu_cuda.cuStreamDestroy) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamDestroy_v2");
+    *(void**) (&g_xpu_cuda.cuMemcpyHtoDAsync) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyHtoDAsync_v2");
+    *(void**) (&g_xpu_cuda.cuMemcpyDtoHAsync) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyDtoHAsync_v2");
     CAJ_BIND(cuLaunchKernel, "cuLaunchKernel");
     CAJ_BIND(cuCtxSynchronize, "cuCtxSynchronize");
     #undef CAJ_BIND
@@ -6225,6 +6243,14 @@ struct cajeta_hip_api {
     int (*hipMallocManaged)(void**, size_t, unsigned);
     int (*hipHostMalloc)(void**, size_t, unsigned);
     int (*hipHostFree)(void*);
+    // Real streams + async copies (Buffer.uploadAsync/downloadAsync, stream-
+    // ordered launch); optional — absent → stream create no-ops to the default
+    // stream and async copies fall back to the synchronous memcpy.
+    int (*hipStreamCreate)(void**);
+    int (*hipStreamSynchronize)(void*);
+    int (*hipStreamDestroy)(void*);
+    int (*hipMemcpyHtoDAsync)(void*, const void*, size_t, void*);
+    int (*hipMemcpyDtoHAsync)(void*, void*, size_t, void*);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
@@ -6427,6 +6453,11 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipMallocManaged, "hipMallocManaged");
     CAJ_HBIND_OPT(hipHostMalloc, "hipHostMalloc");
     CAJ_HBIND_OPT(hipHostFree, "hipHostFree");
+    CAJ_HBIND_OPT(hipStreamCreate, "hipStreamCreate");
+    CAJ_HBIND_OPT(hipStreamSynchronize, "hipStreamSynchronize");
+    CAJ_HBIND_OPT(hipStreamDestroy, "hipStreamDestroy");
+    CAJ_HBIND_OPT(hipMemcpyHtoDAsync, "hipMemcpyHtoDAsync");
+    CAJ_HBIND_OPT(hipMemcpyDtoHAsync, "hipMemcpyDtoHAsync");
     #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
@@ -8137,22 +8168,21 @@ static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name) {
 }
 
 // --- Stream -----------------------------------------------------------------
-// v1 uses the default stream; current()/create() return a null handle (the
-// CUDA default stream) and the launch path passes NULL. sync() drains the
-// context, which also releases the deferred launch borrows on the host side.
-void* __cajeta_xpu_stream_current(void) { return NULL; }
-void* __cajeta_xpu_stream_create(void) { return NULL; }
+// Streams. The Stream handle (int64) is the per-backend stream object: 0 = the
+// default stream (the original v1 behaviour; current() returns it and the launch
+// path passes NULL for it). create() makes a REAL stream (hipStreamCreate /
+// cuStreamCreate) so async copies + stream-ordered launches queue independently;
+// sync() drains either the named stream (real handle) or the whole context (0).
 // Defined with the backend dispatcher below (after the kernel registries).
 static void cajeta_xpu_sync_active(void);
 
-void __cajeta_xpu_stream_sync(void* self) {
-    (void) self;
-    cajeta_xpu_sync_active();
-}
+int64_t __cajeta_xpu_stream_current(void) { return 0; }   // the default stream
 void __cajeta_xpu_stream_wait_for(void* self, void* event) {
     (void)self; (void)event;
 }
-void __cajeta_xpu_stream_destroy(void* self) { (void)self; }
+// __cajeta_xpu_stream_{create,sync,destroy} are defined further below, after the
+// backend enum + cajeta_xpu_active_backend() they switch on (alongside the
+// buffer async-copy functions).
 
 // --- Event -----------------------------------------------------------------
 void* __cajeta_xpu_event_create(void) { return NULL; }
@@ -8682,6 +8712,137 @@ void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
     if (!hp) return;   // not host-accessible (Device on a discrete GPU)
     if (dir) memcpy(hp, hostArr, (size_t) byteCount);
     else     memcpy(hostArr, hp, (size_t) byteCount);
+}
+// Async host↔device copies on a stream (Buffer.uploadAsync/downloadAsync). The
+// copy is enqueued on `stream` (a Stream handle; 0 = the default stream) and
+// completes by the next sync of that stream — so it overlaps other work queued
+// elsewhere. CUDA/HIP issue the real async memcpy (best paired with pinned/
+// unified host memory); CPU and the Vulkan host-coherent map copy synchronously
+// (no async path, but semantically correct — done by the time sync returns).
+void __cajeta_xpu_buffer_upload_async(void* self, int64_t handle, void* host,
+                                      uint64_t byteCount, int64_t stream) {
+    (void) self;
+    if (!handle || !host || byteCount == 0) return;
+    const void* data = (const void*) ((const char*) host + 8);
+    void* st = (void*) (intptr_t) stream;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (g_xpu_cuda.cuMemcpyHtoDAsync)
+                g_xpu_cuda.cuMemcpyHtoDAsync((cajeta_cudeviceptr) handle, data,
+                                             (size_t) byteCount, st);
+            else
+                g_xpu_cuda.cuMemcpyHtoD((cajeta_cudeviceptr) handle, data,
+                                        (size_t) byteCount);
+            return;
+        case CAJ_XPU_HIP:
+            if (g_xpu_hip.hipMemcpyHtoDAsync)
+                g_xpu_hip.hipMemcpyHtoDAsync((void*) (intptr_t) handle, data,
+                                             (size_t) byteCount, st);
+            else
+                g_xpu_hip.hipMemcpyHtoD((void*) (intptr_t) handle, data,
+                                        (size_t) byteCount);
+            return;
+        case CAJ_XPU_VULKAN: {
+            void* m = cajeta_xpu_vk_mapped(handle);   // coherent map: immediate
+            if (m) memcpy(m, data, (size_t) byteCount);
+            return;
+        }
+        case CAJ_XPU_CPU:
+            memcpy((void*) (intptr_t) handle, data, (size_t) byteCount);
+            return;
+        default: return;
+    }
+}
+void __cajeta_xpu_buffer_download_async(void* self, int64_t handle, void* host,
+                                        uint64_t byteCount, int64_t stream) {
+    (void) self;
+    if (!handle || !host || byteCount == 0) return;
+    void* data = (void*) ((char*) host + 8);
+    void* st = (void*) (intptr_t) stream;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (g_xpu_cuda.cuMemcpyDtoHAsync)
+                g_xpu_cuda.cuMemcpyDtoHAsync(data, (cajeta_cudeviceptr) handle,
+                                             (size_t) byteCount, st);
+            else
+                g_xpu_cuda.cuMemcpyDtoH(data, (cajeta_cudeviceptr) handle,
+                                        (size_t) byteCount);
+            return;
+        case CAJ_XPU_HIP:
+            if (g_xpu_hip.hipMemcpyDtoHAsync)
+                g_xpu_hip.hipMemcpyDtoHAsync(data, (void*) (intptr_t) handle,
+                                             (size_t) byteCount, st);
+            else
+                g_xpu_hip.hipMemcpyDtoH(data, (void*) (intptr_t) handle,
+                                        (size_t) byteCount);
+            return;
+        case CAJ_XPU_VULKAN: {
+            void* m = cajeta_xpu_vk_mapped(handle);
+            if (m) memcpy(data, m, (size_t) byteCount);
+            return;
+        }
+        case CAJ_XPU_CPU:
+            memcpy(data, (const void*) (intptr_t) handle, (size_t) byteCount);
+            return;
+        default: return;
+    }
+}
+// Stream create/sync/destroy — defined here (not with stream_current above)
+// because they switch on the backend enum + cajeta_xpu_active_backend(), which
+// are declared further down. Handle 0 = the default stream (the v1 behaviour).
+int64_t __cajeta_xpu_stream_create(void) {
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA: {
+            void* s = NULL;
+            if (g_xpu_cuda.cuStreamCreate &&
+                g_xpu_cuda.cuStreamCreate(&s, 0) == 0)
+                return (int64_t) (intptr_t) s;
+            return 0;   // no driver entry → fall back to the default stream
+        }
+        case CAJ_XPU_HIP: {
+            void* s = NULL;
+            if (g_xpu_hip.hipStreamCreate &&
+                g_xpu_hip.hipStreamCreate(&s) == 0)
+                return (int64_t) (intptr_t) s;
+            return 0;
+        }
+        default: return 0;   // CPU/Vulkan: synchronous; the default stream
+    }
+}
+void __cajeta_xpu_stream_sync(void* self, int64_t handle) {
+    (void) self;
+    void* st = (void*) (intptr_t) handle;
+    if (st) {
+        // Drain just this stream (its async copies + launches).
+        switch (cajeta_xpu_active_backend()) {
+            case CAJ_XPU_CUDA:
+                if (g_xpu_cuda.cuStreamSynchronize) {
+                    g_xpu_cuda.cuStreamSynchronize(st); return;
+                }
+                break;
+            case CAJ_XPU_HIP:
+                if (g_xpu_hip.hipStreamSynchronize) {
+                    g_xpu_hip.hipStreamSynchronize(st); return;
+                }
+                break;
+            default: break;
+        }
+    }
+    cajeta_xpu_sync_active();   // default stream (0) or no per-stream entry
+}
+void __cajeta_xpu_stream_destroy(void* self, int64_t handle) {
+    (void) self;
+    void* st = (void*) (intptr_t) handle;
+    if (!st) return;   // the default stream is not destroyed
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (g_xpu_cuda.cuStreamDestroy) g_xpu_cuda.cuStreamDestroy(st);
+            return;
+        case CAJ_XPU_HIP:
+            if (g_xpu_hip.hipStreamDestroy) g_xpu_hip.hipStreamDestroy(st);
+            return;
+        default: return;
+    }
 }
 void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
                                 uint64_t byteCount) {
@@ -10015,7 +10176,8 @@ caj_v4f __cajeta_xpu_cpu_texcube_sample_rgba(void* texp, int32_t filterMode,
 static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    int32_t gridX, int32_t gridY, int32_t gridZ,
                                    int32_t blockX, int32_t blockY, int32_t blockZ,
-                                   uint32_t sharedBytes, void* argv) {
+                                   uint32_t sharedBytes, void* argv,
+                                   int64_t streamHandle) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -10048,7 +10210,8 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     int launchRc = g_xpu_cuda.cuLaunchKernel(
         fn, (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
         (unsigned) blockX, (unsigned) blockY, (unsigned) blockZ,
-        (unsigned) sharedBytes, /*stream=*/NULL, (void**) argv, /*extra=*/NULL);
+        (unsigned) sharedBytes, /*stream=*/(void*) (intptr_t) streamHandle,
+        (void**) argv, /*extra=*/NULL);
     if (launchRc != 0)
         fprintf(stderr, "cajeta.xpu: cuLaunchKernel('%s') failed (%d)\n",
                 kernelName, launchRc);
@@ -10064,7 +10227,8 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
 static void cajeta_xpu_launch_hip(const char* kernelName,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
-                                  uint32_t sharedBytes, void* argvv) {
+                                  uint32_t sharedBytes, void* argvv,
+                                  int64_t streamHandle) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -10138,7 +10302,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
         g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
                                         (unsigned) gridZ, (unsigned) blockX,
                                         (unsigned) blockY, (unsigned) blockZ,
-                                        (unsigned) sharedBytes, /*stream=*/NULL,
+                                        (unsigned) sharedBytes,
+                                        /*stream=*/(void*) (intptr_t) streamHandle,
                                         useArgv, /*extra=*/NULL);
     if (ntex > 0) {
         if (launchOk)
@@ -10251,23 +10416,32 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
 void __cajeta_xpu_launch(const char* kernelName,
                          int32_t gridX, int32_t gridY, int32_t gridZ,
                          int32_t blockX, int32_t blockY, int32_t blockZ,
-                         uint32_t sharedBytes, void* argv) {
+                         uint32_t sharedBytes, void* argv, int64_t streamHandle) {
     if (!kernelName) return;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
+            // streamHandle (0 = default stream) orders this launch with the
+            // async copies queued on the same stream.
             cajeta_xpu_launch_cuda(kernelName, gridX, gridY, gridZ,
-                                   blockX, blockY, blockZ, sharedBytes, argv);
+                                   blockX, blockY, blockZ, sharedBytes, argv,
+                                   streamHandle);
             return;
         case CAJ_XPU_HIP:
             cajeta_xpu_launch_hip(kernelName, gridX, gridY, gridZ,
-                                  blockX, blockY, blockZ, sharedBytes, argv);
+                                  blockX, blockY, blockZ, sharedBytes, argv,
+                                  streamHandle);
             return;
         case CAJ_XPU_VULKAN:
+            // Vulkan v1 submits on its own queue; per-stream ordering is a
+            // follow-on (cajeta-xpu). The stream handle is accepted, not used.
+            (void) streamHandle;
             cajeta_xpu_launch_vulkan(kernelName, gridX, gridY, gridZ,
                                      blockX, blockY, blockZ,
                                      (int32_t) sharedBytes, argv);
             return;
         case CAJ_XPU_CPU:
+            // CPU launches run synchronously; the stream is ordering-irrelevant.
+            (void) streamHandle;
             cajeta_xpu_launch_cpu(kernelName, gridX, gridY, gridZ,
                                   blockX, blockY, blockZ,
                                   (int32_t) sharedBytes, argv);
