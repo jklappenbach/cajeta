@@ -889,6 +889,65 @@ static const char* kTex3dSampleSrc() {
     return s.c_str();
 }
 
+// Integer Texture3D fetch source — a Texture3D<int32|uint32> RGBA32I/UI volume
+// (VK_FORMAT_R32G32B32A32_SINT 3-D image, OpImageFetch → <4 x i32>).
+static const char* kTex3dIntFetchSrc(const char* elem, const char* fmt) {
+    static std::string s;
+    std::string e(elem);
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex3dIntFetch {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture3D<") + e + "> vol, Buffer<" + e + "> out,\n"
+        "                             uint32 w, uint32 h, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 z = i / (w*h);\n"
+        "            uint32 r = i - z*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            Vector<" + e + ",4> c = vol.fetch(x, y, z);\n"
+        "            out[i*4 + 0] = c.x; out[i*4 + 1] = c.y;\n"
+        "            out[i*4 + 2] = c.z; out[i*4 + 3] = c.w;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 d = 2; uint32 n = 8;\n"
+        "        " + e + "[] voxels = heap " + e + "[32];\n"
+        "        for (uint32 t = 0; t < n; t = t + 1) {\n"
+        "            " + e + " base = (" + e + ")(t) * 10;\n"
+        "            voxels[t*4 + 0] = base + 1; voxels[t*4 + 1] = base + 2;\n"
+        "            voxels[t*4 + 2] = base + 3; voxels[t*4 + 3] = base + 4;\n"
+        "        }\n"
+        "        Texture3D<" + e + "> vol = heap Texture3D<" + e + ">(w, h, d, " + fmt + ");\n"
+        "        vol.upload(voxels);\n"
+        "        uint32 m = n * 4;\n"
+        "        " + e + "[] hout = heap " + e + "[m];\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) { hout[i] = 0; }\n"
+        "        Buffer<" + e + "> out = heap Buffer<" + e + ">(0, m);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [64])(vol, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        for (uint32 t = 0; t < n; t = t + 1) {\n"
+        "            " + e + " base = (" + e + ")(t) * 10;\n"
+        "            if (hout[t*4 + 0] != base + 1) { return (int32)(100 + t*4 + 0); }\n"
+        "            if (hout[t*4 + 1] != base + 2) { return (int32)(100 + t*4 + 1); }\n"
+        "            if (hout[t*4 + 2] != base + 3) { return (int32)(100 + t*4 + 2); }\n"
+        "            if (hout[t*4 + 3] != base + 4) { return (int32)(100 + t*4 + 3); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 // OpImageFetch on a real Vulkan device (RADV / Strix Halo): the sampled image
 // (Sampled=1) is fetched by exact integer coord — no sampler descriptor — and
 // every RGBA32F channel reads back bit-exact.
@@ -955,6 +1014,23 @@ TEST(XpuVulkanDispatchDeviceTests, texture3dSampleOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: trilinear midpoint)";
+}
+
+// Integer Texture3D fetch on a real Vulkan device — RGBA32I 3-D image
+// (VK_FORMAT_R32G32B32A32_SINT), integer OpImageFetch on a Dim=3 image, voxel-exact.
+TEST(XpuVulkanDispatchDeviceTests, texture3dFetchRgba32iOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kTex3dIntFetchSrc("int32", "TextureFormat.RGBA32I"),
+                                  "test.Tex3dIntFetch", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (3D RGBA32I device fetch mismatch)";
 }
 
 

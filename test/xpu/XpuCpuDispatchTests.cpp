@@ -943,6 +943,66 @@ static const char* kTex3dSampleSrcCpu() {
     return s.c_str();
 }
 
+// B3 texture dims + integer: Texture3D<int32|uint32> fetch on CPU. A 2x2x2
+// RGBA32I/UI volume read back as exact integers across all four channels — the
+// 3-D integer voxel read (the seam threads texelTy through fetchTexture3D).
+static const char* kTex3dIntFetchSrcCpu(const char* elem, const char* fmt) {
+    static std::string s;
+    std::string e(elem);
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture3D;\n"
+        "import cajeta.xpu.core.TextureFormat;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex3dIntFetchCpu {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture3D<") + e + "> vol, Buffer<" + e + "> out,\n"
+        "                             uint32 w, uint32 h, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 z = i / (w*h);\n"
+        "            uint32 r = i - z*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            Vector<" + e + ",4> c = vol.fetch(x, y, z);\n"
+        "            out[i*4 + 0] = c.x; out[i*4 + 1] = c.y;\n"
+        "            out[i*4 + 2] = c.z; out[i*4 + 3] = c.w;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 d = 2; uint32 n = 8;\n"
+        "        " + e + "[] voxels = heap " + e + "[32];\n"
+        "        for (uint32 t = 0; t < n; t = t + 1) {\n"
+        "            " + e + " base = (" + e + ")(t) * 10;\n"
+        "            voxels[t*4 + 0] = base + 1; voxels[t*4 + 1] = base + 2;\n"
+        "            voxels[t*4 + 2] = base + 3; voxels[t*4 + 3] = base + 4;\n"
+        "        }\n"
+        "        Texture3D<" + e + "> vol = heap Texture3D<" + e + ">(w, h, d, " + fmt + ");\n"
+        "        vol.upload(voxels);\n"
+        "        uint32 m = n * 4;\n"
+        "        " + e + "[] hout = heap " + e + "[m];\n"
+        "        for (uint32 i = 0; i < m; i = i + 1) { hout[i] = 0; }\n"
+        "        Buffer<" + e + "> out = heap Buffer<" + e + ">(m);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [n])(vol, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 t = 0; t < n; t = t + 1) {\n"
+        "            " + e + " base = (" + e + ")(t) * 10;\n"
+        "            if (hout[t*4 + 0] != base + 1) { return (int32)(100 + t*4 + 0); }\n"
+        "            if (hout[t*4 + 1] != base + 2) { return (int32)(100 + t*4 + 1); }\n"
+        "            if (hout[t*4 + 2] != base + 3) { return (int32)(100 + t*4 + 2); }\n"
+        "            if (hout[t*4 + 3] != base + 4) { return (int32)(100 + t*4 + 3); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -1188,6 +1248,18 @@ TEST(XpuCpuDispatchTests, texture3dSampleOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: trilinear midpoint)";
+}
+
+// Integer Texture3D fetch on CPU — a 2x2x2 RGBA32I volume read voxel-exact (the
+// 3-D twin of textureFetchRgba32iOnCpu; fetchTexture3D threads the int texel type).
+TEST(XpuCpuDispatchTests, texture3dFetchRgba32iOnCpu) {
+    auto jit = CajetaJit::compile(kTex3dIntFetchSrcCpu("int32", "TextureFormat.RGBA32I"),
+                                  "test.Tex3dIntFetchCpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (3D RGBA32I fetch mismatch)";
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the
