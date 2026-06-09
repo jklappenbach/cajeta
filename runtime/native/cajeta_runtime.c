@@ -6598,6 +6598,12 @@ struct cajeta_vk_buf {
     void* mapped;
     VkDeviceSize size;
     int live;
+    // Sub-buffer view (Buffer.slice): a view slot borrows a parent's buffer/
+    // memory (does NOT own them — free() must not destroy them) and carries the
+    // byte offset bound into the descriptor (VkDescriptorBufferInfo.offset) and
+    // folded into `mapped` for host upload/download. is_view==0 for an owner.
+    int is_view;
+    VkDeviceSize view_offset;
 };
 #define CAJETA_VK_MAX_BUFFERS 4096
 static struct cajeta_vk_buf g_vk_bufs[CAJETA_VK_MAX_BUFFERS];
@@ -6974,6 +6980,46 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
     g_vk_bufs[slot].mapped = mapped;
     g_vk_bufs[slot].size = bytes;
     g_vk_bufs[slot].live = 1;
+    g_vk_bufs[slot].is_view = 0;        // an owner, not a slice view
+    g_vk_bufs[slot].view_offset = 0;
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    return (int64_t) (slot + 1);
+}
+
+// Buffer.slice on Vulkan: the handle is a buffer-table index, not a pointer, so
+// the byte offset can't be folded into it. Instead allocate a *view* slot that
+// borrows the parent's VkBuffer/VkDeviceMemory and records the byte offset; the
+// descriptor-bind path emits it as VkDescriptorBufferInfo.offset and host
+// transfers see it via the offset-folded `mapped`. The view never owns the
+// underlying resources — freeing a view slot clears the slot only.
+// NOTE: not yet device-verified (increment B). VkDescriptorBufferInfo.offset
+// must be a multiple of minStorageBufferOffsetAlignment; a caller slicing at an
+// unaligned element offset will need that handled when the Vulkan path is
+// brought up on hardware.
+static int64_t cajeta_xpu_vk_slice(int64_t parent, uint64_t byteOffset) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    struct cajeta_vk_buf* p = (parent > 0 && parent <= g_vk_buf_count &&
+                               g_vk_bufs[parent - 1].live)
+                                  ? &g_vk_bufs[parent - 1] : NULL;
+    if (!p) { pthread_mutex_unlock(&g_xpu_vk_submit_mu); return 0; }
+    VkDeviceSize base_off = p->view_offset + (VkDeviceSize) byteOffset;
+    int slot = -1;
+    for (int i = 0; i < g_vk_buf_count; ++i)
+        if (!g_vk_bufs[i].live) { slot = i; break; }
+    if (slot < 0) {
+        if (g_vk_buf_count >= CAJETA_VK_MAX_BUFFERS) {
+            pthread_mutex_unlock(&g_xpu_vk_submit_mu); return 0;
+        }
+        slot = g_vk_buf_count++;
+    }
+    g_vk_bufs[slot].buffer = p->buffer;          // borrowed, not owned
+    g_vk_bufs[slot].memory = p->memory;
+    g_vk_bufs[slot].mapped = p->mapped ? (void*) ((char*) p->mapped + base_off)
+                                       : NULL;
+    g_vk_bufs[slot].size = (p->size > base_off) ? p->size - base_off : 0;
+    g_vk_bufs[slot].live = 1;
+    g_vk_bufs[slot].is_view = 1;
+    g_vk_bufs[slot].view_offset = base_off;
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return (int64_t) (slot + 1);
 }
@@ -6999,11 +7045,18 @@ static void cajeta_xpu_vk_free(int64_t handle) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
     struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
     if (r) {
-        if (r->mapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, r->memory);
-        if (r->buffer) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, r->buffer, NULL);
-        if (r->memory) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, r->memory, NULL);
-        r->live = 0; r->mapped = NULL; r->buffer = VK_NULL_HANDLE;
-        r->memory = VK_NULL_HANDLE;
+        if (r->is_view) {
+            // A slice view borrows the parent's buffer/memory — clear the slot
+            // only; the parent (its owner) destroys the resources.
+            r->live = 0; r->mapped = NULL; r->buffer = VK_NULL_HANDLE;
+            r->memory = VK_NULL_HANDLE; r->is_view = 0; r->view_offset = 0;
+        } else {
+            if (r->mapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, r->memory);
+            if (r->buffer) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, r->buffer, NULL);
+            if (r->memory) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, r->memory, NULL);
+            r->live = 0; r->mapped = NULL; r->buffer = VK_NULL_HANDLE;
+            r->memory = VK_NULL_HANDLE;
+        }
     }
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
@@ -7894,7 +7947,7 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
             struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(bindings[i]);
             if (!r) goto done;
             bufInfos[i].buffer = r->buffer;
-            bufInfos[i].offset = 0;
+            bufInfos[i].offset = r->view_offset;   // 0 for an owner; slice byte offset for a view
             bufInfos[i].range = VK_WHOLE_SIZE;
             writes[i].pBufferInfo = &bufInfos[i];
         }
@@ -7985,6 +8038,7 @@ done:
 #else  // no Vulkan SDK header at runtime-build time — Vulkan unavailable.
 static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
+static int64_t cajeta_xpu_vk_slice(int64_t p, uint64_t o) { (void) p; (void) o; return 0; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
@@ -8590,6 +8644,26 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
         case CAJ_XPU_VULKAN: cajeta_xpu_vk_free(handle); return;
         case CAJ_XPU_CPU:    free((void*) (intptr_t) handle); return;
         default: return;
+    }
+}
+// Buffer.slice: resolve a sub-range base from a parent handle + byte offset.
+// Pointer backends (CUDA/HIP/CPU) fold the offset into the device pointer; the
+// returned handle indexes the slice's first element exactly like a base buffer,
+// so the launch-arg and upload/download paths need no offset-awareness. Vulkan
+// (handle = buffer-table index) allocates a borrowing view slot that carries
+// the descriptor offset. The returned handle is non-owning on every backend —
+// Buffer.owned is false for a view, so its drop never frees this.
+int64_t __cajeta_xpu_buffer_slice(void* self, int64_t handle, uint64_t byteOffset) {
+    (void) self;
+    if (!handle) return 0;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+        case CAJ_XPU_HIP:
+        case CAJ_XPU_CPU:
+            return handle + (int64_t) byteOffset;   // pointer + byte offset
+        case CAJ_XPU_VULKAN:
+            return cajeta_xpu_vk_slice(handle, byteOffset);
+        default: return 0;
     }
 }
 

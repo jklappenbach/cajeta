@@ -350,6 +350,95 @@ const char* kDeviceBufferParamSource =
     "    }\n"
     "}\n";
 
+// Buffer.slice (Stage B4) — a non-owning sub-buffer view passed to a kernel.
+// A 128-element parent is filled with -1; the tail half [64,128) is sliced and
+// a kernel writes globalIdX (0..63) through the view. Proves (a) the slice base
+// is offset-correct — writing view[i] lands at parent[64+i] — and (b) the head
+// half is untouched (the offset isn't writing from 0). The view is non-owning,
+// so only the parent frees at scope exit (no double free). On CPU/HIP/CUDA the
+// offset is folded into the device pointer; this CPU run covers the pointer-fold
+// path (identical code for HIP/CUDA).
+const char* kBufferSliceSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class Slice {\n"
+    "    @Kernel\n"
+    "    public static void fill(Buffer<int32> b, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { b[i] = (int32) i; }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 128;\n"
+    "        uint32 half = 64;\n"
+    "        int32[] h = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }\n"
+    "        Buffer<int32> all = heap Buffer<int32>(n);\n"
+    "        all.upload(h);\n"
+    "        Buffer<int32> tail = all.slice(half, half);\n"
+    "        Stream s = Stream.current();\n"
+    "        fill.launch(s, grid: [1], block: [64])(tail, half);\n"
+    "        s.sync();\n"
+    "        all.download(h);\n"
+    "        for (uint32 i = 0; i < half; i = i + 1) {\n"
+    "            if (h[i] != -1) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        for (uint32 i = 0; i < half; i = i + 1) {\n"
+    "            if (h[half + i] != (int32) i) { return (int32)(200 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+// Buffer.slice upload visibility through a kernel: a distinct pattern is
+// uploaded INTO a mid-buffer view [32,96) of a 128-element parent (filled 5),
+// then a kernel doubles the WHOLE parent in place. Downloading the parent
+// proves (a) the slice upload landed at the byte offset — the kernel reads
+// 1000+i there, doubling to 2000+2i — and (b) the head/tail the slice didn't
+// cover keep the parent fill (5 -> 10). A kernel is present so the module
+// registers the CPU backend (a kernel-less module selects no backend, so its
+// host buffer ops no-op — a pre-existing runtime fact, orthogonal to slice).
+const char* kBufferSliceUploadSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class SliceIO {\n"
+    "    @Kernel\n"
+    "    public static void dbl(Buffer<int32> b, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { b[i] = b[i] * 2; }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 128;\n"
+    "        uint32 off = 32;\n"
+    "        uint32 len = 64;\n"
+    "        int32[] h = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = 5; }\n"
+    "        Buffer<int32> all = heap Buffer<int32>(n);\n"
+    "        all.upload(h);\n"
+    "        int32[] mid = heap int32[len];\n"
+    "        for (uint32 i = 0; i < len; i = i + 1) { mid[i] = (int32)(1000 + i); }\n"
+    "        Buffer<int32> sub = all.slice(off, len);\n"
+    "        sub.upload(mid);\n"
+    "        Stream s = Stream.current();\n"
+    "        dbl.launch(s, grid: [2], block: [64])(all, n);\n"
+    "        s.sync();\n"
+    "        all.download(h);\n"
+    "        for (uint32 i = 0; i < off; i = i + 1) {\n"
+    "            if (h[i] != 10) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        for (uint32 i = 0; i < len; i = i + 1) {\n"
+    "            if (h[off + i] != (int32)(2000 + 2 * i)) { return (int32)(300 + i); }\n"
+    "        }\n"
+    "        for (uint32 i = off + len; i < n; i = i + 1) {\n"
+    "            if (h[i] != 10) { return (int32)(200 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 // A POD struct passed BY VALUE as a kernel arg (Item 7). `Params` is a plain
 // class (two int32 fields, no marker interface); the kernel reads p.mul / p.add
 // to compute out[i] = i*mul + add. Marshalled field-by-field through the
@@ -1482,6 +1571,31 @@ TEST(XpuCpuDispatchTests, deviceHelperBufferParamOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*3)";
+}
+
+// Buffer.slice — a non-owning sub-view passed to a kernel writes through the
+// parent's storage at the slice offset; the head half stays untouched.
+TEST(XpuCpuDispatchTests, bufferSliceKernelOnCpu) {
+    auto jit = CajetaJit::compile(kBufferSliceSource, "test.Slice", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: head touched; 200+i: tail[i] != i)";
+}
+
+// Buffer.slice — upload/download through a mid-buffer view honor the byte
+// offset; only the sliced range changes, the surrounding parent is preserved.
+TEST(XpuCpuDispatchTests, bufferSliceUploadDownloadOnCpu) {
+    auto jit = CajetaJit::compile(kBufferSliceUploadSource, "test.SliceIO",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: head; 300+i: mid; 200+i: tail clobbered)";
 }
 
 // Item 7: a POD struct passed by value as a kernel arg runs on CPU. The struct
