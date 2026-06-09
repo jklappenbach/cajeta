@@ -1,0 +1,64 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+
+/**
+ * A declared field (property) of a class (REFL-4). Reflective access is
+ * data-driven: get/set load/store at the field's byte offset (REFL-2A) — no
+ * per-class accessor code. The accessor's type must match the field's type
+ * (type/visibility enforcement arrives with REFL-3.3).
+ */
+public final class Field {
+    pointer rtti;
+    int32 index;
+
+    @Native("__cajeta_rtti_field_name_len")
+    private static int32 nameLen(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_field_name_into")
+    private static void nameInto(pointer rtti, int32 idx, int8[] out);
+    @Native("__cajeta_rtti_field_modifiers")
+    private static int32 modsOf(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_field_type_flags")
+    private static int64 typeFlagsOf(pointer rtti, int32 idx);
+    @Native("__cajeta_field_get_i32")
+    private static int32 getI32(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_i32")
+    private static void setI32(Object o, pointer rtti, int32 idx, int32 v);
+    @Native("__cajeta_field_get_i64")
+    private static int64 getI64(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_i64")
+    private static void setI64(Object o, pointer rtti, int32 idx, int64 v);
+    @Native("__cajeta_field_get_bool")
+    private static int32 getBoolNative(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_bool")
+    private static void setBoolNative(Object o, pointer rtti, int32 idx, int32 v);
+
+    public Field(pointer rtti, int32 index) {
+        this.rtti = rtti;
+        this.index = index;
+    }
+
+    public int32 getIndex() { return this.index; }
+
+    /** The declared field name (e.g. `"id"`). */
+    public #String getName() {
+        int32 len = nameLen(this.rtti, this.index);
+        int8[] out = heap int8[len];
+        nameInto(this.rtti, this.index, out);
+        return heap String(#out, len);
+    }
+
+    /** Raw modifier bit field (see Modifier). */
+    public int32 getModifierFlags() { return modsOf(this.rtti, this.index); }
+
+    /** Field type-flag word (CajetaType TYPE_ID bits). */
+    public int64 getTypeFlags() { return typeFlagsOf(this.rtti, this.index); }
+
+    public int32 getInt32(Object o) { return getI32(o, this.rtti, this.index); }
+    public void setInt32(Object o, int32 v) { setI32(o, this.rtti, this.index, v); }
+    public int64 getInt64(Object o) { return getI64(o, this.rtti, this.index); }
+    public void setInt64(Object o, int64 v) { setI64(o, this.rtti, this.index, v); }
+    public boolean getBoolean(Object o) { return getBoolNative(o, this.rtti, this.index) != 0; }
+    public void setBoolean(Object o, boolean v) { setBoolNative(o, this.rtti, this.index, v ? 1 : 0); }
+}

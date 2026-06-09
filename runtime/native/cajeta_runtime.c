@@ -3840,6 +3840,45 @@ int64_t __cajeta_object_invoke_scalar0(void* obj, int32_t idx) {
     return ret;
 }
 
+// REFL-4 parameter introspection. `isCtor` selects the constructor table vs
+// the method table; memberIdx is the method/constructor index; paramIdx is the
+// USER parameter index (the implicit `this` is excluded from the table).
+static const CajetaParamDesc* cajeta_param_desc(
+        void* rtti, int32_t isCtor, int32_t memberIdx, int32_t paramIdx) {
+    if (!rtti) return NULL;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    const CajetaMethodDesc* tbl = isCtor ? r->constructors : r->methods;
+    int32_t cnt = isCtor ? r->constructorCount : r->methodCount;
+    if (!tbl || memberIdx < 0 || memberIdx >= cnt) return NULL;
+    const CajetaMethodDesc* m = &tbl[memberIdx];
+    if (!m->parameters || paramIdx < 0 || paramIdx >= m->parameterCount) return NULL;
+    return &m->parameters[paramIdx];
+}
+static void cajeta_copy_into(const char* s, void* out) {
+    if (!out) return;
+    if (!s) s = "";
+    int64_t cap = *((int64_t*) out);
+    int64_t len = (int64_t) strlen(s);
+    if (len > cap) len = cap;
+    if (len > 0) memcpy((char*) out + 8, s, (size_t) len);
+}
+int32_t __cajeta_rtti_param_name_len(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx) {
+    const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
+    return (p && p->name) ? (int32_t) strlen(p->name) : 0;
+}
+void __cajeta_rtti_param_name_into(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx, void* out) {
+    const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
+    cajeta_copy_into(p ? p->name : "", out);
+}
+int32_t __cajeta_rtti_param_type_len(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx) {
+    const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
+    return (p && p->type) ? (int32_t) strlen(p->type) : 0;
+}
+void __cajeta_rtti_param_type_into(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx, void* out) {
+    const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
+    cajeta_copy_into(p ? p->type : "", out);
+}
+
 // REFL-2C constructor introspection + reflective construction.
 int32_t __cajeta_rtti_constructor_count(void* rtti) {
     return rtti ? (int32_t) ((CajetaRtti*) rtti)->constructorCount : 0;

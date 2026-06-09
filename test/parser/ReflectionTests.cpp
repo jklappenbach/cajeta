@@ -20,12 +20,17 @@ std::string prog(const std::string& body) {
     return
         "package test;\n"
         "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Field;\n"
+        "import cajeta.reflect.Method;\n"
+        "import cajeta.reflect.Constructor;\n"
+        "import cajeta.reflect.Parameter;\n"
         "public class User {\n"
         "    public int32 id;\n"
         "    public int64 score;\n"
         "    public boolean active;\n"
         "    public User() { return; }\n"
         "    public int32 bump() { this.id = this.id + 1; return this.id; }\n"
+        "    public int32 addId(int32 delta) { return this.id + delta; }\n"
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
@@ -180,6 +185,71 @@ TEST(ReflectionTests, reflectiveSetVisibleToReflectiveInvoke) {
         "    i = i + 1;\n"
         "}\n"
         "return found;\n"), 1);
+}
+
+// REFL-4 object model: Field object read/write roundtrip on `id` (field 0).
+TEST(ReflectionTests, fieldObjectRoundtrip) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Field f = Class.of(u).getField(0);\n"
+        "f.setInt32(u, 77);\n"
+        "return f.getInt32(u);\n"), 77);
+}
+
+// REFL-4 object model: a Field object reports its declared name.
+TEST(ReflectionTests, fieldObjectName) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Field f = Class.of(u).getField(0);\n"
+        "return (f.getName() == \"id\") ? 1 : 0;\n"), 1);
+}
+
+// REFL-4 object model: invoke a no-arg method through a Method object. Scan
+// Method objects for a zero-parameter one and invoke it; bump() yields 1.
+TEST(ReflectionTests, methodObjectInvoke) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "int32 count = c.getMethodCount();\n"
+        "int32 found = 0;\n"
+        "int32 i = 0;\n"
+        "while (i < count) {\n"
+        "    Method m = c.getMethod(i);\n"
+        "    if (m.getParameterCount() == 0) {\n"
+        "        if (((int32) m.invokeScalar(u)) == 1) { found = 1; }\n"
+        "    }\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "return found;\n"), 1);
+}
+
+// REFL-4 object model: "access down to the parameter" — find the 1-arg method
+// (addId) via Method objects and read its parameter's name + type.
+TEST(ReflectionTests, parameterIntrospection) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "int32 count = c.getMethodCount();\n"
+        "int32 ok = 0;\n"
+        "int32 i = 0;\n"
+        "while (i < count) {\n"
+        "    Method m = c.getMethod(i);\n"
+        "    if (m.getParameterCount() == 1) {\n"
+        "        Parameter p = m.getParameter(0);\n"
+        "        if ((p.getName() == \"delta\") && (p.getTypeName() == \"int32\")) { ok = 1; }\n"
+        "    }\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "return ok;\n"), 1);
+}
+
+// REFL-4 object model: construct via a Constructor object, verify validity.
+TEST(ReflectionTests, constructorObjectNewInstance) {
+    EXPECT_EQ(runI32(
+        "User seed = heap User();\n"
+        "Constructor ctor = Class.of(seed).getConstructor(0);\n"
+        "Object o = ctor.newInstance();\n"
+        "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 3);
 }
 
 // REFL-2C: User declares one no-arg constructor.

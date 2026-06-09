@@ -249,6 +249,23 @@ public final class Class {
         return invokeScalar0Native(o, index);
     }
 
+    // --- member objects (REFL-4 object model) ------------------------------
+
+    /** The declared field at `index` as a {@link Field} object. */
+    public #Field getField(int32 index) {
+        return heap Field(this.rtti, index);
+    }
+
+    /** The declared method at `index` as a {@link Method} object. */
+    public #Method getMethod(int32 index) {
+        return heap Method(this.rtti, index);
+    }
+
+    /** The declared constructor at `index` as a {@link Constructor} object. */
+    public #Constructor getConstructor(int32 index) {
+        return heap Constructor(this.rtti, index);
+    }
+
     // --- construction (REFL-2C infra; full Constructor API in REFL-4) ------
 
     /** Number of declared constructors. */
