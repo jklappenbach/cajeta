@@ -1598,6 +1598,55 @@ TEST(XpuCpuDispatchTests, bufferSliceUploadDownloadOnCpu) {
                       << " (100+i: head; 300+i: mid; 200+i: tail clobbered)";
 }
 
+// Buffer MemoryKind (Stage B4) — a host-accessible (Unified) buffer with
+// zero-copy hostStore/hostLoad on the CPU. On the CPU "device" memory IS host
+// memory, so a Unified buffer's hostStore writes straight into the storage the
+// kernel reads, and hostLoad reads the kernel's results back — no upload /
+// download device transfer anywhere. Exercises the MemoryKind constructor, the
+// kind-threaded alloc/free (Unified ordinal 2), and the host-copy path end to
+// end. (The HIP twin proves genuine zero-copy managed memory on gfx1151.)
+const char* kMemKindUnifiedSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.MemoryKind;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class MemKind {\n"
+    "    @Kernel\n"
+    "    public static void inc(Buffer<int32> b, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { b[i] = b[i] + 1; }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 64;\n"
+    "        int32[] h = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = (int32) i; }\n"
+    "        Buffer<int32> u = heap Buffer<int32>(0, n);\n"
+    "        u.allocate(MemoryKind.Unified);\n"
+    "        u.hostStore(h);\n"                 // zero-copy host write (no upload)
+    "        Stream s = Stream.current();\n"
+    "        inc.launch(s, grid: [1], block: [64])(u, n);\n"
+    "        s.sync();\n"
+    "        int32[] out = heap int32[n];\n"
+    "        u.hostLoad(out);\n"                // zero-copy host read (no download)
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (out[i] != (int32)(i + 1)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCpuDispatchTests, memoryKindUnifiedHostCopyOnCpu) {
+    auto jit = CajetaJit::compile(kMemKindUnifiedSource, "test.MemKind",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != i+1 — host<->device sharing broke)";
+}
+
 // Item 7: a POD struct passed by value as a kernel arg runs on CPU. The struct
 // is marshalled field-by-field; the kernel reads p.mul/p.add to compute
 // out[i] = i*3 + 7 for every work-item.
