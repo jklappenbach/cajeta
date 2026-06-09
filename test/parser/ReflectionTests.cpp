@@ -596,3 +596,31 @@ TEST(ReflectionTests, sealedPrivateConstructorThrows) {
         "    }\n"
         "}\n"), 1);
 }
+
+// --- REFL-4: reference-returning invoke (Method.invokeObject) ----------------
+// A method that returns `heap Cell` is invoked reflectively; the returned
+// #Object is owned (drop-tracked). We read its field reflectively (no downcast)
+// to prove the real reference came back, not int64-widened bits.
+TEST(ReflectionTests, invokeObjectReturnsReference) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class Cell {\n"
+        "    public int32 v;\n"
+        "    public Cell(int32 x) { this.v = x; return; }\n"
+        "}\n"
+        "public class Factory {\n"
+        "    public Factory() { return; }\n"
+        "    public #Cell make() { return heap Cell(42); }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Factory f = heap Factory();\n"
+        "        Method m = Class.of(f).getMethod(0);\n"   // make (only user method)
+        "        Object o = m.invokeObject(f);\n"
+        "        return (o == null) ? -1 : Class.of(o).getInt32(o, 0);\n"  // Cell.v
+        "    }\n"
+        "}\n"), 42);
+}
