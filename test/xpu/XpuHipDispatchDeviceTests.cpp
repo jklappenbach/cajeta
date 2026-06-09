@@ -1368,3 +1368,59 @@ TEST(XpuHipDispatchDeviceTests, bundledAmdgpuCpuForcedToCpu) {
     ASSERT_NE(fn, nullptr);
     EXPECT_FLOAT_EQ(result, 4096.0f);   // ran on the CPU rung
 }
+
+// Buffer.slice (Stage B4) on HIP/AMD — device-verify the pointer-fold path. On
+// HIP the device handle is a pointer, so slice() folds the byte offset into it
+// (handle + offset*elementBytes) at __cajeta_xpu_buffer_slice; the launch-arg
+// and upload/download paths stay offset-unaware. Code-identical to the verified
+// CPU pointer-fold (XpuCpuDispatchTests.bufferSliceKernelOnCpu), confirmed here
+// on real gfx1151. A 128-element parent is filled -1; the tail half [64,128) is
+// sliced and a kernel writes globalIdX (0..63) through the view → lands at
+// parent[64+i], head untouched, the non-owning view double-free-safe.
+TEST(XpuHipDispatchDeviceTests, bufferSliceKernelRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Slice {\n"
+        "    @Kernel\n"
+        "    public static void fill(Buffer<int32> b, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { b[i] = (int32) i; }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 128;\n"
+        "        uint32 half = 64;\n"
+        "        int32[] h = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }\n"
+        "        Buffer<int32> all = heap Buffer<int32>(n);\n"
+        "        all.upload(h);\n"
+        "        Buffer<int32> tail = all.slice(half, half);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(tail, half);\n"
+        "        s.sync();\n"
+        "        all.download(h);\n"
+        "        for (uint32 i = 0; i < half; i = i + 1) {\n"
+        "            if (h[i] != -1) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        for (uint32 i = 0; i < half; i = i + 1) {\n"
+        "            if (h[half + i] != (int32) i) { return (int32)(200 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(src, "test.Slice", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (1xx: head overwritten — bad offset; "
+                         "2xx: tail wrong — view base off)";
+}
