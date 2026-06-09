@@ -47,6 +47,22 @@ if not defined NO_BUILD (
 )
 if not exist "%TEST_BIN%" ( echo error: %TEST_BIN% not built & exit /b 1 )
 
+rem --- cajeta-llvm fork dylib on PATH ----------------------------------------
+rem The dylib slim-down links cajeta_test.exe against libLLVM-<ver>.dll; its dir
+rem must be on PATH at run time. Prefer CAJETA_LLVM_ROOT\bin, else derive from the
+rem configured build's LLVM_DIR (the drift-guard run below launches the binary in
+rem THIS process, before delegating). See cajeta_tests.cmd for the full rationale.
+set "LLVM_BIN="
+if defined CAJETA_LLVM_ROOT if exist "%CAJETA_LLVM_ROOT%\bin\libLLVM*.dll" set "LLVM_BIN=%CAJETA_LLVM_ROOT%\bin"
+if not defined LLVM_BIN if exist "build\CMakeCache.txt" (
+    for /f "usebackq tokens=2 delims==" %%D in (`findstr /B /C:"LLVM_DIR:" "build\CMakeCache.txt"`) do set "LLVM_DIR_RAW=%%D"
+    if defined LLVM_DIR_RAW (
+        set "LLVM_DIR_RAW=!LLVM_DIR_RAW:/=\!"
+        set "LLVM_BIN=!LLVM_DIR_RAW:\lib\cmake\llvm=!\bin"
+    )
+)
+if defined LLVM_BIN if exist "!LLVM_BIN!\libLLVM*.dll" set "PATH=!LLVM_BIN!;%PATH%"
+
 rem --- Parse the filter file into a space-separated pattern list -------------
 rem Skip blank lines and `#` comments (eol=# drops whole-line comments).
 set "pats="
