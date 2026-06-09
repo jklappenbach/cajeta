@@ -1005,16 +1005,27 @@ namespace cajeta {
         bool dstPtr = dstTy->isPointerTy();
         unsigned long destFlags = destType->getTypeFlags();
         bool destSigned = (destFlags & SIGNED_FLAG) != 0;
+        // Integer WIDENING and int→fp conversion must follow the SOURCE
+        // operand's signedness, not the destination's: a `uint8` zero-extends to
+        // `int32` (sign-extending it — the old `destSigned` behavior — turned
+        // 200 into -56), and a `uint64` converts to fp via UIToFP. Truncation
+        // ignores the flag, and fp→int (below) correctly keys off the
+        // destination integer's signedness, so only these two cases change.
+        bool srcSigned = destSigned;
+        if (childAst && childAst->getResolvedType()) {
+            srcSigned = (childAst->getResolvedType()->getTypeFlags()
+                         & SIGNED_FLAG) != 0;
+        }
 
         if (srcInt && dstInt) {
-            return builder->CreateIntCast(val, dstTy, destSigned);
+            return builder->CreateIntCast(val, dstTy, srcSigned);
         }
         if (srcFp && dstFp) {
             return builder->CreateFPCast(val, dstTy);
         }
         if (srcInt && dstFp) {
-            return destSigned ? builder->CreateSIToFP(val, dstTy)
-                              : builder->CreateUIToFP(val, dstTy);
+            return srcSigned ? builder->CreateSIToFP(val, dstTy)
+                             : builder->CreateUIToFP(val, dstTy);
         }
         if (srcFp && dstInt) {
             return destSigned ? builder->CreateFPToSI(val, dstTy)

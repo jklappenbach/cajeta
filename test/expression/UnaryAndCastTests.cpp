@@ -163,3 +163,48 @@ TEST(CastTests, floatToDouble) {
     auto fn = jit->lookup<double (*)()>("run");
     EXPECT_DOUBLE_EQ(fn(), 2.25);
 }
+
+// Integer WIDENING follows the SOURCE operand's signedness, not the
+// destination's. Regression for the bug where (int32) of a uint8 200 used the
+// destination (signed int32) and sign-extended to -56.
+TEST(CastTests, unsignedByteWidensZeroExtended) {
+    auto jit = CajetaJit::compile(makeSource("int32",
+        "uint8 a = (uint8) 200;\n"
+        "return (int32) a;"), "test.U");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 200);
+}
+
+TEST(CastTests, unsignedShortWidensZeroExtended) {
+    auto jit = CajetaJit::compile(makeSource("int32",
+        "uint16 a = (uint16) 60000;\n"
+        "return (int32) a;"), "test.U");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 60000);
+}
+
+TEST(CastTests, unsignedIntWidensToInt64ZeroExtended) {
+    auto jit = CajetaJit::compile(makeSource("int64",
+        "uint32 a = (uint32) 4000000000L;\n"   // > 2^31; sign-extend would go negative
+        "return (int64) a;"), "test.U");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    EXPECT_EQ(fn(), 4000000000LL);
+}
+
+// Signed widening still sign-extends (the case that already worked).
+TEST(CastTests, signedByteWidensSignExtended) {
+    auto jit = CajetaJit::compile(makeSource("int32",
+        "int8 a = (int8) -5;\n"
+        "return (int32) a;"), "test.U");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), -5);
+}
+
+// int→fp also keys off the source: a large uint32 converts via UIToFP.
+TEST(CastTests, unsignedIntToFloatUsesUnsignedConversion) {
+    auto jit = CajetaJit::compile(makeSource("float64",
+        "uint32 a = (uint32) 4000000000L;\n"
+        "return (float64) a;"), "test.U");
+    auto fn = jit->lookup<double (*)()>("run");
+    EXPECT_DOUBLE_EQ(fn(), 4000000000.0);
+}
