@@ -9,6 +9,7 @@
 #include "../../type/FormalParameter.h"
 #include "../../type/CajetaType.h"
 #include "../../type/CajetaClass.h"
+#include "../../type/CajetaArray.h"
 #include "../../type/CajetaVector.h"
 #include "../../type/CajetaMatrix.h"
 #include "../../type/CajetaQuaternion.h"
@@ -3813,6 +3814,28 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
                               llvm::Type::getInt64Ty(ctx), /*isSigned=*/false,
                               /*isTexture=*/false, /*isSampler=*/false,
                               /*isAccelStruct=*/true});
+        } else if (auto arr = std::dynamic_pointer_cast<CajetaArray>(t);
+                   arr && isBufferType(arr->getElementType())) {
+            // Buffer<T>[] — a bindless descriptor ARRAY of buffers (`bufs[idx][i]`).
+            // The per-buffer element type T is read off the Buffer<T> element
+            // exactly as the lone Buffer<T> case below; isBufferArray adds the
+            // outer descriptor-array binding (one binding, descriptorCount = N).
+            llvm::Type* elem = nullptr;
+            bool elemSigned = true;
+            if (auto cls = std::dynamic_pointer_cast<CajetaClass>(
+                    arr->getElementType())) {
+                if (!cls->getTypeArguments().empty()) {
+                    CajetaTypePtr arg0 = cls->getTypeArguments()[0];
+                    elem = deviceScalarType(arg0, ctx);
+                    if (!elem) elem = deviceVectorType(arg0, ctx);
+                    elemSigned = typeIsSigned(arg0);
+                }
+            }
+            if (!elem) elem = llvm::Type::getFloatTy(ctx);
+            LoweringTarget::KernelParam kp{p->getName(), /*isBuffer=*/true, elem,
+                                           elemSigned};
+            kp.isBufferArray = true;
+            params.push_back(kp);
         } else if (isBufferType(t)) {
             llvm::Type* elem = nullptr;
             bool elemSigned = true;
@@ -3874,6 +3897,8 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
             kind = KernelParamInfo::Sampler;
         } else if (p.isAccelStruct) {
             kind = KernelParamInfo::AccelStruct;
+        } else if (p.isBufferArray) {
+            kind = KernelParamInfo::BufferArray;   // checked before isBuffer (both true)
         } else if (p.isBuffer) {
             kind = KernelParamInfo::Buffer;
         } else if (p.type) {

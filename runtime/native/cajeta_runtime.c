@@ -6482,6 +6482,8 @@ static int cajeta_xpu_hip_init_locked(void) {
 #define CAJETA_KP_SAMPLER 3
 #define CAJETA_KP_ACCEL   4   // AccelerationStructure -> descriptor-bound BVH
 #define CAJETA_KP_IMAGE   5   // Image2D (writable) -> STORAGE_IMAGE descriptor
+#define CAJETA_KP_BUFFER_ARRAY 6   // Buffer<T>[] -> bindless descriptor array
+                                   // (descriptorCount = N; N + handles in argv slot)
 
 struct cajeta_kparams {
     char name[256];

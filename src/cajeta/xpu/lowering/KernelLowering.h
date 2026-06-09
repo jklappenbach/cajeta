@@ -62,11 +62,13 @@ namespace xpu {
     // Backend-neutral classification, same as lowerKernel uses.
     struct KernelParamInfo {
         // kind: 0 = scalar, 1 = buffer, 2 = texture, 3 = sampler, 4 =
-        // acceleration structure, 5 = storage image (Image2D, writable). Matches
-        // the runtime's CAJETA_KP_* constants in cajeta_runtime.c.
+        // acceleration structure, 5 = storage image (Image2D, writable),
+        // 6 = buffer array (Buffer<T>[], a bindless descriptor array — byteSize
+        // unused; the per-launch count rides the argv slot). Matches the
+        // runtime's CAJETA_KP_* constants in cajeta_runtime.c.
         enum Kind : uint8_t {
             Scalar = 0, Buffer = 1, Texture = 2, Sampler = 3, AccelStruct = 4,
-            Image = 5
+            Image = 5, BufferArray = 6
         };
         uint8_t kind;
         unsigned byteSize;   // scalar/POD byte size (0 for buffer/texture/sampler)

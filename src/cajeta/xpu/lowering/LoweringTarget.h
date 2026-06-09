@@ -142,8 +142,20 @@ namespace xpu {
                                      // 5 = TextureCube. Selects the image dimensionality
                                      // (Vulkan spirv.Image Dim + image-type), the
                                      // coord arity, and the 2-D vs 3-D sample/fetch
-                                     // seam. MUST stay last so the 6/8-field
-                                     // positional KernelParam inits keep their layout.
+                                     // seam. Kept ahead of the trailing defaulted
+                                     // fields so the 6/8-field positional KernelParam
+                                     // inits keep their layout.
+            bool isBufferArray = false;  // Buffer<T>[] — a bindless descriptor ARRAY of
+                                     // buffers (`bufs[idx][i]`). isBuffer is ALSO true
+                                     // (the element type / per-buffer access is identical
+                                     // to a lone Buffer<T>); isBufferArray adds the outer
+                                     // descriptor-array binding + the first subscript
+                                     // selecting a descriptor. The runtime binds N
+                                     // descriptors into one binding (descriptorCount = N
+                                     // from the launch); on Vulkan an OpTypeRuntimeArray
+                                     // indexed with NonUniformEXT. Appended last (after
+                                     // textureDim) so existing positional inits are
+                                     // unaffected.
         };
 
         // Create the kernel function for `name`. Default: a void-returning
