@@ -311,6 +311,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     for (auto& [key, type] : cajeta::CajetaType::getCanonicalMap()) {
         if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(type)) {
             klass->emitReflectInvokeBody();
+            klass->emitReflectNewBody();
         }
     }
 

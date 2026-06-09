@@ -800,6 +800,7 @@ namespace cajeta {
         for (auto& [key, type] : CajetaType::getCanonicalMap()) {
             if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
                 klass->emitReflectInvokeBody();
+                klass->emitReflectNewBody();
             }
         }
 

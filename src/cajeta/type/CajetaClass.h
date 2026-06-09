@@ -175,6 +175,15 @@ namespace cajeta {
         llvm::Function* llvmReflectInvokeFunction = nullptr;
         bool llvmReflectInvokeBodyEmitted = false;
 
+        // REFL-2C: synthesized per-class newInstance adapter. Shape:
+        //   ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)
+        // a switch over the constructor index (see getReflectConstructorList)
+        // that allocates + zeroes + installs the vtable(s) + runs the chosen
+        // constructor, returning the new instance. Forward-declared when #Rtti
+        // is built; body filled by emitReflectNewBody post-quiescence.
+        llvm::Function* llvmReflectNewFunction = nullptr;
+        bool llvmReflectNewBodyEmitted = false;
+
         // Per-(class, interface) vtable globals. Keyed by interface
         // canonical name; value is a `[N x ptr]` constant whose entries
         // point at this class's concrete implementations in interface-
@@ -534,6 +543,16 @@ namespace cajeta {
         // Called once per class after the Phase-1/2 codegen loop quiesces, so
         // every method's getLlvmFunction() is available for a direct call.
         void emitReflectInvokeBody();
+
+        // REFL-2C: deterministically-ordered list of this class's constructors
+        // (sorted by canonical signature). The index space the newInstance
+        // adapter switches over and the #Rtti constructor table report.
+        std::vector<MethodPtr> getReflectConstructorList();
+
+        // REFL-2C: declaration / body of the reflective newInstance adapter,
+        // mirroring getOrCreateReflectInvokeDecl / emitReflectInvokeBody.
+        llvm::Function* getOrCreateReflectNewDecl();
+        void emitReflectNewBody();
 
         // Implicit destructor chaining helpers (MemoryModel.md § 140,
         // C++ semantics).
