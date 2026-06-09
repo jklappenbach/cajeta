@@ -23,6 +23,13 @@ public final class Method {
     private static int64 invoke0(Object o, int32 idx);
     @Native("__cajeta_object_invoke_scalar")
     private static int64 invokeN(Object o, int32 idx, int64[] args);
+    // REFL-4.4 fiber-stack arg buffers: discrete args, no heap int64[].
+    @Native("__cajeta_object_invoke_scalar1")
+    private static int64 invoke1(Object o, int32 idx, int64 a0);
+    @Native("__cajeta_object_invoke_scalar2")
+    private static int64 invoke2(Object o, int32 idx, int64 a0, int64 a1);
+    @Native("__cajeta_object_invoke_scalar3")
+    private static int64 invoke3(Object o, int32 idx, int64 a0, int64 a1, int64 a2);
     @Native("__cajeta_object_invoke_f32")
     private static float32 invokeF32(Object o, int32 idx, int64[] args);
     @Native("__cajeta_object_invoke_f64")
@@ -87,6 +94,28 @@ public final class Method {
         return invokeN(o, this.index, args);
     }
 
+    /**
+     * REFL-4.4 (Strategy 6) fiber-stack arg buffers. For a small, statically
+     * known argument count, pass the raw args directly instead of building a
+     * heap `int64[]` — the native assembles the adapter's arg buffer on the
+     * calling fiber's stack (no heap allocation). Each arg is one raw user
+     * parameter, in declared order (scalars as their bits, objects/pointers as
+     * the reference). Result widened to int64; the caller must supply exactly
+     * getParameterCount() args with matching types.
+     */
+    public int64 invokeScalar(Object o, int64 a0) {
+        checkAccess();
+        return invoke1(o, this.index, a0);
+    }
+    public int64 invokeScalar(Object o, int64 a0, int64 a1) {
+        checkAccess();
+        return invoke2(o, this.index, a0, a1);
+    }
+    public int64 invokeScalar(Object o, int64 a0, int64 a1, int64 a2) {
+        checkAccess();
+        return invoke3(o, this.index, a0, a1, a2);
+    }
+
     /** Invoke a NO-ARGUMENT int32-returning method, narrowed from the int64 path. */
     public int32 invokeInt32(Object o) { checkAccess(); return (int32) invoke0(o, this.index); }
 
@@ -94,6 +123,23 @@ public final class Method {
     public int32 invokeInt32(Object o, int64[] args) {
         checkAccess();
         return (int32) invokeN(o, this.index, args);
+    }
+
+    /**
+     * REFL-4.4 int32-returning, fiber-stack arg buffers (see invokeScalar
+     * arity overloads). Narrowed from the int64 path; no heap `int64[]`.
+     */
+    public int32 invokeInt32(Object o, int64 a0) {
+        checkAccess();
+        return (int32) invoke1(o, this.index, a0);
+    }
+    public int32 invokeInt32(Object o, int64 a0, int64 a1) {
+        checkAccess();
+        return (int32) invoke2(o, this.index, a0, a1);
+    }
+    public int32 invokeInt32(Object o, int64 a0, int64 a1, int64 a2) {
+        checkAccess();
+        return (int32) invoke3(o, this.index, a0, a1, a2);
     }
 
     /**

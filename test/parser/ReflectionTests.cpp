@@ -322,6 +322,65 @@ TEST(ReflectionTests, methodInvokeWithArg) {
         "return result;\n"), 15);
 }
 
+// REFL-4.4 (Strategy 6): fiber-stack arg buffer, 1-arg form. Same addId(delta)
+// call as methodInvokeWithArg, but the arg is passed directly (no heap int64[]);
+// the native assembles the buffer on the fiber stack. id=10, delta=5 -> 15.
+TEST(ReflectionTests, methodInvokeStackArg1) {
+    EXPECT_EQ(runI32(
+        "User u = heap User();\n"
+        "Class c = Class.of(u);\n"
+        "c.setInt32(u, 0, 10);\n"
+        "int32 count = c.getMethodCount();\n"
+        "int32 result = -1;\n"
+        "int32 i = 0;\n"
+        "while (i < count) {\n"
+        "    Method m = c.getMethod(i);\n"
+        "    if (m.getParameterCount() == 1) {\n"
+        "        result = m.invokeInt32(u, (int64) 5);\n"
+        "    }\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "return result;\n"), 15);
+}
+
+// REFL-4.4: fiber-stack arg buffers, 2- and 3-arg forms. A custom class with
+// sum2/sum3 (so the shared fixture's 1-arg method-scan tests are undisturbed);
+// each arg is passed directly. base=100: sum2(7,9)=116, sum3(7,9,4)=120.
+TEST(ReflectionTests, methodInvokeStackArgsMulti) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class Adder {\n"
+        "    public int32 base;\n"
+        "    public Adder() { return; }\n"
+        "    public int32 sum2(int32 a, int32 b) { return this.base + a + b; }\n"
+        "    public int32 sum3(int32 a, int32 b, int32 c) { return this.base + a + b + c; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Adder x = heap Adder();\n"
+        "        Class c = Class.of(x);\n"
+        "        c.setInt32(x, 0, 100);\n"
+        "        int32 count = c.getMethodCount();\n"
+        "        int32 r2 = -1;\n"
+        "        int32 r3 = -1;\n"
+        "        int32 i = 0;\n"
+        "        while (i < count) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            if (m.getParameterCount() == 2) {\n"
+        "                r2 = m.invokeInt32(x, (int64) 7, (int64) 9);\n"
+        "            }\n"
+        "            if (m.getParameterCount() == 3) {\n"
+        "                r3 = m.invokeInt32(x, (int64) 7, (int64) 9, (int64) 4);\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return (r2 == 116) ? ((r3 == 120) ? 1 : 0) : 0;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
 // REFL-4 marshalling: construct via the 1-arg User(int32 startId) through a
 // Constructor object; the new instance's id is the passed argument (99).
 TEST(ReflectionTests, constructorNewInstanceWithArg) {
