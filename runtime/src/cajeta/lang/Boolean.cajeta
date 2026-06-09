@@ -1,0 +1,32 @@
+package cajeta.lang;
+
+/**
+ * Boxed `boolean`. Immutable, heap-allocatable, reflection-introspectable
+ * wrapper. Extends `Object` directly — a truth value is not a `Number`.
+ *
+ * Value equality via the `hash()` override: `Boolean.of(true) ==
+ * Boolean.of(true)`, `!= Boolean.of(false)`. Boxed value is field index 0.
+ * See `plans/lang/wrapper-types-plan.md`.
+ */
+public class Boolean extends Object {
+    boolean value;
+
+    public Boolean(boolean value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Boolean of(boolean value) { return heap Boolean(value); }
+
+    /** The wrapped primitive. */
+    public boolean value() { return this.value; }
+
+    /**
+     * Value-based hash → equal values compare equal via Object.operator==.
+     * Uses an `if` rather than the `cond ? 1 : 0` ternary: a boolean-condition
+     * ternary whose arms are int literals widened to the int64 return type
+     * currently miscompiles (malformed ICmp at IR build).
+     */
+    public int64 hash() {
+        if (this.value) { return 1; }
+        return 0;
+    }
+}

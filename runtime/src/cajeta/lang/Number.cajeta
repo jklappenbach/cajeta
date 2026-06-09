@@ -1,0 +1,35 @@
+package cajeta.lang;
+
+/**
+ * Base of every boxed numeric primitive (`Int8`…`Int128`, `UInt8`…`UInt128`,
+ * `Float16`…`Float128`). A `Number` lets generic / reflective code accept any
+ * boxed number through one type and convert it without switching on the
+ * concrete wrapper class.
+ *
+ * ## Concrete, not abstract
+ *
+ * Cajeta has no `abstract` class/method modifier yet (see `Stream`), so
+ * `Number` is a concrete base whose `asInt64()` / `asFloat64()` carry trivial
+ * default bodies that **every** numeric wrapper overrides. A bare `Number` is
+ * never meant to be instantiated; the defaults exist only to satisfy vtable
+ * construction.
+ *
+ * ## Field-less by design
+ *
+ * `Number` declares no fields, so a subclass's `value` field is always
+ * reflect-index 0 — `Class.of(box).getInt32(box, 0)` reaches the boxed value.
+ * Keep it that way when extending this hierarchy.
+ *
+ * `Boolean` and `Char` are intentionally NOT `Number`s — a truth value and a
+ * Unicode codepoint aren't numbers (matching `java.lang.Character`/`Boolean`).
+ *
+ * See `plans/lang/wrapper-types-plan.md`.
+ */
+public class Number extends Object {
+
+    /** This value as a 64-bit signed integer. Overridden by each wrapper. */
+    public int64 asInt64() { return 0; }
+
+    /** This value as a 64-bit float. Overridden by each wrapper. */
+    public float64 asFloat64() { return 0.0; }
+}

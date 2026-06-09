@@ -1,0 +1,31 @@
+package cajeta.lang;
+
+/**
+ * Boxed `float64`. Immutable, heap-allocatable, reflection-introspectable
+ * wrapper for a 64-bit IEEE-754 float. Boxed value is field index 0.
+ *
+ * Equality is **bitwise** (via the `hash()` override over the raw bits), so
+ * `Float64.of(1.5) == Float64.of(1.5)` but `!= Float64.of(1.2)`. `-0.0`
+ * canonicalizes to `+0.0`; distinct NaN bit patterns hash distinctly. See
+ * `plans/lang/wrapper-types-plan.md`.
+ */
+public class Float64 extends Number {
+    float64 value;
+
+    @Native("__cajeta_hash_float64")
+    private static int64 hashBits(float64 value);
+
+    public Float64(float64 value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Float64 of(float64 value) { return heap Float64(value); }
+
+    /** The wrapped primitive. */
+    public float64 value() { return this.value; }
+
+    public int64   asInt64()   { return (int64) this.value; }
+    public float64 asFloat64() { return this.value; }
+
+    /** Bitwise value hash → equal values compare equal via Object.operator==. */
+    public int64 hash() { return hashBits(this.value); }
+}

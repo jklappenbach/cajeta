@@ -1,0 +1,24 @@
+package cajeta.lang;
+
+/**
+ * Boxed `int64`. Immutable, heap-allocatable, reflection-introspectable wrapper
+ * for a 64-bit signed integer. Value equality via the `hash()` override (see
+ * `Int32` / `plans/lang/wrapper-types-plan.md`). Boxed value is field index 0.
+ */
+public class Int64 extends Number {
+    int64 value;
+
+    public Int64(int64 value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Int64 of(int64 value) { return heap Int64(value); }
+
+    /** The wrapped primitive. */
+    public int64 value() { return this.value; }
+
+    public int64   asInt64()   { return this.value; }
+    public float64 asFloat64() { return (float64) this.value; }
+
+    /** Value-based hash → equal values compare equal via Object.operator==. */
+    public int64 hash() { return this.value; }
+}
