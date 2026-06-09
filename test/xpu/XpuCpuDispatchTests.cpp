@@ -1111,6 +1111,130 @@ static const char* kTex1dSampleSrcCpu() {
     return s.c_str();
 }
 
+// B3 texture dims: Texture2DArray fetch on CPU. A 2x2x3 R32F array holds the
+// linear texel index (0..11, layer-major); each texel read back exactly by
+// integer (x, y, layer). The layered analogue of texture3dFetchOnCpu — but the
+// array fetch reuses the 3-D path with z = layer.
+static const char* kTex2daFetchSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2DArray;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex2daFetchCpu {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture2DArray arr, Buffer<float32> out,\n"
+        "                             uint32 w, uint32 h, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 layer = i / (w*h);\n"
+        "            uint32 r = i - layer*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            Vector<float32,4> c = arr.fetch(x, y, layer);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 layers = 3;\n"
+        "        uint32 n = 12;\n"
+        "        float32[] texels = heap float32[12];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { texels[i] = (float32)(i); }\n"
+        "        Texture2DArray arr = heap Texture2DArray(w, h, layers);\n"
+        "        arr.upload(texels);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [n])(arr, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+// Texture2DArray sample on CPU: NEAREST at each texel center reads the exact
+// stored value of that layer; a LINEAR midpoint within layer 1 (u=0.5 between
+// texel 0 and 1) blends them. Exercises the per-layer bilinear path (NO
+// cross-layer blend — the layer is an integer index) + the Sampler.
+static const char* kTex2daSampleSrcCpu() {
+    static std::string s;
+    s =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2DArray;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex2daSampleCpu {\n"
+        "    @Kernel\n"
+        "    public static void samp(Texture2DArray arr, Sampler sn,\n"
+        "                            Buffer<float32> out, uint32 w, uint32 h,\n"
+        "                            uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 layer = i / (w*h);\n"
+        "            uint32 r = i - layer*(w*h);\n"
+        "            uint32 y = r / w;\n"
+        "            uint32 x = r - y*w;\n"
+        "            float32 u = ((float32)(x) + 0.5f) / (float32)(w);\n"
+        "            float32 v = ((float32)(y) + 0.5f) / (float32)(h);\n"
+        "            Vector<float32,4> c = arr.sample(sn, u, v, layer);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void mid(Texture2DArray arr, Sampler sl, Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < 1) {\n"
+        // layer 1 holds {4,5,6,7}; bilinear at the (0.5,0.25) point between
+        // texel 4 and 5 along x at the top row → 4.5.
+        "            Vector<float32,4> c = arr.sample(sl, 0.5f, 0.25f, 1);\n"
+        "            out[0] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2; uint32 layers = 3;\n"
+        "        uint32 n = 12;\n"
+        "        float32[] texels = heap float32[12];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { texels[i] = (float32)(i); }\n"
+        "        Texture2DArray arr = heap Texture2DArray(w, h, layers);\n"
+        "        arr.upload(texels);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"     // nearest, clamp
+        "        Sampler sl = heap Sampler(1, 0);\n"     // linear, clamp
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [n])(arr, sn, out, w, h, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        float32[] hmid = heap float32[1]; hmid[0] = -1.0f;\n"
+        "        Buffer<float32> mout = heap Buffer<float32>(1);\n"
+        "        mout.upload(hmid);\n"
+        "        mid.launch(s, grid: [1], block: [1])(arr, sl, mout);\n"
+        "        s.sync();\n"
+        "        mout.download(hmid);\n"
+        "        float32 dm = hmid[0] - 4.5f;\n"
+        "        if (dm < -0.02f || dm > 0.02f) { return (int32)(200); }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
 // B3: two Sampler params in one kernel — sample the SAME texture through a
 // nearest sampler AND a linear sampler. A 2x2 R32F texture {0,1,2,3}; at the
 // center (u=v=0.5) nearest picks texel (1,1)=3 while linear averages all four to
@@ -1479,6 +1603,29 @@ TEST(XpuCpuDispatchTests, texture1dSampleOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: linear midpoint)";
+}
+
+// B3 texture dims: Texture2DArray fetch on CPU — a 2x2x3 array read texel-exact.
+TEST(XpuCpuDispatchTests, texture2dArrayFetchOnCpu) {
+    auto jit = CajetaJit::compile(kTex2daFetchSrcCpu(), "test.Tex2daFetchCpu",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: layer/texel mismatch at i)";
+}
+
+// Texture2DArray sample on CPU — nearest at texel centers per layer (exact) + a
+// within-layer-1 linear midpoint (texel 4/5 blend = 4.5).
+TEST(XpuCpuDispatchTests, texture2dArraySampleOnCpu) {
+    auto jit = CajetaJit::compile(kTex2daSampleSrcCpu(), "test.Tex2daSampleCpu",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: layer-1 linear midpoint)";
 }
 
 // B3: mipmaps on CPU — fetchLod reads a chosen mip level exactly (L0=3, L1=99),

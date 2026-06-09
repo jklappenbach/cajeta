@@ -268,6 +268,46 @@ public:
         return fetchTexture(b, m, texHandle, x, y, texelTy, lod);
     }
 
+    // Texture2DArray.sample(sampler, u, v, layer): bilinear WITHIN the integer-
+    // selected layer (no cross-layer filtering — unlike Texture3D's trilinear).
+    // Emits a call to a dedicated C runtime symbol that addresses layer `layer`
+    // (the array texobj stores layers exactly like a 3-D volume's z slices).
+    //   <4 x float> __cajeta_xpu_cpu_tex2da_sample_rgba(ptr, i32 filt, i32 addr,
+    //                                                   float u, float v, i32 layer)
+    llvm::Value* sampleTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* texHandle,
+                                      llvm::Value* samplerHandle, llvm::Value* u,
+                                      llvm::Value* v, llvm::Value* layer) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* filterMode =
+            b.CreateExtractValue(samplerHandle, {0}, "samp.filter");
+        llvm::Value* addressMode =
+            b.CreateExtractValue(samplerHandle, {1}, "samp.addr");
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* fnTy = llvm::FunctionType::get(
+            v4f, {llvm::PointerType::get(ctx, 0), i32, i32, f32, f32, i32},
+            /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_tex2da_sample_rgba", fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+            f->setDoesNotThrow();
+        return b.CreateCall(callee,
+                            {texHandle, filterMode, addressMode, u, v, layer},
+                            "tex2da.sample");
+    }
+
+    // Texture2DArray.fetch(x, y, layer): the exact-texel read of layer `layer`.
+    // The array texobj stores layers as a 3-D volume's z slices, so this is
+    // exactly the 3-D fetch with z = layer — reuse it (float or integer variant).
+    llvm::Value* fetchTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* texHandle, llvm::Value* x,
+                                     llvm::Value* y, llvm::Value* layer,
+                                     llvm::Type* texelTy) override {
+        return fetchTexture3D(b, m, texHandle, x, y, layer, texelTy);
+    }
+
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime
     // stub (width-1 scalar semantics: one work-item per host invocation). The
     // CPU registration pass then attaches a Vector Function ABI variant to each

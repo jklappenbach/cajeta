@@ -137,8 +137,9 @@ namespace xpu {
                                      // descriptor bound in GENERAL layout. `type` is
                                      // the texel scalar (f32); written by
                                      // `img.store(x, y, v)` (OpImageWrite).
-            int textureDim = 2;      // 2 = Texture2D, 3 = Texture3D, 1 = Texture1D
-                                     // (for isTexture params). Selects the image dimensionality
+            int textureDim = 2;      // texture KIND for isTexture params: 1 = Texture1D,
+                                     // 2 = Texture2D, 3 = Texture3D, 4 = Texture2DArray,
+                                     // 5 = TextureCube. Selects the image dimensionality
                                      // (Vulkan spirv.Image Dim + image-type), the
                                      // coord arity, and the 2-D vs 3-D sample/fetch
                                      // seam. MUST stay last so the 6/8-field
@@ -244,6 +245,26 @@ namespace xpu {
         virtual llvm::Value* fetchTexture1D(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* x, llvm::Type* texelTy);
+
+        // Texture2DArray — the layered twins of sampleTexture/fetchTexture. Like a
+        // 2-D texture but with an extra `layer` selecting one of N planes: the
+        // sample/fetch is 2-D within that layer (NO cross-layer filtering — unlike
+        // Texture3D's trilinear). `layer` is an INTEGER array index (i32), not a
+        // normalized coord; backends that want a float layer coordinate convert it.
+        // `sampleTexture2DArray` is the bilinear filtered read (float-only) at the
+        // nearest layer; `fetchTexture2DArray` the unfiltered exact-texel read →
+        // <4 x texelTy>. Default: unsupported (XPU-N01). On the image side a layered
+        // image is Dim=2D, Arrayed=1 (Vulkan VIEW_TYPE_2D_ARRAY, AMD
+        // __ockl_image_{sample,load}_2Da, CPU reuse of the 2-D path per layer).
+        virtual llvm::Value* sampleTexture2DArray(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* samplerHandle,
+            llvm::Value* u, llvm::Value* v, llvm::Value* layer);
+
+        virtual llvm::Value* fetchTexture2DArray(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* x, llvm::Value* y,
+            llvm::Value* layer, llvm::Type* texelTy);
 
         // Store `value` into the 2-D storage image `imgHandle` at INTEGER texel
         // coordinate (x, y) — the lowering of `img.store(x, y, value)` (writable
