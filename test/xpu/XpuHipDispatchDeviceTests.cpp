@@ -508,6 +508,94 @@ const char* kHipTex3dSampleSrc() {
     return s.c_str();
 }
 
+// B3 texture dims: Texture1D on the real AMD device. A width-4 R32F row (a 1-D
+// hipArray) fetched via __ockl_image_load_1D texel-exact (scalar coord).
+const char* kHipTex1dFetchSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture1D;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex1dFetchHip {\n"
+        "    @Kernel\n"
+        "    public static void fetch(Texture1D row, Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Vector<float32,4> c = row.fetch(i);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 4; uint32 n = 4;\n"
+        "        float32[] texels = heap float32[4];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { texels[i] = (float32)(i); }\n"
+        "        Texture1D row = heap Texture1D(w);\n"
+        "        row.upload(texels);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fetch.launch(s, grid: [1], block: [64])(row, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
+// Texture1D linear sample on the real AMD device — nearest at texel centers
+// (exact) via __ockl_image_sample_1D (scalar coord) on a 1-D hipArray texobj.
+const char* kHipTex1dSampleSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture1D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Tex1dSampHip {\n"
+        "    @Kernel\n"
+        "    public static void samp(Texture1D row, Sampler sn, Buffer<float32> out,\n"
+        "                            uint32 w, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            float32 u = ((float32)(i) + 0.5f) / (float32)(w);\n"
+        "            Vector<float32,4> c = row.sample(sn, u);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 4; uint32 n = 4;\n"
+        "        float32[] texels = heap float32[4];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { texels[i] = (float32)(i); }\n"
+        "        Texture1D row = heap Texture1D(w);\n"
+        "        row.upload(texels);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"   // nearest, clamp
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [64])(row, sn, out, w, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
 } // namespace
 
 // The dispatcher routes a host-source @Kernel program to HIP on the real AMD
@@ -996,6 +1084,38 @@ TEST(XpuHipDispatchDeviceTests, texture3dSampleRoutesToHipOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: 3D nearest sample mismatch)";
+}
+
+// B3 texture dims: Texture1D fetch on the real AMD device — a 1-D hipArray,
+// __ockl_image_load_1D (scalar coord) texel-exact.
+TEST(XpuHipDispatchDeviceTests, texture1dFetchRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipTex1dFetchSrc(), "test.Tex1dFetchHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: 1D texel fetch mismatch)";
+}
+
+// Texture1D linear sample on the real AMD device — nearest at texel centers
+// (exact) via __ockl_image_sample_1D on a 1-D hipArray texture object.
+TEST(XpuHipDispatchDeviceTests, texture1dSampleRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kHipTex1dSampleSrc(), "test.Tex1dSampHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: 1D nearest sample mismatch)";
 }
 
 // Integer Texture3D fetch on the real AMD device (gfx1151) — RGBA32I 3-D hipArray,
