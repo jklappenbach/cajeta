@@ -19,8 +19,15 @@ std::string prog(const std::string& body) {
         "package test;\n"
         "import cajeta.lang.Number;\n"
         "import cajeta.lang.Boolean;\n"
+        "import cajeta.lang.Int8;\n"
+        "import cajeta.lang.Int16;\n"
         "import cajeta.lang.Int32;\n"
         "import cajeta.lang.Int64;\n"
+        "import cajeta.lang.UInt8;\n"
+        "import cajeta.lang.UInt16;\n"
+        "import cajeta.lang.UInt32;\n"
+        "import cajeta.lang.UInt64;\n"
+        "import cajeta.lang.Char;\n"
         "import cajeta.lang.Float32;\n"
         "import cajeta.lang.Float64;\n"
         "import cajeta.reflect.Class;\n"
@@ -97,4 +104,28 @@ TEST(WrapperTypesTests, reflectionIntrospectable) {
         "Class c = Class.of(box);\n"
         "if (c.getFieldCount() != 1) { return -1; }\n"
         "return c.getInt32(box, 0);\n"), 99);
+}
+
+// W2 wrappers: of/value round-trip across the narrow/unsigned ints + Char, plus
+// virtual asInt64() through a Number upcast. value() is compared via an int32/64
+// cast (the wrapper's primitive type differs in width from a bare literal).
+TEST(WrapperTypesTests, w2RoundTrip) {
+    EXPECT_EQ(runI32(
+        "Int8 a = Int8.of((int8) -5);\n"
+        "if ((int32) a.value() != -5) { return 1; }\n"
+        "Int16 b = Int16.of((int16) -300);\n"
+        "if ((int32) b.value() != -300) { return 2; }\n"
+        "UInt8 c = UInt8.of((uint8) 200);\n"
+        "if ((int32) c.value() != 200) { return 3; }\n"
+        "UInt16 d = UInt16.of((uint16) 60000);\n"
+        "if ((int32) d.value() != 60000) { return 4; }\n"
+        "UInt32 e = UInt32.of((uint32) 200000);\n"
+        "if (e.asInt64() != 200000L) { return 5; }\n"          // via Number override
+        "UInt64 f = UInt64.of((uint64) 9000000000L);\n"
+        "if ((int64) f.value() != 9000000000L) { return 6; }\n"
+        "Char g = Char.of('A');\n"
+        "if ((int32) g.value() != 65) { return 7; }\n"
+        "Number n = Int8.of((int8) 7);\n"                      // upcast + virtual dispatch
+        "if (n.asInt64() != 7L) { return 8; }\n"
+        "return 0;\n"), 0);
 }

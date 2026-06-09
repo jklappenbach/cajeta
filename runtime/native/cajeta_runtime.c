@@ -3797,6 +3797,31 @@ int32_t __cajeta_field_get_i32(void* obj, void* rtti, int32_t idx) {
     if (!obj || off < 0) return 0;
     return *(int32_t*) ((char*) obj + off);
 }
+// W2 boxing: width-correct 8/16-bit field loads (the i32 load above would
+// over-read a 1/2-byte field). Signed variants sign-extend, unsigned zero-extend
+// (into the int32 return), so Field.getBoxed casts back to the exact wrapper
+// type losslessly. 32-bit (uint32/char) and 64-bit (uint64) field reads reuse
+// __cajeta_field_get_i32 / _i64 — same width, just reinterpreted in cajeta.
+int32_t __cajeta_field_get_i8(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (int32_t) *(int8_t*) ((char*) obj + off);
+}
+int32_t __cajeta_field_get_u8(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (int32_t) *(uint8_t*) ((char*) obj + off);
+}
+int32_t __cajeta_field_get_i16(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (int32_t) *(int16_t*) ((char*) obj + off);
+}
+int32_t __cajeta_field_get_u16(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (int32_t) *(uint16_t*) ((char*) obj + off);
+}
 void __cajeta_field_set_i32(void* obj, void* rtti, int32_t idx, int32_t v) {
     int32_t off = cajeta_field_offset(rtti, idx);
     if (!obj || off < 0) return;
@@ -4076,6 +4101,15 @@ void __cajeta_rtti_param_type_into(void* rtti, int32_t isCtor, int32_t mIdx, int
 #define CAJETA_RK_FLOAT64    5
 #define CAJETA_RK_REFERENCE  6
 #define CAJETA_RK_OTHER      7
+// W2 widths (box through the 64-bit invoke/field machinery + truncation; the
+// 8/16-bit field reads use dedicated width-correct natives below).
+#define CAJETA_RK_INT8       8
+#define CAJETA_RK_INT16      9
+#define CAJETA_RK_UINT8      10
+#define CAJETA_RK_UINT16     11
+#define CAJETA_RK_UINT32     12
+#define CAJETA_RK_UINT64     13
+#define CAJETA_RK_CHAR       14
 static int32_t cajeta_return_kind(const char* t) {
     if (!t) return CAJETA_RK_REFERENCE;
     if (!strcmp(t, "void"))    return CAJETA_RK_VOID;
@@ -4084,13 +4118,18 @@ static int32_t cajeta_return_kind(const char* t) {
     if (!strcmp(t, "int64"))   return CAJETA_RK_INT64;
     if (!strcmp(t, "float32")) return CAJETA_RK_FLOAT32;
     if (!strcmp(t, "float64")) return CAJETA_RK_FLOAT64;
-    // Known primitives without a W1 wrapper — not boxable yet (honest about it
-    // rather than widening and lying about the boxed type's identity).
-    if (!strcmp(t, "int8")    || !strcmp(t, "int16")   || !strcmp(t, "int128")  ||
-        !strcmp(t, "uint8")   || !strcmp(t, "uint16")  || !strcmp(t, "uint32")  ||
-        !strcmp(t, "uint64")  || !strcmp(t, "uint128") || !strcmp(t, "uchar")   ||
-        !strcmp(t, "char")    || !strcmp(t, "float16") || !strcmp(t, "bfloat16")||
-        !strcmp(t, "float128")|| !strcmp(t, "pointer") ||
+    if (!strcmp(t, "int8"))    return CAJETA_RK_INT8;
+    if (!strcmp(t, "int16"))   return CAJETA_RK_INT16;
+    if (!strcmp(t, "uint8") || !strcmp(t, "uchar")) return CAJETA_RK_UINT8;
+    if (!strcmp(t, "uint16"))  return CAJETA_RK_UINT16;
+    if (!strcmp(t, "uint32"))  return CAJETA_RK_UINT32;
+    if (!strcmp(t, "uint64"))  return CAJETA_RK_UINT64;
+    if (!strcmp(t, "char"))    return CAJETA_RK_CHAR;
+    // Primitives still without a wrapper — 128-bit ints (don't fit the 64-bit
+    // paths) and the half/quad/ML floats + raw pointer. Not boxable yet
+    // (honest, rather than widening and lying about the boxed type's identity).
+    if (!strcmp(t, "int128")  || !strcmp(t, "uint128")  || !strcmp(t, "float16") ||
+        !strcmp(t, "bfloat16")|| !strcmp(t, "float128") || !strcmp(t, "pointer") ||
         !strcmp(t, "float4e2m1")     || !strcmp(t, "float6e2m3")     ||
         !strcmp(t, "float6e3m2")     || !strcmp(t, "float8e4m3")     ||
         !strcmp(t, "float8e5m2")     || !strcmp(t, "float8e4m3fnuz") ||

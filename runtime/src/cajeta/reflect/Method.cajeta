@@ -3,8 +3,15 @@ package cajeta.reflect;
 import cajeta.lang.Object;
 import cajeta.lang.String;
 import cajeta.lang.Boolean;
+import cajeta.lang.Int8;
+import cajeta.lang.Int16;
 import cajeta.lang.Int32;
 import cajeta.lang.Int64;
+import cajeta.lang.UInt8;
+import cajeta.lang.UInt16;
+import cajeta.lang.UInt32;
+import cajeta.lang.UInt64;
+import cajeta.lang.Char;
 import cajeta.lang.Float32;
 import cajeta.lang.Float64;
 
@@ -234,8 +241,32 @@ public final class Method {
         if (kind == 6) {                                   // reference
             return invokeObj(o, this.index, args);
         }
-        // kind == 7: a primitive with no W1 wrapper (W2-W4 pending).
+        // W2 widths — the scalar adapter widens the return into the int64 ret
+        // buffer; a truncating cast recovers the exact value.
+        if (kind == 8) {                                   // int8
+            return Int8.of((int8) invokeN(o, this.index, args));
+        }
+        if (kind == 9) {                                   // int16
+            return Int16.of((int16) invokeN(o, this.index, args));
+        }
+        if (kind == 10) {                                  // uint8
+            return UInt8.of((uint8) invokeN(o, this.index, args));
+        }
+        if (kind == 11) {                                  // uint16
+            return UInt16.of((uint16) invokeN(o, this.index, args));
+        }
+        if (kind == 12) {                                  // uint32
+            return UInt32.of((uint32) invokeN(o, this.index, args));
+        }
+        if (kind == 13) {                                  // uint64
+            return UInt64.of((uint64) invokeN(o, this.index, args));
+        }
+        if (kind == 14) {                                  // char (i32)
+            return Char.of((char) invokeN(o, this.index, args));
+        }
+        // kind == 7: a primitive with no wrapper yet (int128/uint128, the
+        // half/quad/ML floats — plan W3-W4).
         throw heap UnsupportedReflectionException(
-            "invokeBoxed: this primitive return type has no wrapper yet (plan W2-W4)");
+            "invokeBoxed: this primitive return type has no wrapper yet (plan W3-W4)");
     }
 }

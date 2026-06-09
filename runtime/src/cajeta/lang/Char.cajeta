@@ -1,0 +1,24 @@
+package cajeta.lang;
+
+/**
+ * Boxed `char` (a 32-bit Unicode codepoint — Go-`rune` semantics, i32-backed).
+ * Immutable, heap-allocatable, reflection-introspectable. Extends `Object`
+ * directly — a codepoint is not a `Number` (matching `java.lang.Character`).
+ *
+ * Value equality via the `hash()` override: `Char.of('A') == Char.of('A')`.
+ * Boxed value is field index 0. See `plans/lang/wrapper-types-plan.md` (W2).
+ */
+public class Char extends Object {
+    char value;
+
+    public Char(char value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Char of(char value) { return heap Char(value); }
+
+    /** The wrapped codepoint. */
+    public char value() { return this.value; }
+
+    /** Value-based hash → equal codepoints compare equal via Object.operator==. */
+    public int64 hash() { return (int64) this.value; }
+}

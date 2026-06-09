@@ -1,0 +1,24 @@
+package cajeta.lang;
+
+/**
+ * Boxed `int8` (8-bit signed). Immutable, heap-allocatable,
+ * reflection-introspectable; value equality via the `hash()` override. Boxed
+ * value is field index 0. See `plans/lang/wrapper-types-plan.md` (W2).
+ */
+public class Int8 extends Number {
+    int8 value;
+
+    public Int8(int8 value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Int8 of(int8 value) { return heap Int8(value); }
+
+    /** The wrapped primitive. */
+    public int8 value() { return this.value; }
+
+    public int64   asInt64()   { return (int64) this.value; }
+    public float64 asFloat64() { return (float64) this.value; }
+
+    /** Value-based hash → equal values compare equal via Object.operator==. */
+    public int64 hash() { return (int64) this.value; }
+}
