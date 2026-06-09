@@ -249,7 +249,7 @@ TEST(ReflectionTests, constructorObjectNewInstance) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Constructor ctor = Class.of(seed).getConstructor(0);\n"
-        "Object o = ctor.newInstance();\n"
+        "Object o = ctor.heapInstance();\n"
         "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 3);
 }
 
@@ -296,7 +296,7 @@ TEST(ReflectionTests, constructorNewInstanceWithArg) {
         "    if (ctor.getParameterCount() == 1) {\n"
         "        int64[] args = heap int64[1];\n"
         "        args[0] = (int64) 99;\n"
-        "        Object o = ctor.newInstance(args);\n"
+        "        Object o = ctor.heapInstance(args);\n"
         "        result = c.getInt32(o, 0);\n"
         "    }\n"
         "    i = i + 1;\n"
@@ -304,24 +304,24 @@ TEST(ReflectionTests, constructorNewInstanceWithArg) {
         "return result;\n"), 99);
 }
 
-// REFL-2C: reflectively construct a User via the synthesized newInstance
+// REFL-2C: reflectively construct a User via the synthesized heapInstance
 // adapter, then confirm the result is a valid, fully-formed instance — its
 // vtable->classObject->rtti chain resolves and reports the right field count.
 TEST(ReflectionTests, newInstanceProducesValidObject) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Class c = Class.of(seed);\n"
-        "Object o = c.newInstance(0);\n"
+        "Object o = c.heapInstance(0);\n"
         "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 3);
 }
 
-// REFL-2C: a newInstance'd object is functional — reflectively invoking the
+// REFL-2C: a heapInstance'd object is functional — reflectively invoking the
 // no-arg bump() on it returns 1 (its id was zero-initialized by construction).
 TEST(ReflectionTests, newInstanceObjectIsFunctional) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Class c = Class.of(seed);\n"
-        "Object o = c.newInstance(0);\n"
+        "Object o = c.heapInstance(0);\n"
         "int32 count = c.getMethodCount();\n"
         "int32 found = 0;\n"
         "int32 i = 0;\n"

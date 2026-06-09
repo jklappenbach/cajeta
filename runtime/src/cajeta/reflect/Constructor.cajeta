@@ -4,7 +4,7 @@ import cajeta.lang.Object;
 
 /**
  * A declared constructor of a class (REFL-4). Reflective construction routes
- * through the synthesized per-class newInstance adapter (REFL-2C). The
+ * through the synthesized per-class heapInstance adapter (REFL-2C). The
  * no-argument path is here; argument marshalling lands next.
  */
 public final class Constructor {
@@ -34,18 +34,21 @@ public final class Constructor {
     }
 
     /**
-     * Construct a new instance via this NO-ARGUMENT constructor (allocates,
-     * installs the vtable, runs the ctor). Returns the new owned object.
-     * Argument-passing variants land with REFL-4 marshalling.
+     * Construct a new HEAP instance via this NO-ARGUMENT constructor (allocates
+     * on the heap, installs the vtable, runs the ctor). Returns the new owned
+     * object. Named `heapInstance` to make the allocation site explicit —
+     * reflective construction is always heap (the type, hence its size and
+     * escape, is unknown at the call site, so a stack alloca can't be emitted);
+     * a future `stackInstance`/unsafe-placement form can join this namespace.
      */
-    public #Object newInstance() { return new0(this.rtti, this.index); }
+    public #Object heapInstance() { return new0(this.rtti, this.index); }
 
     /**
-     * Construct via this constructor with raw arguments packed into `args`
-     * (one int64 per user parameter, declared order). Returns the new owned
-     * object.
+     * Construct a HEAP instance via this constructor with raw arguments packed
+     * into `args` (one int64 per user parameter, declared order). Returns the
+     * new owned object.
      */
-    public #Object newInstance(int64[] args) {
+    public #Object heapInstance(int64[] args) {
         return newN(this.rtti, this.index, args);
     }
 }
