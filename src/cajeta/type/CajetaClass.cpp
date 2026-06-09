@@ -2080,6 +2080,23 @@ namespace cajeta {
             if (kids.empty()) return nullptr;
             init = kids[0];
         }
+        // `(T) <literal>` — fold the operand directly to the field's stored
+        // type. For the constant shapes user code writes (`static int64 X =
+        // (int64) 16777216;`) the cast target equals the field type, so
+        // folding the operand against storedType yields the right constant and
+        // covers literal widening/narrowing. A category-changing cast (e.g.
+        // float→int) won't fold (the literal handlers below reject the type
+        // mismatch) and falls through to zero-init, exactly as before — only
+        // now a same-category cast no longer forces a runtime <clinit>. This
+        // matters beyond convenience: an unnecessary clinit becomes an
+        // llvm.global_ctors entry, which is a linker GC root — so a single
+        // `(int64) literal` field was pinning its whole class (and transitively
+        // its subsystem) into every binary, defeating --gc-sections/-dead_strip.
+        if (auto ce = dynamic_pointer_cast<CastExpression>(init)) {
+            auto& kids = ce->getChildren();
+            if (kids.empty()) return nullptr;
+            return foldStaticInitializer(kids[0], storedType);
+        }
         bool negate = false;
         if (auto pe = dynamic_pointer_cast<PrefixExpression>(init)) {
             if (pe->getOp() != PREFIX_OP_NEGATIVE) return nullptr;
