@@ -309,6 +309,16 @@ public final class Class {
         return heap Field(this.rtti, index);
     }
 
+    /**
+     * REFL-4.1 boxing (plan W5b). Read field `index` of `o` as a uniform owned
+     * `#Object` — boxes a primitive into its `cajeta.lang` wrapper; throws
+     * `UnsupportedReflectionException` for reference/unwrapped-primitive fields.
+     * Convenience over `getField(index).getBoxed(o)`.
+     */
+    public #Object getBoxed(Object o, int32 index) {
+        return this.getField(index).getBoxed(o);
+    }
+
     /** The declared method at `index` as a {@link Method} object. */
     public #Method getMethod(int32 index) {
         return heap Method(this.rtti, index);

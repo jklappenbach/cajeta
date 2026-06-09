@@ -834,3 +834,72 @@ TEST(ReflectionTests, invokeBoxedUnsupportedThrows) {
         "    }\n"
         "}\n"), 1);
 }
+
+// REFL-4.1 boxing (W5b): Field.getBoxed / Class.getBoxed read each primitive
+// field as its cajeta.lang wrapper, verified through the wrapper's field-0 value
+// via the matching typed accessor. All five W1 field types round-trip; ok == 5.
+TEST(ReflectionTests, getBoxedPrimitiveFields) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class Bag {\n"
+        "    public int32 i;\n"
+        "    public int64 l;\n"
+        "    public boolean b;\n"
+        "    public float32 f;\n"
+        "    public float64 d;\n"
+        "    public Bag(int32 i, int64 l, boolean b, float32 f, float64 d) {\n"
+        "        this.i = i; this.l = l; this.b = b; this.f = f; this.d = d; return;\n"
+        "    }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Bag x = heap Bag(7, 9000000000L, true, 1.5f, 2.5);\n"
+        "        Class c = Class.of(x);\n"
+        "        int32 ok = 0;\n"
+        "        Object o0 = c.getBoxed(x, 0);\n"
+        "        if (Class.of(o0).getInt32(o0, 0) == 7) { ok = ok + 1; }\n"
+        "        Object o1 = c.getBoxed(x, 1);\n"
+        "        if (Class.of(o1).getInt64(o1, 0) == 9000000000L) { ok = ok + 1; }\n"
+        "        Object o2 = c.getBoxed(x, 2);\n"
+        "        if (Class.of(o2).getBoolean(o2, 0)) { ok = ok + 1; }\n"
+        "        Object o3 = c.getBoxed(x, 3);\n"
+        "        if (Class.of(o3).getFloat32(o3, 0) == 1.5f) { ok = ok + 1; }\n"
+        "        Object o4 = c.getBoxed(x, 4);\n"
+        "        if (Class.of(o4).getFloat64(o4, 0) == 2.5) { ok = ok + 1; }\n"
+        "        return ok;\n"
+        "    }\n"
+        "}\n"), 5);
+}
+
+// REFL-4.1 boxing (W5b): a reference field is ownership-unsafe to box (handing
+// the held reference back as an owned #Object would double-drop), so getBoxed
+// raises UnsupportedReflectionException rather than returning it.
+TEST(ReflectionTests, getBoxedReferenceFieldThrows) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.Object;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.UnsupportedReflectionException;\n"
+        "public class Cell {\n"
+        "    public int32 v;\n"
+        "    public Cell(int32 x) { this.v = x; return; }\n"
+        "}\n"
+        "public class Holder {\n"
+        "    public Cell cell;\n"                         // field 0: a reference
+        "    public Holder() { this.cell = heap Cell(1); return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        Class c = Class.of(h);\n"
+        "        try {\n"
+        "            Object o = c.getBoxed(h, 0);\n"
+        "            return 0;\n"                          // should not reach
+        "        } catch (UnsupportedReflectionException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 1);
+}
