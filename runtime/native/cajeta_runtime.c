@@ -9369,7 +9369,9 @@ int64_t __cajeta_xpu_texturecube_alloc(void* self, uint32_t size, int32_t format
             if (!t->data) { free(t); return 0; }
             return (int64_t) (intptr_t) t;
         }
-        case CAJ_XPU_VULKAN: return 0;  // B2: a CUBE_COMPATIBLE Vulkan image
+        case CAJ_XPU_VULKAN:
+            // A CUBE_COMPATIBLE 2-D image with 6 array layers (the faces).
+            return cajeta_xpu_vk_tex_alloc(size, size, 0, format, 1, 5, 6, 1);
         case CAJ_XPU_HIP:    return 0;  // B3: a cubemap hipArray
         default: return 0;
     }
@@ -9398,7 +9400,11 @@ void __cajeta_xpu_texturecube_upload(void* self, int64_t handle, void* host,
             }
             return;
         }
-        case CAJ_XPU_VULKAN: return;  // B2
+        case CAJ_XPU_VULKAN:
+            // The 6 faces are the image's 6 array layers; the upload reads the
+            // layer count + layered flag from the texture record (layers = 6).
+            cajeta_xpu_vk_tex_upload(handle, src, size, size, format);
+            return;
         case CAJ_XPU_HIP:    return;  // B3
         default: return;
     }

@@ -1116,6 +1116,65 @@ static const char* kTex2daSampleSrc() {
     return s.c_str();
 }
 
+// B3 texture dims: TextureCube sample on a real Vulkan device — a 2x2x6 R32F cube
+// (VIEW_TYPE_CUBE + CUBE_COMPATIBLE, OpImageSampleExplicitLod by direction). Each
+// face holds a constant = its index; the 6 axis directions must select the 6
+// faces. The device twin of textureCubeSampleOnCpu.
+static const char* kTexCubeSampleSrc() {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.TextureCube;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexCubeSamp {\n"
+        "    @Kernel\n"
+        "    public static void samp(TextureCube cube, Sampler sn,\n"
+        "                            Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            uint32 axis = i / 2;\n"
+        "            float32 sgn = 1.0f;\n"
+        "            if (i % 2 == 1) { sgn = -1.0f; }\n"
+        "            float32 x = 0.0f; float32 y = 0.0f; float32 z = 0.0f;\n"
+        "            if (axis == 0) { x = sgn; }\n"
+        "            if (axis == 1) { y = sgn; }\n"
+        "            if (axis == 2) { z = sgn; }\n"
+        "            Vector<float32,4> c = cube.sample(sn, x, y, z);\n"
+        "            out[i] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 sz = 2; uint32 n = 6;\n"
+        "        uint32 faceTexels = sz * sz;\n"
+        "        float32[] faces = heap float32[24];\n"
+        "        for (uint32 f = 0; f < 6; f = f + 1) {\n"
+        "            for (uint32 k = 0; k < faceTexels; k = k + 1) {\n"
+        "                faces[f*faceTexels + k] = (float32)(f);\n"
+        "            }\n"
+        "        }\n"
+        "        TextureCube cube = heap TextureCube(sz);\n"
+        "        cube.upload(faces);\n"
+        "        Sampler sn = heap Sampler(0, 0);\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        out.allocate(); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        samp.launch(s, grid: [1], block: [64])(cube, sn, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout); out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (float32)(i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n");
+    return s.c_str();
+}
+
 // Integer Texture3D fetch source — a Texture3D<int32|uint32> RGBA32I/UI volume
 // (VK_FORMAT_R32G32B32A32_SINT 3-D image, OpImageFetch → <4 x i32>).
 static const char* kTex3dIntFetchSrc(const char* elem, const char* fmt) {
@@ -1422,6 +1481,22 @@ TEST(XpuVulkanDispatchDeviceTests, texture2dArraySampleOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: nearest; 200: layer-1 midpoint)";
+}
+
+// B3 texture dims: TextureCube sample on a real Vulkan device — a cube image
+// (VIEW_TYPE_CUBE), the 6 axis directions select the 6 faces.
+TEST(XpuVulkanDispatchDeviceTests, textureCubeSampleOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kTexCubeSampleSrc(), "test.TexCubeSamp", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: cube face selection mismatch at dir i)";
 }
 
 // Integer Texture3D fetch on a real Vulkan device — RGBA32I 3-D image
