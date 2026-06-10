@@ -684,7 +684,13 @@ namespace cajeta {
             // classes parsed before Class (not reflectively reachable in v1).
             llvm::Constant* classVtableRef = llvm::ConstantPointerNull::get(
                 llvm::cast<llvm::PointerType>(ptrTy));
-            static const std::string kClassCanonical = "cajeta.reflect.Class";
+            // REFL-1.7: cajeta.reflect.Class is a template Class<T>; the bare
+            // name names the (never-built) template. Every #ClassObject embeds
+            // the ONE canonical wildcard instantiation Class<?>'s vtable — all
+            // Class<T> share identical method code, so the phantom T is
+            // irrelevant at the vtable. Class<?> is force-built before codegen
+            // (Compiler::compile / JitTestHelper), so this lookup resolves.
+            static const std::string kClassCanonical = "cajeta.reflect.Class<?>";
             auto& s2m = CajetaModule::getStructureToModule();
             auto mit = s2m.find(kClassCanonical);
             if (mit != s2m.end() && mit->second) {

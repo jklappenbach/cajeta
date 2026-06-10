@@ -112,7 +112,7 @@ TEST(WrapperTypesTests, floatBitwiseEquality) {
 TEST(WrapperTypesTests, reflectionIntrospectable) {
     EXPECT_EQ(runI32(
         "Int32 box = Int32.of(99);\n"
-        "Class c = Class.of(box);\n"
+        "Class<?> c = Class.of(box);\n"
         "if (c.getFieldCount() != 1) { return -1; }\n"
         "return c.getInt32(box, 0);\n"), 99);
 }

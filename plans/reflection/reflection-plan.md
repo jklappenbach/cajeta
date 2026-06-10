@@ -54,14 +54,42 @@ So: the infrastructure (RTTI) is paid for; the surface is missing. This is a
 - [x] **Accept met:** `Class.of(obj).getName()`/`getFieldCount()`/`getFieldName(0)`/
       `getModifierFlags()`/`getInstanceSize()` all correct — 6 JIT tests pass
       (`test/parser/ReflectionTests.cpp`).
-- [ ] REFL-1.2 `cajeta.reflect.registry` (canonical name → `Class`) — for `forName`,
-      deferred to Phase 8.
-- [ ] REFL-1.5 `T.class` literal lowering (grammar `typeTypeOrVoid '.' CLASS` →
-      address of `#ClassObject`) — TODO; `Class.of(obj)` covers the dynamic path.
-- [ ] REFL-1.6 `Object.getClass()` proper (needs the `Object`→reflect edge; the
-      `Class.of` factory is the interim) — TODO.
-- [ ] REFL-1.7 `Class<T>` template parameter + `Field`/`Method`/`Constructor`/
-      `Parameter`/`Modifiers` objects (currently counts + per-index accessors).
+- [x] REFL-1.2 `cajeta.reflect.registry` (canonical name → `Class`) — SHIPPED as
+      Phase 8 (REFL-8.1 process-wide `g_cajeta_classes` registry + REFL-8.2
+      `forName`), where it was always deferred to. Closed here.
+- [x] REFL-1.7 (object model) **`Field`/`Method`/`Constructor`/`Parameter` objects
+      — SHIPPED in Phase 4** (REFL-4 object model; all five live in
+      `runtime/src/cajeta/reflect/`). `Class.getField/getMethod/getConstructor(idx)`
+      return owned objects; the old counts + per-index accessors stay as the fast
+      path. Template introspection objects (`TemplateParameter`/`TemplateArgument`)
+      landed in Phase 7. **Still open below:** `Class<T>` templating + a `Modifiers`
+      object.
+- [x] REFL-1.5 `T.class` literal lowering — **SHIPPED**. Grammar
+      `typeTypeOrVoid '.' CLASS` → `ClassLiteralExpression` (Expression.h/.cpp),
+      lowered to the address of the named type's `#ClassObject` global (the
+      Class<T> instance), typed `Class<T>`. The named type's text is captured at
+      parse time (the ANTLR context is freed before codegen) and resolved by name
+      from canonicalMap at resolveTypes. `loadIfLValue` carve-out treats the
+      #ClassObject address as the Class reference (not a slot to load through).
+- [x] REFL-1.6 `Object.getClass()` proper — **SHIPPED**. Synthesized in
+      `MethodCallExpression::generateCode` as `__cajeta_object_get_class(obj)` (the
+      same native backing `Class.of`), returning `Class<?>`. Gated on a
+      class-instance receiver, no args, and the class not declaring its own
+      `getClass` (a user override wins). No `getClass` slot is added to `Object`,
+      sidestepping the `Object`→reflect bootstrap cycle. Intercepts BEFORE the
+      generic invokeMethod dispatch.
+- [x] REFL-1.7 (remaining) `Class<T>` templatized + `Modifiers` object —
+      **SHIPPED**. `cajeta.reflect.Class` is now `final class Class<T>` (phantom T:
+      no T-typed field, so every instantiation shares one layout/vtable). The
+      canonical `Class<?>` is force-instantiated before user parse
+      (`ensureClassWildcardInstantiated`, called from both `Compiler::compile` and
+      `JitTestHelper`) so its method bodies are emitted and every `#ClassObject`
+      embeds its shared vtable. Concrete `Class<Foo>` receivers (from `Foo.class`)
+      dispatch via the **template-origin alias hash** — same as wildcard receivers
+      — because their runtime vtable is always the shared `Class<?>#VTable`
+      (CajetaClass.cpp dispatch). `getModifiers()` on Class/Field/Method/Constructor
+      returns a `Modifiers` object (`runtime/src/cajeta/reflect/Modifiers.cajeta`)
+      wrapping the packed flag bits.
 
 ### Phase 2 — per-class reflection adapters (REFL-2)  ← hybrid design, 2A+2B shipped 2026-06-08
 Decision: **HYBRID** (fastest). Fields are data-driven (no per-class codegen);
@@ -405,8 +433,10 @@ EXPOSES that to reflection. See [[never-call-it-generics]].
 ### Phase 11 — constant-fold known reflection (REFL-11)  ← shipped 2026-06-10
 - [x] REFL-11.1 **Fold `Class.of(<ident>).<accessor>(...)` to direct access**
       (decision: fold the dynamic `Class.of(...)` entry, NOT the `.class` literal —
-      `.class` lowering (REFL-1.5) isn't done, and the spec lists reflective
-      constant-folding as a v1 non-goal; the user chose the `Class.of` fold). In
+      at the time `.class` lowering (REFL-1.5) wasn't done, and the spec lists
+      reflective constant-folding as a v1 non-goal; the user chose the `Class.of`
+      fold. REFL-1.5 has since shipped but the `.class`-literal fold remains a
+      deliberate non-goal). In
       `MethodCallExpression::generateCode`, when the receiver is
       `cajeta.reflect.Class.of(<ident>)` and `<ident>`'s static type is a **`final`
       class** K — the exact-type guard: only `final` makes K provably its own

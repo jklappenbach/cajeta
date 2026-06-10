@@ -14,6 +14,8 @@ public final class Constructor {
 
     @Native("__cajeta_rtti_constructor_param_count")
     private static int32 paramCountOf(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_constructor_modifiers")
+    private static int32 modsOf(pointer rtti, int32 idx);
     @Native("__cajeta_class_new0")
     private static #Object new0(pointer rtti, int32 idx);
     @Native("__cajeta_class_new")
@@ -39,6 +41,9 @@ public final class Constructor {
 
     /** Number of user-visible parameters (the implicit `this` is excluded). */
     public int32 getParameterCount() { return paramCountOf(this.rtti, this.index); }
+
+    /** This constructor's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
+    public #Modifiers getModifiers() { return heap Modifiers(modsOf(this.rtti, this.index)); }
 
     /** The parameter at `i` (0-based, user-visible). */
     public #Parameter getParameter(int32 i) {

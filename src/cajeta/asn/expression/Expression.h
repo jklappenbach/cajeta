@@ -141,6 +141,31 @@ namespace cajeta {
         static ExpressionPtr fromContext(CajetaParser::PrimaryContext* ctx);
     };
 
+    // REFL-1.5: `T.class` literal. A primary expression
+    // (`typeTypeOrVoid '.' CLASS`) whose value is the address of T's cached
+    // `#ClassObject` and whose type is `Class<T>` (the statically-known type's
+    // reflective Class — the static counterpart to `obj.getClass()` /
+    // `Class.of(obj)`). v1 supports class types; a primitive `T.class` has no
+    // `#ClassObject` and is rejected.
+    class ClassLiteralExpression : public PrimaryExpression {
+    public:
+        ClassLiteralExpression(std::string namedTypeName, antlr4::Token* token)
+            : PrimaryExpression(token),
+              namedTypeName(std::move(namedTypeName)) { }
+
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    private:
+        // The text of the type named before `.class` (e.g. `Foo`), captured at
+        // parse time — the ANTLR context is freed before codegen, so we cannot
+        // hold the TypeTypeOrVoidContext and call fromContext on it later.
+        std::string namedTypeName;
+        // Resolved lazily in resolveTypes / generateCode: the named type's
+        // CajetaClass (looked up by name in canonicalMap), and the
+        // `Class<Foo>` instantiation.
+        CajetaTypePtr namedType;
+    };
+
     class ThisExpression : public PrimaryExpression {
     public:
         ThisExpression(CajetaParser::ExpressionContext* ctx) : PrimaryExpression(ctx->getStart()) { }

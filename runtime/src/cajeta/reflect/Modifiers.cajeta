@@ -1,0 +1,36 @@
+package cajeta.reflect;
+
+/**
+ * The access/declaration modifiers of a reflected member, as a small value
+ * object over the packed modifier bit field (REFL-1.7). Obtain one via
+ * `Class.getModifiers()`, `Field.getModifiers()`, `Method.getModifiers()`, or
+ * `Constructor.getModifiers()`. The bit layout mirrors the compiler's
+ * `Modifier` enum (`src/cajeta/type/Modifiable.h`); the two reflection-only
+ * bits (`@Sealed` → 0x100, `@Retained` → 0x200) are synthesized class
+ * modifiers, so `isSealed()`/`isRetained()` are only ever set on a class.
+ */
+public final class Modifiers {
+    int32 flags;
+
+    public Modifiers(int32 flags) {
+        this.flags = flags;
+    }
+
+    /** The raw packed modifier bit field. */
+    public int32 getFlags() { return this.flags; }
+
+    /** Package-private (no explicit access modifier). */
+    public boolean isPackagePrivate() { return (this.flags & 0x01) != 0; }
+
+    public boolean isPublic()    { return (this.flags & 0x02) != 0; }
+    public boolean isPrivate()   { return (this.flags & 0x04) != 0; }
+    public boolean isProtected() { return (this.flags & 0x08) != 0; }
+    public boolean isStatic()    { return (this.flags & 0x10) != 0; }
+    public boolean isFinal()     { return (this.flags & 0x20) != 0; }
+
+    /** Reflection opt-out: `@Sealed` bars reflective access to private members. */
+    public boolean isSealed()    { return (this.flags & 0x100) != 0; }
+
+    /** `@Retained`: keep this class in the registry even when unreferenced. */
+    public boolean isRetained()  { return (this.flags & 0x200) != 0; }
+}

@@ -2795,6 +2795,40 @@ namespace cajeta {
                 }
                 receiverType = exprChild->getResolvedType();
             }
+            // REFL-1.6: `obj.getClass()` — the object's dynamic Class. Synthesized
+            // as a call to __cajeta_object_get_class(obj) (the same native that
+            // backs Class.of), returning Class<?>. No method is declared on
+            // Object — doing this here sidesteps the Object→cajeta.reflect
+            // bootstrap cycle. Gated on a class-instance receiver, no args, and
+            // the class not declaring its own getClass (a user override wins).
+            // Must run BEFORE the generic invokeMethod dispatch below, which
+            // would otherwise find no `getClass` method and resolve to null.
+            // The wildcard return Class<?> is the force-built canonical
+            // instantiation (REFL-1.7).
+            if (methodCallName == "getClass" && parameters.empty()
+                    && receiverType) {
+                auto recvCls = dynamic_pointer_cast<CajetaClass>(receiverType);
+                if (recvCls && !recvCls->isInterface()
+                        && recvCls->getMethods().find("getClass")
+                                == recvCls->getMethods().end()) {
+                    auto& cmap = CajetaType::getCanonicalMap();
+                    auto wcIt = cmap.find("cajeta.reflect.Class<?>");
+                    if (wcIt != cmap.end() && wcIt->second) {
+                        llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                        llvm::Value* objPtr =
+                            loadIfLValue(module, receiver, exprChild);
+                        llvm::FunctionType* ft =
+                            llvm::FunctionType::get(ptrTy, {ptrTy}, false);
+                        llvm::FunctionCallee fn =
+                            module->getLlvmModule()->getOrInsertFunction(
+                                "__cajeta_object_get_class", ft);
+                        llvm::Value* co = builder->CreateCall(fn, {objPtr},
+                            "refl.getClass");
+                        resolvedType = wcIt->second;
+                        return co;
+                    }
+                }
+            }
             // Vector geometry methods: a.dot(b) -> T, v.length() -> T,
             // v.normalize() -> Vector. Intercepted on a CajetaVector receiver
             // before the generic class-method dispatch (vectors aren't classes).
@@ -3315,9 +3349,29 @@ namespace cajeta {
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(exprChild)) {
                     auto& cmap = CajetaType::getCanonicalMap();
                     auto it = cmap.find(idExpr->getTextValue());
-                    if (it != cmap.end()
-                            && dynamic_pointer_cast<CajetaClass>(it->second)) {
-                        receiverType = it->second;
+                    if (it != cmap.end()) {
+                        if (auto cls = dynamic_pointer_cast<CajetaClass>(it->second)) {
+                            // REFL-1.7: a static call on a bare TEMPLATE name
+                            // (e.g. `Class.of(...)`, `Class.forName(...)`). The
+                            // template itself is never built, so static dispatch
+                            // against it would silently resolve to null. Static
+                            // methods don't depend on the type arguments, so
+                            // route through the canonical all-wildcard
+                            // instantiation (Class<?>), which is fully built.
+                            if (cls->isTemplate()) {
+                                std::vector<CajetaTypePtr> wildArgs;
+                                for (size_t i = 0;
+                                        i < cls->getTypeParameters().size(); ++i) {
+                                    wildArgs.push_back(
+                                        CajetaType::wildcardSentinel());
+                                }
+                                auto inst = cls->instantiate(wildArgs);
+                                receiverType = inst ? std::static_pointer_cast<
+                                    CajetaType>(inst) : it->second;
+                            } else {
+                                receiverType = it->second;
+                            }
+                        }
                     }
                 }
             }

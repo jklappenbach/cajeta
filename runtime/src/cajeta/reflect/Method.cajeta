@@ -31,6 +31,8 @@ public final class Method {
     private static void nameInto(pointer rtti, int32 idx, int8[] out);
     @Native("__cajeta_rtti_method_param_count")
     private static int32 paramCountOf(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_method_modifiers")
+    private static int32 modsOf(pointer rtti, int32 idx);
     @Native("__cajeta_object_invoke_scalar0")
     private static int64 invoke0(Object o, int32 idx);
     @Native("__cajeta_object_invoke_scalar")
@@ -81,6 +83,9 @@ public final class Method {
 
     /** Number of user-visible parameters (the implicit `this` is excluded). */
     public int32 getParameterCount() { return paramCountOf(this.rtti, this.index); }
+
+    /** This method's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
+    public #Modifiers getModifiers() { return heap Modifiers(modsOf(this.rtti, this.index)); }
 
     /** The parameter at `i` (0-based, user-visible). */
     public #Parameter getParameter(int32 i) {

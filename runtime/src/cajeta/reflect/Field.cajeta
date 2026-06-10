@@ -96,6 +96,9 @@ public final class Field {
     /** Raw modifier bit field (see Modifier). */
     public int32 getModifierFlags() { return modsOf(this.rtti, this.index); }
 
+    /** This field's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
+    public #Modifiers getModifiers() { return heap Modifiers(modsOf(this.rtti, this.index)); }
+
     /** Field type-flag word (CajetaType TYPE_ID bits). */
     public int64 getTypeFlags() { return typeFlagsOf(this.rtti, this.index); }
 

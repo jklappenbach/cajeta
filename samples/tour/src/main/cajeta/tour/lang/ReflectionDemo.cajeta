@@ -27,7 +27,7 @@ public class ReflectionDemo extends DemoClass {
 
         // A live object whose dynamic Class we introspect.
         Counter seed = heap Counter();
-        Class c = Class.of(seed);
+        Class<?> c = Class.of(seed);
 
         // Identity, straight off the RTTI header.
         System.stdout.println("  class        = " + c.getName());
