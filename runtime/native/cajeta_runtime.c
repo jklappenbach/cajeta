@@ -8309,6 +8309,21 @@ uint32_t __cajeta_xpu_wave_rotate_u32(uint32_t value, uint32_t delta) {
     (void)delta; return value;
 }
 
+// Quad (2x2) ops (Quad.*). Like the wave ops these are cross-lane on device; the
+// host @Native definition is the width-1 (single-lane quad) fallback so the host
+// JIT / any CPU @Device call resolves the Quad.cajeta forwarders. The device
+// backends lower them inline (OpGroupNonUniformQuad* on Vulkan, ds_bpermute /
+// shuffle elsewhere). A lone quad lane: broadcast/swap yield the lane's own
+// value; the vote is just this lane's predicate.
+uint32_t __cajeta_xpu_quad_broadcast(uint32_t value, uint32_t index) {
+    (void)index; return value;
+}
+uint32_t __cajeta_xpu_quad_swap_horizontal(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_quad_swap_vertical(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_quad_swap_diagonal(uint32_t value) { return value; }
+bool __cajeta_xpu_quad_all(bool predicate) { return predicate; }
+bool __cajeta_xpu_quad_any(bool predicate) { return predicate; }
+
 // Per-invocation bit ops (Bits.*). Unlike the wave ops these are NOT cross-lane —
 // they are pure scalar functions of one u32, so the host @Native definition is
 // the exact same computation the device emits (OpBitReverse / OpBitCount / a
@@ -10020,6 +10035,10 @@ void __cajeta_xpu_image_free(void* self, int64_t handle) {
     }
 }
 
+// Portable software BVH builder + layout (the software AccelerationStructure
+// noun). Self-contained pure C, also compiled directly by the builder unit test.
+#include "cajeta_bvh.c"
+
 // --- AccelerationStructure device-BVH primitives (Part C inc 3b) -------------
 // Instance @Native methods on AccelerationStructure.cajeta. The leading `self`
 // is the cajeta `this`, ignored — the device side is keyed on the returned
@@ -10037,7 +10056,11 @@ int64_t __cajeta_xpu_accel_build_aabbs(void* self, void* aabbs, uint32_t count) 
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_VULKAN:
             return cajeta_xpu_vk_accel_build_aabbs(boxes, count);
-        // CPU/HIP/CUDA BVH builds are follow-ups; no device AS today.
+        case CAJ_XPU_CPU:
+            // Portable software BVH (handle == host blob pointer, CPU convention).
+            return cajeta_xpu_cpu_accel_build_aabbs(boxes, count);
+        // HIP/CUDA software BVH builds (upload the same blob to a device buffer)
+        // are a follow-up; no device AS there today.
         default: return 0;
     }
 }
@@ -10047,6 +10070,7 @@ void __cajeta_xpu_accel_free(void* self, int64_t handle) {
     if (!handle) return;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_VULKAN: cajeta_xpu_vk_accel_free(handle); return;
+        case CAJ_XPU_CPU:    free((void*) (intptr_t) handle); return;
         default: return;
     }
 }

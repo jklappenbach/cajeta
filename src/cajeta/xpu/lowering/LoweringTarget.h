@@ -423,6 +423,15 @@ namespace xpu {
         // overrides these; the defaults reject a RayQuery in a kernel lowered
         // for a backend without ray-query support (XPU-N02).
 
+        // True when this backend has no native inline ray query and uses the
+        // portable Software tier instead (cajeta-gpu ray-query-to-core): a
+        // RayQuery lowers to the cajeta.xpu.core.SoftwareRayQuery @Device walk over
+        // a software BVH `Buffer<float32>`, not to the native rayQuery* seams. CPU
+        // returns true; Vulkan (native SPV_KHR_ray_query) keeps the default false.
+        // The call site (KernelLowering) reads this to pick the verb lowering, and
+        // the noun (AccelerationStructure) is materialized as the BVH buffer base.
+        virtual bool softwareRayQuery() const { return false; }
+
         // The LLVM type to alloca for a `RayQuery` local. Vulkan:
         // target("spirv.RayQueryKHR"). Default: unsupported.
         virtual llvm::Type* rayQueryType(llvm::Module& m);
