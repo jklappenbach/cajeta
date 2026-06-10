@@ -121,5 +121,23 @@ public class ReflectionDemo extends DemoClass {
         System.stdout.println("  @Tracked(value)   = " + (int32) tracked.getInt("value"));
         Annotation metric = vf.getAnnotation(0);
         System.stdout.println("  @Metric(value)    = " + metric.getString("value"));
+
+        // List-valued arguments: @Labels({"hot","live"}) on the class. Locate
+        // the argument by key, then read each element.
+        int32 li = 0;
+        while (li < acount) {
+            Annotation a = c.getAnnotation(li);
+            if (a.getName().equals("code.Labels")) {
+                int32 vi = a.getArgIndex("value");
+                int32 vn = a.getArgListCount(vi);
+                int32 e = 0;
+                while (e < vn) {
+                    System.stdout.println("  @Labels[" + e + "]      = "
+                        + a.getArgListString(vi, e));
+                    e = e + 1;
+                }
+            }
+            li = li + 1;
+        }
     }
 }

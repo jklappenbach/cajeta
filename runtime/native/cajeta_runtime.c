@@ -3622,6 +3622,8 @@ typedef struct {
     int64_t     i64Val;
     const char* strVal;      // String payload; type name for ClassRef; NULL otherwise
     int8_t      boolVal;
+    int32_t     listCount;   // element count for the *List kinds; 0 otherwise
+    const void* listData;    // [N x int64] / [N x char*] / [N x int8] by kind
 } CajetaAnnotationArgDesc;
 
 typedef struct {
@@ -3663,6 +3665,17 @@ typedef struct {
     const CajetaAnnotationDesc* annotations; // REFL-6b: names + arg values (NULL if none)
 } CajetaMethodDesc;
 
+// REFL-7: one declared template parameter (`<T>`, `<T extends Foo & Bar>`, or a
+// non-type `<uint32 N>`). MUST match getTemplateParamStructType() in
+// StructureMetadata.cpp.
+typedef struct {
+    const char*  name;              // parameter name, e.g. "T"
+    int16_t      boundCount;
+    const char** bounds;            // canonical bound type names (NULL if none)
+    int8_t       isNonType;         // 1 for a `<uint32 N>` value parameter
+    const char*  nonTypePrimitive;  // declared primitive when isNonType, else NULL
+} CajetaTemplateParamDesc;
+
 typedef struct {
     int64_t                 allocationSize;
     const char*             typeName;
@@ -3680,6 +3693,15 @@ typedef struct {
     void*                   newInstanceAdapter;  // REFL-2C reflective ctor adapter (or NULL)
     int16_t                 constructorCount;
     const CajetaMethodDesc* constructors;        // #MethodDesc[] for constructors
+    // REFL-7 template reflection. templateParams are the `<T>` declarations (on
+    // both the template and its instantiations); templateArgs are the concrete
+    // type names an instantiation was materialized with (e.g. "cajeta.int32"
+    // for Box<int32>) — empty for a non-template class or an unmaterialized
+    // template.
+    int16_t                       templateParamCount;
+    const CajetaTemplateParamDesc* templateParams;
+    int16_t                       templateArgCount;
+    const char**                  templateArgs;
 } CajetaRtti;
 
 // Object.getClass(): obj -> its cached #ClassObject (the cajeta.reflect.Class
@@ -3690,6 +3712,63 @@ void* __cajeta_object_get_class(void* obj) {
     void* vtable = *(void**) obj;                 // header slot 0
     if (!vtable) return NULL;
     return *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+}
+
+// --- cajeta.reflect class registry (REFL-8) --------------------------------
+// Maps a class's canonical name -> its cached #ClassObject (the reflect Class
+// instance), so Class.forName(name) can resolve a class from a string with no
+// live instance in hand. Populated at startup: the compiler emits, per class,
+// an llvm.global_ctors entry calling __cajeta_register_class(name, classObject)
+// (StructureMetadata::populate). A growable, process-lifetime table — never
+// freed; last-writer-wins on a duplicate canonical name (harmless — the same
+// class object is registered once per definition site). Nothing strips classes
+// today, so every compiled class is registered; @Retained is the advisory marker
+// for the future AOT linker (it must keep marked classes even when unreferenced).
+static struct { const char* name; void* classObject; }* g_cajeta_classes = NULL;
+static int g_cajeta_class_count = 0;
+static int g_cajeta_class_cap   = 0;
+
+void __cajeta_register_class(const char* name, void* classObject) {
+    if (!name || !classObject) return;
+    for (int i = 0; i < g_cajeta_class_count; ++i) {
+        if (g_cajeta_classes[i].name && strcmp(g_cajeta_classes[i].name, name) == 0) {
+            g_cajeta_classes[i].classObject = classObject;  // last writer wins
+            return;
+        }
+    }
+    if (g_cajeta_class_count == g_cajeta_class_cap) {
+        int newCap = g_cajeta_class_cap ? g_cajeta_class_cap * 2 : 64;
+        void* grown = realloc(g_cajeta_classes,
+                              (size_t) newCap * sizeof(*g_cajeta_classes));
+        if (!grown) return;            // OOM: drop the registration, don't crash
+        g_cajeta_classes = grown;
+        g_cajeta_class_cap = newCap;
+    }
+    // strdup the key: a JIT'd registration ctor's name global lives in JIT
+    // memory that may be torn down, leaving a dangling key (the same hazard the
+    // CPU-kernel registry documents above). Process-lifetime copy.
+    g_cajeta_classes[g_cajeta_class_count].name = strdup(name);
+    g_cajeta_classes[g_cajeta_class_count].classObject = classObject;
+    ++g_cajeta_class_count;
+}
+
+// Class.forName backend. `nameBytes` is a cajeta int8[] ({ i64 count,
+// [count x i8] }) — the canonical name's UTF-8 bytes. Single-parameter so it can
+// return a Class borrow (a multi-param @Native returning a borrow is rejected,
+// CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM); the length comes from the array's
+// count header. Returns the #ClassObject pointer (a borrow of a process-lifetime
+// static) or NULL when no class with that canonical name is registered.
+void* __cajeta_class_for_name(void* nameBytes) {
+    if (!nameBytes) return NULL;
+    int64_t len = *((int64_t*) nameBytes);              // the i64 count header
+    if (len < 0) return NULL;
+    const char* data = (const char*) nameBytes + 8;
+    for (int i = 0; i < g_cajeta_class_count; ++i) {
+        const char* n = g_cajeta_classes[i].name;
+        if (n && (int64_t) strlen(n) == len && memcmp(n, data, (size_t) len) == 0)
+            return g_cajeta_classes[i].classObject;
+    }
+    return NULL;
 }
 
 // RTTI scalar readers — `rtti` is a CajetaRtti* (the #RttiGlobal address a
@@ -4270,6 +4349,122 @@ void __cajeta_rtti_annotation_arg_str_into(void* rtti, int32_t ownerKind,
         int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, void* out) {
     cajeta_copy_into(
         cajeta_annotation_arg_str(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx), out);
+}
+
+// REFL-6b list-valued arguments (`@SuppressLint({"a","b"})`, `@Sizes({1,2})`,
+// `@Flags({true,false})`). Element data lives in arg->listData, shaped by the
+// arg's kind: int64[] (Int64List), char*[] (StringList), int8[] (BoolList).
+// elemIdx selects within the list; out-of-range reads return a sentinel.
+int32_t __cajeta_rtti_annotation_arg_list_count(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return a ? a->listCount : 0;
+}
+int64_t __cajeta_rtti_annotation_arg_list_int(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    if (!a || a->kind != CAJETA_AK_INT64LIST || !a->listData
+            || elemIdx < 0 || elemIdx >= a->listCount) return 0;
+    return ((const int64_t*) a->listData)[elemIdx];
+}
+int32_t __cajeta_rtti_annotation_arg_list_bool(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    if (!a || a->kind != CAJETA_AK_BOOLLIST || !a->listData
+            || elemIdx < 0 || elemIdx >= a->listCount) return 0;
+    return ((const int8_t*) a->listData)[elemIdx] ? 1 : 0;
+}
+static const char* cajeta_annotation_arg_list_str(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    if (!a || a->kind != CAJETA_AK_STRINGLIST || !a->listData
+            || elemIdx < 0 || elemIdx >= a->listCount) return "";
+    const char* s = ((const char* const*) a->listData)[elemIdx];
+    return s ? s : "";
+}
+int32_t __cajeta_rtti_annotation_arg_list_str_len(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx) {
+    return (int32_t) strlen(cajeta_annotation_arg_list_str(
+        rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx, elemIdx));
+}
+void __cajeta_rtti_annotation_arg_list_str_into(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx, void* out) {
+    cajeta_copy_into(cajeta_annotation_arg_list_str(
+        rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx, elemIdx), out);
+}
+
+// REFL-7 template reflection. A template instantiation (Box<int32>) carries its
+// declared template parameters (the `<T>`) and the concrete template arguments
+// it was materialized with (int32). Both are read by index off the #Rtti.
+int32_t __cajeta_rtti_template_param_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->templateParamCount : 0;
+}
+static const CajetaTemplateParamDesc* cajeta_template_param(void* rtti, int32_t idx) {
+    if (!rtti) return NULL;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->templateParamCount || !r->templateParams) return NULL;
+    return &r->templateParams[idx];
+}
+static const char* cajeta_template_param_name(void* rtti, int32_t idx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    return (p && p->name) ? p->name : "";
+}
+int32_t __cajeta_rtti_template_param_name_len(void* rtti, int32_t idx) {
+    return (int32_t) strlen(cajeta_template_param_name(rtti, idx));
+}
+void __cajeta_rtti_template_param_name_into(void* rtti, int32_t idx, void* out) {
+    cajeta_copy_into(cajeta_template_param_name(rtti, idx), out);
+}
+int32_t __cajeta_rtti_template_param_is_nontype(void* rtti, int32_t idx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    return (p && p->isNonType) ? 1 : 0;
+}
+static const char* cajeta_template_param_nontype(void* rtti, int32_t idx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    return (p && p->nonTypePrimitive) ? p->nonTypePrimitive : "";
+}
+int32_t __cajeta_rtti_template_param_nontype_len(void* rtti, int32_t idx) {
+    return (int32_t) strlen(cajeta_template_param_nontype(rtti, idx));
+}
+void __cajeta_rtti_template_param_nontype_into(void* rtti, int32_t idx, void* out) {
+    cajeta_copy_into(cajeta_template_param_nontype(rtti, idx), out);
+}
+int32_t __cajeta_rtti_template_param_bound_count(void* rtti, int32_t idx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    return p ? (int32_t) p->boundCount : 0;
+}
+static const char* cajeta_template_param_bound(void* rtti, int32_t idx, int32_t boundIdx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    if (!p || !p->bounds || boundIdx < 0 || boundIdx >= p->boundCount) return "";
+    const char* b = p->bounds[boundIdx];
+    return b ? b : "";
+}
+int32_t __cajeta_rtti_template_param_bound_len(void* rtti, int32_t idx, int32_t boundIdx) {
+    return (int32_t) strlen(cajeta_template_param_bound(rtti, idx, boundIdx));
+}
+void __cajeta_rtti_template_param_bound_into(void* rtti, int32_t idx, int32_t boundIdx, void* out) {
+    cajeta_copy_into(cajeta_template_param_bound(rtti, idx, boundIdx), out);
+}
+
+int32_t __cajeta_rtti_template_arg_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->templateArgCount : 0;
+}
+static const char* cajeta_template_arg_name(void* rtti, int32_t idx) {
+    if (!rtti) return "";
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->templateArgCount || !r->templateArgs) return "";
+    const char* n = r->templateArgs[idx];
+    return n ? n : "";
+}
+int32_t __cajeta_rtti_template_arg_name_len(void* rtti, int32_t idx) {
+    return (int32_t) strlen(cajeta_template_arg_name(rtti, idx));
+}
+void __cajeta_rtti_template_arg_name_into(void* rtti, int32_t idx, void* out) {
+    cajeta_copy_into(cajeta_template_arg_name(rtti, idx), out);
 }
 
 // REFL-4.1 (boxing, plan W5): classify a method's return type into a compact

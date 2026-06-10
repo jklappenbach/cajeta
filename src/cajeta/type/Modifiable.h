@@ -33,7 +33,15 @@ namespace cajeta {
         // visitClassDeclaration (distinct from Java's `sealed` subclassing).
         // Named REFLECT_SEALED (not SEALED) to avoid colliding with the
         // ReservedIdentifiers::SEALED enumerator (both unscoped, namespace cajeta).
-        REFLECT_SEALED = 0x100
+        REFLECT_SEALED = 0x100,
+        // REFL-8 — set on a class annotated `@Retained`. Marks a class that must
+        // stay in the Class.forName registry even when no static code path
+        // references it. Advisory today (the AOT linker does not strip unused
+        // classes yet, so every compiled class is already registered); the
+        // future stripping pass keys off this bit. Recorded as a class modifier
+        // so it rides into the RTTI header's `modifiers` word for free. Derived
+        // from the `@Retained` annotation in visitClassDeclaration (no keyword).
+        REFLECT_RETAINED = 0x200
     };
 
     class Modifiable {

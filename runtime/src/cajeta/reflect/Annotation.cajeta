@@ -20,10 +20,11 @@ import cajeta.lang.String;
  * (`getArgCount`/`getArgName`/`getArgKind`/`getArgInt`/`getArgBool`/
  * `getArgString`) or by key with kind-checked typed getters (`getInt`/
  * `getString`/`getBool`/`getClassRef`). The single-unnamed-arg form `@Order(2)`
- * is stored with an empty key, so `getInt("value")` reads it. Caveats this
- * increment: PARAMETER annotation arguments are not captured (parameter
- * annotations are names only), and LIST-valued arguments (`@SuppressLint({...})`)
- * report their kind but expose no element accessor.
+ * is stored with an empty key, so `getInt("value")` reads it. Argument values
+ * are captured on every owner — class, field, method, constructor, AND
+ * parameter. LIST-valued arguments (`@SuppressLint({"a","b"})`, `@Sizes({1,2})`)
+ * expose their elements via `getArgListCount`/`getArgListInt`/`getArgListBool`/
+ * `getArgListString` (locate the argument with `getArgIndex`).
  *
  * `Annotation` is `final` so its accessors dispatch statically.
  */
@@ -65,6 +66,19 @@ public final class Annotation {
     private static int32 argStrLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx);
     @Native("__cajeta_rtti_annotation_arg_str_into")
     private static void argStrInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx, int8[] out);
+
+    // List-valued arguments (`@SuppressLint({"a","b"})`, `@Sizes({1,2})`).
+    // elemIdx selects within the kind-4/5/6 list.
+    @Native("__cajeta_rtti_annotation_arg_list_count")
+    private static int32 argListCount(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx);
+    @Native("__cajeta_rtti_annotation_arg_list_int")
+    private static int64 argListInt(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx, int32 elemIdx);
+    @Native("__cajeta_rtti_annotation_arg_list_bool")
+    private static int32 argListBool(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx, int32 elemIdx);
+    @Native("__cajeta_rtti_annotation_arg_list_str_len")
+    private static int32 argListStrLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx, int32 elemIdx);
+    @Native("__cajeta_rtti_annotation_arg_list_str_into")
+    private static void argListStrInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx, int32 elemIdx, int8[] out);
 
     public Annotation(pointer rtti, int32 ownerKind, int32 ownerIndex,
                       int32 subIndex, int32 index) {
@@ -150,13 +164,45 @@ public final class Annotation {
         return heap String(#out, len);
     }
 
+    // --- REFL-6b list-valued arguments, by index --------------------------
+
+    /** Element count of a list-kind argument (0 for a scalar argument). */
+    public int32 getArgListCount(int32 i) {
+        return argListCount(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i);
+    }
+
+    /** Element `e` of an int-list argument (`@Sizes({1,2})`). */
+    public int64 getArgListInt(int32 i, int32 e) {
+        return argListInt(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i, e);
+    }
+
+    /** Element `e` of a bool-list argument (`@Flags({true,false})`). */
+    public boolean getArgListBool(int32 i, int32 e) {
+        return argListBool(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i, e) != 0;
+    }
+
+    /** Element `e` of a string-list argument (`@SuppressLint({"a","b"})`). */
+    public #String getArgListString(int32 i, int32 e) {
+        int32 len = argListStrLen(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i, e);
+        int8[] out = heap int8[len];
+        argListStrInto(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i, e, out);
+        return heap String(#out, len);
+    }
+
     // --- REFL-6b argument values, by key ----------------------------------
 
-    // Locate an argument by its parameter name. The single-unnamed-arg form
-    // (`@Order(2)`, stored with an empty key) matches the conventional key
-    // "value", so `getInt("value")` reads it — mirroring the compile-time
-    // AnnotationInstance.findArg semantics. Returns -1 when no argument matches.
-    private int32 findArgIndex(String key) {
+    /**
+     * Locate an argument by its parameter name, returning its index (or -1 if
+     * none matches). The single-unnamed-arg form (`@Order(2)`, stored with an
+     * empty key) matches the conventional key "value" — so list arguments can
+     * be read by key too: `int32 i = a.getArgIndex("tags");`.
+     */
+    public int32 getArgIndex(String key) {
         int32 n = this.getArgCount();
         int32 i = 0;
         while (i < n) {
@@ -170,6 +216,11 @@ public final class Annotation {
             i = i + 1;
         }
         return -1;
+    }
+
+    // Internal alias kept for the scalar getters below.
+    private int32 findArgIndex(String key) {
+        return this.getArgIndex(key);
     }
 
     /**

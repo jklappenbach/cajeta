@@ -60,7 +60,7 @@ So: the infrastructure (RTTI) is paid for; the surface is missing. This is a
       address of `#ClassObject`) — TODO; `Class.of(obj)` covers the dynamic path.
 - [ ] REFL-1.6 `Object.getClass()` proper (needs the `Object`→reflect edge; the
       `Class.of` factory is the interim) — TODO.
-- [ ] REFL-1.7 `Class<T>` generic parameter + `Field`/`Method`/`Constructor`/
+- [ ] REFL-1.7 `Class<T>` template parameter + `Field`/`Method`/`Constructor`/
       `Parameter`/`Modifiers` objects (currently counts + per-index accessors).
 
 ### Phase 2 — per-class reflection adapters (REFL-2)  ← hybrid design, 2A+2B shipped 2026-06-08
@@ -210,7 +210,7 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
 - [ ] REFL-5.1 Per-signature-shape concrete `MethodHandle` subclasses,
       synthesized lazily + cached per shape (spec Strategy 4).
 
-### Phase 6 — Annotations (REFL-6)  ← 6a (names) + 6b (argument values) shipped 2026-06-09
+### Phase 6 — Annotations (REFL-6)  ← COMPLETE: names + scalar/list arg values, all owners (incl. parameters)
 - [x] REFL-6a **Annotation NAME reflection.** New `cajeta.reflect.Annotation`
       object (locator: rtti + ownerKind/ownerIndex/subIndex/index) exposing
       `getName()`/`toString()`. Enumeration + `hasAnnotation(canonicalName)` +
@@ -245,10 +245,11 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       `[N x i8*]` name array to `[N x #AnnotationDesc]` — each row
       `{ ptr name, i16 argCount, ptr args }`, with `args` an
       `[M x #AnnotationArgDesc]` `{ ptr name, i32 kind, i64 i64Val, ptr strVal,
-      i8 boolVal }` of the captured scalar values. **No RTTI struct-shape bump**:
-      with opaque pointers the LLVM field type stays `ptr`, so only the pointee
-      (and the C mirror's interpretation) changed; the REFL-6a name natives now
-      read `desc.name`. Values come from the args-carrying `AnnotationInstance`,
+      i8 boolVal, i32 listCount, ptr listData }` of the captured values. **No
+      RTTI struct-shape bump** for the owner descriptors: with opaque pointers
+      the LLVM field type stays `ptr`, so only the pointee (and the C mirror's
+      interpretation) changed; the REFL-6a name natives now read `desc.name`.
+      Values come from the args-carrying `AnnotationInstance`,
       paired to the REFL-6a `annotationList` by canonical name in a new
       `emitAnnotationArray`/`emitAnnotationArgArray`. `Annotation` gained
       by-index accessors (`getArgCount`/`getArgName`/`getArgKind`/`getArgInt`/
@@ -257,13 +258,7 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       (`@Order(2)`) read via key `"value"` (mirrors `AnnotationInstance.findArg`).
       Natives `__cajeta_rtti_annotation_arg_{count,kind,int,bool,name_len,
       name_into,str_len,str_into}` over a shared `cajeta_annotation_arg` resolver.
-      **Out of scope this increment (documented):** (1) PARAMETER annotation
-      arguments — the formal-parameter parse path captures names only (legacy
-      set/list, not `addAnnotationInstance`), so param `#AnnotationDesc` rows have
-      `argCount 0`; migrating `FormalParameter` to the args-aware path is the
-      follow-on. (2) LIST-valued arguments (`@SuppressLint({"a","b"})`) — the
-      `#AnnotationArgDesc` records the list KIND (argCount stays accurate) but no
-      element data; only scalar accessors are surfaced. Tests (12):
+      Tests (12):
       ReflectionTests.{classAnnotationIntArg, classAnnotationNamedStringArg,
       classAnnotationUnnamedStringArg, classAnnotationBoolArg,
       classAnnotationClassRefArg, annotationArgByIndex,
@@ -274,14 +269,98 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
       type via a NEUTRAL annotation (`@Refers(Marker.class)`) — a self-reference
       (`@T(Self.class)` on `Self`) hangs the reflect class-object build, and an
       active annotation (`@Encoding(...)`) invokes its own subsystem.
+- [x] REFL-6b.1 **Parameter annotation argument values** (shipped 2026-06-10).
+      Extracted the visitor's `parseAnnotationInstance` (+ `classifyLiteral`/
+      `trimWs`) into a shared `src/cajeta/asn/AnnotationParser.{h,cpp}` so
+      `FormalParameter::fromContext` captures full typed instances (was: names
+      only via the legacy set). Parameters now populate `annotationInstances`
+      aligned with `annotationList` (constructed with an EMPTY set + the
+      `addAnnotationInstance` loop, avoiding the same double-count trap the field
+      path had); `emitParameterTable` emits their arg values like every other
+      owner. Test: ReflectionTests.parameterAnnotationArg (`@Bound(min=5)` on a
+      parameter → `getInt("min")==5`).
+- [x] REFL-6b.2 **List-valued argument values** (shipped 2026-06-10).
+      `#AnnotationArgDesc` gained `i32 listCount, ptr listData`; the *List kinds
+      emit their elements (`[N x i64]` Int64List / `[N x i8*]` StringList /
+      `[N x i8]` BoolList). New natives `__cajeta_rtti_annotation_arg_list_{count,
+      int,bool,str_len,str_into}`; `Annotation` gained `getArgListCount`/
+      `getArgListInt`/`getArgListBool`/`getArgListString` (by index) + a public
+      `getArgIndex(key)` to locate a list argument by name. Tests:
+      ReflectionTests.{annotationStringListArg, annotationIntListArg,
+      annotationBoolListArg}. Tour Counter `@Labels({"hot","live"})` read
+      end-to-end. **Phase 6 COMPLETE.**
 
-### Phase 7 — Generic retention (REFL-7)
-- [ ] REFL-7.1 Augment RTTI with per-instantiation type-argument substitutions.
-- [ ] REFL-7.2 `TypeParameter` / `TypeArgument` API reading them.
+### Phase 7 — Template reflection (REFL-7)  ← shipped 2026-06-10
+**NOT "generic retention".** Cajeta has TEMPLATES, not erased generics — there is
+nothing to *retain* because nothing is erased. Each instantiation (`Box<int32>`)
+is its own monomorphized `CajetaClass` that already carries `getTypeParameters()`
+(the `<T>` decls) and `getTypeArguments()` (the concrete types). Phase 7 just
+EXPOSES that to reflection. See [[never-call-it-generics]].
+- [x] REFL-7.1 **RTTI carries template params + args** (2026-06-10). `#Rtti`
+      gained 4 appended slots (16–19): `i16 templateParamCount`, `ptr
+      templateParams` (`[N x #TemplateParamDesc]` `{ ptr name, i16 boundCount,
+      ptr bounds, i8 isNonType, ptr nonTypePrimitive }`), `i16 templateArgCount`,
+      `ptr templateArgs` (`[N x i8*]` canonical type names). Emitted from
+      `structure->getTypeParameters()` / `getTypeArguments()` via
+      `emitTemplateParamTable`/`emitTemplateArgArray`. C mirror
+      `CajetaTemplateParamDesc` + 4 new `CajetaRtti` fields in lock-step. Arg
+      names render via `CajetaType::toCanonical()` — the SAME rendering as
+      field/parameter type names (so `int32` reads back as `"int32"`).
+- [x] REFL-7.2 **`TemplateParameter` / `TemplateArgument` API** (2026-06-10,
+      decision: FULL OBJECT MODEL). New `cajeta.reflect.TemplateParameter`
+      (`getName`/`isNonType`/`getNonTypeName`/`getBoundCount`/`getBound(i)`) and
+      `TemplateArgument` (`getTypeName`; `getType()` → `Class` DEFERRED, throws
+      `UnsupportedReflectionException` until the Phase-8 forName registry exists).
+      `Class` gained `getTemplateParameterCount`/`getTemplateParameter(i)`/
+      `getTemplateArgumentCount`/`getTemplateArgument(i)`/`isTemplateInstantiation`.
+      Natives `__cajeta_rtti_template_{param_count,param_name_*,param_is_nontype,
+      param_nontype_*,param_bound_count,param_bound_*,arg_count,arg_name_*}`.
+      Tests: ReflectionTests.{templateArguments, templateParameters,
+      nonTemplateClassZero}. **`getType()` Class resolution is the one piece
+      gated on Phase 8** (name→Class needs the registry).
 
-### Phase 8 — `Class.forName` + `@Retained` (REFL-8)
-- [ ] REFL-8.1 Link-time process registry; `@Retained` keeps stripped classes.
-- [ ] REFL-8.2 `forName` / `forNameOrNull` (perfect-hash over canonical name).
+### Phase 8 — `Class.forName` + `@Retained` (REFL-8)  ← shipped 2026-06-10
+- [x] REFL-8.1 **Process-wide class registry** (2026-06-10). The compiler emits,
+      per class, an `llvm.global_ctors` entry (in `StructureMetadata::populate`,
+      at the single `#ClassObject` definition site) calling
+      `__cajeta_register_class(canonicalName, classObject)`. The runtime keeps a
+      growable, process-lifetime table (`g_cajeta_classes`) keyed by canonical
+      name (strdup'd keys, last-writer-wins). The same `global_ctors` path clinit
+      already uses, honored by both JIT (`initialize()`) and AOT (C runtime). No
+      stripping exists yet, so every compiled class is registered. **`@Retained`**
+      is recorded as the `REFLECT_RETAINED` (0x200) class modifier (mirrors
+      `@Sealed`/`REFLECT_SEALED`, derived from the annotation in
+      `visitClassDeclaration`) — advisory until the AOT linker's stripping pass
+      lands, which will key off this bit to keep an otherwise-unreferenced class
+      in the registry.
+- [x] REFL-8.2 **`Class.forName(String) -> Optional<Class>`** (2026-06-10,
+      decision D3: one Optional-returning lookup, no throwing/null pair). Backed
+      by `__cajeta_class_for_name(int8[] nameBytes)` — single-parameter so it can
+      return a `Class` borrow (a multi-param `@Native` returning a borrow is
+      rejected, CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM); the name length comes
+      from the `int8[]` count header. Linear scan over the registry (perfect-hash
+      is a later optimization; correctness first). Tests:
+      ReflectionTests.{forNameResolvesClass, forNameAbsentEmpty, forNameRoundTrip,
+      forNameStdlibClass}. **`TemplateArgument.getType()` now wired** — resolves
+      the argument's canonical type name via `forName`; a class-typed argument
+      (`Box<Widget>`'s `Widget`) returns its `Class`, a primitive argument
+      (`Box<int32>`'s `int32`) has no `Class` and throws
+      `UnsupportedReflectionException`. Tests: templateArgGetTypeResolvesClass,
+      templateArgGetTypePrimitiveThrows.
+- [x] **Root-cause fix — template instantiations now auto-extend `Object`**
+      (2026-06-10). Surfaced while running the Phase-7 template-reflection tests
+      for the FIRST time (they had been written but never executed): `Class.of()`
+      on ANY template instantiation crashed because `Class.of(b)` silently
+      compiled to `null` (no call emitted) — a `Box<int32>` argument failed to
+      match the `of(Object)` parameter. Cause: the visitor injects an implicit
+      `extends Object` for any class with an empty `extends` clause
+      (CajetaLlvmVisitor.h), but `TemplateInstantiator` builds the instantiation's
+      extends list straight from the parse tree and bypassed that injection, so
+      every instantiation had ZERO parents and was not recognized as `<: Object`.
+      Fix: mirror the visitor's rule in `TemplateInstantiator` (add
+      `cajeta.lang.Object` when the instantiation's extends list is empty). This
+      was a PRE-EXISTING bug (not Phase 8) that blocked all reflection on template
+      instantiations; Phase 8's `getType` was the first caller to hit it.
 
 ### Phase 9 — access control (REFL-9)
 - [ ] REFL-9.1 `@Reflectable` (private-member opt-in).
@@ -310,16 +389,19 @@ hot-reload class loading, reflection-emit.
   Original lean: restrictive `@Reflectable` opt-in — rejected as too much
   framework friction.
 
-- **D2. Generic retention — N/A (templates, not generics).** Cajeta
-  monomorphizes; per-instantiation type info already exists. No erasure, no
-  `-noGenericRetention` flag framing. See memory `templates-not-generics`.
+- **D2. "Retention" — N/A (templates, NOT generics).** Cajeta monomorphizes;
+  per-instantiation type info already exists, nothing is erased, so there is
+  nothing to "retain" — Phase 7 only EXPOSES the template params/args each
+  instantiation already carries. Never call cajeta's parametric types
+  "generics" (that implies erasure). See [[never-call-it-generics]],
+  [[templates-not-generics]].
 
 - **D3. `forName` → `Optional<Class>`.** No throwing/null pair; one method
   returns `Optional`. (`forName(name) -> Optional<Class<?>>`.)
 
-- **D4. Generic *methods* — read from vtable/IR, not erased.** Templates aren't
-  generics; the per-instantiation type info is in the vtable / IR. Phase 7 reads
-  it rather than re-emitting Java-style type-parameter RTTI. See memory.
+- **D4. Templated *methods* — read from vtable/IR, not erased.** The
+  per-instantiation type info is in the vtable / IR. Phase 7 reads it rather than
+  re-emitting Java-style erased type-parameter RTTI. See memory.
 
 - **D5. Async/reflective → DESIGN THE BRIDGE NOW.** Reflective invoke of an
   `async`-marked method must compose with async (even though async is still a
