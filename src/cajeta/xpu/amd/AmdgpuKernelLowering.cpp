@@ -371,6 +371,62 @@ public:
         return b.CreateCall(s, {texHandle, sampPtr, coord}, "texcube.sample.rgba");
     }
 
+    // --- Image2D storage images (the writable twin of Texture2D) --------------
+    //
+    // img.store(x, y, v) / img.load(x, y) → __ockl_image_store_2D /
+    // __ockl_image_load_2D (ROCm device library, linked by AmdgpuBackend when an
+    // __ockl_image_* symbol is referenced). Unlike the sampled texture path these
+    // take NO sampler — a storage image is bound as a surface object (the image
+    // SRD only), so the handle (= imgHandle, a ptr addrspace(4) kernarg, the same
+    // arg model as a texture via textureParamType) is the sole resource operand.
+    // The runtime binds it via hipCreateSurfaceObject with hipArraySurfaceLoadStore.
+    // Coords are the integer <x, y> (NOT normalized); the texel is the R32f <4 x
+    // float> with the scalar value in lane 0 (the R32 image keeps lane 0) — mirror
+    // of the Vulkan OpImageWrite/OpImageRead path so the two agree.
+
+    void storeImage(llvm::IRBuilderBase& b, llvm::Module& m,
+                    llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
+                    llvm::Value* value) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v2i = llvm::FixedVectorType::get(i32, 2);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* coord = llvm::PoisonValue::get(v2i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1), "img.coord");
+        // R32f texel: value in lane 0, zero elsewhere (the image's R32 format keeps
+        // only lane 0 — same packing the Vulkan storeImage uses).
+        llvm::Value* texel = llvm::ConstantAggregateZero::get(v4f);
+        texel = b.CreateInsertElement(texel, value, uint64_t(0), "img.texel");
+        auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                             {p4, v2i, v4f}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_store_2D", fnTy);
+        b.CreateCall(s, {imgHandle, coord, texel});
+    }
+
+    llvm::Value* loadImage(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Value* imgHandle, llvm::Value* x,
+                           llvm::Value* y) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v2i = llvm::FixedVectorType::get(i32, 2);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        llvm::Value* coord = llvm::PoisonValue::get(v2i);
+        coord = b.CreateInsertElement(coord, x, uint64_t(0));
+        coord = b.CreateInsertElement(coord, y, uint64_t(1), "img.coord");
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, v2i}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_load_2D", fnTy);
+        llvm::Value* rgba = b.CreateCall(s, {imgHandle, coord}, "img.load.rgba");
+        // R32f → the scalar texel is component 0 (same as the Vulkan loadImage).
+        return b.CreateExtractElement(rgba, uint64_t(0), "img.load");
+    }
+
     // (Shader clock uses the base default: llvm.readcyclecounter, which the
     // AMDGPU backend lowers to s_getreg HW_REG_SHADER_CYCLES on RDNA — the GCN/
     // CDNA s_memrealtime/s_memtime intrinsics are not selectable on gfx11+.)
