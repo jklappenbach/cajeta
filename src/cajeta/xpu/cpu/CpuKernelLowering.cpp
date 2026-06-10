@@ -30,6 +30,10 @@ class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
 
+    // No native inline ray query: a RayQuery lowers to the portable
+    // SoftwareRayQuery walk over a software BVH buffer (ray-query-to-core inc 1).
+    bool softwareRayQuery() const override { return true; }
+
     // Flat host address space.
     unsigned allocaAddressSpace() const override { return 0; }
 

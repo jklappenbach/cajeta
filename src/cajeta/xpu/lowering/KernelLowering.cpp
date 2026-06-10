@@ -434,6 +434,12 @@ private:
     // takes the alloca from rayQuerySlots.
     std::map<std::string, llvm::Value*> accelHandles;    // AS name -> descriptor
     std::map<std::string, llvm::Value*> rayQuerySlots;   // RayQuery name -> alloca
+    // Software ray-query (ray-query-to-core): a RayQuery alloca -> the AS handle
+    // (the software BVH `Buffer<float32>` base, an i64 on CPU) recorded at
+    // rq.initialize so each rq.proceed() can pass it to the SoftwareRayQuery walk.
+    std::map<llvm::Value*, llvm::Value*> rayQueryBvh;
+    bool swCursorCached = false;
+    DeviceStructInfo swCursorInfoCache;
     // CooperativeMatrix locals (CM4): the alloca slot holds the tile. For the
     // NATIVE tier `matrixType` is the opaque OpTypeCooperativeMatrixKHR device
     // type (loaded/stored as a whole object). For the SOFTWARE tier (CM6) it is
@@ -593,7 +599,15 @@ private:
             // carries no value to store. Backend-gated: rayQueryType throws on a
             // non-Vulkan backend (XPU-N02).
             if (isRayQueryType(declType)) {
-                rayQuerySlots[nm] = entryAlloca(target.rayQueryType(mod), nm);
+                // Software tier (CPU, etc.): the cursor is a concrete SwRayCursor
+                // device struct the SoftwareRayQuery walk reads/writes by value.
+                // Native tier (Vulkan): the opaque OpTypeRayQueryKHR.
+                llvm::Type* rqTy = target.softwareRayQuery()
+                    ? (llvm::Type*) swCursorInfo().type
+                    : target.rayQueryType(mod);
+                if (!rqTy)
+                    unsupported("software RayQuery needs cajeta.xpu.core.SwRayCursor");
+                rayQuerySlots[nm] = entryAlloca(rqTy, nm);
                 continue;
             }
             // CooperativeMatrix local (CM4/CM6): a device-only matrix-core tile.
@@ -1136,6 +1150,17 @@ private:
                     wantF32 ? llvm::Type::getFloatTy(ctx)
                             : llvm::Type::getDoubleTy(ctx));
             return llvm::ConstantFP::get(ctx, apf);
+        }
+        // Boolean literal (`true` / `false`) → i1. Booleans are a
+        // TextLiteralExpression (LITERAL_TYPE_BOOL), distinct from the
+        // Integer/Float literal nodes above; device code that returns a bool
+        // (e.g. SoftwareRayQuery.slabHit) needs them.
+        if (auto tl = std::dynamic_pointer_cast<TextLiteralExpression>(expr)) {
+            if (tl->getLiteralType() == LITERAL_TYPE_BOOL) {
+                return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx),
+                                              tl->getRawValue() == "true" ? 1 : 0);
+            }
+            unsupported("text/string literal in kernel body");
         }
         if (auto ne = std::dynamic_pointer_cast<NewExpression>(expr)) {
             // A value-type-returning @Device operator builds its result by value
@@ -2392,11 +2417,146 @@ private:
                     "kernel parameter");
     }
 
+    // Resolve a core stdlib class by canonical name (parsed eagerly into the
+    // process-global canonicalMap at compiler init), for the software ray-query
+    // dispatch into cajeta.xpu.core.SoftwareRayQuery / SwRayCursor.
+    std::shared_ptr<CajetaClass> coreClass(const std::string& canonical) {
+        auto& cm = CajetaType::getCanonicalMap();
+        auto it = cm.find(canonical);
+        return it == cm.end()
+            ? nullptr
+            : std::dynamic_pointer_cast<CajetaClass>(it->second);
+    }
+
+    // A @Device method of a core class, by name (first match by name).
+    MethodPtr coreDeviceMethod(const std::string& canonical,
+                               const std::string& method) {
+        auto c = coreClass(canonical);
+        if (!c) return nullptr;
+        for (auto& kv : c->getMethods())
+            if (kv.second && kv.second->getName() == method) return kv.second;
+        return nullptr;
+    }
+
+    // The SwRayCursor device struct + field map (cached). Empty if unavailable.
+    const DeviceStructInfo& swCursorInfo() {
+        if (!swCursorCached) {
+            auto c = coreClass("cajeta.xpu.core.SwRayCursor");
+            swCursorInfoCache = c ? deviceStructInfo(c, ctx) : DeviceStructInfo{};
+            swCursorCached = true;
+        }
+        return swCursorInfoCache;
+    }
+
+    // Software-tier RayQuery op lowering (ray-query-to-core inc 1). The RayQuery
+    // alloca holds a SwRayCursor; each op is a call into the portable
+    // SoftwareRayQuery @Device walk with the cursor read/written back, plus field
+    // reads off the cursor — no native ray-query seam (XPU-N02 is not thrown).
+    llvm::Value* lowerSoftwareRayQueryMethod(
+            llvm::Value* rqPtr, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        const auto& args = mc->getParameters();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        const DeviceStructInfo& ci = swCursorInfo();
+        if (!ci.type) unsupported("software RayQuery: SwRayCursor unavailable");
+        llvm::Type* cursorTy = ci.type;
+        auto fieldIdx = [&](const char* n) -> unsigned {
+            auto it = ci.fields.find(n);
+            if (it == ci.fields.end())
+                unsupported(std::string("SwRayCursor missing field ") + n);
+            return it->second.index;
+        };
+
+        if (name == "initialize") {
+            if (args.size() != 11)
+                unsupported("RayQuery.initialize expects (AccelerationStructure, "
+                            "rayFlags, cullMask, originX, originY, originZ, tMin, "
+                            "dirX, dirY, dirZ, tMax)");
+            (void) f32;
+            // Remember the AS (its handle = the software BVH buffer base) so each
+            // proceed() can pass it to the walk; rayFlags/cullMask are v1-ignored.
+            rayQueryBvh[rqPtr] = resolveAccelArg(args[0].expression);
+            // Seed a fresh cursor by value: ray fields from the call, traversal
+            // state zeroed. Built here (insertvalue) rather than via a cajeta
+            // initialize — a no-Buffer @Device method would be host-compiled and
+            // choke on value-type construction (Method.cpp only host-stubs
+            // Buffer-taking device methods). Consumer arg order:
+            // (AS, rayFlags, cullMask, ox, oy, oz, tMin, dx, dy, dz, tMax).
+            llvm::Value* cur = llvm::UndefValue::get(cursorTy);
+            auto setField = [&](const char* fld, llvm::Value* v) {
+                const auto& f = ci.fields.at(fld);
+                cur = builder.CreateInsertValue(cur, coerceTo(v, f.type), {f.index});
+            };
+            auto setExpr = [&](const char* fld, const ExpressionPtr& e) {
+                setField(fld, lowerExpr(e));
+            };
+            auto zero = [&](const char* fld) {
+                const auto& f = ci.fields.at(fld);
+                cur = builder.CreateInsertValue(
+                    cur, llvm::Constant::getNullValue(f.type), {f.index});
+            };
+            setExpr("ox", args[3].expression);
+            setExpr("oy", args[4].expression);
+            setExpr("oz", args[5].expression);
+            setExpr("tMin", args[6].expression);
+            setExpr("dx", args[7].expression);
+            setExpr("dy", args[8].expression);
+            setExpr("dz", args[9].expression);
+            setExpr("tMax", args[10].expression);
+            zero("nextNode"); zero("hasCandidate");
+            zero("candPrim"); zero("candKind"); zero("committed");
+            builder.CreateStore(cur, rqPtr);
+            return llvm::ConstantInt::get(i32, 0);   // void statement
+        }
+        if (name == "proceed") {
+            if (!args.empty()) unsupported("RayQuery.proceed takes no arguments");
+            MethodPtr m =
+                coreDeviceMethod("cajeta.xpu.core.SoftwareRayQuery", "step");
+            if (!m) unsupported("cajeta.xpu.core.SoftwareRayQuery.step unavailable");
+            llvm::Function* hfn = lowerDeviceFn(m);
+            auto bit = rayQueryBvh.find(rqPtr);
+            if (bit == rayQueryBvh.end())
+                unsupported("RayQuery.proceed() before initialize()");
+            llvm::Value* h = bit->second;
+            llvm::Type* bvhTy = hfn->getArg(1)->getType();
+            llvm::Value* bvh = h->getType()->isPointerTy()
+                ? builder.CreateBitCast(h, bvhTy)
+                : builder.CreateIntToPtr(h, bvhTy, "rq.bvh");
+            llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
+            llvm::Value* nc = builder.CreateCall(hfn, {cur, bvh}, "rq.step");
+            builder.CreateStore(nc, rqPtr);
+            llvm::Value* has =
+                builder.CreateExtractValue(nc, {fieldIdx("hasCandidate")}, "rq.has");
+            return builder.CreateICmpNE(
+                has, llvm::ConstantInt::get(has->getType(), 0), "rq.proceed");
+        }
+        if (name == "committedType" || name == "candidateType") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
+            unsigned idx = fieldIdx(name == "committedType" ? "committed"
+                                                            : "candKind");
+            return builder.CreateExtractValue(cur, {idx}, "rq.type");
+        }
+        if (name == "candidatePrimitiveIndex") {
+            if (!args.empty())
+                unsupported("RayQuery.candidatePrimitiveIndex takes no arguments");
+            llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
+            return builder.CreateExtractValue(cur, {fieldIdx("candPrim")},
+                                              "rq.prim");
+        }
+        unsupported("software RayQuery." + name + "()");
+    }
+
     // RayQuery op dispatch (Part C). `rqPtr` is the RayQuery alloca; the call is
-    // lowered to the backend ray-query seam (Vulkan llvm.spv.ray.query.*).
+    // lowered to the backend ray-query seam (Vulkan llvm.spv.ray.query.*), or —
+    // on a software-tier backend — to the portable SoftwareRayQuery walk.
     llvm::Value* lowerRayQueryMethod(
             llvm::Value* rqPtr, const std::string& name,
             const std::shared_ptr<MethodCallExpression>& mc) {
+        if (target.softwareRayQuery())
+            return lowerSoftwareRayQueryMethod(rqPtr, name, mc);
         const auto& args = mc->getParameters();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         if (name == "initialize") {
@@ -3093,9 +3253,14 @@ private:
                 retTy = deviceStructInfo(rt, ctx).type;
         }
         if (!retTy) retTy = llvm::Type::getVoidTy(ctx);
+        // Lower the body in the context of the method's OWN class, not the
+        // kernel's: a @Device helper may live in a different class (e.g. the core
+        // SoftwareRayQuery the ray-query call site dispatches to). For an
+        // ordinary sibling helper this is the kernel class, unchanged.
+        auto owner = m->getParent() ? m->getParent() : cls;
         auto* fnTy = llvm::FunctionType::get(retTy, tys, /*vararg=*/false);
         std::string fname = "__cajeta_xpu_dev." +
-            (cls ? cls->toCanonical() + "." : std::string()) + m->getName();
+            (owner ? owner->toCanonical() + "." : std::string()) + m->getName();
         auto* hfn = llvm::Function::Create(
             fnTy, llvm::GlobalValue::InternalLinkage, fname, &mod);
         hfn->addFnAttr(llvm::Attribute::AlwaysInline);
@@ -3106,7 +3271,7 @@ private:
         sub.setParams(params);
         sub.setParamsAsArgs(true);   // helper params are plain fn args, not
                                      // kernel descriptors/SSBOs (Vulkan)
-        sub.setDeviceContext(cls, deviceFns);
+        sub.setDeviceContext(owner, deviceFns);
         sub.lowerBody(m);
 
         (*deviceFns)[m.get()] = hfn;

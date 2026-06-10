@@ -224,7 +224,11 @@ public final class Buffer<T> {
      */
     public void uploadAsync(T[] host, Stream stream) {
         uint64 bytes = this.elementCount * elementBytes();
-        this.deviceUploadAsync(this.deviceHandle, host, bytes, stream.handle);
+        // Bind the param's field to a local before passing it (reading a
+        // class-typed param's field inline as a call arg lowers to null — the
+        // documented idiom, as Stream.waitFor does with e.handle).
+        int64 sh = stream.handle;
+        this.deviceUploadAsync(this.deviceHandle, host, bytes, sh);
     }
 
     /**
@@ -233,7 +237,8 @@ public final class Buffer<T> {
      */
     public void downloadAsync(T[] host, Stream stream) {
         uint64 bytes = this.elementCount * elementBytes();
-        this.deviceDownloadAsync(this.deviceHandle, host, bytes, stream.handle);
+        int64 sh = stream.handle;   // see uploadAsync: bind before passing
+        this.deviceDownloadAsync(this.deviceHandle, host, bytes, sh);
     }
 
     /**

@@ -193,3 +193,127 @@ TEST(PrismSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
     EXPECT_EQ(r, 888) << "fail code " << r
                       << " (3xx: box approx != 3; 2xx: exact-L2 count != 1)";
 }
+
+// Minimal self-contained CPU ray-query exec (no SpatialIndex / cajeta-prism
+// dependency): build an AccelerationStructure over 3 AABBs and run a RayQuery walk
+// in a kernel on the CPU software path. Directly exercises the ray-query-to-core
+// integration (software BVH builder + SoftwareRayQuery walk) without the broader
+// stdlib closure. Same 1/0/1/1 expectation as the Prism fixed-radius scene.
+const char* kRqMinDriver =
+    "package test;\n"
+    "import cajeta.xpu.core.AccelerationStructure;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.RayQuery;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class RqMin {\n"
+    "    @Kernel\n"
+    "    public static void countHits(AccelerationStructure scene,\n"
+    "                                 Buffer<float32> qx, Buffer<float32> qy,\n"
+    "                                 Buffer<float32> qz, Buffer<uint32> out,\n"
+    "                                 uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          qx[i], qy[i], qz[i], 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = heap AccelerationStructure(boxes, np);\n"
+    "        uint32 n = 4;\n"
+    "        float32[] hqx = heap float32[n]; float32[] hqy = heap float32[n]; float32[] hqz = heap float32[n];\n"
+    "        uint32[] hout = heap uint32[n];\n"
+    "        hqx[0]=0.0f;  hqy[0]=0.0f; hqz[0]=0.0f;\n"
+    "        hqx[1]=5.0f;  hqy[1]=0.0f; hqz[1]=0.0f;\n"
+    "        hqx[2]=10.0f; hqy[2]=0.0f; hqz[2]=0.0f;\n"
+    "        hqx[3]=19.7f; hqy[3]=0.0f; hqz[3]=0.0f;\n"
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9;\n"
+    "        Buffer<float32> qx = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qy = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qz = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        qx.upload(hqx); qy.upload(hqy); qz.upload(hqz); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        countHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"
+    "        if (hout[1] != 0) { return 101; }\n"
+    "        if (hout[2] != 1) { return 102; }\n"
+    "        if (hout[3] != 1) { return 103; }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(PrismSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
+    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (CPU software ray query: wrong hit count)";
+}
+
+// ── Ray-query-to-core (inc 1): the SAME Prism source on the CPU SOFTWARE path ──
+// No ray-query-capable device required — the AccelerationStructure builds a
+// portable software BVH (runtime/native/cajeta_bvh.c) and RayQuery lowers to the
+// cajeta SoftwareRayQuery walk. The results must match the Vulkan native path
+// above (777 / 888): that agreement is what makes inline ray query genuinely core.
+// Each ctest case is a fresh process, so the CPU-only bundle selects the CPU
+// backend (priority CUDA>HIP>Vulkan>CPU is moot when only CPU is bundled).
+
+TEST(PrismSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
+    std::string lib = readSpatialIndexSource();
+    if (lib.empty()) {
+        GTEST_SKIP() << "cajeta-prism SpatialIndex.cajeta not found beside checkout";
+    }
+    std::map<std::string, std::string> sources = {
+        {"prism.spatial.SpatialIndex", lib},
+        {"test.PrismRQ", kDriver},
+    };
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(sources, "test.PrismRQ", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (CPU software BVH/RayQuery: wrong neighbour count)";
+}
+
+TEST(PrismSpatialIndexDeviceTests, exactL2RefinementOnCpuSoftwareBvh) {
+    std::string lib = readSpatialIndexSource();
+    if (lib.empty()) {
+        GTEST_SKIP() << "cajeta-prism SpatialIndex.cajeta not found beside checkout";
+    }
+    std::map<std::string, std::string> sources = {
+        {"prism.spatial.SpatialIndex", lib},
+        {"test.PrismExact", kExactDriver},
+    };
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(sources, "test.PrismExact", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 888) << "fail code " << r
+                      << " (CPU software: 3xx box approx != 3; 2xx exact-L2 != 1)";
+}

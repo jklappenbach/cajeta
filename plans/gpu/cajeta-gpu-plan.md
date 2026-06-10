@@ -76,6 +76,10 @@ The verb seam exists; the rest of the model from doc §1 does not.
 
 ### 3.3 Ray query → genuinely core  ← **the headline open item**
 
+**Design of record:** [`cajeta-docs/gpu/RayQuery.md`](../../cajeta-docs/gpu/RayQuery.md) —
+the portable BVH noun + software traversal, the tier model (CoopMatrix `Native`/`Software`
+shape), the layout contract, and the sequenced increments. The checklist below mirrors it.
+
 Scope (doc §4): **inline ray query over BOTH triangle meshes and AABB/procedural BVHs** —
 because scientific compute needs ray-triangle queries (mesh Monte-Carlo, SDF/curvature, ICP /
 6-D pose, mesh-NN/fVDB) *and* the AABB path (3-D Gaussian, point clouds). Today it is Vulkan +
@@ -84,17 +88,20 @@ badge-without-substance the model forbids.
 
 - [x] **Vulkan hardware path** (the *acceleration*) — AABB BLAS build + `OpRayQuery`, device-
   verified on RADV; Prism `SpatialIndex.countWithin` runs on it.
-- [ ] **Noun: portable software BVH** — build (LBVH / binned-SAH) over **triangles *and*
-  AABBs** from the geometry description into a `Buffer<T>` (nodes + prim refs); host or build
-  kernel. This is what makes the noun core.
-- [ ] **Verb: portable software traversal** — fixed/stackless walk; **Möller-Trumbore** for
-  triangle leaves, custom intersection for AABB leaves.
+- [x] **Noun: portable software BVH** *(inc 1 — AABBs)* — median-split threaded BVH built
+  into an all-`float32` block (`runtime/native/cajeta_bvh.c`); the software
+  `AccelerationStructure` handle is that buffer. Triangles + LBVH/binned-SAH quality are
+  follow-ups (inc 2 / 4). *Makes the AABB noun core.*
+- [x] **Verb: portable software traversal** *(inc 1 — AABB slab)* — stackless threaded walk
+  in cajeta (`SoftwareRayQuery.step`/`slabHit`, `SwRayCursor`); the call site lowers each
+  `RayQuery` op to it on a software backend. **Möller-Trumbore** triangle leaves are inc 2.
+- [x] **Noun-impl → verb-lowering coupling** — `LoweringTarget.softwareRayQuery()` per
+  backend (CPU software + AS-as-buffer; Vulkan native `OpRayQuery`). Device-verified:
+  `PrismSpatialIndexDeviceTests.*CpuSoftwareBvh` (777/888) match the Vulkan path.
 - [ ] **Complete the verb getters** — `T` (distance), barycentrics, frontFace; **`confirm` /
   `generate` intersection** (without these, ray query can only *count*, not return a nearest hit).
-- [ ] **Triangle geometry on the Vulkan hardware path** — `VK_GEOMETRY_TYPE_TRIANGLES_KHR`
-  alongside the existing AABB build.
-- [ ] **Noun-impl → verb-lowering coupling** — chosen once at build time by the capability
-  heuristic; software BVH ⇒ software traversal, Vulkan BVH ⇒ `OpRayQuery`.
+- [ ] **Triangle geometry** — software BVH triangle leaves (Möller-Trumbore) +
+  `VK_GEOMETRY_TYPE_TRIANGLES_KHR` on the Vulkan build (inc 2).
 - [⊘] **TLAS / instancing** — deferred; the next core AS axis (ICP/pose will want instance
   transforms — a "soon," not a "never"). *Not* gfx.
 - [⊘] **Ray-tracing pipeline** (raygen/closesthit/miss + SBT) — **gfx**, not core.
