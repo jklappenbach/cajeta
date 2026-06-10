@@ -42,6 +42,32 @@ namespace xpu {
         // Lowercase backend name (diagnostics).
         virtual const char* name() const = 0;
 
+        // --- the degrade seam, named (cajeta-gpu inc-4 brick #4) -------------
+        //
+        // The internal face of the "impl-layer / SPIR-V-degrade framework"
+        // (CajetaGPU.md §1.5): a capability has a Native lowering where the
+        // silicon has it and a Portable degrade everywhere else, selected by a
+        // capability heuristic with an explicit override (default ≠ law). Core
+        // is just the in-tree "vendor library" that has a fallback for
+        // everything — same shape an external vendor library will use, which is
+        // why this concept is named here rather than re-invented per feature.
+        //
+        // Two core features answer through this one enum:
+        //   - the coop-matrix VERB tier (coopMatrixTier — Native MMA vs the
+        //     portable flat-tile matmul), and
+        //   - the ray-query verb tier (rayQueryTier — native OpRayQuery vs the
+        //     SoftwareRayQuery walk), derived from the noun's recorded impl.
+        // The explicit override is the CAJETA_GPU_<FEATURE>_IMPL family
+        // (resolveImplTier, this header's .cpp side; CAJETA_GPU_AS_IMPL is the
+        // runtime-side instance for the AS noun in cajeta_runtime.c).
+        //
+        // Native and Portable are DIFFERENT realizations, not the same code two
+        // ways — so for an arithmetic feature like coop-matrix they need not be
+        // bit-identical (the hardware MMA and the triple-loop tile accumulate in
+        // a different order); both are validated against the reference, not
+        // against each other.
+        enum class ImplTier { Native, Portable };
+
         // Address space for entry-block allocas (the mutable scalar-slot model
         // — loop counters, reassigned locals). NVPTX: 0 (generic). AMDGPU: 5
         // (private). Getting this wrong on AMDGPU is the classic first bug
@@ -431,17 +457,29 @@ namespace xpu {
         // runtime/native/cajeta_noun_impl.h (comment-synced, like CAJETA_KP_*).
         // Today impl == backend: Vulkan builds the native BLAS, CPU the portable
         // software BVH. The capability-heuristic brick lets one backend pick either.
+        // This is the ray-query noun's ABI-pinned encoding of the degrade choice;
+        // it feeds rayQueryTier() below (the unified ImplTier face).
         enum class NounImpl { SoftwareBvh = 0, VulkanNative = 1 };
         virtual NounImpl accelImpl() const { return NounImpl::VulkanNative; }
+
+        // The ray-query verb tier in the unified ImplTier vocabulary: SoftwareBvh
+        // ⇒ Portable (the SoftwareRayQuery walk), VulkanNative ⇒ Native
+        // (OpRayQuery). Derived from the noun's recorded impl so the verb follows
+        // the noun (one source). The coop-matrix counterpart is coopMatrixTier;
+        // both features answer "which tier?" through ImplTier.
+        ImplTier rayQueryTier() const {
+            return accelImpl() == NounImpl::SoftwareBvh ? ImplTier::Portable
+                                                        : ImplTier::Native;
+        }
 
         // True when this backend has no native inline ray query and uses the
         // portable Software tier instead (cajeta-gpu ray-query-to-core): a
         // RayQuery lowers to the cajeta.gpu.core.SoftwareRayQuery @Device walk over
-        // a software BVH `Buffer<float32>`, not to the native rayQuery* seams. Now
-        // derived from accelImpl() so the verb follows the noun's impl (one source).
-        // The call site (KernelLowering) reads this to pick the verb lowering, and
-        // the noun (AccelerationStructure) is materialized as the BVH buffer base.
-        bool softwareRayQuery() const { return accelImpl() == NounImpl::SoftwareBvh; }
+        // a software BVH `Buffer<float32>`, not to the native rayQuery* seams. Thin
+        // alias over rayQueryTier() — the call site (KernelLowering) reads this to
+        // pick the verb lowering, and the noun (AccelerationStructure) is
+        // materialized as the BVH buffer base.
+        bool softwareRayQuery() const { return rayQueryTier() == ImplTier::Portable; }
 
         // The LLVM type to alloca for a `RayQuery` local. Vulkan:
         // target("spirv.RayQueryKHR"). Default: unsupported.
@@ -508,28 +546,31 @@ namespace xpu {
         // backend's default throws (XPU-N03). All matrices are at Subgroup scope.
 
         // Which lowering a `CooperativeMatrix<T,Rows,Cols,Use>` gets on this
-        // backend for the given element/shape:
-        //   Native   — a hardware matrix-core path (Vulkan SPV_KHR_cooperative_
-        //              matrix for the dtype configs the driver advertises; AMD
-        //              amdgcn WMMA; NVIDIA wmma).
-        //   Software  — a portable flat-tile matmul (the DeviceLowerer emits a
-        //              `[Rows*Cols x T]` tile + a strided gather/scatter + an
-        //              f32/i32 triple-loop multiply-add). Correct on every
-        //              backend; not matrix-core accelerated.
-        // The choice is static per (backend, dtype, shape) — known at compile
-        // time, so no runtime branch is emitted. The default is Software, so a
-        // backend with no native MMA seam still RUNS cooperative matrix (it does
-        // not throw); a backend overrides this to claim Native where it can.
-        enum class CoopMatrixTier { Native, Software };
-        virtual CoopMatrixTier coopMatrixTier(llvm::Type* /*elem*/,
-                                              uint32_t /*rows*/, uint32_t /*cols*/,
-                                              uint32_t /*use*/) {
-            return CoopMatrixTier::Software;
+        // backend for the given element/shape — answered in the unified ImplTier
+        // vocabulary (the coop-matrix instance of the degrade seam):
+        //   Native    — a hardware matrix-core path (Vulkan SPV_KHR_cooperative_
+        //               matrix for the dtype configs the driver advertises; AMD
+        //               amdgcn WMMA; NVIDIA wmma).
+        //   Portable  — a portable flat-tile matmul (the DeviceLowerer emits a
+        //               `[Rows*Cols x T]` tile + a strided gather/scatter + an
+        //               f32/i32 triple-loop multiply-add). Correct on every
+        //               backend; not matrix-core accelerated.
+        // This is the per-backend BASE decision, static per (backend, dtype,
+        // shape) — known at compile time, so no runtime branch is emitted. The
+        // explicit CAJETA_GPU_COOPMATRIX_IMPL override is layered on top of it by
+        // resolveImplTier at the call site (KernelLowering). The default is
+        // Portable, so a backend with no native MMA seam still RUNS cooperative
+        // matrix (it does not throw); a backend overrides this to claim Native
+        // where it can.
+        virtual ImplTier coopMatrixTier(llvm::Type* /*elem*/,
+                                        uint32_t /*rows*/, uint32_t /*cols*/,
+                                        uint32_t /*use*/) {
+            return ImplTier::Portable;
         }
 
         // The LLVM type to alloca for a `CooperativeMatrix<T,Rows,Cols,Use>`
         // local: target("spirv.CooperativeMatrixKHR", elem, 3, rows, cols, use).
-        // Only called for the Native tier; the Software tier uses a flat tile.
+        // Only called for the Native tier; the Portable tier uses a flat tile.
         virtual llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,
                                            uint32_t rows, uint32_t cols,
                                            uint32_t use);
@@ -728,6 +769,18 @@ namespace xpu {
         // length into a spec constant the launch's sharedBytes sets).
         virtual bool dynamicSharedNeedsConcreteSize() const { return false; }
     };
+
+    // The explicit-override layer of the degrade seam (CajetaGPU.md §1.5): apply
+    // the CAJETA_GPU_<FEATURE>_IMPL env override to a per-backend BASE tier.
+    // `feature` is the uppercase feature tag (e.g. "COOPMATRIX"), spliced into
+    // the env name. The override wins when set: "software" → Portable, "native" →
+    // Native; unset or any other value keeps `base`. The env is read here and
+    // ONLY here (the compile-time-feature instance of the convention; the
+    // runtime-noun instance is caj_resolve_as_impl / CAJETA_GPU_AS_IMPL in
+    // cajeta_runtime.c). Defined out-of-line in KernelLowering.cpp beside the
+    // other LoweringTarget defaults.
+    LoweringTarget::ImplTier resolveImplTier(const char* feature,
+                                             LoweringTarget::ImplTier base);
 
 } // namespace xpu
 } // namespace cajeta

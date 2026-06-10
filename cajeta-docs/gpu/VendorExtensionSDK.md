@@ -98,7 +98,16 @@ From the foundation plan §1:
   `AsImpl` preference / `CAJETA_GPU_AS_IMPL` env override, and a per-impl kernel variant so a
   forced choice actually runs — the "impl layers" the degrade framework will generalize); the
   *automatic* density/extent heuristic still to come,
-- the **impl-layer + degrade framework** (the verb half — still unbuilt),
+- ✅ the **internal impl-layer + degrade seam** (the verb half, dogfooded): core now has one
+  named degrade concept — `LoweringTarget::ImplTier { Native, Portable }` — that both core
+  degrade features answer through (the coop-matrix verb `coopMatrixTier` and the ray-query verb
+  `rayQueryTier`, derived from the AS noun's `NounImpl`), plus a generic
+  `CAJETA_GPU_<FEATURE>_IMPL` override (`resolveImplTier`) proven on a **second** consumer beyond
+  the AS noun (`CAJETA_GPU_COOPMATRIX_IMPL=software` forces the portable tile on a native-capable
+  device, device-verified). This is the in-tree machinery this SDK will *expose*; the **external**
+  declaration syntax (verb + lowering + degrade), AOT/JIT impl-layer packaging, and signing/sandbox
+  remain the seed (below). Honest boundary: Native and Portable are different realizations, so an
+  arithmetic feature's tiers are each validated against the reference, not against each other,
 - ✅ the `cajeta.xpu.core → cajeta.gpu.core` rename.
 
 When the remaining pieces land and core has used them, this seed becomes the SDK's real spec.

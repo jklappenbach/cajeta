@@ -10274,6 +10274,10 @@ static int caj_native_rayquery_available(void) {
 // preference, then the AUTO default policy. Read once per call (constant within a
 // run), so the build's choice and the recorded impl always agree. A NATIVE request
 // with no native support falls back to the software floor (core always runs).
+// This is the RUNTIME-NOUN instance of the CAJETA_GPU_<FEATURE>_IMPL degrade-
+// override convention (inc-4 brick #4); the compile-time-feature instance is
+// resolveImplTier() in src/cajeta/xpu/lowering/KernelLowering.cpp (e.g.
+// CAJETA_GPU_COOPMATRIX_IMPL). Same precedence + case-sensitive string match.
 static CajetaAsImpl caj_resolve_as_impl(int pref) {
     int native = caj_native_rayquery_available();
     const char* env = getenv("CAJETA_GPU_AS_IMPL");

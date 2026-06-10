@@ -43,6 +43,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -63,6 +64,25 @@ llvm::Value* LoweringTarget::globalId(llvm::IRBuilderBase& b, llvm::Module& m,
     llvm::Value* wdim = workgroupDim(b, m, dim);
     llvm::Value* tid = threadId(b, m, dim);
     return b.CreateAdd(b.CreateMul(wid, wdim), tid, "gid");
+}
+
+// The explicit-override layer of the degrade seam (CajetaGPU.md §1.5, inc-4
+// brick #4): apply CAJETA_GPU_<FEATURE>_IMPL to a per-backend base tier. The
+// override wins when set ("software" → Portable, "native" → Native); unset or
+// any other value keeps `base`. Read here and ONLY here — the compile-time-
+// feature instance of the CAJETA_GPU_<FEATURE>_IMPL convention (the runtime-noun
+// instance is caj_resolve_as_impl / CAJETA_GPU_AS_IMPL in cajeta_runtime.c).
+// Precedence + the case-sensitive string match mirror caj_resolve_as_impl.
+LoweringTarget::ImplTier resolveImplTier(const char* feature,
+                                         LoweringTarget::ImplTier base) {
+    std::string var = std::string("CAJETA_GPU_") + feature + "_IMPL";
+    const char* env = std::getenv(var.c_str());
+    if (env && *env) {
+        if (std::string(env) == "software") return LoweringTarget::ImplTier::Portable;
+        if (std::string(env) == "native")   return LoweringTarget::ImplTier::Native;
+        // unknown value: ignore; keep the base decision.
+    }
+    return base;
 }
 
 // Defined far below (after the anonymous-namespace block); forward-declared in
@@ -2754,8 +2774,12 @@ private:
         s.rows = (uint32_t) rows->getValue();
         s.cols = (uint32_t) cols->getValue();
         s.use  = (uint32_t) use->getValue();
-        auto tier = target.coopMatrixTier(elem, s.rows, s.cols, s.use);
-        if (tier == LoweringTarget::CoopMatrixTier::Software) {
+        // The per-backend base tier, then the explicit CAJETA_GPU_COOPMATRIX_IMPL
+        // override layered on top (the degrade seam's override face) — so a forced
+        // "software" runs the portable tile even on a native-capable backend.
+        auto baseTier = target.coopMatrixTier(elem, s.rows, s.cols, s.use);
+        auto tier = resolveImplTier("COOPMATRIX", baseTier);
+        if (tier == LoweringTarget::ImplTier::Portable) {
             // Portable flat tile: a `[Rows*Cols x elem]` array in Function
             // storage. Dynamic-index GEP (gather/scatter/matmul) is well-formed
             // on every backend including SPIR-V logical addressing.
@@ -2764,7 +2788,11 @@ private:
             s.alloca = entryAlloca(s.matrixType, nm);
             // One appraisal per GEMM: note the A operand (Use 0) — every matrix
             // multiply has exactly one, so the B/accumulator tiles don't re-note.
-            if (s.use == 0) noteSoftwareCoopMatrix(elem, s.rows, s.cols);
+            // `forced` is true when the backend HAD a native config but the env
+            // override took the portable path (so the note stays honest).
+            if (s.use == 0)
+                noteSoftwareCoopMatrix(elem, s.rows, s.cols,
+                                       baseTier == LoweringTarget::ImplTier::Native);
         } else {
             s.software = false;
             s.matrixType = target.coopMatrixType(mod, elem, s.rows, s.cols, s.use);
@@ -2791,11 +2819,25 @@ private:
     // up hardware matrix cores automatically where the device exposes the dtype
     // config), and it is forward-looking, not corrective. Emitted once per
     // distinct (dtype, shape, backend).
-    void noteSoftwareCoopMatrix(llvm::Type* elem, uint32_t rows, uint32_t cols) {
+    void noteSoftwareCoopMatrix(llvm::Type* elem, uint32_t rows, uint32_t cols,
+                                bool forced) {
         std::string dt = deviceScalarName(elem);
         std::string key = dt + ":" + std::to_string(rows) + "x" +
                           std::to_string(cols) + "@" + target.name();
         if (!notedCoopTiers.insert(key).second) return;
+        if (forced) {
+            // The backend HAS a native config; CAJETA_GPU_COOPMATRIX_IMPL=software
+            // forced the portable degrade (the override face of the degrade seam —
+            // validates the portable tier against the native one on real silicon).
+            std::cerr << "note: [mma-tiering] CooperativeMatrix<" << dt << ","
+                      << rows << "," << cols << "> runs on the portable software "
+                         "tile-matmul on the " << target.name() << " backend "
+                         "because CAJETA_GPU_COOPMATRIX_IMPL=software forced it "
+                         "(the backend DOES expose a native cooperative-matrix "
+                         "config for " << dt << "; this is the explicit degrade "
+                         "override)." << std::endl;
+            return;
+        }
         std::cerr << "note: [mma-tiering] CooperativeMatrix<" << dt << ","
                   << rows << "," << cols << "> runs on the portable software "
                      "tile-matmul on the " << target.name() << " backend (it "
