@@ -43,10 +43,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CAJ_BVH_VERSION    1.0f
-#define CAJ_BVH_HDR_WORDS  8u
-#define CAJ_BVH_NODE_WORDS 9u
-#define CAJ_BVH_FLAG_AABBS 1u
+#define CAJ_BVH_VERSION        1.0f
+#define CAJ_BVH_HDR_WORDS      8u
+#define CAJ_BVH_NODE_WORDS     9u
+#define CAJ_BVH_FLAG_AABBS     1u
+#define CAJ_BVH_FLAG_TRIANGLES 2u
+// Triangle geometry stores 9 floats per primitive (3 vertices x xyz) in a
+// primData region appended after primRef; its offset is primRefOffset + primCount
+// (implicit, recomputed by the traversal). The leaf node's AABB (the triangle's
+// bounding box) drives descent; the leaf TEST is Möller-Trumbore against these
+// vertices. AABB geometry needs no primData (the leaf node's AABB IS the prim).
+#define CAJ_BVH_TRI_WORDS      9u
 
 struct caj_bvh_prim {
     float    c[3];        // centroid
@@ -154,6 +161,63 @@ static int64_t cajeta_xpu_cpu_accel_build_aabbs(const float* boxes, uint32_t cou
     blk[4] = (float) nodesOff;
     blk[5] = (float) primRefOff;
     blk[6] = (float) CAJ_BVH_FLAG_AABBS;
+    blk[7] = (float) CAJ_BVH_NODE_WORDS;
+
+    free(prims);
+    return (int64_t) (intptr_t) blk;
+}
+
+// Build the software BVH over `triCount` triangles. `verts` is a triangle soup:
+// vertex `v` of triangle `t` starts at word `(t*3 + v) * stride` (stride floats
+// per vertex; `stride` >= 3, tightly-packed = 3). Each leaf's AABB is the
+// triangle's bounding box (drives descent); the triangle's 9 vertex floats are
+// copied tightly into the primData region (indexed by the original triangle id)
+// for the Möller-Trumbore leaf test. Returns the float32 block as an int64 handle
+// (host pointer / CPU buffer convention), or 0 on failure.
+static int64_t cajeta_xpu_cpu_accel_build_triangles(const float* verts,
+                                                    uint32_t triCount,
+                                                    uint32_t stride) {
+    if (!verts || triCount == 0 || stride < 3u) return 0;
+    uint32_t nodeCount = 2u * triCount - 1u;     // full binary tree, 1 tri/leaf
+    uint64_t words = CAJ_BVH_HDR_WORDS +
+                     (uint64_t) nodeCount * CAJ_BVH_NODE_WORDS +
+                     triCount + (uint64_t) triCount * CAJ_BVH_TRI_WORDS;
+    float* blk = (float*) calloc(words, sizeof(float));
+    struct caj_bvh_prim* prims =
+        (struct caj_bvh_prim*) malloc((size_t) triCount * sizeof(struct caj_bvh_prim));
+    if (!blk || !prims) { free(blk); free(prims); return 0; }
+
+    uint32_t nodesOff   = CAJ_BVH_HDR_WORDS;
+    uint32_t primRefOff = nodesOff + nodeCount * CAJ_BVH_NODE_WORDS;
+    uint32_t primDataOff = primRefOff + triCount;
+
+    for (uint32_t t = 0; t < triCount; ++t) {
+        const float* v0 = verts + (uint64_t)(t * 3u + 0u) * stride;
+        const float* v1 = verts + (uint64_t)(t * 3u + 1u) * stride;
+        const float* v2 = verts + (uint64_t)(t * 3u + 2u) * stride;
+        for (int k = 0; k < 3; ++k) {
+            float lo = v0[k] < v1[k] ? v0[k] : v1[k];  lo = lo < v2[k] ? lo : v2[k];
+            float hi = v0[k] > v1[k] ? v0[k] : v1[k];  hi = hi > v2[k] ? hi : v2[k];
+            prims[t].bmin[k] = lo;
+            prims[t].bmax[k] = hi;
+            prims[t].c[k]    = (v0[k] + v1[k] + v2[k]) * (1.0f / 3.0f);
+        }
+        prims[t].orig = t;
+        // Tight 9-float copy at the original triangle index.
+        float* d = blk + primDataOff + (uint64_t) t * CAJ_BVH_TRI_WORDS;
+        for (int k = 0; k < 3; ++k) { d[0 + k] = v0[k]; d[3 + k] = v1[k]; d[6 + k] = v2[k]; }
+    }
+
+    uint32_t next = 0u, pr = 0u;
+    caj_bvh_build(prims, 0u, triCount, blk + nodesOff, &next, blk + primRefOff, &pr);
+
+    blk[0] = CAJ_BVH_VERSION;
+    blk[1] = (float) next;
+    blk[2] = (float) triCount;
+    blk[3] = 0.0f;            // root
+    blk[4] = (float) nodesOff;
+    blk[5] = (float) primRefOff;
+    blk[6] = (float) CAJ_BVH_FLAG_TRIANGLES;
     blk[7] = (float) CAJ_BVH_NODE_WORDS;
 
     free(prims);

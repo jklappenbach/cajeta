@@ -7843,6 +7843,168 @@ accel_done:
     return result;
 }
 
+// Triangle BLAS twin of cajeta_xpu_vk_accel_build_aabbs: a bottom-level AS over
+// `triCount` triangles from a vertex soup (`stride` floats per vertex; 3 = tight).
+// Non-indexed (VK_INDEX_TYPE_NONE_KHR): vertexCount = triCount*3, primCount =
+// triCount. The vertex buffer is a transient build input (freed after the build);
+// only the AS backing store survives, exactly like the AABB path.
+static int64_t cajeta_xpu_vk_accel_build_triangles(const float* verts,
+                                                   uint32_t triCount,
+                                                   uint32_t stride) {
+    if (!g_xpu_vk.rayQuery || !verts || triCount == 0 || stride < 3u) return 0;
+
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    VkBuffer vbuf = VK_NULL_HANDLE, asBuf = VK_NULL_HANDLE,
+             scratchBuf = VK_NULL_HANDLE;
+    VkDeviceMemory vmem = VK_NULL_HANDLE, asMem = VK_NULL_HANDLE,
+                   scratchMem = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR accel = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    int64_t result = 0;
+
+    // 1. Vertex input buffer (triCount*3 vertices, `stride` floats each).
+    uint32_t vertexCount = triCount * 3u;
+    uint64_t vBytes = (uint64_t) vertexCount * stride * sizeof(float);
+    void* vMapped = NULL;
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            vBytes,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &vbuf, &vmem, &vMapped))
+        goto tri_done;
+    memcpy(vMapped, verts, (size_t) vBytes);
+
+    // 2. Triangle geometry descriptor.
+    VkAccelerationStructureGeometryKHR geom;
+    memset(&geom, 0, sizeof(geom));
+    geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    // Non-opaque: the ray-query `proceed()` loop ENUMERATES each triangle hit as a
+    // candidate (candidateType 0), matching the software walk's enumerate-all model
+    // (the software path has no commit yet — confirm/generate is inc 3). Opaque
+    // triangles would auto-commit and never surface as candidates in the loop.
+    geom.flags = 0;
+    geom.geometry.triangles.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    geom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    geom.geometry.triangles.vertexData.deviceAddress = cajeta_xpu_vk_buf_addr(vbuf);
+    geom.geometry.triangles.vertexStride = (VkDeviceSize) stride * sizeof(float);
+    geom.geometry.triangles.maxVertex = vertexCount - 1u;
+    geom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+
+    // 3. Sizes.
+    VkAccelerationStructureBuildGeometryInfoKHR bgi;
+    memset(&bgi, 0, sizeof(bgi));
+    bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    bgi.geometryCount = 1;
+    bgi.pGeometries = &geom;
+
+    uint32_t primCount = triCount;
+    VkAccelerationStructureBuildSizesInfoKHR sizes;
+    memset(&sizes, 0, sizeof(sizes));
+    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    g_xpu_vk.vkGetAccelerationStructureBuildSizesKHR(
+        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bgi,
+        &primCount, &sizes);
+    if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0)
+        goto tri_done;
+
+    // 4. AS backing store + object.
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            sizes.accelerationStructureSize,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &asBuf, &asMem, NULL))
+        goto tri_done;
+    VkAccelerationStructureCreateInfoKHR aci;
+    memset(&aci, 0, sizeof(aci));
+    aci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    aci.buffer = asBuf;
+    aci.size = sizes.accelerationStructureSize;
+    aci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &aci, NULL,
+                                                  &accel) != VK_SUCCESS)
+        goto tri_done;
+
+    // 5. Scratch (aligned).
+    VkDeviceSize scratchAlign = g_xpu_vk.scratchAlign ? g_xpu_vk.scratchAlign : 256;
+    if (!cajeta_xpu_vk_make_addr_buffer(sizes.buildScratchSize + scratchAlign - 1,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                        &scratchBuf, &scratchMem, NULL))
+        goto tri_done;
+    bgi.dstAccelerationStructure = accel;
+    {
+        VkDeviceAddress sAddr = cajeta_xpu_vk_buf_addr(scratchBuf);
+        sAddr = (sAddr + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
+        bgi.scratchData.deviceAddress = sAddr;
+    }
+
+    // 6. Record + submit.
+    VkAccelerationStructureBuildRangeInfoKHR range;
+    memset(&range, 0, sizeof(range));
+    range.primitiveCount = triCount;
+    const VkAccelerationStructureBuildRangeInfoKHR* pranges = &range;
+
+    VkCommandBufferAllocateInfo cbai;
+    memset(&cbai, 0, sizeof(cbai));
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = g_xpu_vk.cmdPool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
+            != VK_SUCCESS)
+        goto tri_done;
+    VkCommandBufferBeginInfo cbbi;
+    memset(&cbbi, 0, sizeof(cbbi));
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &bgi, &pranges);
+    g_xpu_vk.vkEndCommandBuffer(cmd);
+    VkSubmitInfo si;
+    memset(&si, 0, sizeof(si));
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE)
+            != VK_SUCCESS)
+        goto tri_done;
+    g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
+
+    // 7. Record the AS (asBuf/asMem/accel survive).
+    {
+        int slot = -1;
+        for (int i = 0; i < g_vk_accel_count; ++i)
+            if (!g_vk_accels[i].live) { slot = i; break; }
+        if (slot < 0) {
+            if (g_vk_accel_count >= CAJETA_VK_MAX_ACCELS) goto tri_done;
+            slot = g_vk_accel_count++;
+        }
+        g_vk_accels[slot].accel = accel;
+        g_vk_accels[slot].asBuf = asBuf;
+        g_vk_accels[slot].asMem = asMem;
+        g_vk_accels[slot].live = 1;
+        result = (int64_t) (slot + 1);
+        accel = VK_NULL_HANDLE; asBuf = VK_NULL_HANDLE; asMem = VK_NULL_HANDLE;
+    }
+
+tri_done:
+    if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1, &cmd);
+    if (scratchBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, scratchBuf, NULL);
+    if (scratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, scratchMem, NULL);
+    if (vMapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, vmem);
+    if (vbuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, vbuf, NULL);
+    if (vmem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, vmem, NULL);
+    if (accel) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, accel, NULL);
+    if (asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, asBuf, NULL);
+    if (asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, asMem, NULL);
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    return result;
+}
+
 static void cajeta_xpu_vk_accel_free(int64_t handle) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);   // serialize vs build/launch + table
     struct cajeta_vk_accel* a = cajeta_xpu_vk_accel_rec(handle);
@@ -8197,6 +8359,10 @@ static int64_t cajeta_xpu_vk_make_sampler(int32_t f, int32_t a) {
 static void cajeta_xpu_vk_destroy_sampler(int64_t h) { (void) h; }
 static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* a, uint32_t c) {
     (void) a; (void) c; return 0;
+}
+static int64_t cajeta_xpu_vk_accel_build_triangles(const float* v, uint32_t t,
+                                                   uint32_t s) {
+    (void) v; (void) t; (void) s; return 0;
 }
 static void cajeta_xpu_vk_accel_free(int64_t h) { (void) h; }
 static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
@@ -10061,6 +10227,25 @@ int64_t __cajeta_xpu_accel_build_aabbs(void* self, void* aabbs, uint32_t count) 
             return cajeta_xpu_cpu_accel_build_aabbs(boxes, count);
         // HIP/CUDA software BVH builds (upload the same blob to a device buffer)
         // are a follow-up; no device AS there today.
+        default: return 0;
+    }
+}
+
+// __cajeta_xpu_accel_build_triangles(this, vertices, triCount, stride) -> handle.
+// `vertices` is a Cajeta float32[] (8-byte count prefix); a triangle soup with
+// `stride` floats per vertex (3 = tight). 9 floats define triangle t at vertex
+// offset (t*3+v)*stride. v1: software (CPU) path only — Vulkan triangle geometry
+// is a follow-up (the Vulkan path still builds AABBs).
+int64_t __cajeta_xpu_accel_build_triangles(void* self, void* vertices,
+                                           uint32_t triCount, uint32_t stride) {
+    (void) self;
+    if (!vertices || triCount == 0) return 0;
+    const float* verts = (const float*) ((const char*) vertices + 8);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_VULKAN:
+            return cajeta_xpu_vk_accel_build_triangles(verts, triCount, stride);
+        case CAJ_XPU_CPU:
+            return cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride);
         default: return 0;
     }
 }

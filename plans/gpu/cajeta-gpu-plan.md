@@ -98,10 +98,13 @@ badge-without-substance the model forbids.
 - [x] **Noun-impl → verb-lowering coupling** — `LoweringTarget.softwareRayQuery()` per
   backend (CPU software + AS-as-buffer; Vulkan native `OpRayQuery`). Device-verified:
   `PrismSpatialIndexDeviceTests.*CpuSoftwareBvh` (777/888) match the Vulkan path.
+- [x] **Triangle geometry** *(inc 2)* — software BVH triangle leaves (Möller-Trumbore,
+  `SoftwareRayQuery.triangleHit` over a primData region) + `VK_GEOMETRY_TYPE_TRIANGLES_KHR`
+  on the Vulkan build (`cajeta_xpu_vk_accel_build_triangles`, non-opaque). Device-verified:
+  `triangleRayQueryOnCpuSoftwareBvh` == `triangleRayQueryOnDevice`; builder MT vs brute force.
 - [ ] **Complete the verb getters** — `T` (distance), barycentrics, frontFace; **`confirm` /
-  `generate` intersection** (without these, ray query can only *count*, not return a nearest hit).
-- [ ] **Triangle geometry** — software BVH triangle leaves (Möller-Trumbore) +
-  `VK_GEOMETRY_TYPE_TRIANGLES_KHR` on the Vulkan build (inc 2).
+  `generate` intersection** (without these, ray query can only *count*, not return a nearest
+  hit) — inc 3.
 - [⊘] **TLAS / instancing** — deferred; the next core AS axis (ICP/pose will want instance
   transforms — a "soon," not a "never"). *Not* gfx.
 - [⊘] **Ray-tracing pipeline** (raygen/closesthit/miss + SBT) — **gfx**, not core.
