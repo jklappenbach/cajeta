@@ -222,6 +222,12 @@ struct StdlibReuseCache {
         cajeta::CajetaType::captureBaseline();
         cajeta::CajetaModule::captureBaseline();
         baselineStructures = stdlibModule->getStructures();
+        // Snapshot each baseline stdlib class's module-bound llvm bindings
+        // (drop/vtable/RTTI/static-field globals + method functions) so
+        // restoreBaseline can reset any that a reusing test lazily generated
+        // into its own per-test module — the cross-module-reference leak.
+        for (auto& [canon, klass] : baselineStructures)
+            if (klass) klass->captureReuseBaseline();
         // Record the stdlib's llvm StructType names so per-test (user) struct
         // names can be stripped afterward — see clearTransientStructNames.
         for (auto* st : stdlibModule->getLlvmModule()->getIdentifiedStructTypes())
@@ -345,6 +351,11 @@ struct StdlibReuseCache {
                 if (m && m->isMethodTemplateInstantiation()) stale.push_back(m);
             }
             for (auto& m : stale) klass->removeMethod(m);
+            // Reset this class's module-bound llvm bindings (drop/vtable/RTTI/
+            // static-field globals + remaining method functions) that a reusing
+            // test generated into its own per-test module, so the next test
+            // regenerates into its module rather than referencing a freed one.
+            klass->restoreReuseBaseline();
         }
     }
 };

@@ -1,4 +1,104 @@
-# Stdlib Test-Reuse Cache — Correctness Fix (Design B)
+# Stdlib Test-Reuse Cache — Correctness Fix
+
+## Status (2026-06-10) — speculative reuse + fallback + per-class binding reset. HANDOFF TO LINUX.
+
+The "deep refactor" §0 below called for IS DONE and the picture has changed: the
+resolution/emit split landed, and on top of it this session added (a) speculative
+reuse with a fresh fallback and (b) a per-class reset of cached module-bound llvm
+bindings. All gated behind `CAJETA_STDLIB_REUSE=1`; production `--emit` and the
+default (reuse-off) test path are byte-unchanged by construction (the hazard gate
+is never armed unless the JIT harness arms it). Work is shifting to **Linux** to
+stabilize the parallelism/scaling gains with less toolchain churn, then back to
+Windows for final compatibility. Sections §0–§7 below are retained as history;
+this section supersedes the "blocked" status.
+
+### What landed this session (branch `feature/windows-dylib-slimdown`)
+1. **Speculative reuse with fresh fallback** (committed, `3d1d8871`).
+   - `Compiler`: `s_reuseHazardArmed` flag (`setReuseHazardArmed`/`isReuseHazardArmed`)
+     + `struct ReuseHazardAbort` — a non-`Exception` control signal.
+   - `TemplateInstantiator.cpp` (~line 402, after ALL instantiation cache lookups,
+     before any build): `if (Compiler::isReuseHazardArmed() && emitOwner != module)
+     throw ReuseHazardAbort{};` — a primed/cached instantiation returns earlier and
+     never trips it.
+   - `JitTestHelper.cpp`: parse/compile wrapped in a `for(;;)` retry loop. First
+     attempt binds the shared context + arms; on `ReuseHazardAbort` it scrubs
+     (`restoreBaseline`), unbinds, disarms, sets `reuseStdlib=false`, and re-runs the
+     whole parse on a fresh, isolated `Compiler`. Sources written/prescanned once.
+     `CAJETA_STDLIB_REUSE_TRACE=1` logs each fallback.
+2. **Per-class reuse-binding reset** (committed this session — see below).
+   - Root cause: `CajetaClass` persistently caches MODULE-BOUND llvm pointers —
+     `llvmDropFunction`, `llvmStackDropFunction`, `llvmVirtualTableGlobal`,
+     `llvmRttiGlobal`, and the `interfaceVTables` / `staticFieldGlobals` /
+     `secondaryVTables` maps — plus each `Method::llvmFunction`. These are lazily
+     materialized into whatever module is active at first use; under reuse that's a
+     per-test USER module (freed/merged after the test), so the cached pointer
+     outlives it → "references a function/global in another module" on the NEXT
+     reusing test.
+   - Fix: `CajetaClass::captureReuseBaseline()` snapshots them at stdlib prime;
+     `CajetaClass::restoreReuseBaseline()` resets any that drifted back to the
+     snapshot between tests (pointer assignment only — freed pointers are never
+     dereferenced). `Method::setLlvmFunction()` added for the method-fn reset.
+     Wired into `StdlibReuseCache`: capture in `ensurePrimed`, restore in
+     `restoreBaseline`. Context-bound `StructType*`/layout fields are deliberately
+     NOT snapshotted (the reuse context is shared → they're module-independent).
+
+### Validation (single-process, `CAJETA_STDLIB_REUSE=1`, 113-test set)
+Filter: `StreamTests.*:StreamTerminalTests.*:StreamIntermediateTests.*:StreamFoldTests.*:StreamClassTTests.*:HashMapTests.*:HashMapStreamTests.*:TemplateBasicTests.*:StaticFieldTests.*`
+- Split only (before this session): **20 pass / 93 fail** (cross-module refs).
+- + speculative fallback (`3d1d8871`): **96 pass / 17 fail**. The 17 = 5
+  `StreamIntermediateTests.mapOr*` + all 12 `StaticFieldTests`, all cross-module
+  refs from persistent `CajetaClass` cached pointers (drop wrappers / static-field
+  globals) — i.e. exactly what (2) targets.
+- + per-class reset: **PENDING at handoff.** Validation re-running; 0 cross-module
+  errors observed through `StreamIntermediateTests` (was riddled with them before),
+  but the decisive suites (`mapOr*`, `StaticFieldTests`) run later in the process —
+  **first Linux task is to re-run this and confirm 0 failures.**
+  - Repro: `CAJETA_STDLIB_REUSE=1 CAJETA_STDLIB_VERIFY=1 CAJETA_STDLIB_REUSE_TRACE=1 ./cajeta_test --gtest_filter='<above>'`
+
+### Remaining risk — out-of-graph caches
+The per-class reset covers everything reachable from the stdlib class/method graph.
+It does NOT cover module-bound caches that live OUTSIDE that graph (named in the
+original design): the **`FileStream` singleton**, **`ComponentDescriptor::singletonGlobal`**,
+and **`CajetaModule::sourceFileConstants`**. If a full-suite reuse run shows
+cross-module refs in tests that touch file I/O / components / source-file string
+constants, snapshot+reset those the same way (`capture/restoreReuseBaseline` is the
+template). This is the likely next failure class at full-suite scale.
+
+### Next steps (Linux pickup, in order)
+1. Build (Linux: stock clang/gcc + `libLLVM.so` — no mingw fork needed). Re-run the
+   113-test validation; confirm the per-class reset takes 17 → 0.
+2. **Full-suite single-process reuse run** (~3597 tests): (a) surface any out-of-graph
+   caches; (b) measure the **fallback rate** — the fraction that actually reuses
+   (~3–4s) vs falls back (~15s). That rate is the real "tens of minutes" number and
+   tells us whether reuse is worth flipping on.
+3. Gate the **method-template path** too: `MethodTemplateInstantiator.cpp` has the
+   same `emitOwner` redirect (~lines 191–198, 370) but does NOT throw
+   `ReuseHazardAbort` — add the identical guard so method-template-over-user-type
+   tests fall back rather than (potentially) contaminate.
+4. Latent: `Method::emitAroundWrapper` (Method.cpp:1823/1845) does not swap to the
+   emit module — only bites if an `@Around`-advised method is reparented via
+   instantiation; close before default-on.
+5. Then §5 below: reuse-vs-no-reuse differential (identical pass/fail sets) + ≥2
+   shard orderings, then flip default-on with a `CAJETA_STDLIB_REUSE=0` opt-out.
+6. **Scaling (the Linux motivation):** drive the suite with `ctest -j` + per-worker
+   memory caps (cgroups) instead of the bespoke PowerShell runner. Windows data:
+   **W=16 stable, ~73 min, reuse off** (3597 tests; 46 memory-pressure flakes
+   recovered on serial retry; 12 genuine pre-existing reds — 4 `Xpu*Device`, 1
+   `Net`, 2 `Phase14`, 5 `ZoneId` crashes, the last unrelated to reuse). **W=32
+   OOM-restarted the box** — that, plus the can't-rebuild-a-running-exe file lock,
+   is why scaling work moves to Linux.
+
+### Critical files (this session's changes)
+- `src/cajeta/compile/Compiler.h` / `.cpp` — `s_reuseHazardArmed`, `ReuseHazardAbort`.
+- `src/cajeta/type/TemplateInstantiator.cpp` — hazard throw (~line 402).
+- `src/cajeta/type/CajetaClass.h` / `.cpp` — `ReuseBindingBaseline`,
+  `capture/restoreReuseBaseline`.
+- `src/cajeta/method/Method.h` — `setLlvmFunction`.
+- `test/jit/JitTestHelper.cpp` — retry loop, prime capture, `restoreBaseline` reset.
+
+---
+
+## (historical) Original Design B status
 
 Status: **blocked on a deep refactor — Design B as specified is insufficient.**
 The reuse cache + shared-context infra are built and validated for a ~5× per-test

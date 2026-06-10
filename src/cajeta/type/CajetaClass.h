@@ -204,6 +204,30 @@ namespace cajeta {
         // shift after a template instantiation refresh).
         std::map<std::string, llvm::GlobalVariable*> secondaryVTables;
 
+        // Reuse-cache baseline of this class's MODULE-BOUND llvm bindings,
+        // snapshotted at stdlib prime (StdlibReuseCache). All of these are
+        // lazily materialized into whatever llvm::Module is active at first use;
+        // on the test stdlib-reuse path that can be a per-test USER module, and
+        // the cached pointer then outlives that module, producing "references a
+        // function/global in a different module" on the NEXT reusing test.
+        // restoreReuseBaseline() resets them to the snapshot so each test
+        // regenerates into its own module. StructType*/layout fields are NOT
+        // snapshotted — they're context-bound (the reuse context is shared) and
+        // module-independent, so they stay valid across tests.
+        struct ReuseBindingBaseline {
+            bool valid = false;
+            llvm::GlobalVariable* vtableGlobal = nullptr;
+            llvm::GlobalVariable* rttiGlobal = nullptr;
+            llvm::Function* dropFunction = nullptr;
+            llvm::Function* stackDropFunction = nullptr;
+            bool dropFunctionPatched = false;
+            std::map<std::string, llvm::GlobalVariable*> interfaceVTables;
+            std::map<std::string, llvm::GlobalVariable*> staticFieldGlobals;
+            std::map<std::string, llvm::GlobalVariable*> secondaryVTables;
+            std::map<Method*, llvm::Function*> methodFns;
+        };
+        ReuseBindingBaseline reuseBaseline;
+
         // MultiClassing Phase 3 v4 vbase ABI (docs/stdlib/
         // MultiClassing.md § Phase 3): for every transitive non-self
         // ancestor of this class, the layout reserves a `ptr` slot at
@@ -344,6 +368,15 @@ namespace cajeta {
         void setModuleForInstantiation(CajetaModulePtr m) { module = m; }
 
         list<MethodPtr>& getMethodList() { return methodList; }
+
+        // Reuse-cache only (StdlibReuseCache). captureReuseBaseline() snapshots
+        // this class's module-bound llvm bindings at stdlib prime;
+        // restoreReuseBaseline() resets any that drifted (lazily generated into a
+        // per-test user module) back to the snapshot between tests, so the next
+        // reusing test regenerates into its own module. No-ops / unused in
+        // production. See ReuseBindingBaseline.
+        void captureReuseBaseline();
+        void restoreReuseBaseline();
 
         CajetaModulePtr getModule() { return module; }
 
