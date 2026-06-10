@@ -216,6 +216,14 @@ namespace cajeta {
         // module-independent, so they stay valid across tests.
         struct ReuseBindingBaseline {
             bool valid = false;
+            // The class's emit-target module at prime. If a reusing test sets
+            // emitModule to its per-test module (redirect / reuse sink), every
+            // subsequent getEmitModule()-driven lookup on this PERSISTENT class —
+            // e.g. the runtime-fn callees (__cajeta_free / __cajeta_class_virtual_drop)
+            // resolved inside its drop body — lands in that now-freed module,
+            // producing cross-module references on the next test. Restored so
+            // baseline classes fall back to their own (stdlib) module each test.
+            CajetaModulePtr emitModule;
             llvm::GlobalVariable* vtableGlobal = nullptr;
             llvm::GlobalVariable* rttiGlobal = nullptr;
             llvm::Function* dropFunction = nullptr;
