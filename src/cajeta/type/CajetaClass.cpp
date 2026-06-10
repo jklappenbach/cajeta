@@ -265,6 +265,45 @@ namespace cajeta {
         }
     }
 
+    void CajetaClass::captureReuseBaseline() {
+        reuseBaseline.valid = true;
+        reuseBaseline.vtableGlobal = llvmVirtualTableGlobal;
+        reuseBaseline.rttiGlobal = llvmRttiGlobal;
+        reuseBaseline.dropFunction = llvmDropFunction;
+        reuseBaseline.stackDropFunction = llvmStackDropFunction;
+        reuseBaseline.dropFunctionPatched = llvmDropFunctionPatched;
+        reuseBaseline.interfaceVTables = interfaceVTables;
+        reuseBaseline.staticFieldGlobals = staticFieldGlobals;
+        reuseBaseline.secondaryVTables = secondaryVTables;
+        reuseBaseline.methodFns.clear();
+        for (auto& m : methodList)
+            if (m) reuseBaseline.methodFns[m.get()] = m->getLlvmFunction();
+    }
+
+    void CajetaClass::restoreReuseBaseline() {
+        if (!reuseBaseline.valid) return;
+        // Restore each module-bound binding to its prime snapshot. Drops/vtables/
+        // RTTI/static-field globals lazily generated into a per-test user module
+        // are reset (to the stdlib-module value, or null if not built at prime)
+        // so the next reusing test regenerates into its own module. Pointer
+        // assignment only — the freed per-test pointers are never dereferenced.
+        llvmVirtualTableGlobal = reuseBaseline.vtableGlobal;
+        llvmRttiGlobal = reuseBaseline.rttiGlobal;
+        llvmDropFunction = reuseBaseline.dropFunction;
+        llvmStackDropFunction = reuseBaseline.stackDropFunction;
+        llvmDropFunctionPatched = reuseBaseline.dropFunctionPatched;
+        interfaceVTables = reuseBaseline.interfaceVTables;
+        staticFieldGlobals = reuseBaseline.staticFieldGlobals;
+        secondaryVTables = reuseBaseline.secondaryVTables;
+        for (auto& m : methodList) {
+            if (!m) continue;
+            auto it = reuseBaseline.methodFns.find(m.get());
+            llvm::Function* base =
+                (it != reuseBaseline.methodFns.end()) ? it->second : nullptr;
+            if (m->getLlvmFunction() != base) m->setLlvmFunction(base);
+        }
+    }
+
     void CajetaClass::addProperty(StructurePropertyPtr field) {
         properties[field->getName()] = field;
         propertyList.push_back(field);

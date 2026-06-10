@@ -315,6 +315,11 @@ namespace cajeta {
         void emitAroundWrapper();
 
         llvm::Function* getLlvmFunction() { return llvmFunction; }
+        // Reuse-cache only (StdlibReuseCache::restoreBaseline): reset the cached
+        // module-bound llvm::Function* to its stdlib-prime value (or null) so the
+        // next reusing test regenerates the body into ITS module instead of
+        // referencing a freed/foreign one. Not for production codegen.
+        void setLlvmFunction(llvm::Function* f) { llvmFunction = f; }
         // Extracted-body function for @Around-wrapped methods. Null
         // unless A5 method extraction kicked in. External callers
         // shouldn't usually need this — the public entry is
