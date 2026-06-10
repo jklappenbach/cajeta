@@ -53,6 +53,12 @@ using namespace std;
 
 namespace cajeta {
 
+    // Null in production: every Compiler owns its context and resets globals.
+    // The test StdlibCache installs a shared context here so a primed stdlib
+    // survives across Compiler instances (see Compiler ctor).
+    llvm::LLVMContext* Compiler::s_sharedContext = nullptr;
+    bool Compiler::s_sharedInitialized = false;
+
     void Compiler::rebuildTargetMachine() {
         string error;
         // LLVM 21 dropped the std::string overloads of lookupTarget /
@@ -513,7 +519,7 @@ namespace cajeta {
         if (!fileExists(sourcePath))
             throw FileNotFoundException(sourcePath);
 
-        auto module = make_shared<CajetaModule>(&llvmContext,
+        auto module = make_shared<CajetaModule>(activeContext,
             sourcePath,
             sourceRootPath,
             targetRootPath,
@@ -600,7 +606,7 @@ namespace cajeta {
 
                 auto qName = QualifiedName::getOrInsert(cls, pkg);
                 auto extMod = std::make_shared<CajetaModule>(
-                    &llvmContext, qName, targetTriple, targetMachine);
+                    activeContext, qName, targetTriple, targetMachine);
                 extMod->setFlags(flags);
                 externalModules.push_back(extMod);
 
@@ -632,7 +638,7 @@ namespace cajeta {
         auto stdlibQName = QualifiedName::getOrInsert(
             "__stdlib__", "cajeta.runtime");
         auto stdlib = make_shared<CajetaModule>(
-            &llvmContext, stdlibQName, targetTriple, targetMachine);
+            activeContext, stdlibQName, targetTriple, targetMachine);
         stdlib->setFlags(flags);
         CajetaModule::setStdlibModule(stdlib);
         modules.push_back(stdlib);

@@ -109,6 +109,14 @@ namespace cajeta {
         // and !prototypeBuilt is the next candidate to lay out.
         bool prototypeBuilt = false;
         CajetaModulePtr module;
+        // Emit target for this class's own IR (vtable / RTTI / clinit / static
+        // fields). Null → getEmitModule() falls back to `module` (production /
+        // non-reuse: resolution and emission coincide). Set only in the stdlib
+        // test-reuse path for a stdlib-template instantiation over a USER type:
+        // `module` stays the stdlib template module (resolution), emitModule is
+        // the user module, so this instantiation's globals land there and the
+        // cached stdlib stays pristine. Methods inherit it at construction.
+        CajetaModulePtr emitModule;
         ScopePtr scope;
 
         // Templates. `typeParameters` non-empty AND `typeArguments` empty =
@@ -297,6 +305,14 @@ namespace cajeta {
         ScopePtr getScope() { return scope; }
 
         void addMethod(MethodPtr method);
+        // Fully unregister a method from every per-class map addMethod populates
+        // (methods, staticMethods, methodList, labeled/unlabeled method+ctor
+        // maps). Used by the stdlib test-reuse path to drop a prior test's
+        // method-template instantiation that was registered on a persistent
+        // stdlib host class, so the next test can re-register + re-codegen it into
+        // its own module. No production caller (instantiations there live as long
+        // as the class).
+        void removeMethod(const MethodPtr& method);
 
         void addMethods(list<MethodPtr> methods);
 
@@ -320,9 +336,21 @@ namespace cajeta {
 
         map<string, MethodPtr>& getMethods() { return methods; }
 
+        // Reparent the emit-target module of an instantiation. Used by the stdlib
+        // test-reuse path (Design B): a user-triggered stdlib-template
+        // instantiation is owned by the USER module so its vtable/RTTI/bodies
+        // emit there, leaving the cached stdlib module pristine. Call BEFORE
+        // generatePrototype. `module->getLlvmModule()` is the codegen target.
+        void setModuleForInstantiation(CajetaModulePtr m) { module = m; }
+
         list<MethodPtr>& getMethodList() { return methodList; }
 
         CajetaModulePtr getModule() { return module; }
+
+        // The module this class's own IR is CREATED in (see emitModule). Falls
+        // back to the resolution module when unset — production / non-reuse.
+        CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
+        void setEmitModule(CajetaModulePtr m) { emitModule = m; }
 
         list<CajetaClassPtr>& getSuperClasses() { return superClasses; }
 

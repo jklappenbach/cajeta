@@ -402,6 +402,16 @@ class CajetaType : public Modifiable, public Annotatable,
         // pointers from a previous Compiler's now-destroyed context.
         static void resetGlobals();
 
+        // Test stdlib-reuse support. captureBaseline() snapshots every global
+        // type container (canonicalMap, typeMap, archives, …) right after the
+        // pristine stdlib is built; restoreBaseline() assigns those snapshots
+        // back, wiping all user-added types AND any user-triggered stdlib
+        // template instantiations in one shot, so each test starts from the
+        // exact post-stdlib state without re-parsing. No-ops outside the
+        // reuse path (production never calls them).
+        static void captureBaseline();
+        static void restoreBaseline();
+
 
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties);
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name);

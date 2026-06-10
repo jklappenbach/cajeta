@@ -44,6 +44,14 @@ namespace cajeta {
         CajetaClassPtr parent) {
         this->module = module;
         this->parent = parent;
+        // Inherit the parent class's emit target (test-reuse): a method of a
+        // stdlib-template instantiation owned (emit-wise) by a user module must
+        // emit there too. Adopted at construction so IR emitted DURING the
+        // template body walk (prototype-on-reference, before any reparent point)
+        // already targets the user module. No-op in production (emit==resolution).
+        if (parent && parent->getEmitModule() != parent->getModule()) {
+            this->emitModule = parent->getEmitModule();
+        }
         this->name = name;
         this->returnType = returnType;
         this->parameterList = parameterList;
@@ -75,6 +83,11 @@ namespace cajeta {
         CajetaClassPtr parent) {
         this->module = module;
         this->parent = parent;
+        // Inherit the parent class's emit target (test-reuse) — see the other
+        // constructor. No-op in production (emit==resolution).
+        if (parent && parent->getEmitModule() != parent->getModule()) {
+            this->emitModule = parent->getEmitModule();
+        }
         this->name = name;
         this->returnType = returnType;
         constructor = parent->getQName()->getTypeName() == name;
@@ -351,7 +364,9 @@ namespace cajeta {
     // the cajeta declaration and the runtime symbol falls on the user —
     // the declaration must mirror the runtime function's types exactly.
     void Method::emitNativeForwardingBody(const std::string& symbol) {
-        llvm::Module* lmod = module->getLlvmModule();
+        // The forwarding wrapper IS this method's llvmFunction (in the emit
+        // module); its runtime-symbol extern must be co-resident there.
+        llvm::Module* lmod = getEmitModule()->getLlvmModule();
         // Insert (or reuse) the extern declaration of the runtime symbol.
         llvm::Function* targetFn = lmod->getFunction(symbol);
         if (!targetFn) {
@@ -677,6 +692,20 @@ namespace cajeta {
         // instantiation pins each T to a real type. See
         // docs/stdlib/MethodLevelTemplate.md.
         if (isMethodTemplate()) return;
+        // Emit-target swap (test-reuse): for a stdlib-template instantiation
+        // owned (emit-wise) by a user module, point `module` at the emit module
+        // for the duration of prototype emission so the Function — and every
+        // runtime-extern decl it needs (getRuntimeFunction creates them in
+        // `module`'s llvm module) — land in the user module, not the cached
+        // stdlib. Resolution (canonicalMap/type refresh) is by global canonical
+        // name, not module imports, so it is unaffected. No-op in production.
+        CajetaModulePtr* moduleSlot = &module;
+        CajetaModulePtr savedModule = module;
+        if (emitModule && emitModule != module) module = emitModule;
+        struct RestoreModule {
+            CajetaModulePtr* slot; CajetaModulePtr saved;
+            ~RestoreModule() { *slot = saved; }
+        } restoreModule{moduleSlot, savedModule};
         // S8.4 — refresh returnType and parameter types from canonicalMap.
         //
         // At parse time, a method declared inside `struct Foo` whose
@@ -1025,6 +1054,29 @@ namespace cajeta {
     }
 
     void Method::generateCode() {
+        // Emit-target swap (test-reuse): point `module` at the emit module for
+        // the whole body. generateCode passes `module` DOWN to every statement/
+        // expression (generateCode(CajetaModulePtr)), so this single swap
+        // redirects ALL emission — Function/global creation, intrinsics, malloc,
+        // source-file constants, drop functions — into the user emit module,
+        // leaving the cached stdlib pristine. Because the same emit-module pointer
+        // flows to the whole subtree, the per-module codegen cursor
+        // (currentMethod/scopeStack/structureStack/builder) stays self-consistent:
+        // statements set AND read state on the emit module. The one hazard is
+        // NESTING — an instantiated method emitted on-reference inside another
+        // method's body that emits into the SAME user module would clobber the
+        // outer method's currentMethod/builder; the save/restore below handles it
+        // (an earlier swap attempt WITHOUT that save/restore tripped a spurious
+        // heap-return ownership error on async ParallelDriver workers, because the
+        // worker and its caller shared the user module's cursor). No-op in
+        // production: getEmitModule() == module.
+        CajetaModulePtr savedModule = module;
+        if (emitModule && emitModule != module) module = emitModule;
+        struct RestoreModule {
+            Method* self; CajetaModulePtr saved;
+            ~RestoreModule() { self->module = saved; }
+        } restoreModule{this, savedModule};
+
         // Incremental compilation (Phase 2/3): mark this method's module as
         // the active codegen frame for the duration of body lowering, so the
         // template-instantiation choke point can attribute any cross-module
@@ -1136,7 +1188,7 @@ namespace cajeta {
                     std::string originalName = getLlvmSymbolName() + "__original";
                     llvmOriginalFunction = llvm::Function::Create(
                         llvmFunctionType, llvm::Function::ExternalLinkage,
-                        originalName, module->getLlvmModule());
+                        originalName, getEmitModule()->getLlvmModule());
                     break;
                 }
             }
@@ -1148,8 +1200,36 @@ namespace cajeta {
         llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), "entry", bodyFn);
         builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
         builder->SetInsertPoint(llvmBasicBlock);
+        // Save/restore the cursor scalars (builder/currentMethod) on `module`:
+        // when this method's body is emitted on-reference while NESTED inside
+        // another method's body (template instantiation) that emits into the SAME
+        // module, both share that module's cursor — so the outer method's insert
+        // point and current-method must be restored when we return, or its
+        // remaining statements would emit into THIS function (and read THIS as the
+        // current method — the async heap-return false positive). scopeStack/
+        // structureStack self-balance via the push/pop below. Captured BEFORE the
+        // sets, so they hold the outer values.
+        llvm::IRBuilder<>* prevBuilder = module->getBuilder();
+        MethodPtr prevCurrentMethod = module->getCurrentMethod();
+        struct RestoreCursor {
+            CajetaModulePtr m; llvm::IRBuilder<>* b; MethodPtr cm;
+            ~RestoreCursor() { m->setBuilder(b); m->setCurrentMethod(cm); }
+        } restoreCursor{module, prevBuilder, prevCurrentMethod};
         module->setBuilder(builder);
         module->setCurrentMethod(shared_from_this());
+        // Mark the module new IR should land in for the duration of this body
+        // (test-reuse: bodyFn lives in the user emit module even though `module`
+        // is the resolution module). RAII restore so nested method codegen
+        // (a call that drives another method's generateCode) nests correctly.
+        // emitTargetLlvmModule() reads this; getRuntimeFunction / string
+        // constants / spawn trampolines / lambda fns target it. == module's own
+        // llvm module in production.
+        llvm::Module* prevEmitLlvmModule = CajetaModule::getCurrentEmitLlvmModule();
+        CajetaModule::setCurrentEmitLlvmModule(bodyFn->getParent());
+        struct RestoreEmitLlvm {
+            llvm::Module* prev;
+            ~RestoreEmitLlvm() { CajetaModule::setCurrentEmitLlvmModule(prev); }
+        } restoreEmitLlvm{prevEmitLlvmModule};
 
         // Push the enclosing class onto the structure stack so bare
         // method/field references inside the body resolve against it

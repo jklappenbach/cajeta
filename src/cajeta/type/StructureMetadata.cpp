@@ -388,10 +388,19 @@ namespace cajeta {
         // RTTI blob. Both bail-out checks are independent so re-entry after a
         // partial build (only one of the two emitted) recovers cleanly.
 
+        // Emit the vtable + RTTI into the structure's EMIT module (test-reuse:
+        // a stdlib-template instantiation over a user type emits into the user
+        // module, not the cached stdlib). getEmitModule() == module in
+        // production. The cross-module fixups below (ensureFunctionInModule /
+        // ensureGlobalInModule) are keyed off this same module, so the vtable's
+        // method-pointer + parent-vtable entries become local extern decls here
+        // and resolve at the merge step.
+        llvm::Module* emitLm = structure->getEmitModule()->getLlvmModule();
+
         // --- vtable -----------------------------------------------------------
         if (structure->getVirtualTableGlobal() == nullptr) {
             string vtableName = structure->toCanonical() + string("#VTable");
-            if (auto* existing = module->getLlvmModule()->getGlobalVariable(vtableName)) {
+            if (auto* existing = emitLm->getGlobalVariable(vtableName)) {
                 structure->setVirtualTableGlobal(existing);
             } else {
                 // Build the type first so the global has somewhere to land.
@@ -399,7 +408,7 @@ namespace cajeta {
                 // CajetaClass::buildVirtualTable, which writeVirtualTable
                 // runs before calling this method).
                 createVirtualTableType(structure);
-                auto* g = (llvm::GlobalVariable*) module->getLlvmModule()->
+                auto* g = (llvm::GlobalVariable*) emitLm->
                     getOrInsertGlobal(vtableName, structure->getVirtualTableType());
                 g->setInitializer(createVirtualTableConstant(structure));
                 structure->setVirtualTableGlobal(g);
@@ -409,11 +418,11 @@ namespace cajeta {
         // --- RTTI -------------------------------------------------------------
         if (structure->getRttiGlobal() == nullptr) {
             string rttiName = structure->toCanonical() + string("#RttiGlobal");
-            if (auto* existing = module->getLlvmModule()->getGlobalVariable(rttiName)) {
+            if (auto* existing = emitLm->getGlobalVariable(rttiName)) {
                 structure->setRttiGlobal(existing);
             } else {
                 createRttiType(structure);
-                auto* g = (llvm::GlobalVariable*) module->getLlvmModule()->
+                auto* g = (llvm::GlobalVariable*) emitLm->
                     getOrInsertGlobal(rttiName, structure->getRttiType());
                 vector<llvm::Constant*> args;
                 g->setInitializer(createRttiConstant(args, structure));
@@ -507,7 +516,7 @@ namespace cajeta {
         // llvm::Module. Replace any foreign reference with an
         // extern decl in our module — the post-parse merge step
         // resolves it to the real definition.
-        llvm::Module* hostModule = module->getLlvmModule();
+        llvm::Module* hostModule = structure->getEmitModule()->getLlvmModule();
         for (auto& method : slots) {
             int64_t hash = (hashIdx < slotHashes.size())
                 ? slotHashes[hashIdx]
