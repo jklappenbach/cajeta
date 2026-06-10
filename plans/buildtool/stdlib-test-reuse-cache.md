@@ -62,13 +62,31 @@ once/shard and is reused within it — `ctest -j` one-process-per-test would def
 - Artifacts: `/tmp/reuse_full_w24/` (per-shard logs, `_meta.txt`, `_mem.txt`), runner
   `/tmp/run_reuse_w24.sh`.
 
+### Contamination root-caused + FIXED (2026-06-10, commit `9ceea71`)
+`AspectRegistrationTests.freshCompilerStartsEmpty` / `TemplatedInterfaceV2Tests.
+templatedImplementerInterfaceDispatch` failed mid-shard (not from `restoreBaseline`
+gaps as first guessed, but) because the **reuse harness leaks `Compiler::s_sharedContext`**:
+`JitTestHelper` binds it per reusing test (~line 499) but only clears it on the fallback /
+non-reuse branches — after a SUCCESSFUL reuse test it stays set process-globally. The next
+test that constructs a **raw `Compiler`** (parser/unit tests not using the harness) then
+takes the ctor's shared-context branch (`Compiler.h:254`) which **skips `resetGlobals()`**
+to preserve the prime → it inherits the prior test's stale global registries
+(`aspectClasses`, …). `freshCompilerStartsEmpty` failed in **1ms** mid-shard (assertion, not
+a compile) whenever a JIT reuse test preceded it.
+**Fix:** RAII guard at `JitTestHelper` scope clears `s_sharedContext` + disarms the hazard
+on EVERY exit (return and exception). The next reuse test re-binds; `s_sharedInitialized`
+stays intact so the prime persists. **Verified:** re-running shard 17/24 reuse-ON,
+`freshCompilerStartsEmpty` now passes (5.3s) where it previously failed in 1ms.
+
 ### Next steps (Linux, in order)
-0. **Root-cause the reuse-induced contamination** (blocks a clean full-suite run + default-on):
-   start with `AspectRegistrationTests.freshCompilerStartsEmpty` (cheapest, deterministic
-   assertion) — find the global registry it inspects and confirm it's not in
-   `capture/restoreReuseBaseline`; then the JsonSynthesizer/Parallel crashes likely share
-   the root. Re-run W=24 with the trace flag (+ temporarily excluding the pre-existing
-   `EncodingPhaseBTests` crashers) to measure the real fallback rate and a valid wall time.
+0. **Root-cause the reuse-induced CRASHES** (`JsonSynthesizerTests`, `ParallelDispatch-
+   CorrelationTests`/`ParallelStreamP1Tests`) — distinct from the contamination above: these
+   SIGSEGV during reuse codegen (clean reuse-OFF). Both serialize/encode + spawn; suspects
+   are out-of-graph module-bound caches (`FileStream` singleton,
+   `ComponentDescriptor::singletonGlobal`, `CajetaModule::sourceFileConstants`) holding a
+   freed per-test module pointer across the reuse. Then re-run W=24 with the trace flag (+
+   temporarily excluding the pre-existing `EncodingPhaseBTests` crashers) to measure the
+   real fallback rate and a valid wall time.
 1. **Full-suite single-process reuse run** (~3597 tests): surface any out-of-graph caches
    (FileStream singleton / ComponentDescriptor::singletonGlobal /
    CajetaModule::sourceFileConstants — see §"Remaining risk" below) and **measure the
