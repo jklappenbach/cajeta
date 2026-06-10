@@ -3846,7 +3846,21 @@ namespace cajeta {
             return;  // already registered + emitted on a prior call
         }
         host->addMethod(inst);
-        auto hostMod = inst->getModule();
+        // Target the EMIT module, not the resolution module. Method::generateCode
+        // swaps `module` to its emit module and runs the WHOLE body cursor
+        // (builder / currentMethod / scopeStack / structureStack) on that emit
+        // module (see Method.cpp's RestoreCursor + createScope). In production
+        // getEmitModule() == getModule(), so this is identical. Under stdlib
+        // test-reuse a stdlib method template specialized over a user type emits
+        // into the USER module while its resolution module stays the cached
+        // stdlib — so the scope-stack barrier below MUST clear the user (emit)
+        // module's stack, the one the inner body's resolveTypes/codegen actually
+        // consults. Clearing the stdlib stack (the old getModule()) left the
+        // barrier ineffective: the inner parseObjectFromReader<Inner> body saw
+        // the outer parse<Outer>'s `out` (test.Outer) on the user stack's parent
+        // chain and pinned `out`'s type to Outer, so `out.x` found no field `x`
+        // -> null l-value -> SIGSEGV in BinaryOpExpression (parseNestedClass).
+        auto hostMod = inst->getEmitModule();
         llvm::IRBuilder<>* savedBuilder = hostMod ? hostMod->getBuilder() : nullptr;
         MethodPtr savedCurrent = hostMod ? hostMod->getCurrentMethod() : nullptr;
         llvm::BasicBlock* savedInsertBB = savedBuilder

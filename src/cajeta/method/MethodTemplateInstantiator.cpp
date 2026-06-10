@@ -225,7 +225,20 @@ namespace cajeta {
         // fallback path; a primed (already-cached) instantiation returned above
         // and never reaches here.
         if (Compiler::isReuseHazardArmed() && emitOwner != module) {
-            throw cajeta::ReuseHazardAbort{};
+            // The cross-module method-template EMIT path (specialize a stdlib
+            // method template over a user type, emit the body into the user
+            // module, keep the cached stdlib byte-pristine) is the same path
+            // production --emit uses, and is now correct under reuse after the
+            // scope-barrier fix in bringMethodTemplateInstantiationToLife
+            // (CajetaClass.cpp). CAJETA_REUSE_FORCE_EMIT=1 selects it: the test
+            // REUSES (fast) instead of degrading to a fresh fallback. Default
+            // (unset) keeps the conservative fresh fallback until a clean
+            // full-suite W=24 run signs the emit path off as the default.
+            static const bool kForceEmit =
+                std::getenv("CAJETA_REUSE_FORCE_EMIT") != nullptr;
+            if (!kForceEmit) {
+                throw cajeta::ReuseHazardAbort{};
+            }
         }
 
         if (methodSource.empty()) {
