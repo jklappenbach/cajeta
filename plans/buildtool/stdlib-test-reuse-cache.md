@@ -1,5 +1,50 @@
 # Stdlib Test-Reuse Cache — Correctness Fix
 
+## Status (2026-06-10, Linux) — 113-set GREEN 113/113. Drop-fn runtime-callee leak FIXED.
+
+The Linux pickup resolved the remaining failures. Two things landed:
+1. The Windows `emitModule` candidate fix (`fa43516`) was rebuilt + validated: it fixed
+   all 12 `StaticFieldTests` (suspect #2 confirmed correct).
+2. **Root-caused and fixed the runtime-function cross-module leak** (suspects #1/#3):
+   `CajetaClass::getOrCreateDropFunction` creates the heap-drop function in
+   `getEmitModule()->getLlvmModule()` (under reuse, for a stdlib class, the persistent
+   **stdlib module**), but its body's runtime callees — `__cajeta_free` (direct, ~2695)
+   and `__cajeta_class_virtual_drop`/`__cajeta_free_array`/`__cajeta_iface_drop` (via
+   `emitDropBodyInline`, ~2547/2563/2574) — are resolved through `getRuntimeFunction`,
+   which lands the extern decl in `CajetaModule::emitTargetLlvmModule()` ==
+   `currentEmitLlvmModule`, the **per-test** module active because a test method body is
+   mid-emission. So the drop body (in stdlib) called a runtime decl bound to `test.S`;
+   `verifyModule` reported "referenced in a different module" and the stale binding
+   poisoned the next reusing test (`test.D`). The sibling `getOrCreateStackDropFunction`
+   never had the bug — it routes every callee through `ensureFunctionInModule(lmod, …)`.
+   **Fix:** wrap the drop-body emission so `currentEmitLlvmModule` points at the drop
+   body's own module (`lmod`) for its duration — the exact RAII pattern
+   `Method::generateCode` uses (CajetaModule.cpp:1227). No-op in production: the
+   emit-target redirect is gated on a shared context (test-harness only), and
+   `lmod == module`'s own llvm module there.
+
+### Validation (single-process, `CAJETA_STDLIB_REUSE=1 CAJETA_STDLIB_VERIFY=1`, 113-test set)
+- Before this fix (Linux, with `fa43516`): **91 pass / 22 fail** (5 `mapOr*` + all 17
+  `TemplateBasicTests`; StaticField already fixed by `fa43516`). All 22 were the same
+  `__cajeta_free`/`__cajeta_class_virtual_drop` cross-module-ref signature, `+3 fns`.
+- After the drop-emit-module fix: **113/113 PASS, 0 cross-module errors.** Fallback rate
+  on this (worst-case, template-heavy) set: **76/113 fall back, 37 reuse.**
+- Critical file: `src/cajeta/type/CajetaClass.cpp` `getOrCreateDropFunction` (~2638).
+
+### Next steps (Linux, in order)
+1. **Full-suite single-process reuse run** (~3597 tests): surface any out-of-graph caches
+   (FileStream singleton / ComponentDescriptor::singletonGlobal /
+   CajetaModule::sourceFileConstants — see §"Remaining risk" below) and **measure the
+   real suite-wide fallback rate** (the 113-set's 67% is a worst case; the general suite
+   should reuse far more). That rate sets the actual wall-clock win.
+2. Gate the **method-template path** (`MethodTemplateInstantiator.cpp` ~191–198/370) with
+   the same `ReuseHazardAbort` guard the class-template path has.
+3. Then §5: reuse-vs-no-reuse differential (identical pass/fail) + ≥2 shard orderings,
+   then flip default-on with a `CAJETA_STDLIB_REUSE=0` opt-out.
+4. Scaling: `ctest -j` + per-worker cgroup memory caps (replaces the PowerShell runner).
+
+---
+
 ## Status (2026-06-10) — speculative reuse + fallback + per-class binding reset. HANDOFF TO LINUX.
 
 The "deep refactor" §0 below called for IS DONE and the picture has changed: the
