@@ -564,6 +564,13 @@ namespace cajeta {
         // whose slot 0 already resolved (and were already registered).
         void finalizeClassObject();
 
+        // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
+        // canonical wildcard instantiation Class<?> (idempotent, no-op if Class
+        // isn't a template or is absent). Called once after parse/prototype and
+        // before Phase 1/2 codegen so its method bodies are emitted and every
+        // type's #ClassObject can embed its (shared) vtable.
+        static void ensureClassWildcardInstantiated();
+
         // Implicit destructor chaining helpers (MemoryModel.md § 140,
         // C++ semantics).
         //

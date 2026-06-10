@@ -21,8 +21,17 @@ import cajeta.lang.Optional;
  * `Class` is `final` so its accessors dispatch statically — the cached
  * instance's vtable slot is never consulted, which is what lets `T.class` /
  * `getClass()` hand back a constant with a null vtable header safely.
+ *
+ * REFL-1.7: `Class<T>` is a template. The type parameter is a *phantom* — it
+ * records the statically-known reflected type for callers (`Foo.class` →
+ * `Class<Foo>`) but never appears in a field, so every instantiation shares an
+ * identical layout `{ vtable, rtti }` and identical method code. That lets one
+ * canonical `Class<?>` vtable be embedded in every type's `#ClassObject`
+ * (regardless of T) while still typing reflective results precisely. The
+ * dynamic entry points (`of`, `forName`, the registry queries) return
+ * `Class<?>` — the runtime type is unknown at the call site.
  */
-public final class Class {
+public final class Class<T> {
 
     // Address of this class's #RttiGlobal (a cajeta.reflect.#Rtti header).
     // Initialized by the compiler in the cached #ClassObject constant
@@ -137,13 +146,13 @@ public final class Class {
      * of a cached per-type instance reached through `o`'s vtable.
      */
     @Native("__cajeta_object_get_class")
-    public static Class of(Object o);
+    public static Class<?> of(Object o);
 
     // REFL-8: resolve a canonical name to a registered #ClassObject (NULL if
     // none). The compiler emits an llvm.global_ctors entry per class that
     // registers its #ClassObject under its canonical name at startup.
     @Native("__cajeta_class_for_name")
-    private static Class forNameNative(int8[] nameBytes);
+    private static Class<?> forNameNative(int8[] nameBytes);
 
     /**
      * Resolve a class by its canonical name (e.g. `"test.User"`,
@@ -158,18 +167,18 @@ public final class Class {
      * the caller never frees it.
      *
      * ```cajeta
-     * Optional<Class> c = Class.forName("test.User");
+     * Optional<Class<?>> c = Class.forName("test.User");
      * if (c.isPresent()) {
      *     int32 fields = c.get().getFieldCount();
      * }
      * ```
      */
-    public static Optional<Class> forName(String name) {
-        Class c = forNameNative(name.bytes);
+    public static Optional<Class<?>> forName(String name) {
+        Class<?> c = forNameNative(name.bytes);
         if (c == null) {
-            return stack Optional<Class>(false, #null);
+            return stack Optional<Class<?>>(false, #null);
         }
-        return stack Optional<Class>(true, c);
+        return stack Optional<Class<?>>(true, c);
     }
 
     // --- identity ---------------------------------------------------------
@@ -199,6 +208,11 @@ public final class Class {
 
     public boolean isPublic() { return (modifiersOf(this.rtti) & 0x02) != 0; }
     public boolean isFinal()  { return (modifiersOf(this.rtti) & 0x20) != 0; }
+
+    /** This class's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
+    public #Modifiers getModifiers() {
+        return heap Modifiers(modifiersOf(this.rtti));
+    }
 
     // --- members (counts + per-index access; Field/Method objects later) --
 
@@ -490,14 +504,14 @@ public final class Class {
     private static int32 registryCount();
 
     @Native("__cajeta_class_at")
-    private static Class registryAt(int32 index);
+    private static Class<?> registryAt(int32 index);
 
     /**
      * Whether `c`'s package (the canonical name up to the last `.`) equals
      * `packageName`. A class with no `.` in its name (none today, but a
      * top-level type in principle) is "in" the empty package.
      */
-    private static boolean inPackage(Class c, String packageName) {
+    private static boolean inPackage(Class<?> c, String packageName) {
         String full = c.getName();
         int32 len = (int32) full.size();
         int32 lastDot = -1;
@@ -522,9 +536,9 @@ public final class Class {
      * compiled class today; once AOT class-stripping lands it holds the
      * statically-reachable set plus every `@Retained` class.
      */
-    public static #Class[] allClasses() {
+    public static #Class<?>[] allClasses() {
         int32 n = registryCount();
-        Class[] arr = heap Class[n];
+        Class<?>[] arr = heap Class<?>[n];
         int32 i = 0;
         while (i < n) {
             arr[i] = registryAt(i);
@@ -538,7 +552,7 @@ public final class Class {
      * the segment before the last `.` of the canonical name). Two-pass: count
      * the matches, then fill a right-sized array.
      */
-    public static #Class[] classesInPackage(String packageName) {
+    public static #Class<?>[] classesInPackage(String packageName) {
         int32 n = registryCount();
         int32 matches = 0;
         int32 i = 0;
@@ -548,11 +562,11 @@ public final class Class {
             }
             i = i + 1;
         }
-        Class[] arr = heap Class[matches];
+        Class<?>[] arr = heap Class<?>[matches];
         int32 j = 0;
         i = 0;
         while (i < n) {
-            Class c = registryAt(i);
+            Class<?> c = registryAt(i);
             if (inPackage(c, packageName)) {
                 arr[j] = c;
                 j = j + 1;
@@ -567,7 +581,7 @@ public final class Class {
      * equals `annotationName` (e.g. `"code.Component"` for a bare `@Component`).
      * Two-pass over the registry, reusing {@link #hasAnnotation}.
      */
-    public static #Class[] classesAnnotated(String annotationName) {
+    public static #Class<?>[] classesAnnotated(String annotationName) {
         int32 n = registryCount();
         int32 matches = 0;
         int32 i = 0;
@@ -577,11 +591,11 @@ public final class Class {
             }
             i = i + 1;
         }
-        Class[] arr = heap Class[matches];
+        Class<?>[] arr = heap Class<?>[matches];
         int32 j = 0;
         i = 0;
         while (i < n) {
-            Class c = registryAt(i);
+            Class<?> c = registryAt(i);
             if (c.hasAnnotation(annotationName)) {
                 arr[j] = c;
                 j = j + 1;

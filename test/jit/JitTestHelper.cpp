@@ -256,6 +256,12 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     cajeta::CajetaModule::setActiveProfile("test");
     cajeta::CajetaModule::resolveDependencyGraph();
 
+    // REFL-1.7: force-build the canonical Class<?> instantiation before codegen
+    // (cajeta.reflect.Class is now a template Class<T>) so its method bodies are
+    // emitted and every #ClassObject can embed its shared vtable. Mirrors
+    // Compiler::compile.
+    cajeta::CajetaClass::ensureClassWildcardInstantiated();
+
     // Phase 1 (signature registration) + Phase 2 (body codegen),
     // looped until quiescent. A user method's body can codegen an
     // intrinsic that instantiates a stdlib template (e.g. `xs.stream()`

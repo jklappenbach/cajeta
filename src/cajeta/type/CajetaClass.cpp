@@ -924,9 +924,18 @@ namespace cajeta {
         //     that the TemplateInstantiator materializes when a chain-
         //     walker stores into `Stream<?>` is compiler-generated, not
         //     author-written, so flagging its fields would be noise,
+        //   - the owner is a stdlib (`cajeta.*`) class — lints are
+        //     author-actionable diagnostics, and a user compiling their
+        //     program can't edit a stdlib instantiation like
+        //     `Optional<Class<?>>` (materialized by `Class.forName`); the
+        //     warning would be unsuppressible noise on every compile,
         //   - the rule is suppressed at the declaration via @SuppressLint.
+        bool ownerIsStdlib = qName
+            && (qName->getPackageName() == "cajeta"
+                || qName->getPackageName().rfind("cajeta.", 0) == 0);
         if (!dynamic_pointer_cast<CajetaView>(shared_from_this())
                 && !isWildcardInstantiation()
+                && !ownerIsStdlib
                 && !isLintSuppressed("wildcard-field-in-small-class")) {
             for (auto& prop : propertyList) {
                 auto propType = prop->getType();
@@ -2895,11 +2904,13 @@ namespace cajeta {
         if (!init || init->getNumOperands() < 2) return;
         if (!init->getOperand(0)->isNullValue()) return;   // already resolved
 
+        // REFL-1.7: embed the canonical Class<?> instantiation's vtable (the
+        // bare "cajeta.reflect.Class" now names the never-built template).
         auto& s2m = CajetaModule::getStructureToModule();
-        auto mit = s2m.find("cajeta.reflect.Class");
+        auto mit = s2m.find("cajeta.reflect.Class<?>");
         if (mit == s2m.end() || !mit->second) return;
         auto& structs = mit->second->getStructures();
-        auto sit = structs.find("cajeta.reflect.Class");
+        auto sit = structs.find("cajeta.reflect.Class<?>");
         if (sit == structs.end() || !sit->second) return;
         llvm::GlobalVariable* cv = sit->second->getVirtualTableGlobal();
         if (!cv) return;
@@ -2933,6 +2944,22 @@ namespace cajeta {
         rb.CreateCall(regFn, {nameStr, co});
         rb.CreateRetVoid();
         llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+    }
+
+    void CajetaClass::ensureClassWildcardInstantiated() {
+        // REFL-1.7. Find the cajeta.reflect.Class template and instantiate
+        // Class<?> so its method bodies get codegen'd and its vtable backs every
+        // #ClassObject. Idempotent: instantiate() caches by canonical name, and
+        // this whole routine is a no-op when reflect isn't in the compile unit
+        // (no Class template) or Class somehow isn't a template.
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto cit = cmap.find("cajeta.reflect.Class");
+        if (cit == cmap.end()) return;
+        auto classTmpl = std::dynamic_pointer_cast<CajetaClass>(cit->second);
+        if (!classTmpl || !classTmpl->isTemplate()) return;
+        CajetaTypePtr wild = CajetaType::wildcardSentinel();
+        if (!wild) return;
+        classTmpl->instantiate({wild});
     }
 
     struct MethodEntry {
@@ -4643,7 +4670,21 @@ namespace cajeta {
                 // per-instantiation hash on Box<int32>::tag in the
                 // dynamic instance's vtable. See Step 5a in todo.md.
                 int64_t hash;
-                if (this->isWildcardInstantiation() && this->getTemplateOrigin()) {
+                // REFL-1.7: every `Class<T>` instantiation — wildcard OR
+                // concrete (`Foo.class` → `Class<Foo>`) — shares ONE runtime
+                // vtable: the canonical `Class<?>#VTable` embedded in every
+                // type's #ClassObject (the phantom-T design — Class has no
+                // T-dependent layout). That shared vtable only carries the
+                // wildcard's per-instantiation entries plus the template-origin
+                // alias entries; it has NO `Class<Foo>`-specific hashes. So a
+                // concrete `Class<Foo>` receiver must dispatch on the same
+                // origin-relative alias hash a `Class<?>` receiver uses, or the
+                // lookup misses and the indirect call jumps through null.
+                auto tOrigin = this->getTemplateOrigin();
+                bool sharesWildcardVtable = tOrigin
+                    && tOrigin->toCanonical() == "cajeta.reflect.Class";
+                if ((this->isWildcardInstantiation() || sharesWildcardVtable)
+                        && tOrigin) {
                     // Substitution-stable canonical so the lookup hash
                     // matches the alias entry every instantiation
                     // publishes (buildVirtualTable, addAliasFor).

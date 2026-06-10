@@ -90,6 +90,37 @@ namespace cajeta {
                                             targ->integerLiteral())));
                                     continue;
                                 }
+                                // Wildcard arg — `?`, `? extends T`, `? super T`
+                                // — in a `heap T<?>(...)` / `heap T<?>[n]`
+                                // creator. Mirrors CajetaType::fromContext's
+                                // wildcard branch (REFL-1.7 needs `heap
+                                // Class<?>[n]` for the registry queries). The
+                                // grammar puts the BOUND, if any, in typeType().
+                                if (targ->QUESTION() != nullptr) {
+                                    if (!CajetaType::wildcardsEnabled()) {
+                                        throw "wildcard type arguments not supported in v1";
+                                    }
+                                    CajetaTypePtr bound = nullptr;
+                                    if (targ->typeType() != nullptr) {
+                                        bound = CajetaType::fromContext(targ->typeType(), nullptr);
+                                        if (!bound) {
+                                            throw "unresolved wildcard bound type";
+                                        }
+                                    }
+                                    CajetaTypePtr wild;
+                                    if (targ->EXTENDS() != nullptr) {
+                                        wild = CajetaType::wildcardSentinelExtends(bound);
+                                    } else if (targ->SUPER() != nullptr) {
+                                        wild = CajetaType::wildcardSentinelSuper(bound);
+                                    } else {
+                                        wild = CajetaType::wildcardSentinel();
+                                    }
+                                    if (!wild) {
+                                        throw "wildcard sentinel construction failed";
+                                    }
+                                    typeArguments.push_back(wild);
+                                    continue;
+                                }
                                 if (!targ->typeType()) {
                                     throw "wildcard type arguments not supported in v1";
                                 }

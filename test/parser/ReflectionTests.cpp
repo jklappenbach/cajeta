@@ -64,7 +64,7 @@ int32_t runCustomI32(const std::string& fullSource) {
 TEST(ReflectionTests, getClassFieldCount) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "return c.getFieldCount();\n"), 5);
 }
 
@@ -112,7 +112,7 @@ TEST(ReflectionTests, instanceSizeNonZero) {
 TEST(ReflectionTests, fieldOffsetsAreSaneAndAligned) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "int32 o0 = c.getFieldOffset(0);\n"   // id    (int32)
         "int32 o1 = c.getFieldOffset(1);\n"   // score (int64)
         "int32 o2 = c.getFieldOffset(2);\n"   // active (boolean)
@@ -139,7 +139,7 @@ TEST(ReflectionTests, fieldTypeFlagsCarryPrimitiveBit) {
 TEST(ReflectionTests, invokeReachesNoArgMethod) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "int32 count = c.getMethodCount();\n"
         "int32 found = 0;\n"
         "int32 i = 0;\n"
@@ -157,7 +157,7 @@ TEST(ReflectionTests, invokeReachesNoArgMethod) {
 TEST(ReflectionTests, fieldInt32Roundtrip) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "c.setInt32(u, 0, 41);\n"
         "return c.getInt32(u, 0);\n"), 41);
 }
@@ -166,7 +166,7 @@ TEST(ReflectionTests, fieldInt32Roundtrip) {
 TEST(ReflectionTests, fieldInt64Roundtrip) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "c.setInt64(u, 1, (int64) 1000000);\n"
         "return (int32) c.getInt64(u, 1);\n"), 1000000);
 }
@@ -175,7 +175,7 @@ TEST(ReflectionTests, fieldInt64Roundtrip) {
 TEST(ReflectionTests, fieldBooleanRoundtrip) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "c.setBoolean(u, 2, true);\n"
         "return c.getBoolean(u, 2) ? 1 : 0;\n"), 1);
 }
@@ -185,7 +185,7 @@ TEST(ReflectionTests, fieldBooleanRoundtrip) {
 TEST(ReflectionTests, fieldFloat32Roundtrip) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "c.setFloat32(u, 3, 2.5f);\n"
         "return (int32) (c.getFloat32(u, 3) * 4.0f);\n"), 10);
 }
@@ -194,7 +194,7 @@ TEST(ReflectionTests, fieldFloat32Roundtrip) {
 TEST(ReflectionTests, fieldFloat64Roundtrip) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "c.setFloat64(u, 4, 1.25);\n"
         "return (int32) (c.getFloat64(u, 4) * 8.0);\n"), 10);
 }
@@ -214,7 +214,7 @@ TEST(ReflectionTests, fieldObjectFloat32Roundtrip) {
 TEST(ReflectionTests, reflectiveSetVisibleToReflectiveInvoke) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "c.setInt32(u, 0, 41);\n"
         "int32 count = c.getMethodCount();\n"
         "int32 found = 0;\n"
@@ -250,7 +250,7 @@ TEST(ReflectionTests, fieldObjectName) {
 TEST(ReflectionTests, methodObjectInvoke) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "int32 count = c.getMethodCount();\n"
         "int32 found = 0;\n"
         "int32 i = 0;\n"
@@ -269,7 +269,7 @@ TEST(ReflectionTests, methodObjectInvoke) {
 TEST(ReflectionTests, parameterIntrospection) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "int32 count = c.getMethodCount();\n"
         "int32 ok = 0;\n"
         "int32 i = 0;\n"
@@ -305,7 +305,7 @@ TEST(ReflectionTests, constructorCountIsTwo) {
 TEST(ReflectionTests, methodInvokeWithArg) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "c.setInt32(u, 0, 10);\n"
         "int32 count = c.getMethodCount();\n"
         "int32 result = -1;\n"
@@ -328,7 +328,7 @@ TEST(ReflectionTests, methodInvokeWithArg) {
 TEST(ReflectionTests, methodInvokeStackArg1) {
     EXPECT_EQ(runI32(
         "User u = heap User();\n"
-        "Class c = Class.of(u);\n"
+        "Class<?> c = Class.of(u);\n"
         "c.setInt32(u, 0, 10);\n"
         "int32 count = c.getMethodCount();\n"
         "int32 result = -1;\n"
@@ -360,7 +360,7 @@ TEST(ReflectionTests, methodInvokeStackArgsMulti) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Adder x = heap Adder();\n"
-        "        Class c = Class.of(x);\n"
+        "        Class<?> c = Class.of(x);\n"
         "        c.setInt32(x, 0, 100);\n"
         "        int32 count = c.getMethodCount();\n"
         "        int32 r2 = -1;\n"
@@ -386,7 +386,7 @@ TEST(ReflectionTests, methodInvokeStackArgsMulti) {
 TEST(ReflectionTests, constructorNewInstanceWithArg) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
-        "Class c = Class.of(seed);\n"
+        "Class<?> c = Class.of(seed);\n"
         "int32 cc = c.getConstructorCount();\n"
         "int32 result = -1;\n"
         "int32 i = 0;\n"
@@ -409,7 +409,7 @@ TEST(ReflectionTests, constructorNewInstanceWithArg) {
 TEST(ReflectionTests, newInstanceProducesValidObject) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
-        "Class c = Class.of(seed);\n"
+        "Class<?> c = Class.of(seed);\n"
         "Object o = c.heapInstance(0);\n"
         "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 5);
 }
@@ -419,7 +419,7 @@ TEST(ReflectionTests, newInstanceProducesValidObject) {
 TEST(ReflectionTests, newInstanceObjectIsFunctional) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
-        "Class c = Class.of(seed);\n"
+        "Class<?> c = Class.of(seed);\n"
         "Object o = c.heapInstance(0);\n"
         "int32 count = c.getMethodCount();\n"
         "int32 found = 0;\n"
@@ -450,7 +450,7 @@ TEST(ReflectionTests, invokeFloat64ReturnsRealValue) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Box bx = heap Box();\n"
-        "        Class c = Class.of(bx);\n"
+        "        Class<?> c = Class.of(bx);\n"
         "        c.setFloat64(bx, 0, 3.25);\n"
         "        Method m = c.getMethod(0);\n"
         "        return (int32) (m.invokeFloat64(bx) * 4.0);\n"
@@ -565,7 +565,7 @@ TEST(ReflectionTests, sealedPrivateFieldIndexFormThrows) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Vault v = heap Vault();\n"
-        "        Class c = Class.of(v);\n"
+        "        Class<?> c = Class.of(v);\n"
         "        try {\n"
         "            int32 x = c.getInt32(v, 0);\n"
         "            return 0;\n"
@@ -637,7 +637,7 @@ TEST(ReflectionTests, sealedPrivateConstructorThrows) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Locked seed = heap Locked(1);\n"
-        "        Class c = Class.of(seed);\n"
+        "        Class<?> c = Class.of(seed);\n"
         "        int32 count = c.getConstructorCount();\n"
         "        int32 i = 0;\n"
         "        int32 noArg = -1;\n"
@@ -705,7 +705,7 @@ TEST(ReflectionTests, invokeBoxedPrimitiveReturns) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Producer p = heap Producer();\n"
-        "        Class c = Class.of(p);\n"
+        "        Class<?> c = Class.of(p);\n"
         "        c.setInt32(p, 0, 100);\n"
         "        int32 ok = 0;\n"
         "        int32 i = 0;\n"
@@ -763,7 +763,7 @@ TEST(ReflectionTests, invokeBoxedReferenceAndVoid) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Maker p = heap Maker();\n"
-        "        Class c = Class.of(p);\n"
+        "        Class<?> c = Class.of(p);\n"
         "        int32 ok = 0;\n"
         "        int32 i = 0;\n"
         "        int32 n = c.getMethodCount();\n"
@@ -811,7 +811,7 @@ TEST(ReflectionTests, invokeBoxedUnsupportedThrows) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Narrow p = heap Narrow();\n"
-        "        Class c = Class.of(p);\n"
+        "        Class<?> c = Class.of(p);\n"
         "        int32 i = 0;\n"
         "        int32 n = c.getMethodCount();\n"
         "        while (i < n) {\n"
@@ -857,7 +857,7 @@ TEST(ReflectionTests, getBoxedPrimitiveFields) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Bag x = heap Bag(7, 9000000000L, true, 1.5f, 2.5);\n"
-        "        Class c = Class.of(x);\n"
+        "        Class<?> c = Class.of(x);\n"
         "        int32 ok = 0;\n"
         "        Object o0 = c.getBoxed(x, 0);\n"
         "        if (Class.of(o0).getInt32(o0, 0) == 7) { ok = ok + 1; }\n"
@@ -894,7 +894,7 @@ TEST(ReflectionTests, getBoxedReferenceFieldThrows) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Holder h = heap Holder();\n"
-        "        Class c = Class.of(h);\n"
+        "        Class<?> c = Class.of(h);\n"
         "        try {\n"
         "            Object o = c.getBoxed(h, 0);\n"
         "            return 0;\n"                          // should not reach
@@ -925,7 +925,7 @@ TEST(ReflectionTests, invokeBoxedW2Returns) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        P p = heap P();\n"
-        "        Class c = Class.of(p);\n"
+        "        Class<?> c = Class.of(p);\n"
         "        int32 ok = 0;\n"
         "        int32 i = 0;\n"
         "        int32 n = c.getMethodCount();\n"
@@ -997,7 +997,7 @@ TEST(ReflectionTests, getBoxedW2Fields) {
         "    public static int32 run() {\n"
         "        Bag2 x = heap Bag2((int8) -5, (int16) -300, (uint8) 200,\n"
         "            (uint16) 60000, (uint32) 200000, (uint64) 9000000000L, 'Q');\n"
-        "        Class c = Class.of(x);\n"
+        "        Class<?> c = Class.of(x);\n"
         "        int32 ok = 0;\n"
         "        Object o0 = c.getBoxed(x, 0);\n"
         "        if (Class.of(o0).getName() == \"cajeta.lang.Int8\") {\n"
@@ -1054,7 +1054,7 @@ TEST(ReflectionTests, classAnnotationName) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Widget w = heap Widget();\n"
-        "        Class c = Class.of(w);\n"
+        "        Class<?> c = Class.of(w);\n"
         "        if (c.getAnnotationCount() != 1) { return 10; }\n"
         "        if (!c.getAnnotationName(0).equals(\"code.Service\")) { return 11; }\n"
         "        return 0;\n"
@@ -1074,7 +1074,7 @@ TEST(ReflectionTests, classHasAnnotation) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Widget());\n"
+        "        Class<?> c = Class.of(heap Widget());\n"
         "        if (!c.hasAnnotation(\"code.Service\")) { return 1; }\n"
         "        if (c.hasAnnotation(\"code.Nope\")) { return 2; }\n"
         "        return 0;\n"
@@ -1132,7 +1132,7 @@ TEST(ReflectionTests, fieldAnnotationName) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Widget());\n"
+        "        Class<?> c = Class.of(heap Widget());\n"
         "        Field id = c.getField(0);\n"
         "        if (id.getAnnotationCount() != 1) { return 10; }\n"
         "        if (!id.getAnnotationName(0).equals(\"code.Wired\")) { return 11; }\n"
@@ -1159,7 +1159,7 @@ TEST(ReflectionTests, methodAnnotationName) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Widget());\n"
+        "        Class<?> c = Class.of(heap Widget());\n"
         "        int32 ok = 0;\n"
         "        int32 i = 0;\n"
         "        int32 n = c.getMethodCount();\n"
@@ -1188,7 +1188,7 @@ TEST(ReflectionTests, constructorAnnotationName) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Widget());\n"
+        "        Class<?> c = Class.of(heap Widget());\n"
         "        int32 ok = 0;\n"
         "        int32 i = 0;\n"
         "        int32 n = c.getConstructorCount();\n"
@@ -1218,7 +1218,7 @@ TEST(ReflectionTests, parameterAnnotationName) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Widget());\n"
+        "        Class<?> c = Class.of(heap Widget());\n"
         "        int32 ok = 0;\n"
         "        int32 i = 0;\n"
         "        int32 n = c.getMethodCount();\n"
@@ -1249,7 +1249,7 @@ TEST(ReflectionTests, multipleClassAnnotations) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Widget());\n"
+        "        Class<?> c = Class.of(heap Widget());\n"
         "        if (c.getAnnotationCount() != 2) { return 10; }\n"
         "        if (!c.getAnnotationName(0).equals(\"code.Service\")) { return 11; }\n"
         "        if (!c.getAnnotationName(1).equals(\"code.Audited\")) { return 12; }\n"
@@ -1455,7 +1455,7 @@ TEST(ReflectionTests, methodAnnotationArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Widget());\n"
+        "        Class<?> c = Class.of(heap Widget());\n"
         "        int32 ok = 0;\n"
         "        int32 i = 0;\n"
         "        int32 n = c.getMethodCount();\n"
@@ -1531,7 +1531,7 @@ TEST(ReflectionTests, parameterAnnotationArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Widget());\n"
+        "        Class<?> c = Class.of(heap Widget());\n"
         "        int32 ok = 0;\n"
         "        int32 i = 0;\n"
         "        int32 n = c.getMethodCount();\n"
@@ -1644,7 +1644,7 @@ TEST(ReflectionTests, templateArguments) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Box<int32> b = heap Box<int32>(5);\n"
-        "        Class c = Class.of(b);\n"
+        "        Class<?> c = Class.of(b);\n"
         "        if (!c.isTemplateInstantiation()) { return 10; }\n"
         "        if (c.getTemplateArgumentCount() != 1) { return 11; }\n"
         "        if (!c.getTemplateArgument(0).getTypeName().equals(\"int32\")) { return 12; }\n"
@@ -1667,7 +1667,7 @@ TEST(ReflectionTests, templateParameters) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Box<int32> b = heap Box<int32>(5);\n"
-        "        Class c = Class.of(b);\n"
+        "        Class<?> c = Class.of(b);\n"
         "        if (c.getTemplateParameterCount() != 1) { return 11; }\n"
         "        TemplateParameter p = c.getTemplateParameter(0);\n"
         "        if (!p.getName().equals(\"T\")) { return 12; }\n"
@@ -1688,7 +1688,7 @@ TEST(ReflectionTests, nonTemplateClassZero) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class c = Class.of(heap Plain());\n"
+        "        Class<?> c = Class.of(heap Plain());\n"
         "        if (c.isTemplateInstantiation()) { return 11; }\n"
         "        if (c.getTemplateArgumentCount() != 0) { return 12; }\n"
         "        if (c.getTemplateParameterCount() != 0) { return 13; }\n"
@@ -1712,7 +1712,7 @@ TEST(ReflectionTests, forNameResolvesClass) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Optional<Class> c = Class.forName(\"test.User\");\n"
+        "        Optional<Class<?>> c = Class.forName(\"test.User\");\n"
         "        if (c.isEmpty()) { return 11; }\n"
         "        return c.get().getFieldCount();\n"
         "    }\n"
@@ -1731,7 +1731,7 @@ TEST(ReflectionTests, forNameAbsentEmpty) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Optional<Class> c = Class.forName(\"test.NoSuchClass\");\n"
+        "        Optional<Class<?>> c = Class.forName(\"test.NoSuchClass\");\n"
         "        return c.isPresent() ? 1 : 0;\n"
         "    }\n"
         "}\n"), 0);
@@ -1752,7 +1752,7 @@ TEST(ReflectionTests, forNameRoundTrip) {
         "    public static int32 run() {\n"
         "        User u = heap User();\n"
         "        String n = Class.of(u).getName();\n"
-        "        Optional<Class> c = Class.forName(n);\n"
+        "        Optional<Class<?>> c = Class.forName(n);\n"
         "        if (c.isEmpty()) { return 11; }\n"
         "        if (!c.get().getName().equals(\"test.User\")) { return 12; }\n"
         "        return 0;\n"
@@ -1768,7 +1768,7 @@ TEST(ReflectionTests, forNameStdlibClass) {
         "import cajeta.lang.Optional;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Optional<Class> c = Class.forName(\"cajeta.lang.String\");\n"
+        "        Optional<Class<?>> c = Class.forName(\"cajeta.lang.String\");\n"
         "        return c.isPresent() ? 1 : 0;\n"
         "    }\n"
         "}\n"), 1);
@@ -1792,8 +1792,8 @@ TEST(ReflectionTests, templateArgGetTypeResolvesClass) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Box<Widget> b = heap Box<Widget>(heap Widget());\n"
-        "        Class c = Class.of(b);\n"
-        "        Class t = c.getTemplateArgument(0).getType();\n"
+        "        Class<?> c = Class.of(b);\n"
+        "        Class<?> t = c.getTemplateArgument(0).getType();\n"
         "        if (!t.getName().equals(\"test.Widget\")) { return 12; }\n"
         "        return 0;\n"
         "    }\n"
@@ -1815,9 +1815,9 @@ TEST(ReflectionTests, templateArgGetTypePrimitiveThrows) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Box<int32> b = heap Box<int32>(5);\n"
-        "        Class c = Class.of(b);\n"
+        "        Class<?> c = Class.of(b);\n"
         "        try {\n"
-        "            Class t = c.getTemplateArgument(0).getType();\n"
+        "            Class<?> t = c.getTemplateArgument(0).getType();\n"
         "            return 0;\n"
         "        } catch (UnsupportedReflectionException e) {\n"
         "            return 1;\n"
@@ -1844,7 +1844,7 @@ TEST(ReflectionTests, allClassesFindsRegistered) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class[] all = Class.allClasses();\n"
+        "        Class<?>[] all = Class.allClasses();\n"
         "        int32 found = 0;\n"
         "        int32 i = 0;\n"
         "        while (i < (int32) all.count()) {\n"
@@ -1869,14 +1869,14 @@ TEST(ReflectionTests, classesInPackageFilters) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class[] inTest = Class.classesInPackage(\"test\");\n"
+        "        Class<?>[] inTest = Class.classesInPackage(\"test\");\n"
         "        int32 a = 0;\n"
         "        int32 i = 0;\n"
         "        while (i < (int32) inTest.count()) {\n"
         "            if (inTest[i].getName().equals(\"test.User\")) { a = a + 1; }\n"
         "            i = i + 1;\n"
         "        }\n"
-        "        Class[] inLang = Class.classesInPackage(\"cajeta.lang\");\n"
+        "        Class<?>[] inLang = Class.classesInPackage(\"cajeta.lang\");\n"
         "        int32 b = 0;\n"
         "        int32 c = 0;\n"
         "        i = 0;\n"
@@ -1906,7 +1906,7 @@ TEST(ReflectionTests, classesAnnotatedFilters) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Class[] tagged = Class.classesAnnotated(\"code.Marker\");\n"
+        "        Class<?>[] tagged = Class.classesAnnotated(\"code.Marker\");\n"
         "        int32 found = 0;\n"
         "        int32 other = 0;\n"
         "        int32 i = 0;\n"
@@ -2007,4 +2007,114 @@ TEST(ReflectionTests, foldDeclinesSealedPrivate) {
         "        }\n"
         "    }\n"
         "}\n"), 99);
+}
+
+// REFL-1.7: the Modifiers value object reflects a class's packed flags.
+// public final class -> isPublic && isFinal, NOT isStatic. (1 + 2 = 3.)
+TEST(ReflectionTests, modifiersObjectClassFlags) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Modifiers;\n"
+        "public final class Gadget {\n"
+        "    public int32 a;\n"
+        "    public Gadget() { this.a = 1; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Gadget g = heap Gadget();\n"
+        "        Modifiers m = Class.of(g).getModifiers();\n"
+        "        int32 r = 0;\n"
+        "        if (m.isPublic()) { r = r + 1; }\n"
+        "        if (m.isFinal())  { r = r + 2; }\n"
+        "        if (m.isStatic()) { r = r + 100; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n"), 3);
+}
+
+// REFL-1.7: a Field's Modifiers — a private field of a NON-sealed class is
+// isPrivate (and not public). (4.)
+TEST(ReflectionTests, modifiersObjectFieldFlags) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Field;\n"
+        "import cajeta.reflect.Modifiers;\n"
+        "public final class Gadget {\n"
+        "    private int32 secret;\n"
+        "    public Gadget() { this.secret = 1; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Gadget g = heap Gadget();\n"
+        "        Field f = Class.of(g).getField(0);\n"
+        "        Modifiers m = f.getModifiers();\n"
+        "        int32 r = 0;\n"
+        "        if (m.isPrivate()) { r = r + 4; }\n"
+        "        if (m.isPublic())  { r = r + 100; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n"), 4);
+}
+
+// REFL-1.6: obj.getClass() returns the object's dynamic Class<?> (synthesized,
+// no Object source edit). Field count off the RTTI = 2.
+TEST(ReflectionTests, getClassMethodReturnsClass) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "public final class Gadget {\n"
+        "    public int32 a;\n"
+        "    public int32 b;\n"
+        "    public Gadget() { this.a = 1; this.b = 2; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Gadget g = heap Gadget();\n"
+        "        Class<?> c = g.getClass();\n"
+        "        return c.getFieldCount();\n"
+        "    }\n"
+        "}\n"), 2);
+}
+
+// REFL-1.5: T.class is the statically-known type's Class<T>. Field count = 3.
+TEST(ReflectionTests, classLiteralResolvesClass) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "public final class Gadget {\n"
+        "    public int32 a;\n"
+        "    public int32 b;\n"
+        "    public int32 d;\n"
+        "    public Gadget() { this.a = 1; this.b = 2; this.d = 3; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class<Gadget> k = Gadget.class;\n"
+        "        return k.getFieldCount();\n"
+        "    }\n"
+        "}\n"), 3);
+}
+
+// REFL-1.5/1.6: T.class and obj.getClass() name the SAME #ClassObject — the
+// per-type process-lifetime singleton. getInstanceSize matches on both.
+TEST(ReflectionTests, classLiteralAndGetClassAgree) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "public final class Gadget {\n"
+        "    public int32 a;\n"
+        "    public Gadget() { this.a = 1; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Gadget g = heap Gadget();\n"
+        "        Class<?>     viaObj = g.getClass();\n"
+        "        Class<Gadget> viaLit = Gadget.class;\n"
+        "        int64 a = viaObj.getInstanceSize();\n"
+        "        int64 b = viaLit.getInstanceSize();\n"
+        "        return (a == b) ? 1 : 0;\n"
+        "    }\n"
+        "}\n"), 1);
 }

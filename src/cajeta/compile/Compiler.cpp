@@ -644,6 +644,22 @@ namespace cajeta {
         // globals live in this module — user modules will reach
         // them via extern decls and never need to re-prototype.
         CajetaModule::buildPendingPrototypes();
+
+        // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
+        // canonical Class<?> instantiation HERE, as part of the stdlib build and
+        // BEFORE any user module parses. Class<?>'s method bodies reference the
+        // reflect object types (Modifiers / Field / Method / Constructor /
+        // Parameter / Annotation / TemplateParameter / TemplateArgument); with
+        // the concrete `Class` gone, this instantiation is now the only thing
+        // that pulls those types into the canonical map. Doing it here makes them
+        // resolvable when user code names them directly (e.g. `Modifiers m = ...`)
+        // — the eager-build the concrete `Class` used to provide. Also gives
+        // every #ClassObject a real Class<?> vtable to embed.
+        CajetaModule::setActiveModule(stdlib);
+        CajetaClass::ensureClassWildcardInstantiated();
+        CajetaModule::buildPendingPrototypes();
+        CajetaModule::setActiveModule(prevActive);
+
         emitUnrecoverableMarker(stdlib);
         return stdlib;
     }
@@ -758,6 +774,16 @@ namespace cajeta {
         // any IR emission. A9 will read the resolved graph to
         // synthesize singleton + factory helpers.
         CajetaModule::resolveDependencyGraph();
+
+        // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
+        // canonical wildcard instantiation Class<?> here — after all modules are
+        // parsed/prototyped, before Phase 1/2 codegen — so (a) its method bodies
+        // are emitted in the loop below and (b) every type's #ClassObject can
+        // embed its vtable (StructureMetadata::populate / finalizeClassObject
+        // look it up by "cajeta.reflect.Class<?>"). The phantom T means all
+        // Class<T> share identical code, so this one instantiation backs every
+        // reflected type's #ClassObject regardless of the static T.
+        CajetaClass::ensureClassWildcardInstantiated();
 
         // Phase 1 (signatures) + Phase 2 (bodies), looped until quiescent.
         // A user method body can trigger a stdlib template instantiation

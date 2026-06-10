@@ -291,6 +291,16 @@ namespace cajeta {
         if (dynamic_pointer_cast<MethodCallExpression>(ast)) {
             return v;
         }
+        // REFL-1.5 — `T.class` returns the address of the type's #ClassObject
+        // global, which IS the Class<T> reference (a process-lifetime constant
+        // { Class<?>#VTable, rtti }). Same carve-out shape as NewExpression /
+        // MethodCallExpression: the pointer IS the language-level value. The
+        // class-ref catch-all below would otherwise load through the global and
+        // hand back the vtable word (its first field) as if it were the Class
+        // instance pointer, corrupting every downstream dispatch on it.
+        if (dynamic_pointer_cast<ClassLiteralExpression>(ast)) {
+            return v;
+        }
         // Phase 2b-β — string-literal value IS the global's address (a
         // class String instance materialized in static storage). Same
         // carve-out shape as NewExpression / MethodCallExpression: the
