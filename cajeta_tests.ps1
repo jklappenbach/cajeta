@@ -141,6 +141,9 @@ function Start-One {
     $p = Start-Process -FilePath $TestBin -ArgumentList $argList `
             -RedirectStandardOutput $out -RedirectStandardError $err `
             -NoNewWindow -PassThru
+    # PS 5.1: a Start-Process -PassThru object reports a NULL .ExitCode after the
+    # child exits unless its OS handle was retained. Touch .Handle now to force it.
+    $null = $p.Handle
     [void]$running.Add([pscustomobject]@{
         Id = $id; Proc = $p; Names = $names; Out = $out; Err = $err
         Size = $names.Count; Started = $sw.Elapsed.TotalSeconds
@@ -159,7 +162,14 @@ function Parse-Chunk($e) {
     }
     $code = $null
     try { $code = $e.Proc.ExitCode } catch { $code = $null }
-    $crashed = (($code -ne 0) -and ($fails.Count -eq 0))
+    # Crash = the process died mid-chunk. A gtest run that REACHES THE END always
+    # prints a "[  PASSED  ] N tests." summary (even when some tests fail), so its
+    # absence is the reliable crash signal. Do NOT key crash off the exit code:
+    # Start-Process -PassThru yields a null .ExitCode (null -ne 0 is $true in PS),
+    # which would mark every passing chunk crashed and dump the whole suite into
+    # the serial retry pass -- the bug that made this runner "just as slow".
+    $hasSummary = [regex]::IsMatch($txt, '\[\s+PASSED\s+\]\s+\d+\s+test')
+    $crashed = (-not $hasSummary)
     return [pscustomobject]@{ Passed = $passed; Fails = $fails; Crashed = $crashed; Code = $code }
 }
 
@@ -299,13 +309,17 @@ foreach ($n in $retry) {
     $o = Join-Path $tmp 'retry.out'; $er = Join-Path $tmp 'retry.err'
     $p = Start-Process -FilePath $TestBin -ArgumentList @("--gtest_filter=$n", '--gtest_brief=1') `
             -RedirectStandardOutput $o -RedirectStandardError $er -NoNewWindow -PassThru
+    $null = $p.Handle    # retain handle so .ExitCode populates after exit (PS 5.1)
     $p.WaitForExit()
     $txt = ''
     try { $txt = [IO.File]::ReadAllText($o) } catch { }
     $isFail = [regex]::IsMatch($txt, '(?m)^\[\s+FAILED\s+\]\s+\S+\s+\(\d+\s*ms\)')
+    # Same output-based crash signal as Parse-Chunk: a completed run prints the
+    # "[  PASSED  ]" summary; its absence (and no FAILED line) means a real crash.
+    $hasSummary = [regex]::IsMatch($txt, '\[\s+PASSED\s+\]\s+\d+\s+test')
     $code = $null; try { $code = $p.ExitCode } catch { $code = $null }
     if ($isFail) { $realFail.Add($n); Write-Host "  FAIL  $n" }
-    elseif ($code -ne 0) { $realCrash.Add($n); Write-Host "  CRASH $n (exit $code)" }
+    elseif (-not $hasSummary) { $realCrash.Add($n); Write-Host "  CRASH $n (exit $code)" }
     else { Write-Host "  ok    $n (was flaky)" }
 }
 
