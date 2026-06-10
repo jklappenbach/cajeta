@@ -29,10 +29,18 @@ package cajeta.gpu.core;
 public final class AccelerationStructure {
     int64 deviceHandle;
     uint32 primitiveCount;
+    // The noun's recorded impl (CajetaAsImpl: 0 = software BVH, 1 = Vulkan native
+    // BLAS — must match runtime/native/cajeta_noun_impl.h). Recorded at build time
+    // so the verb follows the noun, not the active backend: free dispatches on it,
+    // and the Vulkan launch asserts it matches the compiled verb path. Laid out
+    // after the two existing fields so it sits at byte offset 12 (the launch reads
+    // it there). The capability-heuristic brick is what lets one backend choose.
+    int32 impl;
 
     AccelerationStructure(int64 deviceHandle, uint32 primitiveCount) {
         this.deviceHandle = deviceHandle;
         this.primitiveCount = primitiveCount;
+        this.impl = this.deviceAccelImpl();
     }
 
     /**
@@ -49,6 +57,7 @@ public final class AccelerationStructure {
     public AccelerationStructure(float32[] aabbs, uint32 count) {
         this.primitiveCount = count;
         this.deviceHandle = this.deviceBuildAabbs(aabbs, count);
+        this.impl = this.deviceAccelImpl();
     }
 
     /**
@@ -67,6 +76,7 @@ public final class AccelerationStructure {
         this.primitiveCount = triangleCount;
         this.deviceHandle =
             this.deviceBuildTriangles(vertices, triangleCount, vertexStride);
+        this.impl = this.deviceAccelImpl();
     }
 
     /**
@@ -76,7 +86,7 @@ public final class AccelerationStructure {
      */
     ~AccelerationStructure() {
         if (this.deviceHandle != 0) {
-            this.deviceFree(this.deviceHandle);
+            this.deviceFree(this.deviceHandle, this.impl);
             this.deviceHandle = 0;
         }
     }
@@ -97,6 +107,13 @@ public final class AccelerationStructure {
     private int64 deviceBuildTriangles(float32[] vertices, uint32 triangleCount,
                                        uint32 vertexStride);
 
+    // The impl the active provider chose for this build (CajetaAsImpl ordinal);
+    // recorded onto the noun so the verb follows the noun, not the active backend.
+    @Native("__cajeta_xpu_accel_impl")
+    private int32 deviceAccelImpl();
+
+    // Free dispatches on the recorded impl, so a moved/cross-backend free still
+    // releases the right representation.
     @Native("__cajeta_xpu_accel_free")
-    private void deviceFree(int64 handle);
+    private void deviceFree(int64 handle, int32 impl);
 }

@@ -423,14 +423,25 @@ namespace xpu {
         // overrides these; the defaults reject a RayQuery in a kernel lowered
         // for a backend without ray-query support (XPU-N02).
 
+        // The noun seam's compile-time face (cajeta-gpu inc-4 brick #2): the impl
+        // this backend builds an AccelerationStructure as. The noun's impl
+        // determines the verb's lowering (CajetaGPU.md §1.4) — so this one method
+        // is the single source the RayQuery verb path derives from, instead of the
+        // backend being re-inferred. Ordinals MUST match CajetaAsImpl in
+        // runtime/native/cajeta_noun_impl.h (comment-synced, like CAJETA_KP_*).
+        // Today impl == backend: Vulkan builds the native BLAS, CPU the portable
+        // software BVH. The capability-heuristic brick lets one backend pick either.
+        enum class NounImpl { SoftwareBvh = 0, VulkanNative = 1 };
+        virtual NounImpl accelImpl() const { return NounImpl::VulkanNative; }
+
         // True when this backend has no native inline ray query and uses the
         // portable Software tier instead (cajeta-gpu ray-query-to-core): a
         // RayQuery lowers to the cajeta.gpu.core.SoftwareRayQuery @Device walk over
-        // a software BVH `Buffer<float32>`, not to the native rayQuery* seams. CPU
-        // returns true; Vulkan (native SPV_KHR_ray_query) keeps the default false.
+        // a software BVH `Buffer<float32>`, not to the native rayQuery* seams. Now
+        // derived from accelImpl() so the verb follows the noun's impl (one source).
         // The call site (KernelLowering) reads this to pick the verb lowering, and
         // the noun (AccelerationStructure) is materialized as the BVH buffer base.
-        virtual bool softwareRayQuery() const { return false; }
+        bool softwareRayQuery() const { return accelImpl() == NounImpl::SoftwareBvh; }
 
         // The LLVM type to alloca for a `RayQuery` local. Vulkan:
         // target("spirv.RayQueryKHR"). Default: unsupported.

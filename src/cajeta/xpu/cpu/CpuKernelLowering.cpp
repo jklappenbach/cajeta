@@ -30,9 +30,11 @@ class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
 
-    // No native inline ray query: a RayQuery lowers to the portable
-    // SoftwareRayQuery walk over a software BVH buffer (ray-query-to-core inc 1).
-    bool softwareRayQuery() const override { return true; }
+    // No native inline ray query: the AccelerationStructure noun is built as the
+    // portable software BVH, so the RayQuery verb follows to the SoftwareRayQuery
+    // walk over a software BVH buffer (ray-query-to-core inc 1). softwareRayQuery()
+    // derives from this in the base.
+    NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
 
     // Flat host address space.
     unsigned allocaAddressSpace() const override { return 0; }

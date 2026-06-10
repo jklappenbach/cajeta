@@ -91,12 +91,14 @@ opaque; core never transcodes between representations.
 ## Dependencies (what must exist before this crystallizes)
 
 From the foundation plan §1:
-- the **noun seam** as a first-class SPI (ray-query-to-core forces it),
-- **`Device.supports(...)`** + the capability heuristic,
-- the **impl-layer + degrade framework** (the machinery this SDK exposes),
-- the `cajeta.gpu.core → cajeta.gpu.core` rename.
+- ✅ the **noun seam** as a first-class SPI (ray-query-to-core forced it) — built as
+  `CajetaNounProvider`, dogfooded on `AccelerationStructure` (recorded impl tag; the verb
+  follows the noun). This is the noun half of the machinery this SDK will expose.
+- ✅ **`Device.supports(...)`**; the *automatic* capability heuristic still to come,
+- the **impl-layer + degrade framework** (the verb half — still unbuilt),
+- ✅ the `cajeta.xpu.core → cajeta.gpu.core` rename.
 
-When those land and core has used them, this seed becomes the SDK's real spec.
+When the remaining pieces land and core has used them, this seed becomes the SDK's real spec.
 
 ---
 
