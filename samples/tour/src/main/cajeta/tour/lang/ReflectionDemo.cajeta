@@ -7,6 +7,7 @@ import cajeta.reflect.Field;
 import cajeta.reflect.Method;
 import cajeta.reflect.Constructor;
 import cajeta.reflect.Parameter;
+import cajeta.reflect.Annotation;
 
 // Runtime reflection over cajeta.reflect. Every class carries fixed-layout
 // RTTI (name, fields, methods, constructors, parameters); `Class.of(obj)`
@@ -85,5 +86,40 @@ public class ReflectionDemo extends DemoClass {
             k = k + 1;
         }
         System.stdout.println("  after reflective bumpBy(2), v = " + vf.getInt32(obj));
+
+        // Annotation reflection (REFL-6a). Every annotatable owner — the class,
+        // its fields, methods, constructors, and parameters — reports the
+        // annotations declared on it. A bare `@Tracked` reads back as the
+        // canonical `"code.Tracked"` (single-identifier annotations default to
+        // the `code` package).
+        System.stdout.println("  class annotations = " + c.getAnnotationCount());
+        int32 ai = 0;
+        int32 acount = c.getAnnotationCount();
+        while (ai < acount) {
+            Annotation a = c.getAnnotation(ai);
+            System.stdout.println("    @" + a.getName());
+            ai = ai + 1;
+        }
+        System.stdout.println("  field v @Metric?  = " + vf.hasAnnotation("code.Metric"));
+
+        // Down to a method's annotation: bumpBy carries @Mutates.
+        int32 mj = 0;
+        while (mj < mcount) {
+            Method m = c.getMethod(mj);
+            if (m.hasAnnotation("code.Mutates")) {
+                System.stdout.println("  method @Mutates   = " + m.getName());
+            }
+            mj = mj + 1;
+        }
+
+        // Annotation ARGUMENT values (REFL-6b). Annotations can carry typed
+        // literal arguments; the Annotation object reads them by key. The
+        // class's `@Tracked(2)` has an unnamed int argument (read with the
+        // conventional key "value"), and the field's `@Metric("count")` an
+        // unnamed string — value reflection, not just names.
+        Annotation tracked = c.getAnnotation(0);
+        System.stdout.println("  @Tracked(value)   = " + (int32) tracked.getInt("value"));
+        Annotation metric = vf.getAnnotation(0);
+        System.stdout.println("  @Metric(value)    = " + metric.getString("value"));
     }
 }

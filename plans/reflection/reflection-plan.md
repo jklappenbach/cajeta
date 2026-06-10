@@ -210,9 +210,70 @@ Decision (2026-06-09): **real `Field`/`Method`/`Constructor`/`Parameter` objects
 - [ ] REFL-5.1 Per-signature-shape concrete `MethodHandle` subclasses,
       synthesized lazily + cached per shape (spec Strategy 4).
 
-### Phase 6 — Annotations (REFL-6)
-- [ ] REFL-6.1 `cajeta.reflect.Annotation` over the annotation metadata RTTI
-      already carries for AspectModel.
+### Phase 6 — Annotations (REFL-6)  ← 6a (names) + 6b (argument values) shipped 2026-06-09
+- [x] REFL-6a **Annotation NAME reflection.** New `cajeta.reflect.Annotation`
+      object (locator: rtti + ownerKind/ownerIndex/subIndex/index) exposing
+      `getName()`/`toString()`. Enumeration + `hasAnnotation(canonicalName)` +
+      `getAnnotationCount`/`getAnnotationName(i)`/`getAnnotation(i)` added to
+      **Class, Field, Method, Constructor, Parameter** (every annotatable
+      owner). One generic native family backs all owners —
+      `__cajeta_rtti_annotation_{count,name_len,name_into}(rtti, ownerKind,
+      ownerIndex, subIndex[, annIdx])` over a single C resolver
+      `cajeta_annotation_list` (ownerKind 0=class 1=field 2=method 3=ctor
+      4=method-param 5=ctor-param). **Filled the method/ctor emission gap**:
+      `#MethodDesc` gained `i16 annotationCount, ptr annotations` (appended;
+      existing readers keep offsets), emitted in `emitMethodTable` +
+      `emitConstructorTable` (class/field/param names already rode the RTTI).
+      **Names format**: a bare `@Foo` serializes to canonical `"code.Foo"`
+      (single-identifier annotation names default to the `code` package; a
+      qualified `@p.Bar` → `"p.Bar"`); `hasAnnotation` matches the exact
+      canonical string. Any annotation identifier works (none need predeclaring).
+      **Fixed a latent double-count bug** (`FieldDeclaration::updateParent`):
+      field annotations were added to `annotationList` twice (the
+      `Annotatable(set)` ctor AND the `addAnnotationInstance` loop), so a field's
+      `getAnnotationCount()` came back doubled — invisible before 6a because
+      nothing read a property's annotationList at runtime (DI/JSON use
+      `findAnnotation`→annotationInstances). Now constructs the property with an
+      empty set and lets the instance loop be the single source. Tests:
+      ReflectionTests.{classAnnotationName, classHasAnnotation,
+      annotationObjectName, classNoAnnotationsZeroCount, fieldAnnotationName,
+      methodAnnotationName, constructorAnnotationName, parameterAnnotationName,
+      multipleClassAnnotations}.
+- [x] REFL-6b **Annotation ARGUMENT values** (shipped 2026-06-09). The
+      `annotations` pointer in every owner descriptor (class slots 3/4,
+      `#FieldDesc`/`#MethodDesc`/`#ParameterDesc`) was repointed from a bare
+      `[N x i8*]` name array to `[N x #AnnotationDesc]` — each row
+      `{ ptr name, i16 argCount, ptr args }`, with `args` an
+      `[M x #AnnotationArgDesc]` `{ ptr name, i32 kind, i64 i64Val, ptr strVal,
+      i8 boolVal }` of the captured scalar values. **No RTTI struct-shape bump**:
+      with opaque pointers the LLVM field type stays `ptr`, so only the pointee
+      (and the C mirror's interpretation) changed; the REFL-6a name natives now
+      read `desc.name`. Values come from the args-carrying `AnnotationInstance`,
+      paired to the REFL-6a `annotationList` by canonical name in a new
+      `emitAnnotationArray`/`emitAnnotationArgArray`. `Annotation` gained
+      by-index accessors (`getArgCount`/`getArgName`/`getArgKind`/`getArgInt`/
+      `getArgBool`/`getArgString`) and kind-checked by-key getters (`getInt`/
+      `getString`/`getBool`/`getClassRef`), with the unnamed single-arg form
+      (`@Order(2)`) read via key `"value"` (mirrors `AnnotationInstance.findArg`).
+      Natives `__cajeta_rtti_annotation_arg_{count,kind,int,bool,name_len,
+      name_into,str_len,str_into}` over a shared `cajeta_annotation_arg` resolver.
+      **Out of scope this increment (documented):** (1) PARAMETER annotation
+      arguments — the formal-parameter parse path captures names only (legacy
+      set/list, not `addAnnotationInstance`), so param `#AnnotationDesc` rows have
+      `argCount 0`; migrating `FormalParameter` to the args-aware path is the
+      follow-on. (2) LIST-valued arguments (`@SuppressLint({"a","b"})`) — the
+      `#AnnotationArgDesc` records the list KIND (argCount stays accurate) but no
+      element data; only scalar accessors are surfaced. Tests (12):
+      ReflectionTests.{classAnnotationIntArg, classAnnotationNamedStringArg,
+      classAnnotationUnnamedStringArg, classAnnotationBoolArg,
+      classAnnotationClassRefArg, annotationArgByIndex,
+      annotationArgWrongKindFallback, fieldAnnotationArg, methodAnnotationArg,
+      annotationMultipleNamedArgs, annotationNoArgsZeroCount}. Tour
+      ReflectionDemo + Counter (`@Tracked(2)`, `@Metric("count")`) read arg
+      values. NOTE: a `.class` annotation arg must reference a SEPARATE declared
+      type via a NEUTRAL annotation (`@Refers(Marker.class)`) — a self-reference
+      (`@T(Self.class)` on `Self`) hangs the reflect class-object build, and an
+      active annotation (`@Encoding(...)`) invokes its own subsystem.
 
 ### Phase 7 — Generic retention (REFL-7)
 - [ ] REFL-7.1 Augment RTTI with per-instantiation type-argument substitutions.

@@ -1,0 +1,235 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+
+/**
+ * A single annotation declared on a class, field, method, constructor, or
+ * parameter (REFL-6a). Holds a borrow of the owning class's RTTI plus the
+ * locator that addresses this annotation in the metadata, so the value is read
+ * lazily from the RTTI rather than copied eagerly.
+ *
+ * REFL-6a surface: the annotation's NAME. Cajeta serializes an annotation type
+ * into its canonical form — a bare `@Component` becomes `"code.Component"`
+ * (single-identifier annotation names default to the `code` package), and a
+ * qualified `@pkg.Audited` becomes `"pkg.Audited"`.
+ *
+ * REFL-6b surface: the annotation's ARGUMENT values. `@Order(2)`, `@Component(
+ * name = "disk")`, `@Profile("prod")`, `@Cacheable(true)` carry typed literal
+ * arguments; this object reads them lazily from the RTTI by index
+ * (`getArgCount`/`getArgName`/`getArgKind`/`getArgInt`/`getArgBool`/
+ * `getArgString`) or by key with kind-checked typed getters (`getInt`/
+ * `getString`/`getBool`/`getClassRef`). The single-unnamed-arg form `@Order(2)`
+ * is stored with an empty key, so `getInt("value")` reads it. Caveats this
+ * increment: PARAMETER annotation arguments are not captured (parameter
+ * annotations are names only), and LIST-valued arguments (`@SuppressLint({...})`)
+ * report their kind but expose no element accessor.
+ *
+ * `Annotation` is `final` so its accessors dispatch statically.
+ */
+public final class Annotation {
+    // Owning class's #Rtti (a borrow); the locator below addresses one
+    // annotation within it. ownerKind mirrors the C resolver in
+    // cajeta_runtime.c (cajeta_annotation_list):
+    //   0 = class, 1 = field, 2 = method, 3 = constructor,
+    //   4 = parameter of a method, 5 = parameter of a constructor.
+    pointer rtti;
+    int32 ownerKind;
+    int32 ownerIndex;   // field / method / constructor index (0 for a class)
+    int32 subIndex;     // parameter position for the param kinds, else 0
+    int32 index;        // this annotation's position in the owner's list
+
+    @Native("__cajeta_rtti_annotation_name_len")
+    private static int32 nameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_name_into")
+    private static void nameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int8[] out);
+
+    // REFL-6b argument-value bridges. annIdx is always this.index (which
+    // annotation); argIdx selects the argument within it. Kind codes mirror
+    // AnnotationArgKind / the C CAJETA_AK_* enum:
+    //   0 = int64, 1 = string, 2 = bool, 3 = classRef,
+    //   4 = int64 list, 5 = string list, 6 = bool list.
+    @Native("__cajeta_rtti_annotation_arg_count")
+    private static int32 argCountNative(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_arg_kind")
+    private static int32 argKindNative(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx);
+    @Native("__cajeta_rtti_annotation_arg_int")
+    private static int64 argIntNative(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx);
+    @Native("__cajeta_rtti_annotation_arg_bool")
+    private static int32 argBoolNative(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx);
+    @Native("__cajeta_rtti_annotation_arg_name_len")
+    private static int32 argNameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx);
+    @Native("__cajeta_rtti_annotation_arg_name_into")
+    private static void argNameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx, int8[] out);
+    @Native("__cajeta_rtti_annotation_arg_str_len")
+    private static int32 argStrLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx);
+    @Native("__cajeta_rtti_annotation_arg_str_into")
+    private static void argStrInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int32 argIdx, int8[] out);
+
+    public Annotation(pointer rtti, int32 ownerKind, int32 ownerIndex,
+                      int32 subIndex, int32 index) {
+        this.rtti = rtti;
+        this.ownerKind = ownerKind;
+        this.ownerIndex = ownerIndex;
+        this.subIndex = subIndex;
+        this.index = index;
+    }
+
+    /** This annotation's position in its owner's annotation list (0-based). */
+    public int32 getIndex() { return this.index; }
+
+    /**
+     * The annotation type's canonical name (e.g. `"code.Component"`,
+     * `"cajeta.lang.Native"`). Empty if the locator is out of range.
+     */
+    public #String getName() {
+        int32 len = nameLen(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index);
+        int8[] out = heap int8[len];
+        nameInto(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, out);
+        return heap String(#out, len);
+    }
+
+    /** Same as {@link #getName} — an annotation renders as its canonical name. */
+    public #String toString() { return this.getName(); }
+
+    // --- REFL-6b argument values, by index --------------------------------
+
+    /** Number of arguments declared on this annotation (0 for a bare `@Foo`). */
+    public int32 getArgCount() {
+        return argCountNative(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index);
+    }
+
+    /**
+     * The argument's kind tag (see the class header): 0 int64, 1 string,
+     * 2 bool, 3 classRef, 4/5/6 the list kinds. -1 if `i` is out of range.
+     */
+    public int32 getArgKind(int32 i) {
+        return argKindNative(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i);
+    }
+
+    /**
+     * The argument's parameter name (`@Component(name = "disk")` → `"name"`).
+     * Empty for the single-unnamed-arg form (`@Order(2)`).
+     */
+    public #String getArgName(int32 i) {
+        int32 len = argNameLen(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i);
+        int8[] out = heap int8[len];
+        argNameInto(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i, out);
+        return heap String(#out, len);
+    }
+
+    /** The argument's int64 value (0 if it is not an int-kind argument). */
+    public int64 getArgInt(int32 i) {
+        return argIntNative(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i);
+    }
+
+    /** The argument's boolean value (false if it is not a bool-kind argument). */
+    public boolean getArgBool(int32 i) {
+        return argBoolNative(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i) != 0;
+    }
+
+    /**
+     * The argument's string value — the text for a string argument, or the
+     * referenced type name for a `Foo.class` (classRef) argument. Empty for
+     * non-string/non-classRef kinds.
+     */
+    public #String getArgString(int32 i) {
+        int32 len = argStrLen(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i);
+        int8[] out = heap int8[len];
+        argStrInto(this.rtti, this.ownerKind, this.ownerIndex,
+            this.subIndex, this.index, i, out);
+        return heap String(#out, len);
+    }
+
+    // --- REFL-6b argument values, by key ----------------------------------
+
+    // Locate an argument by its parameter name. The single-unnamed-arg form
+    // (`@Order(2)`, stored with an empty key) matches the conventional key
+    // "value", so `getInt("value")` reads it — mirroring the compile-time
+    // AnnotationInstance.findArg semantics. Returns -1 when no argument matches.
+    private int32 findArgIndex(String key) {
+        int32 n = this.getArgCount();
+        int32 i = 0;
+        while (i < n) {
+            String an = this.getArgName(i);
+            if (an.equals(key)) {
+                return i;
+            }
+            if (an.byteLength == 0 && key.equals("value")) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /**
+     * The int64 value of the argument named `key` (or the unnamed arg when
+     * `key` is "value"). Returns 0 if absent or not an int-kind argument.
+     */
+    public int64 getInt(String key) {
+        int32 i = this.findArgIndex(key);
+        if (i < 0) {
+            return (int64) 0;
+        }
+        if (this.getArgKind(i) != 0) {
+            return (int64) 0;
+        }
+        return this.getArgInt(i);
+    }
+
+    /**
+     * The string value of the argument named `key`. Empty if absent or not a
+     * string-kind argument.
+     */
+    public #String getString(String key) {
+        int32 i = this.findArgIndex(key);
+        if (i < 0) {
+            return heap String();
+        }
+        if (this.getArgKind(i) != 1) {
+            return heap String();
+        }
+        return this.getArgString(i);
+    }
+
+    /**
+     * The boolean value of the argument named `key`. Returns false if absent
+     * or not a bool-kind argument.
+     */
+    public boolean getBool(String key) {
+        int32 i = this.findArgIndex(key);
+        if (i < 0) {
+            return false;
+        }
+        if (this.getArgKind(i) != 2) {
+            return false;
+        }
+        return this.getArgBool(i);
+    }
+
+    /**
+     * The referenced type name of a `Foo.class` (classRef) argument named
+     * `key` (e.g. `@Before(Audited.class)` → `"Audited"`). Empty if absent or
+     * not a classRef argument.
+     */
+    public #String getClassRef(String key) {
+        int32 i = this.findArgIndex(key);
+        if (i < 0) {
+            return heap String();
+        }
+        if (this.getArgKind(i) != 3) {
+            return heap String();
+        }
+        return this.getArgString(i);
+    }
+}

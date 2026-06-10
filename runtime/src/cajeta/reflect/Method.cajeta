@@ -55,6 +55,14 @@ public final class Method {
     // CAJETA_RK_* constants in cajeta_runtime.c.
     @Native("__cajeta_rtti_method_return_kind")
     private static int32 returnKind(pointer rtti, int32 idx);
+    // REFL-6a annotation reflection. ownerKind 2 = a method; the method index is
+    // passed as ownerIndex.
+    @Native("__cajeta_rtti_annotation_count")
+    private static int32 annCountNative(pointer rtti, int32 ok, int32 oi, int32 si);
+    @Native("__cajeta_rtti_annotation_name_len")
+    private static int32 annNameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_name_into")
+    private static void annNameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int8[] out);
 
     public Method(pointer rtti, int32 index) {
         this.rtti = rtti;
@@ -77,6 +85,39 @@ public final class Method {
     /** The parameter at `i` (0-based, user-visible). */
     public #Parameter getParameter(int32 i) {
         return heap Parameter(this.rtti, 0, this.index, i);
+    }
+
+    // --- annotations (REFL-6a; names only — arguments are REFL-6b) ----------
+
+    /** Number of annotations declared on this method. */
+    public int32 getAnnotationCount() {
+        return annCountNative(this.rtti, 2, this.index, 0);
+    }
+
+    /** Canonical name of this method's annotation at `i` (empty if out of range). */
+    public #String getAnnotationName(int32 i) {
+        int32 len = annNameLen(this.rtti, 2, this.index, 0, i);
+        int8[] out = heap int8[len];
+        annNameInto(this.rtti, 2, this.index, 0, i, out);
+        return heap String(#out, len);
+    }
+
+    /** This method's annotation at `i` as an {@link Annotation} object. */
+    public #Annotation getAnnotation(int32 i) {
+        return heap Annotation(this.rtti, 2, this.index, 0, i);
+    }
+
+    /** Whether this method declares an annotation with the given canonical name. */
+    public boolean hasAnnotation(String name) {
+        int32 n = this.getAnnotationCount();
+        int32 i = 0;
+        while (i < n) {
+            if (this.getAnnotationName(i).equals(name)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
     }
 
     /**

@@ -102,13 +102,20 @@ namespace cajeta {
     }
     // CajetaMethod:
     //   { ptr name, ptr returnType, i64 sigHash, i32 modifiers,
-    //     i16 parameterCount, ptr parameters }
+    //     i16 parameterCount, ptr parameters,
+    //     i16 annotationCount, ptr annotations }
+    // annotationCount/annotations (REFL-6a) carry the method's annotation NAMEs
+    // (canonical strings, same shape as the field/parameter annotation lists) so
+    // runtime annotation reflection can enumerate them. Appended after the
+    // original 6 fields so existing readers (name/returnType/sigHash/params)
+    // keep their offsets. The shared constructor table reuses this shape.
     llvm::StructType* StructureMetadata::getMethodStructType() {
         auto& ctx = *module->getLlvmContext();
         if (auto* e = llvm::StructType::getTypeByName(ctx, "cajeta.reflect.#MethodDesc")) return e;
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
         return llvm::StructType::create(ctx,
-            {ptrTy, ptrTy, llvmInt64Type, llvmInt32Type, llvmInt16Type, ptrTy},
+            {ptrTy, ptrTy, llvmInt64Type, llvmInt32Type, llvmInt16Type, ptrTy,
+             llvmInt16Type, ptrTy},
             "cajeta.reflect.#MethodDesc");
     }
     // CajetaRtti header (#RttiGlobal), fixed for every class:
@@ -152,6 +159,107 @@ namespace cajeta {
         return llvmRttiType;
     }
 
+    // REFL-6b: #AnnotationArgDesc — one captured annotation argument value.
+    //   { ptr name, i32 kind, i64 i64Val, ptr strVal, i8 boolVal }
+    // `kind` mirrors AnnotationArgKind (Int64=0, String=1, Bool=2, ClassRef=3,
+    // Int64List=4, StringList=5, BoolList=6). `strVal` holds the string payload
+    // (and, for ClassRef, the referenced type name); scalar fields hold the
+    // Int64/Bool payloads. List kinds are recorded by kind (so argCount is
+    // accurate) but carry no element data in this increment — only the scalar
+    // accessors (getInt/getString/getBool/getClassRef) are surfaced.
+    llvm::StructType* StructureMetadata::getAnnotationArgStructType() {
+        auto& ctx = *module->getLlvmContext();
+        if (auto* e = llvm::StructType::getTypeByName(ctx, "cajeta.reflect.#AnnotationArgDesc")) return e;
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        return llvm::StructType::create(ctx,
+            {ptrTy, llvmInt32Type, llvmInt64Type, ptrTy, llvmInt8Type},
+            "cajeta.reflect.#AnnotationArgDesc");
+    }
+    // REFL-6b: #AnnotationDesc — { ptr name, i16 argCount, ptr args }.
+    // The `annotations` pointer in every owner descriptor (#FieldDesc /
+    // #MethodDesc / #ParameterDesc and the #Rtti class slot) points at an array
+    // of these. `name` is the annotation's canonical type name (REFL-6a); `args`
+    // is the [argCount x #AnnotationArgDesc] table (null when the annotation has
+    // no arguments, e.g. a bare `@Tracked` or any parameter annotation).
+    llvm::StructType* StructureMetadata::getAnnotationStructType() {
+        auto& ctx = *module->getLlvmContext();
+        if (auto* e = llvm::StructType::getTypeByName(ctx, "cajeta.reflect.#AnnotationDesc")) return e;
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        return llvm::StructType::create(ctx,
+            {ptrTy, llvmInt16Type, ptrTy},
+            "cajeta.reflect.#AnnotationDesc");
+    }
+
+    llvm::Constant* StructureMetadata::emitAnnotationArgArray(const vector<AnnotationArg>& args) {
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        if (args.empty())
+            return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        llvm::StructType* argTy = getAnnotationArgStructType();
+        auto nullPtr = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        vector<llvm::Constant*> rows;
+        for (auto& a : args) {
+            // strVal carries the String payload and the ClassRef type name; for
+            // the other scalar kinds it stays empty. List kinds keep their
+            // element data compile-time only (see getAnnotationArgStructType).
+            llvm::Constant* strConst =
+                (a.kind == AnnotationArgKind::String || a.kind == AnnotationArgKind::ClassRef)
+                    ? emitCString(a.strVal)
+                    : nullPtr;
+            rows.push_back(llvm::ConstantStruct::get(argTy, {
+                emitCString(a.name),
+                llvm::ConstantInt::get(llvmInt32Type, (uint64_t) (int32_t) a.kind),
+                llvm::ConstantInt::get(llvmInt64Type, (uint64_t) a.i64Val),
+                strConst,
+                llvm::ConstantInt::get(llvmInt8Type, a.boolVal ? 1 : 0),
+            }));
+        }
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(argTy, rows.size());
+        return new llvm::GlobalVariable(*module->getLlvmModule(), arrTy, true,
+            llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(arrTy, rows), ".rtti.annargs");
+    }
+
+    llvm::Constant* StructureMetadata::emitAnnotationArray(
+            const list<QualifiedNamePtr>& names,
+            const vector<AnnotationInstancePtr>& instances) {
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        if (names.empty())
+            return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        llvm::StructType* descTy = getAnnotationStructType();
+        auto nullPtr = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        // Pair each name with its argument-carrying instance by canonical name.
+        // Annotations are not repeatable in v1, so the canonical is a unique key;
+        // parameter owners pass no instances, so every lookup misses (names only).
+        std::map<std::string, AnnotationInstancePtr> byCanonical;
+        for (auto& inst : instances) {
+            if (inst && inst->getName())
+                byCanonical.emplace(inst->getName()->toCanonical(), inst);
+        }
+        vector<llvm::Constant*> rows;
+        for (auto& q : names) {
+            std::string canonical = q->toCanonical();
+            llvm::Constant* argsPtr = nullPtr;
+            size_t argCount = 0;
+            auto it = byCanonical.find(canonical);
+            if (it != byCanonical.end() && it->second) {
+                const auto& args = it->second->getArgs();
+                argCount = args.size();
+                argsPtr = emitAnnotationArgArray(args);
+            }
+            rows.push_back(llvm::ConstantStruct::get(descTy, {
+                emitCString(canonical),
+                llvm::ConstantInt::get(llvmInt16Type, argCount),
+                argsPtr,
+            }));
+        }
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(descTy, rows.size());
+        return new llvm::GlobalVariable(*module->getLlvmModule(), arrTy, true,
+            llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(arrTy, rows), ".rtti.anns");
+    }
+
     llvm::Constant* StructureMetadata::emitParameterTable(MethodPtr method) {
         auto& ctx = *module->getLlvmContext();
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -166,14 +274,17 @@ namespace cajeta {
         vector<llvm::Constant*> rows;
         for (size_t pi = start; pi < params.size(); ++pi) {
             auto& p = params[pi];
-            vector<std::string> anns;
-            for (auto& a : p->getAnnotationList()) anns.push_back(a->toCanonical());
+            // Parameter annotations carry NAMES only (REFL-6a): the formal-
+            // parameter parse path records them via the legacy set/list, not the
+            // args-aware addAnnotationInstance, so there are no captured argument
+            // values to emit (REFL-6b parameter args remain a TODO). Pass an
+            // empty instance list — names still ride as #AnnotationDesc rows.
             rows.push_back(llvm::ConstantStruct::get(descTy, {
                 emitCString(p->getName()),
                 emitCString(p->getType()->toCanonical()),
                 llvm::ConstantInt::get(llvmInt32Type, (uint64_t) packModifiers(p->getModifiers())),
-                llvm::ConstantInt::get(llvmInt16Type, anns.size()),
-                emitCStringArray(anns),
+                llvm::ConstantInt::get(llvmInt16Type, p->getAnnotationList().size()),
+                emitAnnotationArray(p->getAnnotationList(), {}),
             }));
         }
         llvm::ArrayType* arrTy = llvm::ArrayType::get(descTy, rows.size());
@@ -197,8 +308,6 @@ namespace cajeta {
             : nullptr;
         vector<llvm::Constant*> rows;
         for (auto& p : props) {
-            vector<std::string> anns;
-            for (auto& a : p->getAnnotationList()) anns.push_back(a->toCanonical());
             // -1 for static fields (no instance-struct slot) and when the
             // layout/index is unavailable; otherwise the real byte offset.
             int32_t byteOffset = -1;
@@ -206,12 +315,15 @@ namespace cajeta {
             if (layout && llvmIdx >= 0 && (unsigned) llvmIdx < instStruct->getNumElements())
                 byteOffset = (int32_t) layout->getElementOffset((unsigned) llvmIdx);
             uint64_t typeFlags = p->getType() ? (uint64_t) p->getType()->getTypeFlags() : 0;
+            // Field annotations carry names (REFL-6a) AND argument values
+            // (REFL-6b) — the field's AnnotationInstances are paired with its
+            // annotationList by canonical name in emitAnnotationArray.
             rows.push_back(llvm::ConstantStruct::get(descTy, {
                 emitCString(p->getName()),
                 emitCString(p->getType()->toCanonical()),
                 llvm::ConstantInt::get(llvmInt32Type, (uint64_t) packModifiers(p->getModifiers())),
-                llvm::ConstantInt::get(llvmInt16Type, anns.size()),
-                emitCStringArray(anns),
+                llvm::ConstantInt::get(llvmInt16Type, p->getAnnotationList().size()),
+                emitAnnotationArray(p->getAnnotationList(), p->getAnnotationInstances()),
                 llvm::ConstantInt::get(llvmInt32Type, (uint64_t) (uint32_t) byteOffset),
                 llvm::ConstantInt::get(llvmInt64Type, typeFlags),
             }));
@@ -236,6 +348,9 @@ namespace cajeta {
             const auto& mp = m->getParameterList();
             size_t userParams = mp.size();
             if (!mp.empty() && mp.front()->getName() == "this") userParams -= 1;
+            // Method/constructor annotations carry names (REFL-6a) AND argument
+            // values (REFL-6b): emitAnnotationArray pairs the annotationList with
+            // the args-carrying AnnotationInstances by canonical name.
             rows.push_back(llvm::ConstantStruct::get(descTy, {
                 emitCString(m->toCanonical()),
                 emitCString(m->getReturnType()->toCanonical()),
@@ -243,6 +358,8 @@ namespace cajeta {
                 llvm::ConstantInt::get(llvmInt32Type, (uint64_t) packModifiers(m->getModifiers())),
                 llvm::ConstantInt::get(llvmInt16Type, userParams),
                 emitParameterTable(m),
+                llvm::ConstantInt::get(llvmInt16Type, m->getAnnotationList().size()),
+                emitAnnotationArray(m->getAnnotationList(), m->getAnnotationInstances()),
             }));
         }
         llvm::ArrayType* arrTy = llvm::ArrayType::get(descTy, rows.size());
@@ -267,6 +384,9 @@ namespace cajeta {
             const auto& mp = m->getParameterList();
             size_t userParams = mp.size();
             if (!mp.empty() && mp.front()->getName() == "this") userParams -= 1;
+            // Method/constructor annotations carry names (REFL-6a) AND argument
+            // values (REFL-6b): emitAnnotationArray pairs the annotationList with
+            // the args-carrying AnnotationInstances by canonical name.
             rows.push_back(llvm::ConstantStruct::get(descTy, {
                 emitCString(m->toCanonical()),
                 emitCString(m->getReturnType()->toCanonical()),
@@ -274,6 +394,8 @@ namespace cajeta {
                 llvm::ConstantInt::get(llvmInt32Type, (uint64_t) packModifiers(m->getModifiers())),
                 llvm::ConstantInt::get(llvmInt16Type, userParams),
                 emitParameterTable(m),
+                llvm::ConstantInt::get(llvmInt16Type, m->getAnnotationList().size()),
+                emitAnnotationArray(m->getAnnotationList(), m->getAnnotationInstances()),
             }));
         }
         llvm::ArrayType* arrTy = llvm::ArrayType::get(descTy, rows.size());
@@ -290,8 +412,22 @@ namespace cajeta {
     // lists — live in separately-emitted private globals referenced by
     // pointer, so runtime natives can walk the metadata with constant offsets.
     //
+    // What's here now:
+    //   - Annotation NAMES + ARGUMENT VALUES. Every owner's `annotations`
+    //     pointer (class slots 3/4, #FieldDesc/#MethodDesc/#ParameterDesc) is an
+    //     [N x #AnnotationDesc] table — each row { canonical name, argCount,
+    //     args }, with args an [M x #AnnotationArgDesc] of the captured scalar
+    //     values (`@Order(2)`'s `2`, `@Component(name="disk")`'s `"disk"`,
+    //     REFL-6b). The values come from the args-carrying AnnotationInstance,
+    //     paired to the name list by canonical name.
     // What's NOT here yet:
-    //   - Annotation arguments (Annotatable today carries only names).
+    //   - PARAMETER annotation argument values. Parameter annotations capture
+    //     names only (the formal-parameter parse path uses the legacy set/list,
+    //     not addAnnotationInstance), so their #AnnotationDesc rows have argCount
+    //     0. Migrating FormalParameter to the args-aware path is the follow-on.
+    //   - LIST-valued annotation arguments (`@SuppressLint({"a","b"})`). The
+    //     #AnnotationArgDesc records the list KIND (so argCount is right) but not
+    //     the element data; only scalar accessors are surfaced.
     //   - Recursive Type descriptors for parents (canonical names instead —
     //     the runtime can look up a parent's RTTI by name when needed).
 
@@ -313,8 +449,11 @@ namespace cajeta {
                 .getTypeAllocSize(structure->getLlvmType());
         }
 
-        vector<std::string> classAnns;
-        for (auto& a : structure->getAnnotationList()) classAnns.push_back(a->toCanonical());
+        // Class annotation count (names). The #AnnotationDesc table itself —
+        // names (REFL-6a) plus argument values (REFL-6b) — is emitted below via
+        // emitAnnotationArray, pairing the class's annotationList with its
+        // args-carrying AnnotationInstances.
+        size_t classAnnCount = structure->getAnnotationList().size();
         vector<std::string> parentNames;
         for (auto& p : structure->getSuperClasses()) parentNames.push_back(p->toCanonical());
 
@@ -340,8 +479,9 @@ namespace cajeta {
             emitCString(structure->toCanonical()),                            // 1
             llvm::ConstantInt::get(llvmInt32Type,                             // 2
                 (uint64_t) packModifiers(structure->getModifiers())),
-            llvm::ConstantInt::get(llvmInt16Type, classAnns.size()),          // 3
-            emitCStringArray(classAnns),                                      // 4
+            llvm::ConstantInt::get(llvmInt16Type, classAnnCount),             // 3
+            emitAnnotationArray(structure->getAnnotationList(),               // 4
+                structure->getAnnotationInstances()),
             llvm::ConstantInt::get(llvmInt16Type,                             // 5
                 structure->getPropertyList().size()),
             emitFieldTable(structure),                                        // 6
