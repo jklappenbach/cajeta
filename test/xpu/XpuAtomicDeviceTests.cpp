@@ -52,8 +52,8 @@ namespace {
 
 const char* kAtomicSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void reduce(Buffer<float32> out, Buffer<float32> in,\n"
@@ -249,8 +249,8 @@ TEST(XpuAtomicDeviceTests, floatAtomicsRunOnAmdDevice) {
 namespace {
 const char* kIntAtomicSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void ireduce(Buffer<uint32> out, uint32 n) {\n"

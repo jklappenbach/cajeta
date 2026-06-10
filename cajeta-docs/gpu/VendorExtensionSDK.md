@@ -94,7 +94,7 @@ From the foundation plan §1:
 - the **noun seam** as a first-class SPI (ray-query-to-core forces it),
 - **`Device.supports(...)`** + the capability heuristic,
 - the **impl-layer + degrade framework** (the machinery this SDK exposes),
-- the `cajeta.xpu.core → cajeta.gpu.core` rename.
+- the `cajeta.gpu.core → cajeta.gpu.core` rename.
 
 When those land and core has used them, this seed becomes the SDK's real spec.
 

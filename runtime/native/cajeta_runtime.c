@@ -5978,9 +5978,9 @@ void __cajeta_run_atexit_handlers(void) {
 }
 
 // ============================================================================
-// cajeta.xpu.core runtime stubs (CajetaXPU phases 1-2, step 2).
+// cajeta.gpu.core runtime stubs (CajetaXPU phases 1-2, step 2).
 //
-// The cajeta.xpu.core stdlib classes (Stream / Event / Fence / Thread /
+// The cajeta.gpu.core stdlib classes (Stream / Event / Fence / Thread /
 // Workgroup / Barrier / Wave) declare their methods @Native and forward to
 // the symbols below. LLJIT eagerly materializes all externs at module load
 // time, so these have to exist before any XPU implementation does.
@@ -8663,7 +8663,7 @@ static int cajeta_xpu_active_backend(void) {
 }
 
 // Device.supports(Capability) — does the active device advertise the capability
-// natively? The capability heuristic's runtime input (cajeta.xpu.core.Device).
+// natively? The capability heuristic's runtime input (cajeta.gpu.core.Device).
 // `cap` is the Capability ordinal (the stable contract in Capability.cajeta).
 // Returns 0/1. Append new capabilities as new cases; never renumber.
 int32_t __cajeta_xpu_device_supports(int32_t cap) {

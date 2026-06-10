@@ -25,10 +25,10 @@ namespace {
 // — and its presence bundles the backend (so the runtime selects the device).
 const char* kSupportsDriver =
     "package test;\n"
-    "import cajeta.xpu.core.Device;\n"
-    "import cajeta.xpu.core.Capability;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Device;\n"
+    "import cajeta.gpu.core.Capability;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class DevCap {\n"
     "    @Kernel\n"
     "    public static void touch(Buffer<uint32> b) {\n"

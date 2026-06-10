@@ -1,0 +1,50 @@
+package cajeta.gpu.core;
+
+/**
+ * Bits — per-invocation bit-manipulation primitives.
+ *
+ * Scalar, per-thread (not wave-cooperative like {@link Wave}): each
+ * work-item operates on its own 32-bit value. These lower to a single
+ * hardware instruction on every backend via *generic* LLVM intrinsics
+ * (no fork, no SPIR-V extension) — they reach the Vulkan/Shader flavor
+ * as core SPIR-V ops:
+ *
+ *   reverse   llvm.bitreverse -> OpBitReverse  / NVPTX brev / AMD v_bfrev
+ *   count     llvm.ctpop      -> OpBitCount     / NVPTX popc / AMD v_bcnt
+ *   rotate*   llvm.fshl/fshr  -> funnel shift   / native rotate where present
+ *
+ * The bread-and-butter of hashing, bitset scans, Morton/Z-order codes,
+ * and packing — the building blocks under e.g. a spatial hash or a
+ * popcount-indexed sparse structure.
+ */
+public final class Bits {
+
+    /**
+     * Bit-reversal of `value`: bit `i` of the result is bit `31 - i` of
+     * the input. (`OpBitReverse`.)
+     */
+    @Native("__cajeta_xpu_bits_reverse_u32")
+    public static uint32 reverse(uint32 value);
+
+    /**
+     * Population count — the number of set bits in `value`, in `[0, 32]`.
+     * (`OpBitCount`.) The mask-cardinality primitive: pair with
+     * {@link Wave#ballotSync} to count lanes, or to index a sparse set.
+     */
+    @Native("__cajeta_xpu_bits_count_u32")
+    public static uint32 count(uint32 value);
+
+    /**
+     * Rotate `value` left by `amount` bits (modulo 32); bits shifted off
+     * the top re-enter at the bottom. (`llvm.fshl(value, value, amount)`.)
+     */
+    @Native("__cajeta_xpu_bits_rotate_left_u32")
+    public static uint32 rotateLeft(uint32 value, uint32 amount);
+
+    /**
+     * Rotate `value` right by `amount` bits (modulo 32); bits shifted off
+     * the bottom re-enter at the top. (`llvm.fshr(value, value, amount)`.)
+     */
+    @Native("__cajeta_xpu_bits_rotate_right_u32")
+    public static uint32 rotateRight(uint32 value, uint32 amount);
+}

@@ -146,7 +146,7 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   `note: [mma-tiering]` (a severity below *warning* — it tells you the tier
   without dissuading use, and the path auto-promotes to the cores where the
   hardware exposes the config, e.g. bf16 WMMA on AMD). Walkthrough:
-  `cajeta.xpu.core.CooperativeMatrix` + `cajeta-docs/LintRules.md` § Notes.
+  `cajeta.gpu.core.CooperativeMatrix` + `cajeta-docs/LintRules.md` § Notes.
 - `coopGemmStaged` — **the LDS-staged variant**. The same 16×16 tile matmul, but
   the A and B tiles are first staged into workgroup-shared memory (LDS) by the
   whole workgroup via `CoopStage.panel`, published with a `Barrier.workgroup`, and

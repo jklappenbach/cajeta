@@ -19,10 +19,10 @@ namespace xpu {
 namespace {
 
 // Buffer<T> instantiations have canonical names of the form
-// "cajeta.xpu.core.Buffer<...>". The plain template (uninstantiated)
-// is just "cajeta.xpu.core.Buffer". Match the prefix to admit both.
+// "cajeta.gpu.core.Buffer<...>". The plain template (uninstantiated)
+// is just "cajeta.gpu.core.Buffer". Match the prefix to admit both.
 bool isBufferInstantiation(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.xpu.core.Buffer";
+    static const std::string kPrefix = "cajeta.gpu.core.Buffer";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     // Exact match or `Buffer<...>` follow-on
@@ -31,11 +31,11 @@ bool isBufferInstantiation(const std::string& canonical) {
 }
 
 // Texture2D is now templated on its texel scalar — `Texture2D<T = float32>` —
-// so an instance's canonical is either the bare `cajeta.xpu.core.Texture2D`
-// (default-filled to `<float32>`) or `cajeta.xpu.core.Texture2D<...>`. Match the
+// so an instance's canonical is either the bare `cajeta.gpu.core.Texture2D`
+// (default-filled to `<float32>`) or `cajeta.gpu.core.Texture2D<...>`. Match the
 // prefix like Buffer. Sampler is NOT a template (exact match).
 bool isTextureCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.xpu.core.Texture2D";
+    static const std::string kPrefix = "cajeta.gpu.core.Texture2D";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
@@ -43,7 +43,7 @@ bool isTextureCanonical(const std::string& canonical) {
 }
 // Texture3D<T = float32> — the volumetric sibling; same prefix-match shape.
 bool isTexture3DCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.xpu.core.Texture3D";
+    static const std::string kPrefix = "cajeta.gpu.core.Texture3D";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
@@ -51,7 +51,7 @@ bool isTexture3DCanonical(const std::string& canonical) {
 }
 // Texture1D<T = float32> — the linear sibling; same prefix-match shape.
 bool isTexture1DCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.xpu.core.Texture1D";
+    static const std::string kPrefix = "cajeta.gpu.core.Texture1D";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
@@ -59,7 +59,7 @@ bool isTexture1DCanonical(const std::string& canonical) {
 }
 // Texture2DArray<T = float32> — the layered sibling (N 2-D planes); same shape.
 bool isTexture2DArrayCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.xpu.core.Texture2DArray";
+    static const std::string kPrefix = "cajeta.gpu.core.Texture2DArray";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
@@ -67,20 +67,20 @@ bool isTexture2DArrayCanonical(const std::string& canonical) {
 }
 // TextureCube<T = float32> — the cube-map sibling (6 faces, direction-sampled).
 bool isTextureCubeCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.xpu.core.TextureCube";
+    static const std::string kPrefix = "cajeta.gpu.core.TextureCube";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
 bool isSamplerCanonical(const std::string& canonical) {
-    return canonical == "cajeta.xpu.core.Sampler";
+    return canonical == "cajeta.gpu.core.Sampler";
 }
 // Image2D (writable images) — the writable twin of Texture2D, matched by exact
 // canonical name (not a template). A 2-D float storage image, bound as a
 // STORAGE_IMAGE descriptor and written via `img.store(x, y, value)`.
 bool isImageCanonical(const std::string& canonical) {
-    return canonical == "cajeta.xpu.core.Image2D";
+    return canonical == "cajeta.gpu.core.Image2D";
 }
 // AccelerationStructure (cajeta-gpu Part C) — a descriptor-bound BVH handle,
 // admissible as a kernel argument (it lowers to an OpTypeAccelerationStructureKHR
@@ -88,10 +88,10 @@ bool isImageCanonical(const std::string& canonical) {
 // function-local — so it has no admissibility entry; it is recognized only by
 // the device lowerer (isRayQueryType) when it appears as a kernel-body local.
 bool isAccelStructCanonical(const std::string& canonical) {
-    return canonical == "cajeta.xpu.core.AccelerationStructure";
+    return canonical == "cajeta.gpu.core.AccelerationStructure";
 }
 bool isRayQueryCanonical(const std::string& canonical) {
-    return canonical == "cajeta.xpu.core.RayQuery";
+    return canonical == "cajeta.gpu.core.RayQuery";
 }
 // CooperativeMatrix (cajeta-gpu Part C) — like RayQuery, a device-only
 // kernel-local (a subgroup-cooperative matrix-core tile), NOT a kernel arg. It
@@ -99,12 +99,12 @@ bool isRayQueryCanonical(const std::string& canonical) {
 // canonical carries a `<...>` suffix; match the prefix. Recognized only by the
 // device lowerer when it appears as a kernel-body local.
 bool isCooperativeMatrixCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.xpu.core.CooperativeMatrix";
+    static const std::string kPrefix = "cajeta.gpu.core.CooperativeMatrix";
     return canonical.compare(0, kPrefix.size(), kPrefix) == 0;
 }
 
 // A class implements the KernelArg marker interface if its
-// implemented-interfaces list contains cajeta.xpu.core.KernelArg.
+// implemented-interfaces list contains cajeta.gpu.core.KernelArg.
 // `getImplementedInterfaces()` returns the concrete CajetaClass
 // pointers for interfaces (CajetaInterface is just a CajetaClass with
 // isInterface()=true, so we walk those).
@@ -112,7 +112,7 @@ bool implementsKernelArg(const std::shared_ptr<CajetaClass>& klass) {
     if (!klass) return false;
     for (auto& iface : klass->getImplementedInterfaces()) {
         if (!iface) continue;
-        if (iface->toCanonical() == "cajeta.xpu.core.KernelArg") {
+        if (iface->toCanonical() == "cajeta.gpu.core.KernelArg") {
             return true;
         }
     }
@@ -273,11 +273,11 @@ void validateKernelParams(const MethodPtr& method) {
                 << (t ? t->toCanonical() : std::string("<unknown>"))
                 << "' which is not admissible as a kernel argument. "
                 << "Admissible types: primitives, "
-                << "cajeta.xpu.core.Buffer<T>, cajeta.xpu.core.Texture2D, "
-                << "cajeta.xpu.core.Image2D, cajeta.xpu.core.Sampler, "
-                << "cajeta.xpu.core.AccelerationStructure, POD structs (a class with "
+                << "cajeta.gpu.core.Buffer<T>, cajeta.gpu.core.Texture2D, "
+                << "cajeta.gpu.core.Image2D, cajeta.gpu.core.Sampler, "
+                << "cajeta.gpu.core.AccelerationStructure, POD structs (a class with "
                 << "only primitive fields and no inheritance), or any type "
-                << "that implements cajeta.xpu.core.KernelArg.";
+                << "that implements cajeta.gpu.core.KernelArg.";
             throw cajeta::Exception(msg.str(), "XPU-K01");
         }
     }

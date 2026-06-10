@@ -83,8 +83,8 @@ float bf162f(uint16_t h) {
 
 const char* kF16Source =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wmma(Buffer<float16> a, Buffer<float16> b,\n"
@@ -180,8 +180,8 @@ TEST(XpuCooperativeMatrixAmdDeviceTests, f16WmmaMatmulOnDevice) {
 // intrinsic + bf16-as-i16 fragments. Same non-uniform, exact-integer check.
 const char* kBf16Source =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wmmabf(Buffer<bfloat16> a, Buffer<bfloat16> b,\n"
@@ -278,8 +278,8 @@ TEST(XpuCooperativeMatrixAmdDeviceTests, bf16WmmaMatmulOnDevice) {
 // would not match the int32 host reference. Exact integer arithmetic throughout.
 const char* kInt8Source =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wmmai8(Buffer<int8> a, Buffer<int8> b,\n"
@@ -381,8 +381,8 @@ TEST(XpuCooperativeMatrixAmdDeviceTests, int8WmmaMatmulOnDevice) {
 // products stays exact in f32.
 const char* kGemmKLoopSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void gemmk(Buffer<float16> a, Buffer<float16> b,\n"
@@ -486,9 +486,9 @@ TEST(XpuCooperativeMatrixAmdDeviceTests, gemmKLoopOnDevice) {
 // Layout-sensitive non-uniform data; K=32 small-integer sums stay exact in f32.
 const char* kGemmTiledSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.CooperativeMatrix;\n"
-    "import cajeta.xpu.core.Workgroup;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.CooperativeMatrix;\n"
+    "import cajeta.gpu.core.Workgroup;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void gemm(Buffer<float16> a, Buffer<float16> b,\n"
@@ -595,11 +595,11 @@ TEST(XpuCooperativeMatrixAmdDeviceTests, gemmOutputTilesOnDevice) {
 // class the result would be garbage. Non-uniform, exact-integer check.
 const char* kSharedLoadSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.CooperativeMatrix;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Workgroup;\n"
-    "import cajeta.xpu.core.Barrier;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.CooperativeMatrix;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Workgroup;\n"
+    "import cajeta.gpu.core.Barrier;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void shld(Buffer<float16> a, Buffer<float16> b,\n"
@@ -704,11 +704,11 @@ TEST(XpuCooperativeMatrixAmdDeviceTests, sharedLoadMatmulOnDevice) {
 // waves (the reuse that LDS staging buys). This is the headline of Option B.
 const char* kLdsStagedGemmSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.CooperativeMatrix;\n"
-    "import cajeta.xpu.core.CoopStage;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Barrier;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.CooperativeMatrix;\n"
+    "import cajeta.gpu.core.CoopStage;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Barrier;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void gemm(Buffer<float16> a, Buffer<float16> b,\n"

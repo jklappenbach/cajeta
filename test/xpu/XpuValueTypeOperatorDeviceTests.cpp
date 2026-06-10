@@ -119,8 +119,8 @@ std::string lowerKernelIr(const std::string& src, const std::string& cls,
 TEST(XpuValueTypeOperatorDeviceTests, deviceEqualityOperatorDispatches) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n")
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n")
         + kVec2Eq +
         "public class M {\n"
         "    @Kernel\n"
@@ -145,8 +145,8 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceEqualityOperatorDispatches) {
 TEST(XpuValueTypeOperatorDeviceTests, deviceInequalityDerivesFromEquality) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n")
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n")
         + kVec2Eq +
         "public class M {\n"
         "    @Kernel\n"
@@ -174,8 +174,8 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceInequalityDerivesFromEquality) {
 TEST(XpuValueTypeOperatorDeviceTests, deviceAggregateReturningOperatorDispatches) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n")
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n")
         + kVec2Add +
         "public class M {\n"
         "    @Kernel\n"
@@ -212,8 +212,8 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceAggregateReturningOperatorDispatches
 TEST(XpuValueTypeOperatorDeviceTests, deviceOperatorKernelValidatesAsSpirv) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n")
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n")
         + kVec2Add +
         "public class M {\n"
         "    @Kernel\n"

@@ -53,9 +53,9 @@ namespace {
 
 const char* kBitsSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Bits;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Bits;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void bitops(Buffer<uint32> out, Buffer<uint32> in,\n"

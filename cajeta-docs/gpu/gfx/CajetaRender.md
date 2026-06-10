@@ -831,7 +831,7 @@ A reasonable order of implementation. The substrate phases
   almost entirely compute kernels — they don't need
   `cajeta.render.raster`. Two options: bake compute integration into
   `cajeta.render` (current sketch), or keep the post-fx chain as a
-  thin wrapper around `cajeta.xpu.core` kernels. The current sketch
+  thin wrapper around `cajeta.gpu.core` kernels. The current sketch
   is more ergonomic; the alternative would shave a few hundred lines
   off the render library. Defer until the post-fx surface is real.
 - **Material authoring.** Cajeta-as-shading-language is the v1
