@@ -2,8 +2,15 @@ package tour;
 
 // Simple mutable counter — captured by closures in demoLambdas, used
 // directly in demoClasses to show field state survives method calls.
+//
+// Carries a couple of neutral annotations (`@Tracked`, `@Metric`, `@Mutates`)
+// purely so ReflectionDemo has something to read back at runtime — they have
+// no compiler behavior; any identifier is a valid annotation. Some carry
+// arguments (`@Tracked(2)`, `@Metric("count")`) so the demo can show REFL-6b
+// reading annotation argument VALUES, not just names.
+@Tracked(2)
 public class Counter {
-    int32 v;
+    @Metric("count") int32 v;
 
     public Counter() {
         this.v = 0;
@@ -13,6 +20,7 @@ public class Counter {
         this.v = this.v + 1;
     }
 
+    @Mutates
     public void bumpBy(int32 n) {
         this.v = this.v + n;
     }

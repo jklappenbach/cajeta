@@ -1031,3 +1031,483 @@ TEST(ReflectionTests, getBoxedW2Fields) {
         "    }\n"
         "}\n"), 7);
 }
+
+// --- REFL-6a: annotation NAME reflection -------------------------------------
+// Annotation names ride the RTTI for every owner (class / field / method /
+// constructor / parameter). A bare `@Foo` serializes to the canonical
+// `"code.Foo"` (single-identifier annotation names default to the `code`
+// package). Argument values are REFL-6b (not emitted yet). The fixture below
+// uses arbitrary user annotations — cajeta records any annotation identifier;
+// none need to be predeclared.
+
+// A class annotation is enumerable and reports its canonical name.
+TEST(ReflectionTests, classAnnotationName) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "@Service\n"
+        "public class Widget {\n"
+        "    public int32 id;\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Widget w = heap Widget();\n"
+        "        Class c = Class.of(w);\n"
+        "        if (c.getAnnotationCount() != 1) { return 10; }\n"
+        "        if (!c.getAnnotationName(0).equals(\"code.Service\")) { return 11; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// hasAnnotation matches the exact canonical name; a missing one is false.
+TEST(ReflectionTests, classHasAnnotation) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "@Service\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Widget());\n"
+        "        if (!c.hasAnnotation(\"code.Service\")) { return 1; }\n"
+        "        if (c.hasAnnotation(\"code.Nope\")) { return 2; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// An Annotation object reports its name (and toString is the same).
+TEST(ReflectionTests, annotationObjectName) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Service\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (!a.getName().equals(\"code.Service\")) { return 1; }\n"
+        "        if (!a.toString().equals(\"code.Service\")) { return 2; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// A plain class with no annotations reports a zero count.
+TEST(ReflectionTests, classNoAnnotationsZeroCount) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class Bare {\n"
+        "    public Bare() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        return Class.of(heap Bare()).getAnnotationCount();\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// A field annotation is readable; an unannotated field reports zero.
+TEST(ReflectionTests, fieldAnnotationName) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Field;\n"
+        "public class Widget {\n"
+        "    @Wired public int32 id;\n"
+        "    public int32 plain;\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Widget());\n"
+        "        Field id = c.getField(0);\n"
+        "        if (id.getAnnotationCount() != 1) { return 10; }\n"
+        "        if (!id.getAnnotationName(0).equals(\"code.Wired\")) { return 11; }\n"
+        "        if (!id.hasAnnotation(\"code.Wired\")) { return 12; }\n"
+        "        if (c.getField(1).getAnnotationCount() != 0) { return 13; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// A METHOD annotation is readable — this exercises the REFL-6a emission gap that
+// was filled (method annotations weren't in the RTTI before). Found by scanning
+// for the single annotated method, so the inherited-method indices don't matter.
+TEST(ReflectionTests, methodAnnotationName) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "    @Audited public int32 ping() { return 1; }\n"
+        "    public int32 quiet() { return 2; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Widget());\n"
+        "        int32 ok = 0;\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getMethodCount();\n"
+        "        while (i < n) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            if (m.getAnnotationCount() > 0) {\n"
+        "                if (m.getAnnotationName(0).equals(\"code.Audited\")) { ok = ok + 1; }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ok;\n"   // exactly one annotated method
+        "    }\n"
+        "}\n"), 1);
+}
+
+// A CONSTRUCTOR annotation is readable (same shared #MethodDesc shape).
+TEST(ReflectionTests, constructorAnnotationName) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Constructor;\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "    @Inject public Widget(int32 x) { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Widget());\n"
+        "        int32 ok = 0;\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getConstructorCount();\n"
+        "        while (i < n) {\n"
+        "            Constructor ct = c.getConstructor(i);\n"
+        "            if (ct.getAnnotationCount() > 0) {\n"
+        "                if (ct.getAnnotationName(0).equals(\"code.Inject\")) { ok = ok + 1; }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ok;\n"   // exactly one annotated constructor
+        "    }\n"
+        "}\n"), 1);
+}
+
+// A PARAMETER annotation is readable down at the parameter level.
+TEST(ReflectionTests, parameterAnnotationName) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "import cajeta.reflect.Parameter;\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "    public int32 scaled(@Bound int32 factor) { return factor; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Widget());\n"
+        "        int32 ok = 0;\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getMethodCount();\n"
+        "        while (i < n) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            if (m.getParameterCount() == 1) {\n"
+        "                Parameter p = m.getParameter(0);\n"
+        "                if (p.getAnnotationCount() == 1) {\n"
+        "                    if (p.getAnnotationName(0).equals(\"code.Bound\")) { ok = ok + 1; }\n"
+        "                }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ok;\n"   // exactly one 1-arg method, its param annotated
+        "    }\n"
+        "}\n"), 1);
+}
+
+// Multiple annotations on one class are all enumerated, in declared order.
+TEST(ReflectionTests, multipleClassAnnotations) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "@Service @Audited\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Widget());\n"
+        "        if (c.getAnnotationCount() != 2) { return 10; }\n"
+        "        if (!c.getAnnotationName(0).equals(\"code.Service\")) { return 11; }\n"
+        "        if (!c.getAnnotationName(1).equals(\"code.Audited\")) { return 12; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// --- REFL-6b: annotation ARGUMENT values -------------------------------------
+// Annotation arguments (`@Order(2)`, `@Component(name="disk")`, `@Profile(
+// "prod")`, `@Cacheable(true)`, `@Encoding(Foo.class)`) now ride the RTTI as
+// #AnnotationArgDesc rows. The Annotation object reads them by index or, with
+// kind-checking, by key. The single-unnamed-arg form is read with key "value".
+
+// Unnamed integer argument: @Order(2) -> getInt("value") == 2.
+TEST(ReflectionTests, classAnnotationIntArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Order(2)\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (a.getArgCount() != 1) { return 10; }\n"
+        "        if (a.getInt(\"value\") != (int64) 2) { return 11; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Named string argument: @Component(name = "disk") -> getString("name").
+TEST(ReflectionTests, classAnnotationNamedStringArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Component(name = \"disk\")\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (a.getArgCount() != 1) { return 10; }\n"
+        "        if (!a.getArgName(0).equals(\"name\")) { return 11; }\n"
+        "        if (!a.getString(\"name\").equals(\"disk\")) { return 12; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Unnamed string argument read with the "value" key: @Profile("prod").
+TEST(ReflectionTests, classAnnotationUnnamedStringArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Profile(\"prod\")\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (!a.getString(\"value\").equals(\"prod\")) { return 11; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Boolean argument: @Cacheable(true) -> getBool("value") == true.
+TEST(ReflectionTests, classAnnotationBoolArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Cacheable(true)\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (!a.getBool(\"value\")) { return 11; }\n"
+        "        if (a.getArgKind(0) != 2) { return 12; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Class-literal argument: @Refers(Marker.class) -> getClassRef -> "Marker"
+// (classifyLiteral strips the `.class` suffix). `Refers` is a neutral
+// annotation (no compiler behavior); `Marker` is a separate declared
+// annotation type — a self-reference (`Widget.class` on Widget) would re-enter
+// Widget's reflect class-object build and an active annotation like @Encoding
+// would invoke its own subsystem.
+TEST(ReflectionTests, classAnnotationClassRefArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@interface Marker { }\n"
+        "@Refers(Marker.class)\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (a.getArgKind(0) != 3) { return 11; }\n"
+        "        if (!a.getClassRef(\"value\").equals(\"Marker\")) { return 12; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// By-index inspection: kind tag, value, and the (empty) name of an unnamed arg.
+TEST(ReflectionTests, annotationArgByIndex) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Order(7)\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (a.getArgKind(0) != 0) { return 10; }\n"          // 0 = int64
+        "        if (a.getArgInt(0) != (int64) 7) { return 11; }\n"
+        "        if (a.getArgName(0).byteLength != 0) { return 12; }\n" // unnamed
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Wrong-kind / absent-key reads return the typed fallbacks (no throw).
+TEST(ReflectionTests, annotationArgWrongKindFallback) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Order(2)\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (!a.getString(\"value\").equals(\"\")) { return 10; }\n" // int read as string
+        "        if (a.getInt(\"missing\") != (int64) 0) { return 11; }\n"   // absent key
+        "        if (a.getBool(\"value\")) { return 12; }\n"                 // int read as bool
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Field annotation argument: @Min(5) on a field -> getInt("value") == 5.
+TEST(ReflectionTests, fieldAnnotationArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Field;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "public class Widget {\n"
+        "    @Min(5) public int32 v;\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Field f = Class.of(heap Widget()).getField(0);\n"
+        "        Annotation a = f.getAnnotation(0);\n"
+        "        if (a.getInt(\"value\") != (int64) 5) { return 11; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Method annotation argument: @Order(3) on a method, found by scan.
+TEST(ReflectionTests, methodAnnotationArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "    @Order(3) public int32 ping() { return 1; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Widget());\n"
+        "        int32 ok = 0;\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getMethodCount();\n"
+        "        while (i < n) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            if (m.getAnnotationCount() > 0) {\n"
+        "                Annotation a = m.getAnnotation(0);\n"
+        "                if (a.getInt(\"value\") == (int64) 3) { ok = ok + 1; }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ok;\n"   // exactly one method with @Order(3)
+        "    }\n"
+        "}\n"), 1);
+}
+
+// Multiple named arguments on one annotation, read independently by key.
+TEST(ReflectionTests, annotationMultipleNamedArgs) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Range(min = 3, max = 9)\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        if (a.getArgCount() != 2) { return 10; }\n"
+        "        if (a.getInt(\"min\") != (int64) 3) { return 11; }\n"
+        "        if (a.getInt(\"max\") != (int64) 9) { return 12; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// A bare annotation (no parens) reports zero arguments.
+TEST(ReflectionTests, annotationNoArgsZeroCount) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Tracked\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        return Class.of(heap Widget()).getAnnotation(0).getArgCount();\n"
+        "    }\n"
+        "}\n"), 0);
+}

@@ -119,6 +119,14 @@ public final class Class {
     @Native("__cajeta_class_new0")
     private static #Object new0Native(pointer rtti, int32 ctorIdx);
 
+    // REFL-6a annotation reflection. ownerKind 0 = the class itself.
+    @Native("__cajeta_rtti_annotation_count")
+    private static int32 annCountNative(pointer rtti, int32 ok, int32 oi, int32 si);
+    @Native("__cajeta_rtti_annotation_name_len")
+    private static int32 annNameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_name_into")
+    private static void annNameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int8[] out);
+
     // --- entry points -----------------------------------------------------
 
     /**
@@ -355,5 +363,45 @@ public final class Class {
                 "reflective construction via a private constructor of a @Sealed class is denied");
         }
         return new0Native(this.rtti, index);
+    }
+
+    // --- annotations (REFL-6a; names only — arguments are REFL-6b) ----------
+
+    /** Number of annotations declared on this class. */
+    public int32 getAnnotationCount() {
+        return annCountNative(this.rtti, 0, 0, 0);
+    }
+
+    /**
+     * Canonical name of the class annotation at `index` (e.g. `"code.Component"`
+     * for a bare `@Component`). Empty if out of range.
+     */
+    public #String getAnnotationName(int32 index) {
+        int32 len = annNameLen(this.rtti, 0, 0, 0, index);
+        int8[] out = heap int8[len];
+        annNameInto(this.rtti, 0, 0, 0, index, out);
+        return heap String(#out, len);
+    }
+
+    /** The class annotation at `index` as an {@link Annotation} object. */
+    public #Annotation getAnnotation(int32 index) {
+        return heap Annotation(this.rtti, 0, 0, 0, index);
+    }
+
+    /**
+     * Whether this class declares an annotation whose canonical name equals
+     * `name`. Matching is exact, so pass the canonical form (a bare
+     * `@Component` is `"code.Component"`).
+     */
+    public boolean hasAnnotation(String name) {
+        int32 n = this.getAnnotationCount();
+        int32 i = 0;
+        while (i < n) {
+            if (this.getAnnotationName(i).equals(name)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
     }
 }

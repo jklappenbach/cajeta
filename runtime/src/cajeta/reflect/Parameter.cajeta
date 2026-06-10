@@ -22,6 +22,15 @@ public final class Parameter {
     private static int32 typeLen(pointer rtti, int32 isCtor, int32 mIdx, int32 pIdx);
     @Native("__cajeta_rtti_param_type_into")
     private static void typeInto(pointer rtti, int32 isCtor, int32 mIdx, int32 pIdx, int8[] out);
+    // REFL-6a annotation reflection. ownerKind 4 = parameter of a method,
+    // 5 = parameter of a constructor (so ownerKind == 4 + ownerIsCtor); the
+    // owning member index rides ownerIndex and this parameter's position subIndex.
+    @Native("__cajeta_rtti_annotation_count")
+    private static int32 annCountNative(pointer rtti, int32 ok, int32 oi, int32 si);
+    @Native("__cajeta_rtti_annotation_name_len")
+    private static int32 annNameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_name_into")
+    private static void annNameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int8[] out);
 
     public Parameter(pointer rtti, int32 ownerIsCtor, int32 ownerIndex, int32 index) {
         this.rtti = rtti;
@@ -47,5 +56,42 @@ public final class Parameter {
         int8[] out = heap int8[len];
         typeInto(this.rtti, this.ownerIsCtor, this.ownerIndex, this.index, out);
         return heap String(#out, len);
+    }
+
+    // --- annotations (REFL-6a; names only — arguments are REFL-6b) ----------
+
+    // Annotation ownerKind for a parameter: 4 = parameter of a method, 5 =
+    // parameter of a constructor (mirrors the C resolver in cajeta_runtime.c).
+    private int32 annOwnerKind() { return 4 + this.ownerIsCtor; }
+
+    /** Number of annotations declared on this parameter. */
+    public int32 getAnnotationCount() {
+        return annCountNative(this.rtti, this.annOwnerKind(), this.ownerIndex, this.index);
+    }
+
+    /** Canonical name of this parameter's annotation at `i` (empty if out of range). */
+    public #String getAnnotationName(int32 i) {
+        int32 len = annNameLen(this.rtti, this.annOwnerKind(), this.ownerIndex, this.index, i);
+        int8[] out = heap int8[len];
+        annNameInto(this.rtti, this.annOwnerKind(), this.ownerIndex, this.index, i, out);
+        return heap String(#out, len);
+    }
+
+    /** This parameter's annotation at `i` as an {@link Annotation} object. */
+    public #Annotation getAnnotation(int32 i) {
+        return heap Annotation(this.rtti, this.annOwnerKind(), this.ownerIndex, this.index, i);
+    }
+
+    /** Whether this parameter declares an annotation with the given canonical name. */
+    public boolean hasAnnotation(String name) {
+        int32 n = this.getAnnotationCount();
+        int32 i = 0;
+        while (i < n) {
+            if (this.getAnnotationName(i).equals(name)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
     }
 }

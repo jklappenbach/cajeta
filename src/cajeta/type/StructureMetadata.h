@@ -148,6 +148,28 @@ namespace cajeta {
         llvm::StructType* getFieldStructType();
         llvm::StructType* getMethodStructType();
         llvm::StructType* getRttiStructType();
+        // REFL-6b annotation argument descriptors. #AnnotationArgDesc carries a
+        // single captured argument value (kind tag + scalar storage);
+        // #AnnotationDesc is { name, argCount, args } — the shape the `annotations`
+        // pointer in every owner descriptor now points at (was a bare i8* name
+        // array in REFL-6a; the LLVM field type is still an opaque ptr, so no
+        // descriptor-shape bump). Kept in lock-step with the C mirrors
+        // CajetaAnnotationDesc / CajetaAnnotationArgDesc in cajeta_runtime.c.
+        llvm::StructType* getAnnotationArgStructType();
+        llvm::StructType* getAnnotationStructType();
+
+        // Build the [M x #AnnotationArgDesc] table for one annotation's captured
+        // arguments; null ptr constant when there are none.
+        llvm::Constant* emitAnnotationArgArray(const vector<AnnotationArg>& args);
+        // Build the [N x #AnnotationDesc] table for one annotatable owner. Names
+        // come from `names` (the REFL-6a annotationList — order/count preserved);
+        // argument values come from the matching AnnotationInstance (paired by
+        // canonical name) when present. Parameter owners pass an empty
+        // `instances` (their parse path captures names only), so their args
+        // tables are empty but names still emit. Null ptr constant when empty.
+        llvm::Constant* emitAnnotationArray(
+            const list<QualifiedNamePtr>& names,
+            const vector<AnnotationInstancePtr>& instances);
 
         // Build the per-class descriptor-table globals; return ptr to the
         // table (or null ptr constant when empty).

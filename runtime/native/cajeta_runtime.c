@@ -3596,6 +3596,40 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
 // and parent lists) is referenced by pointer, so every field below sits at a
 // fixed offset regardless of the class.
 
+// REFL-6b annotation argument descriptors. The `annotations` pointer in every
+// owner descriptor below points at a [N x CajetaAnnotationDesc]; each annotation
+// in turn references its [argCount x CajetaAnnotationArgDesc]. MUST stay in
+// lock-step with getAnnotationStructType / getAnnotationArgStructType in
+// StructureMetadata.cpp.
+//
+// `kind` mirrors AnnotationArgKind (Annotatable.h). String/ClassRef payloads
+// live in strVal; Int64 in i64Val; Bool in boolVal. List kinds are recorded by
+// kind (argCount stays accurate) but carry no element data — only the scalar
+// accessors are surfaced this increment.
+enum {
+    CAJETA_AK_INT64      = 0,
+    CAJETA_AK_STRING     = 1,
+    CAJETA_AK_BOOL       = 2,
+    CAJETA_AK_CLASSREF   = 3,
+    CAJETA_AK_INT64LIST  = 4,
+    CAJETA_AK_STRINGLIST = 5,
+    CAJETA_AK_BOOLLIST   = 6,
+};
+
+typedef struct {
+    const char* name;        // argument key ("" for the unnamed single-arg form)
+    int32_t     kind;        // CAJETA_AK_*
+    int64_t     i64Val;
+    const char* strVal;      // String payload; type name for ClassRef; NULL otherwise
+    int8_t      boolVal;
+} CajetaAnnotationArgDesc;
+
+typedef struct {
+    const char*                    name;      // annotation canonical type name
+    int16_t                        argCount;
+    const CajetaAnnotationArgDesc* args;       // NULL when argCount == 0
+} CajetaAnnotationDesc;
+
 // Parameter descriptor — the ORIGINAL 5-field shape (#ParameterDesc). Kept
 // separate from CajetaFieldDesc, which gained byteOffset/typeFlags for fields.
 typedef struct {
@@ -3603,7 +3637,7 @@ typedef struct {
     const char*  type;
     int32_t      modifiers;
     int16_t      annotationCount;
-    const char** annotations;
+    const CajetaAnnotationDesc* annotations;
 } CajetaParamDesc;
 
 // Field descriptor (#FieldDesc). MUST match getFieldStructType() in
@@ -3613,7 +3647,7 @@ typedef struct {
     const char*  type;
     int32_t      modifiers;
     int16_t      annotationCount;
-    const char** annotations;
+    const CajetaAnnotationDesc* annotations;
     int32_t      byteOffset;        // offset in the instance struct; -1 if static
     int64_t      typeFlags;         // field type's CajetaType TYPE_ID flag word
 } CajetaFieldDesc;
@@ -3625,6 +3659,8 @@ typedef struct {
     int32_t                modifiers;
     int16_t                parameterCount;
     const CajetaParamDesc* parameters;
+    int16_t                annotationCount; // REFL-6a: method/ctor annotation names
+    const CajetaAnnotationDesc* annotations; // REFL-6b: names + arg values (NULL if none)
 } CajetaMethodDesc;
 
 typedef struct {
@@ -3632,7 +3668,7 @@ typedef struct {
     const char*             typeName;
     int32_t                 modifiers;
     int16_t                 classAnnotationCount;
-    const char**            classAnnotations;
+    const CajetaAnnotationDesc* classAnnotations;
     int16_t                 propertyCount;
     const CajetaFieldDesc*  properties;
     int16_t                 methodCount;
@@ -4083,6 +4119,157 @@ int32_t __cajeta_rtti_param_type_len(void* rtti, int32_t isCtor, int32_t mIdx, i
 void __cajeta_rtti_param_type_into(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx, void* out) {
     const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
     cajeta_copy_into(p ? p->type : "", out);
+}
+
+// REFL-6a annotation NAME reflection. Every annotatable owner stores its
+// annotation type names as a (count, const char**) pair in the RTTI; this one
+// resolver addresses any of them so the cajeta side needs a single native
+// family. `ownerKind` selects the owner:
+//   0 = class, 1 = field[ownerIndex], 2 = method[ownerIndex],
+//   3 = constructor[ownerIndex],
+//   4 = parameter subIndex of method[ownerIndex],
+//   5 = parameter subIndex of constructor[ownerIndex].
+// `ownerIndex` is the field/method/ctor index (ignored for the class); for the
+// parameter kinds it is the owning member's index and `subIndex` is the
+// user-visible parameter position. Returns the name array and writes its length
+// to *outCount; NULL (count 0) for an out-of-range owner. Each descriptor
+// carries the annotation's canonical name (REFL-6a) plus its captured argument
+// values (REFL-6b).
+static const CajetaAnnotationDesc* cajeta_annotation_list(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t* outCount) {
+    *outCount = 0;
+    if (!rtti) return NULL;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    switch (ownerKind) {
+        case 0:
+            *outCount = r->classAnnotationCount;
+            return r->classAnnotations;
+        case 1:
+            if (ownerIndex < 0 || ownerIndex >= r->propertyCount || !r->properties)
+                return NULL;
+            *outCount = r->properties[ownerIndex].annotationCount;
+            return r->properties[ownerIndex].annotations;
+        case 2:
+            if (ownerIndex < 0 || ownerIndex >= r->methodCount || !r->methods)
+                return NULL;
+            *outCount = r->methods[ownerIndex].annotationCount;
+            return r->methods[ownerIndex].annotations;
+        case 3:
+            if (ownerIndex < 0 || ownerIndex >= r->constructorCount || !r->constructors)
+                return NULL;
+            *outCount = r->constructors[ownerIndex].annotationCount;
+            return r->constructors[ownerIndex].annotations;
+        case 4:
+        case 5: {
+            const CajetaParamDesc* p =
+                cajeta_param_desc(rtti, ownerKind == 5, ownerIndex, subIndex);
+            if (!p) return NULL;
+            *outCount = p->annotationCount;
+            return p->annotations;
+        }
+        default:
+            return NULL;
+    }
+}
+int32_t __cajeta_rtti_annotation_count(void* rtti, int32_t ownerKind,
+                                       int32_t ownerIndex, int32_t subIndex) {
+    int32_t n = 0;
+    cajeta_annotation_list(rtti, ownerKind, ownerIndex, subIndex, &n);
+    return n;
+}
+// Resolve one annotation descriptor by its locator (rtti + ownerKind/
+// ownerIndex/subIndex + annIdx). NULL when out of range.
+static const CajetaAnnotationDesc* cajeta_annotation_desc(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
+    int32_t n = 0;
+    const CajetaAnnotationDesc* list =
+        cajeta_annotation_list(rtti, ownerKind, ownerIndex, subIndex, &n);
+    if (!list || annIdx < 0 || annIdx >= n) return NULL;
+    return &list[annIdx];
+}
+static const char* cajeta_annotation_name(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
+    const CajetaAnnotationDesc* d =
+        cajeta_annotation_desc(rtti, ownerKind, ownerIndex, subIndex, annIdx);
+    return (d && d->name) ? d->name : "";
+}
+int32_t __cajeta_rtti_annotation_name_len(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
+    return (int32_t) strlen(
+        cajeta_annotation_name(rtti, ownerKind, ownerIndex, subIndex, annIdx));
+}
+void __cajeta_rtti_annotation_name_into(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, void* out) {
+    cajeta_copy_into(
+        cajeta_annotation_name(rtti, ownerKind, ownerIndex, subIndex, annIdx), out);
+}
+
+// REFL-6b annotation ARGUMENT VALUE reflection. Indexed by the same owner
+// locator as the name natives, plus `annIdx` (which annotation) and `argIdx`
+// (which argument within it). All return a sentinel (0 / "" / kind -1) for an
+// out-of-range locator so the cajeta side reads uniformly.
+static const CajetaAnnotationArgDesc* cajeta_annotation_arg(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationDesc* d =
+        cajeta_annotation_desc(rtti, ownerKind, ownerIndex, subIndex, annIdx);
+    if (!d || !d->args || argIdx < 0 || argIdx >= d->argCount) return NULL;
+    return &d->args[argIdx];
+}
+int32_t __cajeta_rtti_annotation_arg_count(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
+    const CajetaAnnotationDesc* d =
+        cajeta_annotation_desc(rtti, ownerKind, ownerIndex, subIndex, annIdx);
+    return d ? (int32_t) d->argCount : 0;
+}
+int32_t __cajeta_rtti_annotation_arg_kind(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return a ? a->kind : -1;
+}
+int64_t __cajeta_rtti_annotation_arg_int(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return a ? a->i64Val : 0;
+}
+int32_t __cajeta_rtti_annotation_arg_bool(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return (a && a->boolVal) ? 1 : 0;
+}
+static const char* cajeta_annotation_arg_name(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return (a && a->name) ? a->name : "";
+}
+int32_t __cajeta_rtti_annotation_arg_name_len(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    return (int32_t) strlen(
+        cajeta_annotation_arg_name(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx));
+}
+void __cajeta_rtti_annotation_arg_name_into(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, void* out) {
+    cajeta_copy_into(
+        cajeta_annotation_arg_name(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx), out);
+}
+static const char* cajeta_annotation_arg_str(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return (a && a->strVal) ? a->strVal : "";
+}
+int32_t __cajeta_rtti_annotation_arg_str_len(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    return (int32_t) strlen(
+        cajeta_annotation_arg_str(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx));
+}
+void __cajeta_rtti_annotation_arg_str_into(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, void* out) {
+    cajeta_copy_into(
+        cajeta_annotation_arg_str(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx), out);
 }
 
 // REFL-4.1 (boxing, plan W5): classify a method's return type into a compact

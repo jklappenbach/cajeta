@@ -54,11 +54,21 @@ namespace cajeta {
         void updateParent(CajetaClassPtr structure) override {
             int i = structure->getProperties().size();
             for (auto variableDeclarator: variableDeclarators) {
+                // Construct with an EMPTY annotation set, then populate via the
+                // addAnnotationInstance loop below. Passing `annotations` here AND
+                // looping the instances would add each annotation to the
+                // property's annotationList TWICE (the Annotatable(set)
+                // constructor fills the list, and addAnnotationInstance ->
+                // addAnnotation fills it again) — a latent double-count that
+                // REFL-6a annotation reflection surfaced (a field's
+                // getAnnotationCount() came back doubled). The instance loop is
+                // the single source so annotationInstances (for findAnnotation:
+                // DI/JSON) and annotationList (for RTTI emission) stay aligned.
                 StructurePropertyPtr property = make_shared<StructureProperty>(
                     variableDeclarator->getIdentifier(),
                     type,
                     modifiers,
-                    annotations,
+                    set<QualifiedNamePtr>(),
                     i++);
                 for (auto& inst : annotationInstances) {
                     property->addAnnotationInstance(inst);
