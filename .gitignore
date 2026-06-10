@@ -6,6 +6,7 @@ build/
 build-prebuilt/
 build-cajeta/
 build-release/
+run-logs/
 gen/
 cajeta.cbp
 Makefile
