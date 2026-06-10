@@ -31,16 +31,23 @@ The verb seam exists; the rest of the model from doc §1 does not.
   not the active backend: free dispatches on the recorded impl and the Vulkan launch asserts
   it matches the compiled verb path. The compile-time face is `LoweringTarget::accelImpl()`
   (the old `softwareRayQuery()` now derives from it — one source). Behavior-preserving
-  (impl == backend today); device-verified CPU↔Vulkan. Buffer/Texture/Image keep their
-  existing dispatch (one impl per backend — no tag is meaningful); their provider slots are
-  reserved. The *per-impl* selection on one backend (e.g. Vulkan building a software BVH) is
-  the capability-heuristic brick's job.
-- [~] **Capability heuristic + `Device.supports(...)`** — `Device.supports(Capability)` is
-  built: a host query of the active device (`Capability.RayQueryNative` so far; ordinal =
-  stable runtime contract), `__cajeta_xpu_device_supports`. Device-verified (CPU false,
-  Vulkan-RT true; `XpuDeviceCapabilityTests`). Still to do: the *automatic* impl selection
-  (the heuristic that picks native vs software without an explicit guard) + explicit override
-  (default ≠ law: RT loses at large radius / extreme density), and more capabilities.
+  device-verified CPU↔Vulkan. Buffer/Texture/Image keep their existing dispatch (one impl per
+  backend — no tag is meaningful); their provider slots are reserved. **One backend, either
+  impl** now works: see the capability override below.
+- [~] **Capability heuristic + `Device.supports(...)` + override** — `Device.supports(Capability)`
+  built (host query of the active device; `Capability.RayQueryNative`; `__cajeta_xpu_device_supports`;
+  device-verified CPU false / Vulkan-RT true). **The explicit override + the execution mechanism
+  are built (inc-4 brick #3):** an `AsImpl {Auto, Software, Native}` enum + `AccelerationStructure.of(...)`
+  factory (default ctor = `Auto`) + a `CAJETA_GPU_AS_IMPL=software|native` env override (env wins),
+  resolved once by `caj_resolve_as_impl`. Forced-software on a ray-query-capable GPU genuinely
+  **runs**: the provider builds a software BVH into a storage buffer, the compiler emits a second
+  `"<name>$sw"` kernel variant (the `SoftwareRayQuery` walk in plain SPIR-V via `SpirvSoftwareTarget`;
+  needed a CFG-structurization pass in the SPIR-V emit pipeline + `shaderInt8`), and the launch
+  selects the variant + buffer-binds per the recorded impl. Proven by a three-way equality
+  (Vulkan-native == Vulkan-forced-software == CPU-software; `ToffeeSpatialIndexDeviceTests`).
+  Still to do: the *automatic* density/extent heuristic (the deciding factor — query radius — is
+  not known at AS build time, so the auto-policy stays "native if supported" for now);
+  triangle-software-on-Vulkan; more capabilities.
 - [ ] **Impl-layer + SPIR-V degrade framework** — the "SDK for writing SDKs": a vendor authors
   verb + native lowering + a vendor-supplied SPIR-V fallback, using the same seam machinery
   core uses. The unlock that makes vendor libraries portable instead of hard-locked. Shape
@@ -169,9 +176,10 @@ Core's contract is closed when **doc §3's verb set is ● / ○ on every shippe
    triangles + AABBs, full getters, confirm/generate, nearest-hit, cross-checked CPU↔Vulkan
    (§3.3). *Was the single biggest item.* (TLAS/instancing deferred.)
 2. **AMD `Image2D`** store/load; NVIDIA advanced seams + B5 on-device; **Metal** backend.
-3. **The model plumbing** — ~~noun seam~~ ✅ (§1), `Device.supports(...)` ✅ + the *automatic*
-   capability heuristic (remaining), the impl-layer/SPIR-V-degrade framework, the
-   ~~`cajeta.xpu.core → cajeta.gpu.core` rename~~ ✅.
+3. **The model plumbing** — ~~noun seam~~ ✅ (§1), `Device.supports(...)` ✅ + ~~the impl
+   override + execution mechanism~~ ✅ (`AsImpl`/`.of` + `CAJETA_GPU_AS_IMPL` + the `$sw`
+   variant; the *automatic* density/extent heuristic still remaining), the impl-layer/SPIR-V-
+   degrade framework, the ~~`cajeta.xpu.core → cajeta.gpu.core` rename~~ ✅.
 4. **fp8** when LLVM lands the type.
 
 The foundation is then the **frozen dependency contract** `cajeta-xpu` and `cajeta-gfx` target.

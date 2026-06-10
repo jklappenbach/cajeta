@@ -22,10 +22,20 @@ typedef enum CajetaAsImpl {
     CAJ_AS_IMPL_VULKAN_NATIVE = 1   // VK_KHR_acceleration_structure native BLAS
 } CajetaAsImpl;
 
-// The default impl a build picks: native iff the active backend offers native
-// inline ray query, else the portable software BVH (the floor). `native_available`
-// is the runtime's "active == Vulkan && that device advertises ray query." The
-// heuristic brick generalizes this (e.g. force software at large radius / density).
+// The app's per-AS impl *preference* (inc-4 brick #3) — the in-code override that
+// composes with the `CAJETA_GPU_AS_IMPL` env override. Ordinals MUST match the
+// `AsImpl` enum in runtime/src/cajeta/gpu/core/AsImpl.cajeta (comment-synced).
+typedef enum CajetaAsPref {
+    CAJ_AS_PREF_AUTO     = 0,  // heuristic default (native if supported, else software)
+    CAJ_AS_PREF_SOFTWARE = 1,  // force the portable software BVH
+    CAJ_AS_PREF_NATIVE   = 2   // prefer native (falls back to software if unsupported)
+} CajetaAsPref;
+
+// The default impl an AUTO build picks: native iff the active backend offers
+// native inline ray query, else the portable software BVH (the floor).
+// `native_available` is the runtime's "active == Vulkan && that device advertises
+// ray query." `caj_resolve_as_impl` (cajeta_runtime.c) layers the env override +
+// the explicit preference on top of this; this stays the pure policy core.
 static inline CajetaAsImpl caj_default_as_impl(int native_available) {
     return native_available ? CAJ_AS_IMPL_VULKAN_NATIVE : CAJ_AS_IMPL_SOFTWARE_BVH;
 }

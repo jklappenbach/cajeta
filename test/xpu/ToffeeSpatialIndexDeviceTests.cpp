@@ -672,3 +672,110 @@ TEST(ToffeeSpatialIndexDeviceTests, exactL2RefinementOnCpuSoftwareBvh) {
     EXPECT_EQ(r, 888) << "fail code " << r
                       << " (CPU software: 3xx box approx != 3; 2xx exact-L2 != 1)";
 }
+
+// ── Capability heuristic + override (inc-4 brick #3) ────────────────────────
+// The SAME minimal AABB ray query, built with AccelerationStructure.of(...,
+// AsImpl.Software) — the explicit override forcing the portable software BVH even
+// on a ray-query-capable GPU. On Vulkan this builds a software BVH into a storage
+// buffer and runs the "<name>$sw" kernel variant (the SoftwareRayQuery walk in
+// plain SPIR-V), selected at launch by the recorded impl. Identical to
+// kRqMinDriver except the AS construction, so its 777 must match the native
+// (minimalRayQueryOnDevice) and CPU (minimalRayQueryOnCpuSoftwareBvh) legs — the
+// three-way equality that proves the noun's recorded impl drives the verb.
+const char* kRqMinSoftwareDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.AsImpl;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqMinSw {\n"
+    "    @Kernel\n"
+    "    public static void countHits(AccelerationStructure scene,\n"
+    "                                 Buffer<float32> qx, Buffer<float32> qy,\n"
+    "                                 Buffer<float32> qz, Buffer<uint32> out,\n"
+    "                                 uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          qx[i], qy[i], qz[i], 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = AccelerationStructure.of(boxes, np, AsImpl.Software);\n"
+    "        uint32 n = 4;\n"
+    "        float32[] hqx = heap float32[n]; float32[] hqy = heap float32[n]; float32[] hqz = heap float32[n];\n"
+    "        uint32[] hout = heap uint32[n];\n"
+    "        hqx[0]=0.0f;  hqy[0]=0.0f; hqz[0]=0.0f;\n"
+    "        hqx[1]=5.0f;  hqy[1]=0.0f; hqz[1]=0.0f;\n"
+    "        hqx[2]=10.0f; hqy[2]=0.0f; hqz[2]=0.0f;\n"
+    "        hqx[3]=19.7f; hqy[3]=0.0f; hqz[3]=0.0f;\n"
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9;\n"
+    "        Buffer<float32> qx = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qy = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qz = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        qx.upload(hqx); qy.upload(hqy); qz.upload(hqz); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        countHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"
+    "        if (hout[1] != 0) { return 101; }\n"
+    "        if (hout[2] != 1) { return 102; }\n"
+    "        if (hout[3] != 1) { return 103; }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+// Native leg: kRqMinDriver (default Auto ctor) on a ray-query-capable Vulkan
+// device — the native BLAS + OpRayQuery. The reference 777 the forced-software
+// leg below must match.
+TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnDevice) {
+    if (!VulkanDriver::rayQueryAvailable()) {
+        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
+    }
+    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (Vulkan native AABB ray query: wrong hit count)";
+}
+
+// Forced-software leg (the brick's proof): AsImpl.Software on the SAME Vulkan
+// device builds a software BVH and runs the $sw variant; its 777 == the native leg
+// above == the CPU leg (minimalRayQueryOnCpuSoftwareBvh). One backend, either
+// impl, the verb following the noun.
+TEST(ToffeeSpatialIndexDeviceTests, forcedSoftwareOfApiOnDevice) {
+    if (!VulkanDriver::rayQueryAvailable()) {
+        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
+    }
+    std::map<std::string, std::string> sources = {{"test.RqMinSw", kRqMinSoftwareDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(sources, "test.RqMinSw", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (Vulkan FORCED-SOFTWARE via AsImpl.Software != native/CPU)";
+}

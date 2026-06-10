@@ -4465,14 +4465,14 @@ llvm::Value* LoweringTarget::quadAny(llvm::IRBuilderBase& b, llvm::Module& m,
 }
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
-                            LoweringTarget& target) {
+                            LoweringTarget& target, const std::string& entryName) {
     if (!method) unsupported("null kernel method");
     llvm::LLVMContext& ctx = deviceModule.getContext();
 
     std::vector<LoweringTarget::KernelParam> params = collectParams(method, ctx);
 
-    llvm::Function* fn =
-        target.createKernel(deviceModule, method->getName(), params);
+    std::string kname = entryName.empty() ? method->getName() : entryName;
+    llvm::Function* fn = target.createKernel(deviceModule, kname, params);
 
     DeviceLowerer lowerer(deviceModule, fn, target);
     lowerer.setParams(std::move(params));

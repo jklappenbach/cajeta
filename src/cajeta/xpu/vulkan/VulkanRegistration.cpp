@@ -70,32 +70,31 @@ namespace vulkan {
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_params", kpTy);
 
-        int emitted = 0;
-        for (auto& method : kernels) {
-            if (!method || !isKernel(*method)) continue;
-            const std::string entryName = method->getName();
-
-            // Lower this kernel into a fresh device module + emit SPIR-V, with
-            // its own TargetMachine (see above). The device lowerer builds types
-            // in its own context, so this never touches the host module until we
-            // have bytes.
+        // Emit + register one SPIR-V variant of `method` under `regName`. `software`
+        // selects the SoftwareRayQuery target (the "<name>$sw" variant); a fresh
+        // TargetMachine per call (see above). `registerKparams` is true only for the
+        // primary variant — the param metadata is shared (the launch overrides the
+        // AS bind kind per the recorded impl), so the $sw variant registers only its
+        // module. Returns true on success.
+        auto emitVariant = [&](const MethodPtr& method, const std::string& regName,
+                               bool software, bool registerKparams) -> bool {
             auto tm = createSpirvTargetMachine(arch);
-            if (!tm) continue;
+            if (!tm) return false;
             llvm::LLVMContext devCtx;
-            llvm::Module devMod("xpu.dev." + entryName, devCtx);
+            llvm::Module devMod("xpu.dev." + regName, devCtx);
             configureDeviceModule(devMod, *tm);
             llvm::Function* kfn = nullptr;
             try {
-                kfn = lowerKernel(method, devMod);
+                kfn = lowerKernel(method, devMod, software, regName);
             } catch (cajeta::Exception&) {
                 // Unsupported construct (XPU-N01) — leave this kernel to the
                 // host path; don't fail the whole compile.
-                continue;
+                return false;
             }
-            if (!kfn) continue;
+            if (!kfn) return false;
 
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm);
-            if (spirv.empty()) continue;  // codegen error (logged)
+            if (spirv.empty()) return false;  // codegen error (logged)
 
             // Embed the SPIR-V as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
@@ -103,57 +102,84 @@ namespace vulkan {
             auto* spvGV = new llvm::GlobalVariable(
                 hostModule, dataInit->getType(), /*isConstant=*/true,
                 llvm::GlobalValue::PrivateLinkage, dataInit,
-                "xpu.spirv." + entryName);
+                "xpu.spirv." + regName);
             spvGV->setAlignment(llvm::MaybeAlign(8));
 
-            // ctor: __cajeta_xpu_register_module(entryName, spvGV, len)
+            // ctor: __cajeta_xpu_register_module(regName, spvGV, len)
             llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
             llvm::Function* ctor = llvm::Function::Create(
                 ctorTy, llvm::GlobalValue::InternalLinkage,
-                "__cajeta_xpu_reg_ctor." + entryName, hostModule);
+                "__cajeta_xpu_reg_ctor." + regName, hostModule);
             llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", ctor);
             b.SetInsertPoint(bb);
             llvm::Value* nameStr =
-                b.CreateGlobalString(entryName, "xpu.kname." + entryName);
+                b.CreateGlobalString(regName, "xpu.kname." + regName);
             b.CreateCall(regFn, {nameStr, spvGV,
                                  llvm::ConstantInt::get(i64Ty, spirv.size())});
 
             // Per-kernel parameter metadata: which args are buffers vs scalars,
             // and the scalar byte sizes — so the runtime can bind buffers and
             // wrap scalars in single-element SSBOs at launch.
-            std::vector<KernelParamInfo> info =
-                collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
-            if (!info.empty()) {
-                std::vector<uint8_t> kinds;
-                std::vector<uint32_t> sizes;
-                kinds.reserve(info.size());
-                sizes.reserve(info.size());
-                for (auto& pi : info) {
-                    kinds.push_back(pi.kind);
-                    sizes.push_back(pi.byteSize);
+            if (registerKparams) {
+                std::vector<KernelParamInfo> info =
+                    collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
+                if (!info.empty()) {
+                    std::vector<uint8_t> kinds;
+                    std::vector<uint32_t> sizes;
+                    kinds.reserve(info.size());
+                    sizes.reserve(info.size());
+                    for (auto& pi : info) {
+                        kinds.push_back(pi.kind);
+                        sizes.push_back(pi.byteSize);
+                    }
+                    llvm::Constant* kindInit = llvm::ConstantDataArray::get(
+                        ctx, llvm::ArrayRef<uint8_t>(kinds.data(), kinds.size()));
+                    auto* kindGV = new llvm::GlobalVariable(
+                        hostModule, kindInit->getType(), /*isConstant=*/true,
+                        llvm::GlobalValue::PrivateLinkage, kindInit,
+                        "xpu.kpkind." + regName);
+                    llvm::Constant* szInit = llvm::ConstantDataArray::get(
+                        ctx, llvm::ArrayRef<uint32_t>(sizes.data(), sizes.size()));
+                    auto* szGV = new llvm::GlobalVariable(
+                        hostModule, szInit->getType(), /*isConstant=*/true,
+                        llvm::GlobalValue::PrivateLinkage, szInit,
+                        "xpu.kpsz." + regName);
+                    b.CreateCall(kpFn, {nameStr,
+                                        llvm::ConstantInt::get(
+                                            i32Ty, (uint32_t) info.size()),
+                                        kindGV, szGV});
                 }
-                llvm::Constant* kindInit = llvm::ConstantDataArray::get(
-                    ctx, llvm::ArrayRef<uint8_t>(kinds.data(), kinds.size()));
-                auto* kindGV = new llvm::GlobalVariable(
-                    hostModule, kindInit->getType(), /*isConstant=*/true,
-                    llvm::GlobalValue::PrivateLinkage, kindInit,
-                    "xpu.kpkind." + entryName);
-                llvm::Constant* szInit = llvm::ConstantDataArray::get(
-                    ctx, llvm::ArrayRef<uint32_t>(sizes.data(), sizes.size()));
-                auto* szGV = new llvm::GlobalVariable(
-                    hostModule, szInit->getType(), /*isConstant=*/true,
-                    llvm::GlobalValue::PrivateLinkage, szInit,
-                    "xpu.kpsz." + entryName);
-                b.CreateCall(kpFn, {nameStr,
-                                    llvm::ConstantInt::get(i32Ty,
-                                                           (uint32_t) info.size()),
-                                    kindGV, szGV});
             }
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
+            return true;
+        };
+
+        // A kernel uses ray query iff it has an AccelerationStructure parameter.
+        auto usesRayQuery = [&](const MethodPtr& method) -> bool {
+            for (auto& pi :
+                 collectKernelParamInfo(method, ctx, hostModule.getDataLayout()))
+                if (pi.kind == KernelParamInfo::AccelStruct) return true;
+            return false;
+        };
+
+        int emitted = 0;
+        for (auto& method : kernels) {
+            if (!method || !isKernel(*method)) continue;
+            const std::string entryName = method->getName();
+            if (!emitVariant(method, entryName, /*software=*/false,
+                             /*registerKparams=*/true))
+                continue;
             ++emitted;
+            // A ray-query kernel also gets a software variant "<name>$sw": the same
+            // kernel lowered with the portable SoftwareRayQuery walk in plain
+            // SPIR-V (AS bound as a storage buffer), selected at launch when the AS
+            // was built as a software BVH on this backend (inc-4 brick #3).
+            if (usesRayQuery(method))
+                emitVariant(method, entryName + "$sw", /*software=*/true,
+                            /*registerKparams=*/false);
         }
         return emitted;
     }

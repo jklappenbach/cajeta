@@ -94,7 +94,10 @@ From the foundation plan §1:
 - ✅ the **noun seam** as a first-class SPI (ray-query-to-core forced it) — built as
   `CajetaNounProvider`, dogfooded on `AccelerationStructure` (recorded impl tag; the verb
   follows the noun). This is the noun half of the machinery this SDK will expose.
-- ✅ **`Device.supports(...)`**; the *automatic* capability heuristic still to come,
+- ✅ **`Device.supports(...)`** + the explicit **impl override + execution mechanism** (an
+  `AsImpl` preference / `CAJETA_GPU_AS_IMPL` env override, and a per-impl kernel variant so a
+  forced choice actually runs — the "impl layers" the degrade framework will generalize); the
+  *automatic* density/extent heuristic still to come,
 - the **impl-layer + degrade framework** (the verb half — still unbuilt),
 - ✅ the `cajeta.xpu.core → cajeta.gpu.core` rename.
 

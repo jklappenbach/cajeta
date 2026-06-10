@@ -125,8 +125,11 @@ if (Device.supports(Capability.X)) {
 > **Status.** This is the design contract; it drives the plans. The portable surface ships
 > as **`cajeta.gpu.core`** (renamed from `cajeta.xpu.core`); `Device.supports(...)` is built;
 > the noun seam is now first-class (`CajetaNounProvider`, dogfooded on `AccelerationStructure`
-> whose built impl is a recorded property the verb follows — §4.4); the *automatic*
-> guard/heuristic and the vendor-SDK degrade framework are unbuilt.
+> whose built impl is a recorded property the verb follows — §4.4); the **explicit override +
+> execution mechanism** are built (an `AsImpl` enum + `AccelerationStructure.of(...)` + a
+> `CAJETA_GPU_AS_IMPL` env override; forced-software runs on a ray-query GPU via a `$sw` kernel
+> variant — one backend, either impl); the *automatic* density/extent heuristic and the
+> vendor-SDK degrade framework are unbuilt.
 
 ---
 
@@ -310,8 +313,10 @@ match this document:
   *and* AABBs, full getters + confirm/generate + nearest-hit, native + software);
   `Device.supports(...)`; the `cajeta.xpu.core → cajeta.gpu.core` rename; the noun seam as a
   first-class SPI (`CajetaNounProvider`, dogfooded on `AccelerationStructure` with a recorded
-  impl tag). Remaining: AMD `Image2D`; NVIDIA advanced seams + B5 on-device; Metal backend;
-  the *automatic* impl-selection heuristic + the impl-layer/degrade framework; fp8 (pending
+  impl tag); the capability **override + execution mechanism** (`AsImpl`/`.of` + `CAJETA_GPU_AS_IMPL`
+  + the `$sw` software-on-Vulkan kernel variant — one backend, either impl, cross-checked
+  three ways). Remaining: AMD `Image2D`; NVIDIA advanced seams + B5 on-device; Metal backend;
+  the *automatic* density/extent heuristic + the impl-layer/degrade framework; fp8 (pending
   LLVM).
 - **Vendor libraries** — out of this plan; each its own external effort on the degrade
   framework, sequenced by hardware (AMD now; NVIDIA on B5; Metal on Mac).
