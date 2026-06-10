@@ -8662,6 +8662,23 @@ static int cajeta_xpu_active_backend(void) {
     return r;
 }
 
+// Device.supports(Capability) — does the active device advertise the capability
+// natively? The capability heuristic's runtime input (cajeta.xpu.core.Device).
+// `cap` is the Capability ordinal (the stable contract in Capability.cajeta).
+// Returns 0/1. Append new capabilities as new cases; never renumber.
+int32_t __cajeta_xpu_device_supports(int32_t cap) {
+    int be = cajeta_xpu_active_backend();
+    switch (cap) {
+        case 0:  // RayQueryNative — hardware inline ray query
+#if defined(CAJETA_RT_HAS_VULKAN) && !defined(_WIN32)
+            return (be == CAJ_XPU_VULKAN && g_xpu_vk.rayQuery) ? 1 : 0;
+#else
+            (void) be; return 0;
+#endif
+        default: return 0;
+    }
+}
+
 // Synchronize the active backend (called by stream.sync). active_backend() has
 // already initialized the chosen backend, so its fn pointers are valid. CPU is
 // synchronous (nothing to drain); none is a no-op.
