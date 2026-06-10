@@ -231,9 +231,20 @@ namespace cajeta {
             // production --emit uses, and is now correct under reuse after the
             // scope-barrier fix in bringMethodTemplateInstantiationToLife
             // (CajetaClass.cpp). CAJETA_REUSE_FORCE_EMIT=1 selects it: the test
-            // REUSES (fast) instead of degrading to a fresh fallback. Default
-            // (unset) keeps the conservative fresh fallback until a clean
-            // full-suite W=24 run signs the emit path off as the default.
+            // REUSES (fast) instead of degrading to a fresh fallback.
+            //
+            // It stays OFF by default — DO NOT flip kForceEmit's default to true
+            // yet. A clean full-suite W=24 run with FORCE_EMIT=1 (2026-06-10)
+            // validated this *method*-template path (zero crashes, stdlib stays
+            // byte-pristine) but surfaced a residual cross-test MISCOMPILE on the
+            // CLASS-template-with-interface path that the twin gate in
+            // TemplateInstantiator.cpp still guards: under FORCE_EMIT,
+            // TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch
+            // emitted an invalid GEP into test.Holder<int32>'s interface vtable
+            // slots (JIT verify: "Invalid indices for GEP pointer type"), failing
+            // only in a cross-suite sequence. Forcing emit here is only safe once
+            // that class-template gate gets the same emit-module reparenting fix.
+            // Until then the conservative fresh fallback is the blessed default.
             static const bool kForceEmit =
                 std::getenv("CAJETA_REUSE_FORCE_EMIT") != nullptr;
             if (!kForceEmit) {

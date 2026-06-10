@@ -1,5 +1,43 @@
 # Stdlib Test-Reuse Cache — Correctness Fix
 
+## Status (2026-06-10, Linux) — DEFAULT LOCKED IN: reuse ON, FORCE_EMIT OFF (conservative gate).
+
+**Decision (this session).** The blessed default is **reuse ON, cross-module emit OFF**
+(`CAJETA_REUSE_FORCE_EMIT` unset → novel cross-module template instantiations fall back to a
+fresh, isolated Compiler). Rationale, from a clean full-suite W=24 measurement:
+
+- **Clean W=24 run, reuse ON + FORCE_EMIT=1 (2026-06-10): 11.6 min wall, 3478 ran, 3463 OK,
+  344 fallbacks.** vs the ~73 min Windows W=16 reuse-OFF baseline → **~6×**. Memory safe
+  (peaked ~42 GB used of 61 GB, swap untouched).
+- **Reuse mechanism is clean.** Every crash/failure in that run was triaged single-process
+  reuse-ON vs reuse-OFF:
+  - 4 crashed shards = **pre-existing** crashers absent from the exclude list
+    (`ThisAsArgTests.*`, `TemplatedInterfaceTests.encodingRejects{Wrong,Bare}*`): a null type
+    in `Method::generatePrototype → llvm::FunctionType::get` during ordinary compile-time
+    prototype generation — no reuse code on the stack; crash identically reuse-OFF.
+  - 3 of 4 unique failures (`InheritanceSmokeTests.crossFile…`,
+    `MultiSourceCompileTests.forwardReference…`,
+    `TemplatedInterfaceTests.encodingAcceptsMatchingImplements`) **fail reuse-OFF too** →
+    pre-existing.
+- **Why FORCE_EMIT is NOT the default.** The one genuinely reuse-induced failure,
+  `TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch`, appears ONLY under
+  FORCE_EMIT and ONLY in a cross-suite sequence: an invalid GEP into `test.Holder<int32>`'s
+  interface vtable/kind slots (JIT verify: "Invalid indices for GEP pointer type"). It passes
+  in isolation and within its own suite. Root cause class: the **class-template-with-interface
+  emit path** (the twin gate in `TemplateInstantiator.cpp`, untouched) still leaves
+  module-bound struct/vtable pointers across reusing tests. The conservative class-template
+  gate (unconditional fresh fallback, no FORCE_EMIT escape) is exactly what prevents this
+  miscompile from shipping. Comments at both gate sites now record this.
+- **The method-template emit path IS validated** (scope-barrier fix `5efb8ae`): under
+  FORCE_EMIT, `JsonSynthesizerTests` 70/70 (fallbacks 66→11), `ParallelDispatchCorrelationTests`
+  6/6, `ParallelStreamP1Tests` 49/49, zero verify errors, stdlib byte-pristine.
+
+**To flip FORCE_EMIT on later:** give the class-template+interface path the same emit-module
+reparenting the method path got (reparent `Holder<T>`'s struct type / vtable globals to the
+emit module), re-run W=24 FORCE_EMIT, confirm V2 + the parallel-stream families reuse cleanly.
+
+---
+
 ## Status (2026-06-10, Linux) — ALL reuse-induced crashes FIXED (commit `34f7a9c`). 113-set GREEN 113/113.
 
 The Linux pickup resolved the remaining failures. Two things landed:
