@@ -257,15 +257,19 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
       / `candidateBarycentricV`. `step` inlines Möller-Trumbore to capture t/u/v into the
       cursor; the getters read those fields. Enables nearest-hit-by-user-min (the RTNN
       pattern). Verified: `candidateGettersOnCpuSoftwareBvh` (t=5, u=v=0.25).
-- [ ] *(3b)* **Candidate getters — native**: needs new `llvm.spv.ray.query.*` fork
-      intrinsics (`GetIntersectionTKHR`, `GetIntersectionBarycentricsKHR`) +
-      `SpirvTarget` seams + a cross-check. The getter ops throw a clear diagnostic on the
-      native backend until then.
-- [ ] *(3b)* `frontFace` getter.
-- [ ] *(3b)* `confirm` / `generate` intersection + committed getters — return a *nearest*
-      hit (the driver-tracked closest), not just enumerated candidates. Software: cursor
-      committed state + the commit logic; native: `OpRayQueryConfirm/GenerateIntersectionKHR`
-      + committed getters (more fork intrinsics).
+- [x] *(3b software)* **`confirm` / `generate` + committed getters — software**:
+      `confirmIntersection` (triangle) / `generateIntersection(t)` (AABB) copy the current
+      candidate into the cursor's committed slot and **shrink `tMax` to the hit distance**,
+      so the remaining walk only finds closer hits — the committed hit ends up the *nearest*,
+      independent of traversal order. `committedType`/`committedDistance`/`committedBarycentricU`
+      /`V`/`committedPrimitiveIndex` read it. Verified: `nearestHitOnCpuSoftwareBvh` — two
+      stacked triangles, the nearest (prim 1, t=6) wins.
+- [ ] *(3b native)* **Native getters + confirm/generate**: new `llvm.spv.ray.query.*` fork
+      intrinsics (`GetIntersectionTKHR`, `GetIntersectionBarycentricsKHR`,
+      `Confirm/GenerateIntersectionKHR`, committed getters) + `SpirvTarget` seams +
+      cross-check. The new getter / confirm / generate ops throw a clear diagnostic on the
+      native backend until then. **Needs a build-cajeta LLVM rebuild** (the heavy path).
+- [ ] *(3b)* `frontFace` getter (software: MT det sign; native: a fork intrinsic).
 
 **Inc 4 — Plumbing hardening (shared with the rest of the model).**
 - [ ] `Device.supports(RayQueryNative)` + the selection heuristic with override (§6).

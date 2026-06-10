@@ -2507,6 +2507,8 @@ private:
             zero("nextNode"); zero("hasCandidate");
             zero("candPrim"); zero("candKind"); zero("committed");
             zero("candT"); zero("candU"); zero("candV");
+            zero("committedT"); zero("committedPrim");
+            zero("committedU"); zero("committedV");
             builder.CreateStore(cur, rqPtr);
             return llvm::ConstantInt::get(i32, 0);   // void statement
         }
@@ -2558,6 +2560,47 @@ private:
                                                               : "candV";
             llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
             return builder.CreateExtractValue(cur, {fieldIdx(fld)}, "rq.cand");
+        }
+        // confirm/generate (inc 3b): copy the current candidate into the committed
+        // slot and shrink tMax to the hit distance, so the rest of the walk only
+        // finds closer hits (the last commit is the nearest). confirm = triangle
+        // (committed type 1, t/bary from the candidate); generate = AABB (type 2,
+        // t from the shader argument).
+        if (name == "confirmIntersection" || name == "generateIntersection") {
+            bool tri = (name == "confirmIntersection");
+            if (tri && !args.empty())
+                unsupported("RayQuery.confirmIntersection takes no arguments");
+            if (!tri && args.size() != 1)
+                unsupported("RayQuery.generateIntersection expects (t)");
+            llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
+            auto get = [&](const char* f) {
+                return builder.CreateExtractValue(cur, {fieldIdx(f)}, f);
+            };
+            auto set = [&](const char* f, llvm::Value* v) {
+                cur = builder.CreateInsertValue(
+                    cur, coerceTo(v, ci.fields.at(f).type), {fieldIdx(f)});
+            };
+            llvm::Value* hitT = tri ? get("candT")
+                                    : coerceTo(lowerExpr(args[0].expression), f32);
+            set("committed", llvm::ConstantInt::get(i32, tri ? 1 : 2));
+            set("committedT", hitT);
+            set("committedPrim", get("candPrim"));
+            if (tri) { set("committedU", get("candU")); set("committedV", get("candV")); }
+            set("tMax", hitT);   // shrink the ray so later candidates are culled
+            builder.CreateStore(cur, rqPtr);
+            return llvm::ConstantInt::get(i32, 0);   // void statement
+        }
+        // Committed (nearest-hit) getters (inc 3b).
+        if (name == "committedDistance" || name == "committedBarycentricU" ||
+            name == "committedBarycentricV" || name == "committedPrimitiveIndex") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            const char* fld = name == "committedDistance"     ? "committedT"
+                            : name == "committedBarycentricU" ? "committedU"
+                            : name == "committedBarycentricV" ? "committedV"
+                                                              : "committedPrim";
+            llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
+            return builder.CreateExtractValue(cur, {fieldIdx(fld)}, "rq.committed");
         }
         unsupported("software RayQuery." + name + "()");
     }

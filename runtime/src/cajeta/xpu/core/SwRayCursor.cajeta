@@ -40,13 +40,22 @@ package cajeta.xpu.core;
     public float32 candT;
     public float32 candU;
     public float32 candV;
+    // Committed (nearest) hit (inc 3b): set by confirmIntersection (triangle) /
+    // generateIntersection (AABB), which also shrink `tMax` to committedT so the
+    // remaining walk only finds closer hits — the last commit is the nearest.
+    public float32 committedT;
+    public uint32 committedPrim;
+    public float32 committedU;
+    public float32 committedV;
 
     public SwRayCursor(float32 ox, float32 oy, float32 oz,
                        float32 dx, float32 dy, float32 dz,
                        float32 tMin, float32 tMax,
                        uint32 nextNode, uint32 hasCandidate,
                        uint32 candPrim, uint32 candKind, uint32 committed,
-                       float32 candT, float32 candU, float32 candV) {
+                       float32 candT, float32 candU, float32 candV,
+                       float32 committedT, uint32 committedPrim,
+                       float32 committedU, float32 committedV) {
         this.ox = ox; this.oy = oy; this.oz = oz;
         this.dx = dx; this.dy = dy; this.dz = dz;
         this.tMin = tMin; this.tMax = tMax;
@@ -58,5 +67,9 @@ package cajeta.xpu.core;
         this.candT = candT;
         this.candU = candU;
         this.candV = candV;
+        this.committedT = committedT;
+        this.committedPrim = committedPrim;
+        this.committedU = committedU;
+        this.committedV = committedV;
     }
 }
