@@ -2637,6 +2637,23 @@ namespace cajeta {
 
         llvmDropFunction = llvm::Function::Create(fnTy,
             llvm::Function::ExternalLinkage, dropName, lmod);
+        // The drop body's runtime callees (__cajeta_free here,
+        // __cajeta_class_virtual_drop / __cajeta_free_array / __cajeta_iface_drop
+        // in emitDropBodyInline) are resolved via getRuntimeFunction, which lands
+        // the extern decl in CajetaModule::emitTargetLlvmModule() == the current
+        // emit module. But this body lives in `lmod` (getEmitModule()), which under
+        // test-reuse is the persistent stdlib module while the active emit module is
+        // a per-test user module — so without this the decls land in the per-test
+        // module and verify fails with "referenced in a different module". Point the
+        // emit module at the drop body's own module for the duration of emission.
+        // No-op in production: emitTargetLlvmModule ignores currentEmitLlvmModule
+        // when there is no shared context (and lmod == module's own llvm module).
+        llvm::Module* prevDropEmitLlvm = CajetaModule::getCurrentEmitLlvmModule();
+        CajetaModule::setCurrentEmitLlvmModule(lmod);
+        struct RestoreDropEmitLlvm {
+            llvm::Module* prev;
+            ~RestoreDropEmitLlvm() { CajetaModule::setCurrentEmitLlvmModule(prev); }
+        } restoreDropEmitLlvm{prevDropEmitLlvm};
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(
             ctx, "entry", llvmDropFunction);
         llvm::IRBuilder<> b(bb);
