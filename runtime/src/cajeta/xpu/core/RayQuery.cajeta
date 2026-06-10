@@ -138,4 +138,51 @@ public final class RayQuery {
     public float32 candidateBarycentricV() {
         return 0.0f;
     }
+
+    /**
+     * Device-only intrinsic: commit the current TRIANGLE candidate as the hit. The
+     * ray's effective tMax shrinks to this candidate's distance, so the remaining
+     * traversal only finds closer hits — call it for each accepted triangle and the
+     * committed hit ends up the nearest. Read the result after the proceed() loop
+     * via committedType()/committedDistance()/committed barycentrics. Maps to
+     * OpRayQueryConfirmIntersectionKHR. Software (CPU) only in v1.
+     */
+    public void confirmIntersection() {
+    }
+
+    /**
+     * Device-only intrinsic: commit an AABB (procedural) candidate as a generated
+     * hit at parametric distance `t` (the shader's own intersection result; must be
+     * within the current ray extent). Shrinks tMax to `t` like confirmIntersection.
+     * Maps to OpRayQueryGenerateIntersectionKHR. Software (CPU) only in v1.
+     */
+    public void generateIntersection(float32 t) {
+    }
+
+    /**
+     * Device-only intrinsic: the parametric distance of the COMMITTED (nearest)
+     * intersection — valid after the proceed() loop when committedType() != 0.
+     * (OpRayQueryGetIntersectionTKHR, committed.) Software only in v1.
+     */
+    public float32 committedDistance() {
+        return 0.0f;
+    }
+
+    /** Committed triangle barycentric u (see candidateBarycentricU). */
+    public float32 committedBarycentricU() {
+        return 0.0f;
+    }
+
+    /** Committed triangle barycentric v. */
+    public float32 committedBarycentricV() {
+        return 0.0f;
+    }
+
+    /**
+     * Device-only intrinsic: the caller primitive index of the COMMITTED hit.
+     * (OpRayQueryGetIntersectionPrimitiveIndexKHR, committed.) Software only in v1.
+     */
+    public uint32 committedPrimitiveIndex() {
+        return 0;
+    }
 }

@@ -77,6 +77,12 @@ public final class SoftwareRayQuery {
         float32 tMin = cursor.tMin;
         float32 tMax = cursor.tMax;
         uint32 committed = cursor.committed;
+        // Committed (nearest) hit carried through untouched — confirm/generate at
+        // the call site set it; tMax above already reflects any commit's shrink.
+        float32 committedT = cursor.committedT;
+        uint32 committedPrim = cursor.committedPrim;
+        float32 committedU = cursor.committedU;
+        float32 committedV = cursor.committedV;
 
         uint32 i = cursor.nextNode;
         while (i < nodeCount) {
@@ -138,7 +144,9 @@ public final class SoftwareRayQuery {
                 if (isCandidate) {
                     return stack SwRayCursor(ox, oy, oz, dx, dy, dz, tMin, tMax,
                                            escape, 1, prim, kind, committed,
-                                           cT, cU, cV);
+                                           cT, cU, cV,
+                                           committedT, committedPrim,
+                                           committedU, committedV);
                 }
                 i = escape;       // leaf's box hit but primitive missed: skip it
             } else {
@@ -149,9 +157,10 @@ public final class SoftwareRayQuery {
                 }
             }
         }
-        // Exhausted: no candidate.
+        // Exhausted: no candidate (committed hit, if any, carried through).
         return stack SwRayCursor(ox, oy, oz, dx, dy, dz, tMin, tMax,
-                               nodeCount, 0, 0, 0, committed, 0.0f, 0.0f, 0.0f);
+                               nodeCount, 0, 0, 0, committed, 0.0f, 0.0f, 0.0f,
+                               committedT, committedPrim, committedU, committedV);
     }
 
     /**

@@ -375,6 +375,75 @@ const char* kBaryDriver =
     "    }\n"
     "}\n";
 
+// Inc 3b: nearest-hit via confirm + committed getters (CPU software). Two
+// triangles stacked along the ray at z=2 (prim 0) and z=4 (prim 1), both covering
+// the ray's xy. A ray from z=10 going down confirms every triangle candidate; the
+// committed (nearest) hit must be the z=4 triangle (prim 1) at t=6 — the tMax
+// shrink on confirm guarantees the closest wins regardless of traversal order.
+const char* kNearestDriver =
+    "package test;\n"
+    "import cajeta.xpu.core.AccelerationStructure;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.RayQuery;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class NearRq {\n"
+    "    @Kernel\n"
+    "    public static void nearest(AccelerationStructure scene,\n"
+    "                               Buffer<float32> outT, Buffer<uint32> outI) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i == 0) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          0.25f, 0.25f, 10.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, -1.0f, 100.0f);\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) { rq.confirmIntersection(); }\n"
+    "            }\n"
+    "            outT[0] = rq.committedDistance();\n"
+    "            outI[0] = rq.committedType();\n"
+    "            outI[1] = rq.committedPrimitiveIndex();\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        float32[] verts = heap float32[18];\n"
+    "        verts[0]=0.0f;  verts[1]=0.0f;  verts[2]=2.0f;\n"   // prim 0 @ z=2
+    "        verts[3]=1.0f;  verts[4]=0.0f;  verts[5]=2.0f;\n"
+    "        verts[6]=0.0f;  verts[7]=1.0f;  verts[8]=2.0f;\n"
+    "        verts[9]=0.0f;  verts[10]=0.0f; verts[11]=4.0f;\n"  // prim 1 @ z=4
+    "        verts[12]=1.0f; verts[13]=0.0f; verts[14]=4.0f;\n"
+    "        verts[15]=0.0f; verts[16]=1.0f; verts[17]=4.0f;\n"
+    "        AccelerationStructure mesh = heap AccelerationStructure(verts, 2, 3);\n"
+    "        float32[] ht = heap float32[1]; ht[0]=-9.0f;\n"
+    "        uint32[] hi = heap uint32[2]; hi[0]=9; hi[1]=9;\n"
+    "        Buffer<float32> outT = heap Buffer<float32>(1);\n"
+    "        Buffer<uint32> outI = heap Buffer<uint32>(2);\n"
+    "        outT.upload(ht); outI.upload(hi);\n"
+    "        Stream s = Stream.current();\n"
+    "        nearest.launch(s, grid: [1], block: [64])(mesh, outT, outI);\n"
+    "        s.sync();\n"
+    "        outT.download(ht); outI.download(hi);\n"
+    "        if (hi[0] != 1) { return 100; }\n"            // committed type = triangle
+    "        float32 dt = ht[0] - 6.0f;\n"
+    "        if (dt * dt > 0.001f) { return 101; }\n"      // nearest distance = 6
+    "        if (hi[1] != 1) { return 102; }\n"            // nearest prim = z=4 (idx 1)
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(PrismSpatialIndexDeviceTests, nearestHitOnCpuSoftwareBvh) {
+    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100: committed type; 101: nearest distance; 102: prim)";
+}
+
 TEST(PrismSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
     CajetaJit::Options o;
