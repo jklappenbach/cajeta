@@ -4312,6 +4312,13 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
         } else if (p.isSampler) {
             kind = KernelParamInfo::Sampler;
         } else if (p.isAccelStruct) {
+            // The AccelStruct binding encodes the native impl (accelImpl() ==
+            // VulkanNative): the noun is bound as an acceleration-structure
+            // descriptor. The software-BVH impl binds the AS as a plain buffer
+            // base instead — but that only occurs on CPU (which never reaches this
+            // Vulkan kparams/launch path), so impl == backend makes this correct
+            // today. Selecting the kind per-impl is the heuristic brick's change
+            // (when one backend can build either); the launch asserts the match.
             kind = KernelParamInfo::AccelStruct;
         } else if (p.isBufferArray) {
             kind = KernelParamInfo::BufferArray;   // checked before isBuffer (both true)

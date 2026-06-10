@@ -22,9 +22,19 @@ The verb seam exists; the rest of the model from doc §1 does not.
 
 - [x] **Verb seam** (`LoweringTarget`) — the core-method → driver-op mechanism; ~45 seams,
   native-or-portable-default + bit-exact cross-check. This is the built, working half.
-- [ ] **Noun seam** (resource provider) — core datastructure → per-backend representation
-  (build-from-description, not convert-between-builts). Does not exist as a first-class seam;
-  ray query forces it (§3.3).
+- [x] **Noun seam** (resource provider) — core datastructure → per-backend representation
+  (build-from-description, not convert-between-builts). First-class as `CajetaNounProvider`
+  (`runtime/native/cajeta_runtime.c`): a per-backend struct of build/free hooks (the runtime
+  mirror of the verb seam), dogfooded on the seam-defining `AccelerationStructure` noun. Its
+  built impl is now a **recorded property** of the noun (`CajetaAsImpl` in
+  `cajeta_noun_impl.h`, stored as `AccelerationStructure.impl`), so the verb follows the noun,
+  not the active backend: free dispatches on the recorded impl and the Vulkan launch asserts
+  it matches the compiled verb path. The compile-time face is `LoweringTarget::accelImpl()`
+  (the old `softwareRayQuery()` now derives from it — one source). Behavior-preserving
+  (impl == backend today); device-verified CPU↔Vulkan. Buffer/Texture/Image keep their
+  existing dispatch (one impl per backend — no tag is meaningful); their provider slots are
+  reserved. The *per-impl* selection on one backend (e.g. Vulkan building a software BVH) is
+  the capability-heuristic brick's job.
 - [~] **Capability heuristic + `Device.supports(...)`** — `Device.supports(Capability)` is
   built: a host query of the active device (`Capability.RayQueryNative` so far; ordinal =
   stable runtime contract), `__cajeta_xpu_device_supports`. Device-verified (CPU false,
@@ -159,8 +169,9 @@ Core's contract is closed when **doc §3's verb set is ● / ○ on every shippe
    triangles + AABBs, full getters, confirm/generate, nearest-hit, cross-checked CPU↔Vulkan
    (§3.3). *Was the single biggest item.* (TLAS/instancing deferred.)
 2. **AMD `Image2D`** store/load; NVIDIA advanced seams + B5 on-device; **Metal** backend.
-3. **The model plumbing** — noun seam, `Device.supports(...)` + capability heuristic, the
-   impl-layer/SPIR-V-degrade framework, the `cajeta.gpu.core → cajeta.gpu.core` rename.
+3. **The model plumbing** — ~~noun seam~~ ✅ (§1), `Device.supports(...)` ✅ + the *automatic*
+   capability heuristic (remaining), the impl-layer/SPIR-V-degrade framework, the
+   ~~`cajeta.xpu.core → cajeta.gpu.core` rename~~ ✅.
 4. **fp8** when LLVM lands the type.
 
 The foundation is then the **frozen dependency contract** `cajeta-xpu` and `cajeta-gfx` target.

@@ -25,6 +25,10 @@
 // is no link clash with the copy embedded as runtime bitcode.
 #include "../../runtime/native/cajeta_bvh.c"
 
+// The noun seam's shared impl contract (inc-4 brick #2) — the AS noun's recorded
+// impl identity, mirrored by LoweringTarget::NounImpl (comment-synced).
+#include "../../runtime/native/cajeta_noun_impl.h"
+
 namespace {
 
 // Re-derive the layout independently (do NOT reuse the builder's read path) so the
@@ -346,4 +350,23 @@ TEST(SoftwareBvhBuilderTests, triangleCloudMatchesBruteForce) {
                              << rays[i].o[1] << "): mismatch";
     }
     free((void*) (intptr_t) h);
+}
+
+// Noun-impl contract (inc-4 brick #2). These ordinals are a stable runtime
+// contract: AccelerationStructure.cajeta stores `impl` as this value, the Vulkan
+// launch reads it from the AS POD (offset 12) to assert the noun/verb match, and
+// __cajeta_xpu_accel_free dispatches free on it. They MUST stay mirrored by
+// LoweringTarget::NounImpl in the compiler (comment-synced, like CAJETA_KP_*);
+// renumbering silently breaks all three coupling points.
+TEST(NounImplContract, ordinalsAreStable) {
+    EXPECT_EQ(0, (int) CAJ_AS_IMPL_SOFTWARE_BVH);
+    EXPECT_EQ(1, (int) CAJ_AS_IMPL_VULKAN_NATIVE);
+}
+
+// The default-impl policy: native iff the active backend advertises native ray
+// query, else the portable software BVH (the floor). The capability-heuristic
+// brick generalizes this; today it is the single source impl == backend flows from.
+TEST(NounImplContract, defaultPolicyFollowsNativeAvailability) {
+    EXPECT_EQ(CAJ_AS_IMPL_SOFTWARE_BVH,  caj_default_as_impl(0));
+    EXPECT_EQ(CAJ_AS_IMPL_VULKAN_NATIVE, caj_default_as_impl(1));
 }

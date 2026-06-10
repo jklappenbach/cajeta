@@ -10222,6 +10222,105 @@ void __cajeta_xpu_image_free(void* self, int64_t handle) {
 // noun). Self-contained pure C, also compiled directly by the builder unit test.
 #include "cajeta_bvh.c"
 
+// --- Noun seam: the resource-provider SPI (cajeta-gpu inc-4 brick #2) --------
+//
+// The first-class mirror of the verb seam (LoweringTarget): a struct of build/
+// free hooks, one instance per backend, through which a core noun is built from
+// its description. This is the machinery a vendor extension implements for a
+// noun (VendorExtensionSDK.md §2) — build-from-description, not convert-between-
+// builts. Dogfooded on AccelerationStructure: the seam-defining noun
+// (CajetaGPU.md §4) and the only noun with impl divergence (software BVH vs
+// native BLAS). Buffer/Texture/Image have one impl per backend, so their slots
+// are reserved here but stay on their existing switch dispatch (no tag would be
+// meaningful). Each build reports the CajetaAsImpl it used; the noun records it;
+// free follows the RECORDED impl, not the active backend.
+#include "cajeta_noun_impl.h"
+
+typedef struct CajetaNounProvider {
+    const char*  name;
+    int          backend_id;
+    // AccelerationStructure noun (wired). out_impl reports the impl the build
+    // chose — the hook the heuristic brick reads once one backend can pick either.
+    int64_t      (*accel_build_aabbs)(const float* boxes, uint32_t count,
+                                      CajetaAsImpl* out_impl);
+    int64_t      (*accel_build_triangles)(const float* verts, uint32_t triCount,
+                                          uint32_t stride, CajetaAsImpl* out_impl);
+    void         (*accel_free)(int64_t handle, CajetaAsImpl impl);
+    CajetaAsImpl (*accel_default_impl)(void);
+    // Buffer / Texture / Image noun slots: reserved (the unified contract);
+    // routed by their existing dispatchers until they gain impl divergence.
+} CajetaNounProvider;
+
+// CPU provider — the portable software BVH (the floor; handle == host blob ptr).
+static int64_t caj_cpu_accel_build_aabbs(const float* boxes, uint32_t count,
+                                         CajetaAsImpl* out_impl) {
+    if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
+    return cajeta_xpu_cpu_accel_build_aabbs(boxes, count);
+}
+static int64_t caj_cpu_accel_build_triangles(const float* verts, uint32_t triCount,
+                                             uint32_t stride, CajetaAsImpl* out_impl) {
+    if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
+    return cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride);
+}
+static void caj_cpu_accel_free(int64_t handle, CajetaAsImpl impl) {
+    (void) impl;
+    free((void*) (intptr_t) handle);
+}
+static CajetaAsImpl caj_cpu_accel_default_impl(void) { return CAJ_AS_IMPL_SOFTWARE_BVH; }
+
+static const CajetaNounProvider caj_cpu_noun_provider = {
+    "cpu", CAJ_XPU_CPU,
+    caj_cpu_accel_build_aabbs, caj_cpu_accel_build_triangles,
+    caj_cpu_accel_free, caj_cpu_accel_default_impl,
+};
+
+// Vulkan provider — the native VK_KHR_acceleration_structure BLAS.
+static int64_t caj_vk_accel_build_aabbs(const float* boxes, uint32_t count,
+                                        CajetaAsImpl* out_impl) {
+    if (out_impl) *out_impl = CAJ_AS_IMPL_VULKAN_NATIVE;
+    return cajeta_xpu_vk_accel_build_aabbs(boxes, count);
+}
+static int64_t caj_vk_accel_build_triangles(const float* verts, uint32_t triCount,
+                                            uint32_t stride, CajetaAsImpl* out_impl) {
+    if (out_impl) *out_impl = CAJ_AS_IMPL_VULKAN_NATIVE;
+    return cajeta_xpu_vk_accel_build_triangles(verts, triCount, stride);
+}
+static void caj_vk_accel_free(int64_t handle, CajetaAsImpl impl) {
+    (void) impl;
+    cajeta_xpu_vk_accel_free(handle);
+}
+static CajetaAsImpl caj_vk_accel_default_impl(void) { return CAJ_AS_IMPL_VULKAN_NATIVE; }
+
+static const CajetaNounProvider caj_vk_noun_provider = {
+    "vulkan", CAJ_XPU_VULKAN,
+    caj_vk_accel_build_aabbs, caj_vk_accel_build_triangles,
+    caj_vk_accel_free, caj_vk_accel_default_impl,
+};
+
+// Registry indexed by backend id. CUDA/HIP have no device AS yet (software-BVH-
+// on-device is a follow-up): NULL there.
+static const CajetaNounProvider* const g_xpu_noun_providers[CAJ_XPU_COUNT] = {
+    [CAJ_XPU_VULKAN] = &caj_vk_noun_provider,
+    [CAJ_XPU_CPU]    = &caj_cpu_noun_provider,
+};
+
+// The provider for the active backend (the build site).
+static const CajetaNounProvider* cajeta_xpu_noun_provider(void) {
+    int be = cajeta_xpu_active_backend();
+    if (be < 0 || be >= CAJ_XPU_COUNT) return NULL;
+    return g_xpu_noun_providers[be];
+}
+
+// The provider that owns a recorded impl (the free site — follows the noun, not
+// the active backend, so free is correct regardless of which backend is current).
+static const CajetaNounProvider* cajeta_xpu_noun_provider_for_impl(CajetaAsImpl impl) {
+    switch (impl) {
+        case CAJ_AS_IMPL_SOFTWARE_BVH:  return &caj_cpu_noun_provider;
+        case CAJ_AS_IMPL_VULKAN_NATIVE: return &caj_vk_noun_provider;
+    }
+    return NULL;
+}
+
 // --- AccelerationStructure device-BVH primitives (Part C inc 3b) -------------
 // Instance @Native methods on AccelerationStructure.cajeta. The leading `self`
 // is the cajeta `this`, ignored — the device side is keyed on the returned
@@ -10236,16 +10335,12 @@ int64_t __cajeta_xpu_accel_build_aabbs(void* self, void* aabbs, uint32_t count) 
     (void) self;
     if (!aabbs || count == 0) return 0;
     const float* boxes = (const float*) ((const char*) aabbs + 8);
-    switch (cajeta_xpu_active_backend()) {
-        case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_accel_build_aabbs(boxes, count);
-        case CAJ_XPU_CPU:
-            // Portable software BVH (handle == host blob pointer, CPU convention).
-            return cajeta_xpu_cpu_accel_build_aabbs(boxes, count);
-        // HIP/CUDA software BVH builds (upload the same blob to a device buffer)
-        // are a follow-up; no device AS there today.
-        default: return 0;
-    }
+    const CajetaNounProvider* p = cajeta_xpu_noun_provider();
+    if (!p || !p->accel_build_aabbs) return 0;  // no device AS on this backend
+    CajetaAsImpl impl;                          // reported; recorded via accel_impl
+    int64_t h = p->accel_build_aabbs(boxes, count, &impl);
+    (void) impl;
+    return h;
 }
 
 // __cajeta_xpu_accel_build_triangles(this, vertices, triCount, stride) -> handle.
@@ -10258,23 +10353,31 @@ int64_t __cajeta_xpu_accel_build_triangles(void* self, void* vertices,
     (void) self;
     if (!vertices || triCount == 0) return 0;
     const float* verts = (const float*) ((const char*) vertices + 8);
-    switch (cajeta_xpu_active_backend()) {
-        case CAJ_XPU_VULKAN:
-            return cajeta_xpu_vk_accel_build_triangles(verts, triCount, stride);
-        case CAJ_XPU_CPU:
-            return cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride);
-        default: return 0;
-    }
+    const CajetaNounProvider* p = cajeta_xpu_noun_provider();
+    if (!p || !p->accel_build_triangles) return 0;
+    CajetaAsImpl impl;
+    int64_t h = p->accel_build_triangles(verts, triCount, stride, &impl);
+    (void) impl;
+    return h;
 }
 
-void __cajeta_xpu_accel_free(void* self, int64_t handle) {
+// __cajeta_xpu_accel_impl(this) -> CajetaAsImpl. The impl the active provider
+// builds; AccelerationStructure.cajeta records it on the noun right after the
+// build. Deterministic from the active backend today (impl == backend); the
+// heuristic brick makes the build choose, and this returns that recorded choice.
+int32_t __cajeta_xpu_accel_impl(void* self) {
+    (void) self;
+    const CajetaNounProvider* p = cajeta_xpu_noun_provider();
+    return (int32_t) (p ? p->accel_default_impl() : CAJ_AS_IMPL_SOFTWARE_BVH);
+}
+
+// Free follows the RECORDED impl (passed from the noun), not the active backend.
+void __cajeta_xpu_accel_free(void* self, int64_t handle, int32_t impl) {
     (void) self;
     if (!handle) return;
-    switch (cajeta_xpu_active_backend()) {
-        case CAJ_XPU_VULKAN: cajeta_xpu_vk_accel_free(handle); return;
-        case CAJ_XPU_CPU:    free((void*) (intptr_t) handle); return;
-        default: return;
-    }
+    const CajetaNounProvider* p =
+        cajeta_xpu_noun_provider_for_impl((CajetaAsImpl) impl);
+    if (p && p->accel_free) p->accel_free(handle, (CajetaAsImpl) impl);
 }
 
 // Address one axis: clamp-to-edge (addressMode 0) or repeat/wrap (1). `n` > 0.
@@ -10777,13 +10880,29 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 bindings[i] = *(int64_t*) argv[i];
                 bkinds[i] = CAJ_VKB_STORAGE_IMAGE;
                 break;
-            case CAJETA_KP_ACCEL:
-                // argv slot points at the AccelerationStructure POD; its first
-                // field (deviceHandle) is the accel-table index. Bind it as an
-                // acceleration-structure descriptor.
+            case CAJETA_KP_ACCEL: {
+                // argv slot points at the AccelerationStructure POD:
+                // { i64 deviceHandle, u32 primitiveCount, i32 impl }. The first
+                // field is the accel-table index. Before binding it as a native
+                // acceleration-structure descriptor, verify the noun's RECORDED
+                // impl matches the verb path this kernel was compiled for (the
+                // impl == backend invariant): a software-BVH AS reaching the
+                // native Vulkan launch is a noun/verb mismatch until the heuristic
+                // brick adds the buffer-bind arm.
+                int32_t asImpl = ((const int32_t*) argv[i])[3];
+                if (asImpl != CAJ_AS_IMPL_VULKAN_NATIVE) {
+                    fprintf(stderr,
+                            "cajeta.xpu: kernel '%s' arg %d AccelerationStructure was "
+                            "built as impl %d, but the Vulkan launch binds a native BLAS "
+                            "(impl %d) — noun/verb impl mismatch\n",
+                            kernelName, i, asImpl, CAJ_AS_IMPL_VULKAN_NATIVE);
+                    built = 0;
+                    break;
+                }
                 bindings[i] = *(int64_t*) argv[i];
                 bkinds[i] = CAJ_VKB_ACCEL;
                 break;
+            }
             case CAJETA_KP_SAMPLER: {
                 // argv slot points at the by-value Sampler POD: { i32 filterMode,
                 // i32 addressMode }. Build a transient VkSampler from it.
