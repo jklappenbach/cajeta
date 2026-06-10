@@ -435,16 +435,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // cajeta-object rebinding. Until then the default path is the original
     // fully-isolated compile. Opt in with CAJETA_STDLIB_REUSE=1.
     static const bool kReuseEnabled = std::getenv("CAJETA_STDLIB_REUSE") != nullptr;
-    const bool reuseStdlib = kReuseEnabled && stdlibReusable(opts);
+    bool reuseStdlib = kReuseEnabled && stdlibReusable(opts);
     auto& stdlibCache = StdlibReuseCache::instance();
-    if (reuseStdlib) {
-        stdlibCache.ensurePrimed();
-        stdlibCache.restoreBaseline();
-        cajeta::Compiler::setSharedContext(&stdlibCache.sharedContext);
-    } else {
-        cajeta::Compiler::setSharedContext(nullptr);
-    }
-    mark("stdlib reuse prep");
 
     static std::mt19937_64 rng(std::random_device{}());
     auto sourceRoot = std::filesystem::temp_directory_path()
@@ -463,55 +455,105 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         sourcePaths.push_back(full);
     }
 
-    auto jitState = std::unique_ptr<CajetaJit>(new CajetaJit);
-
-    auto compiler = std::make_unique<Compiler>();
-    compiler->setBoundsCheckEnabled(opts.boundsCheckEnabled);
-    compiler->getMutableFlags().overflowChecks =
-        opts.overflowChecksEnabled
-            ? cajeta::OverflowChecks::On
-            : cajeta::OverflowChecks::Wrapping;
-    if (opts.boundsCheckMode.has_value()) {
-        compiler->getMutableFlags().bounds = *opts.boundsCheckMode;
-    }
-    if (opts.liveSetMode.has_value()) {
-        compiler->getMutableFlags().liveSet = *opts.liveSetMode;
-    }
     auto archiveRoot = std::filesystem::temp_directory_path()
                      / ("cajeta_archive_" + sourceRoot.filename().string());
     std::filesystem::create_directories(archiveRoot);
 
-    // Pre-scan the just-written sources into the archive so
-    // forward references across files can create placeholders
-    // (rather than throw or silently null) when their type's
-    // declaration arrives later in the parse order.
+    // Pre-scan the just-written sources into the archive so forward references
+    // across files can create placeholders (rather than throw or silently null)
+    // when their type's declaration arrives later in the parse order. Sources
+    // don't change across a reuse->fresh fallback retry, so scan once.
     cajeta::prescanSourceRoot(sourceRoot.string());
 
+    // Speculative reuse with a fresh, fully-isolated fallback. When the test's
+    // stdlib-affecting flags match the primed defaults, the first attempt binds
+    // the next Compiler to the shared context + cached stdlib (skips the ~14s
+    // re-parse/re-codegen) AND arms hazard detection. If the test triggers a
+    // NOVEL stdlib-template instantiation (Stream<test.M>, HashMap<...>, ...) —
+    // the one operation that would emit module-bound IR into a per-test user
+    // module and contaminate the shared cache with cross-module references on
+    // the next test — the instantiator throws ReuseHazardAbort BEFORE emitting,
+    // and we transparently re-run the WHOLE parse on a fresh Compiler. Net: the
+    // safe majority reuses (~4s), the hazardous minority degrades to today's
+    // isolated cost (~16s), and reuse can never produce corruption — so it is
+    // safe to leave on for the entire suite. Gated OFF unless
+    // CAJETA_STDLIB_REUSE=1; production --emit never arms the gate.
+    std::unique_ptr<CajetaJit> jitState;
+    std::unique_ptr<Compiler> compiler;
     cajeta::CajetaModulePtr primary;
-    for (auto& sourcePath : sourcePaths) {
-        auto m = compiler->createModule(sourcePath.string(),
-                                        sourceRoot.string(),
-                                        archiveRoot.string());
-        // Reuse mode: designate the first user module as the per-test fallback
-        // emit target BEFORE compiling it, so a stdlib-template instantiation
-        // triggered during type resolution (no user-type arg, no codegen frame)
-        // emits into this disposable user module instead of the cached stdlib.
-        // TemplateInstantiator consults this when nothing better is available.
-        if (!primary) {
-            primary = m;
-            if (reuseStdlib) cajeta::CajetaModule::setReuseEmitModule(primary);
+    for (;;) {
+        if (reuseStdlib) {
+            stdlibCache.ensurePrimed();
+            stdlibCache.restoreBaseline();
+            cajeta::Compiler::setSharedContext(&stdlibCache.sharedContext);
+            cajeta::Compiler::setReuseHazardArmed(true);
+        } else {
+            cajeta::Compiler::setSharedContext(nullptr);
+            cajeta::Compiler::setReuseHazardArmed(false);
         }
-        // CajetaException carries the diagnostic; the gtest "Unknown C++
-        // exception" wrapper otherwise eats the message. Rethrow after
-        // surfacing so the test harness still sees the failure.
+
+        jitState.reset(new CajetaJit);
+        compiler = std::make_unique<Compiler>();
+        compiler->setBoundsCheckEnabled(opts.boundsCheckEnabled);
+        compiler->getMutableFlags().overflowChecks =
+            opts.overflowChecksEnabled
+                ? cajeta::OverflowChecks::On
+                : cajeta::OverflowChecks::Wrapping;
+        if (opts.boundsCheckMode.has_value()) {
+            compiler->getMutableFlags().bounds = *opts.boundsCheckMode;
+        }
+        if (opts.liveSetMode.has_value()) {
+            compiler->getMutableFlags().liveSet = *opts.liveSetMode;
+        }
+
         try {
-            compiler->compile(m);
-        } catch (cajeta::Exception& e) {
-            std::cerr << "[CajetaException] " << e.getErrorId()
-                << ": " << e.getMessage() << "\n";
-            throw;
+            primary = nullptr;
+            for (auto& sourcePath : sourcePaths) {
+                auto m = compiler->createModule(sourcePath.string(),
+                                                sourceRoot.string(),
+                                                archiveRoot.string());
+                // Reuse mode: designate the first user module as the per-test
+                // fallback emit target BEFORE compiling it, so a stdlib-template
+                // instantiation triggered during type resolution (no user-type
+                // arg, no codegen frame) emits into this disposable user module
+                // instead of the cached stdlib. TemplateInstantiator consults
+                // this when nothing better is available.
+                if (!primary) {
+                    primary = m;
+                    if (reuseStdlib) cajeta::CajetaModule::setReuseEmitModule(primary);
+                }
+                // CajetaException carries the diagnostic; the gtest "Unknown C++
+                // exception" wrapper otherwise eats the message. Rethrow after
+                // surfacing so the test harness still sees the failure.
+                try {
+                    compiler->compile(m);
+                } catch (cajeta::Exception& e) {
+                    std::cerr << "[CajetaException] " << e.getErrorId()
+                        << ": " << e.getMessage() << "\n";
+                    throw;
+                }
+            }
+            break;  // compiled cleanly under the current mode
+        } catch (const cajeta::ReuseHazardAbort&) {
+            // A novel stdlib-template instantiation — this test can't reuse
+            // safely. Scrub the partial shared-context state (the abort fired
+            // before any hazardous IR emitted) and retry fully isolated. Only
+            // reachable when reuseStdlib was true.
+            cajeta::CajetaModule::setReuseEmitModule(nullptr);
+            cajeta::Compiler::setReuseHazardArmed(false);
+            stdlibCache.restoreBaseline();
+            cajeta::Compiler::setSharedContext(nullptr);
+            reuseStdlib = false;
+            if (std::getenv("CAJETA_STDLIB_REUSE_TRACE")) {
+                std::fprintf(stderr,
+                    "[stdlib-reuse] %s -> fresh fallback "
+                    "(novel stdlib-template instantiation)\n",
+                    fqEntryClass.c_str());
+            }
+            // loop: re-run the parse on a fresh, isolated Compiler
         }
     }
+    cajeta::Compiler::setReuseHazardArmed(false);
     (void) fqEntryClass;
     mark("parse+compile(modules)");
 

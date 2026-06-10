@@ -28,6 +28,15 @@ namespace cajeta {
 
     class AbstractSyntaxNode;
 
+    // Thrown by the template instantiator when reuse-cache hazard detection is
+    // armed (Compiler::setReuseHazardArmed) and a novel stdlib-template
+    // instantiation would emit into a per-test user module. Deliberately NOT a
+    // cajeta::Exception subclass so the compile loop's catch(Exception&)
+    // diagnostic wrapper ignores it and it propagates straight to the JIT
+    // harness's fresh-fallback handler. Carries no payload — it's a control
+    // signal, not an error.
+    struct ReuseHazardAbort {};
+
     // Walk every .cajeta file under `rootPath` and register every
     // declared class/interface/struct's (canonical, shortName) pair
     // in the archive (CajetaType::registerArchive). Used by the
@@ -102,6 +111,9 @@ namespace cajeta {
         // every Compiler after reuses them. Reset to false when the shared
         // context is cleared so a later priming starts clean.
         static bool s_sharedInitialized;
+        // Armed only during a JIT-harness stdlib-reuse attempt; see
+        // setReuseHazardArmed / ReuseHazardAbort. Always false in production.
+        static bool s_reuseHazardArmed;
         string cpu = "generic";
         string features = "";
         llvm::TargetMachine* targetMachine;
@@ -304,6 +316,18 @@ namespace cajeta {
         static void setSharedContext(llvm::LLVMContext* ctx) { s_sharedContext = ctx; }
         static llvm::LLVMContext* getSharedContext() { return s_sharedContext; }
         llvm::LLVMContext* getActiveContext() { return activeContext; }
+
+        // Reuse-cache hazard gate (test-only). When ARMED (set by the JIT test
+        // harness during a stdlib-reuse attempt), the template instantiator
+        // throws ReuseHazardAbort the first time a NOVEL stdlib-template
+        // instantiation would emit its IR into a per-test USER module
+        // (emitOwner != stdlib module) — the one operation that contaminates the
+        // shared reuse context with module-bound llvm pointers outliving that
+        // user module. The harness catches it and transparently re-runs the test
+        // on a fresh, fully-isolated Compiler. Disarmed in production and on the
+        // fresh fallback path, so --emit and non-reuse tests never throw.
+        static void setReuseHazardArmed(bool v) { s_reuseHazardArmed = v; }
+        static bool isReuseHazardArmed() { return s_reuseHazardArmed; }
 
         // Bounds-check accessors — convenience over the new flags struct.
         // Existing callers (CLI parser, CajetaModule plumbing) read these;
