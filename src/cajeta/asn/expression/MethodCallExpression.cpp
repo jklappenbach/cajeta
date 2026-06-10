@@ -22,6 +22,7 @@
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
+#include "LiteralExpression.h"
 #include "NewExpression.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
@@ -353,6 +354,195 @@ namespace cajeta {
                     if (auto u64 = CajetaType::of("uint64")) resolvedType = u64;
                     return llvm::ConstantInt::get(
                         llvm::Type::getInt64Ty(llvmCtx), sz);
+                }
+            }
+        }
+
+        // ----- REFL-11: constant-fold statically-known reflection -----
+        // Fold `Class.of(<ident>).<accessor>(...)` to a compile-time constant or
+        // a direct field load when <ident> is a `final`-class-typed identifier —
+        // so its dynamic type provably equals its static type and the layout /
+        // metadata the fold bakes in is exactly what the runtime reflective
+        // native would read (spec Strategy 5). Restricting the receiver to an
+        // identifier means there are no side effects to preserve when the inner
+        // `Class.of(...)` call is elided. A sealed class's private field is left
+        // un-folded so the runtime IllegalAccessException path is preserved.
+        if (!children.empty()) {
+            // Identify `cajeta.reflect.Class.of(<ident>)`. `Class.of(arg)` is a
+            // qualified static call: its receiver `Class` is a child. We cannot
+            // read of()'s RETURN type without generating the call (the very call
+            // we want to elide), but the receiver identifier resolves statically
+            // by name — CajetaType::of(text) gives cajeta.reflect.Class. That,
+            // plus method "of" + one arg, pins it down precisely.
+            auto innerCall =
+                std::dynamic_pointer_cast<MethodCallExpression>(children[0]);
+            bool isClassOf = false;
+            if (innerCall && innerCall->getMethodCallName() == "of"
+                    && innerCall->getParameters().size() == 1
+                    && !innerCall->getChildren().empty()) {
+                if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        innerCall->getChildren()[0])) {
+                    auto rt = CajetaType::of(recvId->getTextValue());
+                    isClassOf =
+                        rt && rt->toCanonical() == "cajeta.reflect.Class";
+                }
+            }
+            if (isClassOf) {
+                {
+                    ExpressionPtr ofArg = innerCall->getParameters()[0].expression;
+                    auto ofIdent =
+                        std::dynamic_pointer_cast<IdentifierExpression>(ofArg);
+                    if (ofIdent) {
+                        if (!ofArg->getResolvedType()) ofArg->resolveTypes(module);
+                        auto K = std::dynamic_pointer_cast<CajetaClass>(
+                            ofArg->getResolvedType());
+                        // Exact-type guard: only a `final` class is provably its
+                        // own runtime type through an identifier binding.
+                        if (K && K->getModifiers().count(FINAL) > 0) {
+                            // (a) integer metadata accessors -> ConstantInt.
+                            if (parameters.empty()) {
+                                auto* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                                if (methodCallName == "getFieldCount") {
+                                    resolvedType = CajetaType::of("int32");
+                                    return llvm::ConstantInt::get(i32Ty,
+                                        (uint64_t)(uint32_t)
+                                            K->getPropertyList().size());
+                                }
+                                if (methodCallName == "getMethodCount") {
+                                    resolvedType = CajetaType::of("int32");
+                                    return llvm::ConstantInt::get(i32Ty,
+                                        (uint64_t)(uint32_t)
+                                            K->getMethodList().size());
+                                }
+                                if (methodCallName == "getParentCount") {
+                                    resolvedType = CajetaType::of("int32");
+                                    return llvm::ConstantInt::get(i32Ty,
+                                        (uint64_t)(uint32_t)
+                                            K->getSuperClasses().size());
+                                }
+                                if (methodCallName == "getModifierFlags") {
+                                    int32_t bits = 0;
+                                    for (auto m : K->getModifiers())
+                                        bits |= (int32_t) m;
+                                    resolvedType = CajetaType::of("int32");
+                                    return llvm::ConstantInt::get(i32Ty,
+                                        (uint64_t)(uint32_t) bits);
+                                }
+                                if (methodCallName == "getInstanceSize") {
+                                    uint64_t sz = 0;
+                                    if (auto lt = K->getLlvmType())
+                                        sz = module->getLlvmModule()
+                                                 ->getDataLayout()
+                                                 .getTypeAllocSize(lt);
+                                    resolvedType = CajetaType::of("int64");
+                                    return llvm::ConstantInt::get(
+                                        llvm::Type::getInt64Ty(llvmCtx), sz);
+                                }
+                            }
+                            // (b) typed primitive field load -> direct
+                            //     (obj + byteOffset) load, byte-identical to the
+                            //     reflective native. Shape:
+                            //     Class.of(g).getInt32(g, <literal index>).
+                            const char* wantFieldType = nullptr;
+                            if (methodCallName == "getInt32")
+                                wantFieldType = "int32";
+                            else if (methodCallName == "getInt64")
+                                wantFieldType = "int64";
+                            else if (methodCallName == "getFloat32")
+                                wantFieldType = "float32";
+                            else if (methodCallName == "getFloat64")
+                                wantFieldType = "float64";
+                            if (wantFieldType && parameters.size() == 2) {
+                                // arg0 must be the SAME identifier we proved
+                                // exact; arg1 a non-negative decimal literal.
+                                auto objIdent =
+                                    std::dynamic_pointer_cast<IdentifierExpression>(
+                                        parameters[0].expression);
+                                auto idxLit =
+                                    std::dynamic_pointer_cast<
+                                        IntegerLiteralExpression>(
+                                            parameters[1].expression);
+                                bool sameRecv = objIdent
+                                    && objIdent->getTextValue()
+                                           == ofIdent->getTextValue();
+                                int64_t litIdx = -1;
+                                if (idxLit && idxLit->getIntegerLiteralType()
+                                        == INTEGER_LITERAL_TYPE_DECIMAL) {
+                                    bool ok = true;
+                                    std::string digits;
+                                    for (char ch : idxLit->getRawValue()) {
+                                        if (ch == '_') continue;
+                                        if (ch < '0' || ch > '9') { ok = false; break; }
+                                        digits.push_back(ch);
+                                    }
+                                    if (ok && !digits.empty()) {
+                                        try { litIdx = std::stoll(digits); }
+                                        catch (...) { litIdx = -1; }
+                                    }
+                                }
+                                auto& props = K->getPropertyList();
+                                if (sameRecv && litIdx >= 0
+                                        && (size_t) litIdx < props.size()) {
+                                    auto it = props.begin();
+                                    std::advance(it, (size_t) litIdx);
+                                    StructurePropertyPtr p = *it;
+                                    bool sealed =
+                                        K->getModifiers().count(REFLECT_SEALED) > 0;
+                                    bool priv =
+                                        p->getModifiers().count(PRIVATE) > 0;
+                                    bool typeMatch = p->getType()
+                                        && p->getType()->toCanonical()
+                                               == wantFieldType;
+                                    int llvmIdx = K->getFieldLlvmIndex(p);
+                                    auto* instStruct =
+                                        llvm::dyn_cast_or_null<llvm::StructType>(
+                                            K->getLlvmType());
+                                    if (!(sealed && priv) && typeMatch
+                                            && !p->isStatic() && instStruct
+                                            && llvmIdx >= 0
+                                            && (unsigned) llvmIdx
+                                                   < instStruct->getNumElements()) {
+                                        const llvm::StructLayout* layout =
+                                            module->getLlvmModule()
+                                                ->getDataLayout()
+                                                .getStructLayout(instStruct);
+                                        uint64_t off = layout->getElementOffset(
+                                            (unsigned) llvmIdx);
+                                        // generateCode on a local identifier
+                                        // yields its alloca (l-value: the slot
+                                        // holding the object pointer), not the
+                                        // pointer itself. Load through it so the
+                                        // GEP base is the object, mirroring the
+                                        // normal argument-lowering coercion.
+                                        llvm::Value* objSlot =
+                                            parameters[0].expression
+                                                ->generateCode(module);
+                                        llvm::Value* objVal = objSlot
+                                            ? builder->CreateLoad(
+                                                  llvm::PointerType::get(
+                                                      llvmCtx, 0),
+                                                  objSlot, "refl.fold.obj")
+                                            : nullptr;
+                                        if (objVal) {
+                                            llvm::Value* fieldPtr =
+                                                builder->CreateGEP(
+                                                    llvm::Type::getInt8Ty(llvmCtx),
+                                                    objVal,
+                                                    llvm::ConstantInt::get(
+                                                        llvm::Type::getInt64Ty(
+                                                            llvmCtx),
+                                                        off),
+                                                    "refl.fold.fieldptr");
+                                            resolvedType = p->getType();
+                                            return builder->CreateLoad(
+                                                p->getType()->getLlvmType(),
+                                                fieldPtr, "refl.fold.load");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

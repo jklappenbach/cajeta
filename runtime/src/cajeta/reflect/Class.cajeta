@@ -477,4 +477,117 @@ public final class Class {
         }
         return false;
     }
+
+    // --- REFL-10: registry queries ---------------------------------------
+    // The process-wide registry (built at startup by the per-class
+    // llvm.global_ctors that REFL-8 emits) is exposed as an indexable list by
+    // two natives; the package / annotation filtering runs here in cajeta over
+    // getName()/hasAnnotation(). Each returned `Class` is a borrow of a
+    // process-lifetime cached instance — the array owns its buffer, not its
+    // elements, so freeing the array frees no `Class`.
+
+    @Native("__cajeta_class_count")
+    private static int32 registryCount();
+
+    @Native("__cajeta_class_at")
+    private static Class registryAt(int32 index);
+
+    /**
+     * Whether `c`'s package (the canonical name up to the last `.`) equals
+     * `packageName`. A class with no `.` in its name (none today, but a
+     * top-level type in principle) is "in" the empty package.
+     */
+    private static boolean inPackage(Class c, String packageName) {
+        String full = c.getName();
+        int32 len = (int32) full.size();
+        int32 lastDot = -1;
+        int32 i = len - 1;
+        while (i >= 0) {
+            if (full.charAt(i) == (int8) 46) {     // 46 = '.'
+                lastDot = i;
+                break;
+            }
+            i = i - 1;
+        }
+        if (lastDot < 0) {
+            return packageName.size() == 0;
+        }
+        String pkg = full.substring(0, lastDot);
+        return pkg.equals(packageName);
+    }
+
+    /**
+     * Every class the binary retains, as `Class` borrows. Order follows
+     * registration order (startup global-ctor order). The registry holds every
+     * compiled class today; once AOT class-stripping lands it holds the
+     * statically-reachable set plus every `@Retained` class.
+     */
+    public static #Class[] allClasses() {
+        int32 n = registryCount();
+        Class[] arr = heap Class[n];
+        int32 i = 0;
+        while (i < n) {
+            arr[i] = registryAt(i);
+            i = i + 1;
+        }
+        return #arr;
+    }
+
+    /**
+     * Every retained class whose package equals `packageName` (exact match on
+     * the segment before the last `.` of the canonical name). Two-pass: count
+     * the matches, then fill a right-sized array.
+     */
+    public static #Class[] classesInPackage(String packageName) {
+        int32 n = registryCount();
+        int32 matches = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (inPackage(registryAt(i), packageName)) {
+                matches = matches + 1;
+            }
+            i = i + 1;
+        }
+        Class[] arr = heap Class[matches];
+        int32 j = 0;
+        i = 0;
+        while (i < n) {
+            Class c = registryAt(i);
+            if (inPackage(c, packageName)) {
+                arr[j] = c;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #arr;
+    }
+
+    /**
+     * Every retained class that declares an annotation whose canonical name
+     * equals `annotationName` (e.g. `"code.Component"` for a bare `@Component`).
+     * Two-pass over the registry, reusing {@link #hasAnnotation}.
+     */
+    public static #Class[] classesAnnotated(String annotationName) {
+        int32 n = registryCount();
+        int32 matches = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (registryAt(i).hasAnnotation(annotationName)) {
+                matches = matches + 1;
+            }
+            i = i + 1;
+        }
+        Class[] arr = heap Class[matches];
+        int32 j = 0;
+        i = 0;
+        while (i < n) {
+            Class c = registryAt(i);
+            if (c.hasAnnotation(annotationName)) {
+                arr[j] = c;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #arr;
+    }
 }

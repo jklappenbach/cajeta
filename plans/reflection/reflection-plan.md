@@ -362,16 +362,83 @@ EXPOSES that to reflection. See [[never-call-it-generics]].
       was a PRE-EXISTING bug (not Phase 8) that blocked all reflection on template
       instantiations; Phase 8's `getType` was the first caller to hit it.
 
-### Phase 9 — access control (REFL-9)
-- [ ] REFL-9.1 `@Reflectable` (private-member opt-in).
-- [ ] REFL-9.2 `UnsafeReflect` escape hatch + construction-time audit log.
+### Phase 9 — access control (REFL-9)  ← N/A under decision D1 (dropped 2026-06-10)
+- [x] **REFL-9.1 `@Reflectable` — DROPPED.** The spec's `@Reflectable` was a
+      private-member *opt-in*, which only makes sense under a restrictive default.
+      Decision **D1** inverted that: reflection is DEFAULT-OPEN with `@Sealed` the
+      sole opt-*out* (shipped in REFL-3.3). With everything reflectable by default,
+      a per-class "yes, reflect me" opt-in is redundant. User confirmed: drop it.
+- [x] **REFL-9.2 `UnsafeReflect` + audit log — DROPPED.** `UnsafeReflect` is a
+      visibility-*bypass* escape hatch; under D1 there is almost nothing to bypass
+      (only `@Sealed`-private), and its defining feature — a construction-time
+      audit warning — has no sink (`cajeta.thread.log` doesn't exist; only
+      `cajeta.xpu.core.Thread`). User confirmed: drop it. If a `@Sealed`-private
+      bypass is ever wanted, it returns as a focused follow-on, not this phase.
 
-### Phase 10 — package / annotation queries (REFL-10)
-- [ ] REFL-10.1 `classesInPackage` / `classesAnnotated` (registry scan).
+### Phase 10 — package / annotation queries (REFL-10)  ← shipped 2026-06-10
+- [x] REFL-10.1 `Class.allClasses()` / `classesInPackage(String)` /
+      `classesAnnotated(String)` — registry scan returning `#Class[]` (borrows of
+      the process-lifetime `#ClassObject`s; the array owns its buffer, not its
+      elements). Two new natives expose the REFL-8 registry as an indexable list:
+      `__cajeta_class_count()` and `__cajeta_class_at(i)`; the package/annotation
+      filtering runs in cajeta over `getName()` (package = canonical name up to the
+      last `.`) and the existing `hasAnnotation(canonical)`. `classesInPackage` /
+      `classesAnnotated` are two-pass (count matches, then fill a right-sized
+      array). Array length is `arr.count()` (the structural i64 accessor), NOT a
+      `.length` property. Tests: ReflectionTests.{allClassesFindsRegistered,
+      classesInPackageFilters, classesAnnotatedFilters}.
+- [x] **Registry-correctness fix (2026-06-10):** REFL-8 registered EVERY class,
+      but the "handful of stdlib classes parsed before `cajeta.reflect.Class`"
+      (String, Object, …) get a `#ClassObject` whose slot 0 (`Class#VTable`) is
+      NULL — not reflectively dispatchable (see REFL-1.4). `Class.of` never
+      returns these, so earlier phases never hit it; `allClasses()` did, and the
+      virtual `getName()` crashed on the null vtable. Fix is twofold:
+      (a) `StructureMetadata::populate` only emits the registration ctor when slot
+      0 is non-null; (b) a new post-pass `CajetaClass::finalizeClassObject()` (run
+      alongside `emitReflectInvokeBody`/`emitReflectNewBody` in BOTH
+      `Compiler::compile` and `JitTestHelper`, after the whole stdlib incl. `Class`
+      is built) patches a deferred `#ClassObject`'s slot 0 to the real
+      `Class#VTable` and registers it. Net: String/Object/etc. are now genuinely
+      reflectable AND registry-discoverable; `forName("cajeta.lang.String")` keeps
+      working (now safe to call accessors on the result).
 
-### Phase 11 — constant-fold known reflection (REFL-11)
-- [ ] REFL-11.1 Fold `T.class.getField("lit").get(x)` to direct access when all
-      inputs are statically known and visibility permits (spec Strategy 5).
+### Phase 11 — constant-fold known reflection (REFL-11)  ← shipped 2026-06-10
+- [x] REFL-11.1 **Fold `Class.of(<ident>).<accessor>(...)` to direct access**
+      (decision: fold the dynamic `Class.of(...)` entry, NOT the `.class` literal —
+      `.class` lowering (REFL-1.5) isn't done, and the spec lists reflective
+      constant-folding as a v1 non-goal; the user chose the `Class.of` fold). In
+      `MethodCallExpression::generateCode`, when the receiver is
+      `cajeta.reflect.Class.of(<ident>)` and `<ident>`'s static type is a **`final`
+      class** K — the exact-type guard: only `final` makes K provably its own
+      runtime type through an identifier binding, so the static layout/metadata the
+      fold bakes in equals what the runtime reflective native would read — fold:
+      - integer metadata (no args): `getFieldCount`/`getMethodCount`/
+        `getParentCount`/`getModifierFlags` → i32 `ConstantInt`; `getInstanceSize`
+        → i64 `ConstantInt` (`getTypeAllocSize`, mirroring the rtti).
+      - typed primitive field load: `getInt32`/`getInt64`/`getFloat32`/`getFloat64`
+        `(obj, <literal idx>)` → a direct `(obj + byteOffset)` load, byte-identical
+        to the `__cajeta_field_get_*` native (same `getElementOffset` arithmetic).
+        Guards: field type matches the accessor, `obj` is the SAME identifier, and
+        access is permitted — a `@Sealed`-private field is NOT folded so the runtime
+        `IllegalAccessException` path is preserved.
+      `Class.of` is identified codegen-free via the inner receiver: of()'s return
+      type isn't resolvable without generating the (elided) call, but the receiver
+      `Class` resolves by name (`CajetaType::of("Class")` → `cajeta.reflect.Class`).
+      A non-`final` receiver declines the fold and runs the runtime path unchanged.
+      IR-verified: `fold()` emits `getelementptr i8 + off`/`load` (no `Class::of`,
+      no `__cajeta_vtable_lookup`); a non-final twin keeps the full chain.
+      **Fix (2026-06-10):** the field-load fold initially read 0 — `obj`'s
+      `IdentifierExpression::generateCode` returns the local's *alloca* (the l-value
+      slot holding the object pointer), so GEP'ing off it indexed into the stack
+      slot, not the object. Now load the pointer through the slot
+      (`CreateLoad(ptr, objSlot)`) before the byte-offset GEP, matching the normal
+      argument-lowering coercion. Tests:
+      ReflectionTests.{foldFinalFieldCount, foldFinalFieldLoad, foldDeclinesNonFinal,
+      foldDeclinesSealedPrivate}. **Follow-on (mechanical):** String-returning folds
+      (`getName`/`getFieldName`) — skipped because the un-folded result is an owned
+      `#String` (heap alloc), so folding to a constant isn't a pure win; the
+      `getBoolean` field-load variant; and a `final`-construction-expression
+      receiver (`Class.of(heap K())`) in addition to the identifier form.
 
 **Deferred (post-v1, separate efforts):** compile-time codegen escape hatch
 (`@JsonSerializable`-style), dynamic class generation / proxies, plugin /
