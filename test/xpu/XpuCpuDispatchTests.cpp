@@ -2103,3 +2103,62 @@ TEST(XpuCpuDispatchTests, envForcesCpuAndRuns) {
     ASSERT_NE(fn, nullptr);
     EXPECT_FLOAT_EQ(result, 4096.0f);
 }
+
+// Image2D storage RMW on the CPU reference path — the writable twin of the CPU
+// texture fetch. `fill` writes each texel via img.store(); `rmw` reads-modify-
+// writes it (2v+1) via img.load()+img.store(); the host downloads and checks
+// 2i+1. Exercises the CPU storeImage/loadImage seam (__cajeta_xpu_cpu_image_store
+// /_load over the host float store) + the image alloc/download. Same kernel and
+// closed-form (2i+1) as the Vulkan/AMD storage-image tests, so the in-process
+// oracle now cross-checks the device path for storage images. CPU is the floor —
+// always available, no skip.
+TEST(XpuCpuDispatchTests, imageLoadStoreRmwOnCpu) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Image2D;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class ImgRmwCpu {\n"
+        "    @Kernel\n"
+        "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) { img.store(i % w, i / w, (float32)(i / w * w + i % w)); }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void rmw(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) {\n"
+        "            uint32 x = i % w;\n"
+        "            uint32 y = i / w;\n"
+        "            float32 v = img.load(x, y);\n"
+        "            img.store(x, y, 2.0f * v + 1.0f);\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 4;\n"
+        "        uint32 h = 4;\n"
+        "        uint32 n = w * h;\n"
+        "        Image2D img = heap Image2D(w, h);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        rmw.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        float32[] out = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { out[i] = -1.0f; }\n"
+        "        img.download(out);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = out[i] - (float32)(2 * i + 1);\n"
+        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.ImgRmwCpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != 2*i+1 — storeImage/loadImage RMW)";
+}
