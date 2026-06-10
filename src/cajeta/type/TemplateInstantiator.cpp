@@ -409,6 +409,16 @@ namespace cajeta {
         // test on a fresh, fully-isolated Compiler. Disarmed in production and on
         // the fresh fallback path; a primed (already-cached) instantiation
         // returned above and never reaches here.
+        //
+        // Unlike the method-template gate (MethodTemplateInstantiator.cpp), this
+        // class-template gate has NO CAJETA_REUSE_FORCE_EMIT escape hatch: the
+        // cross-module CLASS-template emit path is NOT yet correct under reuse.
+        // The 2026-06-10 W=24 FORCE_EMIT run caught it producing an invalid GEP
+        // into test.Holder<int32>'s interface vtable slots
+        // (TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch). This
+        // gate is what keeps that miscompile from shipping — it must stay an
+        // unconditional fresh fallback until the struct/vtable layout pointers get
+        // the same emit-module reparenting the method path received.
         if (Compiler::isReuseHazardArmed() && emitOwner != module) {
             throw cajeta::ReuseHazardAbort{};
         }
