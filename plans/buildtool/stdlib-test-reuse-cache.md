@@ -1,6 +1,6 @@
 # Stdlib Test-Reuse Cache — Correctness Fix
 
-## Status (2026-06-10, Linux) — 113-set GREEN 113/113. Drop-fn runtime-callee leak FIXED.
+## Status (2026-06-10, Linux) — ALL reuse-induced crashes FIXED (commit `34f7a9c`). 113-set GREEN 113/113.
 
 The Linux pickup resolved the remaining failures. Two things landed:
 1. The Windows `emitModule` candidate fix (`fa43516`) was rebuilt + validated: it fixed
@@ -78,25 +78,51 @@ on EVERY exit (return and exception). The next reuse test re-binds; `s_sharedIni
 stays intact so the prime persists. **Verified:** re-running shard 17/24 reuse-ON,
 `freshCompilerStartsEmpty` now passes (5.3s) where it previously failed in 1ms.
 
+### Reuse-induced CRASHES root-caused + FIXED (2026-06-10, commit `34f7a9c`)
+Steps 0 and 2 below turned out to be the **same** root cause. The crashes
+(`JsonSynthesizerTests`, `ParallelDispatchCorrelationTests`/`ParallelStreamP1Tests`)
+were NOT out-of-graph singleton caches — they were **novel cross-module *method*-template
+instantiations** with no `ReuseHazardAbort` gate. A stdlib method template specialized over
+a user type (`Json.parse<test.Outer>`, the parallel `stream().map<…>()` chains) emitted its
+body IR + JSON-synth string constants + spawn trampolines into a per-test user module while
+the host template `Method` persisted in the shared context → dangling module-bound llvm
+pointers on the next reusing test, surfacing as a null operand mid-body
+(`BinaryOpExpression::generateCode` → `getTypeFlagsOf(this=0x0)` SIGSEGV).
+
+Two-part fix:
+1. **Added the twin gate** to `MethodTemplateInstantiator.cpp` (after `emitOwner` is
+   computed, before the wrapper parse/emit): `if (isReuseHazardArmed() && emitOwner != module) throw ReuseHazardAbort{};` — mirrors `TemplateInstantiator.cpp`.
+2. **Armed the hazard through codegen.** The gate alone never fired: the harness disarmed
+   the hazard *before* `runCodegenPasses`, but method-template instantiation happens only at
+   call-site codegen (deep in `runCodegenPasses`), not during the parse/compile loop where
+   class-template instantiation resolves. Moved `runCodegenPasses` (+ the reuse-pristine
+   verify) **inside the retry loop with the hazard still armed**, so a novel cross-module
+   instantiation surfacing at codegen aborts to the fresh, isolated fallback — exactly as the
+   design comment already claimed ("the instantiator throws ReuseHazardAbort BEFORE
+   emitting"). Production `--emit` never arms the gate; unchanged there.
+
+**Verified reuse-ON, zero crashes / zero failures (were all SIGSEGV):**
+`JsonSynthesizerTests` 70/70 (66 fall back), `ParallelDispatchCorrelationTests` 6/6,
+`ParallelStreamP1Tests` 49/49.
+
+**Tradeoff (now the open question):** arming through codegen makes EVERY test that
+instantiates a stdlib template over a user type fall back to a fresh compile (no reuse
+speedup) instead of doing the cross-module emit. That is the correct, documented behavior
+("safe majority reuses, hazardous minority degrades to isolated cost") — but the "hazardous
+minority" is larger than the earlier W=24 run implied (it reported FALLBACKS=0 only because
+the gate wasn't armed during codegen and was silently corrupting/crashing). The real
+suite-wide fallback rate is now unmeasured and materially higher; it sets the actual
+wall-clock win and is the next thing to measure.
+
 ### Next steps (Linux, in order)
-0. **Root-cause the reuse-induced CRASHES** (`JsonSynthesizerTests`, `ParallelDispatch-
-   CorrelationTests`/`ParallelStreamP1Tests`) — distinct from the contamination above: these
-   SIGSEGV during reuse codegen (clean reuse-OFF). Both serialize/encode + spawn; suspects
-   are out-of-graph module-bound caches (`FileStream` singleton,
-   `ComponentDescriptor::singletonGlobal`, `CajetaModule::sourceFileConstants`) holding a
-   freed per-test module pointer across the reuse. Then re-run W=24 with the trace flag (+
-   temporarily excluding the pre-existing `EncodingPhaseBTests` crashers) to measure the
-   real fallback rate and a valid wall time.
-1. **Full-suite single-process reuse run** (~3597 tests): surface any out-of-graph caches
-   (FileStream singleton / ComponentDescriptor::singletonGlobal /
-   CajetaModule::sourceFileConstants — see §"Remaining risk" below) and **measure the
-   real suite-wide fallback rate** (the 113-set's 67% is a worst case; the general suite
-   should reuse far more). That rate sets the actual wall-clock win.
-2. Gate the **method-template path** (`MethodTemplateInstantiator.cpp` ~191–198/370) with
-   the same `ReuseHazardAbort` guard the class-template path has.
-3. Then §5: reuse-vs-no-reuse differential (identical pass/fail) + ≥2 shard orderings,
+1. **Clean full-suite W=24 reuse run** with `CAJETA_STDLIB_REUSE_TRACE=1` (and temporarily
+   excluding the pre-existing non-reuse `EncodingPhaseBTests` crashers / Xpu device tests) to
+   measure the **real suite-wide fallback rate** and a valid wall time now that reuse never
+   crashes. That number decides whether reuse is worth defaulting on as-is, or whether the
+   cross-module *emit* path (rather than fallback) needs to be made safe to recover the speedup.
+2. Then §5: reuse-vs-no-reuse differential (identical pass/fail) + ≥2 shard orderings,
    then flip default-on with a `CAJETA_STDLIB_REUSE=0` opt-out.
-4. Scaling: `ctest -j` + per-worker cgroup memory caps (replaces the PowerShell runner).
+3. Scaling: `ctest -j` + per-worker cgroup memory caps (replaces the PowerShell runner).
 
 ---
 
