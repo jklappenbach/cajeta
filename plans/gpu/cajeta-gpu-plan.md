@@ -25,8 +25,12 @@ The verb seam exists; the rest of the model from doc §1 does not.
 - [ ] **Noun seam** (resource provider) — core datastructure → per-backend representation
   (build-from-description, not convert-between-builts). Does not exist as a first-class seam;
   ray query forces it (§3.3).
-- [ ] **Capability heuristic + `Device.supports(...)`** — runtime impl selection with explicit
-  override (default ≠ law: RT loses at large radius / extreme density).
+- [~] **Capability heuristic + `Device.supports(...)`** — `Device.supports(Capability)` is
+  built: a host query of the active device (`Capability.RayQueryNative` so far; ordinal =
+  stable runtime contract), `__cajeta_xpu_device_supports`. Device-verified (CPU false,
+  Vulkan-RT true; `XpuDeviceCapabilityTests`). Still to do: the *automatic* impl selection
+  (the heuristic that picks native vs software without an explicit guard) + explicit override
+  (default ≠ law: RT loses at large radius / extreme density), and more capabilities.
 - [ ] **Impl-layer + SPIR-V degrade framework** — the "SDK for writing SDKs": a vendor authors
   verb + native lowering + a vendor-supplied SPIR-V fallback, using the same seam machinery
   core uses. The unlock that makes vendor libraries portable instead of hard-locked. Shape

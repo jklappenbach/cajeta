@@ -1,0 +1,31 @@
+package cajeta.xpu.core;
+
+/**
+ * A runtime device capability — a hardware feature the **active** device may or
+ * may not advertise, queried with {@link Device#supports}. This is the model's
+ * capability-heuristic input (cajeta-docs/gpu/CajetaGPU.md §1, RayQuery.md §6):
+ * an app chooses a native fast path when the silicon has it, and falls back to
+ * core (which floors to software) when it doesn't.
+ *
+ *     if (Device.supports(Capability.RayQueryNative)) {
+ *         // build a hardware acceleration structure; OpRayQuery on the GPU
+ *     } else {
+ *         // the portable software BVH path — same source, runs anywhere
+ *     }
+ *
+ * This is the RUNTIME counterpart of the compile-time capability *traits* in
+ * {@link Capabilities} (template constraints resolved at codegen): traits gate
+ * *which kernel* compiles for a target; `Capability` + `Device.supports` gate
+ * *which path the host dispatches* at run time on the device it actually got.
+ *
+ * The ordinal is the **stable native contract** — `__cajeta_xpu_device_supports`
+ * (runtime/native/cajeta_runtime.c) switches on it. Do not reorder; append only.
+ *
+ * v1 surfaces the one capability with a crisp per-device answer and an immediate
+ * consumer (the ray-query native-vs-software choice). More land as the runtime
+ * grows the probes (cooperative matrix, unified memory, the wave/atomic feature
+ * tiers) — append to the end so the ordinals stay stable.
+ */
+public enum Capability {
+    RayQueryNative   // 0 — hardware inline ray query (VK_KHR_ray_query / equivalent)
+}
