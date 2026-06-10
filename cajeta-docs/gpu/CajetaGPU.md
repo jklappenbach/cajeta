@@ -103,9 +103,19 @@ portable algorithm the author supplies).
 > **Core is just the in-tree "vendor library" that has a fallback for everything.** Same
 > shape as an external one — verb + lowering + degrade — only complete and built-in.
 
+The internal face of this is **named and built**: `LoweringTarget::ImplTier { Native, Portable }`
+is the one degrade concept both core degrade features answer through — the coop-matrix verb
+(`coopMatrixTier`) and the ray-query verb (`rayQueryTier`, derived from the AS noun's recorded
+`NounImpl`). The explicit override is the `CAJETA_GPU_<FEATURE>_IMPL` family (`resolveImplTier`
+in the compiler for compile-time features; `CAJETA_GPU_AS_IMPL` / `caj_resolve_as_impl` in the
+runtime for the AS noun) — `CAJETA_GPU_COOPMATRIX_IMPL=software` forces the portable tile even on
+a native-capable device. Because Native and Portable are *different realizations* (the hardware
+MMA and the triple-loop tile accumulate in a different order), an arithmetic feature's two tiers
+need not be bit-identical — each is validated against the reference, not against the other.
+
 The third-party side of this — the SPI a driver vendor or interest group uses to ship an
 extension library — is [`VendorExtensionSDK.md`](VendorExtensionSDK.md) (a seed; it crystallizes
-once core has dogfooded the seam machinery).
+now that core has dogfooded the seam machinery).
 
 ### 1.6 Degradation rule
 
@@ -128,8 +138,10 @@ if (Device.supports(Capability.X)) {
 > whose built impl is a recorded property the verb follows — §4.4); the **explicit override +
 > execution mechanism** are built (an `AsImpl` enum + `AccelerationStructure.of(...)` + a
 > `CAJETA_GPU_AS_IMPL` env override; forced-software runs on a ray-query GPU via a `$sw` kernel
-> variant — one backend, either impl); the *automatic* density/extent heuristic and the
-> vendor-SDK degrade framework are unbuilt.
+> variant — one backend, either impl); the **internal** impl-layer/degrade seam is now named
+> (`ImplTier`) and dogfooded across both degrade features (coop-matrix + ray-query) with a
+> generic `CAJETA_GPU_<FEATURE>_IMPL` override (§1.5); the *automatic* density/extent heuristic
+> and the **external** vendor-SDK that exposes the degrade seam are unbuilt (still a seed).
 
 ---
 
@@ -315,9 +327,11 @@ match this document:
   first-class SPI (`CajetaNounProvider`, dogfooded on `AccelerationStructure` with a recorded
   impl tag); the capability **override + execution mechanism** (`AsImpl`/`.of` + `CAJETA_GPU_AS_IMPL`
   + the `$sw` software-on-Vulkan kernel variant — one backend, either impl, cross-checked
-  three ways). Remaining: AMD `Image2D`; NVIDIA advanced seams + B5 on-device; Metal backend;
-  the *automatic* density/extent heuristic + the impl-layer/degrade framework; fp8 (pending
-  LLVM).
+  three ways); the **internal** impl-layer/degrade seam (named `ImplTier` + generic
+  `CAJETA_GPU_<FEATURE>_IMPL` override, dogfooded across coop-matrix + ray-query). Remaining:
+  AMD `Image2D`; NVIDIA advanced seams + B5 on-device; Metal backend; the *automatic*
+  density/extent heuristic; the **external** vendor-SDK that exposes the degrade seam (seed);
+  fp8 (pending LLVM).
 - **Vendor libraries** — out of this plan; each its own external effort on the degrade
   framework, sequenced by hardware (AMD now; NVIDIA on B5; Metal on Mac).
 - **GFX** — the ray-tracing pipeline (SBT, hit/miss shaders); built on this foundation's

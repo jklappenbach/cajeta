@@ -48,11 +48,21 @@ The verb seam exists; the rest of the model from doc §1 does not.
   Still to do: the *automatic* density/extent heuristic (the deciding factor — query radius — is
   not known at AS build time, so the auto-policy stays "native if supported" for now);
   triangle-software-on-Vulkan; more capabilities.
-- [ ] **Impl-layer + SPIR-V degrade framework** — the "SDK for writing SDKs": a vendor authors
+- [~] **Impl-layer + SPIR-V degrade framework** — the "SDK for writing SDKs": a vendor authors
   verb + native lowering + a vendor-supplied SPIR-V fallback, using the same seam machinery
-  core uses. The unlock that makes vendor libraries portable instead of hard-locked. Shape
-  recorded in [`../../cajeta-docs/gpu/VendorExtensionSDK.md`](../../cajeta-docs/gpu/VendorExtensionSDK.md)
-  (seed; crystallizes after core dogfoods the seams).
+  core uses. **The internal face is now named + dogfooded (inc-4 brick #4):** one `ImplTier
+  { Native, Portable }` concept (`LoweringTarget.h`) that both core degrade features answer
+  through — the coop-matrix verb (`coopMatrixTier`) and the ray-query verb (`rayQueryTier`,
+  derived from the AS noun's recorded `NounImpl`) — plus a generic `CAJETA_GPU_<FEATURE>_IMPL`
+  override (`resolveImplTier`), proven on a **second** consumer beyond the AS noun:
+  `CAJETA_GPU_COOPMATRIX_IMPL=software` forces the portable tile on a native-capable device,
+  device-verified bit-exact (`ImplTierOverride.forcedSoftwareCoopMatrixOnDevice`). *Honest
+  scope:* Native and Portable are different algorithms (not bit-identical for arithmetic
+  features) — each is validated against the reference, not against the other. **Still seed**
+  (the external half): the vendor-facing declaration syntax for verb + lowering + degrade,
+  AOT/JIT impl-layer packaging, and the signing/sandbox model — recorded in
+  [`../../cajeta-docs/gpu/VendorExtensionSDK.md`](../../cajeta-docs/gpu/VendorExtensionSDK.md)
+  (crystallizes now that core has dogfooded the seams).
 - [x] **`cajeta.xpu.core` → `cajeta.gpu.core` rename** — the foundation moved to the `gpu`
   namespace: directory `runtime/src/cajeta/{xpu→gpu}/core`, all package/import spellings,
   the compiler's hardcoded detection strings, the stdlib-embed path, tests, samples, docs,
@@ -178,8 +188,10 @@ Core's contract is closed when **doc §3's verb set is ● / ○ on every shippe
 2. **AMD `Image2D`** store/load; NVIDIA advanced seams + B5 on-device; **Metal** backend.
 3. **The model plumbing** — ~~noun seam~~ ✅ (§1), `Device.supports(...)` ✅ + ~~the impl
    override + execution mechanism~~ ✅ (`AsImpl`/`.of` + `CAJETA_GPU_AS_IMPL` + the `$sw`
-   variant; the *automatic* density/extent heuristic still remaining), the impl-layer/SPIR-V-
-   degrade framework, the ~~`cajeta.xpu.core → cajeta.gpu.core` rename~~ ✅.
+   variant; the *automatic* density/extent heuristic still remaining), ~~the **internal**
+   impl-layer/degrade seam~~ ✅ (named `ImplTier` + generic `CAJETA_GPU_<FEATURE>_IMPL` override,
+   dogfooded across coop-matrix + ray-query) — the **external** vendor SPI of that framework
+   still seed, the ~~`cajeta.xpu.core → cajeta.gpu.core` rename~~ ✅.
 4. **fp8** when LLVM lands the type.
 
 The foundation is then the **frozen dependency contract** `cajeta-xpu` and `cajeta-gfx` target.

@@ -698,18 +698,18 @@ public:
     // flat-matmul fallback here — and lights up native WMMA on the AMD backend,
     // which has a bf16 matrix-core path (llvm.amdgcn.wmma.*.bf16). Without the
     // fork toolchain the ops can't be emitted at all, so everything is Software.
-    CoopMatrixTier coopMatrixTier(llvm::Type* elem, uint32_t /*rows*/,
-                                  uint32_t /*cols*/, uint32_t /*use*/) override {
+    ImplTier coopMatrixTier(llvm::Type* elem, uint32_t /*rows*/,
+                            uint32_t /*cols*/, uint32_t /*use*/) override {
 #if CAJETA_HAS_SPV_COOP_MATRIX
-        // bf16 has no Vulkan cooperative-matrix config — Software here (and its
+        // bf16 has no Vulkan cooperative-matrix config — Portable here (and its
         // accumulator must be bf16 too, so the whole GEMM stays one tier).
-        if (elem->isBFloatTy()) return CoopMatrixTier::Software;
+        if (elem->isBFloatTy()) return ImplTier::Portable;
         // f16/int8 multiplicands and their f32/i32 accumulators are the
         // advertised native set; an integer accumulator is any width.
         if (elem->isHalfTy() || elem->isFloatTy() || elem->isIntegerTy())
-            return CoopMatrixTier::Native;
+            return ImplTier::Native;
 #endif
-        return CoopMatrixTier::Software;
+        return ImplTier::Portable;
     }
 
     // A CooperativeMatrix local is an alloca of the opaque tile type. Like the

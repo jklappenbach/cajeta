@@ -27,6 +27,7 @@
 #include "cajeta/xpu/vulkan/SpirvBackend.h"
 #include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
 #include "cajeta/xpu/vulkan/VulkanDriver.h"
+#include "cajeta/xpu/lowering/LoweringTarget.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -37,6 +38,7 @@
 #include "llvm/IR/Module.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -114,6 +116,17 @@ float bf162f(uint16_t h) {
     std::memcpy(&f, &b, 4);
     return f;
 }
+
+// RAII setenv guard — set CAJETA_GPU_<FEATURE>_IMPL for the scope, restore on
+// destruction (env is process-global; gtest runs all tests in one process, so a
+// leak would perturb sibling tests). Survives a gtest ASSERT early-return.
+struct EnvGuard {
+    std::string name;
+    EnvGuard(const char* var, const char* value) : name(var) {
+        setenv(var, value, /*overwrite=*/1);
+    }
+    ~EnvGuard() { unsetenv(name.c_str()); }
+};
 
 } // namespace
 
@@ -599,4 +612,127 @@ TEST(XpuCooperativeMatrixDeviceTests, ldsStagedMatmulOnDevice) {
         for (unsigned j = 0; j < N; ++j)
             EXPECT_EQ(out[i * N + j], ref[i * N + j])
                 << "LDS-staged tile mismatch at (" << i << "," << j << ")";
+}
+
+// ---------------------------------------------------------------------------
+// Impl-layer / degrade framework (inc-4 brick #4): the explicit
+// CAJETA_GPU_<FEATURE>_IMPL override, dogfooded on a SECOND consumer (coop-matrix)
+// beyond the AS noun — proving the degrade override is generic, not AS-specific.
+
+// resolveImplTier precedence (host-only, no device): the env override wins when
+// set ("software" → Portable, "native" → Native); unset or unknown keeps the
+// per-backend base. A unique feature tag ("TESTONLY") keeps this isolated from
+// the COOPMATRIX / AS overrides in the same test process.
+TEST(ImplTierOverride, resolveImplTierPrecedence) {
+    using cajeta::xpu::resolveImplTier;
+    using ImplTier = cajeta::xpu::LoweringTarget::ImplTier;
+    const char* var = "CAJETA_GPU_TESTONLY_IMPL";
+
+    unsetenv(var);
+    EXPECT_EQ(ImplTier::Native,   resolveImplTier("TESTONLY", ImplTier::Native));
+    EXPECT_EQ(ImplTier::Portable, resolveImplTier("TESTONLY", ImplTier::Portable));
+    {
+        EnvGuard g(var, "software");
+        EXPECT_EQ(ImplTier::Portable, resolveImplTier("TESTONLY", ImplTier::Native));
+        EXPECT_EQ(ImplTier::Portable, resolveImplTier("TESTONLY", ImplTier::Portable));
+    }
+    {
+        EnvGuard g(var, "native");
+        EXPECT_EQ(ImplTier::Native, resolveImplTier("TESTONLY", ImplTier::Portable));
+        EXPECT_EQ(ImplTier::Native, resolveImplTier("TESTONLY", ImplTier::Native));
+    }
+    {
+        EnvGuard g(var, "garbage");           // unknown value → keep base
+        EXPECT_EQ(ImplTier::Native,   resolveImplTier("TESTONLY", ImplTier::Native));
+        EXPECT_EQ(ImplTier::Portable, resolveImplTier("TESTONLY", ImplTier::Portable));
+    }
+    EXPECT_EQ(nullptr, std::getenv(var)) << "env must be restored after the guards";
+}
+
+// Forced-software coop-matrix on a NATIVE-capable device. Gated on
+// coopMatrixAvailable() — the point is to force the portable tile where the
+// hardware DOES have a native config (an unconditional software box would prove
+// nothing). With CAJETA_GPU_COOPMATRIX_IMPL=software the f16 `matmul` kernel must:
+//   (a) take the portable path — the `note: [mma-tiering]` appraisal fires during
+//       lowering (on this device, the un-forced sibling mixedPrecisionMatmulOnDevice
+//       does NOT note), and
+//   (b) still compute the same result. Inputs are small integers exact in half and
+//       the 16-term sum (<=192) is exact in the portable f32 accumulator, so the
+//       forced-software tile equals the integer reference to the bit — the same
+//       reference the native path matches.
+TEST(ImplTierOverride, forcedSoftwareCoopMatrixOnDevice) {
+    if (!VulkanDriver::coopMatrixAvailable()) {
+        GTEST_SKIP() << "no Vulkan device with a 16x16x16 f16/f16->f32 "
+                        "cooperative-matrix config to force off";
+    }
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kMatmulSource);
+    auto k = findMethod(module->getStructures()["test.M"], "matmul");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_coopmat_forcedsw_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+
+    // Force the portable tier for the tier-selection that happens during
+    // lowerKernel, and capture stderr to confirm the appraisal fires.
+    std::vector<uint8_t> spirv;
+    std::ostringstream captured;
+    {
+        EnvGuard g("CAJETA_GPU_COOPMATRIX_IMPL", "software");
+        std::streambuf* prev = std::cerr.rdbuf(captured.rdbuf());
+        cajeta::xpu::vulkan::lowerKernel(k, dev);
+        std::cerr.rdbuf(prev);
+        spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    }
+    EXPECT_NE(captured.str().find("[mma-tiering]"), std::string::npos)
+        << "forced-software CooperativeMatrix should emit the degrade note; got: "
+        << captured.str();
+    ASSERT_FALSE(spirv.empty());
+
+    std::vector<_Float16> hostA(TILE), hostB(TILE);
+    std::vector<float> ref(TILE, 0.0f);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned kk = 0; kk < N; ++kk)
+            hostA[i * N + kk] = (_Float16) ((i + 2 * kk) % 5);
+    for (unsigned kk = 0; kk < N; ++kk)
+        for (unsigned j = 0; j < N; ++j)
+            hostB[kk * N + j] = (_Float16) ((3 * kk + j) % 4);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j) {
+            float acc = 0.0f;
+            for (unsigned kk = 0; kk < N; ++kk)
+                acc += (float) hostA[i * N + kk] * (float) hostB[kk * N + j];
+            ref[i * N + j] = acc;
+        }
+
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dA = vk.alloc(TILE * sizeof(_Float16));
+    auto dB = vk.alloc(TILE * sizeof(_Float16));
+    auto dC = vk.alloc(TILE * sizeof(float));
+    ASSERT_NE(dA, 0u);
+    ASSERT_NE(dB, 0u);
+    ASSERT_NE(dC, 0u);
+    ASSERT_TRUE(vk.upload(dA, hostA.data(), TILE * sizeof(_Float16)));
+    ASSERT_TRUE(vk.upload(dB, hostB.data(), TILE * sizeof(_Float16)));
+    std::vector<float> zero(TILE, -1.0f);
+    ASSERT_TRUE(vk.upload(dC, zero.data(), TILE * sizeof(float)));
+
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "matmul", {dA, dB, dC},
+                          /*groupCountX=*/1));
+
+    std::vector<float> out(TILE, -2.0f);
+    ASSERT_TRUE(vk.download(out.data(), dC, TILE * sizeof(float)));
+    vk.free(dA);
+    vk.free(dB);
+    vk.free(dC);
+
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j)
+            EXPECT_EQ(out[i * N + j], ref[i * N + j])
+                << "forced-software tile mismatch at (" << i << "," << j << ")";
 }

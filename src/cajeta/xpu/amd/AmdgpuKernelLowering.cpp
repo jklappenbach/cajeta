@@ -522,24 +522,24 @@ public:
     // Native configs (16x16x16): f16/bf16 A·B → f32 accumulator, int8 A·B → i32
     // accumulator. Anything else falls to the portable Software tier (CM6).
 
-    CoopMatrixTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
-                                  uint32_t use) override {
+    ImplTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
+                            uint32_t use) override {
         // Native 16x16x16 WMMA configs, by tile role:
         //   A/B operands : f16, bf16, or int8 (the iu8 path).
         //   accumulator  : f32 (for the f16/bf16 GEMMs) or int32 (for iu8).
-        // The role-awareness keeps an int32 *operand* (no WMMA) on the software
+        // The role-awareness keeps an int32 *operand* (no WMMA) on the portable
         // tier while an int32 *accumulator* (the iu8 output) is native — the two
         // share an LLVM type but not a config.
         if (rows == 16 && cols == 16) {
             if (use == 2) {
                 if (elem->isFloatTy() || elem->isIntegerTy(32))
-                    return CoopMatrixTier::Native;
+                    return ImplTier::Native;
             } else if (elem->isHalfTy() || elem->isBFloatTy() ||
                        elem->isIntegerTy(8)) {
-                return CoopMatrixTier::Native;
+                return ImplTier::Native;
             }
         }
-        return CoopMatrixTier::Software;
+        return ImplTier::Portable;
     }
 
     // RDNA3 WMMA exists only in the wave32 encoding — mark the kernel so the
