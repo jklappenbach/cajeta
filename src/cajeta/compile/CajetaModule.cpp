@@ -1047,7 +1047,8 @@ namespace cajeta {
         return llvmModule;
     }
 
-    llvm::Function* CajetaModule::getRuntimeFunction(const std::string& name) {
+    llvm::Function* CajetaModule::getRuntimeFunction(const std::string& name,
+                                                     llvm::Module* explicitTarget) {
         // Runtime definitions live exclusively in the compiler-owned
         // stdlib module (Compiler::ensureStdlibModule runs linkRuntime
         // once on it). User modules get module-local extern decls
@@ -1064,7 +1065,10 @@ namespace cajeta {
         // so the runtime extern decl is co-resident with the calling function.
         // Guard against an out-of-codegen call (currentEmitLlvmModule null →
         // emitTargetLlvmModule falls back to this module's llvm module).
-        llvm::Module* target = emitTargetLlvmModule();
+        // An explicit target overrides this: the caller knows the exact module its
+        // IRBuilder is writing into (see header — drop-wrapper bodies on persistent
+        // stdlib classes).
+        llvm::Module* target = explicitTarget ? explicitTarget : emitTargetLlvmModule();
         auto stdlib = stdlibModule;
         if (!stdlib || stdlib.get() == this) {
             linkRuntime();

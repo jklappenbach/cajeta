@@ -1,5 +1,63 @@
 # Stdlib Test-Reuse Cache — Correctness Fix
 
+## Status (2026-06-10, later) — ROOT CAUSE FOUND + FIX APPLIED (runtime-fn module mismatch).
+
+The remaining-17 leak is root-caused and fixed (pending re-validation — build in
+progress when this was written). It was exactly suspects #1/#3 from the prior
+handoff, with a precise mechanism:
+
+**Mechanism.** A *plain* stdlib class (one whose `emitModule` is unset — NOT a
+reparented template instantiation) builds its drop wrapper into
+`getEmitModule()->getLlvmModule()`, which for such a class is the **persistent
+stdlib llvm::Module** (`CajetaClass.cpp` `getOrCreateDropFunction` ~2629/2654, body
+cached by name there forever). But the runtime-fn callees *inside* that body —
+`__cajeta_free` (heap-drop) and `__cajeta_class_virtual_drop` / `__cajeta_free_array`
+/ `__cajeta_iface_drop` (`emitDropBodyInline`) — were resolved via
+`module->getRuntimeFunction(name)` → `emitTargetLlvmModule()` →
+`currentEmitLlvmModule`, which under reuse is the **per-test USER module**. So the
+wrapper lives in the persistent stdlib module but calls decls in test.S's user
+module. Next test (test.D): line ~2648 finds the wrapper still resident in the
+stdlib module by name and returns it as-is — its callees still point at test.S's
+now-freed module → the "references a function in another module" cross-module ref.
+
+This explains every prior observation: only `__cajeta_free` /
+`__cajeta_class_virtual_drop` leak (they're the runtime callees in drop bodies);
+the `+3 fns` accumulating in the stdlib module are those drop wrappers; the
+per-class `llvmDropFunction` reset was a no-op (the wrapper physically persists in
+the stdlib llvm::Module and is found by name, so resetting the C++ pointer changes
+nothing); the `emitModule` reset was a no-op (these classes have `emitModule`
+unset — the defect was never a stale emitModule, it was the wrapper/callee module
+mismatch).
+
+**Fix (committed: see below).** Resolve drop-body callees into the module the
+IRBuilder is *actually* writing into, not `currentEmitLlvmModule`:
+- `CajetaModule::getRuntimeFunction(name, llvm::Module* explicitTarget=nullptr)` —
+  new optional explicit-target arg; when set, the runtime extern decl is created
+  co-resident with that module instead of `emitTargetLlvmModule()`. Default arg
+  keeps production / non-reuse byte-identical.
+- `getOrCreateDropFunction` passes `lmod` (the wrapper's own module) for
+  `__cajeta_free`.
+- `emitDropBodyInline` computes `bodyModule = b.GetInsertBlock()->getModule()` and
+  routes all three runtime-fn lookups + the user-`drop()` `ensureFunctionInModule`
+  through it (the latter also fixes a latent template-instantiation mismatch where
+  cajModule=stdlib but the body builds into the user emit module).
+- Wildcard branch of `getOrCreateDropFunction` no longer caches + early-returns the
+  runtime virtual-drop fn (a persistent wildcard proxy would carry a stale module
+  binding forward) — it re-resolves per call (cheap name lookup, always current
+  module).
+Net: a wrapper in the stdlib module gets its runtime callees in the stdlib module
+(intra-module, never dangles); a wrapper in a user module gets them there. Self-
+consistent regardless of `currentEmitLlvmModule`.
+
+**Files:** `src/cajeta/compile/CajetaModule.h` / `.cpp` (overload),
+`src/cajeta/type/CajetaClass.cpp` (3 call sites + wildcard + userDrop).
+
+**Validation TODO (was building when written):** re-run the 113-test set
+(`CAJETA_STDLIB_REUSE=1`, filter below) — expect 17 → 0 (113 pass). Then proceed
+to the full-suite items in "Next steps" below.
+
+---
+
 ## Status (2026-06-10) — speculative reuse + fallback + per-class binding reset. HANDOFF TO LINUX.
 
 The "deep refactor" §0 below called for IS DONE and the picture has changed: the
