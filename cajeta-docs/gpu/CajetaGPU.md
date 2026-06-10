@@ -154,7 +154,7 @@ if (Device.supports(Capability.X)) {
 |---------|----------|--------|
 | **CPU** | LLJIT (in-process) | ✅ reference path + bit-exact oracle; "device" is the host. The floor. |
 | **Vulkan** | SPIR-V → driver | ✅ device-verified (RADV / Strix Halo); richest; new capability lands here first (we control the SPIR-V fork). Reaches Intel / Mali / Adreno / lavapipe — GPUs with no native backend. |
-| **AMD** | AMDGPU → hsaco | ✅ device-verified (gfx1151). Gaps: storage images; mipmaps driver-blocked. |
+| **AMD** | AMDGPU → hsaco | ✅ device-verified (gfx1151), incl. storage images (surface objects). Gap: mipmaps driver-blocked. |
 | **NVIDIA** | NVPTX → cubin → fatbin | ⚠️ emit-only; advanced seams not overridden; no on-device run (pending B5 WSL2+CUDA). |
 | **Metal** | — | ❌ absent; planned MoltenVK → native. |
 
@@ -202,7 +202,7 @@ device-verified · **◐** emit-only (NVIDIA) · **◷** intended-core, fallback
 | `sampleTexture` / `fetchTexture` (2-D) | ● | ● | ● | ◐ | ✗ |
 | `sample`/`fetch` **3D · 1D · 2DArray · Cube** | ● | ● | ● | — | ✗ |
 | mipmaps / explicit LOD (`fetchLod`/`sampleLod`) | ● | ● | ◑ | — | ✗ |
-| `storeImage` / `loadImage` (`Image2D` storage RMW) | — | ● | — | — | ✗ |
+| `storeImage` / `loadImage` (`Image2D` storage RMW) | — | ● | ● | — | ✗ |
 
 **◑** AMD mipmaps: code complete + emit-verified, but `hipMallocMipmappedArray` is
 unsupported on gfx1151/ROCm 7.2.2 — degrades gracefully, device test SKIPs.
@@ -296,8 +296,9 @@ Ray query exercises both seams and the impl-layer rule end to end:
 
 - **CPU** — complete (reference). No storage images; ray query pending its software path (◷).
 - **Vulkan** — complete, all native, device-verified.
-- **AMD** — complete & device-verified **except** storage images (not wired) and mipmaps
-  (driver-blocked, code done). Cooperative matrix native (WMMA).
+- **AMD** — complete & device-verified, incl. storage images (`Image2D` via surface objects /
+  `__ockl_image_store_2D`/`load_2D`); **except** mipmaps (driver-blocked, code done).
+  Cooperative matrix native (WMMA).
 - **NVIDIA** — emit-only and incomplete; nothing device-verified.
 - **Metal** — absent (needs the backend, MoltenVK → native).
 - **Vendor libraries** — none exist; out of stdlib by design (§1.1).
@@ -328,10 +329,11 @@ match this document:
   impl tag); the capability **override + execution mechanism** (`AsImpl`/`.of` + `CAJETA_GPU_AS_IMPL`
   + the `$sw` software-on-Vulkan kernel variant — one backend, either impl, cross-checked
   three ways); the **internal** impl-layer/degrade seam (named `ImplTier` + generic
-  `CAJETA_GPU_<FEATURE>_IMPL` override, dogfooded across coop-matrix + ray-query). Remaining:
-  AMD `Image2D`; NVIDIA advanced seams + B5 on-device; Metal backend; the *automatic*
+  `CAJETA_GPU_<FEATURE>_IMPL` override, dogfooded across coop-matrix + ray-query); AMD
+  `Image2D` storage images (surface objects, device-verified on gfx1151). Remaining:
+  NVIDIA advanced seams + B5 on-device; Metal backend; the *automatic*
   density/extent heuristic; the **external** vendor-SDK that exposes the degrade seam (seed);
-  fp8 (pending LLVM).
+  fp8 (pending LLVM); CPU/NV storage images.
 - **Vendor libraries** — out of this plan; each its own external effort on the degrade
   framework, sequenced by hardware (AMD now; NVIDIA on B5; Metal on Mac).
 - **GFX** — the ray-tracing pipeline (SBT, hit/miss shaders); built on this foundation's

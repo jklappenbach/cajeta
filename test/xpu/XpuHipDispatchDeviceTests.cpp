@@ -1627,3 +1627,78 @@ TEST(XpuHipDispatchDeviceTests, eventFenceSyncRoutesToHipOnDevice) {
                       << " (1: fence not signaled; 100+i: out[i] != i+2 — "
                          "cross-stream event ordering broke on the device)";
 }
+
+// Image2D storage RMW on the real AMD device — the writable twin of the texture
+// path. `fill` writes each texel via img.store(); `rmw` reads-modify-writes it
+// (2v+1) via img.load()+img.store(); the host then downloads and checks 2i+1.
+// Exercises the AMD storeImage/loadImage seam (__ockl_image_store_2D /
+// __ockl_image_load_2D over a surface object) end to end: surface-capable hipArray
+// alloc + the CAJETA_KP_IMAGE launch arm (hipCreateSurfaceObject) + the
+// hipMemcpy2DFromArray download. The gfx1151 twin of the Vulkan
+// imageLoadStoreRmwOnDevice. Surfaces may be driver-blocked on this APU like
+// mipmaps — when alloc/surface-create fails the launches are skipped and the
+// image stays at the -1.0 sentinel, so run() returns 555 and the test SKIPs
+// (code-complete, driver-blocked) rather than failing.
+TEST(XpuHipDispatchDeviceTests, imageLoadStoreRmwRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Image2D;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class ImgRmwHip {\n"
+        "    @Kernel\n"
+        "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) { img.store(i % w, i / w, (float32)(i / w * w + i % w)); }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void rmw(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) {\n"
+        "            uint32 x = i % w;\n"
+        "            uint32 y = i / w;\n"
+        "            float32 v = img.load(x, y);\n"
+        "            img.store(x, y, 2.0f * v + 1.0f);\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 4;\n"
+        "        uint32 h = 4;\n"
+        "        uint32 n = w * h;\n"
+        "        Image2D img = heap Image2D(w, h);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        rmw.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        float32[] out = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { out[i] = -1.0f; }\n"
+        "        img.download(out);\n"
+        // Surfaces unsupported on this driver → the image was never written, so
+        // out stays at the -1.0 sentinel (no legit RMW value is -1: 2i+1 >= 1).
+        "        if (out[0] == -1.0f) { return (int32)(555); }\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = out[i] - (float32)(2 * i + 1);\n"
+        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(src, "test.ImgRmwHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    if (r == 555) {
+        GTEST_SKIP() << "AMD storage images (surface objects) unsupported on this "
+                        "device (hipMallocArray surface / hipCreateSurfaceObject "
+                        "unavailable) — code-complete, driver-blocked like mipmaps";
+    }
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != 2*i+1 — storeImage/loadImage RMW)";
+}

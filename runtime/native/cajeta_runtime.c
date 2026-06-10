@@ -6172,8 +6172,10 @@ enum { CAJ_HIP_FILTER_POINT = 0, CAJ_HIP_FILTER_LINEAR = 1 };  // filter mode
 enum { CAJ_HIP_READ_ELEMENT = 0 };      // hipReadModeElementType
 enum { CAJ_HIP_READ_NORMALIZED_FLOAT = 1 };  // hipReadModeNormalizedFloat (UNORM→[0,1])
 enum { CAJ_HIP_MEMCPY_HTOD = 1 };       // hipMemcpyHostToDevice
+enum { CAJ_HIP_MEMCPY_DTOH = 2 };       // hipMemcpyDeviceToHost
 // hipArray creation flags (driver_types.h; mirror the CUDA values).
 enum { CAJ_HIP_ARRAY_LAYERED = 0x01 };  // hipArrayLayered (2-D array)
+enum { CAJ_HIP_ARRAY_SURFACE_LOAD_STORE = 0x02 };  // hipArraySurfaceLoadStore (Image2D)
 enum { CAJ_HIP_ARRAY_CUBEMAP = 0x04 };  // hipArrayCubemap (6-face cube)
 
 struct caj_hip_channel_format_desc { int x, y, z, w; int f; };
@@ -6244,6 +6246,15 @@ struct cajeta_hip_api {
     int (*hipCreateTextureObject)(void**, const void*, const void*,
                                   const void*);
     int (*hipDestroyTextureObject)(void*);
+    // Surface object path (Image2D storage images, the writable twin of the
+    // texture object); optional — absent → AMD storage images unavailable (the
+    // path degrades like mipmaps). hipCreateSurfaceObject builds a writable
+    // surface from an ARRAY resource desc (no sampler); the array must be
+    // allocated with hipArraySurfaceLoadStore. hipMemcpy2DFromArray reads it back.
+    int (*hipCreateSurfaceObject)(void**, const void*);
+    int (*hipDestroySurfaceObject)(void*);
+    int (*hipMemcpy2DFromArray)(void*, size_t, const void*, size_t, size_t,
+                                size_t, size_t, int);
     // 3-D array path (Texture3D); optional — absent → 3-D textures unavailable on AMD.
     int (*hipMalloc3DArray)(void**, const void*, struct caj_hip_extent, unsigned);
     int (*hipMemcpy3D)(const void*);
@@ -6476,6 +6487,9 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipMemcpy2DToArray, "hipMemcpy2DToArray");
     CAJ_HBIND_OPT(hipCreateTextureObject, "hipCreateTextureObject");
     CAJ_HBIND_OPT(hipDestroyTextureObject, "hipDestroyTextureObject");
+    CAJ_HBIND_OPT(hipCreateSurfaceObject, "hipCreateSurfaceObject");
+    CAJ_HBIND_OPT(hipDestroySurfaceObject, "hipDestroySurfaceObject");
+    CAJ_HBIND_OPT(hipMemcpy2DFromArray, "hipMemcpy2DFromArray");
     CAJ_HBIND_OPT(hipMalloc3DArray, "hipMalloc3DArray");
     CAJ_HBIND_OPT(hipMemcpy3D, "hipMemcpy3D");
     CAJ_HBIND_OPT(hipMallocMipmappedArray, "hipMallocMipmappedArray");
@@ -9377,6 +9391,54 @@ static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h, int32_t format) 
     return (int64_t) (intptr_t) t;
 }
 
+// --- Image2D storage images on AMD (the writable twin of the texture path) ---
+// A storage image is a hipArray allocated with hipArraySurfaceLoadStore, bound
+// per launch as a SURFACE object (no sampler). Optional, exactly like the
+// texture path: when the symbols (or the driver) are absent the alloc returns 0
+// and the feature degrades to unsupported (cf. the mipmap path on this APU).
+static int cajeta_hip_surf_supported(void) {
+    return g_xpu_hip.hipMallocArray && g_xpu_hip.hipFreeArray &&
+           g_xpu_hip.hipCreateSurfaceObject && g_xpu_hip.hipDestroySurfaceObject &&
+           g_xpu_hip.hipMemcpy2DFromArray;
+}
+
+// Allocate an R32F surface-capable hipArray (Image2D is R32F only, matching the
+// Vulkan storage image). Reuses the cajeta_hip_tex record (format R32F, 1 level).
+static int64_t cajeta_xpu_hip_image_alloc(uint32_t w, uint32_t h) {
+    if (!cajeta_hip_surf_supported()) return 0;
+    struct caj_hip_channel_format_desc cd;
+    memset(&cd, 0, sizeof(cd));
+    cd.x = 32;                       // single 32-bit channel
+    cd.f = CAJ_HIP_CHANNEL_FLOAT;
+    void* array = NULL;
+    if (g_xpu_hip.hipMallocArray(&array, &cd, w, h,
+                                 CAJ_HIP_ARRAY_SURFACE_LOAD_STORE) != 0 || !array)
+        return 0;
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
+    if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = 1;
+    t->format = CAJ_TEXFMT_R32F; t->levels = 1;
+    return (int64_t) (intptr_t) t;
+}
+
+// Read the surface array back to host (the texels the kernel wrote). Row pitch
+// and copy width are in BYTES (w * sizeof(float)); height is in rows.
+static void cajeta_xpu_hip_image_download(int64_t handle, void* host,
+                                          uint32_t w, uint32_t h) {
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
+    if (!t || !t->array || !host || !g_xpu_hip.hipMemcpy2DFromArray) return;
+    size_t rowBytes = (size_t) w * sizeof(float);
+    g_xpu_hip.hipMemcpy2DFromArray(host, rowBytes, t->array, 0, 0, rowBytes, h,
+                                   CAJ_HIP_MEMCPY_DTOH);
+}
+
+static void cajeta_xpu_hip_image_free(int64_t handle) {
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
+    if (!t) return;
+    if (t->array && g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(t->array);
+    free(t);
+}
+
 // Build the channel-format descriptor for a TextureFormat (shared by 2-D + 3-D).
 static struct caj_hip_channel_format_desc cajeta_hip_channel_desc(int32_t format) {
     int channels = cajeta_texfmt_channels(format);
@@ -9636,6 +9698,22 @@ static int64_t cajeta_xpu_hip_make_texobj(int64_t texHandle, int32_t filterMode,
     if (g_xpu_hip.hipCreateTextureObject(&texObj, &rd, &td, NULL) != 0)
         return 0;
     return (int64_t) (intptr_t) texObj;
+}
+
+// Build a SURFACE object for an Image2D storage image (the writable twin of
+// make_texobj). Just the ARRAY resource desc — no sampler, no read mode (a
+// surface read/write is raw). The kernel consumes it via __ockl_image_store_2D /
+// __ockl_image_load_2D. Returns 0 if surfaces are unsupported or creation fails.
+static int64_t cajeta_xpu_hip_make_surfobj(int64_t imgHandle) {
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) imgHandle;
+    if (!t || !t->array || !cajeta_hip_surf_supported()) return 0;
+    struct caj_hip_resource_desc rd;
+    memset(&rd, 0, sizeof(rd));
+    rd.resType = CAJ_HIP_RES_ARRAY;
+    rd.res.array.array = t->array;
+    void* surfObj = NULL;
+    if (g_xpu_hip.hipCreateSurfaceObject(&surfObj, &rd) != 0) return 0;
+    return (int64_t) (intptr_t) surfObj;
 }
 
 // --- Texture2D + Sampler (Item 8) -------------------------------------------
@@ -10212,6 +10290,8 @@ int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_VULKAN:
             return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F, 1, 2, 1, 1);  // storage 2-D (R32F)
+        case CAJ_XPU_HIP:
+            return cajeta_xpu_hip_image_alloc(width, height);  // surface hipArray (R32F)
         default: return 0;
     }
 }
@@ -10228,6 +10308,9 @@ void __cajeta_xpu_image_download(void* self, int64_t handle, void* host,
         case CAJ_XPU_VULKAN:
             cajeta_xpu_vk_tex_download(handle, data, width, height);
             return;
+        case CAJ_XPU_HIP:
+            cajeta_xpu_hip_image_download(handle, data, width, height);
+            return;
         default: return;
     }
 }
@@ -10237,6 +10320,7 @@ void __cajeta_xpu_image_free(void* self, int64_t handle) {
     if (!handle) return;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
+        case CAJ_XPU_HIP: cajeta_xpu_hip_image_free(handle); return;
         default: return;
     }
 }
@@ -10837,19 +10921,27 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
     }
     void** argv = (void**) argvv;
 
-    // Texture-object translation (only if this kernel has a Texture2D param).
+    // Texture/surface-object translation (only if this kernel has a Texture2D or
+    // Image2D param). A Texture2D param is bound as a sampled texture object; an
+    // Image2D param as a writable surface object — both arrive at the kernel as a
+    // ptr-addrspace(4) kernarg, so we substitute &objVal into the argv slot.
     void** useArgv = argv;
     void* subArgv[64];
     void* texObjVals[8];
     int64_t texObjs[8];
     int ntex = 0;
+    void* surfObjVals[8];
+    int64_t surfObjs[8];
+    int nsurf = 0;
     int launchOk = 1;
     struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
     if (kp && kp->count > 0 && kp->count <= 64) {
-        int hasTex = 0;
-        for (int i = 0; i < kp->count; ++i)
-            if (kp->kind[i] == CAJETA_KP_TEXTURE) { hasTex = 1; break; }
-        if (hasTex) {
+        int hasTex = 0, hasImg = 0;
+        for (int i = 0; i < kp->count; ++i) {
+            if (kp->kind[i] == CAJETA_KP_TEXTURE) hasTex = 1;
+            else if (kp->kind[i] == CAJETA_KP_IMAGE) hasImg = 1;
+        }
+        if (hasTex || hasImg) {
             // The (single, v1) Sampler param supplies the filter/address modes.
             int32_t filterMode = CAJ_HIP_FILTER_LINEAR, addressMode = 0;
             for (int i = 0; i < kp->count; ++i)
@@ -10878,6 +10970,24 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                     texObjVals[ntex] = (void*) (intptr_t) obj;
                     subArgv[i] = &texObjVals[ntex];      // arg = the texObj ptr
                     ++ntex;
+                } else if (kp->kind[i] == CAJETA_KP_IMAGE) {
+                    if (nsurf >= 8) {  // more storage images than the surfObj buffers
+                        fprintf(stderr, "cajeta.xpu: HIP kernel '%s' uses more than "
+                                "8 storage images (unsupported); not launching\n",
+                                kernelName);
+                        launchOk = 0; break;
+                    }
+                    int64_t rec = *(int64_t*) argv[i];   // image-record handle
+                    int64_t obj = cajeta_xpu_hip_make_surfobj(rec);
+                    if (!obj) {        // surface-object creation failed/unsupported
+                        fprintf(stderr, "cajeta.xpu: HIP surface-object creation "
+                                "failed for kernel '%s'; not launching\n", kernelName);
+                        launchOk = 0; break;
+                    }
+                    surfObjs[nsurf] = obj;
+                    surfObjVals[nsurf] = (void*) (intptr_t) obj;
+                    subArgv[i] = &surfObjVals[nsurf];    // arg = the surfObj ptr
+                    ++nsurf;
                 }
             }
             useArgv = subArgv;
@@ -10891,12 +11001,15 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                                         (unsigned) sharedBytes,
                                         /*stream=*/(void*) (intptr_t) streamHandle,
                                         useArgv, /*extra=*/NULL);
-    if (ntex > 0) {
+    if (ntex > 0 || nsurf > 0) {
         if (launchOk)
             g_xpu_hip.hipDeviceSynchronize();   // finish before destroying objects
         for (int i = 0; i < ntex; ++i)          // also frees objs made before a skip
             if (texObjs[i] && g_xpu_hip.hipDestroyTextureObject)
                 g_xpu_hip.hipDestroyTextureObject((void*) (intptr_t) texObjs[i]);
+        for (int i = 0; i < nsurf; ++i)
+            if (surfObjs[i] && g_xpu_hip.hipDestroySurfaceObject)
+                g_xpu_hip.hipDestroySurfaceObject((void*) (intptr_t) surfObjs[i]);
     }
 }
 
