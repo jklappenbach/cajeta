@@ -72,9 +72,11 @@ The verb seam exists; the rest of the model from doc §1 does not.
 
 - [x] `Buffer<T>` — alloc/upload/download, kinds, contiguous slice.
 - [x] `Texture2D` / `Image2D` handles.
-- [~] `AccelerationStructure` — exists but **Vulkan-locked and AABB-only** (see §3.3).
+- [x] `AccelerationStructure` — AABB **and** triangle geometry on both the Vulkan native
+  BLAS and the portable software BVH (CPU); no longer Vulkan-locked or AABB-only (§3.3).
+  TLAS / instancing is the deferred next axis.
 
-### 3.3 Ray query → genuinely core  ← **the headline open item**
+### 3.3 Ray query → genuinely core  ← **DONE (inc 1–3)**
 
 **Design of record:** [`cajeta-docs/gpu/RayQuery.md`](../../cajeta-docs/gpu/RayQuery.md) —
 the portable BVH noun + software traversal, the tier model (CoopMatrix `Native`/`Software`
@@ -82,9 +84,9 @@ shape), the layout contract, and the sequenced increments. The checklist below m
 
 Scope (doc §4): **inline ray query over BOTH triangle meshes and AABB/procedural BVHs** —
 because scientific compute needs ray-triangle queries (mesh Monte-Carlo, SDF/curvature, ICP /
-6-D pose, mesh-NN/fVDB) *and* the AABB path (3-D Gaussian, point clouds). Today it is Vulkan +
-AABB only, so it is **not core** — "core intent" without a portable, both-geometry path is the
-badge-without-substance the model forbids.
+6-D pose, mesh-NN/fVDB) *and* the AABB path (3-D Gaussian, point clouds). Now genuinely core:
+the full verb set (traverse, getters, confirm/generate, nearest-hit) runs on the portable
+software BVH **and** native Vulkan, cross-checked CPU↔Vulkan, over both geometries.
 
 - [x] **Vulkan hardware path** (the *acceleration*) — AABB BLAS build + `OpRayQuery`, device-
   verified on RADV; Prism `SpatialIndex.countWithin` runs on it.
@@ -146,8 +148,9 @@ badge-without-substance the model forbids.
 Core's contract is closed when **doc §3's verb set is ● / ○ on every shipped backend** and
 **every core noun has a portable build** (no `[~]`/`[ ]` left unaccepted). Concretely:
 
-1. **Ray query is genuinely core** — software BVH + traversal over triangles + AABBs, full
-   getters, confirm/generate (§3.3). *The single biggest item.*
+1. ~~**Ray query is genuinely core**~~ ✅ **DONE (inc 1–3)** — software BVH + traversal over
+   triangles + AABBs, full getters, confirm/generate, nearest-hit, cross-checked CPU↔Vulkan
+   (§3.3). *Was the single biggest item.* (TLAS/instancing deferred.)
 2. **AMD `Image2D`** store/load; NVIDIA advanced seams + B5 on-device; **Metal** backend.
 3. **The model plumbing** — noun seam, `Device.supports(...)` + capability heuristic, the
    impl-layer/SPIR-V-degrade framework, the `cajeta.xpu.core → cajeta.gpu.core` rename.
