@@ -760,6 +760,45 @@ public:
             &m, llvm::Intrinsic::spv_ray_query_get_intersection_primitive_index);
         return b.CreateCall(f, {rqPtr, intersection}, "rq.primidx");
     }
+    // OpRayQueryGetIntersectionTKHR rq, intersection — returns f32 (inc 3b).
+    llvm::Value* rayQueryIntersectionT(llvm::IRBuilderBase& b, llvm::Module& m,
+                                       llvm::Value* rqPtr,
+                                       llvm::Value* intersection) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_get_intersection_t);
+        return b.CreateCall(f, {rqPtr, intersection}, "rq.t");
+    }
+    // OpRayQueryGetIntersectionBarycentricsKHR rq, intersection — returns <2xf32>.
+    llvm::Value* rayQueryIntersectionBarycentrics(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* intersection) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_get_intersection_barycentrics);
+        return b.CreateCall(f, {rqPtr, intersection}, "rq.bary");
+    }
+    // OpRayQueryGetIntersectionFrontFaceKHR rq, intersection — returns i1.
+    llvm::Value* rayQueryIntersectionFrontFace(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* intersection) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_get_intersection_front_face);
+        return b.CreateCall(f, {rqPtr, intersection}, "rq.front");
+    }
+    // OpRayQueryConfirmIntersectionKHR rq — void.
+    void rayQueryConfirmIntersection(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* rqPtr) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_confirm_intersection);
+        b.CreateCall(f, {rqPtr});
+    }
+    // OpRayQueryGenerateIntersectionKHR rq, tHit — void.
+    void rayQueryGenerateIntersection(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* rqPtr,
+                                      llvm::Value* tHit) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_generate_intersection);
+        b.CreateCall(f, {rqPtr, tHit});
+    }
 #else
     // Stock-LLVM build: the ray-query ops need the fork intrinsics. Unnamed params
     // (no unused-arg warnings); each throws the clean fork-toolchain diagnostic.
@@ -778,6 +817,26 @@ public:
     }
     llvm::Value* rayQueryIntersectionPrimitiveIndex(llvm::IRBuilderBase&,
             llvm::Module&, llvm::Value*, llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+    llvm::Value* rayQueryIntersectionT(llvm::IRBuilderBase&, llvm::Module&,
+                                       llvm::Value*, llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+    llvm::Value* rayQueryIntersectionBarycentrics(llvm::IRBuilderBase&,
+            llvm::Module&, llvm::Value*, llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+    llvm::Value* rayQueryIntersectionFrontFace(llvm::IRBuilderBase&, llvm::Module&,
+                                               llvm::Value*, llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+    void rayQueryConfirmIntersection(llvm::IRBuilderBase&, llvm::Module&,
+                                     llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+    void rayQueryGenerateIntersection(llvm::IRBuilderBase&, llvm::Module&,
+                                      llvm::Value*, llvm::Value*) override {
         rayQueryNoForkToolchain();
     }
 #endif

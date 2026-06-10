@@ -465,6 +465,32 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
             llvm::Value* intersection);
 
+        // Nearest-hit getters + commit (inc 3b). `intersection` selects candidate
+        // (0) or committed (1). The getters → OpRayQueryGetIntersection{T,
+        // Barycentrics,FrontFace}KHR; confirm/generate → OpRayQuery{Confirm,
+        // Generate}IntersectionKHR (void). Default throws (software-only via
+        // SoftwareRayQuery; only SpirvTarget overrides, fork-gated).
+
+        // rq distance `t` → f32.
+        virtual llvm::Value* rayQueryIntersectionT(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* intersection);
+        // rq barycentrics → <2 x float> (u, v).
+        virtual llvm::Value* rayQueryIntersectionBarycentrics(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* intersection);
+        // rq front-face → i1.
+        virtual llvm::Value* rayQueryIntersectionFrontFace(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* intersection);
+        // Commit the current triangle candidate (void).
+        virtual void rayQueryConfirmIntersection(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr);
+        // Commit an AABB candidate at distance `tHit` (void).
+        virtual void rayQueryGenerateIntersection(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* tHit);
+
         // Cooperative matrix (cajeta-gpu Part C, CM4). Device-only subgroup
         // matrix-core tiles. Vulkan lowers these to the SPV_KHR_cooperative_matrix
         // ops via the llvm.spv.cooperative.matrix.* intrinsics; every other

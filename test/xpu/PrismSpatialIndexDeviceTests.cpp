@@ -257,9 +257,11 @@ const char* kRqMinDriver =
     "    }\n"
     "}\n";
 
-// Triangle ray query on the CPU software path (inc 2): build a triangle BVH and
-// cast rays that hit / miss each triangle, counting triangle candidates
-// (candidateType() == 0). Exercises the Möller-Trumbore leaf test end to end.
+// Triangle ray query (inc 2): build a triangle BVH and cast rays that hit / miss
+// each triangle, confirming the triangle candidate and checking committedType().
+// Exercises the Möller-Trumbore leaf test end to end. (Uses confirm + committed
+// rather than counting unconfirmed candidates: enumerating unconfirmed non-opaque
+// triangle candidates is non-deterministic on RADV — see candidateFrontFace.)
 const char* kTriDriver =
     "package test;\n"
     "import cajeta.xpu.core.AccelerationStructure;\n"
@@ -278,10 +280,11 @@ const char* kTriDriver =
     "            rq.initialize(scene, 0, 255,\n"
     "                          ox[i], oy[i], 20.0f, 0.0f,\n"   // origin above mesh
     "                          0.0f, 0.0f, -1.0f, 100.0f);\n"  // ray straight down
-    "            uint32 c = 0;\n"
     "            while (rq.proceed()) {\n"
-    "                if (rq.candidateType() == 0) { c = c + 1; }\n"  // triangle hit
+    "                if (rq.candidateType() == 0) { rq.confirmIntersection(); }\n"
     "            }\n"
+    "            uint32 c = 0;\n"   // confirm + committed: the reliable hit query
+    "            if (rq.committedType() == 1) { c = 1; }\n"
     "            out[i] = c;\n"
     "        }\n"
     "    }\n"
@@ -455,6 +458,125 @@ TEST(PrismSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100: distance; 101: barycentric u; 102: v)";
+}
+
+// Inc 3b: front-face getter. A CCW triangle in z=0 (geometric normal +z): a ray
+// from above (+z, going down) hits the front (true); a ray from below hits the
+// back (false). The cajeta convention (MT det > 0) is set to match Vulkan's
+// default CCW front-face, so CPU and native agree.
+const char* kFrontDriver =
+    "package test;\n"
+    "import cajeta.xpu.core.AccelerationStructure;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.RayQuery;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class FrontRq {\n"
+    "    @Kernel\n"
+    "    public static void getFront(AccelerationStructure scene,\n"
+    "                                Buffer<float32> oz, Buffer<float32> dz,\n"
+    "                                Buffer<uint32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          0.25f, 0.25f, oz[i], 0.0f,\n"
+    "                          0.0f, 0.0f, dz[i], 100.0f);\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) { rq.confirmIntersection(); }\n"
+    "            }\n"
+    "            uint32 f = 0;\n"   // committed front-face — the reliable query
+    "            if (rq.committedType() == 1) {\n"
+    "                if (rq.committedFrontFace()) { f = 1; } else { f = 2; }\n"
+    "            }\n"
+    "            out[i] = f;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        float32[] verts = heap float32[9];\n"
+    "        verts[0]=0.0f; verts[1]=0.0f; verts[2]=0.0f;\n"
+    "        verts[3]=1.0f; verts[4]=0.0f; verts[5]=0.0f;\n"
+    "        verts[6]=0.0f; verts[7]=1.0f; verts[8]=0.0f;\n"
+    "        AccelerationStructure tri = heap AccelerationStructure(verts, 1, 3);\n"
+    "        uint32 n = 2;\n"
+    "        float32[] hoz = heap float32[n]; float32[] hdz = heap float32[n];\n"
+    "        hoz[0]=5.0f;  hdz[0]=-1.0f;\n"   // from above, going down -> front
+    "        hoz[1]=-5.0f; hdz[1]=1.0f;\n"    // from below, going up   -> back
+    "        uint32[] hout = heap uint32[n]; hout[0]=9; hout[1]=9;\n"
+    "        Buffer<float32> oz = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> dz = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        oz.upload(hoz); dz.upload(hdz); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        getFront.launch(s, grid: [1], block: [64])(tri, oz, dz, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"   // front hit -> true
+    "        if (hout[1] != 2) { return 101; }\n"   // back hit  -> false
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(PrismSpatialIndexDeviceTests, frontFaceOnCpuSoftwareBvh) {
+    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100: front hit; 101: back hit)";
+}
+
+TEST(PrismSpatialIndexDeviceTests, frontFaceOnDevice) {
+    if (!VulkanDriver::rayQueryAvailable()) {
+        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
+    }
+    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (Vulkan native front-face != software)";
+}
+
+// Inc 3b native cross-checks: the SAME getter / nearest-hit sources on the Vulkan
+// NATIVE path (OpRayQueryGetIntersectionT / Barycentrics, Confirm/Generate via the
+// new cajeta-llvm fork intrinsics) must match the CPU software results.
+TEST(PrismSpatialIndexDeviceTests, candidateGettersOnDevice) {
+    if (!VulkanDriver::rayQueryAvailable()) {
+        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
+    }
+    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (Vulkan native candidate getters != software)";
+}
+
+TEST(PrismSpatialIndexDeviceTests, nearestHitOnDevice) {
+    if (!VulkanDriver::rayQueryAvailable()) {
+        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
+    }
+    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (Vulkan native nearest-hit (confirm) != software)";
 }
 
 TEST(PrismSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {

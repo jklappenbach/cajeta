@@ -264,12 +264,17 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
       independent of traversal order. `committedType`/`committedDistance`/`committedBarycentricU`
       /`V`/`committedPrimitiveIndex` read it. Verified: `nearestHitOnCpuSoftwareBvh` — two
       stacked triangles, the nearest (prim 1, t=6) wins.
-- [ ] *(3b native)* **Native getters + confirm/generate**: new `llvm.spv.ray.query.*` fork
-      intrinsics (`GetIntersectionTKHR`, `GetIntersectionBarycentricsKHR`,
-      `Confirm/GenerateIntersectionKHR`, committed getters) + `SpirvTarget` seams +
-      cross-check. The new getter / confirm / generate ops throw a clear diagnostic on the
-      native backend until then. **Needs a build-cajeta LLVM rebuild** (the heavy path).
-- [ ] *(3b)* `frontFace` getter (software: MT det sign; native: a fork intrinsic).
+- [x] *(3b native)* **Native getters + confirm/generate**: added the
+      `llvm.spv.ray.query.*` fork intrinsics + opcodes `OpRayQueryGetIntersection{T,
+      Barycentrics,FrontFace}KHR` / `OpRayQuery{Confirm,Generate}IntersectionKHR` (cajeta-llvm,
+      `cajeta-spirv`) + `SpirvTarget` seams. Cross-checked: `candidateGettersOnDevice`,
+      `nearestHitOnDevice`, `triangleRayQueryOnDevice`, `frontFaceOnDevice` match the
+      software path.
+- [x] *(3b)* `frontFace` getter — software MT det-sign (det>0 = front, the CCW convention);
+      native `OpRayQueryGetIntersectionFrontFaceKHR`. **Use committed front-face** (after
+      confirm): reading an *unconfirmed candidate's* front-face is non-deterministic on RADV
+      (same for counting unconfirmed non-opaque triangle candidates — confirm first). The
+      software path is reliable for candidate + committed.
 
 **Inc 4 — Plumbing hardening (shared with the rest of the model).**
 - [ ] `Device.supports(RayQueryNative)` + the selection heuristic with override (§6).

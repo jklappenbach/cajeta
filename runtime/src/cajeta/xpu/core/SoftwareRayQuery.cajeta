@@ -83,6 +83,7 @@ public final class SoftwareRayQuery {
         uint32 committedPrim = cursor.committedPrim;
         float32 committedU = cursor.committedU;
         float32 committedV = cursor.committedV;
+        uint32 committedFront = cursor.committedFront;
 
         uint32 i = cursor.nextNode;
         while (i < nodeCount) {
@@ -109,6 +110,7 @@ public final class SoftwareRayQuery {
                 float32 cT = 0.0f;
                 float32 cU = 0.0f;
                 float32 cV = 0.0f;
+                uint32 cFront = 0;
                 if (geomFlags == 2) {
                     kind = 0;
                     isCandidate = false;
@@ -136,6 +138,11 @@ public final class SoftwareRayQuery {
                                 if (tt >= tMin && tt <= tMax) {
                                     isCandidate = true;
                                     cT = tt; cU = uu; cV = vv;
+                                    // det = -dot(dir, geometric normal): det > 0
+                                    // ⇔ the normal faces the ray ⇒ front-facing
+                                    // (the CCW-winding convention, matching Vulkan
+                                    // OpRayQueryGetIntersectionFrontFaceKHR).
+                                    if (det > 0.0f) { cFront = 1; }
                                 }
                             }
                         }
@@ -144,9 +151,9 @@ public final class SoftwareRayQuery {
                 if (isCandidate) {
                     return stack SwRayCursor(ox, oy, oz, dx, dy, dz, tMin, tMax,
                                            escape, 1, prim, kind, committed,
-                                           cT, cU, cV,
+                                           cT, cU, cV, cFront,
                                            committedT, committedPrim,
-                                           committedU, committedV);
+                                           committedU, committedV, committedFront);
                 }
                 i = escape;       // leaf's box hit but primitive missed: skip it
             } else {
@@ -159,8 +166,9 @@ public final class SoftwareRayQuery {
         }
         // Exhausted: no candidate (committed hit, if any, carried through).
         return stack SwRayCursor(ox, oy, oz, dx, dy, dz, tMin, tMax,
-                               nodeCount, 0, 0, 0, committed, 0.0f, 0.0f, 0.0f,
-                               committedT, committedPrim, committedU, committedV);
+                               nodeCount, 0, 0, 0, committed, 0.0f, 0.0f, 0.0f, 0,
+                               committedT, committedPrim, committedU, committedV,
+                               committedFront);
     }
 
     /**
