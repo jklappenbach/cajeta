@@ -452,7 +452,7 @@ The Maven-Central-style registry. Design reflects the **real** protocol in
     `class`, `final`, `public/private`, `static`, `stack`, `heap`, `async`,
     `await`, `scope`, `spawn`, primitive types `int32/int64/float64`, the `#`
     transfer operator, `@Annotations`, generics `<...>`). Register it with Shiki.
-    Reuse work from **`cajeta-prism`** (the project's existing syntax-highlight
+    Reuse work from **`cajeta-toffee`** (the project's existing syntax-highlight
     effort) if its grammar is portable.
   - **(B)** Interim: alias to **Java** or **Rust** grammar for "good enough"
     coloring until (A) lands.
@@ -898,7 +898,7 @@ implemented") · **CUT** (delete or archive).
 | `TemplateWildcard.md` | 511 | EDIT | Reframe from "cost-benefit analysis" to reference. | Types & Generics |
 | `CaptureConversion.md` | 104 | CHILD→TemplateWildcard | `capture#N` design; fold in as a section/child. | Types & Generics |
 | `CajetaMath.md` | 1198 | ROADMAP | Design for unbuilt `cajeta.math`. | Roadmap |
-| `CajetaPrism.md` | 750 | ROADMAP | Design for unbuilt `cajeta.prism`. | Roadmap |
+| `CajetaToffee.md` | 750 | ROADMAP | Design for unbuilt `cajeta.toffee`. | Roadmap |
 | `CajetaRender.md` | 869 | ROADMAP | Design for unbuilt `cajeta.render`. | Roadmap |
 | `CajetaTorch.md` | 700 | ROADMAP | Design for unbuilt `cajeta.torch`. | Roadmap |
 
@@ -1006,7 +1006,7 @@ Each published group is a top-level node in the docs sidebar and a card on the
 | 10 | **XPU / Accelerators** | `Cpu` | XPU substrate, capability matrix, `@Kernel` portability |
 | 11 | **Tooling & Build** | `Wrench` | Build tool, compilation, modes, lint, archive, debugging, `cajetadoc`, embedded |
 | 12 | **Registry & Specs** | `ScrollText` | Repository/toolchain protocols, manifest/lockfile schema, plugin API |
-| 13 | **Roadmap** | `Telescope` | Design docs for unbuilt libraries (math, prism, render, torch), embedded MCU |
+| 13 | **Roadmap** | `Telescope` | Design docs for unbuilt libraries (math, toffee, render, torch), embedded MCU |
 | — | **Internal / Contributor** | `FlaskConical` | Handoffs, bring-up logs, status trackers, variance registers, test/harness plans, release procedure — **repo-only, never published** |
 
 ### 16.4 Per-document editing plan — sub-item ③
@@ -1043,7 +1043,7 @@ Concrete line items, grouped by operation. (Verdicts come from §16.2.)
 deep-internal rationale to `Internal` or footnotes.
 
 **Mark as roadmap** (badge "design / not yet implemented", group Roadmap):
-`CajetaMath.md`, `CajetaPrism.md`, `CajetaRender.md`, `CajetaTorch.md`,
+`CajetaMath.md`, `CajetaToffee.md`, `CajetaRender.md`, `CajetaTorch.md`,
 `Embedded.md`.
 
 **Exclude from publish (Internal group)** — add to the sync **exclude list**
@@ -1129,7 +1129,7 @@ where a `cajetadoc`-generated API reference sits as a sibling tab (§18, §21);
 │   ├── Extension API v1          (specs/extension-api-v1)
 │   └── Schema versioning         (specs/schema-versioning)
 └── Roadmap ························· Telescope
-    ├── cajeta.math · prism · render · torch   (badged "design")
+    ├── cajeta.math · toffee · render · torch   (badged "design")
     └── Embedded / MCU            (Embedded)
 ```
 

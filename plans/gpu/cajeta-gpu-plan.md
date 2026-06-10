@@ -39,7 +39,7 @@ The verb seam exists; the rest of the model from doc §1 does not.
 - [x] **`cajeta.xpu.core` → `cajeta.gpu.core` rename** — the foundation moved to the `gpu`
   namespace: directory `runtime/src/cajeta/{xpu→gpu}/core`, all package/import spellings,
   the compiler's hardcoded detection strings, the stdlib-embed path, tests, samples, docs,
-  and the sibling `cajeta-prism` repo (in lockstep). Wholesale (the whole `core` package was
+  and the sibling `cajeta-toffee` repo (in lockstep). Wholesale (the whole `core` package was
   foundation); future compute (`Tensor`, orchestration) will be `cajeta.xpu.*` built on
   `gpu.core`. Verified: full XPU/ray-query/foundation regression green post-rename.
 
@@ -96,7 +96,7 @@ the full verb set (traverse, getters, confirm/generate, nearest-hit) runs on the
 software BVH **and** native Vulkan, cross-checked CPU↔Vulkan, over both geometries.
 
 - [x] **Vulkan hardware path** (the *acceleration*) — AABB BLAS build + `OpRayQuery`, device-
-  verified on RADV; Prism `SpatialIndex.countWithin` runs on it.
+  verified on RADV; Toffee `SpatialIndex.countWithin` runs on it.
 - [x] **Noun: portable software BVH** *(inc 1 — AABBs)* — median-split threaded BVH built
   into an all-`float32` block (`runtime/native/cajeta_bvh.c`); the software
   `AccelerationStructure` handle is that buffer. Triangles + LBVH/binned-SAH quality are
@@ -106,7 +106,7 @@ software BVH **and** native Vulkan, cross-checked CPU↔Vulkan, over both geomet
   `RayQuery` op to it on a software backend. **Möller-Trumbore** triangle leaves are inc 2.
 - [x] **Noun-impl → verb-lowering coupling** — `LoweringTarget.softwareRayQuery()` per
   backend (CPU software + AS-as-buffer; Vulkan native `OpRayQuery`). Device-verified:
-  `PrismSpatialIndexDeviceTests.*CpuSoftwareBvh` (777/888) match the Vulkan path.
+  `ToffeeSpatialIndexDeviceTests.*CpuSoftwareBvh` (777/888) match the Vulkan path.
 - [x] **Triangle geometry** *(inc 2)* — software BVH triangle leaves (Möller-Trumbore,
   `SoftwareRayQuery.triangleHit` over a primData region) + `VK_GEOMETRY_TYPE_TRIANGLES_KHR`
   on the Vulkan build (`cajeta_xpu_vk_accel_build_triangles`, non-opaque). Device-verified:

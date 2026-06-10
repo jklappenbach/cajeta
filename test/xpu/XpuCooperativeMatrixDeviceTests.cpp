@@ -7,7 +7,7 @@
 // SPIR-V backend and DISPATCHES on the RADV STRIX_HALO WMMA cores.
 //
 // MIXED PRECISION (the only float config the hardware exposes, and the SPELA/
-// Prism regime): A and B are float16 (IEEE half), the accumulator/result is
+// Toffee regime): A and B are float16 (IEEE half), the accumulator/result is
 // float32. The device lowerer keys each tile off its declared element type, so
 // f16-in / f32-accumulate flows through unchanged (CM5a made cajeta's float16 an
 // IEEE half so it matches VK_COMPONENT_TYPE_FLOAT16_KHR).
@@ -285,7 +285,7 @@ TEST(XpuCooperativeMatrixDeviceTests, kAccumulationMatmulOnDevice) {
 // the canonical cooperative-matrix matmul. rows/cols/depth arrive as scalar args
 // (lowered to single-element storage buffers on Vulkan), so the kernel is generic
 // over size, not baked. Dispatched as (rows/16)*(cols/16) workgroups. This is the
-// matmul SPELA/Prism can call. Exact integer check over a 64×64×64 problem.
+// matmul SPELA/Toffee can call. Exact integer check over a 64×64×64 problem.
 const char* kGemmSource =
     "package test;\n"
     "import cajeta.gpu.core.Buffer;\n"

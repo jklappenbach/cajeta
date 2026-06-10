@@ -1,8 +1,8 @@
-# Cajeta Prism — ML / compute framework (seed)
+# Cajeta Toffee — ML / compute framework (seed)
 
-**Status: seed / early.** This is the first real content for Prism, the separate
+**Status: seed / early.** This is the first real content for Toffee, the separate
 plan promised when the gpu/xpu/gfx specs were split. It is **not** a foundation
-spec — Prism is a *consumer* that sits on top of `cajeta-gpu` (foundation) and
+spec — Toffee is a *consumer* that sits on top of `cajeta-gpu` (foundation) and
 `cajeta-xpu` (compute execution), the way the numpy/scipy/keras/torch/ete ports do.
 It is sequenced **after** those, and gated on specific `cajeta-gpu` Part C items
 (ray query, cooperative matrix). Most of this plan is forward placeholder; the one
@@ -15,7 +15,7 @@ Checkbox legend: `[x]` landed+tested · `[~]` partial · `[ ]` not started.
 
 ---
 
-## What Prism is
+## What Toffee is
 
 A new ML / scientific-compute framework written in Cajeta. Per the locked direction:
 
@@ -26,7 +26,7 @@ A new ML / scientific-compute framework written in Cajeta. Per the locked direct
   memory, single-language host+device, the `cajeta-xpu` kernel model).
 - **Primary focus: the SPELA forward training algorithm** (`ml/spela-training`) —
   single-forward-pass, per-layer local-loss training with **no global backprop**.
-  This is the defining design constraint and Prism's main differentiator (see P2).
+  This is the defining design constraint and Toffee's main differentiator (see P2).
 
 ### Dependency position
 ```
@@ -34,19 +34,19 @@ cajeta-gpu (foundation: value types, math, textures, memory, + Part C: ray query
    ▲                         ▲
 cajeta-xpu (compute)     ┌────┴─────┐
    ▲                     │          │
-   └─────────────────────┤  Prism   │  ← this plan (consumer, like the ports)
+   └─────────────────────┤  Toffee   │  ← this plan (consumer, like the ports)
                          └──────────┘
 ```
-- Prism does **not** belong in the foundation; it builds on it.
-- The numpy/scipy/keras/torch/ete ports are **siblings** of Prism, not parts of it —
-  they remain their own separate plan(s). Prism may *reuse* a ported ndarray/BLAS
+- Toffee does **not** belong in the foundation; it builds on it.
+- The numpy/scipy/keras/torch/ete ports are **siblings** of Toffee, not parts of it —
+  they remain their own separate plan(s). Toffee may *reuse* a ported ndarray/BLAS
   surface but is free to diverge.
 
 ---
 
 ## Part P1 — RT-as-compute spatial primitive (research-grounded)
 
-The most distinctive thing Prism can offer that torch/JAX do not: **hardware ray
+The most distinctive thing Toffee can offer that torch/JAX do not: **hardware ray
 tracing repurposed as a general-purpose spatial-index accelerator** — kNN/radius
 search, clustering, Monte-Carlo transport, point-in-mesh, range queries — built on
 the `cajeta-gpu` ray-query primitive (Part C / Stage C3.3). The deep-research pass
@@ -58,10 +58,10 @@ AABB-as-index-entry, custom intersection) is **library-internal** and never surf
 
 ### Stage P1.0 — `SpatialIndex` primitive
 - [~] `SpatialIndex` over points / AABBs with query verbs: `knn(k)`, `radius(r)`, `contains(p)`, `range(box)`, `countWithin(r)` — **`countWithin` (fixed-radius, L-inf box neighbourhood) landed**; the other verbs are follow-ups.
-- [x] Internal encoding (hidden): wrap each datum in an AABB; issue a degenerate near-zero-length ray; visit candidate AABBs — the verified RTNN pattern. **Landed** in `src/prism/spatial/SpatialIndex.cajeta` (build BVH over half-extent boxes; internal `countWithinKernel` casts the degenerate ray + counts candidates; `countWithin` is the only public surface — rays never leak).
+- [x] Internal encoding (hidden): wrap each datum in an AABB; issue a degenerate near-zero-length ray; visit candidate AABBs — the verified RTNN pattern. **Landed** in `src/toffee/spatial/SpatialIndex.cajeta` (build BVH over half-extent boxes; internal `countWithinKernel` casts the degenerate ray + counts candidates; `countWithin` is the only public surface — rays never leak).
 - [~] Lowers to `cajeta-gpu` ray query (Vulkan) / OptiX (NVIDIA) / compute fallback — **Vulkan ray-query path done + exec-verified on a real RADV device** (via the cajeta-gpu 3a/3b foundation); OptiX + compute fallback are P1.3 follow-ups.
 
-> **P1.0 landed (2026-06-03):** first real Prism code. `SpatialIndex.cajeta` + `cajeta-prism` repo seed (README). Exec-verified through the cajeta JIT harness (`cajeta/test/xpu/PrismSpatialIndexDeviceTests.cpp`) on an **AMD Radeon 8060S (RADV STRIX_HALO)** — `idx.countWithin(...)` returns correct fixed-radius neighbour counts with the ray-tracing entirely hidden. Built on cajeta-gpu Part C inc 3a/3b (ray-query lowering + host BVH build), both now complete.
+> **P1.0 landed (2026-06-03):** first real Toffee code. `SpatialIndex.cajeta` + `cajeta-toffee` repo seed (README). Exec-verified through the cajeta JIT harness (`cajeta/test/xpu/ToffeeSpatialIndexDeviceTests.cpp`) on an **AMD Radeon 8060S (RADV STRIX_HALO)** — `idx.countWithin(...)` returns correct fixed-radius neighbour counts with the ray-tracing entirely hidden. Built on cajeta-gpu Part C inc 3a/3b (ray-query lowering + host BVH build), both now complete.
 
 ### Stage P1.1 — Custom-predicate callback
 - [~] **Enabling primitive landed (2026-06-04):** candidate **primitive index** wired end to end — `RayQuery.candidatePrimitiveIndex()` → `OpRayQueryGetIntersectionPrimitiveIndexKHR` (cajeta-llvm fork, opcode 6023) → a concrete `SpatialIndex.radiusExact` exact-L2 verb, exec-verified on a real RADV device (`exactL2RefinementOnDevice`) + a GPU-free spirv-val guard test. This proves the candidate step can recover the indexed datum and apply a true-distance predicate.
@@ -93,7 +93,7 @@ The canonical implementation is `ml/spela-training/src/` (PyTorch `spela_train.p
 TF/Keras `spela_train_tf.py`). SPELA(O) trains each layer with a **local per-layer
 cosine-similarity loss** against fixed per-layer class embeddings ("symmetric
 vectors" on the unit sphere), **detaching each layer's input** so the whole pass is
-forward-only (no global backprop). Implications for Prism's design:
+forward-only (no global backprop). Implications for Toffee's design:
 - [ ] **No reverse-mode autodiff required for the SPELA path** — a major simplification vs torch; the per-layer local loss + gradient is closed-form / single-layer. (Reverse-mode is only needed for torch-parity workloads — a separate, optional axis.)
 - [ ] Per-layer eval + early-exit inference (`from_layer=k`); online personalization / drift adaptation as first-class API
 - [ ] Map the per-layer local update onto the `cajeta-xpu` kernel + `cajeta-gpu` cooperative-matrix path
@@ -123,7 +123,7 @@ the #1 design risk** (being de-risked by the Vulkan ray-query SPIR-V probe,
 
 **Refuted (0-3) — both consequential:**
 - ❌ "Full raygen/closest-hit/miss + SBT pipeline is mandatory; only triangle geometry is RT-eligible." → **False.** Ray-query-in-an-ordinary-kernel with custom AABB primitives is viable — validates the smaller `cajeta-gpu` foundation path.
-- ❌ "No-payoff regime is narrow (only big triangle-mesh line tracing)." → **False — broader.** RT loses in more cases than the optimistic story → Prism must never force RT (P1.3).
+- ❌ "No-payoff regime is narrow (only big triangle-mesh line tracing)." → **False — broader.** RT loses in more cases than the optimistic story → Toffee must never force RT (P1.3).
 
 **Failure modes (confirmed):** single-precision intersection leaks with no built-in
 detection (→ P1.4); large radius favors GPU cell-list; extreme density → RT slower
@@ -149,8 +149,8 @@ acceleration-structure spec (docs.vulkan.org).
 ## Sequencing & dependencies
 - [ ] **Blocked on `cajeta-gpu` Part C**: P1 needs ray query (C3.3); P1.5/P2 need cooperative matrix. P1 cannot start before the C0 fork pipeline + ray-query lowering land.
 - [ ] **Blocked on `cajeta-xpu`** for the kernel/dispatch execution model.
-- [ ] First concrete step already taken: the Vulkan ray-query SPIR-V expressibility probe (de-risks the headline caveat before Prism commits to the encoding).
+- [ ] First concrete step already taken: the Vulkan ray-query SPIR-V expressibility probe (de-risks the headline caveat before Toffee commits to the encoding).
 
-*Prism is a consumer of the foundation, focused on SPELA forward training, with an
+*Toffee is a consumer of the foundation, focused on SPELA forward training, with an
 RT-as-compute spatial primitive as its distinctive early capability. This is a seed —
 P2/P3 fill in once the foundation's Part C items are real.*

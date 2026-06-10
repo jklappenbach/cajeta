@@ -339,7 +339,7 @@ paths for these are not yet wired.
 | Feature | Vulkan (Cajeta's flavor) | On-device |
 |---|---|---|
 | **Cooperative matrix** `CooperativeMatrix<T,Rows,Cols,Use>` | `OpTypeCooperativeMatrixKHR` + load/store/mul-add via `llvm.spv.cooperative.matrix.*`; mandates `OpMemoryModel Logical VulkanKHR`. CM1–CM5 + multi-tile GEMM | ✅ f16/f16→f32 16×16×16 bit-exact on RDNA3 WMMA cores; 64×64×64 tiled GEMM bit-exact (needed the `SPIRVFixupMergePlacement` backend fix). CM6 LDS-staging deferred |
-| **Ray query + accel structures** `RayQuery` / `AccelerationStructure` | `OpTypeRayQueryKHR` / `OpTypeAccelerationStructureKHR` + init/proceed/get via `llvm.spv.ray.query.*`; AS bound through the standard `handlefrombinding` path | ✅ spatial-index (RTNN) pattern over a BLAS, on-device; consumed by Prism `SpatialIndex` (3c) |
+| **Ray query + accel structures** `RayQuery` / `AccelerationStructure` | `OpTypeRayQueryKHR` / `OpTypeAccelerationStructureKHR` + init/proceed/get via `llvm.spv.ray.query.*`; AS bound through the standard `handlefrombinding` path | ✅ spatial-index (RTNN) pattern over a BLAS, on-device; consumed by Toffee `SpatialIndex` (3c) |
 
 `float16` is IEEE binary16 (`getHalfTy`, not bfloat) to match the device's
 `VK_COMPONENT_TYPE_FLOAT16_KHR` cooperative-matrix config.

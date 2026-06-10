@@ -154,14 +154,14 @@ target → demand → satisfying stage (xpu unless noted `gpu`).
 | **PyTorch port** (DL engine) | conv/matmul/norm kernels, **atomics** for scatter/grad-accum, multi-GPU dispatch, async overlap | Stages 9, 10, 12 (+ gpu: math, fp16/bf16) |
 | **Keras port** | none beyond the torch port | inherits |
 | **ETE port** | mostly host-side; little compute demand | — |
-| **Prism** — new ML framework; **primary focus: SPELA forward training** | **fused per-layer (forward + local cosine-loss + update) kernels**, per-layer/early-exit eval, on-device/continual-learning dispatch | Stages 9, 11, 12 (+ gpu: unit-sphere "symmetric-vector" ops) |
+| **Toffee** — new ML framework; **primary focus: SPELA forward training** | **fused per-layer (forward + local cosine-loss + update) kernels**, per-layer/early-exit eval, on-device/continual-learning dispatch | Stages 9, 11, 12 (+ gpu: unit-sphere "symmetric-vector" ops) |
 
 > **SPELA** (`ml/spela-training`): *Solo Pass Embedded Learning Algorithm* — per-layer
 > local cosine-similarity loss vs fixed unit-sphere "symmetric vectors", detached
 > inter-layer inputs ⇒ **forward-only, no global backprop**. The compute demand it adds
 > over ordinary DL is **fusing a layer's forward + local-loss + weight update into one
 > device pass** (Stage 11 kernel-language reach + Stage 12 launch contract; the
-> symmetric-vector math is `cajeta-gpu`). The training *framework* is the separate Prism plan.
+> symmetric-vector math is `cajeta-gpu`). The training *framework* is the separate Toffee plan.
 
 If a Part II stage exists **only** because a target needs it, that's correct. A compute
 capability no target demands is a candidate to cut or defer.
@@ -172,7 +172,7 @@ capability no target demands is a candidate to cut or defer.
 
 - [ ] Part I follow-ups closed (or deferred with a tracked reason): the per-stage follow-ups in Stages 3/4/5/7.
 - [ ] Part II Stages 9–12 landed, each test-gated on CPU + on-device (AMD/VK; NV once `cajeta-gpu` Stage B5 lands hardware).
-- [ ] A thin **proof-of-support compute probe per target** runs on the substrate (not the full library): a broadcast+reduction kernel (numerics); a matmul + atomic grad-scatter kernel (torch); a fused per-layer forward+cosine-loss+update pass (Prism/SPELA).
+- [ ] A thin **proof-of-support compute probe per target** runs on the substrate (not the full library): a broadcast+reduction kernel (numerics); a matmul + atomic grad-scatter kernel (torch); a fused per-layer forward+cosine-loss+update pass (Toffee/SPELA).
 - [ ] The capability matrix (`CajetaXPU-Matrix.md`) is honest and current for the compute rows.
 - [ ] The Stage 12 launch/FFI contract is documented and frozen.
 - [ ] `cajeta-gpu` has cleared *its* definition of done (compute depends on it).
@@ -189,6 +189,6 @@ capability no target demands is a candidate to cut or defer.
 ---
 
 *Part I is the done compute floor; Part II is the remaining `cajeta-xpu` work. The
-foundation it stands on is `cajeta-gpu`; the numerics stack, framework ports, and Prism
+foundation it stands on is `cajeta-gpu`; the numerics stack, framework ports, and Toffee
 that stand on *it* are out of scope here (each its own plan), gated on this plan's
 definition of done. Graphics is `cajeta-gfx`, a sibling over the same `cajeta-gpu` base.*

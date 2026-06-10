@@ -840,7 +840,7 @@ TEST(XpuVulkanEmitTests, lowersRayQueryToSpirv) {
     }
 }
 
-// candidatePrimitiveIndex() (Prism P1.1 exact-L2 refinement) lowers to
+// candidatePrimitiveIndex() (Toffee P1.1 exact-L2 refinement) lowers to
 // llvm.spv.ray.query.get.intersection.primitive.index ->
 // OpRayQueryGetIntersectionPrimitiveIndexKHR (opcode 4487, intersection=Candidate).
 // This is a GPU-FREE check that the new op is structurally spirv-val-clean,
@@ -1396,7 +1396,7 @@ TEST(XpuVulkanEmitTests, lowersBitInstructionsToSpirv) {
 // CM5b — the device-realistic MIXED-PRECISION config: A and B are float16
 // (IEEE half) tiles, the accumulator C is float32. This is the only float
 // cooperative-matrix config the RADV STRIX_HALO WMMA path actually supports
-// (f16/f16 -> f32, M=N=K=16) and the regime SPELA/Prism matmul runs in. The
+// (f16/f16 -> f32, M=N=K=16) and the regime SPELA/Toffee matmul runs in. The
 // CooperativeMatrix surface needs no change: the device lowerer keys each tile
 // off its own declared element type, and every seam (load/muladd/store) is
 // independently overloaded, so a half-input/float-accumulate mma lowers and

@@ -7,7 +7,7 @@
 
 ## Context
 
-cajeta wants the standard library (Prism, math types) to define **fast value types whose
+cajeta wants the standard library (Toffee, math types) to define **fast value types whose
 operators go through real operator overloading** — Pythonic sugar with GPU-native codegen.
 Today that is impossible: the operator-dispatch gate
 (`BinaryOpExpression.cpp:658-659`, mirrored at the `operator[]` gate `Expression.cpp:532`
