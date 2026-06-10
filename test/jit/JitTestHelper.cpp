@@ -449,6 +449,24 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     bool reuseStdlib = kReuseEnabled && stdlibReusable(opts);
     auto& stdlibCache = StdlibReuseCache::instance();
 
+    // The reuse path binds the process-global shared context (line ~499) per
+    // test but only clears it on the fallback / non-reuse branches — so after a
+    // SUCCESSFUL reuse test it would stay set, and the NEXT test to construct a
+    // raw Compiler (e.g. parser/unit tests that don't use this harness) would
+    // skip resetGlobals() (Compiler ctor's shared-context branch) and inherit
+    // this test's stale process-global registries (aspectClasses, etc.) ->
+    // cross-test contamination (AspectRegistrationTests.freshCompilerStartsEmpty
+    // failed mid-shard for exactly this reason). Guarantee the context (and the
+    // hazard arm) are cleared on EVERY exit from this helper — normal return and
+    // exception alike. The next reuse test re-binds at line ~499; s_sharedInitialized
+    // is left intact so the one-time prime is preserved.
+    struct SharedContextGuard {
+        ~SharedContextGuard() {
+            cajeta::Compiler::setSharedContext(nullptr);
+            cajeta::Compiler::setReuseHazardArmed(false);
+        }
+    } sharedContextGuard;
+
     static std::mt19937_64 rng(std::random_device{}());
     auto sourceRoot = std::filesystem::temp_directory_path()
                     / ("cajeta_multi_" + std::to_string(rng()));
