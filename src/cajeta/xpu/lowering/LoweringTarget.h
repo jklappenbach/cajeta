@@ -636,6 +636,43 @@ namespace xpu {
         virtual llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
                                         llvm::Value* value, llvm::Value* delta);
 
+        // --- quad (2x2) ops (SPV_KHR_quad_control + core GroupNonUniformQuad) --
+        //
+        // A quad is four invocations with consecutive lane ids (laneId & ~3 ..
+        // +3) — the 2x2 derivative/tile group. Like the wave seams these are
+        // cross-lane and flag the kernel for maximal reconvergence; UNLIKE them
+        // they are NOT pure-virtual. The defaults (out-of-line in
+        // KernelLowering.cpp) are width-agnostic forms built on the existing
+        // waveShuffleDivergent / waveBallot / waveLaneId seams — so NVPTX, AMDGPU
+        // and CPU get quad ops for FREE, validating the same lane layout the
+        // Vulkan native ops use. Vulkan OVERRIDES each to the single native op
+        // (OpGroupNonUniformQuad{Broadcast,Swap} core; OpGroupNonUniformQuad
+        // {All,Any}KHR from SPV_KHR_quad_control) via the fork llvm.spv.quad.*
+        // intrinsics.
+
+        // Read i32 `value` from quad lane `index` (0-3); every lane in the quad
+        // receives that lane's value. Vulkan: OpGroupNonUniformQuadBroadcast.
+        virtual llvm::Value* quadBroadcast(llvm::IRBuilderBase& b,
+                                           llvm::Module& m, llvm::Value* value,
+                                           llvm::Value* index);
+
+        // Exchange i32 `value` across the 2x2 quad: direction 0 = horizontal
+        // (lanes 0<->1, 2<->3), 1 = vertical (0<->2, 1<->3), 2 = diagonal
+        // (0<->3, 1<->2). The partner lane is laneId ^ (direction+1). Vulkan:
+        // OpGroupNonUniformQuadSwap.
+        virtual llvm::Value* quadSwap(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* value, unsigned direction);
+
+        // Quad-wide vote of a per-lane predicate (i1 -> i1): all = true iff
+        // `pred` holds for every lane of the quad; any = true iff it holds for
+        // some lane. Vulkan: OpGroupNonUniformQuad{All,Any}KHR (no Scope operand
+        // — implicitly quad-scoped). The portable default reads a wave ballot and
+        // tests this lane's quad nibble (assumes full quads).
+        virtual llvm::Value* quadAll(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* pred);
+        virtual llvm::Value* quadAny(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* pred);
+
         // A dynamic (runtime-sized) `shared T[n]` lowers to an external unsized
         // [0 x T] addrspace(3) global — the native extern-shared model on NVPTX
         // and AMDGPU, where the launch sizes it. Vulkan can't: an external

@@ -993,6 +993,41 @@ public:
         return b.CreateCall(f, {value, delta}, "waverotate");
     }
 
+    // Quad ops → the fork llvm.spv.quad.* intrinsics → the native quad opcodes,
+    // replacing the base defaults' lane arithmetic with single hardware ops.
+    llvm::Value* quadBroadcast(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* value,
+                               llvm::Value* index) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_quad_broadcast,
+            {llvm::Type::getInt32Ty(m.getContext())});
+        return b.CreateCall(f, {value, index}, "quadbcast");
+    }
+
+    llvm::Value* quadSwap(llvm::IRBuilderBase& b, llvm::Module& m,
+                          llvm::Value* value, unsigned direction) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_quad_swap, {i32});
+        return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, direction)},
+                            "quadswap");
+    }
+
+    llvm::Value* quadAll(llvm::IRBuilderBase& b, llvm::Module& m,
+                         llvm::Value* pred) override {
+        // SPV_KHR_quad_control: OpGroupNonUniformQuadAllKHR (i1 -> i1, no scope).
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_quad_all);
+        return b.CreateCall(f, {pred}, "quadall");
+    }
+
+    llvm::Value* quadAny(llvm::IRBuilderBase& b, llvm::Module& m,
+                         llvm::Value* pred) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_quad_any);
+        return b.CreateCall(f, {pred}, "quadany");
+    }
+
     // Vulkan workgroup arrays need a concrete length and can't be external
     // imports — emit a concrete internal array; emitSpirv's post-emit pass turns
     // its length into a spec constant set by the launch's sharedBytes.

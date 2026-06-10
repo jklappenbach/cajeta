@@ -2012,6 +2012,33 @@ private:
                 return target.waveScan(builder, mod, sop,
                                        lowerExpr(args[0].expression));
             }
+        } else if (recv == "Quad") {
+            // Quad (2x2) cross-lane ops — broadcast/swap/all/any. Cross-lane like
+            // the Wave ops, so flag the kernel for maximal reconvergence.
+            const auto& args = mc->getParameters();
+            if (name == "broadcast") {
+                if (args.size() != 2) unsupported("Quad.broadcast arity");
+                usedSubgroupOp_ = true;
+                llvm::Value* value = lowerExpr(args[0].expression);
+                llvm::Value* index = lowerExpr(args[1].expression);
+                return target.quadBroadcast(builder, mod, value, index);
+            }
+            if (name == "swapHorizontal" || name == "swapVertical" ||
+                name == "swapDiagonal") {
+                if (args.size() != 1) unsupported("Quad.swap arity");
+                usedSubgroupOp_ = true;
+                unsigned dir = name == "swapHorizontal" ? 0
+                             : name == "swapVertical"   ? 1 : 2;
+                llvm::Value* value = lowerExpr(args[0].expression);
+                return target.quadSwap(builder, mod, value, dir);
+            }
+            if (name == "all" || name == "any") {
+                if (args.size() != 1) unsupported("Quad.vote arity");
+                usedSubgroupOp_ = true;
+                llvm::Value* pred = toI1(lowerExpr(args[0].expression));
+                return name == "all" ? target.quadAll(builder, mod, pred)
+                                     : target.quadAny(builder, mod, pred);
+            }
         } else if (recv == "Bits") {
             // Per-invocation bit manipulation. No seam: these lower to
             // *generic* LLVM intrinsics that every backend (incl. the
@@ -4065,6 +4092,62 @@ llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
         isFirst, lane, b.CreateSub(lane, llvm::ConstantInt::get(i32, 1)));
     llvm::Value* prev = waveShuffleDivergent(b, m, inc, prevLane);
     return b.CreateSelect(isFirst, identity, prev);
+}
+
+// Quad (2x2) op defaults — width-agnostic forms built on the wave seams (see
+// LoweringTarget.h). Out-of-line because the header only forward-declares
+// IRBuilderBase. NVPTX/AMDGPU/CPU take these; Vulkan overrides to native ops.
+// A quad is the four lanes [laneId & ~3 .. +3].
+llvm::Value* LoweringTarget::quadBroadcast(llvm::IRBuilderBase& b,
+                                           llvm::Module& m, llvm::Value* value,
+                                           llvm::Value* index) {
+    // Read from lane (laneId & ~3) + index — the `index`-th lane of this quad.
+    llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+    llvm::Value* lane = waveLaneId(b, m);
+    llvm::Value* quadBase =
+        b.CreateAnd(lane, llvm::ConstantInt::get(i32, ~3u), "quad.base");
+    llvm::Value* src = b.CreateAdd(quadBase, index, "quad.bcast.src");
+    return waveShuffleDivergent(b, m, value, src);
+}
+
+llvm::Value* LoweringTarget::quadSwap(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      llvm::Value* value, unsigned direction) {
+    // Partner = laneId ^ (direction+1): horiz ^1, vert ^2, diag ^3.
+    llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+    llvm::Value* lane = waveLaneId(b, m);
+    llvm::Value* src = b.CreateXor(
+        lane, llvm::ConstantInt::get(i32, direction + 1), "quad.swap.src");
+    return waveShuffleDivergent(b, m, value, src);
+}
+
+// The four vote bits of this lane's quad: (ballot(pred) >> (laneId & ~3)) & 0xF.
+// all = nibble == 0xF; any = nibble != 0. Assumes full quads (inactive lanes
+// ballot 0, matching the native RequireFullQuadsKHR semantics).
+static llvm::Value* quadNibble(LoweringTarget& t, llvm::IRBuilderBase& b,
+                               llvm::Module& m, llvm::Value* pred) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Value* mask = t.waveBallot(b, m, pred);   // i64
+    llvm::Value* lane = t.waveLaneId(b, m);         // i32
+    llvm::Value* quadBase =
+        b.CreateAnd(lane, llvm::ConstantInt::get(i32, ~3u));
+    llvm::Value* shifted = b.CreateLShr(mask, b.CreateZExt(quadBase, i64));
+    return b.CreateAnd(shifted, llvm::ConstantInt::get(i64, 0xF), "quad.nibble");
+}
+
+llvm::Value* LoweringTarget::quadAll(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* pred) {
+    llvm::Value* nib = quadNibble(*this, b, m, pred);
+    return b.CreateICmpEQ(nib, llvm::ConstantInt::get(nib->getType(), 0xF),
+                          "quad.all");
+}
+
+llvm::Value* LoweringTarget::quadAny(llvm::IRBuilderBase& b, llvm::Module& m,
+                                     llvm::Value* pred) {
+    llvm::Value* nib = quadNibble(*this, b, m, pred);
+    return b.CreateICmpNE(nib, llvm::ConstantInt::get(nib->getType(), 0),
+                          "quad.any");
 }
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,

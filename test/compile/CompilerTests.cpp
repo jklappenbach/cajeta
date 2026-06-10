@@ -50,6 +50,8 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-05: 101 → 102 — B1 added the declared cajeta.math.Matrix value type (+1).
 // 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.core.Bits (+ drift fix).
 // 2026-06-06: 104 → 105 — writable images added cajeta.xpu.core.Image2D (+1).
+// 2026-06-09: +1 — Part C minor added cajeta.xpu.core.Quad (quad-control); the
+//   live base had drifted to 277, so re-anchor to the actual modules.size()-1: 278.
 // --- main lineage (threading / time / json / net preludes) ---
 // 2026-05-31: 96 → 110 — cajeta.threading + Atomic + cajeta.time.Duration + #66 stream sweep.
 // 2026-06-02: 110 → 123 — feature/build-system merge (collection.Cache, codec.json getters, …).
@@ -58,7 +60,7 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-06: both preludes now load together (main's 264 + the xpu.core
 // structures HEAD added beyond the shared base). This count is self-
 // anchoring — re-anchored to the live modules.size() after the merge build.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 273;
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 278;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

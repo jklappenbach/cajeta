@@ -4,6 +4,7 @@ import cajeta.xpu.core.Buffer;
 import cajeta.xpu.core.Stream;
 import cajeta.xpu.core.Thread;
 import cajeta.xpu.core.Wave;
+import cajeta.xpu.core.Quad;
 import cajeta.xpu.core.Bits;
 import cajeta.xpu.core.Texture2D;
 import cajeta.xpu.core.Texture1D;
@@ -558,6 +559,20 @@ public final class XpuTour {
         }
     }
 
+    // quadOps: the 2x2 (quad) cross-lane group. Each lane reports the id held by
+    // quad lane 0 — its quad's base — so lanes 0-3 read 0, lanes 4-7 read 4, …,
+    // making the four-lane grouping visible. Vulkan lowers to the native
+    // OpGroupNonUniformQuadBroadcast (and QuadAll/AnyKHR for Quad.all/any, the
+    // SPV_KHR_quad_control vote); AMD/NVIDIA/CPU use the portable shuffle/ballot
+    // form over the same lane layout. See cajeta-docs/gpu/xpu/QuadControl.md.
+    @Kernel
+    public static void quadOps(Buffer<uint32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            out[i] = Quad.broadcast(i, 0);
+        }
+    }
+
     // waveReduceOps: the reduction family beyond sum — max/min/and/or/xor across
     // the wave. Lane 0 holds a distinguished value so every reduction has a
     // wave-width-agnostic answer (100/5/3/3/1) on CPU (8/16), AMD/NVIDIA (32/64),
@@ -626,6 +641,7 @@ public final class XpuTour {
         runWaveRotate();
         runWaveReduceOps();
         runWavePrefix();
+        runQuad();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
         return 0;
@@ -1314,5 +1330,28 @@ public final class XpuTour {
                             + (int32) hout[3] + " " + (int32) hout[4] + " "
                             + (int32) hout[5] + " " + (int32) hout[6] + " "
                             + (int32) hout[7] + "  (expect 0 1 2 3 4 5 6 7)");
+    }
+
+    // Quad (2x2) ops: each lane reads the id held by quad lane 0 — its quad's
+    // base. The four-lane grouping shows as 0 0 0 0 4 4 4 4 … on every backend
+    // (Vulkan native OpGroupNonUniformQuadBroadcast; AMD/NVIDIA/CPU portable).
+    // See cajeta-docs/gpu/xpu/QuadControl.md.
+    static void runQuad() {
+        System.stdout.println("");
+        System.stdout.println("-- quad: broadcast each lane's quad base (2x2 group) --");
+        uint32 n = 256;
+        uint32[] hout = heap uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        Buffer<uint32> out = stack Buffer<uint32>(n);
+        out.upload(hout);
+        Stream s = Stream.current();
+        quadOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  out[0..7] = " + (int32) hout[0] + " "
+                            + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + " " + (int32) hout[4] + " "
+                            + (int32) hout[5] + " " + (int32) hout[6] + " "
+                            + (int32) hout[7] + "  (expect 0 0 0 0 4 4 4 4)");
     }
 }

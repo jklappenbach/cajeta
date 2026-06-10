@@ -62,12 +62,17 @@ void enableSpirvExtensions() {
     // — requested on kernels that use a cross-lane Wave op so the subgroup op
     // sees the source-converged lanes (no fork; an "enable-maximal-
     // reconvergence" fn-attr the backend turns into the execution mode).
+    // SPV_KHR_quad_control gives OpGroupNonUniformQuad{All,Any}KHR (the
+    // quad-wide vote, Quad.all/any) — reached from the Shader flavor via the
+    // fork's llvm.spv.quad.* intrinsics; the broadcast/swap ops are core
+    // GroupNonUniformQuad and need no extension.
     static const char* kExtensions =
         "+SPV_KHR_ray_query,+SPV_KHR_cooperative_matrix,"
         "+SPV_KHR_vulkan_memory_model,+SPV_KHR_bfloat16,"
         "+SPV_KHR_integer_dot_product,+SPV_EXT_shader_atomic_float_add,"
         "+SPV_EXT_shader_atomic_float_min_max,+SPV_KHR_shader_clock,"
-        "+SPV_KHR_maximal_reconvergence,+SPV_KHR_subgroup_rotate";
+        "+SPV_KHR_maximal_reconvergence,+SPV_KHR_subgroup_rotate,"
+        "+SPV_KHR_quad_control";
     auto& opts = llvm::cl::getRegisteredOptions();
     auto it = opts.find("spirv-ext");
     if (it != opts.end())
