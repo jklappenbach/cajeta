@@ -400,6 +400,19 @@ namespace cajeta {
             }
         }
 
+        // Reuse-cache hazard gate (test-only; see Compiler::setReuseHazardArmed).
+        // We are past every cache lookup, so this is a NOVEL instantiation about
+        // to be built. When emitOwner != module its IR emits into a per-test user
+        // module, leaving module-bound llvm pointers cached on persistent objects
+        // that outlive that module → cross-module references on the next reusing
+        // test. Abort BEFORE the build emits anything so the harness re-runs this
+        // test on a fresh, fully-isolated Compiler. Disarmed in production and on
+        // the fresh fallback path; a primed (already-cached) instantiation
+        // returned above and never reaches here.
+        if (Compiler::isReuseHazardArmed() && emitOwner != module) {
+            throw cajeta::ReuseHazardAbort{};
+        }
+
         // Templated-interface instantiation. We re-parse the captured
         // interfaceDeclaration source under the type-parameter
         // substitution and build a real instantiated interface — same

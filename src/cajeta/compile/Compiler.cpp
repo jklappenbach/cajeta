@@ -58,6 +58,7 @@ namespace cajeta {
     // survives across Compiler instances (see Compiler ctor).
     llvm::LLVMContext* Compiler::s_sharedContext = nullptr;
     bool Compiler::s_sharedInitialized = false;
+    bool Compiler::s_reuseHazardArmed = false;
 
     void Compiler::rebuildTargetMachine() {
         string error;
