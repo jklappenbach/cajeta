@@ -31,7 +31,44 @@ The Linux pickup resolved the remaining failures. Two things landed:
   on this (worst-case, template-heavy) set: **76/113 fall back, 37 reuse.**
 - Critical file: `src/cajeta/type/CajetaClass.cpp` `getOrCreateDropFunction` (~2638).
 
+### Full-suite W=24 reuse run (2026-06-10, Linux) — timing good, surfaced 3 reuse-induced crash families
+Ran the full 3598-test suite at **W=24** via gtest sharding (`GTEST_TOTAL_SHARDS=24` +
+`GTEST_SHARD_INDEX`, `CAJETA_STDLIB_REUSE=1`; one process per shard so the cache primes
+once/shard and is reused within it — `ctest -j` one-process-per-test would defeat reuse).
+- **Timing:** the 4 shards that ran to completion did **150 tests each in 450–534s →
+  a clean W=24 reuse run is ~9 min wall** (vs the Windows W=16 reuse-OFF ~73 min baseline,
+  ≈8×). Reused tests ~2.3s vs ~9s fallback.
+- **Memory: safe.** Peaked 42 GB used / 18 GB avail of 61 GB, swap untouched; W=24 is not
+  memory-bound on this box (crashes, not RAM, are the limiter).
+- **NOT a clean run: 17/24 shards crashed (SIGSEGV)**, aborting ~924 tests (coverage
+  2674/3598). A crash kills the whole shard, so a few crashers crater coverage. Fallback
+  rate still UNMEASURED (driver omitted `CAJETA_STDLIB_REUSE_TRACE=1`).
+- **Crash/failure classification (each confirmed by single-process reuse-ON vs OFF):**
+  | Family / test | OFF | ON | Verdict |
+  |---|---|---|---|
+  | `EncodingPhaseBTests` (4 shards) | crash | crash | **PRE-EXISTING crash** (e.g. `dispatchCallsEncoderMethods` segfaults alone, reuse-off). Not reuse. |
+  | `JsonSynthesizerTests` (7 shards) | 70/70 pass | crash | **REUSE-INDUCED crash** |
+  | `ParallelDispatchCorrelationTests`/`ParallelStreamP1Tests` (6 shards) | clean (timed out, no crash) | crash early | **REUSE-INDUCED crash** |
+  | `AspectRegistrationTests.freshCompilerStartsEmpty` | pass alone+suite | pass alone+suite, **fail mid-shard** | **REUSE contamination** (out-of-graph registry) |
+  | `TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch` | same | same | **REUSE contamination** |
+  | `InheritanceSmokeTests.crossFileChildExtendsParentInOtherFile` | fail | fail | **PRE-EXISTING failure** |
+  | `Xpu*` (4) | — | — | **PRE-EXISTING** (GPU/device, documented) |
+- **The reuse-induced set is the next correctness work** — all consistent with the
+  "out-of-graph caches" risk below (a module-bound global accumulating across reusing
+  tests that `restoreBaseline` doesn't scrub; `freshCompilerStartsEmpty` failing is the
+  smoking gun). JsonSynthesizer/Parallel both serialize/encode + spawn — suspects:
+  `FileStream` singleton, `ComponentDescriptor::singletonGlobal`,
+  `CajetaModule::sourceFileConstants`, aspect/encoder registries.
+- Artifacts: `/tmp/reuse_full_w24/` (per-shard logs, `_meta.txt`, `_mem.txt`), runner
+  `/tmp/run_reuse_w24.sh`.
+
 ### Next steps (Linux, in order)
+0. **Root-cause the reuse-induced contamination** (blocks a clean full-suite run + default-on):
+   start with `AspectRegistrationTests.freshCompilerStartsEmpty` (cheapest, deterministic
+   assertion) — find the global registry it inspects and confirm it's not in
+   `capture/restoreReuseBaseline`; then the JsonSynthesizer/Parallel crashes likely share
+   the root. Re-run W=24 with the trace flag (+ temporarily excluding the pre-existing
+   `EncodingPhaseBTests` crashers) to measure the real fallback rate and a valid wall time.
 1. **Full-suite single-process reuse run** (~3597 tests): surface any out-of-graph caches
    (FileStream singleton / ComponentDescriptor::singletonGlobal /
    CajetaModule::sourceFileConstants — see §"Remaining risk" below) and **measure the
