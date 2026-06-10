@@ -104,4 +104,38 @@ public final class RayQuery {
     public uint32 candidatePrimitiveIndex() {
         return 0;
     }
+
+    /**
+     * Device-only intrinsic: the parametric distance `t` of the current CANDIDATE
+     * intersection along the ray (origin + t·direction). Defined for triangle
+     * candidates (the Möller-Trumbore hit distance); for AABB candidates it is the
+     * box-entry parameter. Read inside the proceed() loop to find the nearest hit
+     * (the user tracks the minimum, or commits via confirm/generate in a later
+     * increment). Maps to OpRayQueryGetIntersectionTKHR (candidate).
+     *
+     * NOTE: software (CPU, etc.) only in v1; the native (Vulkan) getter needs a
+     * fork SPIR-V intrinsic that is not yet carried.
+     */
+    public float32 candidateDistance() {
+        return 0.0f;
+    }
+
+    /**
+     * Device-only intrinsic: the barycentric `u` of the current TRIANGLE candidate
+     * (the weight of vertex 1; vertex 0's weight is 1 - u - v). With
+     * candidateBarycentricV, interpolates per-vertex attributes at the hit.
+     * Maps to OpRayQueryGetIntersectionBarycentricsKHR (candidate). Software only
+     * in v1 (native getter pending a fork intrinsic).
+     */
+    public float32 candidateBarycentricU() {
+        return 0.0f;
+    }
+
+    /**
+     * Device-only intrinsic: the barycentric `v` of the current TRIANGLE candidate
+     * (the weight of vertex 2). See {@link #candidateBarycentricU}.
+     */
+    public float32 candidateBarycentricV() {
+        return 0.0f;
+    }
 }

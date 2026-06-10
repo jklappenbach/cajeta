@@ -32,14 +32,21 @@ package cajeta.xpu.core;
     public uint32 nextNode;      // node index `step` resumes from
     public uint32 hasCandidate;  // 1 while the current candidate is valid
     public uint32 candPrim;      // caller primitive index of the candidate
-    public uint32 candKind;      // 1 = AABB candidate (v1 only generates AABB)
+    public uint32 candKind;      // 0 = triangle, 1 = AABB candidate
     public uint32 committed;     // committed intersection type (v1: 0)
+    // Current-candidate geometry (inc 3): the Möller-Trumbore hit distance and
+    // barycentrics for a triangle candidate (candU/candV the weights of v1/v2;
+    // v0's weight is 1 - candU - candV). Zero for AABB candidates.
+    public float32 candT;
+    public float32 candU;
+    public float32 candV;
 
     public SwRayCursor(float32 ox, float32 oy, float32 oz,
                        float32 dx, float32 dy, float32 dz,
                        float32 tMin, float32 tMax,
                        uint32 nextNode, uint32 hasCandidate,
-                       uint32 candPrim, uint32 candKind, uint32 committed) {
+                       uint32 candPrim, uint32 candKind, uint32 committed,
+                       float32 candT, float32 candU, float32 candV) {
         this.ox = ox; this.oy = oy; this.oz = oz;
         this.dx = dx; this.dy = dy; this.dz = dz;
         this.tMin = tMin; this.tMax = tMax;
@@ -48,5 +55,8 @@ package cajeta.xpu.core;
         this.candPrim = candPrim;
         this.candKind = candKind;
         this.committed = committed;
+        this.candT = candT;
+        this.candU = candU;
+        this.candV = candV;
     }
 }

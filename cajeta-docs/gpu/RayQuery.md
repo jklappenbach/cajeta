@@ -253,8 +253,19 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
       `SoftwareBvhBuilderTests.triangleMesh/triangleCloud` vs a brute-force MT oracle.
 
 **Inc 3 — Full getters + commit.**
-- [ ] `t` / barycentrics / frontFace getters (seam + both lowerings).
-- [ ] `confirm` / `generate` intersection — return a nearest hit, not just a count.
+- [x] *(3a)* **Candidate getters — software**: `candidateDistance` / `candidateBarycentricU`
+      / `candidateBarycentricV`. `step` inlines Möller-Trumbore to capture t/u/v into the
+      cursor; the getters read those fields. Enables nearest-hit-by-user-min (the RTNN
+      pattern). Verified: `candidateGettersOnCpuSoftwareBvh` (t=5, u=v=0.25).
+- [ ] *(3b)* **Candidate getters — native**: needs new `llvm.spv.ray.query.*` fork
+      intrinsics (`GetIntersectionTKHR`, `GetIntersectionBarycentricsKHR`) +
+      `SpirvTarget` seams + a cross-check. The getter ops throw a clear diagnostic on the
+      native backend until then.
+- [ ] *(3b)* `frontFace` getter.
+- [ ] *(3b)* `confirm` / `generate` intersection + committed getters — return a *nearest*
+      hit (the driver-tracked closest), not just enumerated candidates. Software: cursor
+      committed state + the commit logic; native: `OpRayQueryConfirm/GenerateIntersectionKHR`
+      + committed getters (more fork intrinsics).
 
 **Inc 4 — Plumbing hardening (shared with the rest of the model).**
 - [ ] `Device.supports(RayQueryNative)` + the selection heuristic with override (§6).

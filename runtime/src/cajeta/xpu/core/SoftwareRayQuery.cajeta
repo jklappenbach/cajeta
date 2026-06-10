@@ -95,22 +95,50 @@ public final class SoftwareRayQuery {
             if (hit && primCount > 0) {
                 // Leaf: the actual primitive test. AABB geometry's candidate IS
                 // the box overlap (kind 1); a triangle additionally needs a
-                // Möller-Trumbore hit against its vertices (kind 0).
+                // Möller-Trumbore hit (kind 0), inlined here so we capture the hit
+                // distance + barycentrics (the inc-3 candidate getters).
                 uint32 prim = (uint32) bvh[primRefOff + firstPrim];
                 boolean isCandidate = true;
                 uint32 kind = 1;
+                float32 cT = 0.0f;
+                float32 cU = 0.0f;
+                float32 cV = 0.0f;
                 if (geomFlags == 2) {
                     kind = 0;
+                    isCandidate = false;
                     uint32 tb = primDataOff + prim * 9;
-                    isCandidate = SoftwareRayQuery.triangleHit(
-                        ox, oy, oz, dx, dy, dz, tMin, tMax,
-                        bvh[tb + 0], bvh[tb + 1], bvh[tb + 2],
-                        bvh[tb + 3], bvh[tb + 4], bvh[tb + 5],
-                        bvh[tb + 6], bvh[tb + 7], bvh[tb + 8]);
+                    float32 v0x = bvh[tb + 0]; float32 v0y = bvh[tb + 1]; float32 v0z = bvh[tb + 2];
+                    float32 v1x = bvh[tb + 3]; float32 v1y = bvh[tb + 4]; float32 v1z = bvh[tb + 5];
+                    float32 v2x = bvh[tb + 6]; float32 v2y = bvh[tb + 7]; float32 v2z = bvh[tb + 8];
+                    float32 e1x = v1x - v0x; float32 e1y = v1y - v0y; float32 e1z = v1z - v0z;
+                    float32 e2x = v2x - v0x; float32 e2y = v2y - v0y; float32 e2z = v2z - v0z;
+                    float32 px = dy * e2z - dz * e2y;   // p = dir × e2
+                    float32 py = dz * e2x - dx * e2z;
+                    float32 pz = dx * e2y - dy * e2x;
+                    float32 det = e1x * px + e1y * py + e1z * pz;
+                    if (det > 0.00000001f || det < -0.00000001f) {
+                        float32 inv = 1.0f / det;
+                        float32 tvx = ox - v0x; float32 tvy = oy - v0y; float32 tvz = oz - v0z;
+                        float32 uu = (tvx * px + tvy * py + tvz * pz) * inv;
+                        if (uu >= 0.0f && uu <= 1.0f) {
+                            float32 qx = tvy * e1z - tvz * e1y;   // q = tv × e1
+                            float32 qy = tvz * e1x - tvx * e1z;
+                            float32 qz = tvx * e1y - tvy * e1x;
+                            float32 vv = (dx * qx + dy * qy + dz * qz) * inv;
+                            if (vv >= 0.0f && uu + vv <= 1.0f) {
+                                float32 tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
+                                if (tt >= tMin && tt <= tMax) {
+                                    isCandidate = true;
+                                    cT = tt; cU = uu; cV = vv;
+                                }
+                            }
+                        }
+                    }
                 }
                 if (isCandidate) {
                     return stack SwRayCursor(ox, oy, oz, dx, dy, dz, tMin, tMax,
-                                           escape, 1, prim, kind, committed);
+                                           escape, 1, prim, kind, committed,
+                                           cT, cU, cV);
                 }
                 i = escape;       // leaf's box hit but primitive missed: skip it
             } else {
@@ -123,41 +151,7 @@ public final class SoftwareRayQuery {
         }
         // Exhausted: no candidate.
         return stack SwRayCursor(ox, oy, oz, dx, dy, dz, tMin, tMax,
-                               nodeCount, 0, 0, 0, committed);
-    }
-
-    /**
-     * Möller-Trumbore ray-triangle intersection over [tMin, tMax] — the triangle
-     * leaf test. Returns true iff the ray hits the triangle (v0, v1, v2) at a
-     * parametric distance within the ray's extent.
-     */
-    @Device public static boolean triangleHit(
-            float32 ox, float32 oy, float32 oz,
-            float32 dx, float32 dy, float32 dz,
-            float32 tMin, float32 tMax,
-            float32 v0x, float32 v0y, float32 v0z,
-            float32 v1x, float32 v1y, float32 v1z,
-            float32 v2x, float32 v2y, float32 v2z) {
-        float32 e1x = v1x - v0x; float32 e1y = v1y - v0y; float32 e1z = v1z - v0z;
-        float32 e2x = v2x - v0x; float32 e2y = v2y - v0y; float32 e2z = v2z - v0z;
-        // p = dir × e2
-        float32 px = dy * e2z - dz * e2y;
-        float32 py = dz * e2x - dx * e2z;
-        float32 pz = dx * e2y - dy * e2x;
-        float32 det = e1x * px + e1y * py + e1z * pz;
-        if (det > -0.00000001f && det < 0.00000001f) { return false; }
-        float32 inv = 1.0f / det;
-        float32 tvx = ox - v0x; float32 tvy = oy - v0y; float32 tvz = oz - v0z;
-        float32 uu = (tvx * px + tvy * py + tvz * pz) * inv;
-        if (uu < 0.0f || uu > 1.0f) { return false; }
-        // q = tv × e1
-        float32 qx = tvy * e1z - tvz * e1y;
-        float32 qy = tvz * e1x - tvx * e1z;
-        float32 qz = tvx * e1y - tvy * e1x;
-        float32 vv = (dx * qx + dy * qy + dz * qz) * inv;
-        if (vv < 0.0f || uu + vv > 1.0f) { return false; }
-        float32 tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
-        return tt >= tMin && tt <= tMax;
+                               nodeCount, 0, 0, 0, committed, 0.0f, 0.0f, 0.0f);
     }
 
     /**
