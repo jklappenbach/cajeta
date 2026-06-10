@@ -1,0 +1,102 @@
+package cajeta.gpu.core;
+
+/**
+ * AccelerationStructure — a device-side bounding-volume hierarchy (BVH) over a
+ * set of primitives, queried inside a kernel through a {@link RayQuery}.
+ *
+ * Like {@link Texture2D}, this is a small host-side handle (deviceHandle + the
+ * primitive count) over a device resource — here a Vulkan top-/bottom-level
+ * acceleration structure built from `VK_KHR_acceleration_structure`. From the
+ * kernel's perspective it is one opaque, descriptor-bound resource: on Vulkan it
+ * lowers to an `OpTypeAccelerationStructureKHR` bound at (set 0, binding = arg
+ * index) via the same `resource.handlefrombinding` path Buffer/Texture2D use.
+ *
+ * SPATIAL-INDEX USE. Beyond classic ray tracing, a BVH is a hardware-accelerated
+ * spatial index: build it over the AABBs of your points/cells, then in a kernel
+ * cast a (possibly degenerate, near-zero-length) ray and walk candidates with a
+ * RayQuery to answer nearest-neighbour / range queries (the RTNN pattern). The
+ * `buildAabbs` constructor takes axis-aligned boxes for exactly this.
+ *
+ * MEMORY MODEL. The handle (this struct) is governed by the drop chain; the
+ * device BVH is acquired by the constructor and released by ~AccelerationStructure()
+ * at scope exit (the Buffer/Texture2D RAII convention). A launch borrows each
+ * AccelerationStructure argument until the next Stream.sync().
+ *
+ * v1 LIMITS: a single bottom-level AS built from AABB (procedural/bounding-box)
+ * geometry, opaque, no instance transforms or rebuild/refit. Triangle geometry,
+ * top-level instancing, and incremental refit are follow-ups.
+ */
+public final class AccelerationStructure {
+    int64 deviceHandle;
+    uint32 primitiveCount;
+
+    AccelerationStructure(int64 deviceHandle, uint32 primitiveCount) {
+        this.deviceHandle = deviceHandle;
+        this.primitiveCount = primitiveCount;
+    }
+
+    /**
+     * RAII constructor: build a bottom-level acceleration structure over `count`
+     * axis-aligned bounding boxes, packed as 6 float32 per box —
+     * (minX, minY, minZ, maxX, maxY, maxZ), row-major. The constructor acquires
+     * the device BVH and ~AccelerationStructure() releases it.
+     *
+     *     AccelerationStructure scene = heap AccelerationStructure(boxes, n);
+     *     kernel.launch(s, ...)(scene, ...);
+     *     s.sync();
+     *     // device BVH freed automatically at scope exit
+     */
+    public AccelerationStructure(float32[] aabbs, uint32 count) {
+        this.primitiveCount = count;
+        this.deviceHandle = this.deviceBuildAabbs(aabbs, count);
+    }
+
+    /**
+     * RAII constructor: build a bottom-level acceleration structure over `count`
+     * triangles from a vertex soup. Vertex `v` of triangle `t` (v in 0..2) begins
+     * at `vertices[(t*3 + v) * vertexStride]` and spans 3 floats (x, y, z);
+     * `vertexStride` is the floats per vertex (3 = tightly packed). Distinct arity
+     * from the AABB constructor selects the triangle geometry path (a same-arity
+     * overload would collide — distinct arity is the idiom). Software (CPU) only in
+     * v1; the Vulkan triangle BLAS is a follow-up.
+     *
+     *     AccelerationStructure mesh = heap AccelerationStructure(verts, nTris, 3u);
+     */
+    public AccelerationStructure(float32[] vertices, uint32 triangleCount,
+                                 uint32 vertexStride) {
+        this.primitiveCount = triangleCount;
+        this.deviceHandle =
+            this.deviceBuildTriangles(vertices, triangleCount, vertexStride);
+    }
+
+    /**
+     * Destructor — release the device BVH. Runs via the drop chain at scope
+     * exit. Null-guarded and idempotent: a prior free(), or a moved-from handle
+     * (`#scene`), makes this a no-op.
+     */
+    ~AccelerationStructure() {
+        if (this.deviceHandle != 0) {
+            this.deviceFree(this.deviceHandle);
+            this.deviceHandle = 0;
+        }
+    }
+
+    public uint32 count() {
+        return this.primitiveCount;
+    }
+
+    // Device-BVH primitives. Instance @Native methods (the Buffer/Texture2D
+    // convention): pointer-shaped at the ABI boundary, so one C symbol per name
+    // serves the type. The leading `this` the forwarder passes is ignored by the
+    // C side. The runtime implementations live in the Vulkan device layer
+    // (cajeta-gpu Part C increment 3b).
+    @Native("__cajeta_xpu_accel_build_aabbs")
+    private int64 deviceBuildAabbs(float32[] aabbs, uint32 count);
+
+    @Native("__cajeta_xpu_accel_build_triangles")
+    private int64 deviceBuildTriangles(float32[] vertices, uint32 triangleCount,
+                                       uint32 vertexStride);
+
+    @Native("__cajeta_xpu_accel_free")
+    private void deviceFree(int64 handle);
+}

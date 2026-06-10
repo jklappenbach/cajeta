@@ -51,8 +51,8 @@ std::string readSpatialIndexSource() {
 // hidden inside it.
 const char* kDriver =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Stream;\n"
     "import prism.spatial.SpatialIndex;\n"
     "public class PrismRQ {\n"
     "    public static int32 run() {\n"
@@ -94,8 +94,8 @@ const char* kDriver =
 // radiusExact uses the candidate primitive index to refine to the true distance.
 const char* kExactDriver =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Stream;\n"
     "import prism.spatial.SpatialIndex;\n"
     "public class PrismExact {\n"
     "    public static int32 run() {\n"
@@ -201,11 +201,11 @@ TEST(PrismSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
 // stdlib closure. Same 1/0/1/1 expectation as the Prism fixed-radius scene.
 const char* kRqMinDriver =
     "package test;\n"
-    "import cajeta.xpu.core.AccelerationStructure;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.RayQuery;\n"
-    "import cajeta.xpu.core.Stream;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class RqMin {\n"
     "    @Kernel\n"
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -264,11 +264,11 @@ const char* kRqMinDriver =
 // triangle candidates is non-deterministic on RADV — see candidateFrontFace.)
 const char* kTriDriver =
     "package test;\n"
-    "import cajeta.xpu.core.AccelerationStructure;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.RayQuery;\n"
-    "import cajeta.xpu.core.Stream;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class TriRq {\n"
     "    @Kernel\n"
     "    public static void countTri(AccelerationStructure scene,\n"
@@ -331,11 +331,11 @@ const char* kTriDriver =
 // (the hit point is v0 + u*(v1-v0) + v*(v2-v0) = (u, v, 0)).
 const char* kBaryDriver =
     "package test;\n"
-    "import cajeta.xpu.core.AccelerationStructure;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.RayQuery;\n"
-    "import cajeta.xpu.core.Stream;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class BaryRq {\n"
     "    @Kernel\n"
     "    public static void getBary(AccelerationStructure scene, Buffer<float32> out) {\n"
@@ -385,11 +385,11 @@ const char* kBaryDriver =
 // shrink on confirm guarantees the closest wins regardless of traversal order.
 const char* kNearestDriver =
     "package test;\n"
-    "import cajeta.xpu.core.AccelerationStructure;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.RayQuery;\n"
-    "import cajeta.xpu.core.Stream;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class NearRq {\n"
     "    @Kernel\n"
     "    public static void nearest(AccelerationStructure scene,\n"
@@ -466,11 +466,11 @@ TEST(PrismSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
 // default CCW front-face, so CPU and native agree.
 const char* kFrontDriver =
     "package test;\n"
-    "import cajeta.xpu.core.AccelerationStructure;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.RayQuery;\n"
-    "import cajeta.xpu.core.Stream;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class FrontRq {\n"
     "    @Kernel\n"
     "    public static void getFront(AccelerationStructure scene,\n"

@@ -153,7 +153,7 @@ passes). This stage is the *rendering* shading model only.
   pipeline before the foundation's value-type + texture + math stages (gpu B1–B3) land.
 - **The gpu/xpu code split should be sequenced with G1.0.** Building the *second*
   consumer of the foundation (graphics) is what validates the shared seam — so the
-  physical `cajeta.xpu.core.*` → `cajeta.gpu.core.*` package + `__cajeta_xpu_*` ABI
+  physical `cajeta.gpu.core.*` → `cajeta.gpu.core.*` package + `__cajeta_xpu_*` ABI
   rename (see the refactor-strategy note in `cajeta-gpu-plan.md`) is best done here,
   as the first graphics work proves which symbols are truly shared.
 - **gfx never imports xpu.** Where graphics wants a compute pass (particles, skinning,

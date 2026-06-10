@@ -122,10 +122,10 @@ if (Device.supports(Capability.X)) {
 }
 ```
 
-> **Status.** This is the design contract; it drives the plans. Today the portable surface
-> ships as **`cajeta.xpu.core`** (rename to `cajeta.gpu.core` pending); the noun seam exists
-> only for the resources in §3–§4; `Device.supports(...)`, the guard enforcement, and the
-> vendor-SDK degrade framework are unbuilt.
+> **Status.** This is the design contract; it drives the plans. The portable surface ships
+> as **`cajeta.gpu.core`** (renamed from `cajeta.xpu.core`); `Device.supports(...)` is built;
+> the noun seam exists only for the resources in §3–§4; the *automatic* guard/heuristic and
+> the vendor-SDK degrade framework are unbuilt.
 
 ---
 
@@ -305,11 +305,12 @@ Core's DoD: §3's verb set with every cell ● / ○ on every shipped backend, *
 noun with a portable build (§1.4) — i.e. no ◷/◐/✗ left unaccepted. The plans should section to
 match this document:
 
-- **Core plan** — software BVH + traversal over **triangles *and* AABBs** (Möller-Trumbore +
-  custom intersection) to make ray query genuinely core; AMD `Image2D`;
-  NVIDIA advanced seams + B5 on-device; Metal backend; the noun seam + `Device.supports(...)`
-  + the impl-layer/degrade framework; the `cajeta.xpu.core` → `cajeta.gpu.core` rename; fp8
-  (pending LLVM).
+- **Core plan** — done: ray query genuinely core (software BVH + traversal over triangles
+  *and* AABBs, full getters + confirm/generate + nearest-hit, native + software);
+  `Device.supports(...)`; the `cajeta.xpu.core → cajeta.gpu.core` rename. Remaining: AMD
+  `Image2D`; NVIDIA advanced seams + B5 on-device; Metal backend; the noun seam as a
+  first-class SPI + the *automatic* impl-selection heuristic + the impl-layer/degrade
+  framework; fp8 (pending LLVM).
 - **Vendor libraries** — out of this plan; each its own external effort on the degrade
   framework, sequenced by hardware (AMD now; NVIDIA on B5; Metal on Mac).
 - **GFX** — the ray-tracing pipeline (SBT, hit/miss shaders); built on this foundation's

@@ -46,8 +46,8 @@ namespace {
 
 const char* kClockSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void stamp(Buffer<uint64> out, uint32 n) {\n"

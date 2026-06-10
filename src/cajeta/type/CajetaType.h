@@ -296,7 +296,7 @@ class CajetaType : public Modifiable, public Annotatable,
         // recover from same-short-name collisions: a parameterized reference
         // `Foo<...>` can only denote a generic class, so when an ordinary
         // name lookup lands a NON-template (e.g. `Stream` resolving to the
-        // final, non-generic cajeta.xpu.core.Stream instead of the generic
+        // final, non-generic cajeta.gpu.core.Stream instead of the generic
         // cajeta.lang.stream.Stream because both register the bare key
         // "Stream" with last-writer-wins), callers re-resolve through here.
         // Returns nullptr when no same-short-name template exists.

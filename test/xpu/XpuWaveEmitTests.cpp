@@ -52,9 +52,9 @@ namespace {
 // same ballot mask (low 4 bits → 0xF=15), so the device result is 50.
 const char* kWaveSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Wave;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavetest(Buffer<uint32> out) {\n"
@@ -71,9 +71,9 @@ const char* kWaveSource =
 // three expose a single hardware wave-reduce intrinsic (NVPTX's gated sm_80+).
 const char* kReduceSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Wave;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavereduce(Buffer<uint32> out) {\n"
@@ -87,9 +87,9 @@ const char* kReduceSource =
 // SubgroupLocalInvocationId.
 const char* kLaneSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Wave;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavelane(Buffer<uint32> out) {\n"
@@ -269,9 +269,9 @@ TEST(XpuWaveEmitTests, spirvNonWaveKernelOmitsMaximalReconvergence) {
 // kernel uses a cross-lane op, so it also requests maximal reconvergence.
 const char* kRotateSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Wave;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Wave;\n"
     "public class R {\n"
     "    @Kernel\n"
     "    public static void waverot(Buffer<uint32> out) {\n"
@@ -286,9 +286,9 @@ const char* kRotateSource =
 // the module is spirv-val-clean.
 const char* kScanSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Wave;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Wave;\n"
     "public class S {\n"
     "    @Kernel\n"
     "    public static void wavescan(Buffer<uint32> out) {\n"
@@ -351,9 +351,9 @@ TEST(XpuWaveEmitTests, spirvLowersPrefixScanAndValidates) {
 // asserts the five ops emit and the module is spirv-val-clean.
 const char* kReduceFamilySource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Wave;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Wave;\n"
     "public class F {\n"
     "    @Kernel\n"
     "    public static void wavereduceops(Buffer<uint32> out) {\n"

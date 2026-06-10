@@ -91,10 +91,10 @@ namespace xpu {
 
     // Recognition: which AddressSpace does a Cajeta canonical name
     // refer to? Returns nullopt for any canonical not in the
-    // cajeta.xpu.core.{Global,Shared,Constant,Private,Generic} set.
+    // cajeta.gpu.core.{Global,Shared,Constant,Private,Generic} set.
     // Matches just the short class name suffix to admit both the
-    // template-form ("cajeta.xpu.core.Global") and an instantiated
-    // form ("cajeta.xpu.core.Global<cajeta.float32>").
+    // template-form ("cajeta.gpu.core.Global") and an instantiated
+    // form ("cajeta.gpu.core.Global<cajeta.float32>").
     inline bool isAddressSpaceCanonical(const std::string& canonical,
                                         AddressSpace& outAs) {
         // First find where the template-arg list starts (if any).
@@ -107,7 +107,7 @@ namespace xpu {
         auto dotPos = canonical.rfind('.', searchEnd - 1);
         if (dotPos == std::string::npos) return false;
         std::string pkg = canonical.substr(0, dotPos);
-        if (pkg != "cajeta.xpu.core") return false;
+        if (pkg != "cajeta.gpu.core") return false;
         std::string shortName = canonical.substr(
             dotPos + 1, searchEnd - dotPos - 1);
         if (shortName == "Global")   { outAs = AddressSpace::Global;   return true; }

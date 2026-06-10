@@ -150,8 +150,8 @@ TEST(XpuNvptxEmitTests, emitsPtxForHandBuiltKernel) {
 TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
     auto src =
         "package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
@@ -212,10 +212,10 @@ TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
 TEST(XpuNvptxEmitTests, lowersTextureSampleToPtxTex) {
     auto src =
         "package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Texture2D;\n"
-        "import cajeta.xpu.core.Sampler;\n"
-        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Texture2D;\n"
+        "import cajeta.gpu.core.Sampler;\n"
+        "import cajeta.gpu.core.Thread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void sampleTex(Texture2D tex, Sampler s,\n"
@@ -261,8 +261,8 @@ TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {
 
     auto src =
         "package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"

@@ -678,7 +678,7 @@ by construction.
 ```cajeta
 // Matrix multiplication. Broadcasts over batch dimensions; final two
 // dims are (M, K) x (K, N) -> (M, N). Dispatches to vendor BLAS via
-// cajeta.xpu.core.blas when an XPU device is present.
+// cajeta.gpu.core.blas when an XPU device is present.
 public Tensor<T> matmul<T>(Tensor<T> a, Tensor<T> b);
 
 // Decompositions — all return Tensor tuples / structured types.
@@ -762,8 +762,8 @@ and SLAM workloads use the same types.
 
 ### Backend dispatch
 
-Linalg kernels dispatch through `cajeta.xpu.core.blas` /
-`cajeta.xpu.core.dnn` when an accelerator is present and the operation
+Linalg kernels dispatch through `cajeta.gpu.core.blas` /
+`cajeta.gpu.core.dnn` when an accelerator is present and the operation
 is large enough to amortize the launch overhead. Below that threshold,
 or when no XPU device is configured, the CPU fallback uses LLVM SIMD
 intrinsics — see §"Backend strategy" for the full story.
@@ -908,7 +908,7 @@ public Tensor<T>          dct<T>(Tensor<T> x, DCTType type = DCTType.II);
 public Tensor<T>          idct<T>(Tensor<T> X, DCTType type = DCTType.II);
 ```
 
-Dispatches to `cajeta.xpu.core.fft` (cuFFT / rocFFT) when an XPU
+Dispatches to `cajeta.gpu.core.fft` (cuFFT / rocFFT) when an XPU
 device is present and the transform is large enough; FFTW-shaped CPU
 plans below that threshold.
 
@@ -989,7 +989,7 @@ Op authors register a `Function<Inputs, Output, GradInputs>` that
 provides forward + backward. Standard ops (matmul, add, mul, relu,
 softmax, log, sum, mean, ...) ship as built-ins; each delegates its
 forward pass to `cajeta.math.tensor` (and through it to
-`cajeta.xpu.core` when an accelerator is present).
+`cajeta.gpu.core` when an accelerator is present).
 
 ### `Module` base + parameter discovery
 
@@ -1138,7 +1138,7 @@ A reasonable order, given dependencies:
    as a baseline (no autograd yet, no linalg yet). Plus npy / npz IO.
 5. **`cajeta.math.linalg`.** matmul + basic decompositions + the
    geometry types. Wraps reference-implementation kernels initially;
-   LAPACK / OpenBLAS / `cajeta.xpu.core.blas` plug in later behind
+   LAPACK / OpenBLAS / `cajeta.gpu.core.blas` plug in later behind
    the same surface.
 6. **`cajeta.math.stats` — descriptive + distributions.** Self-
    contained block atop `tensor` + `linalg`. Hypothesis tests next.
@@ -1153,7 +1153,7 @@ A reasonable order, given dependencies:
     Transformer block early so language-model workloads are reachable.
 12. **`cajeta.math.nn` — gradient-free optimizers.** BFGS / L-BFGS,
     Nelder-Mead, SA, DE. Independent of the autograd path.
-13. **Accelerator wiring through `cajeta.xpu.core.{blas,dnn,fft}`.**
+13. **Accelerator wiring through `cajeta.gpu.core.{blas,dnn,fft}`.**
     Backends light up under the same API. The CPU path keeps working.
 
 The gating step is (1) — every other layer touches boxed numerics,

@@ -36,9 +36,12 @@ The verb seam exists; the rest of the model from doc §1 does not.
   core uses. The unlock that makes vendor libraries portable instead of hard-locked. Shape
   recorded in [`../../cajeta-docs/gpu/VendorExtensionSDK.md`](../../cajeta-docs/gpu/VendorExtensionSDK.md)
   (seed; crystallizes after core dogfoods the seams).
-- [ ] **`cajeta.xpu.core` → `cajeta.gpu.core` rename** (~120 spellings) — foundation classes
-  move to the `gpu` namespace; `xpu` keeps compute-execution (kernels, `Tensor`). See the
-  gpu⟂xpu code-move guidance before relocating files.
+- [x] **`cajeta.xpu.core` → `cajeta.gpu.core` rename** — the foundation moved to the `gpu`
+  namespace: directory `runtime/src/cajeta/{xpu→gpu}/core`, all package/import spellings,
+  the compiler's hardcoded detection strings, the stdlib-embed path, tests, samples, docs,
+  and the sibling `cajeta-prism` repo (in lockstep). Wholesale (the whole `core` package was
+  foundation); future compute (`Tensor`, orchestration) will be `cajeta.xpu.*` built on
+  `gpu.core`. Verified: full XPU/ray-query/foundation regression green post-rename.
 
 ---
 
@@ -157,7 +160,7 @@ Core's contract is closed when **doc §3's verb set is ● / ○ on every shippe
    (§3.3). *Was the single biggest item.* (TLAS/instancing deferred.)
 2. **AMD `Image2D`** store/load; NVIDIA advanced seams + B5 on-device; **Metal** backend.
 3. **The model plumbing** — noun seam, `Device.supports(...)` + capability heuristic, the
-   impl-layer/SPIR-V-degrade framework, the `cajeta.xpu.core → cajeta.gpu.core` rename.
+   impl-layer/SPIR-V-degrade framework, the `cajeta.gpu.core → cajeta.gpu.core` rename.
 4. **fp8** when LLVM lands the type.
 
 The foundation is then the **frozen dependency contract** `cajeta-xpu` and `cajeta-gfx` target.

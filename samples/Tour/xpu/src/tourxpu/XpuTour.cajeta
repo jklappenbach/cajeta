@@ -1,18 +1,18 @@
 package tourxpu;
 
-import cajeta.xpu.core.Buffer;
-import cajeta.xpu.core.Stream;
-import cajeta.xpu.core.Thread;
-import cajeta.xpu.core.Wave;
-import cajeta.xpu.core.Quad;
-import cajeta.xpu.core.Bits;
-import cajeta.xpu.core.Texture2D;
-import cajeta.xpu.core.Texture1D;
-import cajeta.xpu.core.Texture3D;
-import cajeta.xpu.core.Texture2DArray;
-import cajeta.xpu.core.TextureCube;
-import cajeta.xpu.core.Sampler;
-import cajeta.xpu.core.TextureFormat;
+import cajeta.gpu.core.Buffer;
+import cajeta.gpu.core.Stream;
+import cajeta.gpu.core.Thread;
+import cajeta.gpu.core.Wave;
+import cajeta.gpu.core.Quad;
+import cajeta.gpu.core.Bits;
+import cajeta.gpu.core.Texture2D;
+import cajeta.gpu.core.Texture1D;
+import cajeta.gpu.core.Texture3D;
+import cajeta.gpu.core.Texture2DArray;
+import cajeta.gpu.core.TextureCube;
+import cajeta.gpu.core.Sampler;
+import cajeta.gpu.core.TextureFormat;
 import cajeta.lang.Math;
 
 // Cajeta XPU tour — portable @Kernel programs run through the runtime
@@ -474,7 +474,7 @@ public final class XpuTour {
     // ---- Matrix cores: cooperative-matrix MMA + the tiering fallback ---------
     // CooperativeMatrix<T,R,C,Use> is a tile of a matrix multiply held across a
     // subgroup, mapping to the hardware matrix/tensor cores: one `mma` is a
-    // full tile-sized fused multiply-add. See cajeta.xpu.core.CooperativeMatrix.
+    // full tile-sized fused multiply-add. See cajeta.gpu.core.CooperativeMatrix.
 
     // coopGemm: one 16x16x16 tile matmul C = A*B through the cooperative-matrix
     // verbs (load A and B tiles, zero the accumulator, one mma, store C). A and B

@@ -88,11 +88,11 @@ std::string lowerToPtx(const std::string& src, const std::string& fqClass,
 // global, barrier, halve-and-add down to tile[0], write it out.
 const char* kReduceSrc =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
-    "import cajeta.xpu.core.Workgroup;\n"
-    "import cajeta.xpu.core.Barrier;\n"
-    "import cajeta.xpu.core.Shared;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.core.Workgroup;\n"
+    "import cajeta.gpu.core.Barrier;\n"
+    "import cajeta.gpu.core.Shared;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void reduce(Buffer<int32> out, Buffer<int32> in, uint32 n) {\n"
@@ -141,11 +141,11 @@ TEST(XpuNvptxSharedEmitTests, lowersSharedTileReduction) {
 TEST(XpuNvptxSharedEmitTests, lowersDynamicSharedExtern) {
     auto src =
         "package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n"
-        "import cajeta.xpu.core.Workgroup;\n"
-        "import cajeta.xpu.core.Barrier;\n"
-        "import cajeta.xpu.core.Shared;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.Workgroup;\n"
+        "import cajeta.gpu.core.Barrier;\n"
+        "import cajeta.gpu.core.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void dynreduce(Buffer<int32> out, Buffer<int32> in,\n"
@@ -180,7 +180,7 @@ TEST(XpuNvptxSharedEmitTests, lowersDynamicSharedExtern) {
 TEST(XpuNvptxSharedEmitTests, sharedOutsideKernelRejected) {
     const char* src =
         "package test;\n"
-        "import cajeta.xpu.core.Shared;\n"
+        "import cajeta.gpu.core.Shared;\n"
         "public class M {\n"
         "    public static int32 oops() {\n"
         "        Shared<int32> tile = shared int32[8];\n"

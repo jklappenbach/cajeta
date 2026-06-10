@@ -212,19 +212,19 @@ TEST(XpuMirBuilderTests, printerRoundTrip) {
 TEST(XpuMirBuilderTests, addressSpaceRecognitionHelper) {
     AddressSpace as;
     EXPECT_TRUE(cajeta::xpu::isAddressSpaceCanonical(
-        "cajeta.xpu.core.Global", as));
+        "cajeta.gpu.core.Global", as));
     EXPECT_EQ(as, AddressSpace::Global);
 
     EXPECT_TRUE(cajeta::xpu::isAddressSpaceCanonical(
-        "cajeta.xpu.core.Shared<cajeta.float32>", as));
+        "cajeta.gpu.core.Shared<cajeta.float32>", as));
     EXPECT_EQ(as, AddressSpace::Shared);
 
     EXPECT_TRUE(cajeta::xpu::isAddressSpaceCanonical(
-        "cajeta.xpu.core.Generic", as));
+        "cajeta.gpu.core.Generic", as));
     EXPECT_EQ(as, AddressSpace::Generic);
 
     EXPECT_FALSE(cajeta::xpu::isAddressSpaceCanonical(
-        "cajeta.xpu.core.Stream", as));
+        "cajeta.gpu.core.Stream", as));
     EXPECT_FALSE(cajeta::xpu::isAddressSpaceCanonical(
         "user.pkg.Global", as));     // wrong package
 }

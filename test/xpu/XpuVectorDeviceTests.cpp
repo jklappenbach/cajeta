@@ -58,8 +58,8 @@ namespace {
 // name in the type resolver, like a primitive.
 const char* kVecSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void vecmath(Buffer<float32> out, uint32 n) {\n"
@@ -87,8 +87,8 @@ float expectedAt(uint32_t i) { return 54.0f + (float) i; }
 //   out[i] = s + i  ==  16.5 + i
 const char* kVecIntrinSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class MI {\n"
     "    @Kernel\n"
     "    public static void vintrin(Buffer<float32> out, uint32 n) {\n"
@@ -115,8 +115,8 @@ float intrinExpectedAt(uint32_t i) { return 16.5f + (float) i; }
 //   s = cr.z + rf.x + rf.y + d = 1 + 2 + 5 = 8;  out[i] = 8 + i
 const char* kVecGeomSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class MG {\n"
     "    @Kernel\n"
     "    public static void vgeom(Buffer<float32> out, uint32 n) {\n"
@@ -146,8 +146,8 @@ float geomExpectedAt(uint32_t i) { return 8.0f + (float) i; }
 //   s = 8 + 1 = 9 ;  out[i] = 9 + i
 const char* kVecMaskSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class MM {\n"
     "    @Kernel\n"
     "    public static void vmask(Buffer<float32> out, uint32 n) {\n"
@@ -172,8 +172,8 @@ float maskExpectedAt(uint32_t i) { return 9.0f + (float) i; }
 //   s = 3 + 2 + 2 = 7 ;  out[i] = 7 + i
 const char* kVecSwizSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class MS {\n"
     "    @Kernel\n"
     "    public static void vswiz(Buffer<float32> out, uint32 n) {\n"
@@ -196,8 +196,8 @@ float swizExpectedAt(uint32_t i) { return 7.0f + (float) i; }
 //   a=(1,2,3,4) b=(10,20,30,40); c=a+b=(11,22,33,44); out = c.x + c.w = 55
 const char* kF16Source =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class HF {\n"
     "    @Kernel\n"
     "    public static void f16k(Buffer<float32> out, uint32 n) {\n"
@@ -212,8 +212,8 @@ const char* kF16Source =
     "}\n";
 const char* kBf16Source =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class HB {\n"
     "    @Kernel\n"
     "    public static void bf16k(Buffer<float32> out, uint32 n) {\n"
@@ -235,8 +235,8 @@ float halfExpectedAt(uint32_t i) { return 55.0f + (float) i; }
 //   out[i] = (i, 1, 2, 3) * 2 = (2i, 2, 4, 6)
 const char* kVecBufSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class MB {\n"
     "    @Kernel\n"
     "    public static void vecbuf(Buffer<Vector<float32,4>> out, uint32 n) {\n"
@@ -1002,8 +1002,8 @@ TEST(XpuVectorDeviceTests, bfloat16RunsOnAmdDevice) { runHalfOnAmd(kBf16Source, 
 // dot-product unit); on CPU/AMD to the portable widening reduce. Both bit-exact.
 const char* kDp4aSource =
     "package test;\n"
-    "import cajeta.xpu.core.Buffer;\n"
-    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
     "public class DP {\n"
     "    @Kernel\n"
     "    public static void dp4a(Buffer<int32> out, uint32 n) {\n"

@@ -91,11 +91,11 @@ TEST(XpuSharedVulkanDeviceTests, sharedTreeReductionRunsOnDevice) {
     // Build the reduction source with the tile/loop sized to W.
     std::string src =
         "package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n"
-        "import cajeta.xpu.core.Workgroup;\n"
-        "import cajeta.xpu.core.Barrier;\n"
-        "import cajeta.xpu.core.Shared;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.Workgroup;\n"
+        "import cajeta.gpu.core.Barrier;\n"
+        "import cajeta.gpu.core.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void reduce(Buffer<int32> out, Buffer<int32> in, uint32 n) {\n"
@@ -183,11 +183,11 @@ TEST(XpuSharedVulkanDeviceTests, sharedAtomicCounterRunsOnDevice) {
     const unsigned W = cajeta::xpu::vulkan::kVulkanLocalSizeX;  // 64
     std::string src =
         "package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n"
-        "import cajeta.xpu.core.Workgroup;\n"
-        "import cajeta.xpu.core.Barrier;\n"
-        "import cajeta.xpu.core.Shared;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.Workgroup;\n"
+        "import cajeta.gpu.core.Barrier;\n"
+        "import cajeta.gpu.core.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void blockCount(Buffer<uint32> out, uint32 n) {\n"

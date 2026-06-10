@@ -100,8 +100,8 @@ XpuMirKernelPtr findKernel(const XpuMirModulePtr& m, const std::string& suffix) 
 TEST(XpuMirLaunchSiteTests, kernelBodyOpsCaptureThreadReads) {
     auto src =
         "package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
@@ -124,8 +124,8 @@ TEST(XpuMirLaunchSiteTests, kernelBodyOpsCaptureThreadReads) {
 TEST(XpuMirLaunchSiteTests, kernelBodyOpsCaptureWorkgroupAndBarrier) {
     auto src =
         "package test;\n"
-        "import cajeta.xpu.core.Workgroup;\n"
-        "import cajeta.xpu.core.Barrier;\n"
+        "import cajeta.gpu.core.Workgroup;\n"
+        "import cajeta.gpu.core.Barrier;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void k() {\n"
@@ -166,8 +166,8 @@ TEST(XpuMirLaunchSiteTests, plainKernelHasNoBodyOps) {
 TEST(XpuMirLaunchSiteTests, launchSiteRecognizedInHostBody) {
     auto src =
         "package test;\n"
-        "import cajeta.xpu.core.Buffer;\n"
-        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
