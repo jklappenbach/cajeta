@@ -49,11 +49,43 @@ Filter: `StreamTests.*:StreamTerminalTests.*:StreamIntermediateTests.*:StreamFol
   `StreamIntermediateTests.mapOr*` + all 12 `StaticFieldTests`, all cross-module
   refs from persistent `CajetaClass` cached pointers (drop wrappers / static-field
   globals) — i.e. exactly what (2) targets.
-- + per-class reset: **PENDING at handoff.** Validation re-running; 0 cross-module
-  errors observed through `StreamIntermediateTests` (was riddled with them before),
-  but the decisive suites (`mapOr*`, `StaticFieldTests`) run later in the process —
-  **first Linux task is to re-run this and confirm 0 failures.**
+- + per-class reset (`3592c4f9`): **NO CHANGE — still 96 pass / 17 fail**, byte-identical
+  failing set (5 `mapOr*` + 12 `StaticFieldTests`), 68 cross-module errors. The
+  per-class `CajetaClass`/`Method` binding reset was effectively a **no-op for these
+  17** → the leak is NOT in any cache it resets. (Left committed: it's non-breaking
+  and may matter for other leak modes at full-suite scale, but it does not fix this.)
   - Repro: `CAJETA_STDLIB_REUSE=1 CAJETA_STDLIB_VERIFY=1 CAJETA_STDLIB_REUSE_TRACE=1 ./cajeta_test --gtest_filter='<above>'`
+
+### PRECISE lead for the remaining 17 (start here on Linux)
+The failures are now sharply characterized — don't re-derive, attack this:
+- **Only two symbols leak:** `@__cajeta_free` and `@__cajeta_class_virtual_drop` —
+  RUNTIME functions (from the linked runtime bitcode), not `Method`s or
+  `CajetaClass`-cached pointers. Every error is `call @sym ; ModuleID='test.D'` /
+  `@sym ; ModuleID='test.S'` — i.e. a later test (`test.D`) references a copy of the
+  runtime function bound to an EARLIER test's module (`test.S`).
+- **`stdlib-verify` reports `+3 fns`** accumulating in the cached stdlib module on the
+  failing tests — so something is being ADDED to the shared stdlib module (or a
+  persistent runtime-fn cache) that carries a `test.S`-module binding forward.
+- The drop WRAPPER itself regenerates correctly into `test.D` (good — that part of
+  the machinery works); it's the inner runtime-fn callee that resolves stale.
+- **Suspects, in order:**
+  1. A persistent cache of runtime-function `llvm::Function*` keyed by name (check
+     `CajetaModule::getRuntimeFunction` / `linkRuntime` and any static/member
+     runtime-fn map — does anything hold the `Function*` across tests rather than
+     re-`ensureFunctionInModule` per module?).
+  2. `CajetaClass::emitModule` on a PERSISTENT stdlib class left set to a per-test
+     module from a prior test (the per-class reset does NOT reset `emitModule`!).
+     If `RecoverableException`'s (or another stdlib class's) `getEmitModule()` is a
+     stale `test.S`, its drop body's `cajModule->getRuntimeFunction(...)` resolves
+     into `test.S`. **Quick experiment: reset `emitModule=nullptr` on baseline stdlib
+     classes in `restoreReuseBaseline`** and re-run — cheap to try, may be the whole fix.
+  3. The stdlib `+3 fns` accumulation — dump the stdlib module IR after a failing
+     test (extend `verifyPristine` to print the +FN bodies via
+     `CAJETA_STDLIB_VERIFY_NAMES=1`) and see which 3 functions, and which module
+     their references point into.
+- Fastest debug: `CAJETA_DUMP_IR=1` on a single failing test (e.g.
+  `StaticFieldTests.writeThenRead`) and grep the printed IR for the two symbols'
+  defining modules.
 
 ### Remaining risk — out-of-graph caches
 The per-class reset covers everything reachable from the stdlib class/method graph.
