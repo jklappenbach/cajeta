@@ -34,7 +34,7 @@ import cajeta.gpu.core.Buffer;
  * v1: AABB geometry, one primitive per leaf (each leaf's AABB is the prim's box,
  * so the slab test on the node IS the primitive test); candidates are always AABB
  * (`candKind == 1`), and there is no committed hit yet (`committed == 0`) — count
- * / candidate-refine queries (Prism `countWithin` / `radiusExact`). Triangle
+ * / candidate-refine queries (Toffee `countWithin` / `radiusExact`). Triangle
  * leaves (Möller-Trumbore) and confirm/generate are inc 2 / inc 3.
  */
 public final class SoftwareRayQuery {

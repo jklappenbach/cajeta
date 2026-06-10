@@ -40,8 +40,8 @@ namespace {
 // The canonical spatial-index query as a COMPUTE shader: a degenerate (zero-length)
 // ray at each query point, traversing a BVH whose leaves are per-point AABBs; each
 // candidate AABB is a neighbor to gather/count. No geometric hit is committed — the
-// candidate visit itself is the spatial-query payload. This is the encoding Prism's
-// SpatialIndex hides (see cajeta-prism-plan.md P1).
+// candidate visit itself is the spatial-query payload. This is the encoding Toffee's
+// SpatialIndex hides (see cajeta-toffee-plan.md P1).
 constexpr const char* kRayQueryComputeGlsl = R"GLSL(
 #version 460
 #extension GL_EXT_ray_query : require

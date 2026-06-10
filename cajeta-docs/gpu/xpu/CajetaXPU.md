@@ -2,7 +2,7 @@
 
 This document specifies Cajeta's accelerator code-generation and
 runtime layer — the layer that `cajeta.math`, `cajeta.render`,
-`cajeta.prism`, `cajeta.torch`, and anything else that wants to push
+`cajeta.toffee`, `cajeta.torch`, and anything else that wants to push
 work off the CPU plugs into.
 
 The library is `cajeta.xpu`. It is shaped around three peer GPU backends
@@ -101,7 +101,7 @@ naming.
   later without restructuring the frontend.
 - **No automatic kernel autotuning.** Tile sizes, block shapes, and
   pipeline depths are written by the kernel author or by a higher-
-  level library (`cajeta.math`, Prism, Torch). XPU exposes
+  level library (`cajeta.math`, Toffee, Torch). XPU exposes
   introspection; it does not search.
 - **No CUDA-source compatibility.** Cajeta is not a CUDA replacement
   at the syntax level. Existing CUDA `.cu` files do not compile.
@@ -769,7 +769,7 @@ cajeta.gpu.core.fft         // 1D/2D/3D real and complex
 cajeta.gpu.core.collective  // all-reduce, all-gather, reduce-scatter
 ```
 
-The portable wrappers are the layer `cajeta.math.*`, `cajeta.prism`,
+The portable wrappers are the layer `cajeta.math.*`, `cajeta.toffee`,
 and `cajeta.torch` build on. The vendor namespaces are for kernels
 written against a known device.
 
@@ -803,7 +803,7 @@ xpu.Buffer<float>             // alias for the active backend in a build
 ```
 
 `xpu.Buffer<T>` is the type higher-level libraries (`cajeta.math`,
-Prism, Torch, `cajeta.render`) write against. The build selects which
+Toffee, Torch, `cajeta.render`) write against. The build selects which
 backend it resolves to. Code that must address multiple backends in
 the same translation unit imports the qualified names.
 

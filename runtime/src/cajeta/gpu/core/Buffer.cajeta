@@ -4,7 +4,7 @@ package cajeta.gpu.core;
  * Buffer<T> — unified handle to device memory.
  *
  * The cross-cutting type higher-level libraries (cajeta.math,
- * Prism, Torch, cajeta.render) write against. Backends tag the
+ * Toffee, Torch, cajeta.render) write against. Backends tag the
  * underlying storage handle (CUdeviceptr / hipDeviceptr_t /
  * VkBuffer); from the user's perspective it's one opaque type
  * with a length and the standard upload/download/free operations.

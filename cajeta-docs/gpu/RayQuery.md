@@ -29,8 +29,8 @@ establishes here.
   refit. Built by `__cajeta_xpu_accel_build_aabbs`, which dispatches **only** to
   `cajeta_xpu_vk_accel_build_aabbs` (`CAJ_XPU_VULKAN`); any other backend returns
   handle 0.
-- **Consumer** — Prism `SpatialIndex.countWithin` / `radiusExact`
-  (`PrismSpatialIndexDeviceTests`), the device-verified proof the path works — but
+- **Consumer** — Toffee `SpatialIndex.countWithin` / `radiusExact`
+  (`ToffeeSpatialIndexDeviceTests`), the device-verified proof the path works — but
   gated `if (!VulkanDriver::rayQueryAvailable()) SKIP`.
 
 So today ray query carries *core intent* with a *Vulkan-only* reality. That gap — a
@@ -97,7 +97,7 @@ any other buffer, on any backend). Two regions, both `uint32`/`float32` words:
   fixed-iteration walk the lowerer emits.
 - **primRef** — `uint32` indices remapping sorted leaf order → original primitive id
   (so `candidatePrimitiveIndex()` returns the *caller's* index, matching the Vulkan
-  semantics the Prism exact-L2 test depends on).
+  semantics the Toffee exact-L2 test depends on).
 - **primData** — the geometry itself: AABBs as 6×f32; triangles as 3×(3×f32) (or an
   index buffer into a shared vertex buffer — TBD in inc 2).
 
@@ -127,7 +127,7 @@ ray-**triangle** queries (mesh Monte-Carlo, SDF / curvature, ICP / 6-D pose,
 mesh-NN / fVDB) *and* the AABB / procedural path (3-D Gaussian, point clouds). A core
 BVH that only does AABBs would re-introduce the same half-feature gap one layer down.
 AABBs land first (they cross-check directly against today's Vulkan AABB path and the
-existing Prism tests); triangles follow in the same layout.
+existing Toffee tests); triangles follow in the same layout.
 
 ---
 
@@ -200,14 +200,14 @@ foundation plan §1; ray query is what makes them real rather than speculative.
 The model's correctness rule is **bit/result-compatible cross-check** between a portable
 path and a native path. Ray query already has the harness:
 
-- `PrismSpatialIndexDeviceTests.fixedRadiusCountOnDevice` and `exactL2RefinementOnDevice`
+- `ToffeeSpatialIndexDeviceTests.fixedRadiusCountOnDevice` and `exactL2RefinementOnDevice`
   run `countWithin` / `radiusExact` on the **Vulkan native** path today.
 - After inc 1 these same tests run on the **CPU software** path — *same source, same
   results* (777 / 888) — un-gated from `rayQueryAvailable()` for the software leg. A
   software/native agreement test (same scene, both impls, identical neighbour counts)
   is the acceptance criterion for each increment.
 
-When the software AABB path matches the Vulkan AABB path on the existing Prism scenes,
+When the software AABB path matches the Vulkan AABB path on the existing Toffee scenes,
 the AABB half of "genuinely core" is *proven*, not asserted. Triangles get an analogous
 mesh cross-check.
 
@@ -232,12 +232,12 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
       `initialize`/`proceed`/`committedType`/`candidateType`/`candidatePrimitiveIndex`.
 - [x] Noun-impl → verb-lowering coupling (§5) — per-backend: `LoweringTarget.softwareRayQuery()`
       (CPU true → software walk + AS-as-buffer; Vulkan false → native `OpRayQuery`).
-- [x] **Cross-check:** `PrismSpatialIndexDeviceTests` `fixedRadius` (777) + `exactL2` (888)
+- [x] **Cross-check:** `ToffeeSpatialIndexDeviceTests` `fixedRadius` (777) + `exactL2` (888)
       pass on the **CPU** backend, matching the Vulkan native path; plus a self-contained
       `minimalRayQueryOnCpuSoftwareBvh` and the `SoftwareBvhBuilderTests` noun unit tests.
 - Incidental fixes this slice surfaced (pre-existing, off-path): `Buffer.upload/downloadAsync`
   class-param-field idiom; `Quad` host @Native stubs (missing since the quad commit — it
-  also un-broke the Vulkan native Prism test); boolean literals in the device lowerer.
+  also un-broke the Vulkan native Toffee test); boolean literals in the device lowerer.
 
 **Inc 2 — Triangles. ✅ DONE.**
 - [x] Triangle geometry in the layout + builder — a primData region (9 floats/tri) +
@@ -305,7 +305,7 @@ over a Vulkan BLAS where the device advertises it, a portable stackless BVH walk
 the **Software default**, mirroring `CooperativeMatrix`. The noun impl is chosen once at
 build time by the capability heuristic (overridable) and determines the verb lowering.
 Software is always a valid answer, never a failure (XPU-N02 stops being thrown for ray
-query). Correctness is the software-vs-native cross-check on the existing Prism scenes.
+query). Correctness is the software-vs-native cross-check on the existing Toffee scenes.
 
 ## See also
 

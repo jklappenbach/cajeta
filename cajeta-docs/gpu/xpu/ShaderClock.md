@@ -24,7 +24,7 @@ divergence. Don't convert it to wall-clock time.
   distributed across a subgroup.
 - **Memory-latency probing** — time a dependent load chain on-device.
 
-It is a tuning/research instrument (e.g. timing SPELA layers or Prism kernels
+It is a tuning/research instrument (e.g. timing SPELA layers or Toffee kernels
 on-device), not something an end-user app calls.
 
 ## How it lowers — every backend, native clock

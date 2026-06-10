@@ -1,6 +1,6 @@
-# CajetaPrism.md
+# CajetaToffee.md
 
-A specification for `cajeta.prism`, a deep-learning framework
+A specification for `cajeta.toffee`, a deep-learning framework
 designed from first principles for cajeta — leveraging the type
 system, ownership model, fiber runtime, and `cajeta.math` numerical
 foundation. Not a port of any existing framework. The goal is to
@@ -9,12 +9,12 @@ Flax / Burn / MLX and ask: what would the framework look like if
 designed today, in a language with cajeta's properties, without
 backward compatibility constraints?
 
-For the PyTorch migration target, see `CajetaTorch.md`. cajeta.prism
+For the PyTorch migration target, see `CajetaTorch.md`. cajeta.toffee
 and cajeta.torch coexist; they have different audiences and different
 goals. Most users will pick one or the other for a given project.
 
 Implementation lands incrementally as `.cajeta` files under
-`./libraries/cajeta.prism/src/`. Ships as its own package.
+`./libraries/cajeta.toffee/src/`. Ships as its own package.
 
 ## Why a separate library from cajeta.torch
 
@@ -36,7 +36,7 @@ Transformations like `grad`, `jit`, `vmap`, `pmap` are language-
 native: they take pure functions and return pure functions, and
 the compiler can reason about them.
 
-cajeta.prism is for users who:
+cajeta.toffee is for users who:
 - Are starting fresh, not porting a PyTorch repo.
 - Want compile-time guarantees on shape, dtype, gradient flow.
 - Want functional transformations as a primary tool, not bolt-on.
@@ -93,7 +93,7 @@ cajeta.prism is for users who:
 ## Non-goals (v1)
 
 - **PyTorch API parity.** That's cajeta.torch's job. Migrating
-  PyTorch code to cajeta.prism is a rewrite, not a port.
+  PyTorch code to cajeta.toffee is a rewrite, not a port.
 - **Python interop / dynamic shape inference at runtime.** Shapes
   that are unknown at compile time are supported but reported
   warning-level (compiler can't optimize as hard). No "shape comes
@@ -102,7 +102,7 @@ cajeta.prism is for users who:
   `Device` type parameter exists; only `CPU` resolves. Backend
   abstraction designed in so accelerators slot in cleanly.
 - **Pre-trained model zoo.** No bundled weights. Model definitions
-  may live in a sibling package (`cajeta.prism.models`); weights are
+  may live in a sibling package (`cajeta.toffee.models`); weights are
   loaded from external sources via the checkpoint format.
 - **Visual / dashboard tooling.** No built-in TensorBoard
   equivalent. Logging is structured (json-lines); a separate
@@ -114,67 +114,67 @@ cajeta.prism is for users who:
 ## Package layout
 
 ```
-cajeta.prism.tensor       — Typed Tensor, Shape, DType, Device,
+cajeta.toffee.tensor       — Typed Tensor, Shape, DType, Device,
                             factory functions, ops, broadcasting,
                             indexing, shape ops
-cajeta.prism.autograd     — grad, value_and_grad, jacobian, hessian,
+cajeta.toffee.autograd     — grad, value_and_grad, jacobian, hessian,
                             jvp, vjp, gradient surrogates
-cajeta.prism.transform    — jit, vmap, pmap, scan, checkpoint, remat
-cajeta.prism.random       — RngKey, split, normal, uniform,
+cajeta.toffee.transform    — jit, vmap, pmap, scan, checkpoint, remat
+cajeta.toffee.random       — RngKey, split, normal, uniform,
                             categorical, ... (PRNG-key-threaded)
-cajeta.prism.module       — Module trait, Parameter wrapper,
+cajeta.toffee.module       — Module trait, Parameter wrapper,
                             tree_map / tree_flatten over module
                             parameter trees, parameter init
-cajeta.prism.layer        — Linear, Conv*, BN, LN, RMSNorm,
+cajeta.toffee.layer        — Linear, Conv*, BN, LN, RMSNorm,
                             Dropout, Embedding, Attention,
                             TransformerBlock — immutable structs
-cajeta.prism.act          — relu, gelu, silu, mish, softmax, ...
+cajeta.toffee.act          — relu, gelu, silu, mish, softmax, ...
                             (pure functions; no Module wrapper)
-cajeta.prism.loss         — mse, cross_entropy, kl_div, ... (pure
+cajeta.toffee.loss         — mse, cross_entropy, kl_div, ... (pure
                             functions, not Module instances)
-cajeta.prism.optim        — optimizer state as data; init / step
+cajeta.toffee.optim        — optimizer state as data; init / step
                             return new state; SGD, Adam, AdamW,
                             Lion, Adafactor, ...
-cajeta.prism.schedule     — LR schedules as pure functions of step ->
+cajeta.toffee.schedule     — LR schedules as pure functions of step ->
                             lr; cosine, warmup-then-decay, polynomial
-cajeta.prism.data         — Dataset, Loader (fiber pool, bounded
+cajeta.toffee.data         — Dataset, Loader (fiber pool, bounded
                             prefetch), Sampler, collate
-cajeta.prism.checkpoint   — Pure binary save / load. No pickle.
+cajeta.toffee.checkpoint   — Pure binary save / load. No pickle.
                             Versioned format; safetensors-compatible
                             tensor encoding.
-cajeta.prism.distribute   — Mesh, ShardingSpec, pjit, pmap,
+cajeta.toffee.distribute   — Mesh, ShardingSpec, pjit, pmap,
                             collectives (all_reduce, all_gather,
                             reduce_scatter, broadcast)
-cajeta.prism.distributions — Normal, Categorical, Bernoulli, ...,
+cajeta.toffee.distributions — Normal, Categorical, Bernoulli, ...,
                              with reparameterizable / score-function
                              gradient choice
-cajeta.prism.metric       — Pure-function metrics (accuracy,
+cajeta.toffee.metric       — Pure-function metrics (accuracy,
                             precision, recall, F1, AUC, ...) plus
                             a stateful Aggregator wrapper for
                             running totals across batches
-cajeta.prism.text         — Tokenizer trait + BPE / Unigram /
+cajeta.toffee.text         — Tokenizer trait + BPE / Unigram /
                             WordPiece implementations; the bare
                             minimum to build language-model pipelines
-cajeta.prism.vision       — Image loaders (jpeg / png), augmentation
+cajeta.toffee.vision       — Image loaders (jpeg / png), augmentation
                             ops (resize, crop, flip, color jitter),
                             ToTensor / Normalize
-cajeta.prism.profile      — Op-level timing, memory tracing, flop
+cajeta.toffee.profile      — Op-level timing, memory tracing, flop
                             counting; outputs structured json-lines
 ```
 
 Deferred to follow-ups:
 ```
-cajeta.prism.models           — Curated model definitions
-cajeta.prism.cuda             — CUDA backend
-cajeta.prism.metal            — Metal backend
-cajeta.prism.serve            — Inference serving
-cajeta.prism.export           — ONNX / SavedModel export
-cajeta.prism.compile          — XLA-equivalent graph compiler
+cajeta.toffee.models           — Curated model definitions
+cajeta.toffee.cuda             — CUDA backend
+cajeta.toffee.metal            — Metal backend
+cajeta.toffee.serve            — Inference serving
+cajeta.toffee.export           — ONNX / SavedModel export
+cajeta.toffee.compile          — XLA-equivalent graph compiler
 ```
 
 ---
 
-## cajeta.prism.tensor
+## cajeta.toffee.tensor
 
 The foundational type. Shape, dtype, device, and grad-tracking all
 live in the type. The elements are stored in a `cajeta.math.tensor.
@@ -258,7 +258,7 @@ optimization opportunities of statically-known shapes.
 
 ---
 
-## cajeta.prism.autograd
+## cajeta.toffee.autograd
 
 Pure-function-shaped automatic differentiation. `grad(fn)` returns a
 new function that computes the gradient of `fn` at any input. No
@@ -294,14 +294,14 @@ public enum Surrogate {
 ```
 
 Implementation: when `fn` is composed of registered primitives (the
-ops defined in `cajeta.prism.tensor`), the compiler generates the
+ops defined in `cajeta.toffee.tensor`), the compiler generates the
 backward pass at compile time. User code never sees a graph object.
 Higher-order derivatives compose naturally — `grad(grad(fn))` is a
 function, not a special case.
 
 ---
 
-## cajeta.prism.transform
+## cajeta.toffee.transform
 
 Functional transformations. Each takes a pure function and returns a
 pure function. Composable in any order: `jit(grad(vmap(fn)))` is a
@@ -341,7 +341,7 @@ deep models that don't fit activations in memory.
 
 ---
 
-## cajeta.prism.random
+## cajeta.toffee.random
 
 JAX-style explicit RNG keys. No global state. Two runs with the
 same `RngKey` produce bit-identical results.
@@ -381,7 +381,7 @@ with the same seed get the same numbers, period.
 
 ---
 
-## cajeta.prism.module
+## cajeta.toffee.module
 
 Modules are immutable structs of parameters. There is no
 `.train()` flag, no `.eval()` flag, no hidden state. A `Module`'s
@@ -433,7 +433,7 @@ parameters / inputs:
 
 ---
 
-## cajeta.prism.layer
+## cajeta.toffee.layer
 
 Layers are immutable structs of parameters with a synthesized
 `apply` method. Transformer block as the canonical example:
@@ -498,7 +498,7 @@ Layer set for v1: `Linear`, `Conv1d/2d/3d`, `BatchNorm*d`, `LayerNorm`,
 
 ---
 
-## cajeta.prism.optim
+## cajeta.toffee.optim
 
 Optimizer state is data; `init` and `step` are pure functions; no
 optimizer object holds parameters in a hidden ref-keep cycle.
@@ -568,7 +568,7 @@ contract.
 
 ---
 
-## cajeta.prism.distribute
+## cajeta.toffee.distribute
 
 Designed in from day one. A `Mesh` is a typed grid of devices; a
 `ShardingSpec` says how a tensor's axes map to mesh axes;
@@ -606,7 +606,7 @@ fall-through).
 
 ---
 
-## cajeta.prism.checkpoint
+## cajeta.toffee.checkpoint
 
 Pure binary format. No pickle. No language-specific code paths.
 Versioned header + tensor records.
@@ -644,7 +644,7 @@ Format:
 ```
 
 Compatible with safetensors at the tensor-encoding layer (same byte
-representation per dtype) so `cajeta.prism.checkpoint` and
+representation per dtype) so `cajeta.toffee.checkpoint` and
 `safetensors` files round-trip.
 
 ---
@@ -653,43 +653,43 @@ representation per dtype) so `cajeta.prism.checkpoint` and
 
 A reasonable order, given dependencies:
 
-1. **cajeta.prism.tensor** with statically-known shapes only first.
+1. **cajeta.toffee.tensor** with statically-known shapes only first.
    Type-level shape arithmetic, broadcast / matmul / reshape /
    reductions. Wraps cajeta.math.tensor.Tensor for storage.
-2. **cajeta.prism.random.** RngKey + split + the standard
+2. **cajeta.toffee.random.** RngKey + split + the standard
    distributions. Self-contained, low dependency.
-3. **cajeta.prism.autograd: grad / value_and_grad** for functions
+3. **cajeta.toffee.autograd: grad / value_and_grad** for functions
    over the tensor type. Compile-time backward generation. Validates
    the type-level grad-mode design end-to-end.
-4. **cajeta.prism.module + a small layer set** (`Linear`,
+4. **cajeta.toffee.module + a small layer set** (`Linear`,
    `LayerNorm`, `Dropout`). Parameter-walk synthesis. Training loop
    shape works.
-5. **cajeta.prism.optim: SGD + Adam.** Pure-function step. Trains
+5. **cajeta.toffee.optim: SGD + Adam.** Pure-function step. Trains
    an MLP end-to-end on toy data.
-6. **cajeta.prism.transform: jit.** Function compilation. The trace
+6. **cajeta.toffee.transform: jit.** Function compilation. The trace
    sees a typed function and lowers it to optimized kernels. Big
    payoff: no per-op Python-level overhead, even before any GPU
    support.
-7. **cajeta.prism.transform: vmap + scan.** Per-example gradients,
+7. **cajeta.toffee.transform: vmap + scan.** Per-example gradients,
    compiled loops. Many existing models become much terser.
-8. **cajeta.prism.layer: convolutions + attention.** Transformer
+8. **cajeta.toffee.layer: convolutions + attention.** Transformer
    block. Language-model training reachable.
-9. **cajeta.prism.checkpoint.** Binary save/load. Resumable
+9. **cajeta.toffee.checkpoint.** Binary save/load. Resumable
    training loops.
-10. **cajeta.prism.data.** Dataset + Loader (fiber pool +
+10. **cajeta.toffee.data.** Dataset + Loader (fiber pool +
     bounded prefetch). Real datasets.
-11. **cajeta.prism.distribute: Mesh + pjit + collectives.**
+11. **cajeta.toffee.distribute: Mesh + pjit + collectives.**
     Multi-CPU sharding works first; multi-host comes once
     cajeta.io.net is in.
-12. **cajeta.prism.transform: pmap.** Layered on distribute.
-13. **cajeta.prism.autograd: jvp + vjp + jacobian + hessian.**
+12. **cajeta.toffee.transform: pmap.** Layered on distribute.
+13. **cajeta.toffee.autograd: jvp + vjp + jacobian + hessian.**
     Higher-order derivatives. Useful for second-order optimizers
     and Bayesian methods.
-14. **cajeta.prism.distributions.** Reparameterizable + score-
+14. **cajeta.toffee.distributions.** Reparameterizable + score-
     function gradient choices. Hooks autograd.
-15. **cajeta.prism.text + cajeta.prism.vision + cajeta.prism.metric.**
+15. **cajeta.toffee.text + cajeta.toffee.vision + cajeta.toffee.metric.**
     Domain-flavored extensions. Independent of each other.
-16. **cajeta.prism.profile.** Op-level timing and memory tracing.
+16. **cajeta.toffee.profile.** Op-level timing and memory tracing.
     Hooks the same trace path that `jit` uses.
 
 The gating step is (1) — every other layer touches the typed tensor
@@ -698,11 +698,11 @@ design choice (compile-time backward generation) determines the
 shape of every transformation that follows.
 
 Deferred to follow-ups (separate libraries):
-- cajeta.prism.cuda / cajeta.prism.metal — accelerator backends
-- cajeta.prism.compile — XLA-equivalent graph compiler
-- cajeta.prism.export — ONNX / SavedModel export
-- cajeta.prism.serve — inference serving
-- cajeta.prism.models — curated model implementations
+- cajeta.toffee.cuda / cajeta.toffee.metal — accelerator backends
+- cajeta.toffee.compile — XLA-equivalent graph compiler
+- cajeta.toffee.export — ONNX / SavedModel export
+- cajeta.toffee.serve — inference serving
+- cajeta.toffee.models — curated model implementations
 
 ---
 
@@ -735,7 +735,7 @@ Deferred to follow-ups (separate libraries):
   exclusive? PyTorch's trailing-underscore convention is one
   option; another is no in-place API at all and rely on the
   compiler. Lean: no in-place API; trust the optimizer.
-- **Tensor backing relationship with cajeta.math.tensor.** prism's
+- **Tensor backing relationship with cajeta.math.tensor.** toffee's
   Tensor wraps cajeta.math.tensor's. Round-trip across libraries
   should be zero-copy via the shared backing buffer; same question
   raised in CajetaMath.md / CajetaTorch.md. Cohesive resolution

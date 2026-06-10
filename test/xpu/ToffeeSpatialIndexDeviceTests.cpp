@@ -1,15 +1,15 @@
 //
-// Prism P1.0 — SpatialIndex exec test (cajeta-gpu Part C inc 3c).
+// Toffee P1.0 — SpatialIndex exec test (cajeta-gpu Part C inc 3c).
 //
-// Prism is a consumer of the cajeta-gpu foundation; its first real code is the
-// RT-as-compute SpatialIndex primitive (`cajeta-prism/src/prism/spatial/
+// Toffee is a consumer of the cajeta-gpu foundation; its first real code is the
+// RT-as-compute SpatialIndex primitive (`cajeta-toffee/src/toffee/spatial/
 // SpatialIndex.cajeta`). It has no standalone build/test harness yet, so we
 // exec-verify it here, through the cajeta compiler's JIT: compile the authoritative
-// SpatialIndex source (read from the sibling cajeta-prism repo) alongside a driver
+// SpatialIndex source (read from the sibling cajeta-toffee repo) alongside a driver
 // program via the multi-source overload, and run a fixed-radius neighbour count on
 // a real ray-query device.
 //
-// Gated twice: on a ray-query-capable Vulkan device, and on the cajeta-prism
+// Gated twice: on a ray-query-capable Vulkan device, and on the cajeta-toffee
 // source being present next to this checkout. Either missing -> SKIP.
 //
 
@@ -30,14 +30,14 @@ using cajeta::xpu::vulkan::VulkanDriver;
 
 namespace {
 
-// The authoritative SpatialIndex.cajeta lives in the sibling cajeta-prism repo.
+// The authoritative SpatialIndex.cajeta lives in the sibling cajeta-toffee repo.
 // Resolve it relative to CAJETA_SOURCE_ROOT (the cajeta checkout) — its parent is
-// the cpp/ workspace dir, with cajeta-prism alongside. Returns "" if unreadable.
+// the cpp/ workspace dir, with cajeta-toffee alongside. Returns "" if unreadable.
 std::string readSpatialIndexSource() {
     const char* root = std::getenv("CAJETA_SOURCE_ROOT");
     if (!root || !*root) return "";
     std::string path = std::string(root) +
-        "/../cajeta-prism/src/prism/spatial/SpatialIndex.cajeta";
+        "/../cajeta-toffee/src/toffee/spatial/SpatialIndex.cajeta";
     std::ifstream f(path);
     if (!f) return "";
     std::ostringstream ss;
@@ -53,8 +53,8 @@ const char* kDriver =
     "package test;\n"
     "import cajeta.gpu.core.Buffer;\n"
     "import cajeta.gpu.core.Stream;\n"
-    "import prism.spatial.SpatialIndex;\n"
-    "public class PrismRQ {\n"
+    "import toffee.spatial.SpatialIndex;\n"
+    "public class ToffeeRQ {\n"
     "    public static int32 run() {\n"
     "        uint32 np = 3;\n"
     "        float32[] pts = heap float32[np * 3];\n"
@@ -96,8 +96,8 @@ const char* kExactDriver =
     "package test;\n"
     "import cajeta.gpu.core.Buffer;\n"
     "import cajeta.gpu.core.Stream;\n"
-    "import prism.spatial.SpatialIndex;\n"
-    "public class PrismExact {\n"
+    "import toffee.spatial.SpatialIndex;\n"
+    "public class ToffeeExact {\n"
     "    public static int32 run() {\n"
     "        uint32 np = 3;\n"
     "        float32[] pts = heap float32[np * 3];\n"
@@ -140,25 +140,25 @@ const char* kExactDriver =
 
 } // namespace
 
-// The Prism SpatialIndex primitive, end to end on a real RT device: build a BVH
+// The Toffee SpatialIndex primitive, end to end on a real RT device: build a BVH
 // over points, run a fixed-radius neighbour count through the public verb. Proves
 // the foundation's ray-query path (3a/3b) is consumable as a library abstraction
 // (3c) — the user writes `idx.countWithin(...)`, never a ray.
-TEST(PrismSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
+TEST(ToffeeSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-prism SpatialIndex.cajeta not found beside checkout";
+        GTEST_SKIP() << "cajeta-toffee SpatialIndex.cajeta not found beside checkout";
     }
     std::map<std::string, std::string> sources = {
-        {"prism.spatial.SpatialIndex", lib},
-        {"test.PrismRQ", kDriver},
+        {"toffee.spatial.SpatialIndex", lib},
+        {"test.ToffeeRQ", kDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.PrismRQ", o);
+    auto jit = CajetaJit::compile(sources, "test.ToffeeRQ", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -171,21 +171,21 @@ TEST(PrismSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
 // OpRayQueryGetIntersectionPrimitiveIndexKHR op). The box approximation over-counts
 // (3 of 3 boxes contain the origin); radiusExact recovers each candidate's data
 // point and keeps only the one within the true Euclidean radius (1).
-TEST(PrismSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
+TEST(ToffeeSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-prism SpatialIndex.cajeta not found beside checkout";
+        GTEST_SKIP() << "cajeta-toffee SpatialIndex.cajeta not found beside checkout";
     }
     std::map<std::string, std::string> sources = {
-        {"prism.spatial.SpatialIndex", lib},
-        {"test.PrismExact", kExactDriver},
+        {"toffee.spatial.SpatialIndex", lib},
+        {"test.ToffeeExact", kExactDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.PrismExact", o);
+    auto jit = CajetaJit::compile(sources, "test.ToffeeExact", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -194,11 +194,11 @@ TEST(PrismSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
                       << " (3xx: box approx != 3; 2xx: exact-L2 count != 1)";
 }
 
-// Minimal self-contained CPU ray-query exec (no SpatialIndex / cajeta-prism
+// Minimal self-contained CPU ray-query exec (no SpatialIndex / cajeta-toffee
 // dependency): build an AccelerationStructure over 3 AABBs and run a RayQuery walk
 // in a kernel on the CPU software path. Directly exercises the ray-query-to-core
 // integration (software BVH builder + SoftwareRayQuery walk) without the broader
-// stdlib closure. Same 1/0/1/1 expectation as the Prism fixed-radius scene.
+// stdlib closure. Same 1/0/1/1 expectation as the Toffee fixed-radius scene.
 const char* kRqMinDriver =
     "package test;\n"
     "import cajeta.gpu.core.AccelerationStructure;\n"
@@ -434,7 +434,7 @@ const char* kNearestDriver =
     "    }\n"
     "}\n";
 
-TEST(PrismSpatialIndexDeviceTests, nearestHitOnCpuSoftwareBvh) {
+TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -447,7 +447,7 @@ TEST(PrismSpatialIndexDeviceTests, nearestHitOnCpuSoftwareBvh) {
                       << " (100: committed type; 101: nearest distance; 102: prim)";
 }
 
-TEST(PrismSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
+TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -517,7 +517,7 @@ const char* kFrontDriver =
     "    }\n"
     "}\n";
 
-TEST(PrismSpatialIndexDeviceTests, frontFaceOnCpuSoftwareBvh) {
+TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -529,7 +529,7 @@ TEST(PrismSpatialIndexDeviceTests, frontFaceOnCpuSoftwareBvh) {
     EXPECT_EQ(r, 777) << "fail code " << r << " (100: front hit; 101: back hit)";
 }
 
-TEST(PrismSpatialIndexDeviceTests, frontFaceOnDevice) {
+TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -547,7 +547,7 @@ TEST(PrismSpatialIndexDeviceTests, frontFaceOnDevice) {
 // Inc 3b native cross-checks: the SAME getter / nearest-hit sources on the Vulkan
 // NATIVE path (OpRayQueryGetIntersectionT / Barycentrics, Confirm/Generate via the
 // new cajeta-llvm fork intrinsics) must match the CPU software results.
-TEST(PrismSpatialIndexDeviceTests, candidateGettersOnDevice) {
+TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -563,7 +563,7 @@ TEST(PrismSpatialIndexDeviceTests, candidateGettersOnDevice) {
                       << " (Vulkan native candidate getters != software)";
 }
 
-TEST(PrismSpatialIndexDeviceTests, nearestHitOnDevice) {
+TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -579,7 +579,7 @@ TEST(PrismSpatialIndexDeviceTests, nearestHitOnDevice) {
                       << " (Vulkan native nearest-hit (confirm) != software)";
 }
 
-TEST(PrismSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
+TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -596,7 +596,7 @@ TEST(PrismSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
 // NATIVE path (VK_GEOMETRY_TYPE_TRIANGLES_KHR + OpRayQuery, Möller-Trumbore in
 // hardware) must produce the same hit counts as the CPU software walk above.
 // Non-opaque geometry so triangle candidates enumerate in the proceed() loop.
-TEST(PrismSpatialIndexDeviceTests, triangleRayQueryOnDevice) {
+TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -612,7 +612,7 @@ TEST(PrismSpatialIndexDeviceTests, triangleRayQueryOnDevice) {
                       << " (Vulkan native triangle ray query != software)";
 }
 
-TEST(PrismSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
+TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -625,7 +625,7 @@ TEST(PrismSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
                       << " (CPU software ray query: wrong hit count)";
 }
 
-// ── Ray-query-to-core (inc 1): the SAME Prism source on the CPU SOFTWARE path ──
+// ── Ray-query-to-core (inc 1): the SAME Toffee source on the CPU SOFTWARE path ──
 // No ray-query-capable device required — the AccelerationStructure builds a
 // portable software BVH (runtime/native/cajeta_bvh.c) and RayQuery lowers to the
 // cajeta SoftwareRayQuery walk. The results must match the Vulkan native path
@@ -633,18 +633,18 @@ TEST(PrismSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
 // Each ctest case is a fresh process, so the CPU-only bundle selects the CPU
 // backend (priority CUDA>HIP>Vulkan>CPU is moot when only CPU is bundled).
 
-TEST(PrismSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
+TEST(ToffeeSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-prism SpatialIndex.cajeta not found beside checkout";
+        GTEST_SKIP() << "cajeta-toffee SpatialIndex.cajeta not found beside checkout";
     }
     std::map<std::string, std::string> sources = {
-        {"prism.spatial.SpatialIndex", lib},
-        {"test.PrismRQ", kDriver},
+        {"toffee.spatial.SpatialIndex", lib},
+        {"test.ToffeeRQ", kDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.PrismRQ", o);
+    auto jit = CajetaJit::compile(sources, "test.ToffeeRQ", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -653,18 +653,18 @@ TEST(PrismSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
                       << " (CPU software BVH/RayQuery: wrong neighbour count)";
 }
 
-TEST(PrismSpatialIndexDeviceTests, exactL2RefinementOnCpuSoftwareBvh) {
+TEST(ToffeeSpatialIndexDeviceTests, exactL2RefinementOnCpuSoftwareBvh) {
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-prism SpatialIndex.cajeta not found beside checkout";
+        GTEST_SKIP() << "cajeta-toffee SpatialIndex.cajeta not found beside checkout";
     }
     std::map<std::string, std::string> sources = {
-        {"prism.spatial.SpatialIndex", lib},
-        {"test.PrismExact", kExactDriver},
+        {"toffee.spatial.SpatialIndex", lib},
+        {"test.ToffeeExact", kExactDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.PrismExact", o);
+    auto jit = CajetaJit::compile(sources, "test.ToffeeExact", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
