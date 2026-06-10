@@ -185,4 +185,23 @@ public final class RayQuery {
     public uint32 committedPrimitiveIndex() {
         return 0;
     }
+
+    /**
+     * Device-only intrinsic: whether the current TRIANGLE candidate is front-facing
+     * (the CCW-winding convention — the geometric normal faces the ray).
+     * (OpRayQueryGetIntersectionFrontFaceKHR, candidate.)
+     *
+     * NOTE: the front-face of an UNCONFIRMED candidate is unreliable on some
+     * drivers (observed non-deterministic on RADV). For a dependable result,
+     * confirmIntersection() the hit and read committedFrontFace(). The software
+     * path is reliable for both.
+     */
+    public boolean candidateFrontFace() {
+        return false;
+    }
+
+    /** Whether the COMMITTED hit is front-facing. See candidateFrontFace. */
+    public boolean committedFrontFace() {
+        return false;
+    }
 }

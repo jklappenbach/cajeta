@@ -102,9 +102,13 @@ badge-without-substance the model forbids.
   `SoftwareRayQuery.triangleHit` over a primData region) + `VK_GEOMETRY_TYPE_TRIANGLES_KHR`
   on the Vulkan build (`cajeta_xpu_vk_accel_build_triangles`, non-opaque). Device-verified:
   `triangleRayQueryOnCpuSoftwareBvh` == `triangleRayQueryOnDevice`; builder MT vs brute force.
-- [ ] **Complete the verb getters** — `T` (distance), barycentrics, frontFace; **`confirm` /
-  `generate` intersection** (without these, ray query can only *count*, not return a nearest
-  hit) — inc 3.
+- [x] **Verb getters + commit** *(inc 3)* — `candidate/committed Distance` (t), barycentrics,
+  `frontFace`, `candidate/committedPrimitiveIndex`; **`confirm` / `generate` intersection** +
+  committed nearest-hit. Software (cursor + tMax-shrink) and native (new `llvm.spv.ray.query.*`
+  fork intrinsics + `OpRayQueryGetIntersection{T,Barycentrics,FrontFace}KHR` /
+  `{Confirm,Generate}IntersectionKHR`), cross-checked CPU↔Vulkan. *Caveat: confirm before
+  reading front-face / counting non-opaque triangle hits — unconfirmed candidate enumeration
+  is non-deterministic on RADV.*
 - [⊘] **TLAS / instancing** — deferred; the next core AS axis (ICP/pose will want instance
   transforms — a "soon," not a "never"). *Not* gfx.
 - [⊘] **Ray-tracing pipeline** (raygen/closesthit/miss + SBT) — **gfx**, not core.

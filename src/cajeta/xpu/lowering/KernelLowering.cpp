@@ -2506,9 +2506,9 @@ private:
             setExpr("tMax", args[10].expression);
             zero("nextNode"); zero("hasCandidate");
             zero("candPrim"); zero("candKind"); zero("committed");
-            zero("candT"); zero("candU"); zero("candV");
+            zero("candT"); zero("candU"); zero("candV"); zero("candFront");
             zero("committedT"); zero("committedPrim");
-            zero("committedU"); zero("committedV");
+            zero("committedU"); zero("committedV"); zero("committedFront");
             builder.CreateStore(cur, rqPtr);
             return llvm::ConstantInt::get(i32, 0);   // void statement
         }
@@ -2585,7 +2585,11 @@ private:
             set("committed", llvm::ConstantInt::get(i32, tri ? 1 : 2));
             set("committedT", hitT);
             set("committedPrim", get("candPrim"));
-            if (tri) { set("committedU", get("candU")); set("committedV", get("candV")); }
+            if (tri) {
+                set("committedU", get("candU"));
+                set("committedV", get("candV"));
+                set("committedFront", get("candFront"));
+            }
             set("tMax", hitT);   // shrink the ray so later candidates are culled
             builder.CreateStore(cur, rqPtr);
             return llvm::ConstantInt::get(i32, 0);   // void statement
@@ -2601,6 +2605,17 @@ private:
                                                               : "committedPrim";
             llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
             return builder.CreateExtractValue(cur, {fieldIdx(fld)}, "rq.committed");
+        }
+        // Front-face getters (inc 3b): the cursor stores 1/0; yield i1.
+        if (name == "candidateFrontFace" || name == "committedFrontFace") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            const char* fld = (name == "committedFrontFace") ? "committedFront"
+                                                             : "candFront";
+            llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
+            llvm::Value* f = builder.CreateExtractValue(cur, {fieldIdx(fld)}, "rq.front");
+            return builder.CreateICmpNE(
+                f, llvm::ConstantInt::get(f->getType(), 0), "rq.frontb");
         }
         unsupported("software RayQuery." + name + "()");
     }
@@ -2650,12 +2665,54 @@ private:
                 llvm::ConstantInt::get(i32, name == "committedType" ? 1 : 0);
             return target.rayQueryIntersectionType(builder, mod, rqPtr, which);
         }
-        if (name == "candidatePrimitiveIndex") {
+        if (name == "candidatePrimitiveIndex" ||
+            name == "committedPrimitiveIndex") {
             if (!args.empty())
                 unsupported("RayQuery." + name + " takes no arguments");
-            // Candidate intersection (selector 0) primitive index.
-            return target.rayQueryIntersectionPrimitiveIndex(
-                builder, mod, rqPtr, llvm::ConstantInt::get(i32, 0));
+            llvm::Value* sel = llvm::ConstantInt::get(
+                i32, name == "committedPrimitiveIndex" ? 1 : 0);
+            return target.rayQueryIntersectionPrimitiveIndex(builder, mod, rqPtr, sel);
+        }
+        // Distance getters (inc 3b): candidate / committed selector → f32.
+        if (name == "candidateDistance" || name == "committedDistance") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            llvm::Value* sel = llvm::ConstantInt::get(
+                i32, name == "committedDistance" ? 1 : 0);
+            return target.rayQueryIntersectionT(builder, mod, rqPtr, sel);
+        }
+        // Barycentric getters (inc 3b): read the <2 x f32> and extract u / v.
+        if (name == "candidateBarycentricU" || name == "candidateBarycentricV" ||
+            name == "committedBarycentricU" || name == "committedBarycentricV") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            bool committed = (name.rfind("committed", 0) == 0);
+            bool wantV = (name.back() == 'V');
+            llvm::Value* sel = llvm::ConstantInt::get(i32, committed ? 1 : 0);
+            llvm::Value* bary =
+                target.rayQueryIntersectionBarycentrics(builder, mod, rqPtr, sel);
+            return builder.CreateExtractElement(bary, wantV ? 1u : 0u, "rq.bary");
+        }
+        // Front-face getters (inc 3b): candidate / committed selector → i1.
+        if (name == "candidateFrontFace" || name == "committedFrontFace") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            llvm::Value* sel = llvm::ConstantInt::get(
+                i32, name == "committedFrontFace" ? 1 : 0);
+            return target.rayQueryIntersectionFrontFace(builder, mod, rqPtr, sel);
+        }
+        if (name == "confirmIntersection") {
+            if (!args.empty())
+                unsupported("RayQuery.confirmIntersection takes no arguments");
+            target.rayQueryConfirmIntersection(builder, mod, rqPtr);
+            return llvm::ConstantInt::get(i32, 0);   // void statement
+        }
+        if (name == "generateIntersection") {
+            if (args.size() != 1)
+                unsupported("RayQuery.generateIntersection expects (t)");
+            llvm::Value* tHit = toFloat(lowerExpr(args[0].expression));
+            target.rayQueryGenerateIntersection(builder, mod, rqPtr, tHit);
+            return llvm::ConstantInt::get(i32, 0);   // void statement
         }
         unsupported("RayQuery." + name + "()");
     }
@@ -4014,6 +4071,35 @@ llvm::Value* LoweringTarget::rayQueryIntersectionType(
 llvm::Value* LoweringTarget::rayQueryIntersectionPrimitiveIndex(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
     llvm::Value* /*intersection*/) {
+    throw rayQueryUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::rayQueryIntersectionT(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
+    llvm::Value* /*intersection*/) {
+    throw rayQueryUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::rayQueryIntersectionBarycentrics(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
+    llvm::Value* /*intersection*/) {
+    throw rayQueryUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::rayQueryIntersectionFrontFace(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
+    llvm::Value* /*intersection*/) {
+    throw rayQueryUnsupported(name());
+}
+
+void LoweringTarget::rayQueryConfirmIntersection(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/) {
+    throw rayQueryUnsupported(name());
+}
+
+void LoweringTarget::rayQueryGenerateIntersection(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
+    llvm::Value* /*tHit*/) {
     throw rayQueryUnsupported(name());
 }
 
