@@ -267,6 +267,7 @@ namespace cajeta {
 
     void CajetaClass::captureReuseBaseline() {
         reuseBaseline.valid = true;
+        reuseBaseline.emitModule = emitModule;
         reuseBaseline.vtableGlobal = llvmVirtualTableGlobal;
         reuseBaseline.rttiGlobal = llvmRttiGlobal;
         reuseBaseline.dropFunction = llvmDropFunction;
@@ -287,6 +288,12 @@ namespace cajeta {
         // are reset (to the stdlib-module value, or null if not built at prime)
         // so the next reusing test regenerates into its own module. Pointer
         // assignment only — the freed per-test pointers are never dereferenced.
+        // emitModule first: a stale per-test emitModule makes getEmitModule()
+        // (and thus the runtime-fn callees in this class's regenerated drop body)
+        // resolve into a freed module — the __cajeta_free / __cajeta_class_virtual_drop
+        // cross-module leak. Resetting it to the prime value (normally null →
+        // getEmitModule() falls back to this class's own module) fixes that.
+        emitModule = reuseBaseline.emitModule;
         llvmVirtualTableGlobal = reuseBaseline.vtableGlobal;
         llvmRttiGlobal = reuseBaseline.rttiGlobal;
         llvmDropFunction = reuseBaseline.dropFunction;

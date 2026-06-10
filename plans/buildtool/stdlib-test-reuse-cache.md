@@ -74,11 +74,14 @@ The failures are now sharply characterized — don't re-derive, attack this:
      runtime-fn map — does anything hold the `Function*` across tests rather than
      re-`ensureFunctionInModule` per module?).
   2. `CajetaClass::emitModule` on a PERSISTENT stdlib class left set to a per-test
-     module from a prior test (the per-class reset does NOT reset `emitModule`!).
-     If `RecoverableException`'s (or another stdlib class's) `getEmitModule()` is a
-     stale `test.S`, its drop body's `cajModule->getRuntimeFunction(...)` resolves
-     into `test.S`. **Quick experiment: reset `emitModule=nullptr` on baseline stdlib
-     classes in `restoreReuseBaseline`** and re-run — cheap to try, may be the whole fix.
+     module from a prior test. If `RecoverableException`'s (or another stdlib
+     class's) `getEmitModule()` is a stale `test.S`, its drop body's
+     `cajModule->getRuntimeFunction(...)` resolves into `test.S`.
+     **STATUS: candidate fix APPLIED, UNVALIDATED at handoff.** `emitModule` is now
+     captured at prime and restored in `CajetaClass::restoreReuseBaseline`
+     (commit follows). It was NOT rebuilt/re-run before the handoff — **first Linux
+     task: rebuild + re-run the 113-set and check whether this takes 17 → 0.** If it
+     does, this was the whole fix; if not, fall through to suspects 1 and 3.
   3. The stdlib `+3 fns` accumulation — dump the stdlib module IR after a failing
      test (extend `verifyPristine` to print the +FN bodies via
      `CAJETA_STDLIB_VERIFY_NAMES=1`) and see which 3 functions, and which module
