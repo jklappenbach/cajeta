@@ -239,12 +239,18 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
   class-param-field idiom; `Quad` host @Native stubs (missing since the quad commit — it
   also un-broke the Vulkan native Prism test); boolean literals in the device lowerer.
 
-**Inc 2 — Triangles.**
-- [ ] Triangle geometry in the layout + builder (§3.3).
-- [ ] Möller-Trumbore leaf test in `proceed`.
-- [ ] `VK_GEOMETRY_TYPE_TRIANGLES_KHR` on the **Vulkan** build path (native triangle
-      parity with software).
-- [ ] Mesh cross-check (software vs Vulkan, same mesh, same hits).
+**Inc 2 — Triangles. ✅ DONE.**
+- [x] Triangle geometry in the layout + builder — a primData region (9 floats/tri) +
+      a TRIANGLES geometry flag (`cajeta_xpu_cpu_accel_build_triangles`); a distinct-arity
+      3-arg `AccelerationStructure(vertices, triCount, vertexStride)` ctor selects it.
+- [x] Möller-Trumbore leaf test in the walk — `SoftwareRayQuery.step` branches on the
+      geometry flag; `triangleHit` is the MT intersection; triangle candidates are
+      `candidateType() == 0`.
+- [x] `VK_GEOMETRY_TYPE_TRIANGLES_KHR` on the Vulkan build (`cajeta_xpu_vk_accel_build_triangles`,
+      non-opaque so candidates enumerate in `proceed()` — matching the software model).
+- [x] **Mesh cross-check:** `triangleRayQueryOnCpuSoftwareBvh` (software MT) and
+      `triangleRayQueryOnDevice` (Vulkan hardware RT) agree (777); plus
+      `SoftwareBvhBuilderTests.triangleMesh/triangleCloud` vs a brute-force MT oracle.
 
 **Inc 3 — Full getters + commit.**
 - [ ] `t` / barycentrics / frontFace getters (seam + both lowerings).

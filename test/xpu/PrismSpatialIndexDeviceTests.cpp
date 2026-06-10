@@ -257,6 +257,104 @@ const char* kRqMinDriver =
     "    }\n"
     "}\n";
 
+// Triangle ray query on the CPU software path (inc 2): build a triangle BVH and
+// cast rays that hit / miss each triangle, counting triangle candidates
+// (candidateType() == 0). Exercises the Möller-Trumbore leaf test end to end.
+const char* kTriDriver =
+    "package test;\n"
+    "import cajeta.xpu.core.AccelerationStructure;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.RayQuery;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class TriRq {\n"
+    "    @Kernel\n"
+    "    public static void countTri(AccelerationStructure scene,\n"
+    "                                Buffer<float32> ox, Buffer<float32> oy,\n"
+    "                                Buffer<uint32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          ox[i], oy[i], 20.0f, 0.0f,\n"   // origin above mesh
+    "                          0.0f, 0.0f, -1.0f, 100.0f);\n"  // ray straight down
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) { c = c + 1; }\n"  // triangle hit
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 nt = 4;\n"
+    "        float32[] verts = heap float32[nt * 9];\n"
+    "        for (uint32 t = 0; t < nt; t = t + 1) {\n"
+    "            float32 bx = (float32)(t * 3);\n"
+    "            float32 z = (float32)(t * 2);\n"
+    "            verts[t*9+0]=bx;      verts[t*9+1]=0.0f;     verts[t*9+2]=z;\n"
+    "            verts[t*9+3]=bx+1.0f; verts[t*9+4]=0.0f;     verts[t*9+5]=z;\n"
+    "            verts[t*9+6]=bx;      verts[t*9+7]=1.0f;     verts[t*9+8]=z;\n"
+    "        }\n"
+    "        AccelerationStructure mesh = heap AccelerationStructure(verts, nt, 3u);\n"
+    "        uint32 n = 5;\n"
+    "        float32[] hox = heap float32[n]; float32[] hoy = heap float32[n];\n"
+    "        uint32[] hout = heap uint32[n];\n"
+    "        hox[0]=0.2f;  hoy[0]=0.2f;\n"   // through tri0 interior -> 1
+    "        hox[1]=3.2f;  hoy[1]=0.2f;\n"   // through tri1 -> 1
+    "        hox[2]=6.2f;  hoy[2]=0.2f;\n"   // through tri2 -> 1
+    "        hox[3]=9.2f;  hoy[3]=0.2f;\n"   // through tri3 -> 1
+    "        hox[4]=50.0f; hoy[4]=50.0f;\n"  // misses all -> 0
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9; hout[4]=9;\n"
+    "        Buffer<float32> ox = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> oy = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        ox.upload(hox); oy.upload(hoy); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        countTri.launch(s, grid: [1], block: [64])(mesh, ox, oy, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"
+    "        if (hout[1] != 1) { return 101; }\n"
+    "        if (hout[2] != 1) { return 102; }\n"
+    "        if (hout[3] != 1) { return 103; }\n"
+    "        if (hout[4] != 0) { return 104; }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(PrismSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
+    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (CPU software triangle ray query: wrong hit count)";
+}
+
+// The mesh cross-check (inc-2 done bar): the SAME triangle source on the Vulkan
+// NATIVE path (VK_GEOMETRY_TYPE_TRIANGLES_KHR + OpRayQuery, Möller-Trumbore in
+// hardware) must produce the same hit counts as the CPU software walk above.
+// Non-opaque geometry so triangle candidates enumerate in the proceed() loop.
+TEST(PrismSpatialIndexDeviceTests, triangleRayQueryOnDevice) {
+    if (!VulkanDriver::rayQueryAvailable()) {
+        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
+    }
+    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (Vulkan native triangle ray query != software)";
+}
+
 TEST(PrismSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
     CajetaJit::Options o;

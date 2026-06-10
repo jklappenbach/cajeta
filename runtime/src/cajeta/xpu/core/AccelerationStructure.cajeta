@@ -52,6 +52,24 @@ public final class AccelerationStructure {
     }
 
     /**
+     * RAII constructor: build a bottom-level acceleration structure over `count`
+     * triangles from a vertex soup. Vertex `v` of triangle `t` (v in 0..2) begins
+     * at `vertices[(t*3 + v) * vertexStride]` and spans 3 floats (x, y, z);
+     * `vertexStride` is the floats per vertex (3 = tightly packed). Distinct arity
+     * from the AABB constructor selects the triangle geometry path (a same-arity
+     * overload would collide — distinct arity is the idiom). Software (CPU) only in
+     * v1; the Vulkan triangle BLAS is a follow-up.
+     *
+     *     AccelerationStructure mesh = heap AccelerationStructure(verts, nTris, 3u);
+     */
+    public AccelerationStructure(float32[] vertices, uint32 triangleCount,
+                                 uint32 vertexStride) {
+        this.primitiveCount = triangleCount;
+        this.deviceHandle =
+            this.deviceBuildTriangles(vertices, triangleCount, vertexStride);
+    }
+
+    /**
      * Destructor — release the device BVH. Runs via the drop chain at scope
      * exit. Null-guarded and idempotent: a prior free(), or a moved-from handle
      * (`#scene`), makes this a no-op.
@@ -74,6 +92,10 @@ public final class AccelerationStructure {
     // (cajeta-gpu Part C increment 3b).
     @Native("__cajeta_xpu_accel_build_aabbs")
     private int64 deviceBuildAabbs(float32[] aabbs, uint32 count);
+
+    @Native("__cajeta_xpu_accel_build_triangles")
+    private int64 deviceBuildTriangles(float32[] vertices, uint32 triangleCount,
+                                       uint32 vertexStride);
 
     @Native("__cajeta_xpu_accel_free")
     private void deviceFree(int64 handle);
