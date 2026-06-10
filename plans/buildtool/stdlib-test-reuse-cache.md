@@ -54,6 +54,10 @@ Filter: `StreamTests.*:StreamTerminalTests.*:StreamIntermediateTests.*:StreamFol
   per-class `CajetaClass`/`Method` binding reset was effectively a **no-op for these
   17** → the leak is NOT in any cache it resets. (Left committed: it's non-breaking
   and may matter for other leak modes at full-suite scale, but it does not fix this.)
+- + `emitModule` reset (`fa43516a`): **NO CHANGE — still 96/17, same 68 cross-module
+  errors.** Disproves the stale-emitModule hypothesis too. Net: no class-level reset
+  fixes these 17 — the leak is in the runtime-fn path / stdlib-module accumulation
+  (see lead below).
   - Repro: `CAJETA_STDLIB_REUSE=1 CAJETA_STDLIB_VERIFY=1 CAJETA_STDLIB_REUSE_TRACE=1 ./cajeta_test --gtest_filter='<above>'`
 
 ### PRECISE lead for the remaining 17 (start here on Linux)
@@ -73,15 +77,31 @@ The failures are now sharply characterized — don't re-derive, attack this:
      `CajetaModule::getRuntimeFunction` / `linkRuntime` and any static/member
      runtime-fn map — does anything hold the `Function*` across tests rather than
      re-`ensureFunctionInModule` per module?).
-  2. `CajetaClass::emitModule` on a PERSISTENT stdlib class left set to a per-test
-     module from a prior test. If `RecoverableException`'s (or another stdlib
-     class's) `getEmitModule()` is a stale `test.S`, its drop body's
-     `cajModule->getRuntimeFunction(...)` resolves into `test.S`.
-     **STATUS: candidate fix APPLIED, UNVALIDATED at handoff.** `emitModule` is now
-     captured at prime and restored in `CajetaClass::restoreReuseBaseline`
-     (commit follows). It was NOT rebuilt/re-run before the handoff — **first Linux
-     task: rebuild + re-run the 113-set and check whether this takes 17 → 0.** If it
-     does, this was the whole fix; if not, fall through to suspects 1 and 3.
+  2. ~~`CajetaClass::emitModule` left stale on a persistent stdlib class.~~
+     **DISPROVEN (tested `fa43516a`):** `emitModule` is now captured at prime and
+     restored in `restoreReuseBaseline`, rebuilt + re-run — **NO CHANGE, still 96/17,
+     same 68 cross-module errors.** Combined with the per-class binding reset
+     (`3592c4f9`) also being a no-op, the leak is conclusively **NOT in any
+     `CajetaClass` field** (bindings or emitModule) and NOT in `Method::llvmFunction`.
+     Both resets are kept (correct reuse hygiene, likely needed at full-suite scale)
+     but neither cracks these 17.
+
+  => **Remaining live suspects: #1 (runtime-fn `Function*` cache) and #3 (stdlib
+     `+3 fns` accumulation) — start here.** The `+3 fns` is the smoking gun:
+     something ADDS 3 functions to the *persistent* stdlib llvm::Module on the
+     failing tests, and `restoreBaseline` does NOT remove added llvm functions from
+     the stdlib module (it only resets the cajeta-level `getStructures()` map). Those
+     3 added functions are the most likely carriers of the stale `test.S` binding.
+     Concrete next step on Linux:
+       a. `CAJETA_STDLIB_VERIFY=1 CAJETA_STDLIB_VERIFY_NAMES=1` on a Stream-then-
+          StaticField run → names of the 3 accumulating stdlib functions.
+       b. `CAJETA_DUMP_IR=1` on the first failing `StaticFieldTests.writeThenRead`
+          (must run AFTER a Stream test in the same process to be contaminated) →
+          find the `test.S`-parent `__cajeta_free`/`__cajeta_class_virtual_drop` and
+          trace which persistent thing handed test.D that pointer.
+       c. Likely fix shape: either purge the accumulated non-baseline functions from
+          the stdlib llvm::Module in `restoreBaseline`, or stop whatever emits them
+          into the stdlib module under reuse in the first place.
   3. The stdlib `+3 fns` accumulation — dump the stdlib module IR after a failing
      test (extend `verifyPristine` to print the +FN bodies via
      `CAJETA_STDLIB_VERIFY_NAMES=1`) and see which 3 functions, and which module
