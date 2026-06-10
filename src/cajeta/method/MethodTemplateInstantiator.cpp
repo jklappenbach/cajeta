@@ -209,6 +209,25 @@ namespace cajeta {
             }
         }
 
+        // Reuse-cache hazard gate (test-only; see Compiler::setReuseHazardArmed
+        // and the twin gate in TemplateInstantiator.cpp). We are past the
+        // per-arg cache check, so this is a NOVEL method-template instantiation
+        // about to be parsed + emitted. When emitOwner != module its body IR
+        // (plus its JSON-synth string constants, spawn trampolines, and any
+        // nested instantiations) lands in a per-test user module while the
+        // host stdlib template Method persists in the shared context — leaving
+        // module-bound llvm pointers on persistent objects that outlive that
+        // module and dangle on the next reusing test (observed as a null
+        // operand mid-body: BinaryOpExpression::generateCode → getTypeFlagsOf,
+        // crashing JsonSynthesizerTests.parseNestedClass). Abort BEFORE the
+        // walk emits anything so the harness re-runs this test on a fresh,
+        // fully-isolated Compiler. Disarmed in production and on the fresh
+        // fallback path; a primed (already-cached) instantiation returned above
+        // and never reaches here.
+        if (Compiler::isReuseHazardArmed() && emitOwner != module) {
+            throw cajeta::ReuseHazardAbort{};
+        }
+
         if (methodSource.empty()) {
             throw Exception(
                 "method template '" + name + "' has no captured source; "

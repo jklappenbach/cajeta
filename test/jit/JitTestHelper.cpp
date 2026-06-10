@@ -562,7 +562,40 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                     throw;
                 }
             }
-            break;  // compiled cleanly under the current mode
+            mark("parse+compile(modules)");
+
+            // Deferred body codegen runs HERE — inside the retry scope, with the
+            // reuse hazard STILL ARMED. A novel cross-module instantiation that
+            // surfaces only at call-site codegen (not during the parse above) is
+            // the METHOD-template case: Json.parse<test.Outer> & friends are
+            // monomorphized when MethodCallExpression lowers the call, deep in
+            // runCodegenPasses. Arming the gate across this window lets the
+            // instantiator throw ReuseHazardAbort BEFORE it emits corrupt
+            // cross-module IR (previously a null-operand SIGSEGV in
+            // JsonSynthesizerTests.parseNestedClass) so the test falls back to a
+            // fresh, isolated compile like any other novel stdlib-template
+            // instantiation. (Class-template instantiations triggered during
+            // type resolution already aborted in the compile() loop above.)
+            //
+            // Reuse-mode codegen semantics: user code that instantiates a stdlib
+            // template EMITS that instantiation's IR into a USER module
+            // (resolution/emit separation — Method/CajetaClass swap to their emit
+            // module while lowering), so the cached stdlib is never in the
+            // per-test codegen list and stays byte-pristine (CAJETA_STDLIB_VERIFY
+            // confirms +0/+0). In fresh mode the Compiler's own list already
+            // includes the stdlib.
+            runCodegenPasses(compiler->getModules());
+            if (reuseStdlib) {
+                // Diagnostic: assert the cached stdlib stayed byte-pristine this
+                // test (CAJETA_STDLIB_VERIFY=1). See verifyPristine.
+                static const bool kVerify = std::getenv("CAJETA_STDLIB_VERIFY") != nullptr;
+                if (kVerify) stdlibCache.verifyPristine(fqEntryClass);
+                // The per-test sink has done its job (all instantiation emitted);
+                // drop the reference so it doesn't retain this test's primary module.
+                cajeta::CajetaModule::setReuseEmitModule(nullptr);
+            }
+            mark("phase1/2 codegen loop");
+            break;  // compiled + codegen'd cleanly under the current mode
         } catch (const cajeta::ReuseHazardAbort&) {
             // A novel stdlib-template instantiation — this test can't reuse
             // safely. Scrub the partial shared-context state (the abort fired
@@ -584,37 +617,14 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     }
     cajeta::Compiler::setReuseHazardArmed(false);
     (void) fqEntryClass;
-    mark("parse+compile(modules)");
 
     // The compiler's stdlib module holds the parsed cajeta.error.*
     // classes + the runtime bitcode (parsed once per Compiler, see
     // Compiler::ensureStdlibModule). The merge below pulls it into
     // `primary` alongside the user modules — that's where extern
     // decls in user IR get resolved to real definitions.
-
-    // Cross-module sweeps + phase-1/2 fixpoint + per-class static initializers.
-    // In reuse mode `compiler` holds only the user modules (the stdlib was
-    // codegen'd once at prime and lives in the shared context). User code that
-    // instantiates a stdlib template (e.g. `xs.stream()` → ArrayStream<int32>)
-    // now EMITS that instantiation's IR into a USER module (resolution/emit
-    // separation: TemplateInstantiator sets the instantiation's emit module to
-    // the user-type arg's module / the per-test sink; Method/CajetaClass swap to
-    // their emit module while lowering — see Method::generateCode). So the
-    // cached stdlib is NEVER in the per-test codegen list and is never mutated:
-    // baseline functions don't grow and no user-type instantiations accumulate
-    // in it (verify, below, stays PRISTINE +0/+0). In fresh mode the Compiler's
-    // own list already includes the stdlib.
-    runCodegenPasses(compiler->getModules());
-    if (reuseStdlib) {
-        // Diagnostic: assert the cached stdlib stayed byte-pristine this test
-        // (CAJETA_STDLIB_VERIFY=1). See verifyPristine.
-        static const bool kVerify = std::getenv("CAJETA_STDLIB_VERIFY") != nullptr;
-        if (kVerify) stdlibCache.verifyPristine(fqEntryClass);
-        // The per-test sink has done its job (all instantiation emitted); drop
-        // the reference so it doesn't retain this test's primary module.
-        cajeta::CajetaModule::setReuseEmitModule(nullptr);
-    }
-    mark("phase1/2 codegen loop");
+    // (Codegen — runCodegenPasses + reuse-pristine verify — ran inside the
+    // retry loop above, while the reuse hazard was still armed.)
 
     // Merge every secondary module into `primary`'s llvm::Module.
     // After the parse-stdlib-once refactor, each module owns only
