@@ -2506,6 +2506,7 @@ private:
             setExpr("tMax", args[10].expression);
             zero("nextNode"); zero("hasCandidate");
             zero("candPrim"); zero("candKind"); zero("committed");
+            zero("candT"); zero("candU"); zero("candV");
             builder.CreateStore(cur, rqPtr);
             return llvm::ConstantInt::get(i32, 0);   // void statement
         }
@@ -2545,6 +2546,18 @@ private:
             llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
             return builder.CreateExtractValue(cur, {fieldIdx("candPrim")},
                                               "rq.prim");
+        }
+        // Candidate geometry getters (inc 3): the Möller-Trumbore hit distance +
+        // barycentrics, read off the cursor fields step() populated.
+        if (name == "candidateDistance" || name == "candidateBarycentricU" ||
+            name == "candidateBarycentricV") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            const char* fld = name == "candidateDistance"     ? "candT"
+                            : name == "candidateBarycentricU" ? "candU"
+                                                              : "candV";
+            llvm::Value* cur = builder.CreateLoad(cursorTy, rqPtr, "rq.cur");
+            return builder.CreateExtractValue(cur, {fieldIdx(fld)}, "rq.cand");
         }
         unsupported("software RayQuery." + name + "()");
     }

@@ -322,6 +322,72 @@ const char* kTriDriver =
     "    }\n"
     "}\n";
 
+// Inc 3a: candidate getters (distance + barycentrics) on the CPU software path.
+// A single triangle v0=(0,0,0), v1=(1,0,0), v2=(0,1,0) in z=0; a ray from
+// (0.25,0.25,5) straight down hits at t=5 with barycentrics u=0.25, v=0.25
+// (the hit point is v0 + u*(v1-v0) + v*(v2-v0) = (u, v, 0)).
+const char* kBaryDriver =
+    "package test;\n"
+    "import cajeta.xpu.core.AccelerationStructure;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.RayQuery;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class BaryRq {\n"
+    "    @Kernel\n"
+    "    public static void getBary(AccelerationStructure scene, Buffer<float32> out) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i == 0) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          0.25f, 0.25f, 5.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, -1.0f, 100.0f);\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) {\n"
+    "                    out[0] = rq.candidateDistance();\n"
+    "                    out[1] = rq.candidateBarycentricU();\n"
+    "                    out[2] = rq.candidateBarycentricV();\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        float32[] verts = heap float32[9];\n"
+    "        verts[0]=0.0f; verts[1]=0.0f; verts[2]=0.0f;\n"
+    "        verts[3]=1.0f; verts[4]=0.0f; verts[5]=0.0f;\n"
+    "        verts[6]=0.0f; verts[7]=1.0f; verts[8]=0.0f;\n"
+    "        AccelerationStructure tri = heap AccelerationStructure(verts, 1, 3);\n"
+    "        float32[] hout = heap float32[3];\n"
+    "        hout[0]=-9.0f; hout[1]=-9.0f; hout[2]=-9.0f;\n"
+    "        Buffer<float32> out = heap Buffer<float32>(3);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        getBary.launch(s, grid: [1], block: [64])(tri, out);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        float32 dt = hout[0] - 5.0f;\n"
+    "        if (dt * dt > 0.001f) { return 100; }\n"
+    "        float32 du = hout[1] - 0.25f;\n"
+    "        if (du * du > 0.0001f) { return 101; }\n"
+    "        float32 dv = hout[2] - 0.25f;\n"
+    "        if (dv * dv > 0.0001f) { return 102; }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(PrismSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
+    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100: distance; 101: barycentric u; 102: v)";
+}
+
 TEST(PrismSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
     CajetaJit::Options o;
