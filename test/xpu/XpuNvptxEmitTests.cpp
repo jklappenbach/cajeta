@@ -20,6 +20,9 @@
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/method/Method.h"
 
+#include "../jit/JitTestHelper.h"     // CajetaJit — the hardware-gated device test
+#include "XpuDeviceTestUtil.h"        // CAJETA_SKIP_IF_NO_CUDA()
+
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsNVPTX.h"
@@ -249,6 +252,122 @@ TEST(XpuNvptxEmitTests, lowersTextureSampleToPtxTex) {
     EXPECT_NE(ptx.find(".visible .entry sampleTex"), std::string::npos) << ptx;
     // The hardware texture fetch: PTX `tex.2d.v4.f32.f32`.
     EXPECT_NE(ptx.find("tex.2d"), std::string::npos) << ptx;
+}
+
+// Image2D storage images on NVIDIA (emit-only core, the writable twin of the
+// texture path): img.store/img.load lower to the NVPTX surface store/load —
+// llvm.nvvm.sust.b.2d.i32.trap / llvm.nvvm.suld.2d.i32.trap, which emit the PTX
+// `sust.b.2d` / `suld.b.2d` instructions. The i64 cudaSurfaceObject_t rides the
+// kernarg; x is byte-scaled (×4 for the R32 texel) and the f32 texel is carried
+// as raw i32 bits. No NVIDIA hardware here — this is the PTX-text proof; the
+// device run + CUDA surface runtime land with B5.
+TEST(XpuNvptxEmitTests, lowersImageStoreLoadToPtxSurf) {
+    auto src =
+        "package test;\n"
+        "import cajeta.gpu.core.Image2D;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void rmw(Image2D img, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            float32 v = img.load(i, 0);\n"
+        "            img.store(i, 0, 2.0f * v + 1.0f);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "rmw");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_imgrmw_nvptx", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    llvm::Function* fn = lowerKernel(k, deviceModule);
+    ASSERT_NE(fn, nullptr);
+
+    // The IR carries both surface intrinsics; the image param is the i64 surface
+    // handle (the byte-offset x*4 shows as a `shl ... 2`).
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_NE(ir.find("llvm.nvvm.sust.b.2d.i32"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.nvvm.suld.2d.i32"), std::string::npos) << ir;
+
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+    EXPECT_NE(ptx.find(".visible .entry rmw"), std::string::npos) << ptx;
+    // The hardware surface store + load.
+    EXPECT_NE(ptx.find("sust.b.2d"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("suld.b.2d"), std::string::npos) << ptx;
+}
+
+// Hardware-modulated companion: the full fill→RMW→download (2i+1) on a real CUDA
+// device, gated by CAJETA_SKIP_IF_NO_CUDA(). SKIPs here (no CUDA). It is safe
+// before the B5 CUDA surface runtime exists: __cajeta_xpu_image_alloc returns 0
+// for CUDA, the launch guard refuses to dispatch an unbacked surface, the image
+// stays at the -1.0 sentinel, and run() returns 555 → SKIP (never a false fail
+// or a fault). It turns green at B5 when the surface runtime is wired.
+TEST(XpuNvptxEmitTests, imageLoadStoreRmwOnNvptx) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Image2D;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class ImgRmwNv {\n"
+        "    @Kernel\n"
+        "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) { img.store(i % w, i / w, (float32)(i / w * w + i % w)); }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void rmw(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < w * h) {\n"
+        "            uint32 x = i % w;\n"
+        "            uint32 y = i / w;\n"
+        "            float32 v = img.load(x, y);\n"
+        "            img.store(x, y, 2.0f * v + 1.0f);\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 4;\n"
+        "        uint32 h = 4;\n"
+        "        uint32 n = w * h;\n"
+        "        Image2D img = heap Image2D(w, h);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        rmw.launch(s, grid: [1], block: [64])(img, w, h);\n"
+        "        s.sync();\n"
+        "        float32[] out = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { out[i] = -1.0f; }\n"
+        "        img.download(out);\n"
+        "        if (out[0] == -1.0f) { return (int32)(555); }\n"   // surface runtime absent (pre-B5)
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = out[i] - (float32)(2 * i + 1);\n"
+        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    cajeta_test::CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = cajeta_test::CajetaJit::compile(src, "test.ImgRmwNv", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    if (r == 555) {
+        GTEST_SKIP() << "CUDA storage-image surface runtime not wired yet "
+                        "(pending B5); NVPTX storeImage/loadImage lowering is "
+                        "emit-verified by lowersImageStoreLoadToPtxSurf";
+    }
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != 2*i+1 — storeImage/loadImage RMW)";
 }
 
 // ptxas assembles the SAXPY PTX into a cubin — proving LLVM 23's PTX is

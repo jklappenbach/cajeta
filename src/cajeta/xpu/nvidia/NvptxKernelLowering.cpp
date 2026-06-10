@@ -172,6 +172,42 @@ public:
         return vec;
     }
 
+    // Image2D storage images (the writable twin of Texture2D, emit-only until the
+    // NVIDIA runner / B5). img.store/img.load → llvm.nvvm.sust.b.2d.i32.trap /
+    // llvm.nvvm.suld.2d.i32.trap (the surface store/load PTX ops). The handle is
+    // the i64 cudaSurfaceObject_t (the default textureParamType, by value); there
+    // is no sampler. Two NVPTX specifics vs the Vulkan/AMD paths: surface coords
+    // are BYTE offsets in x (x*4 for the 4-byte R32 texel; y stays a row index),
+    // and the texel rides as raw i32 bits (the R32f image preserves them — bitcast
+    // f32<->i32). The CUDA surface RUNTIME (cuSurfObjectCreate + the launch
+    // marshalling) lands with B5; this is the compiler lowering, proven via PTX.
+    void storeImage(llvm::IRBuilderBase& b, llvm::Module& m,
+                    llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
+                    llvm::Value* value) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* xb =
+            b.CreateShl(x, llvm::ConstantInt::get(i32, 2), "img.xbytes");
+        llvm::Value* vi = b.CreateBitCast(value, i32, "img.bits");
+        llvm::Function* st = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_sust_b_2d_i32_trap);
+        b.CreateCall(st, {imgHandle, xb, y, vi});
+    }
+
+    llvm::Value* loadImage(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Value* imgHandle, llvm::Value* x,
+                           llvm::Value* y) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Value* xb =
+            b.CreateShl(x, llvm::ConstantInt::get(i32, 2), "img.xbytes");
+        llvm::Function* ld = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_suld_2d_i32_trap);
+        llvm::Value* raw = b.CreateCall(ld, {imgHandle, xb, y}, "img.raw");
+        return b.CreateBitCast(raw, f32, "img.load");
+    }
+
     // Shader clock: the 64-bit SM clock (clock64) — the NVIDIA analogue of
     // OpReadClockKHR for Thread.clock(). Emit-only until the NVIDIA runner (B5).
     llvm::Value* readClock(llvm::IRBuilderBase& b, llvm::Module& m) override {

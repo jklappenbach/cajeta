@@ -79,9 +79,10 @@ The verb seam exists; the rest of the model from doc §1 does not.
 - [~] **AMD** — device-verified (gfx1151), incl. `Image2D` storage images
   (`__ockl_image_store_2D`/`load_2D` over a surface object). Gap: mipmaps code-complete but
   ROCm-driver-blocked on this APU.
-- [~] **NVIDIA** — emit-only; advanced seams (texture dims > 2D, native coop-matrix, images,
-  bindless arrays) not overridden; **nothing run on real NV silicon**. Needs B5 (§4) + the
-  missing seam overrides.
+- [~] **NVIDIA** — emit-only; storage images (`Image2D` store/load) now emit (`sust.b.2d`/
+  `suld.b.2d`, ◐); remaining advanced seams (texture dims > 2D, native coop-matrix, bindless
+  arrays) not overridden; **nothing run on real NV silicon**. Needs B5 (§4) + the CUDA surface
+  runtime + the missing seam overrides.
 - [ ] **Metal** — no backend at all. MoltenVK (Vulkan→Metal, most of core ~free) → native Metal
   (for what MoltenVK can't reach). Gated on Mac hardware.
 
@@ -101,7 +102,8 @@ The verb seam exists; the rest of the model from doc §1 does not.
 - [x] **Capability primitives** — atomics (float/int/CAS), wave (shuffle/ballot/reduce/scan/
   rotate/laneId), quad, **cooperative matrix** (WMMA on AMD, native on Vulkan), shader clock.
 - [~] **`Image2D` storage** (`storeImage`/`loadImage`) — Vulkan **+ AMD** (surface objects,
-  device-verified on gfx1151) **+ CPU** (host float store, the oracle); NV open.
+  device-verified on gfx1151) **+ CPU** (host float store, the oracle) device-verified; **NVIDIA
+  emit-only** (`sust.b.2d`/`suld.b.2d`, ◐— device run needs the B5 CUDA surface runtime).
 - [ ] **fp8 / E4M3 / E5M2** element type — blocked upstream (no LLVM backend type).
 
 ### 3.2 Nouns
@@ -188,8 +190,9 @@ Core's contract is closed when **doc §3's verb set is ● / ○ on every shippe
    triangles + AABBs, full getters, confirm/generate, nearest-hit, cross-checked CPU↔Vulkan
    (§3.3). *Was the single biggest item.* (TLAS/instancing deferred.)
 2. ~~**AMD `Image2D`** store/load~~ ✅ (surface objects, device-verified gfx1151) + ~~CPU
-   `Image2D`~~ ✅ (host float store, the oracle); NVIDIA advanced seams + B5 on-device; **Metal**
-   backend; NV storage images.
+   `Image2D`~~ ✅ (host float store, the oracle) + ~~NVIDIA `Image2D` emit~~ ✅ (◐, `sust/suld.b.2d`);
+   NVIDIA advanced seams + B5 on-device (incl. the NV storage-image *device* run + CUDA surface
+   runtime); **Metal** backend.
 3. **The model plumbing** — ~~noun seam~~ ✅ (§1), `Device.supports(...)` ✅ + ~~the impl
    override + execution mechanism~~ ✅ (`AsImpl`/`.of` + `CAJETA_GPU_AS_IMPL` + the `$sw`
    variant; the *automatic* density/extent heuristic still remaining), ~~the **internal**

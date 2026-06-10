@@ -10923,6 +10923,28 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 kernelName);
         return;
     }
+    // Image2D safety guard: the CUDA surface RUNTIME (cuSurfObjectCreate +
+    // per-launch surface marshalling) is not wired yet — __cajeta_xpu_image_alloc
+    // returns 0 for CUDA until B5. If a kernel has a storage-image param with an
+    // unbacked (0) handle, dispatching would feed sust/suld a null surface and
+    // fault; skip the launch instead (mirrors the HIP launchOk=0 guard), so the
+    // image stays unwritten and the caller degrades cleanly. (The compiler-side
+    // NVPTX storeImage/loadImage lowering is proven via the PTX emit test; the
+    // device run lands when the CUDA surface runtime does — B5.)
+    {
+        void** av = (void**) argv;
+        struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
+        if (kp && kp->count > 0 && av) {
+            for (int i = 0; i < kp->count; ++i)
+                if (kp->kind[i] == CAJETA_KP_IMAGE && av[i] &&
+                    *(int64_t*) av[i] == 0) {
+                    fprintf(stderr, "cajeta.xpu: CUDA storage images need the "
+                            "surface runtime (pending B5); not launching '%s'\n",
+                            kernelName);
+                    return;
+                }
+        }
+    }
     // H9: the CUDA context is bound to the thread that created it (cuCtxCreate);
     // a launch from a different thread (the carrier fiber vs the main thread) runs
     // with no current context -> CUDA_ERROR_INVALID_CONTEXT and the launch is a
