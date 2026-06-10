@@ -43,6 +43,17 @@ public final class AccelerationStructure {
         this.impl = this.deviceAccelImpl();
     }
 
+    // Wrap an already-built handle with its known impl (the factories' path). The
+    // leading int64 makes this 3-arg ctor distinct from the 3-arg triangle ctor
+    // (float32[], uint32, uint32) — an enum/int arg ctor would collide and
+    // silently mis-resolve, so the override goes through `of`, not a ctor.
+    private AccelerationStructure(int64 deviceHandle, uint32 primitiveCount,
+                                  int32 impl) {
+        this.deviceHandle = deviceHandle;
+        this.primitiveCount = primitiveCount;
+        this.impl = impl;
+    }
+
     /**
      * RAII constructor: build a bottom-level acceleration structure over `count`
      * axis-aligned bounding boxes, packed as 6 float32 per box —
@@ -58,6 +69,25 @@ public final class AccelerationStructure {
         this.primitiveCount = count;
         this.deviceHandle = this.deviceBuildAabbs(aabbs, count);
         this.impl = this.deviceAccelImpl();
+    }
+
+    /**
+     * Build a bottom-level acceleration structure over `count` AABBs with an
+     * explicit {@link AsImpl} preference — the capability-heuristic OVERRIDE: force
+     * the portable software BVH or the native acceleration structure, instead of
+     * letting the default ctor choose `Auto`. The chosen impl is recorded on the
+     * noun and the verb (RayQuery) follows it. `Native` falls back to software when
+     * the active device has no native ray query; the `CAJETA_GPU_AS_IMPL` env var
+     * overrides this per process (env wins). AABB geometry only (triangle-software
+     * is a follow-up).
+     *
+     *     AccelerationStructure soft = AccelerationStructure.of(boxes, n, AsImpl.Software);
+     */
+    public static #AccelerationStructure of(float32[] aabbs, uint32 count,
+                                            AsImpl impl) {
+        int64 handle = AccelerationStructure.buildAabbsPref(aabbs, count, impl);
+        int32 chosen = AccelerationStructure.resolveImpl(impl);
+        return heap AccelerationStructure(handle, count, chosen);
     }
 
     /**
@@ -116,4 +146,14 @@ public final class AccelerationStructure {
     // releases the right representation.
     @Native("__cajeta_xpu_accel_free")
     private void deviceFree(int64 handle, int32 impl);
+
+    // STATIC @Native (no `this`): the `of` factory's build + impl resolution under
+    // an explicit AsImpl preference. The enum widens to its ordinal (a CajetaAsPref
+    // — as Capability does for Device.supports). The two calls share the runtime
+    // resolver, so the built representation and the recorded impl always agree.
+    @Native("__cajeta_xpu_accel_build_aabbs_pref")
+    private static int64 buildAabbsPref(float32[] aabbs, uint32 count, int32 pref);
+
+    @Native("__cajeta_xpu_accel_resolve_impl")
+    private static int32 resolveImpl(int32 pref);
 }

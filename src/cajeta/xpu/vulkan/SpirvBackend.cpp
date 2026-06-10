@@ -10,6 +10,9 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
+#include "llvm/Transforms/Scalar/StructurizeCFG.h"
+#include "llvm/Transforms/Utils/FixIrreducible.h"
+#include "llvm/Transforms/Utils/UnifyFunctionExitNodes.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
@@ -118,6 +121,20 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     pb.crossRegisterProxies(lam, fam, cgam, mam);
     llvm::ModulePassManager mpm;
     mpm.addPass(llvm::AlwaysInlinerPass());
+    // After inlining, canonicalize each kernel to STRUCTURED control flow before
+    // SPIR-V codegen. The in-tree SPIR-V backend's structurizer rejects the CFG
+    // that results from inlining the SoftwareRayQuery walk (slabHit's multiple
+    // returns + `||` short-circuit, step's stackless loop) — "Selection must be
+    // structured". FixIrreducible + UnifyFunctionExitNodes + StructurizeCFG produce
+    // single-exit, structured regions the backend can lower. A no-op on
+    // already-structured kernels (the native ray-query path is unaffected).
+    {
+        llvm::FunctionPassManager fpm;
+        fpm.addPass(llvm::FixIrreduciblePass());
+        fpm.addPass(llvm::UnifyFunctionExitNodesPass());
+        fpm.addPass(llvm::StructurizeCFGPass());
+        mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    }
     mpm.run(m, mam);
 
     llvm::raw_svector_ostream os(out);

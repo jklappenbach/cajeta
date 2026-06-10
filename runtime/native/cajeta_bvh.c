@@ -125,6 +125,19 @@ static uint32_t caj_bvh_build(struct caj_bvh_prim* prims, uint32_t lo, uint32_t 
     return idx;
 }
 
+// Total size (in float32 words) of a built block, read from its header — the
+// single source of truth both the builder and any uploader use to copy/bind the
+// whole block. Used by the Vulkan software-AS path (cajeta_runtime.c) to upload a
+// software BVH into a storage buffer. Handles both geometries: AABB =
+// header+nodes+primRef; triangles append primCount*9 words of primData.
+static uint32_t caj_bvh_block_words(const float* blk) {
+    uint32_t primCount = (uint32_t) blk[2];               // [2] primCount
+    uint32_t flags     = (uint32_t) blk[6];               // [6] flags
+    uint32_t words     = (uint32_t) blk[5] + primCount;   // primRefOffset + primRef
+    if (flags & CAJ_BVH_FLAG_TRIANGLES) words += primCount * CAJ_BVH_TRI_WORDS;
+    return words;
+}
+
 // Build the software BVH over `count` AABBs (6 floats each: min.xyz,max.xyz) into
 // a freshly-malloc'd float32 block; returns the block as an int64 handle (the CPU
 // buffer convention — handle == host pointer), or 0 on failure. Freed by

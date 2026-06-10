@@ -1102,11 +1102,43 @@ private:
     }
 };
 
+// Software ray-query variant of the Vulkan target (cajeta-gpu inc-4 brick #3).
+// Builds the AccelerationStructure noun as the portable software BVH, so
+// accelImpl() == SoftwareBvh makes the shared lowerer emit the SoftwareRayQuery
+// walk — ordinary SPIR-V compute (buffer reads + math + control flow), no
+// SPV_KHR_ray_query — instead of native OpRayQuery, and the AS parameter binds as
+// a plain float32 storage buffer (the BVH blob the walk reads as bvh[i]) rather
+// than an OpTypeAccelerationStructureKHR descriptor. Everything else is
+// SpirvTarget. Used for the "<name>$sw" kernel variant the launch selects when an
+// AccelerationStructure was built as a software BVH on the Vulkan backend.
+class SpirvSoftwareTarget : public SpirvTarget {
+public:
+    NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
+
+    llvm::Value* materializeParam(llvm::IRBuilderBase& b, llvm::Module& m,
+                                  llvm::Function* fn, unsigned idx,
+                                  const KernelParam& p) override {
+        if (p.isAccelStruct) {
+            return bindResource(
+                b, m,
+                vkBufferType(m.getContext(),
+                             llvm::Type::getFloatTy(m.getContext()), true),
+                idx, p.name);
+        }
+        return SpirvTarget::materializeParam(b, m, fn, idx, p);
+    }
+};
+
 } // namespace
 
-llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule) {
+llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
+                            bool softwareRayQuery, const std::string& entryName) {
+    if (softwareRayQuery) {
+        SpirvSoftwareTarget target;
+        return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
+    }
     SpirvTarget target;
-    return cajeta::xpu::lowerKernel(method, deviceModule, target);
+    return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
 }
 
 } // namespace vulkan

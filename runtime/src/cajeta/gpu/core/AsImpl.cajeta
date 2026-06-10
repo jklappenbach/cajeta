@@ -1,0 +1,33 @@
+package cajeta.gpu.core;
+
+/**
+ * AsImpl — an app's preference for how an {@link AccelerationStructure} is built:
+ * the portable software BVH or the device's native acceleration structure. Passed
+ * to {@link AccelerationStructure#of}; the default constructor uses {@link #Auto}.
+ *
+ * This is the model's **capability heuristic with explicit override**
+ * (cajeta-docs/gpu/CajetaGPU.md §1.5): `Auto` takes the hardware fast path when
+ * the active device advertises native inline ray query (see {@link Device#supports})
+ * and the portable software floor otherwise; `Software` / `Native` force the choice.
+ * Hardware ray tracing can LOSE to a software BVH at large query radius / extreme
+ * density, so an app that knows its query pattern can force `Software` even on a
+ * ray-query-capable GPU — and the verb follows the noun (the kernel runs the
+ * software BVH walk).
+ *
+ *     // auto (native if the device has it, else software):
+ *     AccelerationStructure scene = heap AccelerationStructure(boxes, n);
+ *     // force the software BVH on whatever device is active:
+ *     AccelerationStructure soft = AccelerationStructure.of(boxes, n, AsImpl.Software);
+ *
+ * A global `CAJETA_GPU_AS_IMPL=software|native` environment variable overrides this
+ * per process (env wins), mirroring `CAJETA_XPU_BACKEND`.
+ *
+ * The ordinal is the **stable native contract** — it MUST match `CajetaAsPref` in
+ * runtime/native/cajeta_noun_impl.h (the runtime resolver switches on it). Do not
+ * reorder; append only.
+ */
+public enum AsImpl {
+    Auto,       // 0 — heuristic default (native if supported, else software)
+    Software,   // 1 — force the portable software BVH
+    Native      // 2 — prefer native (falls back to software if unsupported)
+}

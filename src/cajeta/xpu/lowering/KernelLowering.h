@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace llvm {
@@ -48,11 +49,14 @@ namespace xpu {
 
     // Lower `method` (a @Kernel) into `deviceModule` (already configured for
     // `target`'s backend) using `target` for the divergent decisions. Returns
-    // the created kernel function (symbol = simple method name). Throws
-    // XPU-N01 on an unsupported construct.
+    // the created kernel function. `entryName` overrides the kernel symbol /
+    // SPIR-V entry-point name (default = the simple method name); it is how a
+    // specialized variant (e.g. the software ray-query "<name>$sw") gets a
+    // distinct registry key. Throws XPU-N01 on an unsupported construct.
     llvm::Function* lowerKernel(const MethodPtr& method,
                                 llvm::Module& deviceModule,
-                                LoweringTarget& target);
+                                LoweringTarget& target,
+                                const std::string& entryName = "");
 
     // One kernel parameter's runtime-launch shape, in declaration order — the
     // metadata the Vulkan rung of the runtime dispatcher needs to translate the

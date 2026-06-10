@@ -27,6 +27,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 namespace llvm {
     class Module;
@@ -44,10 +45,15 @@ namespace vulkan {
 
     // Lower `method` (a @Kernel) into `deviceModule` (already SPIR-V-configured
     // via SpirvBackend::configureDeviceModule). Returns the created GLCompute
-    // entry function (symbol = simple method name). Throws XPU-N01 on an
-    // unsupported construct.
+    // entry function. `softwareRayQuery` selects the SpirvSoftwareTarget (the
+    // AccelerationStructure noun built as a software BVH → SoftwareRayQuery walk
+    // in plain SPIR-V, AS bound as a storage buffer) for the "<name>$sw" variant;
+    // `entryName` overrides the entry/registry symbol (default = method name).
+    // Throws XPU-N01 on an unsupported construct.
     llvm::Function* lowerKernel(const MethodPtr& method,
-                                llvm::Module& deviceModule);
+                                llvm::Module& deviceModule,
+                                bool softwareRayQuery = false,
+                                const std::string& entryName = "");
 
 } // namespace vulkan
 } // namespace xpu
