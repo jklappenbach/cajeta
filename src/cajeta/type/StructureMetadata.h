@@ -161,6 +161,17 @@ namespace cajeta {
         // Build the [M x #AnnotationArgDesc] table for one annotation's captured
         // arguments; null ptr constant when there are none.
         llvm::Constant* emitAnnotationArgArray(const vector<AnnotationArg>& args);
+        // REFL-7 template reflection. #TemplateParamDesc mirrors a declared
+        // template parameter (name + bounds + non-type info). Kept in lock-step
+        // with CajetaTemplateParamDesc in cajeta_runtime.c.
+        llvm::StructType* getTemplateParamStructType();
+        // Build the [N x #TemplateParamDesc] table from a class's declared
+        // template parameters; null ptr constant when it declares none.
+        llvm::Constant* emitTemplateParamTable(CajetaClassPtr structure);
+        // Build the [N x i8*] of an instantiation's concrete template-argument
+        // canonical names; null ptr constant when it has none.
+        llvm::Constant* emitTemplateArgArray(CajetaClassPtr structure);
+
         // Build the [N x #AnnotationDesc] table for one annotatable owner. Names
         // come from `names` (the REFL-6a annotationList — order/count preserved);
         // argument values come from the matching AnnotationInstance (paired by

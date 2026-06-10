@@ -2,6 +2,7 @@ package cajeta.reflect;
 
 import cajeta.lang.Object;
 import cajeta.lang.String;
+import cajeta.lang.Optional;
 
 /**
  * Runtime representation of a class — the entry point to `cajeta.reflect`.
@@ -137,6 +138,39 @@ public final class Class {
      */
     @Native("__cajeta_object_get_class")
     public static Class of(Object o);
+
+    // REFL-8: resolve a canonical name to a registered #ClassObject (NULL if
+    // none). The compiler emits an llvm.global_ctors entry per class that
+    // registers its #ClassObject under its canonical name at startup.
+    @Native("__cajeta_class_for_name")
+    private static Class forNameNative(int8[] nameBytes);
+
+    /**
+     * Resolve a class by its canonical name (e.g. `"test.User"`,
+     * `"cajeta.lang.String"`) to its cached `Class` — the inverse of
+     * {@link #getName}. Returns an empty `Optional` when no class with that name
+     * is in the process registry (decision D3: a single `Optional`-returning
+     * lookup, no throwing/null pair). Primitives (`"int32"`) are not classes and
+     * never resolve. The registry holds every class the binary retains; a class
+     * marked `@Retained` stays discoverable even when nothing else references it
+     * (advisory until AOT class-stripping lands — today every compiled class is
+     * registered). The result is a borrow of a process-lifetime cached instance;
+     * the caller never frees it.
+     *
+     * ```cajeta
+     * Optional<Class> c = Class.forName("test.User");
+     * if (c.isPresent()) {
+     *     int32 fields = c.get().getFieldCount();
+     * }
+     * ```
+     */
+    public static Optional<Class> forName(String name) {
+        Class c = forNameNative(name.bytes);
+        if (c == null) {
+            return stack Optional<Class>(false, #null);
+        }
+        return stack Optional<Class>(true, c);
+    }
 
     // --- identity ---------------------------------------------------------
 
@@ -335,6 +369,45 @@ public final class Class {
     /** The declared constructor at `index` as a {@link Constructor} object. */
     public #Constructor getConstructor(int32 index) {
         return heap Constructor(this.rtti, index);
+    }
+
+    // --- template reflection (REFL-7) --------------------------------------
+    // Cajeta has TEMPLATES, not erased generics: every instantiation
+    // (`Box<int32>`) is its own monomorphized class that retains both its
+    // declared parameters (the `<T>`) and its concrete arguments (`int32`).
+
+    @Native("__cajeta_rtti_template_param_count")
+    private static int32 templateParamCountOf(pointer rtti);
+    @Native("__cajeta_rtti_template_arg_count")
+    private static int32 templateArgCountOf(pointer rtti);
+
+    /** Number of declared template parameters (`class Box<T>` → 1; 0 if none). */
+    public int32 getTemplateParameterCount() {
+        return templateParamCountOf(this.rtti);
+    }
+
+    /** The declared template parameter at `index` as a {@link TemplateParameter}. */
+    public #TemplateParameter getTemplateParameter(int32 index) {
+        return heap TemplateParameter(this.rtti, index);
+    }
+
+    /**
+     * Number of concrete template arguments this class was instantiated with
+     * (`Box<int32>` → 1). Zero for a non-template class or an unmaterialized
+     * template.
+     */
+    public int32 getTemplateArgumentCount() {
+        return templateArgCountOf(this.rtti);
+    }
+
+    /** The concrete template argument at `index` as a {@link TemplateArgument}. */
+    public #TemplateArgument getTemplateArgument(int32 index) {
+        return heap TemplateArgument(this.rtti, index);
+    }
+
+    /** True when this class is a materialized template instantiation. */
+    public boolean isTemplateInstantiation() {
+        return templateArgCountOf(this.rtti) > 0;
     }
 
     // --- construction (REFL-2C infra; full Constructor API in REFL-4) ------

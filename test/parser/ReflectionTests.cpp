@@ -1511,3 +1511,317 @@ TEST(ReflectionTests, annotationNoArgsZeroCount) {
         "    }\n"
         "}\n"), 0);
 }
+
+// --- REFL-6b follow-ons: parameter arg values + list-valued args -------------
+
+// A PARAMETER annotation's argument value is now captured (the formal-parameter
+// parse path uses the shared parseAnnotationInstance). @Bound(min = 5) on a
+// parameter -> getInt("min") == 5.
+TEST(ReflectionTests, parameterAnnotationArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "import cajeta.reflect.Parameter;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "    public int32 scaled(@Bound(min = 5) int32 factor) { return factor; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Widget());\n"
+        "        int32 ok = 0;\n"
+        "        int32 i = 0;\n"
+        "        int32 n = c.getMethodCount();\n"
+        "        while (i < n) {\n"
+        "            Method m = c.getMethod(i);\n"
+        "            if (m.getParameterCount() == 1) {\n"
+        "                Parameter p = m.getParameter(0);\n"
+        "                if (p.getAnnotationCount() == 1) {\n"
+        "                    Annotation a = p.getAnnotation(0);\n"
+        "                    if (a.getInt(\"min\") == (int64) 5) { ok = ok + 1; }\n"
+        "                }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ok;\n"   // exactly one 1-arg method, its param @Bound(min=5)
+        "    }\n"
+        "}\n"), 1);
+}
+
+// String-list argument: @Tags({"a","b","c"}) -> StringList (kind 5), 3 elements.
+TEST(ReflectionTests, annotationStringListArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Tags({\"a\", \"b\", \"c\"})\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        int32 idx = a.getArgIndex(\"value\");\n"
+        "        if (idx < 0) { return 10; }\n"
+        "        if (a.getArgKind(idx) != 5) { return 11; }\n"
+        "        if (a.getArgListCount(idx) != 3) { return 12; }\n"
+        "        if (!a.getArgListString(idx, 0).equals(\"a\")) { return 13; }\n"
+        "        if (!a.getArgListString(idx, 2).equals(\"c\")) { return 14; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Int-list argument: @Sizes({1,2,3}) -> Int64List (kind 4).
+TEST(ReflectionTests, annotationIntListArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Sizes({1, 2, 3})\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        int32 idx = a.getArgIndex(\"value\");\n"
+        "        if (a.getArgKind(idx) != 4) { return 11; }\n"
+        "        if (a.getArgListCount(idx) != 3) { return 12; }\n"
+        "        if (a.getArgListInt(idx, 0) != (int64) 1) { return 13; }\n"
+        "        if (a.getArgListInt(idx, 2) != (int64) 3) { return 14; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Bool-list argument: @Flags({true,false}) -> BoolList (kind 6).
+TEST(ReflectionTests, annotationBoolListArg) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Annotation;\n"
+        "@Flags({true, false})\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        int32 idx = a.getArgIndex(\"value\");\n"
+        "        if (a.getArgKind(idx) != 6) { return 11; }\n"
+        "        if (a.getArgListCount(idx) != 2) { return 12; }\n"
+        "        if (!a.getArgListBool(idx, 0)) { return 13; }\n"
+        "        if (a.getArgListBool(idx, 1)) { return 14; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// --- REFL-7: template reflection (NOT generics — cajeta monomorphizes) --------
+// Each instantiation (Box<int32>) is its own concrete class that retains both
+// its declared template parameters (the <T>) and its concrete template
+// arguments (int32). Type names render canonically the same way field/parameter
+// type names do (e.g. "int32").
+
+// A template instantiation reports its concrete template arguments.
+TEST(ReflectionTests, templateArguments) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.TemplateArgument;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> b = heap Box<int32>(5);\n"
+        "        Class c = Class.of(b);\n"
+        "        if (!c.isTemplateInstantiation()) { return 10; }\n"
+        "        if (c.getTemplateArgumentCount() != 1) { return 11; }\n"
+        "        if (!c.getTemplateArgument(0).getTypeName().equals(\"int32\")) { return 12; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// A template instantiation still carries its declared parameter (the <T>).
+TEST(ReflectionTests, templateParameters) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.TemplateParameter;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> b = heap Box<int32>(5);\n"
+        "        Class c = Class.of(b);\n"
+        "        if (c.getTemplateParameterCount() != 1) { return 11; }\n"
+        "        TemplateParameter p = c.getTemplateParameter(0);\n"
+        "        if (!p.getName().equals(\"T\")) { return 12; }\n"
+        "        if (p.isNonType()) { return 13; }\n"
+        "        if (p.getBoundCount() != 0) { return 14; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// A non-template class reports zero parameters and arguments.
+TEST(ReflectionTests, nonTemplateClassZero) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class Plain {\n"
+        "    public Plain() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class c = Class.of(heap Plain());\n"
+        "        if (c.isTemplateInstantiation()) { return 11; }\n"
+        "        if (c.getTemplateArgumentCount() != 0) { return 12; }\n"
+        "        if (c.getTemplateParameterCount() != 0) { return 13; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// ---- REFL-8: Class.forName + registry -----------------------------------
+
+// forName resolves a registered class by its canonical name to its Class.
+TEST(ReflectionTests, forNameResolvesClass) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class User {\n"
+        "    public int32 id;\n"
+        "    public int32 score;\n"
+        "    public User() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Class> c = Class.forName(\"test.User\");\n"
+        "        if (c.isEmpty()) { return 11; }\n"
+        "        return c.get().getFieldCount();\n"
+        "    }\n"
+        "}\n"), 2);
+}
+
+// forName on an unknown name yields an empty Optional, not a crash.
+TEST(ReflectionTests, forNameAbsentEmpty) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class User {\n"
+        "    public int32 id;\n"
+        "    public User() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Class> c = Class.forName(\"test.NoSuchClass\");\n"
+        "        return c.isPresent() ? 1 : 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// getName() then forName(name) round-trips back to the same class.
+TEST(ReflectionTests, forNameRoundTrip) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class User {\n"
+        "    public int32 id;\n"
+        "    public User() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        User u = heap User();\n"
+        "        String n = Class.of(u).getName();\n"
+        "        Optional<Class> c = Class.forName(n);\n"
+        "        if (c.isEmpty()) { return 11; }\n"
+        "        if (!c.get().getName().equals(\"test.User\")) { return 12; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// A stdlib class is registered too — forName finds cajeta.lang.String.
+TEST(ReflectionTests, forNameStdlibClass) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.lang.Optional;\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Class> c = Class.forName(\"cajeta.lang.String\");\n"
+        "        return c.isPresent() ? 1 : 0;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// REFL-8 unblocks TemplateArgument.getType() for a class-typed argument:
+// Box<Widget>'s argument resolves to the Widget Class.
+TEST(ReflectionTests, templateArgGetTypeResolvesClass) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.TemplateArgument;\n"
+        "public class Widget {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Box<Widget> b = heap Box<Widget>(heap Widget());\n"
+        "        Class c = Class.of(b);\n"
+        "        Class t = c.getTemplateArgument(0).getType();\n"
+        "        if (!t.getName().equals(\"test.Widget\")) { return 12; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// A primitive template argument has no Class — getType() throws
+// UnsupportedReflectionException (use getTypeName() instead).
+TEST(ReflectionTests, templateArgGetTypePrimitiveThrows) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.TemplateArgument;\n"
+        "import cajeta.reflect.UnsupportedReflectionException;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> b = heap Box<int32>(5);\n"
+        "        Class c = Class.of(b);\n"
+        "        try {\n"
+        "            Class t = c.getTemplateArgument(0).getType();\n"
+        "            return 0;\n"
+        "        } catch (UnsupportedReflectionException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 1);
+}

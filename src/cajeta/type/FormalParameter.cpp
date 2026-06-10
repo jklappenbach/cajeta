@@ -5,6 +5,7 @@
 #include "FormalParameter.h"
 #include "../compile/CajetaModule.h"
 #include "../asn/expression/Expression.h"
+#include "../asn/AnnotationParser.h"
 #include "CajetaArray.h"
 
 namespace cajeta {
@@ -30,8 +31,14 @@ namespace cajeta {
     FormalParameterPtr FormalParameter::fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModulePtr module) {
         FormalParameterPtr parameter = nullptr;
         string name = ctx->variableDeclaratorId()->identifier()->getText();
+        // Constructed empty — parameter annotations (names AND argument values,
+        // REFL-6b) are added below via addAnnotationInstance, which fills the
+        // annotationList / annotations set / annotationInstances in lockstep.
+        // (Passing names here AND adding instances would double-count, the same
+        // trap FieldDeclaration::updateParent hit.)
         set<QualifiedNamePtr> annotations;
         set<Modifier> modifiers;
+        vector<AnnotationInstancePtr> paramAnnotations;
         CajetaParser::TypeTypeContext* ctxType = ctx->typeType();
         CajetaTypePtr type = CajetaType::fromContext(ctxType, module);
 
@@ -39,8 +46,11 @@ namespace cajeta {
         for (auto& ctxVariableModifier: variableModifiers) {
             CajetaParser::AnnotationContext* ctxAnnotation = ctxVariableModifier->annotation();
             if (ctxAnnotation != nullptr) {
-                QualifiedNamePtr qName = QualifiedName::fromContext(ctxAnnotation->qualifiedName());
-                annotations.insert(qName);
+                // Capture the full typed instance (was: name only) so the
+                // parameter's reflective #AnnotationDesc rows carry arg values.
+                if (auto inst = parseAnnotationInstance(ctxAnnotation)) {
+                    paramAnnotations.push_back(inst);
+                }
             } else {
                 string str = ctxVariableModifier->getText();
                 modifiers.insert(Modifiable::toModifier(str));
@@ -48,6 +58,9 @@ namespace cajeta {
         }
         if (type != nullptr) {
             parameter = make_shared<FormalParameter>(name, type, modifiers, annotations);
+            for (auto& inst : paramAnnotations) {
+                parameter->addAnnotationInstance(inst);
+            }
             // `#T x` — parameter takes ownership at the callsite. The token comes
             // before the type in the grammar (`REFERENCE? typeType`), so checking
             // ctx->REFERENCE() here is enough.

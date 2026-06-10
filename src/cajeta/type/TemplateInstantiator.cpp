@@ -625,6 +625,23 @@ namespace cajeta {
         }
         CajetaModule::setActiveModule(prevActiveForSupers);
 
+        // Auto-extend Object: a template with no explicit `extends` clause
+        // (`class Box<T> { ... }`) implicitly inherits cajeta.lang.Object, just
+        // like a regular class. The visitor injects this for ordinary class
+        // declarations (CajetaLlvmVisitor.h), but instantiations are built here
+        // straight from the parse tree's extends clause, so they bypass that
+        // injection. Without it an instantiation has zero parents and is not
+        // recognized as `<: Object` — so passing one to an `Object` parameter
+        // (e.g. `Class.of(box)`) fails method resolution and silently compiles
+        // to null. Mirror the visitor's rule. Skip Object itself (self-cycle).
+        bool isObjectItself = instQName
+            && instQName->getTypeName() == "Object"
+            && instQName->getPackageName() == "cajeta.lang";
+        if (instExtended.empty() && !isObjectItself) {
+            instExtended.push_back(
+                QualifiedName::getOrInsert("Object", "cajeta.lang"));
+        }
+
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
         inst->setQImplementedTypeArgs(std::move(instImplementedTypeArgs));
         inst->setTypeParameters(typeParameters);   // retained for debugging / introspection

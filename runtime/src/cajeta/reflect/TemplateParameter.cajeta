@@ -1,0 +1,96 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+
+/**
+ * A declared template parameter of a class (REFL-7) — the `T` in `class Box<T>`,
+ * or a non-type value parameter like the `uint32 N` in `Matrix<T, uint32 N>`.
+ *
+ * Cajeta is NOT a generics language: it has TEMPLATES (monomorphization), so a
+ * template parameter is the declaration-side placeholder, not an erased type
+ * variable. Every concrete instantiation (`Box<int32>`) is its own class that
+ * still carries both its parameters (this object) and its concrete arguments
+ * ({@link TemplateArgument}) — nothing is erased.
+ *
+ * REFL-7 surface: name, declared bounds (`<T extends Foo & Bar>`), and the
+ * non-type flag + primitive name. Resolving a bound to its {@link Class} is
+ * deferred to the Phase-8 forName registry; bounds are exposed as canonical
+ * name Strings for now.
+ *
+ * `TemplateParameter` is `final` so its accessors dispatch statically.
+ */
+public final class TemplateParameter {
+    // Owning class's #Rtti (a borrow) and this parameter's position in the
+    // class's template-parameter list.
+    pointer rtti;
+    int32 index;
+
+    @Native("__cajeta_rtti_template_param_name_len")
+    private static int32 nameLen(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_template_param_name_into")
+    private static void nameInto(pointer rtti, int32 idx, int8[] out);
+    @Native("__cajeta_rtti_template_param_is_nontype")
+    private static int32 isNonTypeNative(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_template_param_nontype_len")
+    private static int32 nonTypeLen(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_template_param_nontype_into")
+    private static void nonTypeInto(pointer rtti, int32 idx, int8[] out);
+    @Native("__cajeta_rtti_template_param_bound_count")
+    private static int32 boundCountNative(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_template_param_bound_len")
+    private static int32 boundLen(pointer rtti, int32 idx, int32 boundIdx);
+    @Native("__cajeta_rtti_template_param_bound_into")
+    private static void boundInto(pointer rtti, int32 idx, int32 boundIdx, int8[] out);
+
+    public TemplateParameter(pointer rtti, int32 index) {
+        this.rtti = rtti;
+        this.index = index;
+    }
+
+    /** This parameter's position in its class's template-parameter list. */
+    public int32 getIndex() { return this.index; }
+
+    /** The parameter's declared name (e.g. `"T"`, or `"N"` for a non-type). */
+    public #String getName() {
+        int32 len = nameLen(this.rtti, this.index);
+        int8[] out = heap int8[len];
+        nameInto(this.rtti, this.index, out);
+        return heap String(#out, len);
+    }
+
+    /**
+     * True for a non-type (value) parameter — `<uint32 N>` — which binds to a
+     * compile-time integer constant rather than a type.
+     */
+    public boolean isNonType() {
+        return isNonTypeNative(this.rtti, this.index) != 0;
+    }
+
+    /**
+     * The declared primitive of a non-type parameter (`"uint32"` for
+     * `<uint32 N>`). Empty for an ordinary type parameter.
+     */
+    public #String getNonTypeName() {
+        int32 len = nonTypeLen(this.rtti, this.index);
+        int8[] out = heap int8[len];
+        nonTypeInto(this.rtti, this.index, out);
+        return heap String(#out, len);
+    }
+
+    /** Number of declared bounds (`<T extends Foo & Bar>` → 2; unbounded → 0). */
+    public int32 getBoundCount() {
+        return boundCountNative(this.rtti, this.index);
+    }
+
+    /** The canonical name of declared bound `b` (e.g. `"code.Foo"`). */
+    public #String getBound(int32 b) {
+        int32 len = boundLen(this.rtti, this.index, b);
+        int8[] out = heap int8[len];
+        boundInto(this.rtti, this.index, b, out);
+        return heap String(#out, len);
+    }
+
+    /** Renders as the parameter name. */
+    public #String toString() { return this.getName(); }
+}

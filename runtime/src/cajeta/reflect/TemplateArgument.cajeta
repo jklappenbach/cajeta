@@ -1,0 +1,72 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+import cajeta.lang.Optional;
+
+/**
+ * A concrete template argument of an instantiation (REFL-7) — the `int32` that
+ * `Box<int32>` bound to its template parameter `T`.
+ *
+ * Because cajeta monomorphizes (templates, not erased generics), each
+ * instantiation is a distinct class that fully retains the concrete types it was
+ * built with; this object reads them back. The argument is exposed as its
+ * canonical type-name String now ({@link #getTypeName}). Resolving it to a live
+ * {@link Class} ({@link #getType}) needs the Phase-8 `forName` registry and is
+ * not wired yet — calling it raises {@link UnsupportedReflectionException} so
+ * the gap is explicit rather than a silent null.
+ *
+ * `TemplateArgument` is `final` so its accessors dispatch statically.
+ */
+public final class TemplateArgument {
+    // Owning instantiation's #Rtti (a borrow) and this argument's position in
+    // the instantiation's template-argument list.
+    pointer rtti;
+    int32 index;
+
+    @Native("__cajeta_rtti_template_arg_name_len")
+    private static int32 nameLen(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_template_arg_name_into")
+    private static void nameInto(pointer rtti, int32 idx, int8[] out);
+
+    public TemplateArgument(pointer rtti, int32 index) {
+        this.rtti = rtti;
+        this.index = index;
+    }
+
+    /** This argument's position in its instantiation's argument list. */
+    public int32 getIndex() { return this.index; }
+
+    /**
+     * The argument's canonical type name (e.g. `"cajeta.int32"`,
+     * `"cajeta.lang.String"`).
+     */
+    public #String getTypeName() {
+        int32 len = nameLen(this.rtti, this.index);
+        int8[] out = heap int8[len];
+        nameInto(this.rtti, this.index, out);
+        return heap String(#out, len);
+    }
+
+    /**
+     * The argument resolved to a live {@link Class} (REFL-8): looks the
+     * canonical type name up in the `Class.forName` registry. A class-typed
+     * argument (e.g. `Box<String>`'s `String`) resolves to its `Class`; a
+     * primitive argument (`Box<int32>`'s `int32`) has no `Class` and is not
+     * resolvable, so this raises {@link UnsupportedReflectionException} — call
+     * {@link #getTypeName} for those. The returned `Class` is a borrow of a
+     * process-lifetime cached instance; the caller never frees it.
+     */
+    public Class getType() {
+        String name = this.getTypeName();
+        Optional<Class> resolved = Class.forName(name);
+        if (resolved.isEmpty()) {
+            throw heap UnsupportedReflectionException(
+                "TemplateArgument.getType: no Class registered for this template argument type — primitives and stripped types are not resolvable; use getTypeName()");
+        }
+        return resolved.get();
+    }
+
+    /** Renders as the canonical type name. */
+    public #String toString() { return this.getTypeName(); }
+}
