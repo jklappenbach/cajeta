@@ -1,166 +1,331 @@
-# Cajeta GPU — the shared device foundation
+# Cajeta GPU — the device foundation
 
-`cajeta-gpu` is the **shared GPU foundation** that both compute and graphics build
-on. Anything that is *not* specific to the kernel/compute execution model and *not*
-specific to the graphics pipeline lives here: the codegen/device/driver plumbing, the
-memory & buffer model, the value types, the math intrinsics, and textures/images.
+`cajeta-gpu` is the **shared device foundation**: value types & math, the memory/buffer
+model, textures & images, acceleration structures, and the per-backend lowering of every
+portable device capability. Compute (`cajeta-xpu`) and graphics (`cajeta-gfx`) are
+**siblings** built on it — gfx does not depend on xpu; both target the contract here.
 
 ```
-cajeta-gpu        (this layer — the foundation)
+cajeta-gpu        (foundation — the portable contract; "core")
    ▲                       ▲
-   │ depends on            │ depends on
 cajeta-xpu             cajeta-gfx
-(compute:              (graphics:
- science/ML/stats)      pipeline + engine)
+(compute, Tensor)      (rendering pipeline)
 ```
 
-**Why a separate layer.** The value types (`Vector`/`Matrix`/`Quaternion`), the math
-intrinsics, the SPIR-V/cubin/hsaco emit machinery, the device/driver layer, the
-memory/buffer model, and textures are needed *identically* by compute kernels and by
-graphics shaders. Factoring them out keeps the compute layer
-([`xpu/CajetaXPU.md`](xpu/CajetaXPU.md)) and the graphics layer
-([`gfx/CajetaGFX.md`](gfx/CajetaGFX.md)) from forking the substrate. `cajeta-xpu` and
-`cajeta-gfx` are **siblings** over this base — gfx does *not* depend on xpu.
+The GPU↔GFX seam is concrete, not stylistic: **GPU owns inline ray query — over meshes *and*
+bounding volumes; GFX owns the ray-tracing pipeline** (hit/miss shaders + SBT). (§4.)
 
-> **One axis, one model.** Allocation + borrow follow a single rule: storage class is
-> the axis (stack = copy / heap = ref). The foundation does not add GPU-special
-> allocation or borrow paths — device buffers (`Buffer<T>`) and images are ordinary
-> RAII values whose lifetime is the scope-exit drop chain.
-
-This doc is the **map** of the foundation. The authoritative forward plan is
-[`plans/gpu/cajeta-gpu-plan.md`](../../plans/gpu/cajeta-gpu-plan.md); the per-backend,
-per-feature capability matrix is [`xpu/CajetaXPU-Matrix.md`](xpu/CajetaXPU-Matrix.md).
+> **One axis, one model.** Allocation + borrow follow a single rule — storage class is the
+> axis (stack = copy / heap = ref). Device buffers, images, and acceleration structures are
+> ordinary RAII values whose lifetime is the scope-exit drop chain.
 
 ---
 
-## What lives in the foundation
+## 1. The model
 
-### 1. Value types (host + device, identical lowering)
+### 1.1 Core is the only GPU surface in stdlib
 
-First-class, by-value POD types that lower to LLVM vectors and run **identically** on
-the host JIT and every device backend. The canonical signature reference is
-[`ValueTypeCatalog.md`](ValueTypeCatalog.md).
+`cajeta.gpu.core` is **write-once-run-everywhere**, and it is the *only* GPU package in the
+standard library. There are no `cajeta.gpu.nvidia` / `.amd` / `.metal` / `.vulkan` packages
+in stdlib. Vendor-exclusive silicon (NV cooperative vector / TMA, AMD MFMA, Metal
+simdgroup-matrix, CUDA/ROCm/MPS interop) lives in **external vendor libraries** — authored
+by vendors or interest groups, distributed as signed dependencies from `olla.cajeta.dev`,
+added to a project explicitly. Importing one *is* the lock-in declaration.
 
-| Type | Lowers to | Docs |
-|------|-----------|------|
-| `Vector<T,N>` | `<N x T>` | [`ValueTypeCatalog.md`](ValueTypeCatalog.md) |
-| `Matrix<T,R,C>` | `<R*C x T>` | [`ValueTypeCatalog.md`](ValueTypeCatalog.md), [`MatrixDeterminantInverse.md`](MatrixDeterminantInverse.md) |
-| `Quaternion<T>` | `<4 x T>` (w,x,y,z) | [`Quaternions.md`](Quaternions.md) |
+Write to core and you get more than you asked for: it already selects the best available
+silicon path under the hood and falls back where a backend lacks one. Want vendor-specific
+peak or exclusive features — import a vendor library and accept its reach.
 
-Operator rule worth knowing up front: **comparisons on value types yield per-lane
-masks** (`<N x i1>`), not a reduced boolean — reduce with `.all()`/`.any()`, blend with
-`.select(a,b)`. The branchless mask/select primitive is documented in
-[`MaskSelect.md`](MaskSelect.md).
+### 1.2 Two seams — verbs *and* nouns
 
-Covered surface: construction, component/swizzle reads (`.xyz`/`.rgba`/`.xxyy`),
-element-wise arithmetic + scalar broadcast, `dot`/`length`/`normalize`,
-`cross`/`reflect`/`refract`/`distance`/`clamp`/`lerp`/`min`/`max`; matrix
-`matmul`/transpose/identity/`determinant`/`inverse` (square 2–4, float); quaternion
-Hamilton product, vector rotation, `nlerp`/`slerp`.
+A device capability is not just a call; it is a call **on a datastructure**. So core lowers
+through **two** parallel seams:
 
-### 2. Math & numeric intrinsics
+- **Verb seam** (`LoweringTarget`, `src/cajeta/xpu/lowering/LoweringTarget.h`) — core method
+  → the driver op/call available on the target backend.
+- **Noun seam** (the resource provider) — core datastructure → the concrete representation
+  the chosen driver path expects.
 
-- **Integer dot product** — `Vector<int8,4>.dot` (DP4a): the Vulkan hardware unit
-  (`SPV_KHR_integer_dot_product`, `OpSDot`/`OpUDot`) with a bit-exact portable
-  fallback elsewhere. See [`IntegerDotProduct.md`](IntegerDotProduct.md).
-- **Bit instructions** — `Bits.*` (reverse / popcount / rotate): per-invocation scalar
-  bit ops with no wave/execution-model dependence. See
-  [`BitInstructions.md`](BitInstructions.md).
-- **Device transcendentals** — the `TrigEmitter`/`LoweringTarget::transcendental` seam
-  (host emits `llvm.acos`/`sin`/…; device routes per backend), used by e.g. quaternion
-  `slerp`.
-- **bf16** element type + arithmetic landed (Shader flavor); **fp8** deferred pending
-  upstream LLVM backend support.
+Every capability = `(verb seam) + (noun seam)`, each with native realizations and a portable
+default. The noun seam is the harder, less obvious half (§4).
 
-### 3. Textures & images
+### 1.3 Native where the silicon has it, portable default everywhere — cross-checked
 
-- `Texture2D<T = float32>` + `Sampler` — 2-D, normalized coords, nearest/bilinear,
-  clamp/wrap; the `LoweringTarget::sampleTexture` seam lowers `tex.sample(s, u, v)` per
-  backend (CPU C bilinear, VK `OpImageSampleExplicitLod`, AMD `__ockl_image_sample_2D`,
-  NV `tex.2d`). The type parameter `T` is the texel scalar (defaults to `float32`, so
-  every bare `Texture2D` is `Texture2D<float32>`); `sample` returns `Vector<T, 4>`.
-  Multi-channel formats via `TextureFormat` (R32F/R8_UNORM/RGBA8_UNORM/RGBA32F/R16F/
-  RGBA16F). **`sample` is float-only** — integer textures (below) can't be filtered.
-- **texelFetch** — `tex.fetch(x, y)` reads the texel at the **exact integer** coordinate,
-  unfiltered and with **no Sampler** (LOD 0); the unfiltered twin of `sample`, for data
-  textures / lookup tables. The `LoweringTarget::fetchTexture` seam lowers per backend:
-  VK `OpImageFetch` (via the `llvm.spv.resource.load.level` intrinsic — the sampled-image
-  `Sampled=1` branch picks Fetch, distinct from `Image2D`'s storage `OpImageRead`; the
-  mandatory `Lod` operand is supplied), AMD `__ockl_image_load_2D`, CPU exact texel read.
-  Returns `Vector<T, 4>`; CPU/Vulkan/AMD on-device. (NV emit-deferred.)
-- **Integer textures** — `Texture2D<int32>` / `Texture2D<uint32>` with a raw-integer
-  `TextureFormat` (`R32I`/`R32UI`/`RGBA32I`/`RGBA32UI`) store exact integers (no
-  normalization). They are **fetch-only** — `fetch` returns `Vector<int32|uint32, 4>`
-  verbatim; `sample` is a compile error (the hardware sampler can't filter integer
-  texels). Same `fetchTexture` seam, threading the texel type `T`: VK emits an integer
-  `OpImageFetch` (i32-sampled image), CPU reads raw i32, AMD reuses the only ockl 2-D
-  image load (v4f32) and **bitcasts** its raw result to `<4 x i32>` (the HW `image_load`
-  is raw on a non-normalized integer SRD). CPU/Vulkan/AMD on-device, bit-exact.
-- **Writable / storage images** — `Image2D` `imageStore`/`imageRead`, the writable twin
-  of `Texture2D` and the bridge toward graphics. See
-  [`WritableImages.md`](WritableImages.md). (Storage-image read/write needs a *known*
-  format, e.g. `R32f`, on the `vulkan1.3-compute` triple.)
+Each verb seam is **pure-virtual** (every backend must supply its own — e.g. the wave ops)
+or **defaulted** (a portable form correct on every backend, overridden only by a backend
+with a faster native op). The discipline:
 
-### 4. Device, codegen & memory (the plumbing)
+> **Native where the silicon has it, portable default everywhere else.**
 
-These have no standalone doc yet — they are specified in the plan
-([`plans/gpu/cajeta-gpu-plan.md`](../../plans/gpu/cajeta-gpu-plan.md) Part A) and the
-capability matrix ([`xpu/CajetaXPU-Matrix.md`](xpu/CajetaXPU-Matrix.md) §1–§5):
+The correctness guarantee is the **bit-exact cross-check**: the portable default (verified on
+AMD/CPU) and the native op (verified on Vulkan) must agree to the bit. That check only exists
+because core is an abstraction with multiple realizations — it is *not* "Vulkan with a CPU
+mode."
 
-- **Codegen pipeline** — per-backend device triple + `*Backend`
-  (`nvptx64-nvidia-cuda` → cubin via `ptxas`; `amdgcn-amd-amdhsa` → hsaco via `ld.lld`;
-  `spirv64-unknown-vulkan1.3-compute` → SPIR-V binary; CPU → LLJIT), entry-point
-  decoration, and in-process module registration.
-- **Device & driver layer** — driver acquisition via `dlopen`
-  (`libcuda`/`libamdhip64`/`libvulkan`), backend detection + selection order
-  `CUDA → HIP → Vulkan → CPU`, per-backend module load.
-- **Memory & buffer model** — `Buffer<T>` RAII (alloc/upload/download), the
-  address-space model (Global/Shared/Constant/Private/Generic mapped per backend), and
-  the Vulkan descriptor-set SSBO model (BDA has no IR path — a load-bearing finding).
-- **Multi-arch bundling** — AMD fatbin via `clang-offload-bundler` (`--xpu-arch=…`);
-  NV fatbin pending hardware.
+### 1.4 Nouns: build-from-description, not convert-between-builts
 
-### 5. Part C — cutting-edge SPIR-V (foundation-level)
+A core datastructure (an `AccelerationStructure`, a texture) is **not** a concrete blob you
+transcode to a vendor format — a Vulkan BVH is an opaque driver artifact with nothing to
+translate. The core noun is the **build description** (the inputs + a query interface); each
+backend **builds its own** concrete representation from that description. The seam's job is
+"build *your* representation from *my* description," never "convert my bytes to yours."
 
-Delivered, on-device: **ray query** + acceleration structures (compute-callable; also
-used by gfx inline RT) and **cooperative matrix → Shader flavor** (tensor-core matmul).
-These ride the downstream LLVM fork. Tracked in
-[`plans/gpu/cajeta-gpu-plan.md`](../../plans/gpu/cajeta-gpu-plan.md) Part C.
+Two consequences:
+
+- **The noun's chosen implementation determines the verb's lowering.** A software BVH needs
+  software traversal; a Vulkan BVH needs `OpRayQuery`. The implementation is selected **once,
+  when the resource is built**, and the verb follows the noun — they are coupled, not
+  independently dispatched.
+- **The built artifact is opaque and per-implementation.** The interface exposes the inputs
+  and the query verbs; it hides the representation entirely.
+
+### 1.5 Choosing an implementation — heuristic + impl layers
+
+Where more than one implementation is available, the app selects by a **capability heuristic
+with explicit override** (default: "use hardware if present"; override required because RT,
+for one, *loses* at large radius / extreme density — the app, or the query parameters, must
+be able to force the software path).
+
+Which implementations exist at all is set by the **impl layers** present:
+
+- **AOT binaries** — link the implementation layers you want; the app chooses among the
+  compiled-in set at runtime.
+- **JIT (`.cja`)** — whatever is on the classpath, with **`core` + `cpu` always built in** —
+  so a `.cja` always has at least the software/CPU floor; vendor impls come from classpath deps.
+
+A vendor library author writes a verb + its native lowering **+ a portable SPIR-V degrade**
+using the same seam machinery core uses internally. So a vendor library is not hard-locked:
+on absent silicon it can fall through SPIR-V to a competing GPU or to CPU. The degrade is a
+*hook with a vendor-authored fallback* — SPIR-V is the emission vehicle, not free same-perf
+portability (a vendor-exclusive op has no SPIR-V equivalent, so its fallback is the slower
+portable algorithm the author supplies).
+
+> **Core is just the in-tree "vendor library" that has a fallback for everything.** Same
+> shape as an external one — verb + lowering + degrade — only complete and built-in.
+
+The third-party side of this — the SPI a driver vendor or interest group uses to ship an
+extension library — is [`VendorExtensionSDK.md`](VendorExtensionSDK.md) (a seed; it crystallizes
+once core has dogfooded the seam machinery).
+
+### 1.6 Degradation rule
+
+Core always runs: with no GPU it lowers to CPU (CPU is the floor, not a package). A vendor
+library **never silently emulates** — absent silicon yields a compile diagnostic / no-device,
+*unless* the author provided a degrade. You opt a portable kernel into graceful fallback by
+writing a core branch beside a guarded vendor branch:
+
+```cajeta
+if (Device.supports(Capability.X)) {
+    // vendor-library fast path on its silicon
+} else {
+    // cajeta.gpu.core — portable; floors to CPU when no GPU is present
+}
+```
+
+> **Status.** This is the design contract; it drives the plans. Today the portable surface
+> ships as **`cajeta.xpu.core`** (rename to `cajeta.gpu.core` pending); the noun seam exists
+> only for the resources in §3–§4; `Device.supports(...)`, the guard enforcement, and the
+> vendor-SDK degrade framework are unbuilt.
 
 ---
 
-## Backends & evidentiary weight
+## 2. Backends (how core lowers)
 
-**NV** NVPTX→cubin · **AMD** AMDGPU→hsaco · **VK** SPIR-V · **CPU** LLJIT. "On-device"
-means real hardware (AMD gfx1151 Strix Halo; VK via RADV). The NVIDIA column is
-**emit-only** today (no NV hardware on the dev box), pending the B5 WSL2+CUDA runner.
-The full, honest per-cell status is the capability matrix
-([`xpu/CajetaXPU-Matrix.md`](xpu/CajetaXPU-Matrix.md)); the cross-backend design
-discipline is [`xpu/CajetaXPU-Variance.md`](xpu/CajetaXPU-Variance.md).
+"Backend" here means a target the compiler lowers **core** to — distinct from a vendor
+*library* (§1.1), which exposes exclusive verbs. Core has four backends; Metal is planned.
+
+| Backend | Pipeline | Status |
+|---------|----------|--------|
+| **CPU** | LLJIT (in-process) | ✅ reference path + bit-exact oracle; "device" is the host. The floor. |
+| **Vulkan** | SPIR-V → driver | ✅ device-verified (RADV / Strix Halo); richest; new capability lands here first (we control the SPIR-V fork). Reaches Intel / Mali / Adreno / lavapipe — GPUs with no native backend. |
+| **AMD** | AMDGPU → hsaco | ✅ device-verified (gfx1151). Gaps: storage images; mipmaps driver-blocked. |
+| **NVIDIA** | NVPTX → cubin → fatbin | ⚠️ emit-only; advanced seams not overridden; no on-device run (pending B5 WSL2+CUDA). |
+| **Metal** | — | ❌ absent; planned MoltenVK → native. |
+
+Runtime selection order: `CUDA → HIP → Vulkan → CPU`.
 
 ---
 
-## Status & definition of done
+## 3. Core verbs
 
-- **B1** (linear-algebra value types) and **B2** (device math intrinsics) — **landed**.
-- **B3** (textures/images) — **partial** (writable + readable storage images landed).
-- **B4/B5** — remaining (texture/memory completeness; NV on-device runner).
-- **Part C** ray query + cooperative matrix — **delivered, on-device**.
+The complete verb set **is** the `LoweringTarget` seams — that header is authoritative; this
+is its grouped contract. Legend: **●** native, device-verified · **○** portable default,
+device-verified · **◐** emit-only (NVIDIA) · **◷** intended-core, fallback not yet written ·
+**—** N/A · **✗** no backend.
 
-The foundation's definition of done is a **frozen value-type / math / texture / memory
-dependency contract** that `cajeta-xpu` and `cajeta-gfx` both target. Until B3–B5 land,
-that contract stays open. Full criteria: the plan's "Definition of done for the
-foundation".
+### 3.1 Execution — coordinates, barriers, kernel shape
+
+| Verb | CPU | VK | AMD | NV | Metal |
+|------|:--:|:--:|:--:|:--:|:--:|
+| `threadId` / `workgroupId` / `workgroupDim` / `globalId` / `gridSize` | ● | ● | ● | ◐ | ✗ |
+| `workgroupBarrier` | ● | ● | ● | ◐ | ✗ |
+| `createKernel` / `materializeParam` / `decorateKernel` | ● | ● | ● | ◐ | ✗ |
+| dynamic `shared T[n]` | ● | ● | ● | ◐ | ✗ |
+
+### 3.2 Memory & buffers
+
+| Verb | CPU | VK | AMD | NV | Metal |
+|------|:--:|:--:|:--:|:--:|:--:|
+| `bufferElementPtr` / `bufferParamType` | ● | ● | ● | ◐ | ✗ |
+| `bufferArrayElement` (bindless `Buffer<T>[]`) | ● | ● | — | — | ✗ |
+| `Buffer<T>` alloc/upload/download · `MemoryKind` (Device/Pinned/Unified) · `slice` | ● | ● | ● | ◐ | ✗ |
+
+### 3.3 Value types & math ([`ValueTypeCatalog.md`](ValueTypeCatalog.md))
+
+| Verb | CPU | VK | AMD | NV | Metal |
+|------|:--:|:--:|:--:|:--:|:--:|
+| `Vector<T,N>` / `Matrix<T,R,C>` / `Quaternion<T>` (+ comparison masks → `.all()`/`.any()`/`.select()`) | ● | ● | ● | ● | ✗ |
+| `transcendental` (sin/…/pow/rsqrt; AMD → `__ocml_*`) | ● | ● | ● | ◐ | ✗ |
+| `integerDot4x8` (DP4a) · `Bits.*` | ○/● | ● | ○/● | ◐ | ✗ |
+| element types f32/f16/**bf16** (fp8 deferred — no LLVM type) | ● | ● | ● | ◐ | ✗ |
+
+### 3.4 Textures & images ([`WritableImages.md`](WritableImages.md))
+
+| Verb | CPU | VK | AMD | NV | Metal |
+|------|:--:|:--:|:--:|:--:|:--:|
+| `sampleTexture` / `fetchTexture` (2-D) | ● | ● | ● | ◐ | ✗ |
+| `sample`/`fetch` **3D · 1D · 2DArray · Cube** | ● | ● | ● | — | ✗ |
+| mipmaps / explicit LOD (`fetchLod`/`sampleLod`) | ● | ● | ◑ | — | ✗ |
+| `storeImage` / `loadImage` (`Image2D` storage RMW) | — | ● | — | — | ✗ |
+
+**◑** AMD mipmaps: code complete + emit-verified, but `hipMallocMipmappedArray` is
+unsupported on gfx1151/ROCm 7.2.2 — degrades gracefully, device test SKIPs.
+
+### 3.5 Capability primitives
+
+| Family | Verbs | CPU | VK | AMD | NV | Metal |
+|--------|-------|:--:|:--:|:--:|:--:|:--:|
+| Atomics ([`xpu/FloatAtomics.md`](xpu/FloatAtomics.md)) | `atomicFloatRMW` / `atomicIntRMW` / `atomicCompareExchange` | ● | ● | ● | ◐ | ✗ |
+| Wave ([`xpu/WaveReductions.md`](xpu/WaveReductions.md)) | `waveWidth`/`LaneId`/`Shuffle`/`Ballot`/`ReduceSum`/`Reduce` | ● | ● | ● | ◐ | ✗ |
+| | `waveScan` / `waveRotate` (portable default; VK native) | ●/○ | ● | ○ | ◐ | ✗ |
+| Quad ([`xpu/QuadControl.md`](xpu/QuadControl.md)) | `quadBroadcast`/`Swap`/`All`/`Any` | ○ | ● | ○ | ◐ | ✗ |
+| Coop matrix | `coopMatrixLoad/Store/MulAdd/Splat` (the MMA operand — not a tensor) | ○ | ● | ● (WMMA) | ◐ | ✗ |
+| Shader clock ([`xpu/ShaderClock.md`](xpu/ShaderClock.md)) | `readClock` | ● | ● | ● | ◐ | ✗ |
+| **Ray query** (§4) | `rayQueryInitialize/Proceed/…` | ◷ | ● | ◷ | ◷ | ✗ |
+
+---
+
+## 4. Core nouns — and ray query as the worked example
+
+The datastructures core owns: `Buffer<T>`, `Texture2D`/`Image2D`, and `AccelerationStructure`.
+Each goes through the **noun seam** (§1.2): a core build-description with per-backend
+representations. Ray query is the case that *defines* the seam, because its noun (the scene)
+is the heavy part.
+
+### 4.1 The real seam — inline query vs pipeline, not triangle vs AABB
+
+Ray query belongs in `gpu.core` (both compute and gfx pull it from the foundation). But the
+scope line is **not** triangle-vs-AABB — that was a wrong inference. Scientific compute needs
+ray-**triangle** queries pervasively: mesh Monte-Carlo transport (Möller-Trumbore boundary
+crossings), SDF & curvature from meshes, ICP / 6-D pose against mesh instances, BVH-over-mesh
+NN training (fVDB). 3-D-Gaussian and point-cloud methods need the **AABB/procedural** path.
+**Both geometry inputs are compute primitives — core needs both.**
+
+The vendor APIs do split the two geometry *inputs* (and core supports both):
+
+| Vendor | Triangle geometry input | AABB/procedural geometry input |
+|--------|-------------------------|--------------------------------|
+| Vulkan | `VK_GEOMETRY_TYPE_TRIANGLES_KHR` | `VK_GEOMETRY_TYPE_AABBS_KHR` + `generateIntersection` |
+| NVIDIA OptiX | `OPTIX_BUILD_INPUT_TYPE_TRIANGLES` | `…_CUSTOM_PRIMITIVES` + intersection program |
+| Metal | `…TriangleGeometryDescriptor` | `…BoundingBoxGeometryDescriptor` + intersection function |
+| DXR | `…GEOMETRY_TYPE_TRIANGLES` | `…PROCEDURAL_PRIMITIVE_AABBS` |
+| AMD | — through Vulkan/DXR — | inherits the Vulkan inputs |
+
+What the vendors actually gate behind the *heavier* model is the **ray-tracing pipeline** —
+raygen / closesthit / anyhit / miss shaders + a shader binding table — which **none** of those
+compute uses need; they all use **inline ray query in a kernel**. *That* is the real seam:
+
+> GPU foundation core = **inline ray query over BOTH triangle meshes and AABB/procedural
+> BVHs**, with traversal, custom intersection, and the full getters (t, barycentrics,
+> primitiveIndex, frontFace). GFX = the **ray-tracing pipeline** (SBT + hit/miss programs).
+
+TLAS/instancing is an orthogonal advanced axis, deferred — though ICP / 6-D pose will want
+instance transforms, so it's a "soon," not a "never."
+
+### 4.2 The noun: `AccelerationStructure`
+
+Build description = the geometry — **triangle (vertex + index buffers) and/or AABB
+(`(min, max)` × N)** — plus build params. Today it has one representation: a Vulkan
+`VK_KHR_acceleration_structure` BVH over AABBs only — so the noun is doubly narrow
+(Vulkan-locked *and* AABB-only). To be core it needs a **portable software BVH** built
+(LBVH / binned-SAH) over both geometry kinds into a plain `Buffer<T>` (node array + primitive
+refs), runnable on host or as a build kernel. Same description, two builds; the hardware BVH
+is the *acceleration*, the software BVH is what makes it core.
+
+### 4.3 The verb: `RayQuery`
+
+A kernel-local cursor: `initialize → proceed* → getters`. Built today: `initialize / proceed /
+committedType / candidateType / candidatePrimitiveIndex` — AABB-only, and unable to commit a
+hit. To be core it needs the **`T` (distance)** + **barycentrics / frontFace** getters and
+**`confirm` / `generate` intersection** — without those it can only *count* candidates, not
+return a **nearest** hit (why Prism's `countWithin` only counts). The portable lowering is a
+**software traversal kernel** over the §4.2 BVH: a fixed/stackless stack, **Möller-Trumbore**
+for triangle leaves, custom intersection for AABB leaves; the getters then compute directly.
+
+### 4.4 Why this proves the model
+
+Ray query exercises both seams and the impl-layer rule end to end:
+
+- **Noun-impl drives verb-lowering** — a software BVH ⇒ software traversal; a Vulkan BVH ⇒
+  `OpRayQuery`. Chosen **once at build time** by the capability heuristic (override-able: RT
+  is not always the win), and the verb follows.
+- **Build-from-description** — you never convert a Vulkan BVH to a software one; both build
+  from the same geometry description (triangles and/or AABBs).
+- **Impl layers** — `core`+`cpu` ship the software AS+traversal (the JIT floor); a hardware-RT
+  impl can arrive as a linked layer / library; the app picks by capability.
+
+---
+
+## 5. Honest status & reconciled drift
+
+- **CPU** — complete (reference). No storage images; ray query pending its software path (◷).
+- **Vulkan** — complete, all native, device-verified.
+- **AMD** — complete & device-verified **except** storage images (not wired) and mipmaps
+  (driver-blocked, code done). Cooperative matrix native (WMMA).
+- **NVIDIA** — emit-only and incomplete; nothing device-verified.
+- **Metal** — absent (needs the backend, MoltenVK → native).
+- **Vendor libraries** — none exist; out of stdlib by design (§1.1).
+
+**Drift reconciled (the file was rewritten clean, not patched):**
+
+- **1-D / cube / 2-D-array textures are done and device-verified** on CPU + Vulkan + AMD
+  (`texture1d*` / `texture2dArray*` / `textureCube*` across `XpuVulkan/Hip/Cpu` tests) — the
+  plan's "still open" is stale.
+- **Ray query is *not* core yet** — its noun and verb are Vulkan-only *and* AABB-only; "core
+  intent" without a software path (over **both** meshes and BVHs) is the badge-without-substance
+  this model forbids. The fix is §4.2–§4.3.
+- Earlier revisions invented vendor verb tables (TMA/MFMA/…) presented as spec — removed;
+  vendor surface is external libraries, not foundation content.
+
+---
+
+## 6. Definition of done & how this drives the plans
+
+Core's DoD: §3's verb set with every cell ● / ○ on every shipped backend, **and** every core
+noun with a portable build (§1.4) — i.e. no ◷/◐/✗ left unaccepted. The plans should section to
+match this document:
+
+- **Core plan** — software BVH + traversal over **triangles *and* AABBs** (Möller-Trumbore +
+  custom intersection) to make ray query genuinely core; AMD `Image2D`;
+  NVIDIA advanced seams + B5 on-device; Metal backend; the noun seam + `Device.supports(...)`
+  + the impl-layer/degrade framework; the `cajeta.xpu.core` → `cajeta.gpu.core` rename; fp8
+  (pending LLVM).
+- **Vendor libraries** — out of this plan; each its own external effort on the degrade
+  framework, sequenced by hardware (AMD now; NVIDIA on B5; Metal on Mac).
+- **GFX** — the ray-tracing pipeline (SBT, hit/miss shaders); built on this foundation's
+  inline query + BVH. (Triangle *geometry* is core, per §4; TLAS/instancing is the next core
+  AS axis, not gfx.)
 
 ---
 
 ## See also
 
-- Compute layer — [`xpu/CajetaXPU.md`](xpu/CajetaXPU.md) (spec),
-  [`xpu/CajetaCPU.md`](xpu/CajetaCPU.md) (CPU backend),
-  [`xpu/CajetaXPU-Matrix.md`](xpu/CajetaXPU-Matrix.md) (capability matrix).
-- Graphics layer — [`gfx/CajetaGFX.md`](gfx/CajetaGFX.md),
-  [`gfx/CajetaRender.md`](gfx/CajetaRender.md).
-- Plans — [`plans/gpu/cajeta-gpu-plan.md`](../../plans/gpu/cajeta-gpu-plan.md),
-  [`plans/gpu/xpu/cajeta-xpu-plan.md`](../../plans/gpu/xpu/cajeta-xpu-plan.md),
-  [`plans/gpu/gfx/cajeta-gfx-plan.md`](../../plans/gpu/gfx/cajeta-gfx-plan.md).
+- Authoritative seam set — `src/cajeta/xpu/lowering/LoweringTarget.h`.
+- Forward plan — [`plans/gpu/cajeta-gpu-plan.md`](../../plans/gpu/cajeta-gpu-plan.md).
+- Deep per-cell ledger — [`xpu/CajetaXPU-Matrix.md`](xpu/CajetaXPU-Matrix.md); cross-backend
+  discipline — [`xpu/CajetaXPU-Variance.md`](xpu/CajetaXPU-Variance.md).
+- Compute — [`xpu/CajetaXPU.md`](xpu/CajetaXPU.md); CPU — [`xpu/CajetaCPU.md`](xpu/CajetaCPU.md).
+  Graphics — [`gfx/CajetaGFX.md`](gfx/CajetaGFX.md).
+- Per-feature — `ValueTypeCatalog`, `Quaternions`, `MatrixDeterminantInverse`, `MaskSelect`,
+  `IntegerDotProduct`, `BitInstructions`, `WritableImages`,
+  `xpu/{FloatAtomics,IntegerAtomics,WaveReductions,WavePrefixScan,SubgroupRotate,QuadControl,ShaderClock}`.
