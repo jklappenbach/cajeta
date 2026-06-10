@@ -2880,6 +2880,61 @@ namespace cajeta {
         b.CreateRet(llvm::ConstantPointerNull::get(ptrTy));
     }
 
+    void CajetaClass::finalizeClassObject() {
+        // See header. A #ClassObject is { ptr Class#VTable, ptr rtti }. Slot 0
+        // is NULL only for classes parsed before cajeta.reflect.Class (the
+        // lookup in StructureMetadata::populate couldn't find Class's vtable
+        // yet). Those were also NOT registered (registration there is guarded on
+        // a non-null slot 0). By the time this post-pass runs the whole stdlib —
+        // Class included — is built, so we can resolve Class#VTable, patch slot
+        // 0, and register the class. Idempotent: a class whose slot 0 already
+        // resolved returns immediately (and was already registered at populate).
+        llvm::GlobalVariable* co = getClassObjectGlobal();
+        if (!co || !co->hasInitializer()) return;
+        auto* init = llvm::dyn_cast<llvm::ConstantStruct>(co->getInitializer());
+        if (!init || init->getNumOperands() < 2) return;
+        if (!init->getOperand(0)->isNullValue()) return;   // already resolved
+
+        auto& s2m = CajetaModule::getStructureToModule();
+        auto mit = s2m.find("cajeta.reflect.Class");
+        if (mit == s2m.end() || !mit->second) return;
+        auto& structs = mit->second->getStructures();
+        auto sit = structs.find("cajeta.reflect.Class");
+        if (sit == structs.end() || !sit->second) return;
+        llvm::GlobalVariable* cv = sit->second->getVirtualTableGlobal();
+        if (!cv) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::Constant* classVtableRef =
+            CajetaModule::ensureGlobalInModule(lmod, cv);
+
+        auto* coTy = llvm::cast<llvm::StructType>(co->getValueType());
+        co->setInitializer(llvm::ConstantStruct::get(
+            coTy, {classVtableRef, init->getOperand(1)}));
+
+        // Deferred registration (mirrors StructureMetadata::populate's REFL-8
+        // block). These names were not emitted at populate time for this class
+        // (its slot 0 was null), so there is no collision.
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+        llvm::FunctionType* regTy =
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
+        llvm::FunctionCallee regFn =
+            lmod->getOrInsertFunction("__cajeta_register_class", regTy);
+        std::string canon = toCanonical();
+        llvm::Function* regCtor = llvm::Function::Create(
+            llvm::FunctionType::get(voidTy, false),
+            llvm::GlobalValue::InternalLinkage,
+            "__cajeta_class_reg_ctor." + canon, lmod);
+        llvm::IRBuilder<> rb(llvm::BasicBlock::Create(ctx, "entry", regCtor));
+        llvm::Constant* nameStr =
+            rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
+        rb.CreateCall(regFn, {nameStr, co});
+        rb.CreateRetVoid();
+        llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+    }
+
     struct MethodEntry {
         MethodPtr method;
         int score;

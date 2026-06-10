@@ -1825,3 +1825,186 @@ TEST(ReflectionTests, templateArgGetTypePrimitiveThrows) {
         "    }\n"
         "}\n"), 1);
 }
+
+// ---------------------------------------------------------------------------
+// REFL-10 — package / annotation registry queries (Class.allClasses /
+// classesInPackage / classesAnnotated). Each returns a Class[] of borrows over
+// the process-wide registry; the tests scan the result by getName().
+// ---------------------------------------------------------------------------
+
+// allClasses() includes every registered class — find the fixture exactly once.
+TEST(ReflectionTests, allClassesFindsRegistered) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class User {\n"
+        "    public int32 id;\n"
+        "    public User() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class[] all = Class.allClasses();\n"
+        "        int32 found = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < (int32) all.count()) {\n"
+        "            if (all[i].getName().equals(\"test.User\")) { found = found + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return found;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// classesInPackage("test") contains User; classesInPackage("cajeta.lang") does
+// NOT contain User but DOES contain String (a stdlib class is registered too).
+TEST(ReflectionTests, classesInPackageFilters) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class User {\n"
+        "    public int32 id;\n"
+        "    public User() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class[] inTest = Class.classesInPackage(\"test\");\n"
+        "        int32 a = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < (int32) inTest.count()) {\n"
+        "            if (inTest[i].getName().equals(\"test.User\")) { a = a + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Class[] inLang = Class.classesInPackage(\"cajeta.lang\");\n"
+        "        int32 b = 0;\n"
+        "        int32 c = 0;\n"
+        "        i = 0;\n"
+        "        while (i < (int32) inLang.count()) {\n"
+        "            if (inLang[i].getName().equals(\"test.User\")) { b = b + 1; }\n"
+        "            if (inLang[i].getName().equals(\"cajeta.lang.String\")) { c = c + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (a == 1 && b == 0 && c >= 1) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// classesAnnotated("code.Marker") finds the @Marker class, not the plain one.
+TEST(ReflectionTests, classesAnnotatedFilters) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class Plain {\n"
+        "    public Plain() { return; }\n"
+        "}\n"
+        "@Marker\n"
+        "public class Tagged {\n"
+        "    public Tagged() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class[] tagged = Class.classesAnnotated(\"code.Marker\");\n"
+        "        int32 found = 0;\n"
+        "        int32 other = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < (int32) tagged.count()) {\n"
+        "            if (tagged[i].getName().equals(\"test.Tagged\")) { found = found + 1; }\n"
+        "            if (tagged[i].getName().equals(\"test.Plain\"))  { other = other + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (found == 1 && other == 0) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// REFL-11 — constant-fold statically-known reflection. The fold fires only for
+// `Class.of(<final-class identifier>).<accessor>(...)`; these assert the folded
+// path yields the same value the runtime path would (the fold elision itself is
+// verified at the IR level separately). A non-final class declines the fold and
+// must still work through the runtime path.
+// ---------------------------------------------------------------------------
+
+// Metadata fold: getFieldCount() over a final class -> compile-time constant.
+TEST(ReflectionTests, foldFinalFieldCount) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "public final class Gadget {\n"
+        "    public int32 a;\n"
+        "    public int32 b;\n"
+        "    public int32 c;\n"
+        "    public Gadget() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Gadget g = heap Gadget();\n"
+        "        return Class.of(g).getFieldCount();\n"
+        "    }\n"
+        "}\n"), 3);
+}
+
+// Field-load fold: getInt32(g, litIdx) over a final class -> direct field load.
+TEST(ReflectionTests, foldFinalFieldLoad) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "public final class Gadget {\n"
+        "    public int32 a;\n"
+        "    public int32 b;\n"
+        "    public Gadget() { this.a = 7; this.b = 9; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Gadget g = heap Gadget();\n"
+        "        return Class.of(g).getInt32(g, 1);\n"
+        "    }\n"
+        "}\n"), 9);
+}
+
+// A non-final class declines the fold (subclass could shift layout) — the
+// runtime reflective path still returns the correct value.
+TEST(ReflectionTests, foldDeclinesNonFinal) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class Widget {\n"
+        "    public int32 a;\n"
+        "    public Widget() { this.a = 42; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Widget w = heap Widget();\n"
+        "        return Class.of(w).getInt32(w, 0);\n"
+        "    }\n"
+        "}\n"), 42);
+}
+
+// The fold must NOT bypass visibility: a @Sealed final class's private field
+// stays un-folded so the runtime IllegalAccessException still fires.
+TEST(ReflectionTests, foldDeclinesSealedPrivate) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.IllegalAccessException;\n"
+        "@Sealed\n"
+        "public final class Secret {\n"
+        "    private int32 s;\n"
+        "    public Secret() { this.s = 5; return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Secret x = heap Secret();\n"
+        "        try {\n"
+        "            int32 v = Class.of(x).getInt32(x, 0);\n"
+        "            return v;\n"
+        "        } catch (IllegalAccessException e) {\n"
+        "            return 99;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 99);
+}

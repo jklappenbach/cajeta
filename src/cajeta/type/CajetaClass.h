@@ -554,6 +554,16 @@ namespace cajeta {
         llvm::Function* getOrCreateReflectNewDecl();
         void emitReflectNewBody();
 
+        // REFL-8/REFL-10: post-pass that patches a deferred #ClassObject. A
+        // class parsed before cajeta.reflect.Class gets a #ClassObject whose
+        // slot 0 (Class#VTable) was NULL at populate time and was left out of
+        // the process registry. Once the whole stdlib (Class included) is built,
+        // this fills slot 0 with the real Class#VTable and registers the class,
+        // so forName/allClasses/classesInPackage/classesAnnotated can reflect on
+        // it without a null-vtable virtual-dispatch crash. No-op for classes
+        // whose slot 0 already resolved (and were already registered).
+        void finalizeClassObject();
+
         // Implicit destructor chaining helpers (MemoryModel.md § 140,
         // C++ semantics).
         //

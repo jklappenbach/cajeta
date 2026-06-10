@@ -801,6 +801,10 @@ namespace cajeta {
             if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
                 klass->emitReflectInvokeBody();
                 klass->emitReflectNewBody();
+                // REFL-8/10: patch + register #ClassObjects deferred at populate
+                // (classes parsed before cajeta.reflect.Class) now that Class is
+                // built — makes them forName/allClasses-discoverable.
+                klass->finalizeClassObject();
             }
         }
 

@@ -3771,6 +3771,19 @@ void* __cajeta_class_for_name(void* nameBytes) {
     return NULL;
 }
 
+// REFL-10: registry enumeration for Class.allClasses / classesInPackage /
+// classesAnnotated. The filtering (package match, annotation match) is done in
+// cajeta over getName()/hasAnnotation(); these two primitives just expose the
+// registry as an indexable list. __cajeta_class_at returns a #ClassObject
+// pointer (a borrow of a process-lifetime static) or NULL when out of range.
+int32_t __cajeta_class_count(void) {
+    return (int32_t) g_cajeta_class_count;
+}
+void* __cajeta_class_at(int32_t idx) {
+    if (idx < 0 || idx >= g_cajeta_class_count) return NULL;
+    return g_cajeta_classes[idx].classObject;
+}
+
 // RTTI scalar readers — `rtti` is a CajetaRtti* (the #RttiGlobal address a
 // Class instance holds in its `rtti` field).
 int32_t __cajeta_rtti_field_count(void* rtti) {

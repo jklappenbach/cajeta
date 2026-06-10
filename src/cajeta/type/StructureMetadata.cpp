@@ -720,23 +720,36 @@ namespace cajeta {
             // runtime runs at startup. One ctor per class — this block is the
             // single #ClassObject definition site (guarded by initClassObject),
             // so no duplicate registration is emitted.
-            llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
-            llvm::FunctionType* regTy =
-                llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
-            llvm::FunctionCallee regFn =
-                lmod->getOrInsertFunction("__cajeta_register_class", regTy);
-            std::string canon = structure->toCanonical();
-            llvm::Function* regCtor = llvm::Function::Create(
-                llvm::FunctionType::get(voidTy, false),
-                llvm::GlobalValue::InternalLinkage,
-                "__cajeta_class_reg_ctor." + canon, lmod);
-            llvm::IRBuilder<> rb(
-                llvm::BasicBlock::Create(ctx, "entry", regCtor));
-            llvm::Constant* nameStr =
-                rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
-            rb.CreateCall(regFn, {nameStr, structure->getClassObjectGlobal()});
-            rb.CreateRetVoid();
-            llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+            //
+            // ONLY register when slot 0 (Class#VTable) is non-null. A class whose
+            // #ClassObject has a null Class#VTable (the handful of stdlib classes
+            // parsed before cajeta.reflect.Class — see above) is not reflectively
+            // dispatchable: any accessor on the returned Class virtual-dispatches
+            // through slot 0 and would crash. forName/allClasses/classesInPackage/
+            // classesAnnotated (REFL-8/REFL-10) enumerate the registry and call
+            // those accessors, so a null-vtable entry must not be discoverable.
+            // Class.of never returns these (such classes are never reflected on
+            // in v1), which is why earlier phases never tripped over them.
+            if (!llvm::isa<llvm::ConstantPointerNull>(classVtableRef)) {
+                llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+                llvm::FunctionType* regTy =
+                    llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
+                llvm::FunctionCallee regFn =
+                    lmod->getOrInsertFunction("__cajeta_register_class", regTy);
+                std::string canon = structure->toCanonical();
+                llvm::Function* regCtor = llvm::Function::Create(
+                    llvm::FunctionType::get(voidTy, false),
+                    llvm::GlobalValue::InternalLinkage,
+                    "__cajeta_class_reg_ctor." + canon, lmod);
+                llvm::IRBuilder<> rb(
+                    llvm::BasicBlock::Create(ctx, "entry", regCtor));
+                llvm::Constant* nameStr =
+                    rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
+                rb.CreateCall(regFn,
+                    {nameStr, structure->getClassObjectGlobal()});
+                rb.CreateRetVoid();
+                llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+            }
         }
     }
 
