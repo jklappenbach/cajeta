@@ -218,7 +218,12 @@ namespace cajeta {
                     return module->getBuilder()->CreateGlobalString(decoded, "str");
                 }
                 auto* structTy = llvm::cast<llvm::StructType>(klass->getLlvmType());
-                auto* mod = module->getLlvmModule();
+                // Emit the string-literal globals into the module the builder is
+                // currently emitting into (the emit/user module for a reuse-path
+                // instantiation), not the resolution module. == getLlvmModule()
+                // in production. The vtable cross-module fixup below is keyed off
+                // the same `mod`.
+                auto* mod = module->emitTargetLlvmModule();
                 auto* i8Ty = llvm::Type::getInt8Ty(ctx);
                 auto* i32Ty = llvm::Type::getInt32Ty(ctx);
                 auto* i64Ty = llvm::Type::getInt64Ty(ctx);

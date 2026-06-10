@@ -2030,7 +2030,7 @@ namespace cajeta {
                 + std::to_string(lambdaCounter++);
         }
 
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = module->emitTargetLlvmModule();
         // Already emitted? (Re-entering codegen for the same lambda — rare,
         // but harmless to return the existing function pointer.)
         if (auto* existing = lmod->getFunction(synthesizedName)) {
@@ -2823,7 +2823,7 @@ namespace cajeta {
             // allocation and the vtable slot) and the ctor's LLVM
             // function pointer for the thunk's call.
             auto& llvmCtx = *module->getLlvmContext();
-            auto* lmod = module->getLlvmModule();
+            auto* lmod = module->emitTargetLlvmModule();
             llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
             auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(resolvedType);
@@ -2939,7 +2939,7 @@ namespace cajeta {
         }
 
         auto& llvmCtx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = module->emitTargetLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
         // Synthesize a thunk function matching the closure ABI:
@@ -3563,7 +3563,7 @@ namespace cajeta {
 
         auto* outerBuilder = module->getBuilder();
         auto& llvmCtx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = module->emitTargetLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
         // Step 1: Evaluate every arg at the spawn site. Any side effects
@@ -3779,10 +3779,17 @@ namespace cajeta {
                     /*label=*/string(), loaded));
             }
             string methodNameCopy = innerCall->getMethodCallName();
-            // For static methods, thisValue is nullptr.
+            // For static methods, thisValue is nullptr. Pass `module` as the
+            // caller module so the worker call is emitted with THIS module's
+            // builder/insert point (the trampoline we just built) — not the
+            // receiver class's. For a stdlib-template worker resolved via the
+            // uninstantiated `ParallelDriver` template (structureStack.back()),
+            // the class's own emit module is the cached stdlib, whose builder
+            // points at some unrelated stdlib function; using it would emit the
+            // call into the wrong function ("instruction in another function").
             innerResult = targetClass->invokeMethod(
                 methodNameCopy, entries, /*isConstructor=*/false,
-                /*thisValue=*/nullptr);
+                /*thisValue=*/nullptr, /*callerModule=*/module);
             if (innerResult) {
                 innerType = CajetaType::of(innerResult);
                 // CajetaType::of can't recover a class type from an opaque-

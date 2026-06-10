@@ -143,6 +143,11 @@ namespace cajeta {
         // one with empty methodTypeArguments); instantiations themselves
         // don't recurse.
         map<string, MethodPtr> methodInstantiationCache;
+        // Reuse epoch this cache was last valid for. When it lags
+        // CajetaModule::getReuseEpoch() (a new test in the reuse path), the
+        // cache holds instantiations bound to a freed user emit module and is
+        // cleared on next use. Unused (epoch never bumps) in production.
+        uint64_t methodInstantiationCacheEpoch = 0;
 
         // Stack of drop frames. Each Block::generateCode pushes a frame
         // at entry, registers any owned locals declared inside into the
@@ -155,6 +160,17 @@ namespace cajeta {
         vector<vector<llvm::Value*>> dropFrameStack;
 
         CajetaModulePtr module;
+        // Emit target — the llvm::Module that this method's Function/IR is
+        // CREATED in. Defaults to null (→ getEmitModule() returns `module`, so
+        // resolution and emission coincide, the production behavior). Set only
+        // in the stdlib test-reuse path: a stdlib-template instantiation over a
+        // USER type keeps `module` = the stdlib template module (name resolution
+        // needs its imports/substitution) but sets emitModule = the user module,
+        // so its IR lands there and the cached stdlib module stays pristine.
+        // Context is shared in reuse mode, so only Function/global CREATION sites
+        // (module->getLlvmModule()) consult getEmitModule(); getLlvmContext()
+        // (type creation) and getBuilder() (context-bound insert point) do not.
+        CajetaModulePtr emitModule;
         llvm::IRBuilder<>* builder;
         llvm::FunctionType* llvmFunctionType;
         llvm::Function* llvmFunction;
@@ -368,6 +384,14 @@ namespace cajeta {
         // change a method's parent after construction.
         void setParentForInstantiation(CajetaClassPtr p) { parent = p; }
 
+        // Reparent the emit-target module of an instantiation's method. Used by
+        // the stdlib test-reuse path (Design B): a user-triggered stdlib-template
+        // instantiation's bodies must emit into the USER module, not the stdlib
+        // module, so the cached stdlib module is never mutated. Must be called
+        // BEFORE generatePrototype (nothing emitted yet); `module->getLlvmModule()`
+        // is the codegen target (Method.cpp ~994/998/1024).
+        void setModuleForInstantiation(CajetaModulePtr m) { module = m; }
+
         vector<FormalParameterPtr> getParameterList() { return parameterList; }
 
         map<string, FormalParameterPtr> getParameters() { return parameters; }
@@ -463,6 +487,11 @@ namespace cajeta {
         FieldPtr getVariable(string name);
 
         CajetaModulePtr getModule() { return module; }
+
+        // The module this method's IR is CREATED in (see emitModule). Falls back
+        // to the resolution module when unset — i.e. production / non-reuse.
+        CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
+        void setEmitModule(CajetaModulePtr m) { emitModule = m; }
 
         const string toCanonical(bool labeled = false) {
             return buildCanonical(parent, name, parameterList, labeled);

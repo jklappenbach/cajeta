@@ -4,6 +4,7 @@
 
 #include "JitTestHelper.h"
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -21,8 +22,14 @@
 #include "JitWinSymbols.h"
 #include "JitErrorShim.h"
 
+#include <list>
+#include <set>
+
+#include "cajeta/type/CajetaClass.h"
+
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Transforms/Utils/Cloning.h"   // CloneModule — stdlib-reuse merge
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
@@ -123,6 +130,225 @@ writeSourceToTemp(const std::string& source, const std::string& fqClassName) {
     return {base, full};
 }
 
+// Cross-module codegen sweeps + the phase-1/2 fixpoint + per-class static
+// initializers, run over the given module list. Factored so the stdlib prime
+// and each per-test compile run the exact same passes. In reuse mode the caller
+// MUST include the persistent stdlib module here even though it is not in the
+// test Compiler's own list: user code can instantiate a stdlib template (e.g.
+// `Stream<Pair<...>>`), whose new CajetaClass is owned by the stdlib module, so
+// its method bodies are emitted only if the stdlib module is in this loop.
+// Re-visiting already-built stdlib methods is a cheap idempotent no-op.
+void runCodegenPasses(const std::list<cajeta::CajetaModulePtr>& modules) {
+    cajeta::CajetaModule::validatePlaceholders();
+    cajeta::CajetaModule::resolveAdviceMatches();
+    cajeta::CajetaModule::setActiveProfile("test");
+    cajeta::CajetaModule::resolveDependencyGraph();
+
+    size_t prevMethodCount = 0;
+    while (true) {
+        size_t methodCount = 0;
+        for (auto& m : modules)
+            methodCount += m->getAllMethods().size();
+        for (auto& m : modules)
+            for (auto& method : m->getAllMethods())
+                method->getLlvmFunctionType();
+        for (auto& m : modules) {
+            for (auto& method : m->getAllMethods()) {
+                try {
+                    method->generateCode();
+                } catch (cajeta::Exception& e) {
+                    std::cerr << "[CajetaException @ codegen] "
+                        << e.getErrorId() << ": " << e.getMessage()
+                        << "  (method=" << method->getName() << ")\n";
+                    throw;
+                }
+            }
+        }
+        size_t after = 0;
+        for (auto& m : modules)
+            after += m->getAllMethods().size();
+        if (after == methodCount && after == prevMethodCount) break;
+        prevMethodCount = after;
+    }
+    for (auto& m : modules)
+        for (auto& [name, klass] : m->getStructures())
+            if (klass) klass->generateStaticInitializers();
+}
+
+// True when a test's stdlib-affecting flags match the defaults the stdlib was
+// primed with. Only then is the cached stdlib IR valid for the test; otherwise
+// the caller falls back to a fresh, fully-isolated Compiler (the original path).
+// poison-free / drop-chain / stack-trace are runtime toggles set dynamically and
+// do NOT change stdlib codegen, so they don't gate reuse.
+bool stdlibReusable(const CajetaJit::Options& o) {
+    return o.boundsCheckEnabled
+        && o.overflowChecksEnabled
+        && !o.boundsCheckMode.has_value()
+        && !o.liveSetMode.has_value();
+}
+
+// Process-global cache: the stdlib parsed + codegen'd ONCE into a shared
+// LLVMContext, with a captured post-stdlib baseline restored before each reusing
+// test. Collapses the ~14s/test stdlib parse+codegen to a one-time cost.
+struct StdlibReuseCache {
+    llvm::LLVMContext sharedContext;
+    std::unique_ptr<cajeta::Compiler> primeCompiler;   // owns the TargetMachine the stdlib references
+    cajeta::CajetaModulePtr stdlibModule;
+    std::map<std::string, cajeta::CajetaClassPtr> baselineStructures;
+    std::set<std::string> baselineStructNames;   // stdlib llvm StructType names at prime
+    // Per-baseline-function signature (instruction count; SIZE_MAX = declaration)
+    // captured at prime. A reusing test that MUTATES or REMOVES a baseline
+    // function corrupts the next test through the shared module — this names it.
+    // New functions (template instantiations) are accumulation, not corruption.
+    std::map<std::string, size_t> baselineFnSig;
+    std::set<std::string> baselineGlobalNames;   // stdlib llvm GlobalVariable names
+    bool primed = false;
+
+    static StdlibReuseCache& instance() {
+        static StdlibReuseCache c;
+        return c;
+    }
+
+    void ensurePrimed() {
+        if (primed) return;
+        cajeta::Compiler::setSharedContext(&sharedContext);
+        // First Compiler under the shared context primes the global type
+        // tables (resetGlobals + init) in that context.
+        primeCompiler = std::make_unique<cajeta::Compiler>();
+        primeCompiler->ensureStdlibModule();            // parse stdlib once
+        runCodegenPasses(primeCompiler->getModules());   // codegen stdlib bodies + static inits
+        stdlibModule = cajeta::CajetaModule::getStdlibModule();
+        // Snapshot the pristine state AFTER the stdlib is fully built.
+        cajeta::CajetaType::captureBaseline();
+        cajeta::CajetaModule::captureBaseline();
+        baselineStructures = stdlibModule->getStructures();
+        // Record the stdlib's llvm StructType names so per-test (user) struct
+        // names can be stripped afterward — see clearTransientStructNames.
+        for (auto* st : stdlibModule->getLlvmModule()->getIdentifiedStructTypes())
+            if (st->hasName()) baselineStructNames.insert(st->getName().str());
+        // Pristineness signature: per-function instruction count + global names.
+        for (auto& F : *stdlibModule->getLlvmModule())
+            baselineFnSig[F.getName().str()] =
+                F.isDeclaration() ? SIZE_MAX : F.getInstructionCount();
+        for (auto& G : stdlibModule->getLlvmModule()->globals())
+            if (G.hasName()) baselineGlobalNames.insert(G.getName().str());
+        primed = true;
+    }
+
+    // Diagnostic (CAJETA_STDLIB_VERIFY=1): after a reusing test's codegen, check
+    // that no BASELINE stdlib function was mutated/removed in the shared module.
+    // Such a change is the cross-test corruption that breaks the *next* test.
+    // Reports MUTATED/REMOVED functions and the running count of accumulated
+    // (new) functions + globals. Returns true if pristine. O(#stdlib functions)
+    // — gated, only runs when explicitly verifying.
+    bool verifyPristine(const std::string& label) {
+        if (!primed) return true;
+        auto* m = stdlibModule->getLlvmModule();
+        std::vector<std::string> mutated, removed;
+        size_t newFns = 0;
+        std::set<std::string> seen;
+        for (auto& F : *m) {
+            std::string name = F.getName().str();
+            seen.insert(name);
+            auto it = baselineFnSig.find(name);
+            if (it == baselineFnSig.end()) { ++newFns; continue; }
+            size_t sig = F.isDeclaration() ? SIZE_MAX : F.getInstructionCount();
+            if (sig != it->second)
+                mutated.push_back(name + " (" + std::to_string(it->second)
+                                  + "->" + std::to_string(sig) + ")");
+        }
+        for (auto& [name, sig] : baselineFnSig)
+            if (!seen.count(name)) removed.push_back(name);
+        size_t newGlobals = 0;
+        std::vector<std::string> newFnNames, newGlobalNames;
+        for (auto& F : *m)
+            if (!baselineFnSig.count(F.getName().str()))
+                newFnNames.push_back(F.getName().str()
+                    + (F.isDeclaration() ? " (decl)" : " (def)"));
+        for (auto& G : m->globals())
+            if (G.hasName() && !baselineGlobalNames.count(G.getName().str())) {
+                ++newGlobals;
+                newGlobalNames.push_back(G.getName().str()
+                    + (G.isDeclaration() ? " (decl)" : " (def)"));
+            }
+        if (std::getenv("CAJETA_STDLIB_VERIFY_NAMES")) {
+            for (auto& s : newFnNames)
+                std::fprintf(stderr, "[stdlib-verify]   +FN %s\n", s.c_str());
+            for (auto& s : newGlobalNames)
+                std::fprintf(stderr, "[stdlib-verify]   +GLOBAL %s\n", s.c_str());
+        }
+        bool pristine = mutated.empty() && removed.empty();
+        if (!pristine || newFns || newGlobals) {
+            std::fprintf(stderr,
+                "[stdlib-verify] %s  %s  +%zu fns +%zu globals%s\n",
+                label.c_str(), pristine ? "PRISTINE" : "*** LEAK ***",
+                newFns, newGlobals,
+                pristine ? "" : "  <-- baseline mutation");
+        }
+        for (auto& s : mutated)
+            std::fprintf(stderr, "[stdlib-verify]   MUTATED %s\n", s.c_str());
+        for (auto& s : removed)
+            std::fprintf(stderr, "[stdlib-verify]   REMOVED %s\n", s.c_str());
+        return pristine;
+    }
+
+    // Strip the NAMES of this test's user-defined struct types from the shared
+    // context so the next test's `getOrCreateLlvmType` (CajetaType.cpp:1072,
+    // StructType::getTypeByName) does NOT find a stale, already-bodied struct of
+    // the same name (e.g. two tests both declaring `test.S`) — which would
+    // double-set the body / impose a stale layout and crash. Baseline (stdlib)
+    // struct names are preserved. Safe: the JIT module is a separate
+    // bitcode-roundtripped context, so the live test is unaffected; only the
+    // throwaway compile-context type identity is released.
+    void clearTransientStructNames(llvm::Module* m) {
+        if (!primed) return;
+        for (auto* st : m->getIdentifiedStructTypes())
+            if (st->hasName() && !baselineStructNames.count(st->getName().str()))
+                st->setName("");
+    }
+
+    // Reset per-test global state to the captured post-stdlib baseline: drop
+    // every user module's types/methods/structures AND any user-triggered
+    // stdlib template instantiation's CAJETA-side objects. The stdlib
+    // llvm::Module itself is left as-is — codegen must target it (the cached
+    // baseline objects hold llvm::Function*/Global* pointers INTO it, so a new
+    // instantiation that references a baseline vtable must be emitted there too;
+    // emitting into a clone yields cross-module references). The merge takes a
+    // self-contained CLONE, so the (growing) cached module is never consumed.
+    // Instantiations accumulate in it across the shard — bounded and harmless
+    // for built-in type args; see the known-limitation note at the call site.
+    void restoreBaseline() {
+        if (!primed) return;
+        // Advance the reuse generation so per-template method-instantiation
+        // caches (held on persistent stdlib Methods) invalidate stale entries
+        // bound to the previous test's now-freed user emit module.
+        cajeta::CajetaModule::bumpReuseEpoch();
+        cajeta::CajetaType::restoreBaseline();
+        cajeta::CajetaModule::restoreBaseline();   // re-pins the stdlib singleton
+        stdlibModule->getStructures() = baselineStructures;
+        // Drop every method-template instantiation a PRIOR test registered on a
+        // persistent stdlib class (e.g. ParallelDriver::forEachWorker<test.M>,
+        // forEachParallelChain<test.M>). Such a class outlives the per-test user
+        // module its instantiations were codegen'd into; left registered, the
+        // next test's resolveMethod finds the stale entry and skips re-emitting
+        // the body into ITS module — the call site then references an undefined
+        // symbol at JIT link. The per-template methodInstantiationCache is already
+        // epoch-invalidated; this clears the parallel registration on the host
+        // class so the next test re-instantiates + re-codegens cleanly. (Class-
+        // template instantiations like Stream<test.M> ride their own per-test
+        // class object, which is dropped with the user module — no cleanup
+        // needed.) Collect-then-remove to avoid mutating the maps mid-iteration.
+        for (auto& [canonical, klass] : stdlibModule->getStructures()) {
+            if (!klass) continue;
+            std::vector<cajeta::MethodPtr> stale;
+            for (auto& m : klass->getMethodList()) {
+                if (m && m->isMethodTemplateInstantiation()) stale.push_back(m);
+            }
+            for (auto& m : stale) klass->removeMethod(m);
+        }
+    }
+};
+
 } // namespace
 
 CajetaJit::CajetaJit() = default;
@@ -179,6 +405,47 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // pipeline by parsing each module into the same Compiler.
     ensureJitInitialized();
 
+    // Coarse per-phase wall-clock timing, gated on CAJETA_JIT_TIMING, to locate
+    // the per-test fixed cost (parse vs cajeta codegen vs LLJIT backend compile).
+    const bool jitTiming = std::getenv("CAJETA_JIT_TIMING") != nullptr;
+    auto timingStart = std::chrono::steady_clock::now();
+    auto timingPrev = timingStart;
+    auto mark = [&](const char* label) {
+        if (!jitTiming) return;
+        auto now = std::chrono::steady_clock::now();
+        double step = std::chrono::duration<double, std::milli>(now - timingPrev).count();
+        double total = std::chrono::duration<double, std::milli>(now - timingStart).count();
+        std::fprintf(stderr, "[jit-timing] %-26s +%8.1f ms  (total %8.1f ms)\n",
+                     label, step, total);
+        timingPrev = now;
+    };
+
+    // Stdlib-reuse decision. When the test's stdlib-affecting flags match the
+    // primed defaults, bind the next Compiler to the shared context + cached
+    // stdlib (skips the ~14s re-parse/re-codegen). Otherwise force a fresh,
+    // fully-isolated Compiler — the original path — so flag-sensitive stdlib
+    // codegen stays correct.
+    // Gated OFF by default. The reuse path collapses the ~14s/test stdlib
+    // parse+codegen to a one-time prime and is correct for tests that don't
+    // instantiate stdlib templates over USER types. Cross-test memory safety
+    // for that case (a stdlib-template instantiation referencing a freed user
+    // type, accumulated in the shared module) is NOT yet solved — it needs
+    // either redirecting stdlib-template instantiation ownership to the user
+    // module (a production codegen change) or per-test module reset with
+    // cajeta-object rebinding. Until then the default path is the original
+    // fully-isolated compile. Opt in with CAJETA_STDLIB_REUSE=1.
+    static const bool kReuseEnabled = std::getenv("CAJETA_STDLIB_REUSE") != nullptr;
+    const bool reuseStdlib = kReuseEnabled && stdlibReusable(opts);
+    auto& stdlibCache = StdlibReuseCache::instance();
+    if (reuseStdlib) {
+        stdlibCache.ensurePrimed();
+        stdlibCache.restoreBaseline();
+        cajeta::Compiler::setSharedContext(&stdlibCache.sharedContext);
+    } else {
+        cajeta::Compiler::setSharedContext(nullptr);
+    }
+    mark("stdlib reuse prep");
+
     static std::mt19937_64 rng(std::random_device{}());
     auto sourceRoot = std::filesystem::temp_directory_path()
                     / ("cajeta_multi_" + std::to_string(rng()));
@@ -225,6 +492,15 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         auto m = compiler->createModule(sourcePath.string(),
                                         sourceRoot.string(),
                                         archiveRoot.string());
+        // Reuse mode: designate the first user module as the per-test fallback
+        // emit target BEFORE compiling it, so a stdlib-template instantiation
+        // triggered during type resolution (no user-type arg, no codegen frame)
+        // emits into this disposable user module instead of the cached stdlib.
+        // TemplateInstantiator consults this when nothing better is available.
+        if (!primary) {
+            primary = m;
+            if (reuseStdlib) cajeta::CajetaModule::setReuseEmitModule(primary);
+        }
         // CajetaException carries the diagnostic; the gtest "Unknown C++
         // exception" wrapper otherwise eats the message. Rethrow after
         // surfacing so the test harness still sees the failure.
@@ -235,9 +511,9 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                 << ": " << e.getMessage() << "\n";
             throw;
         }
-        if (!primary) primary = m;
     }
     (void) fqEntryClass;
+    mark("parse+compile(modules)");
 
     // The compiler's stdlib module holds the parsed cajeta.error.*
     // classes + the runtime bitcode (parsed once per Compiler, see
@@ -245,62 +521,29 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // `primary` alongside the user modules — that's where extern
     // decls in user IR get resolved to real definitions.
 
-    // Cross-module sweeps. Compiler::compile(module) already runs
-    // buildPendingPrototypes + emitUnrecoverableMarker per call;
-    // the rest of these only make sense after every module has
-    // parsed, so they live here.
-    cajeta::CajetaModule::validatePlaceholders();
-    cajeta::CajetaModule::resolveAdviceMatches();
-    cajeta::CajetaModule::setActiveProfile("test");
-    cajeta::CajetaModule::resolveDependencyGraph();
-
-    // Phase 1 (signature registration) + Phase 2 (body codegen),
-    // looped until quiescent. A user method's body can codegen an
-    // intrinsic that instantiates a stdlib template (e.g. `xs.stream()`
-    // → ArrayStream<int32>), which lands the new methods in stdlib's
-    // structures AFTER stdlib's earlier pass already ran. The do/while
-    // re-runs both phases over every module until no new methods
-    // surface — Method::generateCode and ::getLlvmFunctionType are
-    // both idempotent so re-visiting already-emitted methods is a
-    // cheap no-op.
-    size_t prevMethodCount = 0;
-    while (true) {
-        size_t methodCount = 0;
-        for (auto& m : compiler->getModules()) {
-            methodCount += m->getAllMethods().size();
-        }
-        for (auto& m : compiler->getModules()) {
-            for (auto& method : m->getAllMethods()) {
-                method->getLlvmFunctionType();
-            }
-        }
-        for (auto& m : compiler->getModules()) {
-            for (auto& method : m->getAllMethods()) {
-                try {
-                    method->generateCode();
-                } catch (cajeta::Exception& e) {
-                    std::cerr << "[CajetaException @ codegen] "
-                        << e.getErrorId() << ": " << e.getMessage()
-                        << "  (method=" << method->getName() << ")\n";
-                    throw;
-                }
-            }
-        }
-        size_t after = 0;
-        for (auto& m : compiler->getModules()) {
-            after += m->getAllMethods().size();
-        }
-        if (after == methodCount && after == prevMethodCount) break;
-        prevMethodCount = after;
+    // Cross-module sweeps + phase-1/2 fixpoint + per-class static initializers.
+    // In reuse mode `compiler` holds only the user modules (the stdlib was
+    // codegen'd once at prime and lives in the shared context). User code that
+    // instantiates a stdlib template (e.g. `xs.stream()` → ArrayStream<int32>)
+    // now EMITS that instantiation's IR into a USER module (resolution/emit
+    // separation: TemplateInstantiator sets the instantiation's emit module to
+    // the user-type arg's module / the per-test sink; Method/CajetaClass swap to
+    // their emit module while lowering — see Method::generateCode). So the
+    // cached stdlib is NEVER in the per-test codegen list and is never mutated:
+    // baseline functions don't grow and no user-type instantiations accumulate
+    // in it (verify, below, stays PRISTINE +0/+0). In fresh mode the Compiler's
+    // own list already includes the stdlib.
+    runCodegenPasses(compiler->getModules());
+    if (reuseStdlib) {
+        // Diagnostic: assert the cached stdlib stayed byte-pristine this test
+        // (CAJETA_STDLIB_VERIFY=1). See verifyPristine.
+        static const bool kVerify = std::getenv("CAJETA_STDLIB_VERIFY") != nullptr;
+        if (kVerify) stdlibCache.verifyPristine(fqEntryClass);
+        // The per-test sink has done its job (all instantiation emitted); drop
+        // the reference so it doesn't retain this test's primary module.
+        cajeta::CajetaModule::setReuseEmitModule(nullptr);
     }
-    // P6.2 — after quiescence, emit per-class clinit-style ctors for
-    // any static fields with non-foldable initializers. Mirrors what
-    // Compiler.cpp does for non-JIT compilation.
-    for (auto& m : compiler->getModules()) {
-        for (auto& [name, klass] : m->getStructures()) {
-            if (klass) klass->generateStaticInitializers();
-        }
-    }
+    mark("phase1/2 codegen loop");
 
     // Merge every secondary module into `primary`'s llvm::Module.
     // After the parse-stdlib-once refactor, each module owns only
@@ -317,6 +560,19 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
             throw std::runtime_error("JIT module-merge failed");
         }
     }
+    // Reuse mode: the persistent stdlib isn't in this Compiler's module list
+    // (it's process-global, built once), so CLONE its IR — including any
+    // template instantiations this test triggered into it — and link the
+    // self-contained clone into `primary`. Cloning (not moving) leaves the
+    // cached module available for the next test.
+    if (reuseStdlib) {
+        auto stdlibClone = llvm::CloneModule(*stdlibCache.stdlibModule->getLlvmModule());
+        if (llvm::Linker::linkModules(*primary->getLlvmModule(),
+                                       std::move(stdlibClone))) {
+            throw std::runtime_error("JIT stdlib-clone merge failed");
+        }
+    }
+    mark("linkModules merge");
 
     // CajetaXPU host launch: build each @Kernel's cubin and emit a global
     // constructor that registers it with the runtime, so a JIT'd
@@ -383,6 +639,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     if (llvm::verifyModule(*llvmModule, &verifyStream)) {
         throw std::runtime_error("JIT verify failed: " + verifyErr);
     }
+    mark("nameMap + verify");
 
     // Build the JIT. We need to extract the module out of the compiler's context so
     // we can wrap it in a ThreadSafeModule with its own context. Simplest: clone
@@ -422,6 +679,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // would otherwise stay real calls in JIT execution. optimizeModule at O0 runs
     // exactly the AlwaysInlinerPass (see Optimizer.cpp / value-type plan S1b).
     cajeta::optimizeModule(**parsed, nullptr, cajeta::OptLevel::O0);
+    mark("bitcode roundtrip + O0");
     // IR capture (S0/S4): stash the post-codegen, post-AlwaysInline (O0) host IR
     // so a test can assert the lowered shape — the flat <N x T> Vector intrinsics
     // (S0, unaffected by an inline-only O0 pass) AND whether a @ValueType operator
@@ -457,6 +715,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     if (auto err = jitState->jit->addIRModule(std::move(tsModule))) {
         throw std::runtime_error("LLJIT addIRModule failed");
     }
+    mark("LLJIT create + addIRModule");
 
     // Make host process symbols (printf, malloc, etc.) resolvable from JIT'd code.
     auto& mainDylib = jitState->jit->getMainJITDylib();
@@ -544,6 +803,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         throw std::runtime_error("LLJIT initialize failed: "
             + cajeta::jittest::toString(std::move(err)));
     }
+    mark("LLJIT initialize (ctors)");
 
     // Apply per-test runtime-flag overrides. The runtime ships in two
     // places — the embedded bitcode merged into the JIT module, AND
@@ -581,6 +841,15 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         cajeta::jittest::consumeError(sym.takeError());
     }
     ::__cajeta_set_stack_trace_capture(desiredTrace);
+
+    // Reuse mode: release this test's user struct-type names from the shared
+    // context so the next test can re-declare same-named classes (`test.S`)
+    // without colliding with this test's now-stale, already-bodied structs.
+    // The JIT module is a separate bitcode-roundtripped context, so the live
+    // test is unaffected. (llvmModule is primary's compile-context module.)
+    if (reuseStdlib) {
+        stdlibCache.clearTransientStructNames(llvmModule);
+    }
 
     return jitState;
 }

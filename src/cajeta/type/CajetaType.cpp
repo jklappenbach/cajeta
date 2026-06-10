@@ -124,6 +124,57 @@ namespace cajeta {
         // to honor that.
     }
 
+    namespace {
+        // Snapshot of every global type container, taken once after the
+        // pristine stdlib is built (StdlibCache::prime) and reassigned before
+        // each reusing test (StdlibCache::restoreBaseline). Holds copies of
+        // both the CajetaType member-statics and the file-statics above, so a
+        // single restore reverts every user-visible mutation. `valid` guards
+        // the production case where a baseline was never captured.
+        struct TypeGlobalsBaseline {
+            bool valid = false;
+            map<string, CajetaTypePtr> canonicalMap;
+            map<string, map<string, int32_t>> enumConstants;
+            map<TypeKey, CajetaTypePtr> typeMap;
+            map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
+            map<string, string> g_archive;
+            set<string> g_enumArchive;
+            set<string> g_valueTypeArchive;
+            set<string> g_interfaceArchive;
+            map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
+            map<string, WildcardInfoEntry> g_wildcardInfo;
+        };
+        TypeGlobalsBaseline g_typeBaseline;
+    }
+
+    void CajetaType::captureBaseline() {
+        g_typeBaseline.canonicalMap = canonicalMap;
+        g_typeBaseline.enumConstants = enumConstants;
+        g_typeBaseline.typeMap = typeMap;
+        g_typeBaseline.llvmTypeIdMap = llvmTypeIdMap;
+        g_typeBaseline.g_archive = g_archive;
+        g_typeBaseline.g_enumArchive = g_enumArchive;
+        g_typeBaseline.g_valueTypeArchive = g_valueTypeArchive;
+        g_typeBaseline.g_interfaceArchive = g_interfaceArchive;
+        g_typeBaseline.g_archiveTemplateMeta = g_archiveTemplateMeta;
+        g_typeBaseline.g_wildcardInfo = g_wildcardInfo;
+        g_typeBaseline.valid = true;
+    }
+
+    void CajetaType::restoreBaseline() {
+        if (!g_typeBaseline.valid) return;
+        canonicalMap = g_typeBaseline.canonicalMap;
+        enumConstants = g_typeBaseline.enumConstants;
+        typeMap = g_typeBaseline.typeMap;
+        llvmTypeIdMap = g_typeBaseline.llvmTypeIdMap;
+        g_archive = g_typeBaseline.g_archive;
+        g_enumArchive = g_typeBaseline.g_enumArchive;
+        g_valueTypeArchive = g_typeBaseline.g_valueTypeArchive;
+        g_interfaceArchive = g_typeBaseline.g_interfaceArchive;
+        g_archiveTemplateMeta = g_typeBaseline.g_archiveTemplateMeta;
+        g_wildcardInfo = g_typeBaseline.g_wildcardInfo;
+    }
+
     map<string, string>& CajetaType::getArchive() { return g_archive; }
 
     void CajetaType::markArchiveEnum(const string& canonical) {

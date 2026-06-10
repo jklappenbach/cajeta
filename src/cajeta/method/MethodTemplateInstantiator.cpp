@@ -23,6 +23,7 @@
 #include "../codec/JsonSynthesizer.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/CajetaLlvmVisitor.h"
+#include "../compile/Compiler.h"
 #include "../error/Exception.h"
 #include "CajetaParser.h"
 #include "CajetaLexer.h"
@@ -139,11 +140,73 @@ namespace cajeta {
             }
         }
 
+        // Reuse path: this cache lives on the persistent stdlib template Method,
+        // so a hit from a PRIOR test would hand back an instantiation whose emit
+        // module (a user module) has been freed. Self-invalidate when the test
+        // generation advanced. No-op in production (epoch never bumps).
+        uint64_t epoch = CajetaModule::getReuseEpoch();
+        if (epoch != methodInstantiationCacheEpoch) {
+            // Also UNREGISTER the stale instantiations from the host class's
+            // method map. bringMethodTemplateInstantiationToLife (CajetaClass.cpp)
+            // registered each there + emitted its body into the PREVIOUS test's
+            // (now-freed) user emit module; left in place, that registration makes
+            // the next test's codegen short-circuit ("already registered") and
+            // never re-emit the body into ITS module — the call site then
+            // references an undefined symbol at JIT link. The host is the
+            // template's own parent class (persistent stdlib class), so its method
+            // map outlives the per-test modules. No-op in production (epoch never
+            // bumps; the cache is empty).
+            if (parent) {
+                for (auto& entry : methodInstantiationCache) {
+                    if (entry.second) {
+                        // Full unregister from EVERY per-class map (not just
+                        // `methods`): addMethod's duplicate-static check reads
+                        // unlabeledMethodMap, so a partial erase would re-trip it.
+                        parent->removeMethod(entry.second);
+                    }
+                }
+            }
+            methodInstantiationCache.clear();
+            methodInstantiationCacheEpoch = epoch;
+        }
+
         // Cache hit?
         std::string suffix = buildMethodArgSuffix(args);
         auto cached = methodInstantiationCache.find(suffix);
         if (cached != methodInstantiationCache.end()) {
             return cached->second;
+        }
+
+        // Emit target for this instantiation (resolution/emit separation,
+        // reuse-gated) — mirrors the class-template choke point. A stdlib method
+        // template specialized over a USER type emits into the user module so
+        // the cached stdlib stays pristine. Chosen from: a user-type method arg's
+        // emit module; the receiver class's emit module (e.g. Stream<test.M>);
+        // the active codegen frame; the per-test sink. module in production.
+        CajetaModulePtr emitOwner = module;
+        if (Compiler::getSharedContext()
+                && module == CajetaModule::getStdlibModule()) {
+            for (auto& arg : args) {
+                auto ac = std::dynamic_pointer_cast<CajetaClass>(arg);
+                if (ac && ac->getEmitModule() && ac->getEmitModule() != module) {
+                    emitOwner = ac->getEmitModule();
+                    break;
+                }
+            }
+            if (emitOwner == module && parent && parent->getEmitModule()
+                    && parent->getEmitModule() != module) {
+                emitOwner = parent->getEmitModule();
+            }
+            if (emitOwner == module
+                    && CajetaModule::getCurrentCodegenModule()
+                    && CajetaModule::getCurrentCodegenModule() != module) {
+                emitOwner = CajetaModule::getCurrentCodegenModule();
+            }
+            if (emitOwner == module
+                    && CajetaModule::getReuseEmitModule()
+                    && CajetaModule::getReuseEmitModule() != module) {
+                emitOwner = CajetaModule::getReuseEmitModule();
+            }
         }
 
         if (methodSource.empty()) {
@@ -297,6 +360,14 @@ namespace cajeta {
         // canonical-name building uses the right class name. The visitor
         // set it to the wrapper class.
         inst->setParentForInstantiation(parent);
+        // Emit this specialization into the user module in reuse mode (its body
+        // is codegen'd later via the cross-module obligation recorded by
+        // noteCrossModuleMethodInstantiation; Method::generateCode then swaps to
+        // this emit module so the body + its spawn trampolines / string
+        // constants land in the user module, not the cached stdlib). The walk
+        // above only built the AST; no IR has been emitted yet. No-op in
+        // production (emitOwner == module).
+        if (emitOwner != module) inst->setEmitModule(emitOwner);
         // Keep the bare method name. Two-layer naming (Method::getMapKey
         // + Method::getLlvmSymbolName) appends the method-arg suffix to
         // the addMethod map keys and the LLVM symbol for instantiations,

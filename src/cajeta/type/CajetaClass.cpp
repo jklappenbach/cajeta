@@ -242,6 +242,29 @@ namespace cajeta {
         }
     }
 
+    void CajetaClass::removeMethod(const MethodPtr& method) {
+        if (!method) return;
+        methods.erase(method->getMapKey());
+        staticMethods.erase(method->getMapKey());
+        for (auto it = methodList.begin(); it != methodList.end(); ) {
+            if (*it == method) it = methodList.erase(it); else ++it;
+        }
+        auto eraseFromGenericMap =
+            [&](map<string, map<string, MethodPtr>>& gmap, bool labeled) {
+                auto git = gmap.find(method->toGeneric(labeled));
+                if (git == gmap.end()) return;
+                git->second.erase(method->getMapKey(labeled));
+                if (git->second.empty()) gmap.erase(git);
+            };
+        if (method->isConstructor()) {
+            eraseFromGenericMap(labeledConstructorMap, true);
+            eraseFromGenericMap(unlabeledConstructorMap, false);
+        } else {
+            eraseFromGenericMap(labeledMethodMap, true);
+            eraseFromGenericMap(unlabeledMethodMap, false);
+        }
+    }
+
     void CajetaClass::addProperty(StructurePropertyPtr field) {
         properties[field->getName()] = field;
         propertyList.push_back(field);
@@ -354,7 +377,7 @@ namespace cajeta {
             uint64_t parentOffsetInThis) {
         if (!impl || !impl->getLlvmFunctionType()) return nullptr;
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::FunctionType* fnTy = impl->getLlvmFunctionType();
 
         std::string name = sanitizeSymbol(
@@ -412,7 +435,7 @@ namespace cajeta {
         if (!parentVtableType) return nullptr;
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         std::string vtName = sanitizeSymbol(
             qName->toCanonical() + "$as$" + parentCanon + "#VTable");
         if (auto* existing = lmod->getGlobalVariable(vtName)) {
@@ -514,6 +537,19 @@ namespace cajeta {
         // times as parents fill in. The flag is set at the end so a
         // partial / aborted run doesn't claim done.
         if (prototypeBuilt) return;
+        // Emit-target swap (test-reuse) — see Method::generatePrototype. For a
+        // stdlib-template instantiation owned (emit-wise) by a user module,
+        // point `module` at the emit module so this class's vtable / RTTI /
+        // struct-type globals land there, leaving the cached stdlib pristine.
+        // Layout/type resolution is context-bound (shared) + canonicalMap-keyed,
+        // so it is unaffected. No-op in production (emit==resolution).
+        CajetaModulePtr* moduleSlot = &module;
+        CajetaModulePtr savedModule = module;
+        if (emitModule && emitModule != module) module = emitModule;
+        struct RestoreModule {
+            CajetaModulePtr* slot; CajetaModulePtr saved;
+            ~RestoreModule() { *slot = saved; }
+        } restoreModule{moduleSlot, savedModule};
 
         // Templates aren't types — `Box` alone has no layout, no methods to
         // lower, no vtable to build. Defer the structural work until a
@@ -979,7 +1015,7 @@ namespace cajeta {
         if (implementedInterfaces.empty()) return;
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         std::string classCanonical = qName->toCanonical();
 
@@ -1907,6 +1943,17 @@ namespace cajeta {
     }
 
     void CajetaClass::generateStaticInitializers() {
+        // Emit-target swap (test-reuse) — see generatePrototype. Emit the clinit
+        // + static-field globals into the emit (user) module for an
+        // instantiation, leaving the cached stdlib pristine. No-op in production.
+        CajetaModulePtr* moduleSlot = &module;
+        CajetaModulePtr savedModule = module;
+        if (emitModule && emitModule != module) module = emitModule;
+        struct RestoreModule {
+            CajetaModulePtr* slot; CajetaModulePtr saved;
+            ~RestoreModule() { *slot = saved; }
+        } restoreModule{moduleSlot, savedModule};
+
         // First pass — pick out static properties that have an
         // initializer AND whose shape isn't covered by the
         // constant-folder. Anything covered by foldStaticInitializer
@@ -1930,7 +1977,7 @@ namespace cajeta {
         if (needsClinit.empty()) return;
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
 
         std::string fnName = std::string("__cajeta_clinit_")
             + qName->toCanonical();
@@ -2149,7 +2196,7 @@ namespace cajeta {
         if (!prop || !prop->isStatic()) return nullptr;
         if (!prop->getType() || !prop->getType()->getLlvmType()) return nullptr;
 
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         const std::string globalName =
             qName->toCanonical() + "." + prop->getName();
 
@@ -2233,7 +2280,7 @@ namespace cajeta {
         if (llvmStackDropFunction) return llvmStackDropFunction;
         if (interfaceFlag) return nullptr;
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
@@ -2519,7 +2566,7 @@ namespace cajeta {
             return llvmDropFunction;
         }
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
@@ -3976,7 +4023,16 @@ namespace cajeta {
         // after a foreign function's terminator. Callers in user code
         // pass their own module; the fallback is preserved for sites
         // that haven't been threaded through yet.
-        CajetaModulePtr emitMod = callerModule ? callerModule : module;
+        // Fallback to the class's EMIT module, not its resolution `module`.
+        // For a stdlib-template instantiation specialized over a user type
+        // (test-reuse), `module` is the cached stdlib (resolution) while
+        // getEmitModule() is the user module where this class's IR actually
+        // lives. Using `module` here created the callee decl in the cached
+        // stdlib (e.g. ParallelDriver<test.Counter>'s worker methods) while the
+        // call instruction landed in the user module via the global builder —
+        // a cross-module reference the verifier rejects (and the dropped stdlib
+        // never supplies). No-op in production: getEmitModule() == module.
+        CajetaModulePtr emitMod = callerModule ? callerModule : getEmitModule();
         // Value-return (sret) ABI: a method that returns a stack value by copy
         // takes the result slot as hidden arg 0 (before `this`). Use the
         // caller-supplied slot, or materialize a temp in the caller's frame; the
@@ -4148,7 +4204,25 @@ namespace cajeta {
         // we have a guaranteed-fresh Function*. Else, declare it
         // in the current module via getOrInsertFunction so we
         // never have to dereference the possibly-stale pointer.
+        // The callee decl/def must live in the module the call INSTRUCTION is
+        // being inserted into — i.e. the module of the builder's current insert
+        // function — not in `emitMod->getLlvmModule()`. They differ in the
+        // test-reuse path: `this` here can be the UNINSTANTIATED template class
+        // (structureStack.back() during a stdlib method body), whose emit module
+        // is the cached stdlib, while the actual emission target (the user
+        // module, via the global builder) is where the call lands. Using the
+        // class's module created the callee decl in stdlib while the call landed
+        // in the user module — a cross-module reference the verifier rejects.
+        // Deriving from the insert point mirrors ensureFunctionVisible and is a
+        // no-op in production (insert function lives in emitMod's module there).
         llvm::Module* currentLm = emitMod->getLlvmModule();
+        if (llvm::IRBuilder<>* ib = emitMod->getBuilder()) {
+            if (llvm::BasicBlock* ibb = ib->GetInsertBlock()) {
+                if (llvm::Function* ibf = ibb->getParent()) {
+                    currentLm = ibf->getParent();
+                }
+            }
+        }
         const std::string canonical = method->getLlvmSymbolName();
         llvm::Function* targetFn = currentLm->getFunction(canonical);
         if (!targetFn) {
