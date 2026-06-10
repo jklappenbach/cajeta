@@ -100,9 +100,12 @@ public:
         std::vector<llvm::Type*> tys;
         tys.reserve(params.size() + kNumCoordParams);
         for (auto& p : params) {
-            // Buffers and Texture2D handles are flat host pointers; a Sampler
-            // rides by value as its {i32,i32} struct (p.type); scalars by value.
-            tys.push_back((p.isBuffer || p.isTexture)
+            // Buffers, Texture2D, and Image2D handles are flat host pointers; a
+            // Sampler rides by value as its {i32,i32} struct (p.type); scalars by
+            // value. (An Image2D handle is the host image-record pointer — its
+            // KernelParam.type is `float`, so without isImage here it would wrongly
+            // arrive as a float scalar.)
+            tys.push_back((p.isBuffer || p.isTexture || p.isImage)
                               ? (llvm::Type*) llvm::PointerType::get(ctx, 0)
                               : p.type);
         }
@@ -342,6 +345,45 @@ public:
         return b.CreateCall(callee,
                             {texHandle, filterMode, addressMode, x, y, z},
                             "texcube.sample");
+    }
+
+    // Image2D storage images (the writable twin of Texture2D). On CPU the image
+    // handle is a host pointer to the image record (a flat R32f float store), so
+    // store/load lower to calls into the C runtime, like the texture fetch path —
+    // no descriptor/surface object. `imgHandle` is the materialized param
+    // (fn->getArg, a host pointer); `x`/`y` are i32 texel indices.
+    //
+    //   void  __cajeta_xpu_cpu_image_store(ptr img, i32 x, i32 y, float value)
+    //   float __cajeta_xpu_cpu_image_load (ptr img, i32 x, i32 y)
+    void storeImage(llvm::IRBuilderBase& b, llvm::Module& m,
+                    llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
+                    llvm::Value* value) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx),
+            {llvm::PointerType::get(ctx, 0), i32, i32, f32}, /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_image_store", fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+            f->setDoesNotThrow();
+        b.CreateCall(callee, {imgHandle, x, y, value});
+    }
+
+    llvm::Value* loadImage(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Value* imgHandle, llvm::Value* x,
+                           llvm::Value* y) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* fnTy = llvm::FunctionType::get(
+            f32, {llvm::PointerType::get(ctx, 0), i32, i32}, /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_image_load", fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+            f->setDoesNotThrow();
+        return b.CreateCall(callee, {imgHandle, x, y}, "img.load");
     }
 
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime

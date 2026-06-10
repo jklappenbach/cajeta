@@ -10279,15 +10279,46 @@ void __cajeta_xpu_texturecube_free(void* self, int64_t handle) {
 // --- Image2D (writable storage images) --------------------------------------
 // Image2D is the writable twin of Texture2D: a 2-D R32_SFLOAT storage image a
 // kernel writes via `img.store(x, y, value)` (OpImageWrite), and the host reads
-// back with `img.download(out)`. Vulkan-only for v1 (the gfx bridge); other
-// backends return 0 / no-op so the cajeta drop chain still works. The handle is
-// a 1-based index into the same cajeta_vk_tex table as Texture2D (storage flag set).
+// back with `img.download(out)`. Vulkan (storage image), AMD (surface object),
+// and CPU (the reference host float store); NV returns 0 / no-op so the cajeta
+// drop chain still works. The handle is a backend-specific record/index.
+
+// CPU Image2D: the in-process reference store — a flat R32f host float array in a
+// cajeta_cpu_texobj (channels=1), the writable twin of the CPU texture path. The
+// device kernel writes/reads it via __cajeta_xpu_cpu_image_store/_load below.
+static int64_t cajeta_xpu_cpu_image_alloc(uint32_t w, uint32_t h) {
+    struct cajeta_cpu_texobj* t =
+        (struct cajeta_cpu_texobj*) malloc(sizeof(*t));
+    if (!t) return 0;
+    t->w = w; t->h = h; t->d = 1;
+    t->format = CAJ_TEXFMT_R32F; t->channels = 1; t->levels = 1;
+    t->mipoff[0] = 0; t->mipw[0] = w; t->miph[0] = h;
+    t->data = (float*) calloc((size_t) w * h, sizeof(float));
+    if (!t->data) { free(t); return 0; }
+    return (int64_t) (intptr_t) t;
+}
+
+static void cajeta_xpu_cpu_image_download(int64_t handle, void* host,
+                                          uint32_t w, uint32_t h) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) (intptr_t) handle;
+    if (!t || !t->data || !host) return;
+    memcpy(host, t->data, (size_t) w * h * sizeof(float));
+}
+
+static void cajeta_xpu_cpu_image_free(int64_t handle) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) (intptr_t) handle;
+    if (!t) return;
+    free(t->data);
+    free(t);
+}
 
 // __cajeta_xpu_image_alloc(this, width, height) -> int64 handle.
 int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
     (void) self;
     if (width == 0 || height == 0) return 0;
     switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU:
+            return cajeta_xpu_cpu_image_alloc(width, height);  // host float store (R32F)
         case CAJ_XPU_VULKAN:
             return cajeta_xpu_vk_tex_alloc(width, height, 1, CAJ_TEXFMT_R32F, 1, 2, 1, 1);  // storage 2-D (R32F)
         case CAJ_XPU_HIP:
@@ -10305,6 +10336,9 @@ void __cajeta_xpu_image_download(void* self, int64_t handle, void* host,
     if (!handle || !host || width == 0 || height == 0) return;
     void* data = (void*) ((char*) host + 8);
     switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU:
+            cajeta_xpu_cpu_image_download(handle, data, width, height);
+            return;
         case CAJ_XPU_VULKAN:
             cajeta_xpu_vk_tex_download(handle, data, width, height);
             return;
@@ -10319,6 +10353,7 @@ void __cajeta_xpu_image_free(void* self, int64_t handle) {
     (void) self;
     if (!handle) return;
     switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: cajeta_xpu_cpu_image_free(handle); return;
         case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
         case CAJ_XPU_HIP: cajeta_xpu_hip_image_free(handle); return;
         default: return;
@@ -10650,6 +10685,26 @@ caj_v4i __cajeta_xpu_cpu_tex_fetch_rgba_i32(void* texp, int32_t x, int32_t y,
     caj_v4i c = { 0, 0, 0, 1 };
     for (int i = 0; i < t->channels; ++i) c[i] = p[i];
     return c;
+}
+
+// CPU Image2D store/load — the in-process lowering of `img.store(x, y, v)` /
+// `img.load(x, y)` (the writable twin of tex.fetch). `imgp` is the host image
+// record (a single-channel R32f cajeta_cpu_texobj). Bounds-guarded: an in-range
+// store writes data[y*w + x], an out-of-range store is dropped and an OOB load
+// returns 0 — so a stray kernel index can't corrupt host memory (the reference
+// path is the safe one). LLJIT resolves these like the tex-fetch symbols.
+void __cajeta_xpu_cpu_image_store(void* imgp, int32_t x, int32_t y, float v) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) imgp;
+    if (!t || !t->data) return;
+    if (x < 0 || y < 0 || (uint32_t) x >= t->w || (uint32_t) y >= t->h) return;
+    t->data[(size_t) y * t->w + (size_t) x] = v;
+}
+
+float __cajeta_xpu_cpu_image_load(void* imgp, int32_t x, int32_t y) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) imgp;
+    if (!t || !t->data) return 0.0f;
+    if (x < 0 || y < 0 || (uint32_t) x >= t->w || (uint32_t) y >= t->h) return 0.0f;
+    return t->data[(size_t) y * t->w + (size_t) x];
 }
 
 // --- Texture3D CPU sample/fetch ---------------------------------------------

@@ -101,7 +101,7 @@ The verb seam exists; the rest of the model from doc §1 does not.
 - [x] **Capability primitives** — atomics (float/int/CAS), wave (shuffle/ballot/reduce/scan/
   rotate/laneId), quad, **cooperative matrix** (WMMA on AMD, native on Vulkan), shader clock.
 - [~] **`Image2D` storage** (`storeImage`/`loadImage`) — Vulkan **+ AMD** (surface objects,
-  device-verified on gfx1151); CPU/NV open.
+  device-verified on gfx1151) **+ CPU** (host float store, the oracle); NV open.
 - [ ] **fp8 / E4M3 / E5M2** element type — blocked upstream (no LLVM backend type).
 
 ### 3.2 Nouns
@@ -187,8 +187,9 @@ Core's contract is closed when **doc §3's verb set is ● / ○ on every shippe
 1. ~~**Ray query is genuinely core**~~ ✅ **DONE (inc 1–3)** — software BVH + traversal over
    triangles + AABBs, full getters, confirm/generate, nearest-hit, cross-checked CPU↔Vulkan
    (§3.3). *Was the single biggest item.* (TLAS/instancing deferred.)
-2. ~~**AMD `Image2D`** store/load~~ ✅ (surface objects, device-verified gfx1151); NVIDIA
-   advanced seams + B5 on-device; **Metal** backend; CPU/NV storage images.
+2. ~~**AMD `Image2D`** store/load~~ ✅ (surface objects, device-verified gfx1151) + ~~CPU
+   `Image2D`~~ ✅ (host float store, the oracle); NVIDIA advanced seams + B5 on-device; **Metal**
+   backend; NV storage images.
 3. **The model plumbing** — ~~noun seam~~ ✅ (§1), `Device.supports(...)` ✅ + ~~the impl
    override + execution mechanism~~ ✅ (`AsImpl`/`.of` + `CAJETA_GPU_AS_IMPL` + the `$sw`
    variant; the *automatic* density/extent heuristic still remaining), ~~the **internal**

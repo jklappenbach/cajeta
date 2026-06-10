@@ -202,7 +202,7 @@ device-verified · **◐** emit-only (NVIDIA) · **◷** intended-core, fallback
 | `sampleTexture` / `fetchTexture` (2-D) | ● | ● | ● | ◐ | ✗ |
 | `sample`/`fetch` **3D · 1D · 2DArray · Cube** | ● | ● | ● | — | ✗ |
 | mipmaps / explicit LOD (`fetchLod`/`sampleLod`) | ● | ● | ◑ | — | ✗ |
-| `storeImage` / `loadImage` (`Image2D` storage RMW) | — | ● | ● | — | ✗ |
+| `storeImage` / `loadImage` (`Image2D` storage RMW) | ● | ● | ● | — | ✗ |
 
 **◑** AMD mipmaps: code complete + emit-verified, but `hipMallocMipmappedArray` is
 unsupported on gfx1151/ROCm 7.2.2 — degrades gracefully, device test SKIPs.
@@ -294,7 +294,8 @@ Ray query exercises both seams and the impl-layer rule end to end:
 
 ## 5. Honest status & reconciled drift
 
-- **CPU** — complete (reference). No storage images; ray query pending its software path (◷).
+- **CPU** — complete (reference), incl. storage images (`Image2D` — the in-process host float
+  store, the oracle for the device storage-image path).
 - **Vulkan** — complete, all native, device-verified.
 - **AMD** — complete & device-verified, incl. storage images (`Image2D` via surface objects /
   `__ockl_image_store_2D`/`load_2D`); **except** mipmaps (driver-blocked, code done).
@@ -333,7 +334,7 @@ match this document:
   `Image2D` storage images (surface objects, device-verified on gfx1151). Remaining:
   NVIDIA advanced seams + B5 on-device; Metal backend; the *automatic*
   density/extent heuristic; the **external** vendor-SDK that exposes the degrade seam (seed);
-  fp8 (pending LLVM); CPU/NV storage images.
+  fp8 (pending LLVM); NV storage images.
 - **Vendor libraries** — out of this plan; each its own external effort on the degrade
   framework, sequenced by hardware (AMD now; NVIDIA on B5; Metal on Mac).
 - **GFX** — the ray-tracing pipeline (SBT, hit/miss shaders); built on this foundation's
