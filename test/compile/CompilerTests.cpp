@@ -55,10 +55,13 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-02: 110 → 123 — feature/build-system merge (collection.Cache, codec.json getters, …).
 // 2026-06-06: 123 → 264 — cajeta-net merge (cajeta.net.{tcp,udp,dns,http,tls,ws}, …, +141).
 // --- merge of origin/main into cajeta-xpu ---
-// 2026-06-06: both preludes now load together (main's 264 + the xpu.core
-// structures HEAD added beyond the shared base). This count is self-
-// anchoring — re-anchored to the live modules.size() after the merge build.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 273;
+// 2026-06-10: re-anchored after merging origin/main (Reflection Phases 1–11)
+// into windows-dylib-slimdown. The reflection prelude (cajeta.reflect.Class,
+// Modifiers, annotation/registry classes, reflective adapters) added structures
+// on top of the prior shared base; live modules.size() is now 1 user module +
+// 311 stdlib. This count is self-anchoring — re-anchor to the live
+// modules.size() after any merge that grows the prelude.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 311;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
