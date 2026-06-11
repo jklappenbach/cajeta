@@ -70,7 +70,7 @@ tracked in `cajeta-gpu`.)
 - [x] Resolve a non-builtin call to a sibling `@Device` method; cached `alwaysinline` device function; recursion guard (→ `XPU-N01`)
 - [x] Scalar params + scalar/void return; helper-calls-helper chains
 - [x] `Buffer<T>` params in helpers — `LoweringTarget::bufferParamType` seam; verified on AMD & VK
-- [ ] **Follow-up:** clean cross-class resolution (helpers are same-class today)
+- [x] **Follow-up:** clean cross-class resolution — `OtherClass.helper(...)` resolves a `@Device` method in any class via the global canonicalMap (`resolveDeviceMethod`); still always-inline. Device-verified (Stage 11).
 - [ ] **Follow-up:** explicit recursion-rejection emit test
 
 ### Stage 4 — Vulkan spec-constant workgroup size (Item 3) ✅
@@ -133,7 +133,7 @@ Part II + the Part I follow-ups is the **definition of done** for `cajeta-xpu`.
 
 ### Stage 11 — Kernel-language completeness
 - [ ] Labeled `break`/`continue` in kernels (deferred `XPU-N01`)
-- [ ] Cross-class `@Device` helpers (Stage 3 follow-up) + true call ABI (not always-inline) where backends allow
+- [x] Cross-class `@Device` helpers — a kernel calls a `@Device` method in another class (a shared device-math library); resolved via the canonicalMap, the foreign owner's body lowered in its own context (`lowerDeviceFn`). Device-verified on CPU + Vulkan (`crossClassDeviceHelperOn{Cpu,Device}`). *(Still always-inline; the true non-inline call ABI is a separate follow-up where backends allow.)*
 - [ ] Function pointers / device-side dispatch (bounded)
 - [ ] Printf-style device debug (`printf` on NV/AMD; VK debug-printf extension)
 - [ ] Kernel specialization constants surfaced to the language (compile-time `const` params)

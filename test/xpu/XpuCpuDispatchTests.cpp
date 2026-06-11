@@ -1573,6 +1573,52 @@ TEST(XpuCpuDispatchTests, deviceHelperBufferParamOnCpu) {
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*3)";
 }
 
+// Stage 11: a kernel calls a @Device helper in ANOTHER class (a shared device-
+// math library). MathLib.square lives in its own class; DevX's kernel resolves
+// it cross-class (lowerDeviceFn inlines the foreign owner's body). out[i] = i*i.
+const char* kCrossClassDeviceSource =
+    "package test;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class MathLib {\n"
+    "    @Device\n"
+    "    public static int32 square(int32 x) { return x * x; }\n"
+    "}\n"
+    "public class DevX {\n"
+    "    @Kernel\n"
+    "    public static void k(Buffer<int32> out) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        out[i] = MathLib.square((int32) i);\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 64;\n"
+    "        int32[] hout = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        k.launch(s, grid: [1], block: [64])(out);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (hout[i] != (int32)(i * i)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCpuDispatchTests, crossClassDeviceHelperOnCpu) {
+    auto jit = CajetaJit::compile(kCrossClassDeviceSource, "test.DevX",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != i*i — cross-class @Device call)";
+}
+
 // Buffer.slice — a non-owning sub-view passed to a kernel writes through the
 // parent's storage at the slice offset; the head half stays untouched.
 TEST(XpuCpuDispatchTests, bufferSliceKernelOnCpu) {
