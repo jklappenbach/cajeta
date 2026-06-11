@@ -484,6 +484,7 @@ Where each cell stands, per backend.
 | Raw device pointers              | yes (default)        | yes (default)            | `KHR_buffer_device_address` + `PhysicalStorageBuffer` |
 | `malloc` inside kernel           | yes (device heap)    | yes                      | no                                     |
 | `printf` inside kernel — `Debug.printf("fmt", a, …)` (explicit args). **CPU: done + runnable** (host `printf`). NVPTX: **emit-only** below. AMD/Vulkan: **deferred** (runtime integration). | emit-only (`vprintf`) | deferred (hostcall) | deferred (`KHR_non_semantic_info` debug printf) |
+| Specialization constants — `Spec.geti(slot, default)` (i32; SpecId `4`+slot). **Vulkan: a genuine `OpSpecConstant`** (override-ready). **CPU/NVPTX/AMD: bake the default** (per-launch compile). Host override deferred to the launch contract. | baked default | baked default | `OpSpecConstant` (SpecId 4+) |
 | Graph capture                    | yes (CUDA graphs)    | yes (HIP graphs)         | n/a (use secondary cmd buffers)        |
 | Ray-tracing acceleration         | OptiX (external)     | HIP-RT (external)        | `VK_KHR_ray_tracing_pipeline`          |
 

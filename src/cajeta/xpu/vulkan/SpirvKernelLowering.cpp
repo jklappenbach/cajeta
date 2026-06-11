@@ -248,6 +248,39 @@ public:
         b.CreateCall(f, {});
     }
 
+    // Specialization constant (Stage 11): a GENUINE OpSpecConstant the launch
+    // can set at pipeline creation. LLVM 23's SPIR-V backend has no spec-constant
+    // IR intrinsic, so we emit a uniquely-named Private (addrspace 10) global
+    // seeded with the default and VOLATILE-load it; the post-emit pass
+    // (injectUserSpecConstants) rewrites that global's initializer into an
+    // OpSpecConstant decorated SpecId = kFirstUserSpecId + slot. The volatile
+    // load stops LLVM from const-folding the never-stored global back to a
+    // literal. Module-scope ⇒ the same value across all invocations, which is
+    // the spec-constant semantics. The runtime supplies no value for SpecId ≥ 4
+    // yet, so it reads the default (host override = the deferred launch contract).
+    llvm::Value* specConstantI32(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 unsigned slot, int32_t defaultValue) override {
+        constexpr unsigned kPrivateAS = 10;   // addressSpaceToStorageClass → Private
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        unsigned specId = kFirstUserSpecId + slot;
+        std::string gname = "cajeta_spec_" + std::to_string(specId);
+        llvm::GlobalVariable* gv = m.getGlobalVariable(gname,
+                                                       /*AllowInternal=*/true);
+        if (!gv) {
+            gv = new llvm::GlobalVariable(
+                m, i32, /*isConstant=*/false,
+                llvm::GlobalValue::InternalLinkage,
+                llvm::ConstantInt::get(i32, (uint64_t) (int64_t) defaultValue,
+                                       /*isSigned=*/true),
+                gname, /*InsertBefore=*/nullptr,
+                llvm::GlobalValue::NotThreadLocal, kPrivateAS);
+            gv->setAlignment(llvm::MaybeAlign(4));
+        }
+        llvm::LoadInst* ld = b.CreateLoad(i32, gv, gname + ".v");
+        ld->setVolatile(true);
+        return ld;
+    }
+
     // Vulkan marks the entry via createKernel's attributes, not a CC here.
     void decorateKernel(llvm::Function* /*fn*/, llvm::Module& /*m*/) override {}
 

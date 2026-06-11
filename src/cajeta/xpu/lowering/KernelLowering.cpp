@@ -2107,6 +2107,33 @@ private:
                 target.devicePrintf(builder, mod, fmt, pargs);
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
+        } else if (recv == "Spec") {
+            // Specialization constant (Stage 11): Spec.geti(slot, default). Both
+            // args are compile-time i32 constants; returns i32. On Vulkan this
+            // is a genuine OpSpecConstant (SpecId kFirstUserSpecId+slot)
+            // defaulting to `default`, override-able at pipeline creation (the
+            // host override is the deferred launch contract — it reads the
+            // default today). CPU/AMD/NVPTX bake the default (per-launch compile).
+            if (name == "geti") {
+                const auto& args = mc->getParameters();
+                if (args.size() != 2)
+                    unsupported("Spec.geti expects (slot, default) — two "
+                                "compile-time i32 constants");
+                auto* slotC = llvm::dyn_cast<llvm::ConstantInt>(
+                    lowerExpr(args[0].expression));
+                auto* defC = llvm::dyn_cast<llvm::ConstantInt>(
+                    lowerExpr(args[1].expression));
+                if (!slotC || !defC)
+                    unsupported("Spec.geti(slot, default) needs compile-time "
+                                "i32 constants");
+                uint64_t slot = slotC->getZExtValue();
+                if (slot >= LoweringTarget::kMaxUserSpecConstants)
+                    unsupported("Spec.geti slot must be < " +
+                                std::to_string(
+                                    LoweringTarget::kMaxUserSpecConstants));
+                return target.specConstantI32(builder, mod, (unsigned) slot,
+                                              (int32_t) defC->getSExtValue());
+            }
         } else if (recv == "Wave") {
             const auto& args = mc->getParameters();
             if (name == "width") return target.waveWidth(builder, mod);
@@ -4224,6 +4251,19 @@ void LoweringTarget::devicePrintf(llvm::IRBuilderBase&, llvm::Module&,
     throw cajeta::Exception(
         "Debug.printf is not supported on this backend (CPU + NVPTX only; AMD "
         "hostcall / Vulkan DebugPrintf deferred)", "XPU-N01");
+}
+
+// Default specialization constant: bake the compile-time default as an i32
+// literal. Correct for CPU/AMD/NVPTX — they (re)compile the kernel per launch,
+// so there is no pipeline-time binding to specialize against; the value IS the
+// default. Vulkan overrides with a real OpSpecConstant (override-able at
+// pipeline creation).
+llvm::Value* LoweringTarget::specConstantI32(llvm::IRBuilderBase& /*b*/,
+                                             llvm::Module& m, unsigned /*slot*/,
+                                             int32_t defaultValue) {
+    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()),
+                                  (uint64_t) (int64_t) defaultValue,
+                                  /*isSigned=*/true);
 }
 
 // Default float atomic: a system-scope atomicrmw at `order` (Default → relaxed/

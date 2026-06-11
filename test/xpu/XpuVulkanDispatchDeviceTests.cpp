@@ -176,6 +176,56 @@ TEST(XpuVulkanDispatchDeviceTests, dynamicSharedOnDevice) {
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != (n-1)-i)";
 }
 
+// Stage 11: a USER specialization constant on Vulkan. `Spec.geti(0, 4242)`
+// lowers to a genuine OpSpecConstant (SpecId 4) defaulting to 4242 — emitted via
+// a Private witness global the post-emit pass rewrites. The runtime supplies no
+// value for SpecId ≥ 4 yet (host override = the deferred launch contract), so it
+// reads the default: every element == 4242. Matches specConstantBakesDefaultOnCpu
+// (the oracle). If the spec constant didn't validate or read back, the device
+// would fault or read 0/garbage — distinguishing the feature.
+TEST(XpuVulkanDispatchDeviceTests, specConstantDefaultOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class SC {\n"
+        "    @Kernel\n"
+        "    public static void fill(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { out[i] = Spec.geti(0, 4242); }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        int32[] hout = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+        "        Buffer<int32> out = heap Buffer<int32>(0, n);\n"
+        "        out.allocate();\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != 4242) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.SC", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != 4242)";
+}
+
 // Item 6: a grid-stride for-each. `for (uint32 i, float32 v : in.range(n))`
 // lowers to `for (i = globalId.x; i < n; i += gridSize.x) { v = in[i]; ... }`.
 // The launch grid is deliberately SMALLER than n (grid=4, block=64 ⇒ 256

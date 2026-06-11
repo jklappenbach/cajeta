@@ -38,10 +38,13 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <random>
 #include <string>
+#include <vector>
 
 using namespace cajeta::xpu::vulkan;
 using cajeta::Compiler;
@@ -115,6 +118,25 @@ std::optional<bool> validateSpirv(const std::vector<uint8_t>& spirv) {
     int rc = llvm::sys::ExecuteAndWait(*tool, args);
     std::filesystem::remove(path);
     return rc == 0;
+}
+
+// Scan a SPIR-V binary for `OpDecorate <id> SpecId <specId>` (opcode 71, deco 1)
+// — direct proof that a genuine specialization constant with that SpecId is
+// present, as opposed to a baked literal (which carries no SpecId decoration).
+bool hasSpecIdDecoration(const std::vector<uint8_t>& spirv, uint32_t specId) {
+    if (spirv.size() < 20 || (spirv.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(spirv.size() / 4);
+    std::memcpy(w.data(), spirv.data(), spirv.size());
+    if (w[0] != 0x07230203u) return false;
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) break;
+        if (op == 71u /*OpDecorate*/ && wc == 4 && w[i + 2] == 1u /*SpecId*/ &&
+            w[i + 3] == specId)
+            return true;
+        i += wc;
+    }
+    return false;
 }
 
 } // namespace
@@ -1799,6 +1821,55 @@ TEST(XpuVulkanEmitTests, lowersAtomicMemoryOrderToSpirv) {
     if (auto valid = validateSpirv(spirv))
         EXPECT_TRUE(*valid) << "memory-order kernel produced invalid SPIR-V "
                                "(Vulkan order clamp not applied?)";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped";
+}
+
+// Stage 11: `Spec.geti(slot, default)` lowers to a GENUINE OpSpecConstant on
+// Vulkan — SpecId kFirstUserSpecId(4)+slot, defaulting to the compile-time
+// default — not a baked literal. The witness global is emitted by
+// SpirvKernelLowering and rewritten into the spec constant by SpirvBackend's
+// post-emit pass (applied in the BINARY path only, so this asserts on the bytes,
+// not emitSpirvText). Proven by the SpecId-4 decoration in the binary + spirv-val
+// (the Private witness var + spec-constant initializer must validate). The
+// runtime leaves SpecId ≥ 4 at its default today (host override = the deferred
+// launch contract).
+TEST(XpuVulkanEmitTests, lowersSpecConstantToOpSpecConstant) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        out[i] = Spec.geti(0, 1234);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto klass = module->getStructures()["test.M"];
+    ASSERT_NE(klass, nullptr);
+    auto k = findMethod(klass, "k");
+    ASSERT_NE(k, nullptr);
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_spec_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    ASSERT_NE(lowerKernel(k, binModule), nullptr);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+
+    // A real specialization constant carries a SpecId decoration; SpecId 4 is the
+    // first user slot (Spec.geti slot 0). A baked literal would have none.
+    EXPECT_TRUE(hasSpecIdDecoration(spirv, /*specId=*/4))
+        << "expected an OpSpecConstant with SpecId 4 for Spec.geti(0, …)";
+
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "spec-constant kernel produced invalid SPIR-V "
+                               "(Private witness var / spec-constant init?)";
     else
         GTEST_SUCCEED() << "spirv-val not installed; skipped";
 }
