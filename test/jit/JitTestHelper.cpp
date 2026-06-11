@@ -514,11 +514,12 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                      / ("cajeta_archive_" + sourceRoot.filename().string());
     std::filesystem::create_directories(archiveRoot);
 
-    // Pre-scan the just-written sources into the archive so forward references
-    // across files can create placeholders (rather than throw or silently null)
-    // when their type's declaration arrives later in the parse order. Sources
-    // don't change across a reuse->fresh fallback retry, so scan once.
-    cajeta::prescanSourceRoot(sourceRoot.string());
+    // (The just-written sources are pre-scanned into the archive INSIDE the
+    // retry loop below — after the Compiler ctor's resetGlobals() / the reuse
+    // path's restoreBaseline(), both of which clear g_archive. Scanning before
+    // the loop would have its registrations wiped by that reset, leaving
+    // forward-referenced user types (e.g. a `#M decode()` return whose `M` is
+    // declared later) resolving to null. See prescanSourceRoot placement below.)
 
     // Speculative reuse with a fresh, fully-isolated fallback. When the test's
     // stdlib-affecting flags match the primed defaults, the first attempt binds
@@ -560,6 +561,19 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         if (opts.liveSetMode.has_value()) {
             compiler->getMutableFlags().liveSet = *opts.liveSetMode;
         }
+
+        // Pre-scan the just-written sources into the archive so forward
+        // references across files can create placeholders (rather than throw or
+        // silently null) when their type's declaration arrives later in the
+        // parse order. MUST run here — after the Compiler ctor (fresh path:
+        // resetGlobals() clears g_archive) and after restoreBaseline() (reuse
+        // path: resets g_archive to the stdlib baseline). Both reset points
+        // precede this in the loop body, so scanning here is the first point at
+        // which the registrations survive to the body walk. Re-scanned each
+        // retry iteration because the Compiler is reconstructed (and the archive
+        // re-cleared) per attempt; registerArchive is first-write-wins so this
+        // is idempotent.
+        cajeta::prescanSourceRoot(sourceRoot.string());
 
         try {
             primary = nullptr;
