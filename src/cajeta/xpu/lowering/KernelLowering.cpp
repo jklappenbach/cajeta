@@ -3405,25 +3405,50 @@ private:
         unsupported("Math." + name + " is not available in a kernel on device");
     }
 
-    // Resolve a call `name(args)` / `Cls.name(args)` to a sibling @Device method
-    // of the kernel's class (first cut: same class only), matched by arity.
+    // Resolve a call `name(args)` / `Cls.name(args)` to a @Device method, matched
+    // by name + arity. Unqualified and `Self.helper(...)` resolve within the
+    // kernel's own class; `OtherClass.helper(...)` resolves CROSS-CLASS via the
+    // process-global canonicalMap (lowerDeviceFn already lowers a foreign owner's
+    // body in its own context — the SoftwareRayQuery path proves this). This lets
+    // kernels share a device-math library across classes (Stage 11).
     MethodPtr resolveDeviceMethod(
             const std::string& recv, const std::string& name,
             const std::shared_ptr<MethodCallExpression>& mc) {
-        if (!cls || !deviceFns) return nullptr;
-        if (!recv.empty()) {
-            // `Cls.helper(...)` — accept only the kernel's own (simple) class
-            // name (the last segment of the qualified name).
-            std::string q = cls->toCanonical();
-            std::string simple = q.substr(q.find_last_of('.') + 1);
-            if (recv != simple) return nullptr;
-        }
+        if (!deviceFns) return nullptr;
         unsigned argc = (unsigned) mc->getParameters().size();
-        for (auto& kv : cls->getMethods()) {
-            const MethodPtr& m = kv.second;
-            if (!m || m->getName() != name || !isDevice(*m)) continue;
-            if (m->getParameters().size() != argc) continue;
-            return m;
+        auto findIn = [&](const std::shared_ptr<CajetaClass>& c) -> MethodPtr {
+            if (!c) return nullptr;
+            for (auto& kv : c->getMethods()) {
+                const MethodPtr& m = kv.second;
+                if (m && m->getName() == name && isDevice(*m) &&
+                    m->getParameters().size() == argc)
+                    return m;
+            }
+            return nullptr;
+        };
+        // Same-class: unqualified, or `Self.helper(...)` (the kernel's own simple
+        // class name).
+        std::string simpleSelf;
+        if (cls) {
+            std::string q = cls->toCanonical();
+            simpleSelf = q.substr(q.find_last_of('.') + 1);
+            if (recv.empty() || recv == simpleSelf) {
+                if (auto m = findIn(cls)) return m;
+                if (recv.empty()) return nullptr;  // unqualified ⇒ same-class only
+            }
+        }
+        if (recv.empty()) return nullptr;
+        // Cross-class `OtherClass.helper(...)`. Match a class whose simple (or
+        // canonical) name is `recv` AND that has the @Device method — scanning by
+        // simple name + method presence sidesteps the canonicalMap's bare-name
+        // last-writer-wins. (Skip the kernel's own class, handled above.)
+        for (auto& kv : CajetaType::getCanonicalMap()) {
+            auto c = std::dynamic_pointer_cast<CajetaClass>(kv.second);
+            if (!c) continue;
+            std::string canon = c->toCanonical();
+            std::string simple = canon.substr(canon.find_last_of('.') + 1);
+            if ((simple == recv || canon == recv) && simple != simpleSelf)
+                if (auto m = findIn(c)) return m;
         }
         return nullptr;
     }

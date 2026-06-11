@@ -2025,3 +2025,52 @@ TEST(XpuVulkanDispatchDeviceTests, relaxedAtomicCounterOnDevice) {
     int r = fn();
     EXPECT_EQ(r, 777) << "got " << r << " (expected 256 — relaxed atomic count)";
 }
+
+// Stage 11: a kernel calls a @Device helper in ANOTHER class (a shared device-
+// math library) on the Vulkan device — the strictest path (descriptor-bound, the
+// inlined foreign-class helper must lower cleanly to SPIR-V). out[i] = i*i.
+TEST(XpuVulkanDispatchDeviceTests, crossClassDeviceHelperOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class MathLibVk {\n"
+        "    @Device\n"
+        "    public static int32 square(int32 x) { return x * x; }\n"
+        "}\n"
+        "public class DevXVk {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        out[i] = MathLibVk.square((int32) i);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        int32[] hout = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+        "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        k.launch(s, grid: [1], block: [64])(out);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (int32)(i * i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.DevXVk", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != i*i — cross-class @Device on device)";
+}
