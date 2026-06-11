@@ -24,7 +24,7 @@ operations register through core's **two seams** (§1.3) and obey core's
 native/portable/degrade discipline — exactly like the `AccelerationStructure` noun +
 `RayQuery` verb. See [`CajetaGPU.md`](CajetaGPU.md) §4 (which already names "3-D-Gaussian
 and point-cloud methods" as the AABB/procedural ray-query consumer) and the virtual-
-geometry consumer spec at [`../../plans/gpu/gfx/canela.md`](../../plans/gpu/gfx/canela.md).
+geometry consumer plan at [`../../plans/gpu/gfx/canela-plan.md`](../../plans/gpu/gfx/canela-plan.md).
 
 > **Status: design spec, no code.** This fixes the data model, serialization format +
 > codec (encode/decode only — *not* file I/O, §3), render path, compute path, and
@@ -274,7 +274,7 @@ and atomics together (a flagship integration test for the compute stack).
 `canela`'s raycast/G-buffer capture already emits **oriented points with material**
 (position, normal, albedo, roughness) — the exact init for a `Material` `SplatCloud`. So
 the same capture pass feeds either the TSDF→mesh path or, via a short fit, the splat tier.
-No second capture pipeline (the unifying insight in `canela.md`).
+No second capture pipeline (the unifying insight in `canela-plan.md`).
 
 ### 4.4 Dynamic / 4D (optional, later)
 Animated content is a **canonical cloud + deformation field**: an MLP/grid warp
@@ -418,5 +418,5 @@ them.
   [`Quaternions.md`](Quaternions.md), [`MaskSelect.md`](MaskSelect.md).
 - Storage images / ray query the splat paths build on — [`WritableImages.md`](WritableImages.md),
   [`RayQuery.md`](RayQuery.md).
-- The virtual-geometry consumer — [`../../plans/gpu/gfx/canela.md`](../../plans/gpu/gfx/canela.md).
+- The virtual-geometry consumer — [`../../plans/gpu/gfx/canela-plan.md`](../../plans/gpu/gfx/canela-plan.md).
 - Research library (PDFs) — `../../plans/gpu/gfx/research/gfx/splats/`.

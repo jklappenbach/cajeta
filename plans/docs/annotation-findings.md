@@ -5,7 +5,7 @@
 The 15 Cajeta-specific `@`-tags were **documentation conventions only** — defined in
 `docs/Documentation.md` as a doc-comment vocabulary, but never wired into the
 compiler. No C/C++/header source parses any of them, and no doc-comment processor exists
-(`cajetadoc` is only a plan: `plans/docs/cajetadoc-tool.md`). Of the 15, only `@complexity`
+(`cajetadoc` is only a plan: `plans/docs/cajetadoc-tool-plan.md`). Of the 15, only `@complexity`
 was ever used in real `.cajeta` source. The audit kept the semantic subset (renamed to
 alpha-only CamelCase), pruned the speculative remainder, updated the spec and the
 cajetadoc plan, and added a directive to apply the kept tags to real stdlib doc comments.
@@ -56,7 +56,7 @@ Judgment call: `@nonblocking` was treated as two segments, `non` + `blocking`, y
   …) were CamelCased in a **separate consistency pass** — see "JavaDoc tag CamelCasing"
   below.
 
-### `plans/docs/cajetadoc-tool.md` (cajetadoc build plan)
+### `plans/docs/cajetadoc-tool-plan.md` (cajetadoc build plan)
 
 - **Renamed** all 9 kept tags to CamelCase (confined to §0 and §8).
 - **Pruned** all 6 speculative tags from the §0 tag list, the §8 cost/policy lists, and
@@ -136,7 +136,7 @@ Applied across the **cajeta documentation system** only — a deterministic `sed
 - **22 `.cajeta` source files** under `runtime/src/cajeta/**` (doc comments in
   `collection/**`, `hash/**`, `lang/Object`, `threading/{LockGuard,WriteGuard}`, …).
 - **Doc + plan `.md`:** `docs/Documentation.md`, `docs/BuildTool.md`,
-  `plans/docs/cajetadoc-tool.md`, `plans/site/cajeta-site-plan.md`, and the two stale Astro copies
+  `plans/docs/cajetadoc-tool-plan.md`, `plans/site/cajeta-site-plan.md`, and the two stale Astro copies
   (`cajeta-docs-site/src/pages/docs/{Documentation,BuildTool}.md`, deletion-bound).
 
 ### Exclusions (deliberately NOT converted)
