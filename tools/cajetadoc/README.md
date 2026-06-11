@@ -6,7 +6,7 @@ comments in cajeta source into a hierarchical, browsable website organised by
 package.
 
 Authoritative spec: [`docs/Documentation.md`](../../docs/Documentation.md).
-Build plan / status: [`plans/docs/cajetadoc-tool.md`](../../plans/docs/cajetadoc-tool.md).
+Build plan / status: [`plans/docs/cajetadoc-tool-plan.md`](../../plans/docs/cajetadoc-tool-plan.md).
 
 ## Two ways to run it, one engine
 
@@ -83,7 +83,7 @@ printf 'Hello **world**.\n\n- a\n- b\n\n`code` and a [link](http://x).\n' \
 ## Status
 
 First implementation pass — see the *Implementation status* note and the
-checkboxes in [`plans/docs/cajetadoc-tool.md`](../../plans/docs/cajetadoc-tool.md). Done:
+checkboxes in [`plans/docs/cajetadoc-tool-plan.md`](../../plans/docs/cajetadoc-tool-plan.md). Done:
 ingestion + model (§2), doc-comment parsing (§3), Markdown subset (§4, partial),
 hierarchical page generation + themeable CSS (§10/§11, partial), structured-tag
 badges + block-tag widgets (§6/§8, partial), deterministic model JSON, gtest
