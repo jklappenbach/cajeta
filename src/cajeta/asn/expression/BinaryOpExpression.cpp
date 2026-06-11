@@ -731,6 +731,26 @@ namespace cajeta {
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);
         ExpressionPtr rhsAst = dynamic_pointer_cast<Expression>(children[1]);
 
+        // A binary operator requires both operands to produce a value. When an
+        // operand's codegen returns null, some sub-expression failed to yield
+        // one — e.g. a member access that doesn't resolve on the receiver's
+        // type, such as `.length` on an array (the size accessor is `count()`).
+        // Without this guard the null flows into getTypeFlagsOf / loadIfLValue
+        // below and SIGSEGVs the compiler; surface a clean diagnostic instead.
+        if (lhs == nullptr || rhs == nullptr) {
+            const char* opSym = opdispatch::binaryOpSymbol(binaryOp);
+            std::string side = (lhs == nullptr && rhs == nullptr) ? "both operands"
+                             : (lhs == nullptr ? "the left operand"
+                                               : "the right operand");
+            throw Exception(
+                std::string("binary operator '") + (opSym ? opSym : "?")
+                + "' has no value for " + side
+                + " (a sub-expression did not resolve to a value — e.g. a member"
+                  " or method that does not exist on that type, such as `.length`"
+                  " on an array, where the size accessor is `count()`)",
+                "CAJETA_ERROR_NULL_OPERAND");
+        }
+
         // B1: Matrix binary ops, intercepted before the built-in/vector path.
         // `+ - /` are element-wise over same-shape matrices -> Matrix<T,R,C>;
         // `== !=` are element-wise equality reduced to a boolean. `*` (matmul /
