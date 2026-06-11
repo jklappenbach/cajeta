@@ -82,6 +82,32 @@ global `Buffer<T>` atomic stays at Device scope. The scope is derived from the
 pointer address space — no separate API. Device-verified on RADV + gfx1151
 (`Xpu*SharedDeviceTests.sharedAtomicCounterRunsOnDevice`).
 
+## Memory order (`MemoryOrder`)
+
+The ordering is an **optional, compile-time-constant** trailing argument; omit it
+for the safe default (the backend's release/acquire — `AcqRel` on Vulkan, the
+native default elsewhere):
+
+```
+out.atomicAdd(0, 1, MemoryOrder.Relaxed);   // histogram/counter: no ordering needed
+flag.atomicExchange(0, 1, MemoryOrder.Release);
+```
+
+`MemoryOrder` is `{ Relaxed, Acquire, Release, AcqRel, SeqCst }`. LLVM bakes the
+ordering into the atomic instruction at IR-build time, so the value must be a
+literal `MemoryOrder.X`, not a runtime variable. The dominant use is **`Relaxed`**
+for pure counters / histograms / reductions where only the final value matters —
+the cheapest atomic, since atomicity still holds (only ordering is dropped).
+
+**Per-backend.** CPU / AMD / NVPTX honour all five orderings (e.g. `Relaxed` →
+a `monotonic` atomicrmw — the native relaxed atomic). **Vulkan clamps `Relaxed`
+and `SeqCst` up to `AcqRel`**: its memory model rejects a bare-relaxed device
+atomic (strict `spirv-val` requires storage-class acquire/release semantics on
+the op), so the relaxed-atomic *perf* win lands on CPU/AMD/NVPTX while Vulkan
+stays correct. Device-verified: a relaxed-atomic counter (exact count) on
+CPU + RADV + gfx1151; emit-verified order→ordering on NVPTX. The same surface
+applies to the scoped memory fences (`Barrier.deviceMemory(MemoryOrder.Acquire)`).
+
 > A shared atomic on element 0 surfaced *another* facet of the same upstream
 > `SPIRVLegalizePointerCast` gap as `atomicCompareExchange`: the element GEP folds
 > to the aggregate base, so the `atomicrmw` flows through a `spv_ptrcast` whose

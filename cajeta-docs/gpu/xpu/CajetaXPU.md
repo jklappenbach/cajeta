@@ -362,7 +362,16 @@ superset of LLVM's "scoped atomics" model and of the PTX/HSA memory
 models.
 
 - Atomics carry an explicit scope: `Thread`, `Workgroup`, `Device`,
-  `Queue`. `Queue` is only meaningful on Vulkan.
+  `Queue`. `Queue` is only meaningful on Vulkan. The scope follows the
+  pointer's storage (a `shared` array → Workgroup, a `Buffer<T>` →
+  Device).
+- The **memory order** is an optional compile-time `MemoryOrder`
+  argument on atomics and fences — `out.atomicAdd(i, 1,
+  MemoryOrder.Relaxed)`, `Barrier.deviceMemory(MemoryOrder.Acquire)`.
+  `{ Relaxed, Acquire, Release, AcqRel, SeqCst }`; default is the
+  backend's release/acquire. CPU/AMD/NVPTX honour all five; Vulkan
+  clamps `Relaxed`/`SeqCst` → `AcqRel` (its model needs storage-class
+  acq/rel on a device atomic).
 - `xpu.barrier.workgroup()` is the portable barrier — lowers to
   `bar.sync 0` (NVPTX), `s_barrier` (AMDGPU), or
   `OpControlBarrier(Workgroup, Workgroup, AcquireRelease)` (SPIR-V).

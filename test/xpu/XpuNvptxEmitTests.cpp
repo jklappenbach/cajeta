@@ -462,3 +462,44 @@ TEST(XpuNvptxEmitTests, lowersMemoryFenceToPtxMembar) {
     EXPECT_NE(ptx.find("membar.gl"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("membar.cta"), std::string::npos) << ptx;
 }
+
+// Stage 9: an explicit MemoryOrder threads through to the atomicrmw ordering on
+// a backend that honours it (NVPTX uses the portable seam — no Vulkan clamp).
+// MemoryOrder.Relaxed → `monotonic`, MemoryOrder.AcqRel → `acq_rel`. Proves the
+// enum constant resolves in the kernel body and maps to the right ordering.
+TEST(XpuNvptxEmitTests, lowersRelaxedAtomicToMonotonicPtx) {
+    auto src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.MemoryOrder;\n"
+        "public class MO {\n"
+        "    @Kernel\n"
+        "    public static void bump(Buffer<int32> a, Buffer<int32> b,\n"
+        "                            uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            a.atomicAdd(0, 1, MemoryOrder.Relaxed);\n"
+        "            b.atomicAdd(0, 1, MemoryOrder.AcqRel);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.MO");
+    auto klass = module->getStructures()["test.MO"];
+    ASSERT_NE(klass, nullptr);
+    auto bump = findMethod(klass, "bump");
+    ASSERT_NE(bump, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_memorder_device", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(bump, deviceModule), nullptr);
+
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_NE(ir.find("monotonic"), std::string::npos) << ir;  // Relaxed
+    EXPECT_NE(ir.find("acq_rel"), std::string::npos) << ir;    // AcqRel
+}

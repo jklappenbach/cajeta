@@ -1744,3 +1744,61 @@ TEST(XpuVulkanEmitTests, lowersMemoryFenceToSpirv) {
     else
         GTEST_SUCCEED() << "spirv-val not installed; skipped";
 }
+
+// Stage 9: the MemoryOrder surface accepts an explicit order on a Vulkan kernel
+// atomic and stays spirv-val clean. Vulkan's memory model rejects a bare
+// relaxed/seqcst device atomic (it needs storage-class acquire/release
+// semantics), so the Vulkan path CLAMPS Relaxed/SeqCst up to AcqRel — the
+// kernel here mixes a relaxed int, a default int, and a relaxed float, and all
+// three lower to a valid `acq_rel` atomicrmw. (Honouring relaxed natively is a
+// CPU/AMD/NVPTX property — see lowersRelaxedAtomicToMonotonicPtx.)
+TEST(XpuVulkanEmitTests, lowersAtomicMemoryOrderToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.MemoryOrder;\n"
+        "public class MO {\n"
+        "    @Kernel\n"
+        "    public static void bump(Buffer<int32> a, Buffer<int32> b,\n"
+        "                            Buffer<float32> c, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            a.atomicAdd(0, 1, MemoryOrder.Relaxed);\n"   // clamped → acq_rel
+        "            b.atomicAdd(0, 1);\n"                        // default → acq_rel
+        "            c.atomicAdd(0, 1.0f, MemoryOrder.Relaxed);\n"// float, clamped
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.MO");
+    auto klass = module->getStructures()["test.MO"];
+    ASSERT_NE(klass, nullptr);
+    auto bump = findMethod(klass, "bump");
+    ASSERT_NE(bump, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_memorder_vulkan_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(bump, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    // All three clamp to acq_rel on Vulkan; none stays monotonic.
+    EXPECT_NE(ir.find("acq_rel"), std::string::npos) << ir;
+    EXPECT_EQ(ir.find("monotonic"), std::string::npos) << ir;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_memorder_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(bump, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "memory-order kernel produced invalid SPIR-V "
+                               "(Vulkan order clamp not applied?)";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped";
+}

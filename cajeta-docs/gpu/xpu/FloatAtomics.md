@@ -74,3 +74,9 @@ f32). Runnable end to end in `samples/Tour/xpu` (the `float atomics` section).
 See `CajetaXPU.md` for the kernel surface. (Follow-ons: f16/f64 atomics, integer
 atomics — `atomicAdd/And/Or/Xor/Exchange/CompareExchange` — and shared-memory
 atomics, per `cajeta-xpu-plan.md` Stage 9.)
+
+**Memory order.** An optional compile-time `MemoryOrder` trailing arg applies to
+float atomics too (`out.atomicAdd(0, v, MemoryOrder.Relaxed)`) — see
+[`IntegerAtomics.md`](IntegerAtomics.md). Because Vulkan's `OpAtomicF*EXT` rejects
+relaxed-with-storage-class semantics (above), Vulkan clamps `Relaxed`/`SeqCst` →
+`AcqRel` for float atomics; CPU/AMD/NVPTX honour the requested order.
