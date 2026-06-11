@@ -2517,6 +2517,21 @@ namespace cajeta {
     void CajetaClass::emitDropBodyInline(llvm::IRBuilder<>& b,
                                           llvm::Value* instance,
                                           CajetaModulePtr cajModule) {
+        // The module this inline body is ACTUALLY being written into — the
+        // function the IRBuilder is inserting at — which is the only module
+        // every callee referenced here MUST be co-resident with. It can differ
+        // from cajModule->getLlvmModule(): for a plain stdlib class (emitModule
+        // unset) the enclosing drop wrapper lives in the PERSISTENT stdlib
+        // module while currentEmitLlvmModule points at a per-test user module;
+        // for a reparented template instantiation cajModule is the resolution
+        // (stdlib) module but the body is built into the user emit module.
+        // Resolving callees here keeps the cached wrapper self-consistent so a
+        // later reusing test never references a freed module's decl. Falls back
+        // to cajModule's own module when there's no insert point.
+        llvm::Module* bodyModule = b.GetInsertBlock()
+            ? b.GetInsertBlock()->getModule()
+            : cajModule->getLlvmModule();
+
         // (1) User-written destructor body. Looked up directly (not via
         // resolveMethod) — overload resolution hasn't run at the point
         // drop wrappers get synthesized.
@@ -2532,7 +2547,7 @@ namespace cajeta {
         }
         if (userDrop && userDrop->getLlvmFunction()) {
             llvm::Function* fn = CajetaModule::ensureFunctionInModule(
-                cajModule->getLlvmModule(), userDrop->getLlvmFunction());
+                bodyModule, userDrop->getLlvmFunction());
             b.CreateCall(userDrop->getLlvmFunctionType(), fn, {instance});
         }
 
@@ -2548,7 +2563,6 @@ namespace cajeta {
         // plain class-refs → __cajeta_class_virtual_drop. Primitives /
         // pointers / function-typed fields don't need drops.
         auto& ctx = *cajModule->getLlvmContext();
-        auto* lmod = cajModule->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         std::vector<StructurePropertyPtr> reversed(
             propertyList.begin(), propertyList.end());
@@ -2566,7 +2580,7 @@ namespace cajeta {
 
             if (dynamic_pointer_cast<CajetaArray>(fieldType)) {
                 if (!freeArrayFn) {
-                    freeArrayFn = cajModule->getRuntimeFunction("__cajeta_free_array");
+                    freeArrayFn = cajModule->getRuntimeFunction("__cajeta_free_array", bodyModule);
                 }
                 if (!freeArrayFn) continue;
                 llvm::Value* slot = b.CreateStructGEP(
@@ -2582,7 +2596,7 @@ namespace cajeta {
                 if (dynamic_pointer_cast<CajetaView>(fieldType)) continue;
                 if (fieldClass->isInterface()) {
                     if (!ifaceDropFn) {
-                        ifaceDropFn = cajModule->getRuntimeFunction("__cajeta_iface_drop");
+                        ifaceDropFn = cajModule->getRuntimeFunction("__cajeta_iface_drop", bodyModule);
                     }
                     if (!ifaceDropFn) continue;
                     llvm::Value* bodyPtr = b.CreateStructGEP(
@@ -2594,7 +2608,7 @@ namespace cajeta {
                 if (!fieldClass->hasVtablePointerAtSlotZero()) continue;
                 if (!virtualDropFn) {
                     virtualDropFn = cajModule->getRuntimeFunction(
-                        "__cajeta_class_virtual_drop");
+                        "__cajeta_class_virtual_drop", bodyModule);
                 }
                 if (!virtualDropFn) continue;
                 fieldClass->patchVirtualTableDropFn();
@@ -2610,7 +2624,6 @@ namespace cajeta {
     }
 
     llvm::Function* CajetaClass::getOrCreateDropFunction() {
-        if (llvmDropFunction) return llvmDropFunction;
         if (interfaceFlag) return nullptr;
         // Wildcard proxies (Step 2 — template wildcards) don't own a
         // synthesized per-class drop wrapper — the proxy has no body
@@ -2622,17 +2635,20 @@ namespace cajeta {
         // Declaration, getOrCreateStackDropFunction's class-ref
         // field walk, emitDropBodyInline) lowers to the right
         // routing without each site needing to special-case
-        // wildcards. Cache on llvmDropFunction so subsequent calls
-        // are constant-time and the same llvm::Function* is shared
-        // across the proxy's use sites.
+        // wildcards.
+        //
+        // Do NOT cache + early-return the runtime fn here: __cajeta_class_-
+        // virtual_drop is resolved into the current emit module (per-test
+        // user module under reuse). A wildcard proxy can be a PERSISTENT
+        // stdlib instantiation, so a cached pointer would carry an earlier
+        // test's module binding forward and produce a cross-module reference
+        // on the next reusing test. Re-resolving per call is a cheap name
+        // lookup and always lands in the right module. (Production is a single
+        // module → same decl every time.)
         if (isWildcardInstantiation()) {
-            llvm::Function* virtualDropFn = module->getRuntimeFunction(
-                "__cajeta_class_virtual_drop");
-            if (virtualDropFn) {
-                llvmDropFunction = virtualDropFn;
-            }
-            return llvmDropFunction;
+            return module->getRuntimeFunction("__cajeta_class_virtual_drop");
         }
+        if (llvmDropFunction) return llvmDropFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -2730,8 +2746,13 @@ namespace cajeta {
 
         // Free the heap allocation. Reuses __cajeta_free from the
         // closure-drop runtime; all generic heap blocks share one
-        // free symbol.
-        llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free");
+        // free symbol. Resolve the callee into `lmod` — the module this
+        // wrapper body is being BUILT into — not currentEmitLlvmModule:
+        // for a plain stdlib class (emitModule unset) lmod is the persistent
+        // stdlib module, and under reuse currentEmitLlvmModule is a per-test
+        // user module. Co-residence keeps the cached wrapper self-consistent
+        // so a later reusing test never references a freed module's decl.
+        llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free", lmod);
         if (freeFn) {
             b.CreateCall(freeFn, {instance});
         }

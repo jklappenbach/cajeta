@@ -684,7 +684,18 @@ namespace cajeta {
 
         // Look up a runtime helper by name (must be linked first via linkRuntime()).
         // Returns nullptr if missing.
-        llvm::Function* getRuntimeFunction(const std::string& name);
+        //
+        // `explicitTarget`: the llvm::Module the returned decl MUST be co-resident
+        // with. Pass the module the IRBuilder is actually inserting into when that
+        // can differ from emitTargetLlvmModule() — notably drop-wrapper bodies for a
+        // plain stdlib class (emitModule unset), whose body is built into the
+        // PERSISTENT stdlib module while currentEmitLlvmModule points at a per-test
+        // user module. Without this the wrapper (cached in the stdlib module) would
+        // call a runtime decl in a now-freed test module → cross-module reference on
+        // the next reusing test. Null (default) keeps the historical
+        // emitTargetLlvmModule() behavior; production / non-reuse is unaffected.
+        llvm::Function* getRuntimeFunction(const std::string& name,
+                                           llvm::Module* explicitTarget = nullptr);
 
         // The llvm::Module that IR created *right now* should land in: the module
         // of the function the builder is currently inserting into. During body
