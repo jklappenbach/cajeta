@@ -8473,6 +8473,8 @@ uint32_t __cajeta_xpu_workgroup_dim_z(void) { return 0; }
 // --- Barrier ---------------------------------------------------------------
 void __cajeta_xpu_barrier_workgroup(void) { /* no-op on CPU emulation */ }
 void __cajeta_xpu_barrier_wave(void) { /* no-op on CPU emulation */ }
+void __cajeta_xpu_barrier_workgroup_memory(void) { /* host no-op; kernel path lowers to a scoped fence */ }
+void __cajeta_xpu_barrier_device_memory(void) { /* host no-op; kernel path lowers to a scoped fence */ }
 
 // --- Wave ------------------------------------------------------------------
 // width=1 on CPU emulation (single-threaded) is the variance-correct

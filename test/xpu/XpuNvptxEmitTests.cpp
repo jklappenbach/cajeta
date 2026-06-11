@@ -413,3 +413,52 @@ TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {
     EXPECT_EQ(cubin[2], 'L');
     EXPECT_EQ(cubin[3], 'F');
 }
+
+// Stage 9: scoped memory fences lower to NVPTX membar (a memory fence with NO
+// bar.sync — no thread rendezvous). Barrier.deviceMemory → membar.gl (global
+// scope); Barrier.workgroupMemory → membar.cta (CTA scope). Emit-only (◐): no
+// CUDA silicon here, so this proves the PTX, like the other NVPTX emit tests.
+TEST(XpuNvptxEmitTests, lowersMemoryFenceToPtxMembar) {
+    auto src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.Barrier;\n"
+        "public class MF {\n"
+        "    @Kernel\n"
+        "    public static void fence(Buffer<int32> data, Buffer<int32> out,\n"
+        "                             uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            data[i] = (int32)(i * 2);\n"
+        "            Barrier.deviceMemory();\n"
+        "            Barrier.workgroupMemory();\n"
+        "            out[i] = data[i] + 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.MF");
+    auto klass = module->getStructures()["test.MF"];
+    ASSERT_NE(klass, nullptr);
+    auto fence = findMethod(klass, "fence");
+    ASSERT_NE(fence, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_fence_device", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    llvm::Function* fn = lowerKernel(fence, deviceModule);
+    ASSERT_NE(fn, nullptr);
+
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_NE(ir.find("llvm.nvvm.membar.gl"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.nvvm.membar.cta"), std::string::npos) << ir;
+
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+    EXPECT_NE(ptx.find("membar.gl"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("membar.cta"), std::string::npos) << ptx;
+}

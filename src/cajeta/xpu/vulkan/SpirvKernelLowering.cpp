@@ -234,6 +234,19 @@ public:
         b.CreateCall(f, {});
     }
 
+    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
+                     FenceScope scope) override {
+        // Memory-only OpMemoryBarrier (no OpControlBarrier / group sync). The
+        // dedicated *_memory_barrier intrinsics carry the scope: Workgroup vs
+        // Device. SpirvBackend's post-emit pass fixes the memory-semantics
+        // operand to a Vulkan-valid value (WorkgroupMemory|AcquireRelease).
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, scope == FenceScope::Workgroup
+                    ? llvm::Intrinsic::spv_group_memory_barrier
+                    : llvm::Intrinsic::spv_device_memory_barrier);
+        b.CreateCall(f, {});
+    }
+
     // Vulkan marks the entry via createKernel's attributes, not a CC here.
     void decorateKernel(llvm::Function* /*fn*/, llvm::Module& /*m*/) override {}
 

@@ -68,6 +68,13 @@ namespace xpu {
         // against each other.
         enum class ImplTier { Native, Portable };
 
+        // Memory-fence scope (Stage 9): the visibility/ordering reach of a
+        // scoped memory fence (Barrier.workgroupMemory / .deviceMemory) — a
+        // memory barrier WITHOUT the thread rendezvous of workgroupBarrier.
+        // Workgroup = LDS/shared + global visibility within the block; Device =
+        // global-memory visibility across the whole device.
+        enum class FenceScope { Workgroup, Device };
+
         // Address space for entry-block allocas (the mutable scalar-slot model
         // — loop counters, reassigned locals). NVPTX: 0 (generic). AMDGPU: 5
         // (private). Getting this wrong on AMDGPU is the classic first bug
@@ -108,6 +115,15 @@ namespace xpu {
         // memory ordering the backend needs for LDS visibility).
         virtual void workgroupBarrier(llvm::IRBuilderBase& b,
                                       llvm::Module& m) = 0;
+
+        // Scoped memory fence (Stage 9): order/make-visible memory accesses at
+        // `scope`, with NO thread rendezvous (unlike workgroupBarrier). Fixed
+        // AcquireRelease ordering for now; the explicit memory-order surface is
+        // a separate Stage-9 brick. Default emits a system-scope acq_rel
+        // `fence` (the CPU oracle); GPU backends override with the native op
+        // (SPIR-V OpMemoryBarrier, AMDGPU scoped fence, NVPTX membar).
+        virtual void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 FenceScope scope);
 
         // Decorate a freshly-created kernel function: calling convention +
         // any kernel-marker metadata. NVPTX: ptx_kernel CC + nvvm.annotations.

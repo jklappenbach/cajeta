@@ -1768,3 +1768,55 @@ TEST(XpuHipDispatchDeviceTests, bindlessBufferArrayOnDevice) {
                       << " (100+i: out[i] != 60+3i — bindless descriptor-array "
                          "indexing wrong on HIP)";
 }
+
+// Stage 9: scoped memory fences (Barrier.deviceMemory / .workgroupMemory) run on
+// the AMD device. deviceMemory lowers to an "agent"-scope acq_rel fence,
+// workgroupMemory to a "workgroup"-scope fence (no s_barrier — no rendezvous).
+// Same write→fence→read kernel as the CPU oracle → out[i] == 2i+1.
+TEST(XpuHipDispatchDeviceTests, memoryFenceOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.Barrier;\n"
+        "public class MFHip {\n"
+        "    @Kernel\n"
+        "    public static void fence(Buffer<int32> data, Buffer<int32> out,\n"
+        "                             uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            data[i] = (int32)(i * 2);\n"
+        "            Barrier.deviceMemory();\n"
+        "            Barrier.workgroupMemory();\n"
+        "            out[i] = data[i] + 1;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        Buffer<int32> data = heap Buffer<int32>(n);\n"
+        "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+        "        Stream s = Stream.current();\n"
+        "        fence.launch(s, grid: [1], block: [64])(data, out, n);\n"
+        "        s.sync();\n"
+        "        int32[] ho = heap int32[n];\n"
+        "        out.download(ho);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (ho[i] != (int32)(2 * i + 1)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(src, "test.MFHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != 2i+1 — memory fence on HIP device)";
+}

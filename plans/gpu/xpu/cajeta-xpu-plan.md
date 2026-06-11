@@ -115,7 +115,7 @@ Part II + the Part I follow-ups is the **definition of done** for `cajeta-xpu`.
 ### Stage 9 — Atomics & synchronization
 - [x] `atomicAdd/Min/Max/And/Or/Xor/Exchange/CompareExchange` on global & shared (integer; on-device CPU/VK/AMD — doc `IntegerAtomics.md`)
 - [x] Float atomics (NV/AMD native; VK `SPV_EXT_shader_atomic_float_*` capability check) — on-device, doc `FloatAtomics.md`
-- [ ] Functional `Fence` (the type is a `cajeta-gpu` prelude entry; the *kernel-side* scoped `OpMemoryBarrier`/fence lowering is here)
+- [x] Functional kernel-side memory fence — `Barrier.workgroupMemory()` / `.deviceMemory()` (the `memoryFence(scope)` seam): a scoped memory barrier with no thread rendezvous, fixed AcquireRelease. OpMemoryBarrier (VK, `spirv-val` clean) / scoped `acq_rel` fence (AMD `agent`/`workgroup`) / `membar.gl`/`membar.cta` (NVPTX, emit-only) / system fence (CPU). Device-verified CPU/VK/AMD. *(Named under `Barrier`, not the host-facing `Fence` class — separate concern. Explicit memory-order surface is the next item.)*
 - [~] Memory-order surface (`acquire`/`release`/`relaxed`/`seq_cst`) on the seam — internal model exists (VK Device-scope + AcquireRelease; monotonic default) but is **not yet surfaced** as a user-facing API
 - [x] On-device tests: histogram, reduction-by-atomics, spin-free counters (Tour `histogram` + `reduceAtomic` + shared-atomic-counter demos)
 
