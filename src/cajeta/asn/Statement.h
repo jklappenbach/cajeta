@@ -443,6 +443,9 @@ namespace cajeta {
         IdentifierLabel(antlr4::Token* token, string label, StatementPtr body)
             : Statement(token), identifier(std::move(label)), body(std::move(body)) { }
 
+        const string& getIdentifier() const { return identifier; }
+        StatementPtr getBody() const { return body; }
+
         void resolveTypes(CajetaModulePtr module) override {
             if (body) body->resolveTypes(module);
         }
