@@ -161,6 +161,44 @@ namespace cajeta {
         g_typeBaseline.valid = true;
     }
 
+    void CajetaType::releaseThrownTransientStructNames() {
+        if (!g_typeBaseline.valid) return;
+        // A reusing test whose compile THREW (typically an expected-error test)
+        // never ran its normal end-of-compile struct-name release, so any USER
+        // struct it created keeps its name in the shared LLVMContext — and LLVM
+        // struct types are context-owned, outliving the per-test module teardown.
+        // Even a fully BODIED user struct is a hazard: TemplateBasicTests
+        // .diamondWithoutInferableConstructorThrows builds `test.Holder<int32>`
+        // as a 1-field `class Holder<T>` then throws on an un-inferable ctor; a
+        // later test re-declaring `interface Holder<T>` (TemplatedInterfaceV2Tests)
+        // gets that stale 1-field struct from getOrCreateLlvmType and GEPs into
+        // the absent interface vtable/kind slots → "Invalid indices for GEP
+        // pointer type". So we release by NAME (not by opaque-ness), walking
+        // canonicalMap — the authoritative creation record that also catches
+        // structs floating free of any module. We PRESERVE stdlib-resident
+        // structs: a stdlib template instantiation accumulated for cross-test
+        // reuse lives in the persistent stdlib module and is reused by name, so
+        // freeing it would diverge from its accumulated bodies. (The success path
+        // keeps its own clearTransientStructNames; this is the throw counterpart.)
+        // Production-inert: only the test harness ever captures a baseline.
+        std::set<std::string> stdlibResident;
+        if (auto stdlib = CajetaModule::getStdlibModule()) {
+            if (auto* lm = stdlib->getLlvmModule()) {
+                for (auto* st : lm->getIdentifiedStructTypes())
+                    if (st->hasName()) stdlibResident.insert(st->getName().str());
+            }
+        }
+        for (auto& [name, type] : canonicalMap) {
+            if (!type) continue;
+            llvm::Type* lt = type->getLlvmType();
+            if (lt && lt->isStructTy()) {
+                auto* st = llvm::cast<llvm::StructType>(lt);
+                if (st->hasName() && !stdlibResident.count(st->getName().str()))
+                    st->setName("");
+            }
+        }
+    }
+
     void CajetaType::restoreBaseline() {
         if (!g_typeBaseline.valid) return;
         canonicalMap = g_typeBaseline.canonicalMap;

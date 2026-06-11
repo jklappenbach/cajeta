@@ -1,5 +1,31 @@
 # Stdlib Test-Reuse Cache — Correctness Fix
 
+## UPDATE (2026-06-10, later) — throw-path struct-name release; FORCE_EMIT stays OFF.
+
+A follow-up fix lands the **throw-path counterpart** to the success-path struct-name release.
+A reusing test whose compile THROWS (expected-error tests, e.g.
+`TemplateBasicTests.diamondWithoutInferableConstructorThrows`) never reached the end-of-compile
+release, so its USER structs kept their names in the shared (context-owned) `LLVMContext` and
+poisoned a later same-named test — the exact `test.Holder<int32>` interface-vtable GEP miscompile
+("Invalid indices for GEP pointer type") the section below blamed on the class-template+interface
+emit path. New `CajetaType::releaseThrownTransientStructNames()` (walks `canonicalMap`, frees
+non-stdlib-resident struct names) + a `catch (...)` in `JitTestHelper.cpp` that calls it before
+rethrow. **This resolves the V2 failure**: under FORCE_EMIT, `TemplatedInterfaceV2Tests` 7/7,
+`TemplateBasic`/`ParallelStreamP1`/`StreamFold`/`StreamTerminal` green (smoke: 99/100, the one
+fail being the pre-existing `encodingAcceptsMatchingImplements`).
+
+**FORCE_EMIT still stays OFF as default**, for a different reason than predicted below: the W=24
+FORCE_EMIT full run (11.6 min, 337 fallbacks) hit a `PointcutMatchingTests` heap corruption
+("corrupted size vs prev_size") on the LAST test of a shard — but this is a **24-shard
+parallel-pressure artifact** (peak ~42 GB), NOT deterministic and NOT caused by the fix: shard 17
+run SOLO completes 149/149 under *both* FORCE_EMIT+fix and conservative+fix. The conservative
+default (reuse ON, FORCE_EMIT OFF) ships unchanged; the throw-path fix is committed because it also
+hardens the conservative speculative-reuse fallback (which throws `ReuseHazardAbort`). The
+"emit-module reparenting" flip-precondition below is **superseded** — the throw-path release was
+the actual fix for the V2 hazard.
+
+---
+
 ## Status (2026-06-10, Linux) — DEFAULT LOCKED IN: reuse ON, FORCE_EMIT OFF (conservative gate).
 
 **Decision (this session).** The blessed default is **reuse ON, cross-module emit OFF**
