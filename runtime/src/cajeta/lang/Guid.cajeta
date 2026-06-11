@@ -1,0 +1,143 @@
+package cajeta.lang;
+
+/**
+ * A 128-bit globally-unique identifier (UUID), backed by a single `uint128`.
+ * Cajeta's native 128-bit integers make this a true value-width identifier — no
+ * struct-of-two-longs, no byte array — so comparison, hashing, and storage are
+ * single-word operations.
+ *
+ * ## Construction
+ *
+ *  - `Guid.random()`        — a fresh RFC 4122 **version-4** (random) UUID,
+ *                             seeded from `/dev/urandom` when available.
+ *  - `Guid.parse(String)`   — from canonical `8-4-4-4-12` hex text; throws
+ *                             `GuidFormatException` on malformed input.
+ *  - `Guid.fromHalves(hi,lo)` / `Guid.of(uint128)` — from raw bits (e.g. two
+ *                             columns read from a database).
+ *
+ * ## Equality
+ *
+ * `equals(Guid)` is the **exact** 128-bit comparison. `==` / hash-keyed
+ * collections route through `hash()`, which folds 128 bits of identity into 64,
+ * so they carry the standard ~2⁻⁶⁴ collision caveat (`Object` documents this) —
+ * call `equals()` when you need certainty. Immutable: the value is set once at
+ * construction.
+ *
+ * The boxed value is field index 0, so reflective `Class.of(g).getField(0)`
+ * reaches the raw `uint128`.
+ */
+public class Guid extends Object {
+    uint128 value;
+
+    // v4 entropy: fills out[0]=hi, out[1]=lo with version/variant bits set.
+    @Native("__cajeta_guid_random_fill")
+    private static void randomFill(int64[] out);
+    // 128-bit-aware hash: mixes both halves through the shared seed/mixer.
+    @Native("__cajeta_hash_guid")
+    private static int64 hashHalves(int64 hi, int64 lo);
+
+    public Guid(uint128 value) { this.value = value; return; }
+
+    /** Box an existing 128-bit value. */
+    public static #Guid of(uint128 value) { return heap Guid(value); }
+
+    /** Compose from a high and low 64-bit half (high bits are the most significant). */
+    public static #Guid fromHalves(uint64 hi, uint64 lo) {
+        uint128 v = ((uint128) hi << 64) | (uint128) lo;
+        return heap Guid(v);
+    }
+
+    /** A fresh random (version-4) UUID. */
+    public static #Guid random() {
+        int64[] out = heap int64[2];
+        randomFill(out);
+        return Guid.fromHalves((uint64) out[0], (uint64) out[1]);
+    }
+
+    /** The raw 128-bit value. */
+    public uint128 value() { return this.value; }
+
+    /** The most-significant 64 bits. */
+    public uint64 high() { return (uint64) (this.value >> 64); }
+
+    /** The least-significant 64 bits. */
+    public uint64 low() { return (uint64) this.value; }
+
+    /** Exact 128-bit equality (no hash collisions). */
+    public boolean equals(Guid other) {
+        if (other == null) { return false; }
+        return this.value == other.value;
+    }
+
+    /** Value-based hash over all 128 bits (see class doc on `==` collisions). */
+    public int64 hash() {
+        return hashHalves((int64) this.high(), (int64) this.low());
+    }
+
+    // ASCII hex digit for a 0..15 nibble (lowercase).
+    private static int8 hexChar(int32 nib) {
+        if (nib < 10) { return (int8) (48 + nib); }     // '0'..'9'
+        return (int8) (97 + (nib - 10));                // 'a'..'f'
+    }
+
+    // Value of an ASCII hex digit, or -1 if it isn't one.
+    private static int32 hexVal(int8 b) {
+        int32 c = (int32) b;
+        if (c >= 48 && c <= 57)  { return c - 48; }       // '0'..'9'
+        if (c >= 97 && c <= 102) { return c - 97 + 10; }  // 'a'..'f'
+        if (c >= 65 && c <= 70)  { return c - 65 + 10; }  // 'A'..'F'
+        return -1;
+    }
+
+    /** Canonical lowercase `8-4-4-4-12` hex form. */
+    public #String toString() {
+        int8[] out = heap int8[36];
+        uint128 v = this.value;
+        int32 oi = 0;
+        int32 ni = 0;
+        while (ni < 32) {
+            if (ni == 8 || ni == 12 || ni == 16 || ni == 20) {
+                out[oi] = (int8) 45;                       // '-'
+                oi = oi + 1;
+            }
+            int32 shift = (31 - ni) * 4;
+            int32 nib = (int32) ((v >> shift) & (uint128) 15);
+            out[oi] = hexChar(nib);
+            oi = oi + 1;
+            ni = ni + 1;
+        }
+        return heap String(#out, 36);
+    }
+
+    /**
+     * Parse a canonical 36-character `8-4-4-4-12` hex GUID. Accepts upper or
+     * lowercase hex; the separators must be hyphens at the canonical positions.
+     * Throws `GuidFormatException` on any deviation.
+     */
+    public static #Guid parse(#String s) {
+        if (s == null || s.byteLength != 36) {
+            throw heap GuidFormatException(
+                "Guid.parse: expected a 36-character 8-4-4-4-12 hex GUID");
+        }
+        uint128 acc = (uint128) 0;
+        int32 i = 0;
+        while (i < 36) {
+            int8 b = s.byteAt(i);
+            if (i == 8 || i == 13 || i == 18 || i == 23) {
+                if (b != 45) {                             // '-'
+                    throw heap GuidFormatException(
+                        "Guid.parse: missing '-' separator at the canonical position");
+                }
+            } else {
+                int32 nib = hexVal(b);
+                if (nib < 0) {
+                    throw heap GuidFormatException(
+                        "Guid.parse: non-hexadecimal digit in GUID");
+                }
+                acc = (acc << 4) | (uint128) nib;
+            }
+            i = i + 1;
+        }
+        return heap Guid(acc);
+    }
+}

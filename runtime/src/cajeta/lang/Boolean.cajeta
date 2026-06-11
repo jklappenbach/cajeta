@@ -1,0 +1,48 @@
+package cajeta.lang;
+
+/**
+ * Boxed `boolean`. Immutable, heap-allocatable, reflection-introspectable
+ * wrapper. Extends `Object` directly — a truth value is not a `Number`.
+ *
+ * Value equality via the `hash()` override: `Boolean.of(true) ==
+ * Boolean.of(true)`, `!= Boolean.of(false)`. Boxed value is field index 0.
+ * See `plans/lang/wrapper-types-plan.md`.
+ */
+public class Boolean extends Object {
+    boolean value;
+
+    // toString() formatters (plan W6) — Boolean extends Object, not Number, so
+    // it can't share Number's helpers; render "true"/"false" via the same
+    // length-then-fill idiom.
+    @Native("__cajeta_bool_to_str_len")  private static int32 boolStrLen(int32 v);
+    @Native("__cajeta_bool_to_str_into") private static void  boolStrInto(int32 v, int8[] out);
+
+    public Boolean(boolean value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #Boolean of(boolean value) { return heap Boolean(value); }
+
+    /** The wrapped primitive. */
+    public boolean value() { return this.value; }
+
+    /**
+     * Value-based hash → equal values compare equal via Object.operator==.
+     * Uses an `if` rather than the `cond ? 1 : 0` ternary: a boolean-condition
+     * ternary whose arms are int literals widened to the int64 return type
+     * currently miscompiles (malformed ICmp at IR build).
+     */
+    public int64 hash() {
+        if (this.value) { return 1; }
+        return 0;
+    }
+
+    /** `"true"` / `"false"`. */
+    public #String toString() {
+        int32 v = 0;
+        if (this.value) { v = 1; }
+        int32 len = boolStrLen(v);
+        int8[] out = heap int8[len];
+        boolStrInto(v, out);
+        return heap String(#out, len);
+    }
+}

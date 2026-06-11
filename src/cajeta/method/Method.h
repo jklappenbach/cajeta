@@ -172,8 +172,12 @@ namespace cajeta {
         // (type creation) and getBuilder() (context-bound insert point) do not.
         CajetaModulePtr emitModule;
         llvm::IRBuilder<>* builder;
-        llvm::FunctionType* llvmFunctionType;
-        llvm::Function* llvmFunction;
+        // Initialized to null so getLlvmFunction()/getLlvmFunctionType() return
+        // null (not uninitialized garbage) before generatePrototype runs — a
+        // method may be reached (e.g. reflection's adapter pass over every
+        // class) before it has been prototyped.
+        llvm::FunctionType* llvmFunctionType = nullptr;
+        llvm::Function* llvmFunction = nullptr;
         // A5 method extraction: when at least one @Around advice
         // matches this method, the user-written body emits into THIS
         // separately-named llvm Function (canonical + `__original`

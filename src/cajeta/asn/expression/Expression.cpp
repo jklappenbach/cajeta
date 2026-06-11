@@ -1005,16 +1005,27 @@ namespace cajeta {
         bool dstPtr = dstTy->isPointerTy();
         unsigned long destFlags = destType->getTypeFlags();
         bool destSigned = (destFlags & SIGNED_FLAG) != 0;
+        // Integer WIDENING and int→fp conversion must follow the SOURCE
+        // operand's signedness, not the destination's: a `uint8` zero-extends to
+        // `int32` (sign-extending it — the old `destSigned` behavior — turned
+        // 200 into -56), and a `uint64` converts to fp via UIToFP. Truncation
+        // ignores the flag, and fp→int (below) correctly keys off the
+        // destination integer's signedness, so only these two cases change.
+        bool srcSigned = destSigned;
+        if (childAst && childAst->getResolvedType()) {
+            srcSigned = (childAst->getResolvedType()->getTypeFlags()
+                         & SIGNED_FLAG) != 0;
+        }
 
         if (srcInt && dstInt) {
-            return builder->CreateIntCast(val, dstTy, destSigned);
+            return builder->CreateIntCast(val, dstTy, srcSigned);
         }
         if (srcFp && dstFp) {
             return builder->CreateFPCast(val, dstTy);
         }
         if (srcInt && dstFp) {
-            return destSigned ? builder->CreateSIToFP(val, dstTy)
-                              : builder->CreateUIToFP(val, dstTy);
+            return srcSigned ? builder->CreateSIToFP(val, dstTy)
+                             : builder->CreateUIToFP(val, dstTy);
         }
         if (srcFp && dstInt) {
             return destSigned ? builder->CreateFPToSI(val, dstTy)
@@ -1119,6 +1130,12 @@ namespace cajeta {
             // `[e1, e2, ...]` list literal (XPU launch dims; general-purpose).
             result = make_shared<ArrayLiteralExpression>(
                 ctx->arrayLiteral(), ctx->getStart());
+        } else if (ctx->typeTypeOrVoid() && ctx->CLASS()) {
+            // REFL-1.5: `T.class` — the statically-known type's reflective Class.
+            // Capture the type's text now (the ANTLR context is freed before
+            // codegen); the class is resolved by name at resolveTypes time.
+            result = make_shared<ClassLiteralExpression>(
+                ctx->typeTypeOrVoid()->getText(), ctx->getStart());
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), true);
         } else if (ctx->THIS()) {
@@ -1156,6 +1173,49 @@ namespace cajeta {
 
     llvm::Value* PrimaryExpression::generateCode(CajetaModulePtr module) {
         return nullptr;
+    }
+
+    // REFL-1.5: `T.class`.
+    void ClassLiteralExpression::resolveTypes(CajetaModulePtr module) {
+        if (resolvedType) return;
+        // Resolve the named type by name from canonicalMap (keyed by both short
+        // typeName and full canonical), now that every class is registered.
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto nit = cmap.find(namedTypeName);
+        if (nit != cmap.end()) {
+            namedType = nit->second;
+        }
+        if (!namedType) return;   // unresolved type — generateCode reports it
+        // resolvedType = Class<T> (the wildcard-phantom template instantiated
+        // with the named type). Requires cajeta.reflect.Class on the path.
+        auto it = cmap.find("cajeta.reflect.Class");
+        auto classTmpl = (it != cmap.end())
+            ? dynamic_pointer_cast<CajetaClass>(it->second) : nullptr;
+        if (classTmpl && classTmpl->isTemplate()) {
+            resolvedType = classTmpl->instantiate({namedType});
+        }
+    }
+
+    llvm::Value* ClassLiteralExpression::generateCode(CajetaModulePtr module) {
+        if (!resolvedType) resolveTypes(module);
+        auto klass = dynamic_pointer_cast<CajetaClass>(namedType);
+        if (!klass) {
+            throw Exception(
+                "`.class` requires a class type — a primitive has no runtime "
+                "Class object; use a reference type before `.class`",
+                "CAJETA_ERROR_CLASS_LITERAL");
+        }
+        // The cached #ClassObject IS the Class<T> instance: a process-lifetime
+        // constant { Class<?>#VTable, rtti }. Its ADDRESS is the borrow we hand
+        // back (never freed). Mirror obj.getClass()/Class.of, but statically.
+        llvm::GlobalVariable* co = klass->getClassObjectGlobal();
+        if (!co) {
+            throw Exception(
+                "no #ClassObject for '" + klass->toCanonical()
+                + "' — its reflection metadata was not emitted",
+                "CAJETA_ERROR_CLASS_LITERAL");
+        }
+        return CajetaModule::ensureGlobalInModule(module->getLlvmModule(), co);
     }
 
     // Helper used by ternary/instanceof: load value from an alloca-style l-value.

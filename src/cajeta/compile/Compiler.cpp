@@ -653,6 +653,22 @@ namespace cajeta {
         // globals live in this module — user modules will reach
         // them via extern decls and never need to re-prototype.
         CajetaModule::buildPendingPrototypes();
+
+        // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
+        // canonical Class<?> instantiation HERE, as part of the stdlib build and
+        // BEFORE any user module parses. Class<?>'s method bodies reference the
+        // reflect object types (Modifiers / Field / Method / Constructor /
+        // Parameter / Annotation / TemplateParameter / TemplateArgument); with
+        // the concrete `Class` gone, this instantiation is now the only thing
+        // that pulls those types into the canonical map. Doing it here makes them
+        // resolvable when user code names them directly (e.g. `Modifiers m = ...`)
+        // — the eager-build the concrete `Class` used to provide. Also gives
+        // every #ClassObject a real Class<?> vtable to embed.
+        CajetaModule::setActiveModule(stdlib);
+        CajetaClass::ensureClassWildcardInstantiated();
+        CajetaModule::buildPendingPrototypes();
+        CajetaModule::setActiveModule(prevActive);
+
         emitUnrecoverableMarker(stdlib);
         return stdlib;
     }
@@ -768,6 +784,16 @@ namespace cajeta {
         // synthesize singleton + factory helpers.
         CajetaModule::resolveDependencyGraph();
 
+        // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
+        // canonical wildcard instantiation Class<?> here — after all modules are
+        // parsed/prototyped, before Phase 1/2 codegen — so (a) its method bodies
+        // are emitted in the loop below and (b) every type's #ClassObject can
+        // embed its vtable (StructureMetadata::populate / finalizeClassObject
+        // look it up by "cajeta.reflect.Class<?>"). The phantom T means all
+        // Class<T> share identical code, so this one instantiation backs every
+        // reflected type's #ClassObject regardless of the static T.
+        CajetaClass::ensureClassWildcardInstantiated();
+
         // Phase 1 (signatures) + Phase 2 (bodies), looped until quiescent.
         // A user method body can trigger a stdlib template instantiation
         // mid-codegen (e.g. `xs.stream()` → ArrayStream<int32>); the new
@@ -801,6 +827,22 @@ namespace cajeta {
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
+        // REFL-2 — emit the reflective adapter bodies now that Phase 1/2 has
+        // quiesced and every method's LLVM function exists. Each class that had
+        // an invoke adapter forward-declared into its #Rtti (during prototype
+        // generation) gets its switch-over-index body filled here; classes
+        // without a decl are a no-op. Runs once, before clinit/emit.
+        for (auto& [key, type] : CajetaType::getCanonicalMap()) {
+            if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
+                klass->emitReflectInvokeBody();
+                klass->emitReflectNewBody();
+                // REFL-8/10: patch + register #ClassObjects deferred at populate
+                // (classes parsed before cajeta.reflect.Class) now that Class is
+                // built — makes them forName/allClasses-discoverable.
+                klass->finalizeClassObject();
+            }
+        }
+
         // P6.2 — after Phase 1/2 quiescence, emit any per-class clinit
         // for static fields whose initializers didn't constant-fold.
         // Runs once at this point (not inside the loop) so the

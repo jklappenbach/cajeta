@@ -1,0 +1,26 @@
+package cajeta.reflect;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by a reflective operation that is well-formed but not supported by the
+ * current runtime build — e.g. `Method.invokeBoxed` on a method whose primitive
+ * return type has no wrapper class yet (plan W2-W4: int8/16/128, the unsigned
+ * ints, char, the half/quad/ML floats). The W1 wrappers
+ * (`Boolean`/`Int32`/`Int64`/`Float32`/`Float64`) box exactly; everything else
+ * raises this instead of silently widening (which would lie about the boxed
+ * value's type identity) or returning an ambiguous `null`.
+ *
+ * A `RecoverableException`: a generic tool can catch it and fall back to the
+ * typed invoke surface (`invokeInt32`, `invokeFloat64`, …) for that member.
+ *
+ * See plans/lang/wrapper-types-plan.md § W5 and plans/reflection §REFL-4.1.
+ */
+public class UnsupportedReflectionException extends RecoverableException {
+    /** Wrap a heap `#String` message; ownership transfers in, `cause` unset. */
+    public UnsupportedReflectionException(#String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

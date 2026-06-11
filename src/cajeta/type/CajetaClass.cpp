@@ -510,8 +510,10 @@ namespace cajeta {
             }
         }
 
+        // Entries live at index 5 (after version, count, parent_vtable,
+        // drop_fn, classObject — see StructureMetadata::createVirtualTableType).
         llvm::ArrayType* entriesArrTy = llvm::cast<llvm::ArrayType>(
-            parentVtableType->getTypeAtIndex(4));
+            parentVtableType->getTypeAtIndex(5));
         llvm::StructType* entryTy = llvm::cast<llvm::StructType>(
             entriesArrTy->getElementType());
 
@@ -559,12 +561,23 @@ namespace cajeta {
         llvm::Constant* dropFnConst =
             llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
 
+        // Slot 4: classObject. getClass() must report the DYNAMIC (most-derived)
+        // type even when the object is reached through a parent-subobject view,
+        // so point at THIS class's #ClassObject (not the parent's). NULL until
+        // this class's #ClassObject is forward-declared (populate step 3).
+        llvm::Constant* classObjConst =
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        if (auto* co = getClassObjectGlobal()) {
+            classObjConst = CajetaModule::ensureGlobalInModule(lmod, co);
+        }
+
         std::vector<llvm::Constant*> initArgs{
             llvm::ConstantInt::get(i16Ty, llvm::APInt(16, 0, false)),
             llvm::ConstantInt::get(i16Ty,
                 llvm::APInt(16, parentSlots.size(), false)),
             parentVtableRef,
             dropFnConst,
+            classObjConst,
             entriesArr,
         };
         llvm::Constant* initializer = llvm::ConstantStruct::get(parentVtableType,
@@ -993,9 +1006,18 @@ namespace cajeta {
         //     that the TemplateInstantiator materializes when a chain-
         //     walker stores into `Stream<?>` is compiler-generated, not
         //     author-written, so flagging its fields would be noise,
+        //   - the owner is a stdlib (`cajeta.*`) class — lints are
+        //     author-actionable diagnostics, and a user compiling their
+        //     program can't edit a stdlib instantiation like
+        //     `Optional<Class<?>>` (materialized by `Class.forName`); the
+        //     warning would be unsuppressible noise on every compile,
         //   - the rule is suppressed at the declaration via @SuppressLint.
+        bool ownerIsStdlib = qName
+            && (qName->getPackageName() == "cajeta"
+                || qName->getPackageName().rfind("cajeta.", 0) == 0);
         if (!dynamic_pointer_cast<CajetaView>(shared_from_this())
                 && !isWildcardInstantiation()
+                && !ownerIsStdlib
                 && !isLintSuppressed("wildcard-field-in-small-class")) {
             for (auto& prop : propertyList) {
                 auto propType = prop->getType();
@@ -2718,6 +2740,353 @@ namespace cajeta {
         b.SetInsertPoint(done);
         b.CreateRetVoid();
         return llvmDropFunction;
+    }
+
+    // REFL-2: declaration of the reflective invoke adapter. Body filled later by
+    // emitReflectInvokeBody (post-quiescence). Shape:
+    //   void __cajeta_<canonical>_reflect_invoke(ptr obj, i32 idx, ptr args, ptr ret)
+    llvm::Function* CajetaClass::getOrCreateReflectInvokeDecl() {
+        if (llvmReflectInvokeFunction) return llvmReflectInvokeFunction;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx),
+            {(llvm::Type*) ptrTy, i32Ty, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy},
+            /*isVarArg=*/false);
+        std::string name = std::string("__cajeta_") + qName->toCanonical() + "_reflect_invoke";
+        for (char& c : name) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') c = '_';
+        }
+        if (llvm::Function* existing = lmod->getFunction(name)) {
+            llvmReflectInvokeFunction = existing;
+            return existing;
+        }
+        llvmReflectInvokeFunction = llvm::Function::Create(
+            fnTy, llvm::Function::ExternalLinkage, name, lmod);
+        return llvmReflectInvokeFunction;
+    }
+
+    // REFL-2: emit the invoke adapter's body. A switch over the class's
+    // method-list index (the SAME order emitMethodTable / getMethodCount use):
+    // each marshallable, non-constructor method gets a case that loads its args
+    // from the 8-byte-strided `args` buffer, makes a direct call, and stores the
+    // scalar result to `ret`. Unmarshallable shapes (aggregate/byval/sret params
+    // or returns, varargs, constructors) are omitted — those indices fall to the
+    // default (no-op) arm. NOTE: does NOT create the declaration; only fills a
+    // decl already referenced by this class's #Rtti.
+    void CajetaClass::emitReflectInvokeBody() {
+        if (llvmReflectInvokeBodyEmitted) return;
+        llvm::Function* fn = llvmReflectInvokeFunction;   // created in createRttiConstant
+        if (!fn) return;
+        llvmReflectInvokeBodyEmitted = true;
+        if (!fn->empty()) return;                         // already has a body
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::IntegerType* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+
+        llvm::Value* objArg = fn->getArg(0);
+        llvm::Value* idxArg = fn->getArg(1);
+        llvm::Value* argsArg = fn->getArg(2);
+        llvm::Value* retArg = fn->getArg(3);
+
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        llvm::BasicBlock* end = llvm::BasicBlock::Create(ctx, "end", fn);
+        llvm::IRBuilder<> b(entry);
+
+        auto& methods = getMethodList();
+        llvm::SwitchInst* sw = b.CreateSwitch(idxArg, end, (unsigned) methods.size());
+
+        // REFL-3.3 (decision D1): a `@Sealed` class bars reflective access to
+        // its private members. Omit private methods' cases here so a reflective
+        // invoke of one falls through to the default (the reflect API also
+        // throws IllegalAccessException before reaching the adapter).
+        bool sealed = getModifiers().count(REFLECT_SEALED) != 0;
+
+        int i = -1;
+        for (auto& m : methods) {
+            i++;
+            if (!m || m->isConstructor()) continue;       // ctors handled by newInstance
+            if (sealed && m->getModifiers().count(PRIVATE)) continue;
+            llvm::Function* callee = m->getLlvmFunction();
+            if (!callee) continue;
+            // Only reference DEFINED functions. Referencing a declaration-only
+            // method (native/abstract, or a class prototyped-but-not-codegen'd
+            // in this compile) would introduce an unresolved symbol and, in the
+            // JIT, drag normally-dead stdlib code into the materialization set.
+            if (callee->isDeclaration()) continue;
+            llvm::FunctionType* cTy = callee->getFunctionType();
+            if (cTy->isVarArg()) continue;
+
+            // The LLVM signature is the source of truth. Instance methods carry
+            // a leading `this` parameter (the front FormalParameter named
+            // "this"); statics do not. The args buffer holds only the USER
+            // arguments (this is supplied from `obj`). A param-count mismatch
+            // means an sret/byval/wrapper shape we don't marshal — skip it.
+            auto pl = m->getParameterList();
+            if (cTy->getNumParams() != pl.size()) continue;
+            bool hasThis = !pl.empty() && pl.front()->getName() == "this";
+            unsigned userStart = hasThis ? 1u : 0u;
+
+            auto marshallable = [](llvm::Type* t) {
+                return t->isIntegerTy() || t->isFloatingPointTy() || t->isPointerTy();
+            };
+            bool ok = true;
+            for (unsigned p = 0; p < cTy->getNumParams() && ok; ++p)
+                ok = marshallable(cTy->getParamType(p));
+            llvm::Type* rt = cTy->getReturnType();
+            if (ok && !rt->isVoidTy() && !marshallable(rt)) ok = false;
+            if (!ok) continue;
+
+            llvm::BasicBlock* caseBB = llvm::BasicBlock::Create(
+                ctx, std::string("invoke_") + std::to_string(i), fn);
+            sw->addCase(llvm::ConstantInt::get(i32Ty, (uint64_t) i), caseBB);
+            b.SetInsertPoint(caseBB);
+
+            llvm::Function* calleeInMod = CajetaModule::ensureFunctionInModule(lmod, callee);
+            std::vector<llvm::Value*> callArgs;
+            if (hasThis) callArgs.push_back(objArg);
+            for (unsigned p = userStart; p < cTy->getNumParams(); ++p) {
+                llvm::Type* pt = cTy->getParamType(p);
+                llvm::Value* slot = b.CreateInBoundsGEP(i64Ty, argsArg,
+                    llvm::ConstantInt::get(i64Ty, p - userStart),
+                    std::string("argslot_") + std::to_string(p - userStart));
+                callArgs.push_back(b.CreateLoad(pt, slot,
+                    std::string("arg_") + std::to_string(p - userStart)));
+            }
+            llvm::Value* result = b.CreateCall(calleeInMod->getFunctionType(),
+                calleeInMod, callArgs);
+            if (!rt->isVoidTy()) b.CreateStore(result, retArg);
+            b.CreateBr(end);
+        }
+
+        b.SetInsertPoint(end);
+        b.CreateRetVoid();
+    }
+
+    // REFL-2C: this class's constructors in a deterministic order (sorted by
+    // canonical signature). Constructors live in the `methods` map (keyed for
+    // overload resolution) but NOT in methodList; this is the stable index
+    // space the newInstance adapter and the #Rtti constructor table share.
+    std::vector<MethodPtr> CajetaClass::getReflectConstructorList() {
+        std::vector<MethodPtr> ctors;
+        for (auto& entry : methods) {
+            if (entry.second && entry.second->isConstructor())
+                ctors.push_back(entry.second);
+        }
+        std::sort(ctors.begin(), ctors.end(),
+            [](const MethodPtr& a, const MethodPtr& b) {
+                return a->toCanonical() < b->toCanonical();
+            });
+        return ctors;
+    }
+
+    // REFL-2C: declaration of the reflective newInstance adapter. Body filled
+    // by emitReflectNewBody (post-quiescence). Shape:
+    //   ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)
+    llvm::Function* CajetaClass::getOrCreateReflectNewDecl() {
+        if (llvmReflectNewFunction) return llvmReflectNewFunction;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            (llvm::Type*) ptrTy, {i32Ty, (llvm::Type*) ptrTy}, /*isVarArg=*/false);
+        std::string name = std::string("__cajeta_") + qName->toCanonical() + "_reflect_new";
+        for (char& c : name) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') c = '_';
+        }
+        if (llvm::Function* existing = lmod->getFunction(name)) {
+            llvmReflectNewFunction = existing;
+            return existing;
+        }
+        llvmReflectNewFunction = llvm::Function::Create(
+            fnTy, llvm::Function::ExternalLinkage, name, lmod);
+        return llvmReflectNewFunction;
+    }
+
+    // REFL-2C: emit the newInstance adapter body — a switch over the
+    // constructor index that mirrors `heap T(...)` construction (CreatorRest):
+    // __cajeta_alloc(allocationSize) + zero + install primary/secondary vtables
+    // + patch the virtual drop slot + run the chosen constructor, returning the
+    // new instance. Unknown/unmarshallable constructors fall to a null return.
+    void CajetaClass::emitReflectNewBody() {
+        if (llvmReflectNewBodyEmitted) return;
+        llvm::Function* fn = llvmReflectNewFunction;   // created in createRttiConstant
+        if (!fn) return;
+        llvmReflectNewBodyEmitted = true;
+        if (!fn->empty()) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::IntegerType* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        llvm::Value* idxArg = fn->getArg(0);
+        llvm::Value* argsArg = fn->getArg(1);
+
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        llvm::BasicBlock* fail = llvm::BasicBlock::Create(ctx, "fail", fn);
+        llvm::IRBuilder<> b(entry);
+
+        auto ctors = getReflectConstructorList();
+        auto* st = llvm::dyn_cast_or_null<llvm::StructType>(getLlvmType());
+        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
+        uint64_t allocSize = st ? lmod->getDataLayout().getTypeAllocSize(st) : 0;
+
+        llvm::SwitchInst* sw = b.CreateSwitch(idxArg, fail, (unsigned) ctors.size());
+
+        auto marshallable = [](llvm::Type* t) {
+            return t->isIntegerTy() || t->isFloatingPointTy() || t->isPointerTy();
+        };
+
+        // REFL-3.3 (decision D1): a `@Sealed` class bars reflective construction
+        // through a private constructor — omit those cases (the reflect API also
+        // throws IllegalAccessException before reaching the adapter).
+        bool sealed = getModifiers().count(REFLECT_SEALED) != 0;
+
+        int i = -1;
+        for (auto& ctor : ctors) {
+            i++;
+            if (!ctor || !st || !allocFn) continue;
+            if (sealed && ctor->getModifiers().count(PRIVATE)) continue;
+            llvm::Function* callee = ctor->getLlvmFunction();
+            if (!callee || callee->isDeclaration()) continue;
+            llvm::FunctionType* cTy = callee->getFunctionType();
+            if (cTy->isVarArg()) continue;
+            auto pl = ctor->getParameterList();
+            if (cTy->getNumParams() != pl.size()) continue;
+            bool hasThis = !pl.empty() && pl.front()->getName() == "this";
+            unsigned userStart = hasThis ? 1u : 0u;
+            bool ok = true;
+            for (unsigned p = 0; p < cTy->getNumParams() && ok; ++p)
+                ok = marshallable(cTy->getParamType(p));
+            if (!ok) continue;
+
+            llvm::BasicBlock* caseBB = llvm::BasicBlock::Create(
+                ctx, std::string("new_") + std::to_string(i), fn);
+            sw->addCase(llvm::ConstantInt::get(i32Ty, (uint64_t) i), caseBB);
+            b.SetInsertPoint(caseBB);
+
+            llvm::Value* inst = b.CreateCall(allocFn,
+                {llvm::ConstantInt::get(i64Ty, allocSize)}, "inst");
+            b.CreateMemSet(inst, llvm::ConstantInt::get(i8Ty, 0),
+                llvm::ConstantInt::get(i64Ty, allocSize), llvm::MaybeAlign(8));
+
+            if (hasVtablePointerAtSlotZero()) {
+                if (llvm::GlobalVariable* vt = getVirtualTableGlobal()) {
+                    llvm::Constant* vtRef =
+                        CajetaModule::ensureGlobalInModule(lmod, vt);
+                    llvm::Value* slot0 = b.CreateStructGEP(st, inst, 0, "vtable_slot");
+                    b.CreateStore(vtRef, slot0);
+                }
+                for (auto& sub : getNonFirstSubObjects()) {
+                    llvm::GlobalVariable* secVT = getOrCreateSecondaryVTable(sub.ancestor);
+                    if (!secVT) continue;
+                    llvm::Constant* secRef =
+                        CajetaModule::ensureGlobalInModule(lmod, secVT);
+                    llvm::Value* secSlot = b.CreateStructGEP(
+                        st, inst, (unsigned) sub.slot, "sec_vtable_slot");
+                    b.CreateStore(secRef, secSlot);
+                }
+                patchVirtualTableDropFn();
+            }
+
+            llvm::Function* calleeInMod = CajetaModule::ensureFunctionInModule(lmod, callee);
+            std::vector<llvm::Value*> callArgs;
+            if (hasThis) callArgs.push_back(inst);
+            for (unsigned p = userStart; p < cTy->getNumParams(); ++p) {
+                llvm::Type* pt = cTy->getParamType(p);
+                llvm::Value* slot = b.CreateInBoundsGEP(i64Ty, argsArg,
+                    llvm::ConstantInt::get(i64Ty, p - userStart),
+                    std::string("argslot_") + std::to_string(p - userStart));
+                callArgs.push_back(b.CreateLoad(pt, slot,
+                    std::string("arg_") + std::to_string(p - userStart)));
+            }
+            b.CreateCall(calleeInMod->getFunctionType(), calleeInMod, callArgs);
+            b.CreateRet(inst);
+        }
+
+        b.SetInsertPoint(fail);
+        b.CreateRet(llvm::ConstantPointerNull::get(ptrTy));
+    }
+
+    void CajetaClass::finalizeClassObject() {
+        // See header. A #ClassObject is { ptr Class#VTable, ptr rtti }. Slot 0
+        // is NULL only for classes parsed before cajeta.reflect.Class (the
+        // lookup in StructureMetadata::populate couldn't find Class's vtable
+        // yet). Those were also NOT registered (registration there is guarded on
+        // a non-null slot 0). By the time this post-pass runs the whole stdlib —
+        // Class included — is built, so we can resolve Class#VTable, patch slot
+        // 0, and register the class. Idempotent: a class whose slot 0 already
+        // resolved returns immediately (and was already registered at populate).
+        llvm::GlobalVariable* co = getClassObjectGlobal();
+        if (!co || !co->hasInitializer()) return;
+        auto* init = llvm::dyn_cast<llvm::ConstantStruct>(co->getInitializer());
+        if (!init || init->getNumOperands() < 2) return;
+        if (!init->getOperand(0)->isNullValue()) return;   // already resolved
+
+        // REFL-1.7: embed the canonical Class<?> instantiation's vtable (the
+        // bare "cajeta.reflect.Class" now names the never-built template).
+        auto& s2m = CajetaModule::getStructureToModule();
+        auto mit = s2m.find("cajeta.reflect.Class<?>");
+        if (mit == s2m.end() || !mit->second) return;
+        auto& structs = mit->second->getStructures();
+        auto sit = structs.find("cajeta.reflect.Class<?>");
+        if (sit == structs.end() || !sit->second) return;
+        llvm::GlobalVariable* cv = sit->second->getVirtualTableGlobal();
+        if (!cv) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::Constant* classVtableRef =
+            CajetaModule::ensureGlobalInModule(lmod, cv);
+
+        auto* coTy = llvm::cast<llvm::StructType>(co->getValueType());
+        co->setInitializer(llvm::ConstantStruct::get(
+            coTy, {classVtableRef, init->getOperand(1)}));
+
+        // Deferred registration (mirrors StructureMetadata::populate's REFL-8
+        // block). These names were not emitted at populate time for this class
+        // (its slot 0 was null), so there is no collision.
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+        llvm::FunctionType* regTy =
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
+        llvm::FunctionCallee regFn =
+            lmod->getOrInsertFunction("__cajeta_register_class", regTy);
+        std::string canon = toCanonical();
+        llvm::Function* regCtor = llvm::Function::Create(
+            llvm::FunctionType::get(voidTy, false),
+            llvm::GlobalValue::InternalLinkage,
+            "__cajeta_class_reg_ctor." + canon, lmod);
+        llvm::IRBuilder<> rb(llvm::BasicBlock::Create(ctx, "entry", regCtor));
+        llvm::Constant* nameStr =
+            rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
+        rb.CreateCall(regFn, {nameStr, co});
+        rb.CreateRetVoid();
+        llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+    }
+
+    void CajetaClass::ensureClassWildcardInstantiated() {
+        // REFL-1.7. Find the cajeta.reflect.Class template and instantiate
+        // Class<?> so its method bodies get codegen'd and its vtable backs every
+        // #ClassObject. Idempotent: instantiate() caches by canonical name, and
+        // this whole routine is a no-op when reflect isn't in the compile unit
+        // (no Class template) or Class somehow isn't a template.
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto cit = cmap.find("cajeta.reflect.Class");
+        if (cit == cmap.end()) return;
+        auto classTmpl = std::dynamic_pointer_cast<CajetaClass>(cit->second);
+        if (!classTmpl || !classTmpl->isTemplate()) return;
+        CajetaTypePtr wild = CajetaType::wildcardSentinel();
+        if (!wild) return;
+        classTmpl->instantiate({wild});
     }
 
     struct MethodEntry {
@@ -4469,7 +4838,21 @@ namespace cajeta {
                 // per-instantiation hash on Box<int32>::tag in the
                 // dynamic instance's vtable. See Step 5a in todo.md.
                 int64_t hash;
-                if (this->isWildcardInstantiation() && this->getTemplateOrigin()) {
+                // REFL-1.7: every `Class<T>` instantiation — wildcard OR
+                // concrete (`Foo.class` → `Class<Foo>`) — shares ONE runtime
+                // vtable: the canonical `Class<?>#VTable` embedded in every
+                // type's #ClassObject (the phantom-T design — Class has no
+                // T-dependent layout). That shared vtable only carries the
+                // wildcard's per-instantiation entries plus the template-origin
+                // alias entries; it has NO `Class<Foo>`-specific hashes. So a
+                // concrete `Class<Foo>` receiver must dispatch on the same
+                // origin-relative alias hash a `Class<?>` receiver uses, or the
+                // lookup misses and the indirect call jumps through null.
+                auto tOrigin = this->getTemplateOrigin();
+                bool sharesWildcardVtable = tOrigin
+                    && tOrigin->toCanonical() == "cajeta.reflect.Class";
+                if ((this->isWildcardInstantiation() || sharesWildcardVtable)
+                        && tOrigin) {
                     // Substitution-stable canonical so the lookup hash
                     // matches the alias entry every instantiation
                     // publishes (buildVirtualTable, addAliasFor).
