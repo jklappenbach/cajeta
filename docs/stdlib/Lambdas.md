@@ -39,10 +39,46 @@ Function types are first-class:
 ```
 (int32) -> int32 doubler = x -> x * 2;
 (int32) -> int32 tripler = x -> x * 3;
-(int32) -> int32[] pipeline = {doubler, tripler};
+((int32) -> int32)[] pipeline = { doubler, tripler };   // array OF function
+int32 y = pipeline[0](21);                              // -> 42
 ```
 
+**Array-of-function types need grouping parens.** `((T) -> R)[]` is an array whose
+elements are `(T) -> R`. Without the parens, `(T) -> R[]` is a *function returning*
+`R[]` — the `[]` binds to the return type, not the array. So the dispatch-table
+shape is always written `((int32) -> int32)[]`, and an element is invoked by
+indexing then calling: `pipeline[i](x)`. (Grammar: `typeType` gained a
+`'(' functionType ')' ('[' ']')*` alternative — the inner `->` is what
+disambiguates the grouping parens from a C-style cast.)
+
 Function types are NOT classes — there's no inheritance, no methods on the function value beyond invocation. If you need OO machinery on top of a callable, wrap the function value in a class.
+
+### On device (`@Kernel` / `@Device` bodies)
+
+Function-typed values work inside kernels, but **bounded**: a device function-typed
+value is an `i32` tag over a closed, compile-time-known set of non-capturing
+`@Device`-static candidates, and a call lowers to an **if/else-if chain of direct
+calls** — SPIR-V (Vulkan compute) has no function pointers, so this is the only
+shape that's portable across all four backends (CPU, Vulkan, AMD, NVPTX), with no
+backend-specific code. The array-of-function surface is the dispatch table:
+
+```
+@Device public static int32 sq(int32 x)   { return x * x; }
+@Device public static int32 cube(int32 x) { return x * x * x; }
+@Kernel public static void k(Buffer<int32> out, uint32 n) {
+    uint32 i = Thread.globalIdX();
+    if (i < n) {
+        ((int32) -> int32)[] ops = { Ops::sq, Ops::cube };
+        out[i] = ops[i % 2]((int32) i);   // tag = i%2, direct-call chain
+    }
+}
+```
+
+An out-of-range index is a **defined no-op** (the zero-initialized result is
+returned — no trap, no UB). Captures, host→kernel function-pointer kernel
+arguments, and bound/instance method refs are host-only / deferred (the device set
+must be statically resolvable). On host, an array-of-function is a genuine
+first-class dispatch table of closure pointers (real indirect calls).
 
 ### Lowering
 

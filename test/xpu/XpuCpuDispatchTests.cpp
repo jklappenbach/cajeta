@@ -2460,3 +2460,172 @@ TEST(XpuCpuDispatchTests, specConstantBakesDefaultOnCpu) {
     int r = fn();
     EXPECT_EQ(r, 777) << "got " << r << " (spec default not baked as 4242?)";
 }
+
+// ----- Stage 11: bounded device-side dispatch (function-type values) -----
+//
+// A function-typed device value is an i32 TAG over a closed set of @Device
+// statics; a call lowers to an if/else chain of DIRECT calls (SPIR-V has no
+// function pointers — this rides identically on all four backends). Two surface
+// forms, same mechanism:
+//   variable:  (int32)->int32     op  = Ops::sq;            (single candidate)
+//   table:     ((int32)->int32)[] ops = { sq, cube, neg };  (indexed dispatch)
+// The grouping parens in `((T)->R)[]` are what make array-OF-function
+// expressible — `(T)->R[]` binds the `[]` to the RETURN. Table results are
+// chosen so each candidate is distinguishable per lane (a constant-folded
+// single candidate would fail).
+
+// Variable form — a single @Device static bound to a function-typed local,
+// then called: `op = Ops::sq; out[i] = op(i)` -> every lane is i*i. Proves the
+// function-typed device local lowers to a (tag-0) direct call.
+const char* kDeviceFnPtrVariableSource =
+    "package test;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class Ops {\n"
+    "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
+    "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
+    "}\n"
+    "public class DispA {\n"
+    "    @Kernel\n"
+    "    public static void k(Buffer<int32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            (int32) -> int32 op = Ops::sq;\n"
+    "            out[i] = op((int32) i);\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 16;\n"
+    "        int32[] hout = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        k.launch(s, grid: [1], block: [16])(out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            int32 want = (int32)(i * i);\n"
+    "            if (hout[i] != want) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCpuDispatchTests, deviceFnPtrVariableOnCpu) {
+    auto jit = CajetaJit::compile(kDeviceFnPtrVariableSource, "test.DispA",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] wrong — function-typed device local)";
+}
+
+// Form B — an indexed dispatch table over three @Device statics:
+//   ops = { sq, cube, neg };  out[i] = ops[i % 3](i)
+// i%3==0 -> i*i, ==1 -> i*i*i, ==2 -> -i. The index IS the dispatch tag.
+const char* kDeviceDispatchTableSource =
+    "package test;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class Ops {\n"
+    "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
+    "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
+    "    @Device public static int32 neg(int32 x)  { return 0 - x; }\n"
+    "}\n"
+    "public class DispB {\n"
+    "    @Kernel\n"
+    "    public static void k(Buffer<int32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            ((int32) -> int32)[] ops = { Ops::sq, Ops::cube, Ops::neg };\n"
+    "            uint32 sel = i % 3;\n"
+    "            out[i] = ops[sel]((int32) i);\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 24;\n"
+    "        int32[] hout = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -999; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        k.launch(s, grid: [1], block: [24])(out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            uint32 m = i % 3;\n"
+    "            int32 want = 0;\n"
+    "            if (m == 0) { want = (int32)(i * i); }\n"
+    "            else if (m == 1) { want = (int32)(i * i * i); }\n"
+    "            else { want = (int32)(0 - (int32) i); }\n"
+    "            if (hout[i] != want) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCpuDispatchTests, deviceDispatchTableOnCpu) {
+    auto jit = CajetaJit::compile(kDeviceDispatchTableSource, "test.DispB",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] wrong — indexed device dispatch table)";
+}
+
+// Bounds: a runtime index past the table size is a DEFINED no-op — the
+// zero-initialized result slot is returned (no trap, no UB). Here sel = i+100
+// is always out of range for a 2-entry table, so every lane must read 0.
+const char* kDeviceDispatchOobSource =
+    "package test;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class Ops {\n"
+    "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
+    "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
+    "}\n"
+    "public class DispC {\n"
+    "    @Kernel\n"
+    "    public static void k(Buffer<int32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            ((int32) -> int32)[] ops = { Ops::sq, Ops::cube };\n"
+    "            uint32 sel = i + 100;\n"
+    "            out[i] = ops[sel]((int32) i);\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 8;\n"
+    "        int32[] hout = heap int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -999; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        k.launch(s, grid: [1], block: [8])(out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (hout[i] != 0) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCpuDispatchTests, deviceDispatchOutOfRangeIsDefinedNoOpOnCpu) {
+    auto jit = CajetaJit::compile(kDeviceDispatchOobSource, "test.DispC",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out-of-range dispatch should be a defined 0)";
+}

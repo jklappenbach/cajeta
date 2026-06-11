@@ -7,6 +7,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaArray.h"
+#include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/type/StructureProperty.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/error/Exception.h"
@@ -68,6 +69,27 @@ namespace cajeta {
     // + Event cross-stream deps ride the same handle). Vulkan/CPU accept the
     // handle but run synchronously today (no overlap); Stream.sync() drains it.
     llvm::Value* CallExpression::generateCode(CajetaModulePtr module) {
+        // Indirect call through a function-typed value — `arr[i](args)`, where
+        // the callee is any expression (an array element, a field, a chained
+        // result) whose resolved type is a CajetaFunctionType. The callee
+        // evaluates to a `ptr` to the closure record; dispatch through the
+        // shared closure ABI (same path as the bare `op(args)` form). This is
+        // what makes an array-of-function-type callable: `((T)->R)[] ops; …
+        // ops[i](x)`. See docs/stdlib/Lambdas.md.
+        if (auto calleeExpr = getCallee()) {
+            if (!calleeExpr->getResolvedType()) calleeExpr->resolveTypes(module);
+            auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(
+                calleeExpr->getResolvedType());
+            if (fnType) {
+                llvm::Value* closurePtr = calleeExpr->generateCode(module);
+                // The element/field load yields the closure-record `ptr`; an
+                // l-value slot (ArrayIndex GEP / field GEP) needs the load.
+                closurePtr = loadIfLValue(module, closurePtr, calleeExpr);
+                return emitClosureCall(module, closurePtr, fnType, args,
+                                       resolvedType);
+            }
+        }
+
         auto callee = std::dynamic_pointer_cast<MethodCallExpression>(getCallee());
         if (!callee || callee->getMethodCallName() != "launch") {
             throw Exception(

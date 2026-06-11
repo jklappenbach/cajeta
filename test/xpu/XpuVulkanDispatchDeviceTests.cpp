@@ -2197,3 +2197,66 @@ TEST(XpuVulkanDispatchDeviceTests, labeledBreakContinueOnDevice) {
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100+g: break outer wrong; 200+g: continue outer wrong)";
 }
+
+// ----- Stage 11: bounded device-side dispatch on a real Vulkan device -----
+//
+// An indexed dispatch table over three @Device statics lowered to SPIR-V: the
+// `((int32)->int32)[] ops = { sq, cube, neg }` table is an i32 tag over a closed
+// candidate set; `ops[i % 3](i)` lowers to an if/else chain of DIRECT calls (no
+// function pointers — SPIR-V has none). i%3==0 -> i*i, ==1 -> i*i*i, ==2 -> -i.
+// The index is a runtime value, so a constant-folded single candidate fails.
+TEST(XpuVulkanDispatchDeviceTests, deviceDispatchTableOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class Ops {\n"
+        "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
+        "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
+        "    @Device public static int32 neg(int32 x)  { return 0 - x; }\n"
+        "}\n"
+        "public class DispVk {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            ((int32) -> int32)[] ops = { Ops::sq, Ops::cube, Ops::neg };\n"
+        "            uint32 sel = i % 3;\n"
+        "            out[i] = ops[sel]((int32) i);\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 192;\n"
+        "        int32[] hout = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -999; }\n"
+        "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        k.launch(s, grid: [3], block: [64])(out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            uint32 m = i % 3;\n"
+        "            int32 want = 0;\n"
+        "            if (m == 0) { want = (int32)(i * i); }\n"
+        "            else if (m == 1) { want = (int32)(i * i * i); }\n"
+        "            else { want = (int32)(0 - (int32) i); }\n"
+        "            if (hout[i] != want) { return (int32)(1000 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.DispVk", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (1000+i: indexed device dispatch table on Vulkan)";
+}

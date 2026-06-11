@@ -545,3 +545,76 @@ TEST(XpuNvptxEmitTests, lowersDebugPrintfToVprintf) {
     ASSERT_FALSE(ptx.empty());
     EXPECT_NE(ptx.find("vprintf"), std::string::npos) << ptx;
 }
+
+// ----- Stage 11: bounded device-side dispatch — portable lowering shape -----
+//
+// A device dispatch table `((int32)->int32)[] ops = { sq, cube, neg }` indexed
+// by a runtime value `ops[i % 3](i)` must lower to an i32 tag-compare + if/else
+// chain of DIRECT calls — NEVER a function-pointer load or indirect call (SPIR-V
+// has no function pointers; this is the shape that rides all four backends). The
+// IR check is the load-bearing one: every call in the device module resolves to
+// a concrete Function (direct), so there is no indirect dispatch. NVPTX then
+// emits valid PTX with the tag compares + branches. Always runs (no CUDA HW).
+TEST(XpuNvptxEmitTests, lowersDeviceDispatchToBranchChain) {
+    auto src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class Ops {\n"
+        "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
+        "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
+        "    @Device public static int32 neg(int32 x)  { return 0 - x; }\n"
+        "}\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void dispatch(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            ((int32) -> int32)[] ops = { Ops::sq, Ops::cube, Ops::neg };\n"
+        "            uint32 sel = i % 3;\n"
+        "            out[i] = ops[sel]((int32) i);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto klass = module->getStructures()["test.M"];
+    ASSERT_NE(klass, nullptr);
+    auto dispatch = findMethod(klass, "dispatch");
+    ASSERT_NE(dispatch, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_dispatch_device", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+
+    llvm::Function* fn = lowerKernel(dispatch, deviceModule);
+    ASSERT_NE(fn, nullptr);
+
+    // Portable-shape invariant: NO indirect call anywhere in the device module.
+    // Every CallInst must resolve to a concrete callee (a direct call); an
+    // indirect call (function-pointer dispatch) would have a null
+    // getCalledFunction(). Intrinsics are direct calls and fine.
+    size_t indirectCalls = 0, directCalls = 0;
+    for (llvm::Function& f : deviceModule) {
+        for (llvm::BasicBlock& bb : f) {
+            for (llvm::Instruction& inst : bb) {
+                if (auto* call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+                    if (call->getCalledFunction() == nullptr) ++indirectCalls;
+                    else ++directCalls;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(indirectCalls, 0u)
+        << "device dispatch must never emit an indirect call / fn-pointer load";
+
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+    EXPECT_NE(ptx.find(".visible .entry dispatch"), std::string::npos) << ptx;
+    // The if/else chain compares the i32 tag against the candidate indices —
+    // an equality test per arm (the alwaysinline candidate bodies then fold in).
+    EXPECT_NE(ptx.find("setp.eq"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("bra"), std::string::npos) << ptx;
+}

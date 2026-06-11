@@ -13,6 +13,7 @@
 #include "../../type/CajetaVector.h"
 #include "../../type/CajetaMatrix.h"
 #include "../../type/CajetaQuaternion.h"
+#include "../../type/CajetaFunctionType.h"
 #include "../../type/CajetaConstantType.h"
 #include "../../type/VectorOps.h"
 #include "../../type/MatrixOps.h"
@@ -35,6 +36,7 @@
 #include "../../asn/expression/NewExpression.h"
 #include "../../asn/expression/CreatorRest.h"
 #include "../../asn/expression/DotExpression.h"
+#include "../../asn/expression/CallExpression.h"
 #include "../../type/StructureProperty.h"
 
 #include "llvm/IR/DataLayout.h"
@@ -527,6 +529,20 @@ private:
     // alias (CUDA extern __shared__ / HIP HIP_DYNAMIC_SHARED both single).
     bool emittedDynamicShared = false;
 
+    // Stage 11: bounded device-side dispatch. A function-typed device local
+    // (`(int32)->int32 op` / `(int32)->int32[] ops`) is NOT a pointer — SPIR-V
+    // has no function pointers — it's an i32 TAG selecting among a finite,
+    // statically-known set of @Device-static candidates. A call lowers to an
+    // if/else-if chain of DIRECT (alwaysinline) calls, portable to all four
+    // backends with no backend-specific code. See plans/gpu/xpu Stage 11.
+    struct DeviceCallable {
+        CajetaTypePtr sig;                  // the CajetaFunctionType (params/return)
+        std::vector<MethodPtr> candidates;  // ordered; vector index == dispatch tag
+        bool isTable = false;               // table: tag is the call-site index expr
+        llvm::Value* tagVal = nullptr;      // variable form: the i32 tag (const/select)
+    };
+    std::map<std::string, DeviceCallable> callables;  // local name -> callable
+
     // continue/break targets for the innermost enclosing loop.
     struct LoopTarget {
         llvm::BasicBlock* continueBB;
@@ -729,6 +745,31 @@ private:
                     structValues[nm] = v;
                     structFields[nm] = si;
                     valueTypeNames[nm] = declType;
+                    continue;
+                }
+            }
+            // Stage 11: a function-typed local — bounded device-side dispatch.
+            //   variable:  (T)->R    op  = A::f;            (single candidate)
+            //   table:     ((T)->R)[] ops = { A::f, B::g };  (indexed dispatch)
+            // Represented as an i32 tag over a closed @Device-static candidate
+            // set; calls lower to an if/else chain of direct calls (SPIR-V has
+            // no function pointers — this rides identically on all four
+            // backends). Tried before the scalar/vector paths so a function
+            // type isn't mistaken for one. The table form's declared type is a
+            // CajetaArray over a CajetaFunctionType (the grouping parens in
+            // `((T)->R)[]` are what make array-OF-function expressible — see
+            // CajetaType::fromContext); the variable form is a bare
+            // CajetaFunctionType. Both feed lowerCallableDecl with the element/
+            // own function type; the initializer shape (array literal vs single
+            // ref) decides the dispatch form.
+            if (auto fnT = std::dynamic_pointer_cast<CajetaFunctionType>(declType)) {
+                lowerCallableDecl(nm, fnT, vd->getInitializer());
+                continue;
+            }
+            if (auto arrT = std::dynamic_pointer_cast<CajetaArray>(declType)) {
+                if (auto efn = std::dynamic_pointer_cast<CajetaFunctionType>(
+                        arrT->getElementType())) {
+                    lowerCallableDecl(nm, efn, vd->getInitializer());
                     continue;
                 }
             }
@@ -1318,6 +1359,25 @@ private:
             if (!dst) unsupported("cast to non-scalar type");
             return castNumeric(v, dst, typeIsSigned(ct),
                                exprSigned(exprChild(cast, 0)));
+        }
+        if (auto call = std::dynamic_pointer_cast<CallExpression>(expr)) {
+            // Stage 11: indexed device dispatch `ops[idx](args)` — the postfix
+            // call's callee is a subscript of a bounded callable table; the
+            // index expression IS the dispatch tag.
+            auto callee = call->getCallee();
+            if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(callee)) {
+                if (auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        exprChild(ai, 0))) {
+                    auto cit = callables.find(baseId->getTextValue());
+                    if (cit != callables.end() && cit->second.isTable) {
+                        llvm::Value* tag = lowerExpr(exprChild(ai, 1));
+                        return emitCallableDispatch(cit->second, tag,
+                                                    call->getArgs());
+                    }
+                }
+            }
+            unsupported("postfix call in kernel body (only a device dispatch "
+                        "table `ops[i](...)` is callable here)");
         }
         unsupported("expression form in kernel body");
     }
@@ -2042,6 +2102,16 @@ private:
                     return builder.CreateSelect(mask, a, b, "mask.select");
                 }
             }
+        }
+
+        // Stage 11: a call through a function-typed device local — `op(args)`
+        // where `op` is a bounded callable (variable form). The receiver is
+        // empty (a bare call); dispatch on the callable's tag.
+        if (recv.empty()) {
+            auto cit = callables.find(name);
+            if (cit != callables.end() && !cit->second.isTable)
+                return emitCallableDispatch(cit->second, cit->second.tagVal,
+                                            mc->getParameters());
         }
 
         if (recv == "Thread") {
@@ -3626,6 +3696,175 @@ private:
 
         (*deviceFns)[m.get()] = hfn;
         return hfn;
+    }
+
+    // ----- Stage 11: bounded device-side dispatch -----
+
+    // A @Device-static candidate must have no receiver on device.
+    MethodPtr validateCallableCandidate(const MethodPtr& m) {
+        if (!m->isStatic())
+            unsupported("device callable candidate '" + m->getName() +
+                        "' must be static (a device candidate has no receiver)");
+        return m;
+    }
+
+    // Resolve a `Type::method` device-callable candidate to its @Device static
+    // method, matched by name + arity. The receiver class name comes from either
+    // the eagerly-parsed receiverType (which, parsed with a null module, may be
+    // an unresolved placeholder rather than the registered CajetaClass) or the
+    // receiverExpr identifier — so we extract the NAME and resolve the real class
+    // through the canonicalMap (the same scan resolveDeviceMethod uses). A
+    // non-class / unnameable receiver is a true bound-instance ref → rejected.
+    MethodPtr resolveCallableCandidate(
+            const std::shared_ptr<MethodReferenceExpression>& mr, unsigned arity) {
+        if (mr->getIsCtor())
+            unsupported("device callable: a constructor reference (Type::heap) is "
+                        "not a device candidate");
+        std::string recvName;
+        if (auto rt = mr->getReceiverType()) {
+            if (rt->getQName()) recvName = rt->getQName()->getTypeName();
+        }
+        if (recvName.empty()) {
+            if (auto rid = std::dynamic_pointer_cast<IdentifierExpression>(
+                    mr->getReceiverExpr()))
+                recvName = rid->getTextValue();
+        }
+        if (recvName.empty())
+            unsupported("device callable: candidate must be a Type::method "
+                        "reference to a @Device static method (a bound instance "
+                        "reference is not a device candidate)");
+        // Resolve `recvName` to the registered class by simple or canonical name.
+        for (auto& kv : CajetaType::getCanonicalMap()) {
+            auto c = std::dynamic_pointer_cast<CajetaClass>(kv.second);
+            if (!c) continue;
+            std::string canon = c->toCanonical();
+            std::string simple = canon.substr(canon.find_last_of('.') + 1);
+            if (simple != recvName && canon != recvName) continue;
+            for (auto& mkv : c->getMethods()) {
+                const MethodPtr& m = mkv.second;
+                if (m && m->getName() == mr->getMethodName() &&
+                    m->getParameters().size() == arity && isDevice(*m))
+                    return validateCallableCandidate(m);
+            }
+        }
+        unsupported("device callable: no @Device static '" + recvName + "." +
+                    mr->getMethodName() + "' taking " + std::to_string(arity) +
+                    " parameter(s)");
+        return nullptr;  // unreachable (unsupported throws)
+    }
+
+    // Register a function-typed device local — both surface forms feed the same
+    // tag mechanism (see emitCallableDispatch). The form is decided by the
+    // initializer shape:
+    //   table:     ((T)->R)[] ops = { A::f, B::g, ... };  (tag = call-site index)
+    //   variable:  (T)->R     op  = A::f;                 (single candidate, tag 0)
+    void lowerCallableDecl(const std::string& nm,
+                           const CajetaFunctionTypePtr& fnT,
+                           const InitializerPtr& init) {
+        DeviceCallable c;
+        c.sig = fnT;
+        unsigned arity = (unsigned) fnT->getParameterTypes().size();
+        if (!init)
+            unsupported("function-typed local '" + nm + "' needs an initializer "
+                        "(a @Device-static dispatch set)");
+        if (auto arrInit = std::dynamic_pointer_cast<ArrayInitializer>(init)) {
+            // `{ A::f, B::g, ... }` — an ArrayInitializer of method references;
+            // each child is a VariableInitializer wrapping the ref expression.
+            c.isTable = true;
+            for (auto& child : arrInit->getChildren()) {
+                ExpressionPtr e;
+                if (auto vi = std::dynamic_pointer_cast<VariableInitializer>(child)) {
+                    if (!vi->getChildren().empty())
+                        e = std::dynamic_pointer_cast<Expression>(
+                            vi->getChildren()[0]);
+                }
+                auto mr = std::dynamic_pointer_cast<MethodReferenceExpression>(e);
+                if (!mr)
+                    unsupported("device dispatch table '" + nm + "' entries must "
+                                "be Type::method references");
+                c.candidates.push_back(resolveCallableCandidate(mr, arity));
+            }
+            if (c.candidates.empty())
+                unsupported("device dispatch table '" + nm + "' is empty");
+        } else {
+            // Variable form: a single `A::f` reference — one candidate, tag 0.
+            // (Runtime re-selection on device is the table form, indexed by a
+            // value; there is no mutable function-typed local on device.)
+            if (init->getChildren().empty())
+                unsupported("function-typed local '" + nm + "' needs an "
+                            "initializer (a @Device-static method reference)");
+            auto e = std::dynamic_pointer_cast<Expression>(init->getChildren()[0]);
+            if (auto mr =
+                    std::dynamic_pointer_cast<MethodReferenceExpression>(e)) {
+                c.candidates.push_back(resolveCallableCandidate(mr, arity));  // tag 0
+                c.tagVal =
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+            } else {
+                unsupported("function-typed local '" + nm + "': initializer must "
+                            "be a @Device-static method reference (`Type::method`); "
+                            "for runtime selection use a dispatch table "
+                            "`((T)->R)[] ops = { A::f, B::g }` and index it");
+            }
+        }
+        // Lower every candidate up front (cached alwaysinline device fns) — this
+        // also validates each body now rather than at a (possibly nested) call.
+        for (auto& m : c.candidates) lowerDeviceFn(m);
+        callables[nm] = std::move(c);
+    }
+
+    // Lower a call through a bounded device callable: an if/else-if chain of
+    // DIRECT calls keyed by the i32 tag. No function-pointer / indirect call —
+    // SPIR-V-legal and identical on every backend. An unmatched tag (index out
+    // of range) is a defined no-op: the zero-initialized result slot is returned
+    // (no trap, no UB).
+    llvm::Value* emitCallableDispatch(
+            const DeviceCallable& c, llvm::Value* tag,
+            const std::vector<MethodCallParameter>& args) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        if (tag->getType() != i32)
+            tag = builder.CreateIntCast(tag, i32, /*isSigned=*/false);
+        // Lower the user args ONCE — shared across every dispatch arm.
+        std::vector<llvm::Value*> rawArgs;
+        rawArgs.reserve(args.size());
+        for (auto& a : args) rawArgs.push_back(lowerExpr(a.expression));
+        // Result type/slot from the first candidate's lowered device fn (all
+        // candidates share the function type's return). Zero-init so an
+        // out-of-range tag yields a defined value.
+        llvm::Function* firstFn = lowerDeviceFn(c.candidates[0]);
+        llvm::Type* retTy = firstFn->getReturnType();
+        llvm::Value* resultSlot =
+            retTy->isVoidTy() ? nullptr : entryAlloca(retTy, "dispatch.result");
+        if (resultSlot)
+            builder.CreateStore(llvm::Constant::getNullValue(retTy), resultSlot);
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* contBB =
+            llvm::BasicBlock::Create(ctx, "dispatch.cont", fn);
+        for (size_t k = 0; k < c.candidates.size(); ++k) {
+            llvm::Function* hfn = lowerDeviceFn(c.candidates[k]);
+            llvm::BasicBlock* caseBB =
+                llvm::BasicBlock::Create(ctx, "dispatch.case", fn);
+            llvm::BasicBlock* nextBB =
+                llvm::BasicBlock::Create(ctx, "dispatch.next", fn);
+            llvm::Value* hit = builder.CreateICmpEQ(
+                tag, llvm::ConstantInt::get(i32, k), "dispatch.is");
+            builder.CreateCondBr(hit, caseBB, nextBB);
+            builder.SetInsertPoint(caseBB);
+            std::vector<llvm::Value*> argv;
+            argv.reserve(rawArgs.size());
+            for (unsigned i = 0; i < rawArgs.size() && i < hfn->arg_size(); ++i)
+                argv.push_back(coerceTo(rawArgs[i], hfn->getArg(i)->getType()));
+            llvm::Value* r = builder.CreateCall(
+                hfn, argv, retTy->isVoidTy() ? "" : "dispatch.call");
+            if (resultSlot) builder.CreateStore(r, resultSlot);
+            builder.CreateBr(contBB);
+            builder.SetInsertPoint(nextBB);
+        }
+        // Fall-through (no tag matched): defined no-op, slot keeps its zero init.
+        builder.CreateBr(contBB);
+        builder.SetInsertPoint(contBB);
+        if (resultSlot)
+            return builder.CreateLoad(retTy, resultSlot, "dispatch.value");
+        return llvm::ConstantInt::get(i32, 0);  // void call yields a dummy value
     }
 
     // S8 device operator dispatch. When the LHS resolves to a @ValueType, route

@@ -452,6 +452,14 @@ namespace cajeta {
             if (this->isCtor) kind = Kind::CONSTRUCTOR;
         }
 
+        // Accessors used by the device kernel lowerer (Stage 11 bounded
+        // dispatch), which walks the AST directly and needs the eagerly-
+        // resolved receiver type + method name without running resolveTypes.
+        CajetaTypePtr getReceiverType() const { return receiverType; }
+        ExpressionPtr getReceiverExpr() const { return receiverExpr; }
+        const std::string& getMethodName() const { return methodName; }
+        bool getIsCtor() const { return isCtor; }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
