@@ -1,0 +1,46 @@
+package tour.lang;
+
+import tour.DemoClass;
+import cajeta.lang.Guid;
+import cajeta.lang.GuidFormatException;
+
+// cajeta.lang.Guid: a 128-bit UUID backed by a single `uint128` — one of the
+// first real consumers of cajeta's native int128. No struct-of-two-longs, so
+// comparison/hashing/storage are single-word ops. Generate v4 GUIDs, parse and
+// format the canonical 8-4-4-4-12 hex form, and compare by exact 128-bit value.
+public class GuidDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Guid (128-bit UUID over uint128) --");
+
+        // A fresh random (version-4) GUID, seeded from the OS CSPRNG
+        // (/dev/urandom on POSIX, BCryptGenRandom on Windows).
+        Guid a = Guid.random();
+        System.stdout.println("  random()       = " + a.toString());
+
+        // Parse the canonical text form back to a value; toString() is its
+        // inverse and normalizes to lowercase.
+        Guid b = Guid.parse("01234567-89AB-CDEF-FEDC-BA9876543210");
+        System.stdout.println("  parse()        = " + b.toString());
+
+        // Compose from two 64-bit halves (e.g. two database columns), and read
+        // them back out.
+        Guid c = Guid.fromHalves((uint64) 255L, (uint64) 1L);
+        System.stdout.println("  fromHalves     = " + c.toString());
+        System.stdout.println("    high()       = " + (int32) c.high());
+        System.stdout.println("    low()        = " + (int32) c.low());
+
+        // equals() is the exact 128-bit comparison.
+        Guid d = Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
+        System.stdout.println("  b.equals(d)    = " + b.equals(d));   // true
+        System.stdout.println("  a.equals(b)    = " + a.equals(b));   // false
+
+        // Malformed input raises a recoverable GuidFormatException.
+        try {
+            Guid bad = Guid.parse("not-a-valid-guid");
+            System.stdout.println("  parse(bad)     = " + bad.toString());
+        } catch (GuidFormatException e) {
+            System.stdout.println("  parse(bad)     -> GuidFormatException (caught)");
+        }
+    }
+}

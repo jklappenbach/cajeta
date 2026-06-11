@@ -1,0 +1,73 @@
+package cajeta.lang;
+
+/**
+ * Base of every boxed numeric primitive (`Int8`…`Int128`, `UInt8`…`UInt128`,
+ * `Float16`…`Float128`). A `Number` lets generic / reflective code accept any
+ * boxed number through one type and convert it without switching on the
+ * concrete wrapper class.
+ *
+ * ## Concrete, not abstract
+ *
+ * Cajeta has no `abstract` class/method modifier yet (see `Stream`), so
+ * `Number` is a concrete base whose `asInt64()` / `asFloat64()` carry trivial
+ * default bodies that **every** numeric wrapper overrides. A bare `Number` is
+ * never meant to be instantiated; the defaults exist only to satisfy vtable
+ * construction.
+ *
+ * ## Field-less by design
+ *
+ * `Number` declares no fields, so a subclass's `value` field is always
+ * reflect-index 0 — `Class.of(box).getInt32(box, 0)` reaches the boxed value.
+ * Keep it that way when extending this hierarchy.
+ *
+ * `Boolean` and `Char` are intentionally NOT `Number`s — a truth value and a
+ * Unicode codepoint aren't numbers (matching `java.lang.Character`/`Boolean`).
+ *
+ * See `plans/lang/wrapper-types-plan.md`.
+ */
+public class Number extends Object {
+
+    // toString() formatters (plan W6). The length-then-fill idiom mirrors
+    // Method.getName / Field.getName: size the text, allocate an int8[], fill
+    // it, wrap it in a String. Split signed/unsigned/float so a uint64 with the
+    // high bit set renders its true magnitude, not a negative.
+    @Native("__cajeta_int64_to_str_len")    private static int32 i64StrLen(int64 v);
+    @Native("__cajeta_int64_to_str_into")   private static void  i64StrInto(int64 v, int8[] out);
+    @Native("__cajeta_uint64_to_str_len")   private static int32 u64StrLen(uint64 v);
+    @Native("__cajeta_uint64_to_str_into")  private static void  u64StrInto(uint64 v, int8[] out);
+    @Native("__cajeta_float64_to_str_len")  private static int32 f64StrLen(float64 v);
+    @Native("__cajeta_float64_to_str_into") private static void  f64StrInto(float64 v, int8[] out);
+
+    /** This value as a 64-bit signed integer. Overridden by each wrapper. */
+    public int64 asInt64() { return 0; }
+
+    /** This value as a 64-bit float. Overridden by each wrapper. */
+    public float64 asFloat64() { return 0.0; }
+
+    /**
+     * Decimal text of a signed value. Inherited by the signed-integer wrappers,
+     * which call it from `toString()` with `this.asInt64()`.
+     */
+    public #String formatSigned(int64 v) {
+        int32 len = i64StrLen(v);
+        int8[] out = heap int8[len];
+        i64StrInto(v, out);
+        return heap String(#out, len);
+    }
+
+    /** Decimal text of an unsigned value (true magnitude, never negative). */
+    public #String formatUnsigned(uint64 v) {
+        int32 len = u64StrLen(v);
+        int8[] out = heap int8[len];
+        u64StrInto(v, out);
+        return heap String(#out, len);
+    }
+
+    /** `%g`-formatted text of a float value. */
+    public #String formatFloat(float64 v) {
+        int32 len = f64StrLen(v);
+        int8[] out = heap int8[len];
+        f64StrInto(v, out);
+        return heap String(#out, len);
+    }
+}

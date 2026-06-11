@@ -1,0 +1,29 @@
+package cajeta.lang;
+
+/**
+ * Boxed `uint64` (64-bit unsigned). Immutable, heap-allocatable,
+ * reflection-introspectable; value equality via the `hash()` override (the raw
+ * 64 bits, reinterpreted — injective, so distinct values stay distinct). Boxed
+ * value is field index 0. `asInt64()` reinterprets the bits (values ≥ 2⁶³ come
+ * back negative); `asFloat64()` is the unsigned magnitude. See
+ * `plans/lang/wrapper-types-plan.md` (W2).
+ */
+public class UInt64 extends Number {
+    uint64 value;
+
+    public UInt64(uint64 value) { this.value = value; return; }
+
+    /** Heap box — the boxing entry point (Java-style `valueOf`). */
+    public static #UInt64 of(uint64 value) { return heap UInt64(value); }
+
+    /** The wrapped primitive. */
+    public uint64 value() { return this.value; }
+
+    public int64   asInt64()   { return (int64) this.value; }
+    public float64 asFloat64() { return (float64) this.value; }
+
+    /** Value-based hash → equal values compare equal via Object.operator==. */
+    public int64 hash() { return (int64) this.value; }
+
+    public #String toString() { return this.formatUnsigned(this.value); }
+}

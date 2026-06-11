@@ -17,6 +17,7 @@
 #include "cajeta/asn/LocalVariableDeclaration.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/asn/ClassBodyDeclaration.h"
+#include "cajeta/asn/AnnotationParser.h"
 #include "cajeta/error/Exception.h"
 
 
@@ -290,6 +291,24 @@ namespace cajeta {
                         }
                     }
                 }
+            }
+
+            // REFL-3.3 (decision D1): `@Sealed` bars reflective access to the
+            // class's private members. Record it as the SEALED class modifier
+            // so it both (a) rides into the RTTI header's modifiers word the
+            // reflect API reads, and (b) is visible to the invoke/newInstance
+            // adapter codegen, which omits private cases for a sealed class.
+            if (structure->findAnnotation("Sealed")) {
+                structure->addModifier(REFLECT_SEALED);
+            }
+
+            // REFL-8: `@Retained` keeps a class in the Class.forName registry
+            // even when nothing statically references it. Advisory until AOT
+            // stripping lands (every compiled class is registered today);
+            // recorded as a class modifier so the future stripping pass and the
+            // reflect API can both read it from the RTTI modifiers word.
+            if (structure->findAnnotation("Retained")) {
+                structure->addModifier(REFLECT_RETAINED);
             }
 
             pModule->getStructureStack().push_back(structure);
@@ -855,209 +874,6 @@ namespace cajeta {
             }
         }
 
-        // Strip surrounding ASCII whitespace from a literal's text.
-        // Annotation argument tokens come from ANTLR's getText() which
-        // concatenates token text verbatim — array initializers in
-        // particular contain interior whitespace around the commas.
-        static std::string trimWs(const std::string& s) {
-            size_t b = 0, e = s.size();
-            while (b < e && std::isspace((unsigned char) s[b])) ++b;
-            while (e > b && std::isspace((unsigned char) s[e - 1])) --e;
-            return s.substr(b, e - b);
-        }
-
-        // Classify a single element-value token text and write the
-        // discriminated result into `out`. Recognized shapes:
-        //   "foo"     → AnnotationArgKind::String,   strVal=foo
-        //   123       → AnnotationArgKind::Int64,    i64Val=123
-        //   true      → AnnotationArgKind::Bool,     boolVal=true
-        //   Foo.class → AnnotationArgKind::ClassRef, strVal=Foo
-        // Anything else falls through to String with the raw text —
-        // the user gets back what they typed, which is enough for
-        // the current annotation surface (no nested annotations
-        // here; A2+ may add typed references). Returns true on a
-        // confident classification.
-        static bool classifyLiteral(const std::string& raw, AnnotationArg& out) {
-            std::string t = trimWs(raw);
-            if (t.empty()) {
-                out.kind = AnnotationArgKind::String;
-                out.strVal = "";
-                return false;
-            }
-            if (t.size() >= 2 && t.front() == '"' && t.back() == '"') {
-                out.kind = AnnotationArgKind::String;
-                out.strVal = t.substr(1, t.size() - 2);
-                return true;
-            }
-            if (t == "true" || t == "false") {
-                out.kind = AnnotationArgKind::Bool;
-                out.boolVal = (t == "true");
-                return true;
-            }
-            // Class literal — `Foo.class`. The grammar's primary
-            // production for `typeTypeOrVoid '.' CLASS` produces this
-            // text. Strip the suffix and capture the type-name
-            // prefix; pointcut matching (A3) then resolves it
-            // against the registered classes. Qualified names
-            // (`pkg.Foo.class`) keep the dots; the matcher looks up
-            // by short name first, then canonical.
-            {
-                static const std::string suffix = ".class";
-                if (t.size() > suffix.size()
-                        && std::equal(suffix.rbegin(), suffix.rend(), t.rbegin())) {
-                    out.kind = AnnotationArgKind::ClassRef;
-                    out.strVal = t.substr(0, t.size() - suffix.size());
-                    return true;
-                }
-            }
-            // Integer (decimal, with optional leading sign). Hex/oct/
-            // binary literals can land here later when annotations
-            // actually use them.
-            bool numeric = !t.empty();
-            size_t i = 0;
-            if (t[0] == '+' || t[0] == '-') ++i;
-            if (i == t.size()) numeric = false;
-            for (; i < t.size() && numeric; ++i) {
-                if (!std::isdigit((unsigned char) t[i])) numeric = false;
-            }
-            if (numeric) {
-                try {
-                    out.kind = AnnotationArgKind::Int64;
-                    out.i64Val = (int64_t) std::stoll(t);
-                    return true;
-                } catch (...) {
-                    // Fall through to raw-string fallback.
-                }
-            }
-            // Unknown shape (identifier reference, enum constant, etc.).
-            // Keep as a raw string so consumers see the source text;
-            // A2+ may parse these into typed references.
-            out.kind = AnnotationArgKind::String;
-            out.strVal = t;
-            return false;
-        }
-
-        // Build an AnnotationInstance from an ANTLR annotation context.
-        // Walks elementValuePairs (name = value, name = value, ...) or
-        // a single bare elementValue (the unnamed-arg form, stored
-        // with name="" and looked up by callers as the conventional
-        // "value" key). Array initializers map to *List kinds; each
-        // element classifies independently and the list takes the
-        // dominant kind (all-strings → StringList, all-ints → Int64List,
-        // all-bools → BoolList; mixed lists fall back to StringList of
-        // the raw text). Unsupported elementValue shapes (nested
-        // annotation, expressions beyond literals) are captured with
-        // their raw getText() as a String; A2+ can refine.
-        //
-        // `ann` may be null — returns nullptr in that case. The
-        // returned instance always has a resolvable name (or nullptr
-        // if the annotation context didn't yield one, which is a
-        // malformed parser state we don't try to recover from).
-        static AnnotationInstancePtr parseAnnotationInstance(
-                CajetaParser::AnnotationContext* ann) {
-            if (!ann) return nullptr;
-            QualifiedNamePtr qn;
-            if (ann->qualifiedName()) {
-                qn = QualifiedName::fromContext(ann->qualifiedName());
-            } else if (auto* alt = ann->altAnnotationQualifiedName()) {
-                // `pkg.@MyAnn` form — leaf identifier is the
-                // annotation name. v1 takes the short name only;
-                // package-qualified annotation lookups can be added
-                // when reflection consumers need the full canonical.
-                const auto& ids = alt->identifier();
-                if (!ids.empty()) {
-                    qn = QualifiedName::getOrInsert(
-                        ids.back()->getText(), "");
-                }
-            }
-            if (!qn) return nullptr;
-
-            auto inst = std::make_shared<AnnotationInstance>(qn);
-
-            // Helper to populate a single AnnotationArg from one
-            // elementValue context. Recursively handles array
-            // initializers by collecting child element-value texts.
-            std::function<void(CajetaParser::ElementValueContext*,
-                               AnnotationArg&)> readArg =
-                [&](CajetaParser::ElementValueContext* ev, AnnotationArg& arg) {
-                    if (!ev) return;
-                    if (auto* arr = ev->elementValueArrayInitializer()) {
-                        // Array — first pass classifies each child,
-                        // second pass picks the dominant kind.
-                        std::vector<AnnotationArg> parts;
-                        for (auto* child : arr->elementValue()) {
-                            AnnotationArg p;
-                            readArg(child, p);
-                            parts.push_back(std::move(p));
-                        }
-                        // Pick dominant kind. All-same wins; mixed
-                        // collapses to StringList of the raw text.
-                        bool allString = !parts.empty(), allInt = !parts.empty(), allBool = !parts.empty();
-                        for (auto& p : parts) {
-                            if (p.kind != AnnotationArgKind::String) allString = false;
-                            if (p.kind != AnnotationArgKind::Int64)  allInt = false;
-                            if (p.kind != AnnotationArgKind::Bool)   allBool = false;
-                        }
-                        if (allInt) {
-                            arg.kind = AnnotationArgKind::Int64List;
-                            for (auto& p : parts) arg.i64List.push_back(p.i64Val);
-                        } else if (allBool) {
-                            arg.kind = AnnotationArgKind::BoolList;
-                            for (auto& p : parts) arg.boolList.push_back(p.boolVal);
-                        } else {
-                            arg.kind = AnnotationArgKind::StringList;
-                            for (auto& p : parts) {
-                                // For a homogeneous string array each
-                                // p.strVal is already the unquoted
-                                // payload; for mixed shapes, fall back
-                                // to whatever classifyLiteral put in
-                                // strVal (or stringify ints/bools).
-                                if (p.kind == AnnotationArgKind::String) {
-                                    arg.strList.push_back(p.strVal);
-                                } else if (p.kind == AnnotationArgKind::Int64) {
-                                    arg.strList.push_back(std::to_string(p.i64Val));
-                                } else if (p.kind == AnnotationArgKind::Bool) {
-                                    arg.strList.push_back(p.boolVal ? "true" : "false");
-                                } else {
-                                    arg.strList.push_back(p.strVal);
-                                }
-                            }
-                        }
-                        return;
-                    }
-                    if (auto* nested = ev->annotation()) {
-                        // Nested annotation — captured as raw text for
-                        // now; A2+ can promote to a real nested
-                        // AnnotationInstance.
-                        arg.kind = AnnotationArgKind::String;
-                        arg.strVal = nested->getText();
-                        return;
-                    }
-                    // expression — text-classify the leaf token.
-                    classifyLiteral(ev->getText(), arg);
-                };
-
-            if (auto* evp = ann->elementValuePairs()) {
-                // `@Foo(name = value, other = thing)`.
-                for (auto* pair : evp->elementValuePair()) {
-                    AnnotationArg arg;
-                    if (pair->identifier()) {
-                        arg.name = pair->identifier()->getText();
-                    }
-                    readArg(pair->elementValue(), arg);
-                    inst->addArg(std::move(arg));
-                }
-            } else if (auto* ev = ann->elementValue()) {
-                // `@Foo(value)` — single unnamed arg. Stored with
-                // empty name; findArg("value") routes through to it.
-                AnnotationArg arg;
-                readArg(ev, arg);
-                inst->addArg(std::move(arg));
-            }
-            // `@Foo` with no parens at all — empty args, the instance
-            // still records the annotation by name.
-            return inst;
-        }
 
         virtual std::any visitClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext* ctx) override {
             // Nested class declaration: the grammar lists `classDeclaration`

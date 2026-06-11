@@ -1,0 +1,25 @@
+package cajeta.lang;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Thrown by `Guid.parse` when the input is not a canonical 36-character
+ * `8-4-4-4-12` hexadecimal UUID (wrong length, a misplaced separator, or a
+ * non-hex digit). A `RecoverableException` — catch it at the parse boundary and
+ * reject the input rather than aborting.
+ *
+ * ```cajeta
+ * try {
+ *     Guid g = Guid.parse(userInput);
+ * } catch (GuidFormatException e) {
+ *     // userInput was not a well-formed GUID
+ * }
+ * ```
+ */
+public class GuidFormatException extends RecoverableException {
+    /** Wrap a heap `#String` message; ownership transfers in, `cause` unset. */
+    public GuidFormatException(#String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

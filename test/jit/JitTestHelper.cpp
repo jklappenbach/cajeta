@@ -13,6 +13,8 @@
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/type/CajetaType.h"
+#include "cajeta/type/CajetaClass.h"
 #include "cajeta/compile/Optimizer.h"   // optimizeModule — runs AlwaysInlinerPass at O0
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
@@ -144,6 +146,15 @@ void runCodegenPasses(const std::list<cajeta::CajetaModulePtr>& modules) {
     cajeta::CajetaModule::setActiveProfile("test");
     cajeta::CajetaModule::resolveDependencyGraph();
 
+    // REFL-1.7: force-build the canonical Class<?> instantiation before method
+    // codegen (cajeta.reflect.Class is a template Class<T>) so its bodies are
+    // emitted and every #ClassObject can embed its shared vtable. Mirrors
+    // Compiler::compile. Under stdlib reuse this runs at prime (before
+    // captureBaseline), so Class<?> becomes a resident baseline instantiation
+    // and per-test calls are idempotent no-ops — never a novel-instantiation
+    // reuse hazard.
+    cajeta::CajetaClass::ensureClassWildcardInstantiated();
+
     size_t prevMethodCount = 0;
     while (true) {
         size_t methodCount = 0;
@@ -173,6 +184,21 @@ void runCodegenPasses(const std::list<cajeta::CajetaModulePtr>& modules) {
     for (auto& m : modules)
         for (auto& [name, klass] : m->getStructures())
             if (klass) klass->generateStaticInitializers();
+
+    // REFL-2 — fill the reflective invoke-adapter bodies + finalize/register
+    // #ClassObjects now that every method's LLVM function exists (mirrors
+    // Compiler::compile's AOT pass). Runs here, at the tail of the codegen
+    // pass, so under stdlib reuse it executes at PRIME for stdlib classes
+    // (captured byte-pristine into the baseline) and only for new user classes
+    // per-test — emitReflect*Body / finalizeClassObject are all idempotent.
+    // Each adapter lands in its class's own llvm module, before any merge.
+    for (auto& [key, type] : cajeta::CajetaType::getCanonicalMap()) {
+        if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(type)) {
+            klass->emitReflectInvokeBody();
+            klass->emitReflectNewBody();
+            klass->finalizeClassObject();
+        }
+    }
 }
 
 // True when a test's stdlib-affecting flags match the defaults the stdlib was
@@ -640,8 +666,20 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // Compiler::ensureStdlibModule). The merge below pulls it into
     // `primary` alongside the user modules — that's where extern
     // decls in user IR get resolved to real definitions.
-    // (Codegen — runCodegenPasses + reuse-pristine verify — ran inside the
-    // retry loop above, while the reuse hazard was still armed.)
+    // (Codegen — the cross-module sweeps, REFL-1.7 Class<?> build, the
+    // phase1/2 method loop, and static initializers — all run inside
+    // runCodegenPasses, called within the retry loop above while the reuse
+    // hazard was still armed. main ran them here post-parse; under reuse they
+    // must live inside the hazard-armed window, so they were hoisted into
+    // runCodegenPasses, which is also the prime path.)
+
+    // (REFL-2 reflect-adapter bodies + #ClassObject finalize also run inside
+    // runCodegenPasses now, at the end of the quiescence loop. Under reuse this
+    // means stdlib classes get their adapters at PRIME — baseline-resident and
+    // byte-pristine across tests — instead of being mutated into the cached
+    // stdlib on first per-test use. The emit*/finalize calls are idempotent
+    // (guarded by llvmReflect*BodyEmitted / non-null #ClassObject slot 0), so
+    // per-test they only fire for the new user classes.)
 
     // Merge every secondary module into `primary`'s llvm::Module.
     // After the parse-stdlib-once refactor, each module owns only

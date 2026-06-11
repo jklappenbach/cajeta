@@ -1,0 +1,117 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+
+/**
+ * A declared constructor of a class (REFL-4). Reflective construction routes
+ * through the synthesized per-class heapInstance adapter (REFL-2C). The
+ * no-argument path is here; argument marshalling lands next.
+ */
+public final class Constructor {
+    pointer rtti;
+    int32 index;
+
+    @Native("__cajeta_rtti_constructor_param_count")
+    private static int32 paramCountOf(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_constructor_modifiers")
+    private static int32 modsOf(pointer rtti, int32 idx);
+    @Native("__cajeta_class_new0")
+    private static #Object new0(pointer rtti, int32 idx);
+    @Native("__cajeta_class_new")
+    private static #Object newN(pointer rtti, int32 idx, int64[] args);
+    // REFL-3.3 (D1): 1 if this constructor is private AND its class is @Sealed.
+    @Native("__cajeta_reflect_ctor_blocked")
+    private static int32 accessBlocked(pointer rtti, int32 idx);
+    // REFL-6a annotation reflection. ownerKind 3 = a constructor; the ctor index
+    // is passed as ownerIndex.
+    @Native("__cajeta_rtti_annotation_count")
+    private static int32 annCountNative(pointer rtti, int32 ok, int32 oi, int32 si);
+    @Native("__cajeta_rtti_annotation_name_len")
+    private static int32 annNameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_name_into")
+    private static void annNameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int8[] out);
+
+    public Constructor(pointer rtti, int32 index) {
+        this.rtti = rtti;
+        this.index = index;
+    }
+
+    public int32 getIndex() { return this.index; }
+
+    /** Number of user-visible parameters (the implicit `this` is excluded). */
+    public int32 getParameterCount() { return paramCountOf(this.rtti, this.index); }
+
+    /** This constructor's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
+    public #Modifiers getModifiers() { return heap Modifiers(modsOf(this.rtti, this.index)); }
+
+    /** The parameter at `i` (0-based, user-visible). */
+    public #Parameter getParameter(int32 i) {
+        return heap Parameter(this.rtti, 1, this.index, i);
+    }
+
+    // --- annotations (REFL-6a; names only — arguments are REFL-6b) ----------
+
+    /** Number of annotations declared on this constructor. */
+    public int32 getAnnotationCount() {
+        return annCountNative(this.rtti, 3, this.index, 0);
+    }
+
+    /** Canonical name of this constructor's annotation at `i` (empty if out of range). */
+    public #String getAnnotationName(int32 i) {
+        int32 len = annNameLen(this.rtti, 3, this.index, 0, i);
+        int8[] out = heap int8[len];
+        annNameInto(this.rtti, 3, this.index, 0, i, out);
+        return heap String(#out, len);
+    }
+
+    /** This constructor's annotation at `i` as an {@link Annotation} object. */
+    public #Annotation getAnnotation(int32 i) {
+        return heap Annotation(this.rtti, 3, this.index, 0, i);
+    }
+
+    /** Whether this constructor declares an annotation with the given canonical name. */
+    public boolean hasAnnotation(String name) {
+        int32 n = this.getAnnotationCount();
+        int32 i = 0;
+        while (i < n) {
+            if (this.getAnnotationName(i).equals(name)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * REFL-3.3 visibility gate (decision D1). Reflective construction is
+     * default-open; a `@Sealed` class bars constructing through its private
+     * constructors. Both heapInstance forms run this first and throw if sealed-off.
+     */
+    private void checkAccess() {
+        if (accessBlocked(this.rtti, this.index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective construction via a private constructor of a @Sealed class is denied");
+        }
+    }
+
+    /**
+     * Construct a new HEAP instance via this NO-ARGUMENT constructor (allocates
+     * on the heap, installs the vtable, runs the ctor). Returns the new owned
+     * object. Named `heapInstance` to make the allocation site explicit —
+     * reflective construction is always heap (the type, hence its size and
+     * escape, is unknown at the call site, so a stack alloca can't be emitted);
+     * a future `stackInstance`/unsafe-placement form can join this namespace.
+     */
+    public #Object heapInstance() { checkAccess(); return new0(this.rtti, this.index); }
+
+    /**
+     * Construct a HEAP instance via this constructor with raw arguments packed
+     * into `args` (one int64 per user parameter, declared order). Returns the
+     * new owned object.
+     */
+    public #Object heapInstance(int64[] args) {
+        checkAccess();
+        return newN(this.rtti, this.index, args);
+    }
+}
