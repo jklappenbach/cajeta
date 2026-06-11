@@ -17,7 +17,7 @@ package cajeta.error;
  * Constructors don't call `super(...)` — `super` is still
  * UnsupportedExpression — so inherited fields are written directly via
  * `this.message`, and each subclass repeats the field assignment.
- * See cajeta-docs/stdlib/ErrorModel.md.
+ * See docs/stdlib/ErrorModel.md.
  */
 public class Throwable {
     public String message;

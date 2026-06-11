@@ -1,0 +1,323 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+import cajeta.lang.Boolean;
+import cajeta.lang.Int8;
+import cajeta.lang.Int16;
+import cajeta.lang.Int32;
+import cajeta.lang.Int64;
+import cajeta.lang.UInt8;
+import cajeta.lang.UInt16;
+import cajeta.lang.UInt32;
+import cajeta.lang.UInt64;
+import cajeta.lang.Char;
+import cajeta.lang.Float32;
+import cajeta.lang.Float64;
+
+/**
+ * A declared method of a class (REFL-4). Reflective invocation routes through
+ * the receiver's synthesized per-class invoke adapter (REFL-2B), so the call
+ * lowers to a direct LLVM call. The no-argument scalar path is here; typed
+ * argument marshalling lands as `invoke(obj, args)` next.
+ */
+public final class Method {
+    pointer rtti;
+    int32 index;
+
+    @Native("__cajeta_rtti_method_name_len")
+    private static int32 nameLen(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_method_name_into")
+    private static void nameInto(pointer rtti, int32 idx, int8[] out);
+    @Native("__cajeta_rtti_method_param_count")
+    private static int32 paramCountOf(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_method_modifiers")
+    private static int32 modsOf(pointer rtti, int32 idx);
+    @Native("__cajeta_object_invoke_scalar0")
+    private static int64 invoke0(Object o, int32 idx);
+    @Native("__cajeta_object_invoke_scalar")
+    private static int64 invokeN(Object o, int32 idx, int64[] args);
+    // REFL-4.4 fiber-stack arg buffers: discrete args, no heap int64[].
+    @Native("__cajeta_object_invoke_scalar1")
+    private static int64 invoke1(Object o, int32 idx, int64 a0);
+    @Native("__cajeta_object_invoke_scalar2")
+    private static int64 invoke2(Object o, int32 idx, int64 a0, int64 a1);
+    @Native("__cajeta_object_invoke_scalar3")
+    private static int64 invoke3(Object o, int32 idx, int64 a0, int64 a1, int64 a2);
+    @Native("__cajeta_object_invoke_f32")
+    private static float32 invokeF32(Object o, int32 idx, int64[] args);
+    @Native("__cajeta_object_invoke_f64")
+    private static float64 invokeF64(Object o, int32 idx, int64[] args);
+    @Native("__cajeta_object_invoke_obj")
+    private static #Object invokeObj(Object o, int32 idx, int64[] args);
+    // REFL-3.3 (D1): 1 if this method is private AND its class is @Sealed.
+    @Native("__cajeta_reflect_method_blocked")
+    private static int32 accessBlocked(pointer rtti, int32 idx);
+    // REFL-4.1 boxing (W5): the method's return-type kind. Mirrors the
+    // CAJETA_RK_* constants in cajeta_runtime.c.
+    @Native("__cajeta_rtti_method_return_kind")
+    private static int32 returnKind(pointer rtti, int32 idx);
+    // REFL-6a annotation reflection. ownerKind 2 = a method; the method index is
+    // passed as ownerIndex.
+    @Native("__cajeta_rtti_annotation_count")
+    private static int32 annCountNative(pointer rtti, int32 ok, int32 oi, int32 si);
+    @Native("__cajeta_rtti_annotation_name_len")
+    private static int32 annNameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_name_into")
+    private static void annNameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int8[] out);
+
+    public Method(pointer rtti, int32 index) {
+        this.rtti = rtti;
+        this.index = index;
+    }
+
+    public int32 getIndex() { return this.index; }
+
+    /** Canonical signature (e.g. `"test.User::bump(pointer)"`). */
+    public #String getName() {
+        int32 len = nameLen(this.rtti, this.index);
+        int8[] out = heap int8[len];
+        nameInto(this.rtti, this.index, out);
+        return heap String(#out, len);
+    }
+
+    /** Number of user-visible parameters (the implicit `this` is excluded). */
+    public int32 getParameterCount() { return paramCountOf(this.rtti, this.index); }
+
+    /** This method's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
+    public #Modifiers getModifiers() { return heap Modifiers(modsOf(this.rtti, this.index)); }
+
+    /** The parameter at `i` (0-based, user-visible). */
+    public #Parameter getParameter(int32 i) {
+        return heap Parameter(this.rtti, 0, this.index, i);
+    }
+
+    // --- annotations (REFL-6a; names only — arguments are REFL-6b) ----------
+
+    /** Number of annotations declared on this method. */
+    public int32 getAnnotationCount() {
+        return annCountNative(this.rtti, 2, this.index, 0);
+    }
+
+    /** Canonical name of this method's annotation at `i` (empty if out of range). */
+    public #String getAnnotationName(int32 i) {
+        int32 len = annNameLen(this.rtti, 2, this.index, 0, i);
+        int8[] out = heap int8[len];
+        annNameInto(this.rtti, 2, this.index, 0, i, out);
+        return heap String(#out, len);
+    }
+
+    /** This method's annotation at `i` as an {@link Annotation} object. */
+    public #Annotation getAnnotation(int32 i) {
+        return heap Annotation(this.rtti, 2, this.index, 0, i);
+    }
+
+    /** Whether this method declares an annotation with the given canonical name. */
+    public boolean hasAnnotation(String name) {
+        int32 n = this.getAnnotationCount();
+        int32 i = 0;
+        while (i < n) {
+            if (this.getAnnotationName(i).equals(name)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * REFL-3.3 visibility gate (decision D1). Reflective invocation is
+     * default-open; a `@Sealed` class bars invoking its private methods. Every
+     * invoke path runs this first and throws if the method is sealed-off.
+     */
+    private void checkAccess() {
+        if (accessBlocked(this.rtti, this.index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective invoke of a private method of a @Sealed class is denied");
+        }
+    }
+
+    /**
+     * Invoke this NO-ARGUMENT method on `o`, returning the result widened to
+     * int64 (smaller scalars in the low bytes, pointers whole, void → 0).
+     * Argument-passing variants land with REFL-4 marshalling.
+     */
+    public int64 invokeScalar(Object o) { checkAccess(); return invoke0(o, this.index); }
+
+    /**
+     * Invoke this method on `o` with raw arguments packed into `args` (one
+     * int64 element per user parameter, in declared order: scalars as their
+     * bits, objects/pointers whole). Result widened to int64. The caller must
+     * supply exactly getParameterCount() elements with matching types
+     * (typed/boxed marshalling refinements land later).
+     */
+    public int64 invokeScalar(Object o, int64[] args) {
+        checkAccess();
+        return invokeN(o, this.index, args);
+    }
+
+    /**
+     * REFL-4.4 (Strategy 6) fiber-stack arg buffers. For a small, statically
+     * known argument count, pass the raw args directly instead of building a
+     * heap `int64[]` — the native assembles the adapter's arg buffer on the
+     * calling fiber's stack (no heap allocation). Each arg is one raw user
+     * parameter, in declared order (scalars as their bits, objects/pointers as
+     * the reference). Result widened to int64; the caller must supply exactly
+     * getParameterCount() args with matching types.
+     */
+    public int64 invokeScalar(Object o, int64 a0) {
+        checkAccess();
+        return invoke1(o, this.index, a0);
+    }
+    public int64 invokeScalar(Object o, int64 a0, int64 a1) {
+        checkAccess();
+        return invoke2(o, this.index, a0, a1);
+    }
+    public int64 invokeScalar(Object o, int64 a0, int64 a1, int64 a2) {
+        checkAccess();
+        return invoke3(o, this.index, a0, a1, a2);
+    }
+
+    /** Invoke a NO-ARGUMENT int32-returning method, narrowed from the int64 path. */
+    public int32 invokeInt32(Object o) { checkAccess(); return (int32) invoke0(o, this.index); }
+
+    /** Invoke an int32-returning method with raw-packed `args`, narrowed. */
+    public int32 invokeInt32(Object o, int64[] args) {
+        checkAccess();
+        return (int32) invokeN(o, this.index, args);
+    }
+
+    /**
+     * REFL-4.4 int32-returning, fiber-stack arg buffers (see invokeScalar
+     * arity overloads). Narrowed from the int64 path; no heap `int64[]`.
+     */
+    public int32 invokeInt32(Object o, int64 a0) {
+        checkAccess();
+        return (int32) invoke1(o, this.index, a0);
+    }
+    public int32 invokeInt32(Object o, int64 a0, int64 a1) {
+        checkAccess();
+        return (int32) invoke2(o, this.index, a0, a1);
+    }
+    public int32 invokeInt32(Object o, int64 a0, int64 a1, int64 a2) {
+        checkAccess();
+        return (int32) invoke3(o, this.index, a0, a1, a2);
+    }
+
+    /**
+     * Invoke a float32-returning method. The per-class adapter stores the
+     * floating-point result in its own ABI register, so this returns the real
+     * value (not int64-widened bits). No-arg form passes a null arg buffer.
+     */
+    public float32 invokeFloat32(Object o) { checkAccess(); return invokeF32(o, this.index, null); }
+    public float32 invokeFloat32(Object o, int64[] args) {
+        checkAccess();
+        return invokeF32(o, this.index, args);
+    }
+
+    /** Invoke a float64-returning method (real FP value; see invokeFloat32). */
+    public float64 invokeFloat64(Object o) { checkAccess(); return invokeF64(o, this.index, null); }
+    public float64 invokeFloat64(Object o, int64[] args) {
+        checkAccess();
+        return invokeF64(o, this.index, args);
+    }
+
+    /**
+     * Invoke a reference-returning method and hand back the result as an owned
+     * `#Object`. The per-class adapter stores the returned pointer to its ret
+     * buffer, so this returns the real reference (not an int64-widened bit
+     * pattern) and the result is drop-tracked like any owned object.
+     *
+     * Ownership follows the invoked method's signature: a method returning
+     * `heap T` transfers ownership to the caller (the common, safe case). A
+     * method that returns a *borrow* must NOT be reached this way — reflection
+     * can't see the borrow's lifetime, so treating it as owned would risk a
+     * double free. No-arg form passes a null arg buffer.
+     */
+    public #Object invokeObject(Object o) { checkAccess(); return invokeObj(o, this.index, null); }
+    public #Object invokeObject(Object o, int64[] args) {
+        checkAccess();
+        return invokeObj(o, this.index, args);
+    }
+
+    /**
+     * REFL-4.1 boxing (plan W5). Invoke this method and hand back the result as
+     * a uniform owned `#Object`, regardless of the return type — the operation
+     * generic, type-erased reflection consumers (serializers, DI containers,
+     * inspectors) need when they hold members whose types they don't know.
+     *
+     * A primitive return is boxed into its `cajeta.lang` wrapper
+     * (`int32`→`Int32`, `float64`→`Float64`, `boolean`→`Boolean`, …); a
+     * reference return passes through `invokeObject` (ownership follows the
+     * method's signature — see that method's caveat); a `void` method returns
+     * `null` after running for its side effects. A primitive without a wrapper
+     * yet (int8/16/128, the unsigned ints, `char`, half/quad/ML floats — plan
+     * W2-W4) raises `UnsupportedReflectionException` rather than widening (which
+     * would misreport the boxed type) — catch it and fall back to the typed
+     * invoke surface for that member.
+     *
+     * Note FP returns route through the FP-register natives (`invokeF32/F64`),
+     * not the int64 scalar path, so the value crosses correctly.
+     */
+    public #Object invokeBoxed(Object o) { return invokeBoxedImpl(o, null); }
+    public #Object invokeBoxed(Object o, int64[] args) { return invokeBoxedImpl(o, args); }
+
+    private #Object invokeBoxedImpl(Object o, int64[] args) {
+        checkAccess();
+        int32 kind = returnKind(this.rtti, this.index);
+        if (kind == 0) {                                   // void
+            invokeN(o, this.index, args);                  // run for side effects
+            return null;
+        }
+        if (kind == 1) {                                   // boolean
+            return Boolean.of(invokeN(o, this.index, args) != 0L);
+        }
+        if (kind == 2) {                                   // int32
+            return Int32.of((int32) invokeN(o, this.index, args));
+        }
+        if (kind == 3) {                                   // int64
+            return Int64.of(invokeN(o, this.index, args));
+        }
+        if (kind == 4) {                                   // float32
+            return Float32.of(invokeF32(o, this.index, args));
+        }
+        if (kind == 5) {                                   // float64
+            return Float64.of(invokeF64(o, this.index, args));
+        }
+        if (kind == 6) {                                   // reference
+            return invokeObj(o, this.index, args);
+        }
+        // W2 widths — the scalar adapter widens the return into the int64 ret
+        // buffer; a truncating cast recovers the exact value.
+        if (kind == 8) {                                   // int8
+            return Int8.of((int8) invokeN(o, this.index, args));
+        }
+        if (kind == 9) {                                   // int16
+            return Int16.of((int16) invokeN(o, this.index, args));
+        }
+        if (kind == 10) {                                  // uint8
+            return UInt8.of((uint8) invokeN(o, this.index, args));
+        }
+        if (kind == 11) {                                  // uint16
+            return UInt16.of((uint16) invokeN(o, this.index, args));
+        }
+        if (kind == 12) {                                  // uint32
+            return UInt32.of((uint32) invokeN(o, this.index, args));
+        }
+        if (kind == 13) {                                  // uint64
+            return UInt64.of((uint64) invokeN(o, this.index, args));
+        }
+        if (kind == 14) {                                  // char (i32)
+            return Char.of((char) invokeN(o, this.index, args));
+        }
+        // kind == 7: int128/uint128, the half/quad (float16/bfloat16/float128)
+        // and ML fp8/sub-byte floats, or `pointer`. The W3/W4 wrapper CLASSES
+        // exist now, but reflective auto-boxing of these RETURNS is not wired:
+        // the invoke adapter stores into an 8-byte ret buffer (a float128 would
+        // overflow it) and there are no half/bfloat/sub-byte return natives yet.
+        // Box manually off the typed-invoke surface, e.g.
+        // `Float128.of((float128) ...)`, until those paths land.
+        throw heap UnsupportedReflectionException(
+            "invokeBoxed: reflective boxing of this return type (128-bit int, half/quad/ML float, or pointer) is not wired yet; use the typed invoke surface and box manually");
+    }
+}

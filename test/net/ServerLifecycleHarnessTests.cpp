@@ -4,7 +4,7 @@
 // Pins the pure-logic contract of the NET-4.1 `Server` core
 // (runtime/src/cajeta/net/Server.cajeta + ServerState.cajeta), modeled one
 // level down via ServerLifecycleHarness.h (std::atomic standing in for
-// cajeta.threading.AtomicInt32), in the deterministic, scheduler-free
+// cajeta.concurrent.AtomicInt32), in the deterministic, scheduler-free
 // posture the other net harnesses use while the cajeta-surface accept loop
 // is still being wired. Two groups:
 //

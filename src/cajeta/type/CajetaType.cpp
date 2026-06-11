@@ -124,6 +124,95 @@ namespace cajeta {
         // to honor that.
     }
 
+    namespace {
+        // Snapshot of every global type container, taken once after the
+        // pristine stdlib is built (StdlibCache::prime) and reassigned before
+        // each reusing test (StdlibCache::restoreBaseline). Holds copies of
+        // both the CajetaType member-statics and the file-statics above, so a
+        // single restore reverts every user-visible mutation. `valid` guards
+        // the production case where a baseline was never captured.
+        struct TypeGlobalsBaseline {
+            bool valid = false;
+            map<string, CajetaTypePtr> canonicalMap;
+            map<string, map<string, int32_t>> enumConstants;
+            map<TypeKey, CajetaTypePtr> typeMap;
+            map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
+            map<string, string> g_archive;
+            set<string> g_enumArchive;
+            set<string> g_valueTypeArchive;
+            set<string> g_interfaceArchive;
+            map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
+            map<string, WildcardInfoEntry> g_wildcardInfo;
+        };
+        TypeGlobalsBaseline g_typeBaseline;
+    }
+
+    void CajetaType::captureBaseline() {
+        g_typeBaseline.canonicalMap = canonicalMap;
+        g_typeBaseline.enumConstants = enumConstants;
+        g_typeBaseline.typeMap = typeMap;
+        g_typeBaseline.llvmTypeIdMap = llvmTypeIdMap;
+        g_typeBaseline.g_archive = g_archive;
+        g_typeBaseline.g_enumArchive = g_enumArchive;
+        g_typeBaseline.g_valueTypeArchive = g_valueTypeArchive;
+        g_typeBaseline.g_interfaceArchive = g_interfaceArchive;
+        g_typeBaseline.g_archiveTemplateMeta = g_archiveTemplateMeta;
+        g_typeBaseline.g_wildcardInfo = g_wildcardInfo;
+        g_typeBaseline.valid = true;
+    }
+
+    void CajetaType::releaseThrownTransientStructNames() {
+        if (!g_typeBaseline.valid) return;
+        // A reusing test whose compile THREW (typically an expected-error test)
+        // never ran its normal end-of-compile struct-name release, so any USER
+        // struct it created keeps its name in the shared LLVMContext — and LLVM
+        // struct types are context-owned, outliving the per-test module teardown.
+        // Even a fully BODIED user struct is a hazard: TemplateBasicTests
+        // .diamondWithoutInferableConstructorThrows builds `test.Holder<int32>`
+        // as a 1-field `class Holder<T>` then throws on an un-inferable ctor; a
+        // later test re-declaring `interface Holder<T>` (TemplatedInterfaceV2Tests)
+        // gets that stale 1-field struct from getOrCreateLlvmType and GEPs into
+        // the absent interface vtable/kind slots → "Invalid indices for GEP
+        // pointer type". So we release by NAME (not by opaque-ness), walking
+        // canonicalMap — the authoritative creation record that also catches
+        // structs floating free of any module. We PRESERVE stdlib-resident
+        // structs: a stdlib template instantiation accumulated for cross-test
+        // reuse lives in the persistent stdlib module and is reused by name, so
+        // freeing it would diverge from its accumulated bodies. (The success path
+        // keeps its own clearTransientStructNames; this is the throw counterpart.)
+        // Production-inert: only the test harness ever captures a baseline.
+        std::set<std::string> stdlibResident;
+        if (auto stdlib = CajetaModule::getStdlibModule()) {
+            if (auto* lm = stdlib->getLlvmModule()) {
+                for (auto* st : lm->getIdentifiedStructTypes())
+                    if (st->hasName()) stdlibResident.insert(st->getName().str());
+            }
+        }
+        for (auto& [name, type] : canonicalMap) {
+            if (!type) continue;
+            llvm::Type* lt = type->getLlvmType();
+            if (lt && lt->isStructTy()) {
+                auto* st = llvm::cast<llvm::StructType>(lt);
+                if (st->hasName() && !stdlibResident.count(st->getName().str()))
+                    st->setName("");
+            }
+        }
+    }
+
+    void CajetaType::restoreBaseline() {
+        if (!g_typeBaseline.valid) return;
+        canonicalMap = g_typeBaseline.canonicalMap;
+        enumConstants = g_typeBaseline.enumConstants;
+        typeMap = g_typeBaseline.typeMap;
+        llvmTypeIdMap = g_typeBaseline.llvmTypeIdMap;
+        g_archive = g_typeBaseline.g_archive;
+        g_enumArchive = g_typeBaseline.g_enumArchive;
+        g_valueTypeArchive = g_typeBaseline.g_valueTypeArchive;
+        g_interfaceArchive = g_typeBaseline.g_interfaceArchive;
+        g_archiveTemplateMeta = g_typeBaseline.g_archiveTemplateMeta;
+        g_wildcardInfo = g_typeBaseline.g_wildcardInfo;
+    }
+
     map<string, string>& CajetaType::getArchive() { return g_archive; }
 
     void CajetaType::markArchiveEnum(const string& canonical) {
@@ -306,7 +395,7 @@ namespace cajeta {
         // character literal `'c'` evaluates to int32 99, `'é'` to 233,
         // `'😀'` to 0x1F600. The 8-bit byte type has perfectly good
         // names (`int8` / `uint8`); `char` doesn't need to alias them.
-        // See cajeta-docs/stdlib/lang/String.md § `char` is a 32-bit
+        // See docs/stdlib/lang/String.md § `char` is a 32-bit
         // Unicode codepoint. Redefined 2026-05-18 (was i8).
         //
         // `uchar` is kept as a deprecated alias for `uint8` so legacy
@@ -379,7 +468,7 @@ namespace cajeta {
         // C-string spell `pointer` (or, more rigorously, the new
         // encoding-prefixed byte-array literal — task #164, L-29 in
         // Features.md — once shipped). See
-        // cajeta-docs/stdlib/lang/String.md § Memory model.
+        // docs/stdlib/lang/String.md § Memory model.
     }
 
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {
@@ -492,7 +581,7 @@ namespace cajeta {
         }
         // Function type: `(T1, T2) -> R`. Resolve each component and build
         // (or look up by canonical) a CajetaFunctionType. See
-        // cajeta-docs/stdlib/Lambdas.md. The return slot is typeTypeOrVoid so
+        // docs/stdlib/Lambdas.md. The return slot is typeTypeOrVoid so
         // `(T) -> void` is a legal function-type shape (P6.5).
         if (auto* fnt = ctx->functionType()) {
             std::vector<CajetaTypePtr> paramTypes;
@@ -790,7 +879,7 @@ namespace cajeta {
                 // structure map. Handled here — before the generic
                 // template path — so we don't need to register a fake
                 // "Task" template class just to satisfy the
-                // isTemplate() check. See cajeta-docs/AsyncStatus.md §
+                // isTemplate() check. See docs/AsyncStatus.md §
                 // Plan: Task<T> as user-typeable template.
                 if (qName->getTypeName() == "Vector"
                         && targs->typeArgument().size() == 2) {
@@ -911,7 +1000,7 @@ namespace cajeta {
                             // `'?' ((EXTENDS|SUPER) typeType)?` means
                             // typeType() carries the BOUND for bounded
                             // forms (not a regular type arg). Step 6
-                            // — see cajeta-docs/TemplateWildcard.md.
+                            // — see docs/TemplateWildcard.md.
                             if (targ->QUESTION() != nullptr) {
                                 if (!CajetaType::wildcardsEnabled()) {
                                     throw "wildcard type arguments not supported in v1";

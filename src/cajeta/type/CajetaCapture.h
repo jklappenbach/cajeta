@@ -1,6 +1,6 @@
 //
 // CajetaCapture — synthetic per-binding-site capture type for wildcard
-// receivers (see cajeta-docs/CaptureConversion.md).
+// receivers (see docs/CaptureConversion.md).
 //
 // A capture is the compile-time identity of "the unknown T that this
 // specific wildcard-typed binding holds." Two `Box<? extends Animal>`

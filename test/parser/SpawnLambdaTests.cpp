@@ -2,7 +2,7 @@
 // spawn-of-lambda — SpawnExpression accepting a function-typed local /
 // parameter / capture as the inner "method" and indirect-dispatching
 // through the L3-3 closure record. Unblocks the lambda-form withTimeout
-// shape documented in cajeta-docs/stdlib/Thread.md § withTimeout.
+// shape documented in docs/stdlib/Concurrency.md § withTimeout.
 //
 // v1 supports the heap-ownership / `(P) -> #R` return ABI and primitive
 // returns; the sret value-return shape is rejected at compile time

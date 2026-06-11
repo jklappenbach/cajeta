@@ -1,7 +1,7 @@
 package cajeta.io.file;
 
 /**
- * File-open intent enum. See `cajeta-docs/stdlib/io/file/OpenMode.md`.
+ * File-open intent enum. See `docs/stdlib/io/file/OpenMode.md`.
  *
  * Ordinal values are stable — runtime helpers
  * (`__cajeta_file_open(path, mode)`) interpret them directly as

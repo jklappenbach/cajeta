@@ -242,6 +242,75 @@ namespace cajeta {
         }
     }
 
+    void CajetaClass::removeMethod(const MethodPtr& method) {
+        if (!method) return;
+        methods.erase(method->getMapKey());
+        staticMethods.erase(method->getMapKey());
+        for (auto it = methodList.begin(); it != methodList.end(); ) {
+            if (*it == method) it = methodList.erase(it); else ++it;
+        }
+        auto eraseFromGenericMap =
+            [&](map<string, map<string, MethodPtr>>& gmap, bool labeled) {
+                auto git = gmap.find(method->toGeneric(labeled));
+                if (git == gmap.end()) return;
+                git->second.erase(method->getMapKey(labeled));
+                if (git->second.empty()) gmap.erase(git);
+            };
+        if (method->isConstructor()) {
+            eraseFromGenericMap(labeledConstructorMap, true);
+            eraseFromGenericMap(unlabeledConstructorMap, false);
+        } else {
+            eraseFromGenericMap(labeledMethodMap, true);
+            eraseFromGenericMap(unlabeledMethodMap, false);
+        }
+    }
+
+    void CajetaClass::captureReuseBaseline() {
+        reuseBaseline.valid = true;
+        reuseBaseline.emitModule = emitModule;
+        reuseBaseline.vtableGlobal = llvmVirtualTableGlobal;
+        reuseBaseline.rttiGlobal = llvmRttiGlobal;
+        reuseBaseline.dropFunction = llvmDropFunction;
+        reuseBaseline.stackDropFunction = llvmStackDropFunction;
+        reuseBaseline.dropFunctionPatched = llvmDropFunctionPatched;
+        reuseBaseline.interfaceVTables = interfaceVTables;
+        reuseBaseline.staticFieldGlobals = staticFieldGlobals;
+        reuseBaseline.secondaryVTables = secondaryVTables;
+        reuseBaseline.methodFns.clear();
+        for (auto& m : methodList)
+            if (m) reuseBaseline.methodFns[m.get()] = m->getLlvmFunction();
+    }
+
+    void CajetaClass::restoreReuseBaseline() {
+        if (!reuseBaseline.valid) return;
+        // Restore each module-bound binding to its prime snapshot. Drops/vtables/
+        // RTTI/static-field globals lazily generated into a per-test user module
+        // are reset (to the stdlib-module value, or null if not built at prime)
+        // so the next reusing test regenerates into its own module. Pointer
+        // assignment only — the freed per-test pointers are never dereferenced.
+        // emitModule first: a stale per-test emitModule makes getEmitModule()
+        // (and thus the runtime-fn callees in this class's regenerated drop body)
+        // resolve into a freed module — the __cajeta_free / __cajeta_class_virtual_drop
+        // cross-module leak. Resetting it to the prime value (normally null →
+        // getEmitModule() falls back to this class's own module) fixes that.
+        emitModule = reuseBaseline.emitModule;
+        llvmVirtualTableGlobal = reuseBaseline.vtableGlobal;
+        llvmRttiGlobal = reuseBaseline.rttiGlobal;
+        llvmDropFunction = reuseBaseline.dropFunction;
+        llvmStackDropFunction = reuseBaseline.stackDropFunction;
+        llvmDropFunctionPatched = reuseBaseline.dropFunctionPatched;
+        interfaceVTables = reuseBaseline.interfaceVTables;
+        staticFieldGlobals = reuseBaseline.staticFieldGlobals;
+        secondaryVTables = reuseBaseline.secondaryVTables;
+        for (auto& m : methodList) {
+            if (!m) continue;
+            auto it = reuseBaseline.methodFns.find(m.get());
+            llvm::Function* base =
+                (it != reuseBaseline.methodFns.end()) ? it->second : nullptr;
+            if (m->getLlvmFunction() != base) m->setLlvmFunction(base);
+        }
+    }
+
     void CajetaClass::addProperty(StructurePropertyPtr field) {
         properties[field->getName()] = field;
         propertyList.push_back(field);
@@ -354,7 +423,7 @@ namespace cajeta {
             uint64_t parentOffsetInThis) {
         if (!impl || !impl->getLlvmFunctionType()) return nullptr;
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::FunctionType* fnTy = impl->getLlvmFunctionType();
 
         std::string name = sanitizeSymbol(
@@ -412,7 +481,7 @@ namespace cajeta {
         if (!parentVtableType) return nullptr;
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         std::string vtName = sanitizeSymbol(
             qName->toCanonical() + "$as$" + parentCanon + "#VTable");
         if (auto* existing = lmod->getGlobalVariable(vtName)) {
@@ -441,8 +510,10 @@ namespace cajeta {
             }
         }
 
+        // Entries live at index 5 (after version, count, parent_vtable,
+        // drop_fn, classObject — see StructureMetadata::createVirtualTableType).
         llvm::ArrayType* entriesArrTy = llvm::cast<llvm::ArrayType>(
-            parentVtableType->getTypeAtIndex(4));
+            parentVtableType->getTypeAtIndex(5));
         llvm::StructType* entryTy = llvm::cast<llvm::StructType>(
             entriesArrTy->getElementType());
 
@@ -490,12 +561,23 @@ namespace cajeta {
         llvm::Constant* dropFnConst =
             llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
 
+        // Slot 4: classObject. getClass() must report the DYNAMIC (most-derived)
+        // type even when the object is reached through a parent-subobject view,
+        // so point at THIS class's #ClassObject (not the parent's). NULL until
+        // this class's #ClassObject is forward-declared (populate step 3).
+        llvm::Constant* classObjConst =
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        if (auto* co = getClassObjectGlobal()) {
+            classObjConst = CajetaModule::ensureGlobalInModule(lmod, co);
+        }
+
         std::vector<llvm::Constant*> initArgs{
             llvm::ConstantInt::get(i16Ty, llvm::APInt(16, 0, false)),
             llvm::ConstantInt::get(i16Ty,
                 llvm::APInt(16, parentSlots.size(), false)),
             parentVtableRef,
             dropFnConst,
+            classObjConst,
             entriesArr,
         };
         llvm::Constant* initializer = llvm::ConstantStruct::get(parentVtableType,
@@ -514,6 +596,19 @@ namespace cajeta {
         // times as parents fill in. The flag is set at the end so a
         // partial / aborted run doesn't claim done.
         if (prototypeBuilt) return;
+        // Emit-target swap (test-reuse) — see Method::generatePrototype. For a
+        // stdlib-template instantiation owned (emit-wise) by a user module,
+        // point `module` at the emit module so this class's vtable / RTTI /
+        // struct-type globals land there, leaving the cached stdlib pristine.
+        // Layout/type resolution is context-bound (shared) + canonicalMap-keyed,
+        // so it is unaffected. No-op in production (emit==resolution).
+        CajetaModulePtr* moduleSlot = &module;
+        CajetaModulePtr savedModule = module;
+        if (emitModule && emitModule != module) module = emitModule;
+        struct RestoreModule {
+            CajetaModulePtr* slot; CajetaModulePtr saved;
+            ~RestoreModule() { *slot = saved; }
+        } restoreModule{moduleSlot, savedModule};
 
         // Templates aren't types — `Box` alone has no layout, no methods to
         // lower, no vtable to build. Defer the structural work until a
@@ -696,7 +791,7 @@ namespace cajeta {
         // 'enclosingStart' = slot where the surrounding sub-object's vtable
         // sits. Used to record `subObjectSlotMap[firstParent]` (which shares).
         //
-        // MultiClassing Phase 3 v1 (cajeta-docs/stdlib/MultiClassing.md § P-4):
+        // MultiClassing Phase 3 v1 (docs/stdlib/MultiClassing.md § P-4):
         // when an ancestor is reachable through multiple paths (true diamond),
         // record the CANONICAL (first-encountered) offset in subObjectSlotMap.
         // Without this guard, the second walk would overwrite with a later
@@ -831,7 +926,7 @@ namespace cajeta {
                         "view type '" + viewName + "' cannot be used as a "
                         "class field (class '" + canonical + "', field '"
                         + p->getName() + "'). Views are buffer overlays with "
-                        "borrowed lifetime — see cajeta-docs/stdlib/Views.md "
+                        "borrowed lifetime — see docs/stdlib/Views.md "
                         "(Errors caught statically). Workaround: store the "
                         "underlying byte[] in the class and construct the "
                         "view per access; or pass the view by value across "
@@ -897,7 +992,7 @@ namespace cajeta {
 
         CajetaModule::getStructureToModule()[canonical] = module;
 
-        // wildcard-field-in-small-class (cajeta-docs/LintRules.md). A
+        // wildcard-field-in-small-class (docs/LintRules.md). A
         // wildcard-typed field forces virtual-drop dispatch through
         // __cajeta_class_virtual_drop on every instance teardown; for
         // a class allocated in a hot path that's measurable noise. Lint
@@ -911,9 +1006,18 @@ namespace cajeta {
         //     that the TemplateInstantiator materializes when a chain-
         //     walker stores into `Stream<?>` is compiler-generated, not
         //     author-written, so flagging its fields would be noise,
+        //   - the owner is a stdlib (`cajeta.*`) class — lints are
+        //     author-actionable diagnostics, and a user compiling their
+        //     program can't edit a stdlib instantiation like
+        //     `Optional<Class<?>>` (materialized by `Class.forName`); the
+        //     warning would be unsuppressible noise on every compile,
         //   - the rule is suppressed at the declaration via @SuppressLint.
+        bool ownerIsStdlib = qName
+            && (qName->getPackageName() == "cajeta"
+                || qName->getPackageName().rfind("cajeta.", 0) == 0);
         if (!dynamic_pointer_cast<CajetaView>(shared_from_this())
                 && !isWildcardInstantiation()
+                && !ownerIsStdlib
                 && !isLintSuppressed("wildcard-field-in-small-class")) {
             for (auto& prop : propertyList) {
                 auto propType = prop->getType();
@@ -979,7 +1083,7 @@ namespace cajeta {
         if (implementedInterfaces.empty()) return;
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         std::string classCanonical = qName->toCanonical();
 
@@ -1130,7 +1234,7 @@ namespace cajeta {
             std::static_pointer_cast<CajetaClass>(shared_from_this())));
     }
 
-    // Resolve `access="…"` (per cajeta-docs/stdlib/Annotations.md §
+    // Resolve `access="…"` (per docs/stdlib/Annotations.md §
     // Accessors) to the matching Modifier bit. Default is PUBLIC.
     // Unknown values raise CAJETA_ERROR_ACCESSOR_BAD_ACCESS with the
     // annotation site for the diagnostic context. v1 honors the
@@ -1163,7 +1267,7 @@ namespace cajeta {
         // OR at field level (only that field). User-declared methods
         // with the same name and zero params win — synthesizer skips.
         // Naming: getter for field `name` is `name()`, size()-style
-        // (see cajeta-docs/stdlib/Annotations.md § Accessors).
+        // (see docs/stdlib/Annotations.md § Accessors).
         //
         // @Data and @Value bundles also enable class-level @Getter.
         auto classAnn = findAnnotation("Getter");
@@ -1543,7 +1647,7 @@ namespace cajeta {
         // Mutual-exclusion check: @Encoding owns the wire format, so
         // it can't coexist with packed-layout annotations
         // (@BigEndian / @LittleEndian / @HostEndian / @Align).
-        // See cajeta-docs/stdlib/Annotations.md § @Encoding for views
+        // See docs/stdlib/Annotations.md § @Encoding for views
         // — § Composition with existing annotations.
         const char* conflictingAnns[] = {
             "BigEndian", "LittleEndian", "HostEndian", "Align"
@@ -1907,6 +2011,17 @@ namespace cajeta {
     }
 
     void CajetaClass::generateStaticInitializers() {
+        // Emit-target swap (test-reuse) — see generatePrototype. Emit the clinit
+        // + static-field globals into the emit (user) module for an
+        // instantiation, leaving the cached stdlib pristine. No-op in production.
+        CajetaModulePtr* moduleSlot = &module;
+        CajetaModulePtr savedModule = module;
+        if (emitModule && emitModule != module) module = emitModule;
+        struct RestoreModule {
+            CajetaModulePtr* slot; CajetaModulePtr saved;
+            ~RestoreModule() { *slot = saved; }
+        } restoreModule{moduleSlot, savedModule};
+
         // First pass — pick out static properties that have an
         // initializer AND whose shape isn't covered by the
         // constant-folder. Anything covered by foldStaticInitializer
@@ -1930,7 +2045,7 @@ namespace cajeta {
         if (needsClinit.empty()) return;
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
 
         std::string fnName = std::string("__cajeta_clinit_")
             + qName->toCanonical();
@@ -2080,6 +2195,23 @@ namespace cajeta {
             if (kids.empty()) return nullptr;
             init = kids[0];
         }
+        // `(T) <literal>` — fold the operand directly to the field's stored
+        // type. For the constant shapes user code writes (`static int64 X =
+        // (int64) 16777216;`) the cast target equals the field type, so
+        // folding the operand against storedType yields the right constant and
+        // covers literal widening/narrowing. A category-changing cast (e.g.
+        // float→int) won't fold (the literal handlers below reject the type
+        // mismatch) and falls through to zero-init, exactly as before — only
+        // now a same-category cast no longer forces a runtime <clinit>. This
+        // matters beyond convenience: an unnecessary clinit becomes an
+        // llvm.global_ctors entry, which is a linker GC root — so a single
+        // `(int64) literal` field was pinning its whole class (and transitively
+        // its subsystem) into every binary, defeating --gc-sections/-dead_strip.
+        if (auto ce = dynamic_pointer_cast<CastExpression>(init)) {
+            auto& kids = ce->getChildren();
+            if (kids.empty()) return nullptr;
+            return foldStaticInitializer(kids[0], storedType);
+        }
         bool negate = false;
         if (auto pe = dynamic_pointer_cast<PrefixExpression>(init)) {
             if (pe->getOp() != PREFIX_OP_NEGATIVE) return nullptr;
@@ -2132,7 +2264,7 @@ namespace cajeta {
         if (!prop || !prop->isStatic()) return nullptr;
         if (!prop->getType() || !prop->getType()->getLlvmType()) return nullptr;
 
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         const std::string globalName =
             qName->toCanonical() + "." + prop->getName();
 
@@ -2216,7 +2348,7 @@ namespace cajeta {
         if (llvmStackDropFunction) return llvmStackDropFunction;
         if (interfaceFlag) return nullptr;
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
@@ -2385,6 +2517,21 @@ namespace cajeta {
     void CajetaClass::emitDropBodyInline(llvm::IRBuilder<>& b,
                                           llvm::Value* instance,
                                           CajetaModulePtr cajModule) {
+        // The module this inline body is ACTUALLY being written into — the
+        // function the IRBuilder is inserting at — which is the only module
+        // every callee referenced here MUST be co-resident with. It can differ
+        // from cajModule->getLlvmModule(): for a plain stdlib class (emitModule
+        // unset) the enclosing drop wrapper lives in the PERSISTENT stdlib
+        // module while currentEmitLlvmModule points at a per-test user module;
+        // for a reparented template instantiation cajModule is the resolution
+        // (stdlib) module but the body is built into the user emit module.
+        // Resolving callees here keeps the cached wrapper self-consistent so a
+        // later reusing test never references a freed module's decl. Falls back
+        // to cajModule's own module when there's no insert point.
+        llvm::Module* bodyModule = b.GetInsertBlock()
+            ? b.GetInsertBlock()->getModule()
+            : cajModule->getLlvmModule();
+
         // (1) User-written destructor body. Looked up directly (not via
         // resolveMethod) — overload resolution hasn't run at the point
         // drop wrappers get synthesized.
@@ -2400,7 +2547,7 @@ namespace cajeta {
         }
         if (userDrop && userDrop->getLlvmFunction()) {
             llvm::Function* fn = CajetaModule::ensureFunctionInModule(
-                cajModule->getLlvmModule(), userDrop->getLlvmFunction());
+                bodyModule, userDrop->getLlvmFunction());
             b.CreateCall(userDrop->getLlvmFunctionType(), fn, {instance});
         }
 
@@ -2416,7 +2563,6 @@ namespace cajeta {
         // plain class-refs → __cajeta_class_virtual_drop. Primitives /
         // pointers / function-typed fields don't need drops.
         auto& ctx = *cajModule->getLlvmContext();
-        auto* lmod = cajModule->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         std::vector<StructurePropertyPtr> reversed(
             propertyList.begin(), propertyList.end());
@@ -2434,7 +2580,7 @@ namespace cajeta {
 
             if (dynamic_pointer_cast<CajetaArray>(fieldType)) {
                 if (!freeArrayFn) {
-                    freeArrayFn = cajModule->getRuntimeFunction("__cajeta_free_array");
+                    freeArrayFn = cajModule->getRuntimeFunction("__cajeta_free_array", bodyModule);
                 }
                 if (!freeArrayFn) continue;
                 llvm::Value* slot = b.CreateStructGEP(
@@ -2450,7 +2596,7 @@ namespace cajeta {
                 if (dynamic_pointer_cast<CajetaView>(fieldType)) continue;
                 if (fieldClass->isInterface()) {
                     if (!ifaceDropFn) {
-                        ifaceDropFn = cajModule->getRuntimeFunction("__cajeta_iface_drop");
+                        ifaceDropFn = cajModule->getRuntimeFunction("__cajeta_iface_drop", bodyModule);
                     }
                     if (!ifaceDropFn) continue;
                     llvm::Value* bodyPtr = b.CreateStructGEP(
@@ -2462,7 +2608,7 @@ namespace cajeta {
                 if (!fieldClass->hasVtablePointerAtSlotZero()) continue;
                 if (!virtualDropFn) {
                     virtualDropFn = cajModule->getRuntimeFunction(
-                        "__cajeta_class_virtual_drop");
+                        "__cajeta_class_virtual_drop", bodyModule);
                 }
                 if (!virtualDropFn) continue;
                 fieldClass->patchVirtualTableDropFn();
@@ -2478,7 +2624,6 @@ namespace cajeta {
     }
 
     llvm::Function* CajetaClass::getOrCreateDropFunction() {
-        if (llvmDropFunction) return llvmDropFunction;
         if (interfaceFlag) return nullptr;
         // Wildcard proxies (Step 2 — template wildcards) don't own a
         // synthesized per-class drop wrapper — the proxy has no body
@@ -2490,19 +2635,22 @@ namespace cajeta {
         // Declaration, getOrCreateStackDropFunction's class-ref
         // field walk, emitDropBodyInline) lowers to the right
         // routing without each site needing to special-case
-        // wildcards. Cache on llvmDropFunction so subsequent calls
-        // are constant-time and the same llvm::Function* is shared
-        // across the proxy's use sites.
+        // wildcards.
+        //
+        // Do NOT cache + early-return the runtime fn here: __cajeta_class_-
+        // virtual_drop is resolved into the current emit module (per-test
+        // user module under reuse). A wildcard proxy can be a PERSISTENT
+        // stdlib instantiation, so a cached pointer would carry an earlier
+        // test's module binding forward and produce a cross-module reference
+        // on the next reusing test. Re-resolving per call is a cheap name
+        // lookup and always lands in the right module. (Production is a single
+        // module → same decl every time.)
         if (isWildcardInstantiation()) {
-            llvm::Function* virtualDropFn = module->getRuntimeFunction(
-                "__cajeta_class_virtual_drop");
-            if (virtualDropFn) {
-                llvmDropFunction = virtualDropFn;
-            }
-            return llvmDropFunction;
+            return module->getRuntimeFunction("__cajeta_class_virtual_drop");
         }
+        if (llvmDropFunction) return llvmDropFunction;
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
@@ -2527,6 +2675,23 @@ namespace cajeta {
 
         llvmDropFunction = llvm::Function::Create(fnTy,
             llvm::Function::ExternalLinkage, dropName, lmod);
+        // The drop body's runtime callees (__cajeta_free here,
+        // __cajeta_class_virtual_drop / __cajeta_free_array / __cajeta_iface_drop
+        // in emitDropBodyInline) are resolved via getRuntimeFunction, which lands
+        // the extern decl in CajetaModule::emitTargetLlvmModule() == the current
+        // emit module. But this body lives in `lmod` (getEmitModule()), which under
+        // test-reuse is the persistent stdlib module while the active emit module is
+        // a per-test user module — so without this the decls land in the per-test
+        // module and verify fails with "referenced in a different module". Point the
+        // emit module at the drop body's own module for the duration of emission.
+        // No-op in production: emitTargetLlvmModule ignores currentEmitLlvmModule
+        // when there is no shared context (and lmod == module's own llvm module).
+        llvm::Module* prevDropEmitLlvm = CajetaModule::getCurrentEmitLlvmModule();
+        CajetaModule::setCurrentEmitLlvmModule(lmod);
+        struct RestoreDropEmitLlvm {
+            llvm::Module* prev;
+            ~RestoreDropEmitLlvm() { CajetaModule::setCurrentEmitLlvmModule(prev); }
+        } restoreDropEmitLlvm{prevDropEmitLlvm};
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(
             ctx, "entry", llvmDropFunction);
         llvm::IRBuilder<> b(bb);
@@ -2581,8 +2746,13 @@ namespace cajeta {
 
         // Free the heap allocation. Reuses __cajeta_free from the
         // closure-drop runtime; all generic heap blocks share one
-        // free symbol.
-        llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free");
+        // free symbol. Resolve the callee into `lmod` — the module this
+        // wrapper body is being BUILT into — not currentEmitLlvmModule:
+        // for a plain stdlib class (emitModule unset) lmod is the persistent
+        // stdlib module, and under reuse currentEmitLlvmModule is a per-test
+        // user module. Co-residence keeps the cached wrapper self-consistent
+        // so a later reusing test never references a freed module's decl.
+        llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free", lmod);
         if (freeFn) {
             b.CreateCall(freeFn, {instance});
         }
@@ -2591,6 +2761,353 @@ namespace cajeta {
         b.SetInsertPoint(done);
         b.CreateRetVoid();
         return llvmDropFunction;
+    }
+
+    // REFL-2: declaration of the reflective invoke adapter. Body filled later by
+    // emitReflectInvokeBody (post-quiescence). Shape:
+    //   void __cajeta_<canonical>_reflect_invoke(ptr obj, i32 idx, ptr args, ptr ret)
+    llvm::Function* CajetaClass::getOrCreateReflectInvokeDecl() {
+        if (llvmReflectInvokeFunction) return llvmReflectInvokeFunction;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx),
+            {(llvm::Type*) ptrTy, i32Ty, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy},
+            /*isVarArg=*/false);
+        std::string name = std::string("__cajeta_") + qName->toCanonical() + "_reflect_invoke";
+        for (char& c : name) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') c = '_';
+        }
+        if (llvm::Function* existing = lmod->getFunction(name)) {
+            llvmReflectInvokeFunction = existing;
+            return existing;
+        }
+        llvmReflectInvokeFunction = llvm::Function::Create(
+            fnTy, llvm::Function::ExternalLinkage, name, lmod);
+        return llvmReflectInvokeFunction;
+    }
+
+    // REFL-2: emit the invoke adapter's body. A switch over the class's
+    // method-list index (the SAME order emitMethodTable / getMethodCount use):
+    // each marshallable, non-constructor method gets a case that loads its args
+    // from the 8-byte-strided `args` buffer, makes a direct call, and stores the
+    // scalar result to `ret`. Unmarshallable shapes (aggregate/byval/sret params
+    // or returns, varargs, constructors) are omitted — those indices fall to the
+    // default (no-op) arm. NOTE: does NOT create the declaration; only fills a
+    // decl already referenced by this class's #Rtti.
+    void CajetaClass::emitReflectInvokeBody() {
+        if (llvmReflectInvokeBodyEmitted) return;
+        llvm::Function* fn = llvmReflectInvokeFunction;   // created in createRttiConstant
+        if (!fn) return;
+        llvmReflectInvokeBodyEmitted = true;
+        if (!fn->empty()) return;                         // already has a body
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::IntegerType* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+
+        llvm::Value* objArg = fn->getArg(0);
+        llvm::Value* idxArg = fn->getArg(1);
+        llvm::Value* argsArg = fn->getArg(2);
+        llvm::Value* retArg = fn->getArg(3);
+
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        llvm::BasicBlock* end = llvm::BasicBlock::Create(ctx, "end", fn);
+        llvm::IRBuilder<> b(entry);
+
+        auto& methods = getMethodList();
+        llvm::SwitchInst* sw = b.CreateSwitch(idxArg, end, (unsigned) methods.size());
+
+        // REFL-3.3 (decision D1): a `@Sealed` class bars reflective access to
+        // its private members. Omit private methods' cases here so a reflective
+        // invoke of one falls through to the default (the reflect API also
+        // throws IllegalAccessException before reaching the adapter).
+        bool sealed = getModifiers().count(REFLECT_SEALED) != 0;
+
+        int i = -1;
+        for (auto& m : methods) {
+            i++;
+            if (!m || m->isConstructor()) continue;       // ctors handled by newInstance
+            if (sealed && m->getModifiers().count(PRIVATE)) continue;
+            llvm::Function* callee = m->getLlvmFunction();
+            if (!callee) continue;
+            // Only reference DEFINED functions. Referencing a declaration-only
+            // method (native/abstract, or a class prototyped-but-not-codegen'd
+            // in this compile) would introduce an unresolved symbol and, in the
+            // JIT, drag normally-dead stdlib code into the materialization set.
+            if (callee->isDeclaration()) continue;
+            llvm::FunctionType* cTy = callee->getFunctionType();
+            if (cTy->isVarArg()) continue;
+
+            // The LLVM signature is the source of truth. Instance methods carry
+            // a leading `this` parameter (the front FormalParameter named
+            // "this"); statics do not. The args buffer holds only the USER
+            // arguments (this is supplied from `obj`). A param-count mismatch
+            // means an sret/byval/wrapper shape we don't marshal — skip it.
+            auto pl = m->getParameterList();
+            if (cTy->getNumParams() != pl.size()) continue;
+            bool hasThis = !pl.empty() && pl.front()->getName() == "this";
+            unsigned userStart = hasThis ? 1u : 0u;
+
+            auto marshallable = [](llvm::Type* t) {
+                return t->isIntegerTy() || t->isFloatingPointTy() || t->isPointerTy();
+            };
+            bool ok = true;
+            for (unsigned p = 0; p < cTy->getNumParams() && ok; ++p)
+                ok = marshallable(cTy->getParamType(p));
+            llvm::Type* rt = cTy->getReturnType();
+            if (ok && !rt->isVoidTy() && !marshallable(rt)) ok = false;
+            if (!ok) continue;
+
+            llvm::BasicBlock* caseBB = llvm::BasicBlock::Create(
+                ctx, std::string("invoke_") + std::to_string(i), fn);
+            sw->addCase(llvm::ConstantInt::get(i32Ty, (uint64_t) i), caseBB);
+            b.SetInsertPoint(caseBB);
+
+            llvm::Function* calleeInMod = CajetaModule::ensureFunctionInModule(lmod, callee);
+            std::vector<llvm::Value*> callArgs;
+            if (hasThis) callArgs.push_back(objArg);
+            for (unsigned p = userStart; p < cTy->getNumParams(); ++p) {
+                llvm::Type* pt = cTy->getParamType(p);
+                llvm::Value* slot = b.CreateInBoundsGEP(i64Ty, argsArg,
+                    llvm::ConstantInt::get(i64Ty, p - userStart),
+                    std::string("argslot_") + std::to_string(p - userStart));
+                callArgs.push_back(b.CreateLoad(pt, slot,
+                    std::string("arg_") + std::to_string(p - userStart)));
+            }
+            llvm::Value* result = b.CreateCall(calleeInMod->getFunctionType(),
+                calleeInMod, callArgs);
+            if (!rt->isVoidTy()) b.CreateStore(result, retArg);
+            b.CreateBr(end);
+        }
+
+        b.SetInsertPoint(end);
+        b.CreateRetVoid();
+    }
+
+    // REFL-2C: this class's constructors in a deterministic order (sorted by
+    // canonical signature). Constructors live in the `methods` map (keyed for
+    // overload resolution) but NOT in methodList; this is the stable index
+    // space the newInstance adapter and the #Rtti constructor table share.
+    std::vector<MethodPtr> CajetaClass::getReflectConstructorList() {
+        std::vector<MethodPtr> ctors;
+        for (auto& entry : methods) {
+            if (entry.second && entry.second->isConstructor())
+                ctors.push_back(entry.second);
+        }
+        std::sort(ctors.begin(), ctors.end(),
+            [](const MethodPtr& a, const MethodPtr& b) {
+                return a->toCanonical() < b->toCanonical();
+            });
+        return ctors;
+    }
+
+    // REFL-2C: declaration of the reflective newInstance adapter. Body filled
+    // by emitReflectNewBody (post-quiescence). Shape:
+    //   ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)
+    llvm::Function* CajetaClass::getOrCreateReflectNewDecl() {
+        if (llvmReflectNewFunction) return llvmReflectNewFunction;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            (llvm::Type*) ptrTy, {i32Ty, (llvm::Type*) ptrTy}, /*isVarArg=*/false);
+        std::string name = std::string("__cajeta_") + qName->toCanonical() + "_reflect_new";
+        for (char& c : name) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') c = '_';
+        }
+        if (llvm::Function* existing = lmod->getFunction(name)) {
+            llvmReflectNewFunction = existing;
+            return existing;
+        }
+        llvmReflectNewFunction = llvm::Function::Create(
+            fnTy, llvm::Function::ExternalLinkage, name, lmod);
+        return llvmReflectNewFunction;
+    }
+
+    // REFL-2C: emit the newInstance adapter body — a switch over the
+    // constructor index that mirrors `heap T(...)` construction (CreatorRest):
+    // __cajeta_alloc(allocationSize) + zero + install primary/secondary vtables
+    // + patch the virtual drop slot + run the chosen constructor, returning the
+    // new instance. Unknown/unmarshallable constructors fall to a null return.
+    void CajetaClass::emitReflectNewBody() {
+        if (llvmReflectNewBodyEmitted) return;
+        llvm::Function* fn = llvmReflectNewFunction;   // created in createRttiConstant
+        if (!fn) return;
+        llvmReflectNewBodyEmitted = true;
+        if (!fn->empty()) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::IntegerType* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        llvm::Value* idxArg = fn->getArg(0);
+        llvm::Value* argsArg = fn->getArg(1);
+
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        llvm::BasicBlock* fail = llvm::BasicBlock::Create(ctx, "fail", fn);
+        llvm::IRBuilder<> b(entry);
+
+        auto ctors = getReflectConstructorList();
+        auto* st = llvm::dyn_cast_or_null<llvm::StructType>(getLlvmType());
+        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
+        uint64_t allocSize = st ? lmod->getDataLayout().getTypeAllocSize(st) : 0;
+
+        llvm::SwitchInst* sw = b.CreateSwitch(idxArg, fail, (unsigned) ctors.size());
+
+        auto marshallable = [](llvm::Type* t) {
+            return t->isIntegerTy() || t->isFloatingPointTy() || t->isPointerTy();
+        };
+
+        // REFL-3.3 (decision D1): a `@Sealed` class bars reflective construction
+        // through a private constructor — omit those cases (the reflect API also
+        // throws IllegalAccessException before reaching the adapter).
+        bool sealed = getModifiers().count(REFLECT_SEALED) != 0;
+
+        int i = -1;
+        for (auto& ctor : ctors) {
+            i++;
+            if (!ctor || !st || !allocFn) continue;
+            if (sealed && ctor->getModifiers().count(PRIVATE)) continue;
+            llvm::Function* callee = ctor->getLlvmFunction();
+            if (!callee || callee->isDeclaration()) continue;
+            llvm::FunctionType* cTy = callee->getFunctionType();
+            if (cTy->isVarArg()) continue;
+            auto pl = ctor->getParameterList();
+            if (cTy->getNumParams() != pl.size()) continue;
+            bool hasThis = !pl.empty() && pl.front()->getName() == "this";
+            unsigned userStart = hasThis ? 1u : 0u;
+            bool ok = true;
+            for (unsigned p = 0; p < cTy->getNumParams() && ok; ++p)
+                ok = marshallable(cTy->getParamType(p));
+            if (!ok) continue;
+
+            llvm::BasicBlock* caseBB = llvm::BasicBlock::Create(
+                ctx, std::string("new_") + std::to_string(i), fn);
+            sw->addCase(llvm::ConstantInt::get(i32Ty, (uint64_t) i), caseBB);
+            b.SetInsertPoint(caseBB);
+
+            llvm::Value* inst = b.CreateCall(allocFn,
+                {llvm::ConstantInt::get(i64Ty, allocSize)}, "inst");
+            b.CreateMemSet(inst, llvm::ConstantInt::get(i8Ty, 0),
+                llvm::ConstantInt::get(i64Ty, allocSize), llvm::MaybeAlign(8));
+
+            if (hasVtablePointerAtSlotZero()) {
+                if (llvm::GlobalVariable* vt = getVirtualTableGlobal()) {
+                    llvm::Constant* vtRef =
+                        CajetaModule::ensureGlobalInModule(lmod, vt);
+                    llvm::Value* slot0 = b.CreateStructGEP(st, inst, 0, "vtable_slot");
+                    b.CreateStore(vtRef, slot0);
+                }
+                for (auto& sub : getNonFirstSubObjects()) {
+                    llvm::GlobalVariable* secVT = getOrCreateSecondaryVTable(sub.ancestor);
+                    if (!secVT) continue;
+                    llvm::Constant* secRef =
+                        CajetaModule::ensureGlobalInModule(lmod, secVT);
+                    llvm::Value* secSlot = b.CreateStructGEP(
+                        st, inst, (unsigned) sub.slot, "sec_vtable_slot");
+                    b.CreateStore(secRef, secSlot);
+                }
+                patchVirtualTableDropFn();
+            }
+
+            llvm::Function* calleeInMod = CajetaModule::ensureFunctionInModule(lmod, callee);
+            std::vector<llvm::Value*> callArgs;
+            if (hasThis) callArgs.push_back(inst);
+            for (unsigned p = userStart; p < cTy->getNumParams(); ++p) {
+                llvm::Type* pt = cTy->getParamType(p);
+                llvm::Value* slot = b.CreateInBoundsGEP(i64Ty, argsArg,
+                    llvm::ConstantInt::get(i64Ty, p - userStart),
+                    std::string("argslot_") + std::to_string(p - userStart));
+                callArgs.push_back(b.CreateLoad(pt, slot,
+                    std::string("arg_") + std::to_string(p - userStart)));
+            }
+            b.CreateCall(calleeInMod->getFunctionType(), calleeInMod, callArgs);
+            b.CreateRet(inst);
+        }
+
+        b.SetInsertPoint(fail);
+        b.CreateRet(llvm::ConstantPointerNull::get(ptrTy));
+    }
+
+    void CajetaClass::finalizeClassObject() {
+        // See header. A #ClassObject is { ptr Class#VTable, ptr rtti }. Slot 0
+        // is NULL only for classes parsed before cajeta.reflect.Class (the
+        // lookup in StructureMetadata::populate couldn't find Class's vtable
+        // yet). Those were also NOT registered (registration there is guarded on
+        // a non-null slot 0). By the time this post-pass runs the whole stdlib —
+        // Class included — is built, so we can resolve Class#VTable, patch slot
+        // 0, and register the class. Idempotent: a class whose slot 0 already
+        // resolved returns immediately (and was already registered at populate).
+        llvm::GlobalVariable* co = getClassObjectGlobal();
+        if (!co || !co->hasInitializer()) return;
+        auto* init = llvm::dyn_cast<llvm::ConstantStruct>(co->getInitializer());
+        if (!init || init->getNumOperands() < 2) return;
+        if (!init->getOperand(0)->isNullValue()) return;   // already resolved
+
+        // REFL-1.7: embed the canonical Class<?> instantiation's vtable (the
+        // bare "cajeta.reflect.Class" now names the never-built template).
+        auto& s2m = CajetaModule::getStructureToModule();
+        auto mit = s2m.find("cajeta.reflect.Class<?>");
+        if (mit == s2m.end() || !mit->second) return;
+        auto& structs = mit->second->getStructures();
+        auto sit = structs.find("cajeta.reflect.Class<?>");
+        if (sit == structs.end() || !sit->second) return;
+        llvm::GlobalVariable* cv = sit->second->getVirtualTableGlobal();
+        if (!cv) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::Constant* classVtableRef =
+            CajetaModule::ensureGlobalInModule(lmod, cv);
+
+        auto* coTy = llvm::cast<llvm::StructType>(co->getValueType());
+        co->setInitializer(llvm::ConstantStruct::get(
+            coTy, {classVtableRef, init->getOperand(1)}));
+
+        // Deferred registration (mirrors StructureMetadata::populate's REFL-8
+        // block). These names were not emitted at populate time for this class
+        // (its slot 0 was null), so there is no collision.
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+        llvm::FunctionType* regTy =
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
+        llvm::FunctionCallee regFn =
+            lmod->getOrInsertFunction("__cajeta_register_class", regTy);
+        std::string canon = toCanonical();
+        llvm::Function* regCtor = llvm::Function::Create(
+            llvm::FunctionType::get(voidTy, false),
+            llvm::GlobalValue::InternalLinkage,
+            "__cajeta_class_reg_ctor." + canon, lmod);
+        llvm::IRBuilder<> rb(llvm::BasicBlock::Create(ctx, "entry", regCtor));
+        llvm::Constant* nameStr =
+            rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
+        rb.CreateCall(regFn, {nameStr, co});
+        rb.CreateRetVoid();
+        llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+    }
+
+    void CajetaClass::ensureClassWildcardInstantiated() {
+        // REFL-1.7. Find the cajeta.reflect.Class template and instantiate
+        // Class<?> so its method bodies get codegen'd and its vtable backs every
+        // #ClassObject. Idempotent: instantiate() caches by canonical name, and
+        // this whole routine is a no-op when reflect isn't in the compile unit
+        // (no Class template) or Class somehow isn't a template.
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto cit = cmap.find("cajeta.reflect.Class");
+        if (cit == cmap.end()) return;
+        auto classTmpl = std::dynamic_pointer_cast<CajetaClass>(cit->second);
+        if (!classTmpl || !classTmpl->isTemplate()) return;
+        CajetaTypePtr wild = CajetaType::wildcardSentinel();
+        if (!wild) return;
+        classTmpl->instantiate({wild});
     }
 
     struct MethodEntry {
@@ -2853,7 +3370,7 @@ namespace cajeta {
             return (pos == string::npos) ? canon : canon.substr(pos + 2);
         };
 
-        // MultiClassing R-3 (cajeta-docs/stdlib/MultiClassing.md): when
+        // MultiClassing R-3 (docs/stdlib/MultiClassing.md): when
         // a method on THIS class carries @Override(from=X), verify X is
         // an ancestor of this class AND X declares a same-suffix
         // method. Both the identifier form (`from=B`) and class-literal
@@ -2954,7 +3471,7 @@ namespace cajeta {
         };
         walk(static_pointer_cast<CajetaClass>(shared_from_this()));
 
-        // MultiClassing Phase 1 (P-1, cajeta-docs/stdlib/MultiClassing.md):
+        // MultiClassing Phase 1 (P-1, docs/stdlib/MultiClassing.md):
         // detect collisions between sibling parents BEFORE the alias walk
         // hides them. The pre-existing walk above is last-write-wins by
         // declaration order (B silently shadows A when both are siblings
@@ -3719,7 +4236,21 @@ namespace cajeta {
             return;  // already registered + emitted on a prior call
         }
         host->addMethod(inst);
-        auto hostMod = inst->getModule();
+        // Target the EMIT module, not the resolution module. Method::generateCode
+        // swaps `module` to its emit module and runs the WHOLE body cursor
+        // (builder / currentMethod / scopeStack / structureStack) on that emit
+        // module (see Method.cpp's RestoreCursor + createScope). In production
+        // getEmitModule() == getModule(), so this is identical. Under stdlib
+        // test-reuse a stdlib method template specialized over a user type emits
+        // into the USER module while its resolution module stays the cached
+        // stdlib — so the scope-stack barrier below MUST clear the user (emit)
+        // module's stack, the one the inner body's resolveTypes/codegen actually
+        // consults. Clearing the stdlib stack (the old getModule()) left the
+        // barrier ineffective: the inner parseObjectFromReader<Inner> body saw
+        // the outer parse<Outer>'s `out` (test.Outer) on the user stack's parent
+        // chain and pinned `out`'s type to Outer, so `out.x` found no field `x`
+        // -> null l-value -> SIGSEGV in BinaryOpExpression (parseNestedClass).
+        auto hostMod = inst->getEmitModule();
         llvm::IRBuilder<>* savedBuilder = hostMod ? hostMod->getBuilder() : nullptr;
         MethodPtr savedCurrent = hostMod ? hostMod->getCurrentMethod() : nullptr;
         llvm::BasicBlock* savedInsertBB = savedBuilder
@@ -3829,7 +4360,7 @@ namespace cajeta {
             }
         }
 
-        // Method-template fallback (cajeta-docs/stdlib/MethodLevelTemplate.md):
+        // Method-template fallback (docs/stdlib/MethodLevelTemplate.md):
         // if no exact / subtype match was found, look for a method-templated
         // candidate with the same name and arity whose T-vars unify with the
         // supplied arg types. On a hit, instantiate the template into a
@@ -3959,12 +4490,21 @@ namespace cajeta {
         // after a foreign function's terminator. Callers in user code
         // pass their own module; the fallback is preserved for sites
         // that haven't been threaded through yet.
-        CajetaModulePtr emitMod = callerModule ? callerModule : module;
+        // Fallback to the class's EMIT module, not its resolution `module`.
+        // For a stdlib-template instantiation specialized over a user type
+        // (test-reuse), `module` is the cached stdlib (resolution) while
+        // getEmitModule() is the user module where this class's IR actually
+        // lives. Using `module` here created the callee decl in the cached
+        // stdlib (e.g. ParallelDriver<test.Counter>'s worker methods) while the
+        // call instruction landed in the user module via the global builder —
+        // a cross-module reference the verifier rejects (and the dropped stdlib
+        // never supplies). No-op in production: getEmitModule() == module.
+        CajetaModulePtr emitMod = callerModule ? callerModule : getEmitModule();
         // Value-return (sret) ABI: a method that returns a stack value by copy
         // takes the result slot as hidden arg 0 (before `this`). Use the
         // caller-supplied slot, or materialize a temp in the caller's frame; the
         // returned pointer then behaves like any class-instance pointer. See
-        // cajeta-docs/stdlib/ValueReturns.md.
+        // docs/stdlib/ValueReturns.md.
         bool usesSret = method->returnsStackValue();
         int sretOffset = usesSret ? 1 : 0;
         llvm::Value* sretSlot = sretTarget;
@@ -4071,6 +4611,29 @@ namespace cajeta {
                         v = coerceBuilder->CreateIntCast(v, expected, /*isSigned=*/true);
                     } else if (expected->isFloatingPointTy() && v->getType()->isFloatingPointTy()) {
                         v = coerceBuilder->CreateFPCast(v, expected);
+                    } else if (expected->isPointerTy()
+                               && (v->getType()->isStructTy()
+                                   || v->getType()->isArrayTy()
+                                   || v->getType()->isVectorTy())) {
+                        // Value-type (@ValueType struct / vector) argument
+                        // passed BY POINTER, but we hold it BY VALUE — an
+                        // rvalue temporary, e.g.
+                        // `d.plus(Duration.ofSeconds(30))` where the arg is a
+                        // freshly-returned Duration. The aggregate ABI passes
+                        // these by pointer (`this`/params are `ptr`), so spill
+                        // the value into a stack slot and pass its address.
+                        // Local-variable args already arrive as the slot
+                        // pointer and never reach this branch. Without the
+                        // spill the call passes the aggregate by value: the
+                        // LLVM verifier rejects it ("Call parameter type does
+                        // not match function signature"), and --emit=exe (which
+                        // doesn't re-verify) miscompiles it to a garbage value
+                        // or a segfault. Mirrors the value-type receiver guard
+                        // in MethodCallExpression (the `valueTypeReceiver`
+                        // case) for the argument side.
+                        llvm::Value* spill = coerceBuilder->CreateAlloca(v->getType());
+                        coerceBuilder->CreateStore(v, spill);
+                        v = spill;
                     }
                 }
             }
@@ -4108,7 +4671,25 @@ namespace cajeta {
         // we have a guaranteed-fresh Function*. Else, declare it
         // in the current module via getOrInsertFunction so we
         // never have to dereference the possibly-stale pointer.
+        // The callee decl/def must live in the module the call INSTRUCTION is
+        // being inserted into — i.e. the module of the builder's current insert
+        // function — not in `emitMod->getLlvmModule()`. They differ in the
+        // test-reuse path: `this` here can be the UNINSTANTIATED template class
+        // (structureStack.back() during a stdlib method body), whose emit module
+        // is the cached stdlib, while the actual emission target (the user
+        // module, via the global builder) is where the call lands. Using the
+        // class's module created the callee decl in stdlib while the call landed
+        // in the user module — a cross-module reference the verifier rejects.
+        // Deriving from the insert point mirrors ensureFunctionVisible and is a
+        // no-op in production (insert function lives in emitMod's module there).
         llvm::Module* currentLm = emitMod->getLlvmModule();
+        if (llvm::IRBuilder<>* ib = emitMod->getBuilder()) {
+            if (llvm::BasicBlock* ibb = ib->GetInsertBlock()) {
+                if (llvm::Function* ibf = ibb->getParent()) {
+                    currentLm = ibf->getParent();
+                }
+            }
+        }
         const std::string canonical = method->getLlvmSymbolName();
         llvm::Function* targetFn = currentLm->getFunction(canonical);
         if (!targetFn) {
@@ -4128,7 +4709,7 @@ namespace cajeta {
         // entirely; LLVM gets a direct call to the resolved method.
         bool isView = dynamic_cast<CajetaView*>(this) != nullptr;
         // Method-level templated methods are non-virtual (templating
-        // excludes them from the vtable per cajeta-docs/stdlib/
+        // excludes them from the vtable per docs/stdlib/
         // MethodLevelTemplate.md). Always direct-dispatch — the
         // concrete instantiation's LLVM function is the static target.
         bool isMethodTemplateInst = method->isMethodTemplateInstantiation();
@@ -4278,7 +4859,21 @@ namespace cajeta {
                 // per-instantiation hash on Box<int32>::tag in the
                 // dynamic instance's vtable. See Step 5a in todo.md.
                 int64_t hash;
-                if (this->isWildcardInstantiation() && this->getTemplateOrigin()) {
+                // REFL-1.7: every `Class<T>` instantiation — wildcard OR
+                // concrete (`Foo.class` → `Class<Foo>`) — shares ONE runtime
+                // vtable: the canonical `Class<?>#VTable` embedded in every
+                // type's #ClassObject (the phantom-T design — Class has no
+                // T-dependent layout). That shared vtable only carries the
+                // wildcard's per-instantiation entries plus the template-origin
+                // alias entries; it has NO `Class<Foo>`-specific hashes. So a
+                // concrete `Class<Foo>` receiver must dispatch on the same
+                // origin-relative alias hash a `Class<?>` receiver uses, or the
+                // lookup misses and the indirect call jumps through null.
+                auto tOrigin = this->getTemplateOrigin();
+                bool sharesWildcardVtable = tOrigin
+                    && tOrigin->toCanonical() == "cajeta.reflect.Class";
+                if ((this->isWildcardInstantiation() || sharesWildcardVtable)
+                        && tOrigin) {
                     // Substitution-stable canonical so the lookup hash
                     // matches the alias entry every instantiation
                     // publishes (buildVirtualTable, addAliasFor).

@@ -1,5 +1,5 @@
 // Tests for the @Builder Lombok-mirror synthesizer
-// (cajeta-docs/stdlib/Annotations.md § Builders).
+// (docs/stdlib/Annotations.md § Builders).
 //
 // Synthesizes a nested `Outer.Builder` class (uses the nested-class
 // infrastructure landed alongside) + a `static Outer.Builder

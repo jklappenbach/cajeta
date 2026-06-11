@@ -5,7 +5,7 @@
 // (a) *time out* when the fd stays idle past its budget and (b) leave the
 // reactor's live-registration balance exactly where it started — the
 // *deregister-on-timeout* half of the *deregister-on-cancel* contract every
-// reactor op honors (see `cajeta-docs/Net.md` §The async model and the plan's
+// reactor op honors (see `docs/Net.md` §The async model and the plan's
 // NET-3 acceptance `timedReadDeregistersOnTimeout`).
 //
 // The cajeta surface that lands with this item —

@@ -21,7 +21,7 @@ package cajeta.error;
  * }
  * ```
  *
- * See cajeta-docs/stdlib/ErrorModel.md.
+ * See docs/stdlib/ErrorModel.md.
  */
 public class RecoverableException extends Exception {
     /**

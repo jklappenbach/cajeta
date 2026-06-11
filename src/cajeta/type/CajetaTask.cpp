@@ -15,7 +15,7 @@ namespace cajeta {
         this->elementType = elementType;
         string typeName = string("Task<") + elementType->toCanonical() + ">";
         // No package prefix — Task is a built-in compiler-synthesized type,
-        // distinct from user-declared `cajeta.threading.Task<T>` (which is
+        // distinct from user-declared `cajeta.concurrent.Task<T>` (which is
         // the package the doc reserves for it but doesn't exist as a real
         // class today).
         qName = QualifiedName::getOrCreate(typeName);

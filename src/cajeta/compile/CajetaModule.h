@@ -137,6 +137,19 @@ namespace cajeta {
         // activeModule.
         static CajetaModulePtr currentCodegenModule;
 
+        // Test-reuse fallback emit target. The harness sets this to the per-test
+        // primary USER module before compiling, so a stdlib-template
+        // instantiation triggered with no user-type arg and no active codegen
+        // frame (e.g. during type resolution) still emits into a disposable user
+        // module rather than the cached stdlib. Null outside the reuse path.
+        static CajetaModulePtr reuseEmitModule;
+        // The llvm::Module of the function currently being emitted. Set (RAII)
+        // by Method::generateCode / clinit body lowering; read by
+        // emitTargetLlvmModule() so IR-creation helpers land new IR in the emit
+        // module without swapping `module` (which would split per-module state).
+        static llvm::Module* currentEmitLlvmModule;
+        static uint64_t reuseEpoch;
+
         // The compiler-owned module that holds the parsed stdlib
         // (cajeta.error.* today) and the linked runtime bitcode.
         // Set by Compiler's ctor, cleared in resetGlobals. User
@@ -158,7 +171,7 @@ namespace cajeta {
         MethodPtr currentMethod;
         StructureMetadataPtr structureMetadata;
 
-        // Incremental compilation (cajeta-docs/IncrementalCompilation.md,
+        // Incremental compilation (docs/IncrementalCompilation.md,
         // Phase 2): the set of template instantiations this module's codegen
         // drove into ANOTHER module (typically stdlib) — e.g. a method body
         // calling `xs.stream()` instantiates `ArrayStream<int32>` into the
@@ -171,7 +184,7 @@ namespace cajeta {
 
         // Compiler-level options that codegen consults. Set on the module by the
         // Compiler at creation time (so each module produces IR consistent with the
-        // current invocation's CLI flags). The CompilerFlags struct (cajeta-docs/
+        // current invocation's CLI flags). The CompilerFlags struct (docs/
         // CompilerModes.md) is the authoritative store; getFlags() / setFlags()
         // are the new accessors. boundsCheckEnabled is a backward-compat shim.
         CompilerFlags compilerFlags = CompilerFlags::defaultsForMode(CompilerMode::Debug);
@@ -286,6 +299,12 @@ namespace cajeta {
         llvm::Module* getLlvmModule() const {
             return llvmModule;
         }
+
+        // Swap the backing llvm::Module. Used by the test stdlib-reuse path to
+        // redirect codegen into a per-test clone so the cached stdlib module is
+        // never mutated. Ownership of the previous module is NOT freed here —
+        // the caller manages it.
+        void setLlvmModule(llvm::Module* m) { llvmModule = m; }
 
         void setBuilder(llvm::IRBuilder<>* builder) {
             this->builder = builder;
@@ -493,6 +512,21 @@ namespace cajeta {
         static CajetaModulePtr getCurrentCodegenModule() { return currentCodegenModule; }
         static void setCurrentCodegenModule(CajetaModulePtr m) { currentCodegenModule = m; }
 
+        static CajetaModulePtr getReuseEmitModule() { return reuseEmitModule; }
+        static void setReuseEmitModule(CajetaModulePtr m) { reuseEmitModule = m; }
+
+        // Per-test generation counter for the reuse path. Bumped by the harness
+        // (StdlibReuseCache::restoreBaseline) before each test. Caches keyed on
+        // persistent stdlib objects (e.g. Method::methodInstantiationCache, which
+        // lives on the stdlib template Method and would otherwise hand back a
+        // prior test's instantiation pointing at a freed user module) compare
+        // their stored epoch to this and self-invalidate on mismatch.
+        static uint64_t getReuseEpoch() { return reuseEpoch; }
+        static void bumpReuseEpoch() { ++reuseEpoch; }
+
+        static llvm::Module* getCurrentEmitLlvmModule() { return currentEmitLlvmModule; }
+        static void setCurrentEmitLlvmModule(llvm::Module* m) { currentEmitLlvmModule = m; }
+
         static CajetaModulePtr getStdlibModule() { return stdlibModule; }
         static void setStdlibModule(CajetaModulePtr m) { stdlibModule = m; }
 
@@ -503,6 +537,15 @@ namespace cajeta {
         // Clear cross-Compiler module/method bookkeeping. Used by Compiler's ctor so
         // each fresh Compiler instance starts with empty static state.
         static void resetGlobals();
+
+        // Test stdlib-reuse support (mirrors CajetaType::capture/restoreBaseline).
+        // captureBaseline() snapshots the module-level global registries after
+        // the pristine stdlib is built; restoreBaseline() reassigns them,
+        // dropping every user module's methods/structures/aspects/components and
+        // re-pinning the stdlib singleton, while clearing the transient
+        // active/codegen module pointers. No-ops in production.
+        static void captureBaseline();
+        static void restoreBaseline();
 
         llvm::IRBuilder<>* getBuilder() const;
 
@@ -545,6 +588,16 @@ namespace cajeta {
         // No-op when same-module or either arg is null.
         static void noteCrossModuleInstantiation(
             const CajetaModulePtr& triggering, const CajetaClassPtr& inst);
+        // Method-template twin of noteCrossModuleInstantiation. A method-
+        // template instantiation (e.g. `Stream<int32>.map<int32>`) lands its
+        // body in the HOST class's module via addMethod, separate from any
+        // class-template instantiation — so replaying the class obligation
+        // does NOT re-create it. Records `inst->getMapKey(false)` (which
+        // carries `::`, distinguishing it from a class obligation) on
+        // `triggering` IFF the host module differs. No-op when same-module or
+        // either arg is null. See docs/IncrementalCompilation.md.
+        static void noteCrossModuleMethodInstantiation(
+            const CajetaModulePtr& triggering, const MethodPtr& inst);
         // Write this module's obligations to a sidecar next to its emitted IR
         // (`<archiveRoot><archivePath:.ll→.obligations>`), one sorted
         // canonical name per line. No-op (and removes any stale sidecar) when
@@ -631,7 +684,30 @@ namespace cajeta {
 
         // Look up a runtime helper by name (must be linked first via linkRuntime()).
         // Returns nullptr if missing.
-        llvm::Function* getRuntimeFunction(const std::string& name);
+        //
+        // `explicitTarget`: the llvm::Module the returned decl MUST be co-resident
+        // with. Pass the module the IRBuilder is actually inserting into when that
+        // can differ from emitTargetLlvmModule() — notably drop-wrapper bodies for a
+        // plain stdlib class (emitModule unset), whose body is built into the
+        // PERSISTENT stdlib module while currentEmitLlvmModule points at a per-test
+        // user module. Without this the wrapper (cached in the stdlib module) would
+        // call a runtime decl in a now-freed test module → cross-module reference on
+        // the next reusing test. Null (default) keeps the historical
+        // emitTargetLlvmModule() behavior; production / non-reuse is unaffected.
+        llvm::Function* getRuntimeFunction(const std::string& name,
+                                           llvm::Module* explicitTarget = nullptr);
+
+        // The llvm::Module that IR created *right now* should land in: the module
+        // of the function the builder is currently inserting into. During body
+        // codegen this is where this method's Function lives — which, for a
+        // stdlib-template instantiation in the test-reuse path, is the USER (emit)
+        // module even though `this` is the resolution (stdlib) module. Falls back
+        // to this module's own llvm::Module when the builder has no insert point
+        // (e.g. constant folding before any function). In production / non-reuse
+        // it always equals getLlvmModule(). Lets IR-creation helpers stay
+        // emit-correct without swapping `module` (which would split per-module
+        // state across the resolution and emit modules — see Method::generateCode).
+        llvm::Module* emitTargetLlvmModule();
 
         void writeIRFileTarget() {
             string targetPath = archiveRoot + archivePath;

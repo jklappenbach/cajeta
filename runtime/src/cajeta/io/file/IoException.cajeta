@@ -5,7 +5,7 @@ import cajeta.lang.String;
 
 /**
  * Base of the `cajeta.io.file` exception hierarchy. See
- * `cajeta-docs/stdlib/io/file/Errors.md` for the full chart
+ * `docs/stdlib/io/file/Errors.md` for the full chart
  * (errno → exception) and the throws-clause discipline.
  *
  * Extends `RecoverableException` (not an unrecoverable error): callers

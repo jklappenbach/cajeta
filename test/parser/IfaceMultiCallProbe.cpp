@@ -27,7 +27,7 @@ int32_t runI32(const std::string& src) {
 const char* kHeader =
     "package test;\n"
     "import cajeta.lang.Optional;\n"
-    "import cajeta.threading.AsyncIterator;\n"
+    "import cajeta.concurrent.AsyncIterator;\n"
     "public final class TriIter implements AsyncIterator<int32> {\n"
     "    int32 i;\n"
     "    int32[] vals;\n"
@@ -70,7 +70,7 @@ TEST(IfaceMultiCallProbe, singleCallViaInterfaceStatelessImpl) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.AsyncIterator;\n"
+        "import cajeta.concurrent.AsyncIterator;\n"
         "public final class Stateless implements AsyncIterator<int32> {\n"
         "    public Optional<int32> next() {\n"
         "        return stack Optional<int32>(true, 42);\n"
@@ -92,7 +92,7 @@ TEST(IfaceMultiCallProbe, twoCallsStatelessImpl) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.AsyncIterator;\n"
+        "import cajeta.concurrent.AsyncIterator;\n"
         "public final class Stateless implements AsyncIterator<int32> {\n"
         "    public Optional<int32> next() {\n"
         "        return stack Optional<int32>(true, 42);\n"
@@ -117,7 +117,7 @@ TEST(IfaceMultiCallProbe, singleCallStatefulFieldNotRead) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.AsyncIterator;\n"
+        "import cajeta.concurrent.AsyncIterator;\n"
         "public final class OneField implements AsyncIterator<int32> {\n"
         "    int32 i;\n"
         "    public OneField() { this.i = 5; }\n"
@@ -141,7 +141,7 @@ TEST(IfaceMultiCallProbe, singleCallStatefulFieldRead) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.AsyncIterator;\n"
+        "import cajeta.concurrent.AsyncIterator;\n"
         "public final class OneFieldRead implements AsyncIterator<int32> {\n"
         "    int32 i;\n"
         "    public OneFieldRead() { this.i = 17; }\n"
@@ -165,7 +165,7 @@ TEST(IfaceMultiCallProbe, singleCallStatefulFieldWrite) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.AsyncIterator;\n"
+        "import cajeta.concurrent.AsyncIterator;\n"
         "public final class OneFieldWrite implements AsyncIterator<int32> {\n"
         "    int32 i;\n"
         "    public OneFieldWrite() { this.i = 0; }\n"

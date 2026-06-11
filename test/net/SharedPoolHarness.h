@@ -4,7 +4,7 @@
 // The NET-4.3 shared-pool server (runtime/src/cajeta/net/SharedPoolServer.cajeta)
 // is, like the NET-4.1 core it extends, a piece of *pure dispatch logic*
 // riding on primitives that already exist (the NET-4.1 Server lifecycle +
-// in-flight drain, cajeta.threading.Channel, AtomicInt32). The Model-B
+// in-flight drain, cajeta.concurrent.Channel, AtomicInt32). The Model-B
 // override changes exactly two things vs. Model A (fiber-per-connection):
 //
 //   1. dispatch() ENQUEUES the accepted connection onto a *bounded*
@@ -35,7 +35,7 @@
 // queue-close-driven graceful stop — is platform-independent and
 // deterministically pinnable on its own. That is exactly what this header
 // models, one level down, with a std::mutex + condition_variable bounded
-// queue standing in for cajeta.threading.Channel<TcpStream>, std::atomic for
+// queue standing in for cajeta.concurrent.Channel<TcpStream>, std::atomic for
 // AtomicInt32, and std::thread for the worker fibers.
 //
 // The queue/worker/drain semantics here MUST mirror
@@ -58,7 +58,7 @@ namespace cajeta::net::testing {
 
     // -----------------------------------------------------------------------
     // BoundedQueue<T> — a faithful native model of the bounded
-    // cajeta.threading.Channel<T> the shared pool drains: a fixed-capacity
+    // cajeta.concurrent.Channel<T> the shared pool drains: a fixed-capacity
     // FIFO guarded by a mutex + condvar. send() blocks while full (the
     // accept-loop back-pressure); receive() blocks while empty and open, and
     // returns "no value" once the queue is closed AND drained (mirroring

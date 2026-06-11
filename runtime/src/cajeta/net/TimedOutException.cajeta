@@ -9,11 +9,11 @@ import cajeta.lang.String;
  * `WSAETIMEDOUT`. `kind == NetException.KIND_TIMED_OUT` (10).
  *
  * Note: application-level deadlines composed via
- * `Tasks.withTimeout(...)` (see [`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md))
+ * `Tasks.withTimeout(...)` (see [`docs/Net.md`](../../../../../docs/Net.md))
  * surface through the concurrency cancellation path, **not** this
  * exception; `TimedOutException` is specifically the *OS-reported*
  * timeout. See
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class TimedOutException extends NetException {
     public TimedOutException(String message) {

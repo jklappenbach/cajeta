@@ -2,7 +2,7 @@
 
 Worked examples of cajeta build-tool projects. Each sample
 demonstrates a different project shape from
-[`cajeta-docs/BuildTool.md`](../../cajeta-docs/BuildTool.md):
+[`docs/BuildTool.md`](../../docs/BuildTool.md):
 
 | Sample                  | Shape                                                |
 |-------------------------|------------------------------------------------------|

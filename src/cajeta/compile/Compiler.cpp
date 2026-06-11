@@ -8,11 +8,13 @@
 #include "CajetaLlvmVisitor.h"
 #include "Optimizer.h"
 #include "StdlibEmbedded.h"
+#include "cajeta/runtime/EmbeddedTls.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "../asn/AbstractSyntaxNode.h"
@@ -50,6 +52,13 @@ using namespace antlr4;
 using namespace std;
 
 namespace cajeta {
+
+    // Null in production: every Compiler owns its context and resets globals.
+    // The test StdlibCache installs a shared context here so a primed stdlib
+    // survives across Compiler instances (see Compiler ctor).
+    llvm::LLVMContext* Compiler::s_sharedContext = nullptr;
+    bool Compiler::s_sharedInitialized = false;
+    bool Compiler::s_reuseHazardArmed = false;
 
     void Compiler::rebuildTargetMachine() {
         string error;
@@ -517,7 +526,7 @@ namespace cajeta {
         if (!fileExists(sourcePath))
             throw FileNotFoundException(sourcePath);
 
-        auto module = make_shared<CajetaModule>(&llvmContext,
+        auto module = make_shared<CajetaModule>(activeContext,
             sourcePath,
             sourceRootPath,
             targetRootPath,
@@ -604,7 +613,7 @@ namespace cajeta {
 
                 auto qName = QualifiedName::getOrInsert(cls, pkg);
                 auto extMod = std::make_shared<CajetaModule>(
-                    &llvmContext, qName, targetTriple, targetMachine);
+                    activeContext, qName, targetTriple, targetMachine);
                 extMod->setFlags(flags);
                 externalModules.push_back(extMod);
 
@@ -636,7 +645,7 @@ namespace cajeta {
         auto stdlibQName = QualifiedName::getOrInsert(
             "__stdlib__", "cajeta.runtime");
         auto stdlib = make_shared<CajetaModule>(
-            &llvmContext, stdlibQName, targetTriple, targetMachine);
+            activeContext, stdlibQName, targetTriple, targetMachine);
         stdlib->setFlags(flags);
         CajetaModule::setStdlibModule(stdlib);
         modules.push_back(stdlib);
@@ -650,6 +659,22 @@ namespace cajeta {
         // globals live in this module — user modules will reach
         // them via extern decls and never need to re-prototype.
         CajetaModule::buildPendingPrototypes();
+
+        // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
+        // canonical Class<?> instantiation HERE, as part of the stdlib build and
+        // BEFORE any user module parses. Class<?>'s method bodies reference the
+        // reflect object types (Modifiers / Field / Method / Constructor /
+        // Parameter / Annotation / TemplateParameter / TemplateArgument); with
+        // the concrete `Class` gone, this instantiation is now the only thing
+        // that pulls those types into the canonical map. Doing it here makes them
+        // resolvable when user code names them directly (e.g. `Modifiers m = ...`)
+        // — the eager-build the concrete `Class` used to provide. Also gives
+        // every #ClassObject a real Class<?> vtable to embed.
+        CajetaModule::setActiveModule(stdlib);
+        CajetaClass::ensureClassWildcardInstantiated();
+        CajetaModule::buildPendingPrototypes();
+        CajetaModule::setActiveModule(prevActive);
+
         emitUnrecoverableMarker(stdlib);
         return stdlib;
     }
@@ -765,6 +790,16 @@ namespace cajeta {
         // synthesize singleton + factory helpers.
         CajetaModule::resolveDependencyGraph();
 
+        // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
+        // canonical wildcard instantiation Class<?> here — after all modules are
+        // parsed/prototyped, before Phase 1/2 codegen — so (a) its method bodies
+        // are emitted in the loop below and (b) every type's #ClassObject can
+        // embed its vtable (StructureMetadata::populate / finalizeClassObject
+        // look it up by "cajeta.reflect.Class<?>"). The phantom T means all
+        // Class<T> share identical code, so this one instantiation backs every
+        // reflected type's #ClassObject regardless of the static T.
+        CajetaClass::ensureClassWildcardInstantiated();
+
         // Phase 1 (signatures) + Phase 2 (bodies), looped until quiescent.
         // A user method body can trigger a stdlib template instantiation
         // mid-codegen (e.g. `xs.stream()` → ArrayStream<int32>); the new
@@ -798,6 +833,22 @@ namespace cajeta {
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
+        // REFL-2 — emit the reflective adapter bodies now that Phase 1/2 has
+        // quiesced and every method's LLVM function exists. Each class that had
+        // an invoke adapter forward-declared into its #Rtti (during prototype
+        // generation) gets its switch-over-index body filled here; classes
+        // without a decl are a no-op. Runs once, before clinit/emit.
+        for (auto& [key, type] : CajetaType::getCanonicalMap()) {
+            if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
+                klass->emitReflectInvokeBody();
+                klass->emitReflectNewBody();
+                // REFL-8/10: patch + register #ClassObjects deferred at populate
+                // (classes parsed before cajeta.reflect.Class) now that Class is
+                // built — makes them forName/allClasses-discoverable.
+                klass->finalizeClassObject();
+            }
+        }
+
         // P6.2 — after Phase 1/2 quiescence, emit any per-class clinit
         // for static fields whose initializers didn't constant-fold.
         // Runs once at this point (not inside the loop) so the
@@ -816,10 +867,17 @@ namespace cajeta {
         emitXpuKernels(archiveRootPath);
 
         // Binary emit needs a C-ABI `main` to satisfy the loader. Synthesize
-        // a shim that forwards to the user's static entry method. Skipped
-        // for IR emit; the JIT and IR-archive consumers invoke the entry
-        // by mangled name directly.
-        if ((emitMode == EmitMode::Obj || emitMode == EmitMode::Exe)
+        // a shim that bridges crt0's `main(argc, argv)` to the user's static
+        // entry: it installs `-Dkey=value` props, marshals argv into the
+        // cajeta `String[]` the entry expects, calls it, and returns its int32.
+        // Skipped for IR emit; the JIT and IR-archive consumers invoke the
+        // entry by mangled name directly. Uber archives are the "runnable,
+        // self-contained deployment artifact" form, so they carry the shim too
+        // — linking an uber's bitcode into a binary then needs no external
+        // entry. (Plain `cja` archives are classpath libraries — no shim, so a
+        // consumer's own `main` can't collide.)
+        if ((emitMode == EmitMode::Obj || emitMode == EmitMode::Exe
+                || emitMode == EmitMode::Uber)
                 && !entryMethod.empty()) {
             emitCMainShim(entryMethod);
         }
@@ -1154,20 +1212,85 @@ namespace cajeta {
         drivers.emplace_back("clang");
         drivers.emplace_back("gcc");
 
+        // Prefer LLD for the final link when it's available. GNU ld's section
+        // GC is conservative — on COFF it keeps unreferenced external COMDAT
+        // sections, and across platforms it dead-strips less than lld — so
+        // preferring lld measurably shrinks `--emit=exe` output (a HelloWorld
+        // drops ~30% on Windows). We pass `-fuse-ld=lld` to the C driver rather
+        // than calling lld directly so the driver still supplies the CRT/libc
+        // and lld picks the right flavor (lld-link/MinGW for PE, ld.lld for
+        // ELF, ld64.lld for Mach-O). Gated on lld actually being locatable so
+        // we degrade to the platform default linker instead of failing when
+        // lld is absent.
+        bool haveLld = (bool) llvm::sys::findProgramByName("ld.lld")
+                    || (bool) llvm::sys::findProgramByName("lld");
+#if defined(_WIN32)
+        if (!haveLld) haveLld = (bool) llvm::sys::findProgramByName("lld-link");
+#endif
+
+#if defined(_WIN32)
+        // Materialize the embedded TLS native object beside the output so it can
+        // be added to the link. The produced exe references `__cajeta_tls_*` from
+        // the always-linked stdlib TlsConnection thunks, but those natives live in
+        // a standalone object kept out of the embedded JIT bitcode (see
+        // EmbeddedTls.h / src/CMakeLists.txt). The build machine has the mingw
+        // toolchain but not cajeta's runtime source, so the bytes ride along in
+        // the compiler binary.
+        std::string tlsObjPath = archiveRootPath + "__cajeta_tls.o";
+        {
+            std::ofstream tlsOut(tlsObjPath, std::ios::binary);
+            tlsOut.write(reinterpret_cast<const char*>(cajeta_tls_o),
+                         (std::streamsize) cajeta_tls_o_len);
+        }
+#endif
+
         buildtool::SubprocessResult res;
         bool launched = false;
         std::string usedDriver;
         for (const auto& drv : drivers) {
             buildtool::SubprocessOptions opt;
             opt.argv.push_back(drv);
+            if (haveLld) opt.argv.push_back("-fuse-ld=lld");
             for (const auto& obj : objectFiles) opt.argv.push_back(obj);
+#if defined(_WIN32)
+            opt.argv.push_back(tlsObjPath);
+#endif
             opt.argv.push_back("-o");
             opt.argv.push_back(outPath);
+            // Dead-strip unreferenced sections. The codegen emits one section
+            // per function/global (-ffunction-sections, see the comment near
+            // the top of this file), so the linker can drop everything the
+            // entry point doesn't transitively reach — including the stdlib's
+            // OpenSSL-backed TLS natives (`__cajeta_tls_*`) when the program
+            // never touches TLS, so they don't need to be resolved or have
+            // -lssl/-lcrypto on the link line. (A program that *does* use TLS
+            // still needs those libs; that wider link set is a follow-up.)
+            // Matches what samples/*/build-bin.sh has always passed.
+#if defined(__APPLE__)
+            opt.argv.push_back("-Wl,-dead_strip");
+#else
+            opt.argv.push_back("-Wl,--gc-sections");
+#endif
             // Platform libraries the cajeta runtime references (the driver adds
             // the CRT + libc itself).
 #if defined(_WIN32)
+            // Per-mode link policy: an `--emit=exe` is a deliverable, so it
+            // STATICALLY links the mingw runtime (libgcc / libstdc++ / winpthread)
+            // and OpenSSL — the produced binary then depends only on Windows
+            // SYSTEM DLLs (kernel32, ws2_32, crypt32, bcrypt, advapi32, user32,
+            // msvcrt), all present on every install, and runs with no extra
+            // install or PATH setup. (cja / uber artifacts deliberately stay
+            // dynamic: they execute inside cajeta's JIT host, which already
+            // provides the runtime + these libs in-process — see the JIT path.)
+            opt.argv.push_back("-static");    // libgcc / libstdc++ / winpthread
+            opt.argv.push_back("-lssl");      // TLS engine (__cajeta_tls_*, cajeta_tls.o)
+            opt.argv.push_back("-lcrypto");
+            opt.argv.push_back("-lws2_32");   // Winsock (cajeta.net natives in the bitcode)
+            opt.argv.push_back("-lcrypt32");  // OS trust-store shim (cajeta_tls.c)
             opt.argv.push_back("-lbcrypt");   // BCryptGenRandom (runtime RNG)
-            opt.argv.push_back("-lpthread");  // winpthreads
+            opt.argv.push_back("-ladvapi32"); // OpenSSL CryptoAPI dependencies
+            opt.argv.push_back("-luser32");
+            opt.argv.push_back("-lpthread");  // winpthreads (resolved static via -static)
 #elif defined(__APPLE__)
             opt.argv.push_back("-lpthread");
 #else

@@ -29,8 +29,8 @@ package tour;
 // `Box<? extends Animal>` (the value's origin proves it's the
 // receiver's exact T, just not nameable in source).
 //
-// See cajeta-docs/TemplateWildcard.md and
-// cajeta-docs/CaptureConversion.md.
+// See docs/TemplateWildcard.md and
+// docs/CaptureConversion.md.
 
 // Class hierarchy: Animal -> { Dog, Cat }. Each carries a `tag`
 // method overriding the parent — virtual dispatch confirms which

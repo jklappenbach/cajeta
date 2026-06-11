@@ -11,7 +11,7 @@ namespace cajeta {
     struct MethodCallParameter {
         string label;
         ExpressionPtr expression;
-        // Phase 1 of two-sided transfer (cajeta-docs/stdlib/OwnershipTransfer.md).
+        // Phase 1 of two-sided transfer (docs/stdlib/OwnershipTransfer.md).
         // `#x` at the argument position sets this; the call-site transfer
         // machinery in MethodCallExpression.cpp / CreatorRest.cpp fires the
         // drop deactivation when EITHER this is true OR the matching formal
@@ -31,7 +31,7 @@ namespace cajeta {
         // Explicit method-level template type arguments from the
         // `identifier<TypeArgs>(args)` call-site syntax (Form C). Empty
         // for ordinary calls (type args inferred via unification at
-        // resolveMethod time). See cajeta-docs/stdlib/MethodLevelTemplate.md.
+        // resolveMethod time). See docs/stdlib/MethodLevelTemplate.md.
         vector<CajetaTypePtr> explicitMethodTypeArgs;
         // Capture identity for the read-back pattern. `resolvedType` is
         // the projected bound (via captureProject) for user-facing

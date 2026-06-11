@@ -113,7 +113,7 @@ TEST(WsEntryPointTests, clientServerEchoRoundTripOverLoopback) {
         "import cajeta.net.ws.WebSocket;\n"
         "import cajeta.net.ws.WsMessage;\n"
         "import cajeta.net.ws.WsUpgrade;\n"
-        "import cajeta.threading.Tasks;\n"
+        "import cajeta.concurrent.Tasks;\n"
         "public final class M {\n"
         "    public static async int32 wsServer(#TcpListener listener) {\n"
         "        TcpStream sock = listener.acceptAsync();\n"

@@ -1,4 +1,4 @@
-// Step 1 of template wildcards (`<?>`). See cajeta-docs/TemplateWildcard.md
+// Step 1 of template wildcards (`<?>`). See docs/TemplateWildcard.md
 // and todo.md for the full staging plan. This test fixture exercises only
 // the foundation: wildcard-sentinel registration, the gated parser-site
 // behavior, the wildcard short-circuit in CajetaClass::instantiate, and

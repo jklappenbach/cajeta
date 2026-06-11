@@ -9,7 +9,7 @@ import cajeta.lang.String;
  *
  * The lower-level `FileReader` `read(buf, max)` reports EOF as a
  * zero return, NOT this exception. See
- * `cajeta-docs/stdlib/io/file/Errors.md`.
+ * `docs/stdlib/io/file/Errors.md`.
  *
  * ```cajeta
  * stack int32 got = reader.read(buf, 256);

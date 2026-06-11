@@ -3,8 +3,8 @@ package cajeta.net.ws;
 import cajeta.lang.String;
 import cajeta.net.AsyncReader;
 import cajeta.net.AsyncWriter;
-import cajeta.threading.Lock;
-import cajeta.threading.LockGuard;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
 
 /**
  * A live **RFC 6455 WebSocket connection** — plan item **NET-10.6**, the
@@ -20,7 +20,7 @@ import cajeta.threading.LockGuard;
  * fiber-parking transport ([`AsyncReader`](../AsyncReader.cajeta) /
  * [`AsyncWriter`](../AsyncWriter.cajeta), NET-3.5).
  *
- * ## The usage shape (cajeta-docs/Net.md § WebSocket)
+ * ## The usage shape (docs/Net.md § WebSocket)
  *
  * ```cajeta
  * await ws.send("hello");                 // text
@@ -42,7 +42,7 @@ import cajeta.threading.LockGuard;
  * **reciprocal close** as it drains control frames. Interleaving two
  * frames' bytes on the wire would corrupt the stream, so every frame
  * emission goes through [`writeFrame`](#writeFrame), which holds a
- * single-connection write [`Lock`](../../threading/Lock.cajeta) for the
+ * single-connection write [`Lock`](../../concurrent/Lock.cajeta) for the
  * duration of one frame's `encode + writeAll + flush`. The lock is
  * **fiber-aware**: a writer that finds it held parks its fiber and yields
  * the carrier (the no-carrier-blocks invariant), so a reader auto-ponging
@@ -84,7 +84,7 @@ import cajeta.threading.LockGuard;
  * [`AsyncWriter`](../AsyncWriter.cajeta) (which in turn borrow the
  * `TcpStream`): the caller that opened the socket — the entry point
  * (NET-10.7) — owns and closes it after the close handshake. The write
- * [`Lock`](../../threading/Lock.cajeta), decoder, and engine are owned and
+ * [`Lock`](../../concurrent/Lock.cajeta), decoder, and engine are owned and
  * dropped with the connection.
  */
 public class WebSocket {
@@ -442,10 +442,10 @@ public class WebSocket {
 
     /**
      * Serialize and send one [`WsFrame`](WsFrame.cajeta), **holding the
-     * write [`Lock`](../../threading/Lock.cajeta) for the whole
+     * write [`Lock`](../../concurrent/Lock.cajeta) for the whole
      * `encode + writeAll + flush`** so two fibers' frames never interleave
      * on the wire (the concurrency guarantee in the class doc). The lock is
-     * released by the [`LockGuard`](../../threading/LockGuard.cajeta)'s drop
+     * released by the [`LockGuard`](../../concurrent/LockGuard.cajeta)'s drop
      * on return *and* on exception unwind, so a failed write still unlocks.
      *
      * Masking follows the role: a **client** frame is masked with a fresh

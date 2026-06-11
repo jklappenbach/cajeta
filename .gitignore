@@ -5,6 +5,8 @@
 build/
 build-prebuilt/
 build-cajeta/
+build-release/
+run-logs/
 gen/
 cajeta.cbp
 Makefile
@@ -12,7 +14,8 @@ Testing
 generated/
 *.gch
 *.tokens
-
+test-quality/
+__pycache__/
 # Cajeta compiler output (per-source artifacts from cajetac)
 *.cja
 *.ll
@@ -33,6 +36,9 @@ generated/
 *.cajeta-*
 
 .DS_Store
+
+# Build/test run logs (transient diagnostics, never source)
+*.log
 
 # Stray build artifacts that appear when cmake is accidentally invoked
 # from the repo root or a source subdirectory (instead of /build).

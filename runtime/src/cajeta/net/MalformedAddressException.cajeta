@@ -15,12 +15,12 @@ import cajeta.lang.String;
  *
  * ## Hierarchy note
  *
- * The networking spec ([`cajeta-docs/Net.md`](../../../../cajeta-docs/Net.md))
+ * The networking spec ([`docs/Net.md`](../../../../docs/Net.md))
  * roots every `cajeta.net` failure under
  * [`cajeta.net.NetException`](NetException.cajeta) (plan item
  * **NET-1.8**). That base is now built, so — as part of the **NET-11.6**
  * taxonomy consolidation (see
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../cajeta-docs/stdlib/net/Errors.md))
+ * [`docs/stdlib/net/Errors.md`](../../../../docs/stdlib/net/Errors.md))
  * — this exception hangs off `NetException` like every other
  * `cajeta.net` failure. The `(message, position)` constructor contract
  * is unchanged. As a parse failure (not an errno-derived socket

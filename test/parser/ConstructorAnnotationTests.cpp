@@ -1,5 +1,5 @@
 // Tests for the constructor Lombok-mirror synthesizers
-// (cajeta-docs/stdlib/Annotations.md § Constructors):
+// (docs/stdlib/Annotations.md § Constructors):
 //   - @NoArgsConstructor
 //   - @AllArgsConstructor
 //   - @RequiredArgsConstructor (currently selects `final` fields only;

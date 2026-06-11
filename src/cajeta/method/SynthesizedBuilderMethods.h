@@ -1,5 +1,5 @@
 // Compiler-synthesized methods for the @Builder annotation
-// (cajeta-docs/stdlib/Annotations.md § Builders). Three method shapes:
+// (docs/stdlib/Annotations.md § Builders). Three method shapes:
 //
 //   - SynthesizedBuilderSetterMethod  — `Outer.Builder fieldName(T v)`
 //     chained setter on the Builder. Stores the value to the matching

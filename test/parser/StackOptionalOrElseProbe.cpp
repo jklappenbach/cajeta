@@ -46,7 +46,7 @@ namespace {
 int32_t runI32(const std::string& body) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.Channel;\n"
+        "import cajeta.concurrent.Channel;\n"
         "import cajeta.lang.Optional;\n"
         "public final class S {\n"
         + body +

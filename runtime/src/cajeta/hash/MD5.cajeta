@@ -52,7 +52,7 @@ import cajeta.lang.String;
  *   the output on the cajeta side and the C helper fills it.
  *
  * @See cajeta.hash.Hasher
- * @See [stdlib/Hashing.md § MD5](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See [stdlib/Hashing.md § MD5](../../../../../docs/stdlib/Hashing.md)
  */
 public final class MD5 implements Hasher {
 

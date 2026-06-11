@@ -1,0 +1,11 @@
+package tour.lang;
+
+// Base class for the inheritance demo. `area()` is virtual; overridden
+// in Square / Circle. The vtable lookup is hash-based by canonical
+// method signature, so subclass dispatch lands on the override regardless
+// of receiver storage (stack or heap).
+public class Shape {
+    public int32 area() {
+        return 0;
+    }
+}

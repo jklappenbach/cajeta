@@ -16,7 +16,7 @@ Mandatory only when this PR adds or modifies an API surface in
 src/cajeta/xpu/core/ or runtime/src/cajeta/xpu/core/. Otherwise
 delete this section.
 
-Per cajeta-docs/CajetaXPU-Variance.md, every xpu.core API must clear
+Per docs/CajetaXPU-Variance.md, every xpu.core API must clear
 the three-column check before landing — the NVIDIA implementation is
 the only one that exists today; AMD and Vulkan must be designed in,
 not retrofitted. The expensive case is rewriting kernels later.
@@ -26,7 +26,7 @@ not retrofitted. The expensive case is rewriting kernels later.
 
 <!-- e.g. Buffer<T>.alloc, Stream.sync, @Kernel argument trait, ... -->
 
-**Variance rows applicable** (from `cajeta-docs/CajetaXPU-Variance.md` §2):
+**Variance rows applicable** (from `docs/CajetaXPU-Variance.md` §2):
 
 <!-- e.g. Rows 2 (launch arg model), 3 (allocator), 6 (sync primitives) -->
 

@@ -40,7 +40,7 @@ import cajeta.net.NetException;
  * ## The `kind` / `resolveErrno` split
  *
  * Like the other higher-layer subtypes (see
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md)),
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md)),
  * this does **not** classify a socket `cajeta_net_err`, so its inherited
  * [`kind`](../NetException.cajeta) is the coarse `KIND_OTHER` (99) — its
  * *type* is the primary discriminant — and the exact

@@ -29,7 +29,7 @@
 // cannot be JIT-run deterministically yet. But the lifecycle + drain
 // LOGIC the core encodes is platform-independent and deterministically
 // pinnable on its own — exactly what this header models, one level down,
-// with std::atomic standing in for cajeta.threading.AtomicInt32. When the
+// with std::atomic standing in for cajeta.concurrent.AtomicInt32. When the
 // in-scheduler JIT `ServerTests.*` suite the plan names lands, this stays
 // the native analog + the contract these fixtures freeze.
 //

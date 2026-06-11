@@ -70,6 +70,25 @@ if not defined NO_BUILD (
 )
 if not exist "%TEST_BIN%" ( echo error: %TEST_BIN% not built & exit /b 1 )
 
+rem --- cajeta-llvm fork dylib on PATH ----------------------------------------
+rem The dylib slim-down links cajeta_test.exe against libLLVM-<ver>.dll, so that
+rem dll's directory must be on PATH at RUN time (Windows resolves DLLs via PATH /
+rem the exe's dir, not an rpath). build.cmd prepends it when CAJETA_LLVM_ROOT is
+rem set, but tests are usually run in a shell WITHOUT that env var -- so also
+rem derive the dir from the configured build's LLVM_DIR. Skip silently for a stock
+rem (non-dylib) build. Without this the binary fails to even launch, with exit
+rem 0xC0000135 / -1073741515 (STATUS_DLL_NOT_FOUND).
+set "LLVM_BIN="
+if defined CAJETA_LLVM_ROOT if exist "%CAJETA_LLVM_ROOT%\bin\libLLVM*.dll" set "LLVM_BIN=%CAJETA_LLVM_ROOT%\bin"
+if not defined LLVM_BIN if exist "build\CMakeCache.txt" (
+    for /f "usebackq tokens=2 delims==" %%D in (`findstr /B /C:"LLVM_DIR:" "build\CMakeCache.txt"`) do set "LLVM_DIR_RAW=%%D"
+    if defined LLVM_DIR_RAW (
+        set "LLVM_DIR_RAW=!LLVM_DIR_RAW:/=\!"
+        set "LLVM_BIN=!LLVM_DIR_RAW:\lib\cmake\llvm=!\bin"
+    )
+)
+if defined LLVM_BIN if exist "!LLVM_BIN!\libLLVM*.dll" set "PATH=!LLVM_BIN!;%PATH%"
+
 rem The test binary reads its .cajeta fixtures relative to this root.
 set "CAJETA_SOURCE_ROOT=%ROOT%"
 

@@ -1,6 +1,6 @@
 // `cajeta archive <subcommand>` — archive-management CLI surface.
 // Full feature catalog and exit-code semantics live in
-// cajeta-docs/ArchiveManagement.md.
+// docs/ArchiveManagement.md.
 //
 // Today's binary still uses `cajeta` as the compiler entry; archive
 // subcommands sit at the top of main() and short-circuit when argv[1]

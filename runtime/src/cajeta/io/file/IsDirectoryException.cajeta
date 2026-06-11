@@ -6,7 +6,7 @@ import cajeta.lang.String;
  * Path is a directory where a regular file was expected (e.g.
  * `File``.open` on a directory). POSIX `EISDIR`. A subtype of
  * `IoException`, so it is caught by handlers that catch the broader
- * I/O failure. See `cajeta-docs/stdlib/io/file/Errors.md`.
+ * I/O failure. See `docs/stdlib/io/file/Errors.md`.
  *
  * ```cajeta
  * try {

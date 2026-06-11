@@ -4,7 +4,7 @@
 # stdlib is NOT included (consumers bring their own via --classpath).
 # The library distribution shape.
 #
-# See cajeta-docs/Compilation.md § Output formats for the contract and
+# See docs/Compilation.md § Output formats for the contract and
 # § Uber archives for the runnable, self-contained form (build-uber.sh).
 
 set -euo pipefail

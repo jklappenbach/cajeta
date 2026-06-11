@@ -28,6 +28,9 @@ namespace cajeta {
     map<string, CajetaModulePtr> CajetaModule::strutureToModule;
     CajetaModulePtr CajetaModule::activeModule;
     CajetaModulePtr CajetaModule::currentCodegenModule;
+    CajetaModulePtr CajetaModule::reuseEmitModule;
+    llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
+    uint64_t CajetaModule::reuseEpoch = 0;
     CajetaModulePtr CajetaModule::stdlibModule;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     vector<CajetaClassPtr> CajetaModule::aspectClasses;
@@ -177,6 +180,25 @@ namespace cajeta {
         triggering->instantiationObligations.insert(inst->toCanonical());
     }
 
+    void CajetaModule::noteCrossModuleMethodInstantiation(
+        const CajetaModulePtr& triggering, const MethodPtr& inst) {
+        if (!triggering || !inst) {
+            return;
+        }
+        // The instantiated method's codegen lands in its own module (the host
+        // class's module — the template's declaring module, e.g. stdlib). Only
+        // a cross-module landing can vanish when `triggering`'s codegen is
+        // skipped; a same-module instantiation travels with this module's IR.
+        if (inst->getModule() == triggering) {
+            return;
+        }
+        // getMapKey(false) embeds the host-class canonical, method name,
+        // value-param signature, and method-type-arg suffix — unique,
+        // deterministic, and reconcilable at replay. The `::` separator marks
+        // it as a method (vs. a `<…>`-only class) obligation.
+        triggering->instantiationObligations.insert(inst->getMapKey(false));
+    }
+
     void CajetaModule::writeObligationsSidecar() const {
         // Path mirrors the emitted IR: swap the .ll suffix for .obligations.
         std::string path = archiveRoot + archivePath;
@@ -281,6 +303,52 @@ namespace cajeta {
         activeProfile = "prod";
         Method::getArchive().clear();
         stdlibModule.reset();
+        activeModule.reset();
+        currentCodegenModule.reset();
+    }
+
+    namespace {
+        // Snapshot of the module-level global registries, taken once after the
+        // pristine stdlib build and reassigned before each reusing test. Holds
+        // the stdlib singleton so restore re-pins it (the persistent module),
+        // and the method archive so cross-file forward refs reset too.
+        struct ModuleGlobalsBaseline {
+            bool valid = false;
+            map<string, MethodPtr> methods;
+            map<string, CajetaModulePtr> strutureToModule;
+            map<string, CajetaModulePtr> moduleVariables;
+            vector<CajetaClassPtr> aspectClasses;
+            vector<CajetaModule::ComponentDescriptorPtr> componentClasses;
+            string activeProfile;
+            map<string, MethodPtr> methodArchive;
+            CajetaModulePtr stdlibModule;
+        };
+        ModuleGlobalsBaseline g_moduleBaseline;
+    }
+
+    void CajetaModule::captureBaseline() {
+        g_moduleBaseline.methods = methods;
+        g_moduleBaseline.strutureToModule = strutureToModule;
+        g_moduleBaseline.moduleVariables = moduleVariables;
+        g_moduleBaseline.aspectClasses = aspectClasses;
+        g_moduleBaseline.componentClasses = componentClasses;
+        g_moduleBaseline.activeProfile = activeProfile;
+        g_moduleBaseline.methodArchive = Method::getArchive();
+        g_moduleBaseline.stdlibModule = stdlibModule;
+        g_moduleBaseline.valid = true;
+    }
+
+    void CajetaModule::restoreBaseline() {
+        if (!g_moduleBaseline.valid) return;
+        methods = g_moduleBaseline.methods;
+        strutureToModule = g_moduleBaseline.strutureToModule;
+        moduleVariables = g_moduleBaseline.moduleVariables;
+        aspectClasses = g_moduleBaseline.aspectClasses;
+        componentClasses = g_moduleBaseline.componentClasses;
+        activeProfile = g_moduleBaseline.activeProfile;
+        Method::getArchive() = g_moduleBaseline.methodArchive;
+        stdlibModule = g_moduleBaseline.stdlibModule;
+        // Transient per-compile pointers must not leak across tests.
         activeModule.reset();
         currentCodegenModule.reset();
     }
@@ -965,7 +1033,22 @@ namespace cajeta {
         return true;
     }
 
-    llvm::Function* CajetaModule::getRuntimeFunction(const std::string& name) {
+    llvm::Module* CajetaModule::emitTargetLlvmModule() {
+        // Emit≠resolution is a TEST-REUSE-only concern. In production / non-reuse
+        // (no shared context) always return this module's own llvm::Module — the
+        // historical behavior — so normal compiles are bit-for-bit unchanged and
+        // never depend on currentEmitLlvmModule. In the reuse path, return the
+        // function currently being emitted (set RAII by Method::generateCode) so
+        // a stdlib-template instantiation's body IR + its runtime externs land in
+        // the user emit module, not the cached stdlib. Null (outside a body) →
+        // fall back to this module's own llvm::Module.
+        if (Compiler::getSharedContext() && currentEmitLlvmModule)
+            return currentEmitLlvmModule;
+        return llvmModule;
+    }
+
+    llvm::Function* CajetaModule::getRuntimeFunction(const std::string& name,
+                                                     llvm::Module* explicitTarget) {
         // Runtime definitions live exclusively in the compiler-owned
         // stdlib module (Compiler::ensureStdlibModule runs linkRuntime
         // once on it). User modules get module-local extern decls
@@ -977,10 +1060,21 @@ namespace cajeta {
         // ensureStdlibModule runs) — fall back to linking the runtime
         // straight into this module so the lookup returns a usable
         // function on first call.
+        // Target the module the builder is currently emitting into (the emit
+        // module for a reuse-path instantiation), not necessarily this module —
+        // so the runtime extern decl is co-resident with the calling function.
+        // Guard against an out-of-codegen call (currentEmitLlvmModule null →
+        // emitTargetLlvmModule falls back to this module's llvm module).
+        // An explicit target overrides this: the caller knows the exact module its
+        // IRBuilder is writing into (see header — drop-wrapper bodies on persistent
+        // stdlib classes).
+        llvm::Module* target = explicitTarget ? explicitTarget : emitTargetLlvmModule();
         auto stdlib = stdlibModule;
         if (!stdlib || stdlib.get() == this) {
             linkRuntime();
-            return llvmModule->getFunction(name);
+            llvm::Function* defFn = llvmModule->getFunction(name);
+            if (!defFn) return nullptr;
+            return ensureFunctionInModule(target, defFn);
         }
         llvm::Function* defFn = stdlib->getLlvmModule()->getFunction(name);
         if (!defFn) {
@@ -991,7 +1085,7 @@ namespace cajeta {
             defFn = stdlib->getLlvmModule()->getFunction(name);
             if (!defFn) return nullptr;
         }
-        return ensureFunctionInModule(llvmModule, defFn);
+        return ensureFunctionInModule(target, defFn);
     }
 
     llvm::Constant* CajetaModule::getOrCreateSourceFileConstant(const std::string& path) {

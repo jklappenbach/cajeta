@@ -5,7 +5,7 @@ package cajeta.codec.json;
  * call. This is the Tier-2 (hot-path) view of a JSON document: instead
  * of materializing a `JsonValue` tree, you drive the reader yourself
  * and dispatch on the token at each position. See
- * `cajeta-docs/stdlib/codec/Json.md` § Tier 2 for the full protocol
+ * `docs/stdlib/codec/Json.md` § Tier 2 for the full protocol
  * (separator handling, container nesting, end-of-input semantics).
  *
  * `BOOLEAN` is a single token; call `currentBoolean()` on the reader to

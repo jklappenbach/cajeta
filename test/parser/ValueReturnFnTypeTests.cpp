@@ -1,7 +1,7 @@
 //
 // M5(b) — function-pointer / method-reference types carrying sret. With the
 // value-return ABI now visible through CajetaFunctionType (see
-// cajeta-docs/stdlib/ValueReturns.md), a lambda whose body is a `stack X(...)`
+// docs/stdlib/ValueReturns.md), a lambda whose body is a `stack X(...)`
 // construction lowers to a sret-shaped function, and a method reference to a
 // value-returning method (one that returnsStackValue() per the body scan)
 // produces a sret-shaped function-type. The call site allocates the result

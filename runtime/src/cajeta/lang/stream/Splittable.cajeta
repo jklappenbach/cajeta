@@ -6,7 +6,7 @@ package cajeta.lang.stream;
  * implement `Splittable`; non-splittable parallel streams fall back to
  * sequential transparently.
  *
- * See cajeta-docs/stdlib/StreamParallelism.md § Splittable.
+ * See docs/stdlib/StreamParallelism.md § Splittable.
  *
  * ## Usage
  * Treat a source as splittable, peel off a share for a worker, and keep

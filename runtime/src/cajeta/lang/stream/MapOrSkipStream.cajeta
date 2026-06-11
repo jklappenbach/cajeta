@@ -11,7 +11,7 @@ import cajeta.error.RecoverableException;
  * `UnrecoverableException` is NOT caught (alarm contract per
  * `ErrorModel.md` § The hierarchy); it propagates through the
  * pipeline unchanged. See
- * `cajeta-docs/stdlib/StreamParallelism.ErrorHandling.md` § 3.3.
+ * `docs/stdlib/StreamParallelism.ErrorHandling.md` § 3.3.
  *
  * Lazy — `fn` is invoked once per pull, each pull returning an
  * `Optional``<R>`. Empty inner stream propagates as empty. Same

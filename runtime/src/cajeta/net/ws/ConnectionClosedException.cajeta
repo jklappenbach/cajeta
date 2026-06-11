@@ -35,7 +35,7 @@ import cajeta.lang.String;
  * (`closeCode == 1000`) from "the peer failed the connection on a
  * protocol error" (`closeCode == 1002`) or "the connection was cut"
  * (`closeCode == 1006`) — the discriminant the
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md)
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md)
  * chart names ("`ConnectionClosed` carries the close code") and the plan
  * acceptance row `closeHandshakeReportsCode` checks.
  *

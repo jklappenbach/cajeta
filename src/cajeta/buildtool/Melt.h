@@ -2,7 +2,7 @@
 //
 // A melt is a curated bundle of dependency versions, properties,
 // action presets, and repositories that consumers import as one
-// unit. See cajeta-docs/BuildTool.md "Melts" for the spec.
+// unit. See docs/BuildTool.md "Melts" for the spec.
 //
 // This header models:
 //   - The typed `melt.*` block of a melt-publishing package.

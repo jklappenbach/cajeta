@@ -1,5 +1,5 @@
 //
-// AsyncIterator<T> — minimal iteration contract for cajeta.threading.
+// AsyncIterator<T> — minimal iteration contract for cajeta.concurrent.
 // v1 ships the interface. The canonical iteration loop is:
 //
 //     Optional<T> opt = iter.next();
@@ -45,7 +45,7 @@ TEST(AsyncIteratorTests, singleCallViaInterface) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.AsyncIterator;\n"
+        "import cajeta.concurrent.AsyncIterator;\n"
         "public final class FixedOne implements AsyncIterator<int32> {\n"
         "    public Optional<int32> next() {\n"
         "        return stack Optional<int32>(true, 7);\n"
@@ -70,7 +70,7 @@ TEST(AsyncIteratorTests, sumThreeViaConcreteReceiver) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.AsyncIterator;\n"
+        "import cajeta.concurrent.AsyncIterator;\n"
         "public final class TriIter implements AsyncIterator<int32> {\n"
         "    int32 i;\n"
         "    int32[] vals;\n"
@@ -112,7 +112,7 @@ TEST(AsyncIteratorTests, sumThreeViaInterfaceLoop) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.threading.AsyncIterator;\n"
+        "import cajeta.concurrent.AsyncIterator;\n"
         "public final class TriIter implements AsyncIterator<int32> {\n"
         "    int32 i;\n"
         "    int32[] vals;\n"

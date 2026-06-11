@@ -59,7 +59,7 @@ public class Stream<T> {
      * `.sequential()`. Terminals consult it to decide whether to
      * fork. The bit propagates through wrapper combinators (filter,
      * map, etc.) via their ctors (each wrapper copies its source's
-     * flag at construction). See cajeta-docs/stdlib/StreamParallelism.md.
+     * flag at construction). See docs/stdlib/StreamParallelism.md.
      */
     boolean isParallel = false;
 
@@ -335,7 +335,7 @@ public class Stream<T> {
      * an `int32`, build a `String` from a stream of any T, etc.
      *
      * Non-virtual by construction (method-level templates can't sit in
-     * a vtable — see cajeta-docs/stdlib/MethodLevelTemplate.md). The
+     * a vtable — see docs/stdlib/MethodLevelTemplate.md). The
      * inherited `next()` is what subclasses customize; this combinator
      * stays the same body across every Stream<T> subclass.
      *

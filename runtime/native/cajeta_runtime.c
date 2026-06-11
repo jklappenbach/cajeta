@@ -465,7 +465,7 @@ static void __cajeta_live_set_add_locked(void* p) {
                 "Subsequent allocations won't be tracked; field auto-drop "
                 "may double-free aliased addresses past this point. "
                 "Raise CAJETA_LIVE_SET_CAPACITY in runtime/native/cajeta_runtime.c "
-                "(see cajeta-docs/FieldOwnership.md).\n",
+                "(see docs/FieldOwnership.md).\n",
                 __cajeta_live_set_count, CAJETA_LIVE_SET_CAPACITY);
             warned = 1;
         }
@@ -2663,7 +2663,7 @@ void __cajeta_lock_destroy(void* p) {
 // --- Threading sync primitives: condition variable (R7-B) ----------------
 //
 // Fiber-aware condvar, paired with a Lock handle. `Mutex<T>.withLockWhen`
-// (cajeta-docs/stdlib/Thread.md § Mutex) builds on it: wait-for-predicate
+// (docs/stdlib/Concurrency.md § Mutex) builds on it: wait-for-predicate
 // inside a held lock, with notify on every mutation. A single condvar with
 // notify-all + per-waiter predicate re-check is the v1 strategy (spurious
 // wakeups are possible but harmless — each waiter re-tests its own
@@ -2773,7 +2773,7 @@ void __cajeta_condvar_destroy(void* cvp) {
 
 // --- Threading sync primitives: reader-writer lock (R7-D) ----------------
 //
-// Fiber-aware RW lock backing `RwLock<T>` (cajeta-docs/stdlib/Thread.md §
+// Fiber-aware RW lock backing `RwLock<T>` (docs/stdlib/Concurrency.md §
 // RwLock). Many readers may hold it concurrently; a writer holds it
 // exclusively. Writer-preference: a reader blocks while any writer is
 // waiting, so a steady stream of readers can't starve a writer.
@@ -2963,7 +2963,7 @@ void __cajeta_rwlock_destroy(void* p) {
 
 // --- atomic<T> backing storage (R8 Slice 1) ---------------------------------
 //
-// Atomic<T> classes (cajeta.threading.AtomicInt32 / AtomicInt64) own a heap-
+// Atomic<T> classes (cajeta.concurrent.AtomicInt32 / AtomicInt64) own a heap-
 // allocated word that the compiler-emitted inline LLVM atomic instructions
 // (atomicrmw / cmpxchg / load atomic / store atomic) operate on directly. The
 // runtime's role is just the alloc/free of the underlying cell — the
@@ -3048,7 +3048,7 @@ struct cajeta_drop_entry {
 };
 
 // Debug-mode variant — extends the base entry with source-position
-// tags (cajeta-docs/CompilerModes.md § Source-tagged drop-chain
+// tags (docs/CompilerModes.md § Source-tagged drop-chain
 // entries). The first four fields share the base entry's layout, so
 // a debug entry passed to pop_run (which only touches obj/drop_fn/
 // prev/active) works without a separate pop helper.
@@ -3529,10 +3529,14 @@ int64_t __cajeta_signature_hash(const char* s) {
 //   [16..23] ptr drop_fn              (this class's synthesized drop wrapper —
 //                                      __cajeta_class_virtual_drop loads this
 //                                      to route drops through the dynamic type)
-//   [24..]   [count x { i64 hash, ptr fn }] entries
+//   [24..31] ptr classObject          (this class's cached cajeta.reflect.Class
+//                                      instance — Object.getClass() loads it;
+//                                      NULL for value types / pre-reflect classes)
+//   [32..]   [count x { i64 hash, ptr fn }] entries
 #define CAJETA_VTABLE_PARENT_OFFSET 8
 #define CAJETA_VTABLE_DROP_FN_OFFSET 16
-#define CAJETA_VTABLE_ENTRIES_OFFSET 24
+#define CAJETA_VTABLE_CLASSOBJECT_OFFSET 24
+#define CAJETA_VTABLE_ENTRIES_OFFSET 32
 
 // Gap-1 fix — virtual dispatch on drop. Heap class locals push this as
 // their drop fn (in place of the static per-class drop wrapper). At
@@ -3580,6 +3584,1001 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
         else return entries[mid].fn;
     }
     return NULL;
+}
+
+// ---- Reflection (cajeta.reflect) — REFL-1 -------------------------------
+//
+// Fixed-layout C mirrors of the RTTI structs emitted by
+// StructureMetadata.cpp (getRttiStructType / getFieldStructType /
+// getMethodStructType / getParameterStructType). These MUST stay in
+// lock-step with those LLVM struct shapes — the compiler builds the data,
+// these readers walk it. All variable-length data (names, tables, annotation
+// and parent lists) is referenced by pointer, so every field below sits at a
+// fixed offset regardless of the class.
+
+// REFL-6b annotation argument descriptors. The `annotations` pointer in every
+// owner descriptor below points at a [N x CajetaAnnotationDesc]; each annotation
+// in turn references its [argCount x CajetaAnnotationArgDesc]. MUST stay in
+// lock-step with getAnnotationStructType / getAnnotationArgStructType in
+// StructureMetadata.cpp.
+//
+// `kind` mirrors AnnotationArgKind (Annotatable.h). String/ClassRef payloads
+// live in strVal; Int64 in i64Val; Bool in boolVal. List kinds are recorded by
+// kind (argCount stays accurate) but carry no element data — only the scalar
+// accessors are surfaced this increment.
+enum {
+    CAJETA_AK_INT64      = 0,
+    CAJETA_AK_STRING     = 1,
+    CAJETA_AK_BOOL       = 2,
+    CAJETA_AK_CLASSREF   = 3,
+    CAJETA_AK_INT64LIST  = 4,
+    CAJETA_AK_STRINGLIST = 5,
+    CAJETA_AK_BOOLLIST   = 6,
+};
+
+typedef struct {
+    const char* name;        // argument key ("" for the unnamed single-arg form)
+    int32_t     kind;        // CAJETA_AK_*
+    int64_t     i64Val;
+    const char* strVal;      // String payload; type name for ClassRef; NULL otherwise
+    int8_t      boolVal;
+    int32_t     listCount;   // element count for the *List kinds; 0 otherwise
+    const void* listData;    // [N x int64] / [N x char*] / [N x int8] by kind
+} CajetaAnnotationArgDesc;
+
+typedef struct {
+    const char*                    name;      // annotation canonical type name
+    int16_t                        argCount;
+    const CajetaAnnotationArgDesc* args;       // NULL when argCount == 0
+} CajetaAnnotationDesc;
+
+// Parameter descriptor — the ORIGINAL 5-field shape (#ParameterDesc). Kept
+// separate from CajetaFieldDesc, which gained byteOffset/typeFlags for fields.
+typedef struct {
+    const char*  name;
+    const char*  type;
+    int32_t      modifiers;
+    int16_t      annotationCount;
+    const CajetaAnnotationDesc* annotations;
+} CajetaParamDesc;
+
+// Field descriptor (#FieldDesc). MUST match getFieldStructType() in
+// StructureMetadata.cpp: { ptr, ptr, i32, i16, ptr, i32, i64 }.
+typedef struct {
+    const char*  name;
+    const char*  type;
+    int32_t      modifiers;
+    int16_t      annotationCount;
+    const CajetaAnnotationDesc* annotations;
+    int32_t      byteOffset;        // offset in the instance struct; -1 if static
+    int64_t      typeFlags;         // field type's CajetaType TYPE_ID flag word
+} CajetaFieldDesc;
+
+typedef struct {
+    const char*            name;           // canonical signature
+    const char*            returnType;
+    int64_t                sigHash;        // FNV-1a of toCanonical(false)
+    int32_t                modifiers;
+    int16_t                parameterCount;
+    const CajetaParamDesc* parameters;
+    int16_t                annotationCount; // REFL-6a: method/ctor annotation names
+    const CajetaAnnotationDesc* annotations; // REFL-6b: names + arg values (NULL if none)
+} CajetaMethodDesc;
+
+// REFL-7: one declared template parameter (`<T>`, `<T extends Foo & Bar>`, or a
+// non-type `<uint32 N>`). MUST match getTemplateParamStructType() in
+// StructureMetadata.cpp.
+typedef struct {
+    const char*  name;              // parameter name, e.g. "T"
+    int16_t      boundCount;
+    const char** bounds;            // canonical bound type names (NULL if none)
+    int8_t       isNonType;         // 1 for a `<uint32 N>` value parameter
+    const char*  nonTypePrimitive;  // declared primitive when isNonType, else NULL
+} CajetaTemplateParamDesc;
+
+typedef struct {
+    int64_t                 allocationSize;
+    const char*             typeName;
+    int32_t                 modifiers;
+    int16_t                 classAnnotationCount;
+    const CajetaAnnotationDesc* classAnnotations;
+    int16_t                 propertyCount;
+    const CajetaFieldDesc*  properties;
+    int16_t                 methodCount;
+    const CajetaMethodDesc* methods;
+    int16_t                 parentCount;
+    const char**            parentNames;
+    void*                   vtable;
+    void*                   invokeAdapter;       // REFL-2 reflective invoke adapter (or NULL)
+    void*                   newInstanceAdapter;  // REFL-2C reflective ctor adapter (or NULL)
+    int16_t                 constructorCount;
+    const CajetaMethodDesc* constructors;        // #MethodDesc[] for constructors
+    // REFL-7 template reflection. templateParams are the `<T>` declarations (on
+    // both the template and its instantiations); templateArgs are the concrete
+    // type names an instantiation was materialized with (e.g. "cajeta.int32"
+    // for Box<int32>) — empty for a non-template class or an unmaterialized
+    // template.
+    int16_t                       templateParamCount;
+    const CajetaTemplateParamDesc* templateParams;
+    int16_t                       templateArgCount;
+    const char**                  templateArgs;
+} CajetaRtti;
+
+// Object.getClass(): obj -> its cached #ClassObject (the cajeta.reflect.Class
+// instance) through the vtable's classObject slot. The returned pointer is a
+// borrow of a process-lifetime static; the caller never frees it.
+void* __cajeta_object_get_class(void* obj) {
+    if (!obj) return NULL;
+    void* vtable = *(void**) obj;                 // header slot 0
+    if (!vtable) return NULL;
+    return *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+}
+
+// --- cajeta.reflect class registry (REFL-8) --------------------------------
+// Maps a class's canonical name -> its cached #ClassObject (the reflect Class
+// instance), so Class.forName(name) can resolve a class from a string with no
+// live instance in hand. Populated at startup: the compiler emits, per class,
+// an llvm.global_ctors entry calling __cajeta_register_class(name, classObject)
+// (StructureMetadata::populate). A growable, process-lifetime table — never
+// freed; last-writer-wins on a duplicate canonical name (harmless — the same
+// class object is registered once per definition site). Nothing strips classes
+// today, so every compiled class is registered; @Retained is the advisory marker
+// for the future AOT linker (it must keep marked classes even when unreferenced).
+static struct { const char* name; void* classObject; }* g_cajeta_classes = NULL;
+static int g_cajeta_class_count = 0;
+static int g_cajeta_class_cap   = 0;
+
+void __cajeta_register_class(const char* name, void* classObject) {
+    if (!name || !classObject) return;
+    for (int i = 0; i < g_cajeta_class_count; ++i) {
+        if (g_cajeta_classes[i].name && strcmp(g_cajeta_classes[i].name, name) == 0) {
+            g_cajeta_classes[i].classObject = classObject;  // last writer wins
+            return;
+        }
+    }
+    if (g_cajeta_class_count == g_cajeta_class_cap) {
+        int newCap = g_cajeta_class_cap ? g_cajeta_class_cap * 2 : 64;
+        void* grown = realloc(g_cajeta_classes,
+                              (size_t) newCap * sizeof(*g_cajeta_classes));
+        if (!grown) return;            // OOM: drop the registration, don't crash
+        g_cajeta_classes = grown;
+        g_cajeta_class_cap = newCap;
+    }
+    // strdup the key: a JIT'd registration ctor's name global lives in JIT
+    // memory that may be torn down, leaving a dangling key (the same hazard the
+    // CPU-kernel registry documents above). Process-lifetime copy.
+    g_cajeta_classes[g_cajeta_class_count].name = strdup(name);
+    g_cajeta_classes[g_cajeta_class_count].classObject = classObject;
+    ++g_cajeta_class_count;
+}
+
+// Class.forName backend. `nameBytes` is a cajeta int8[] ({ i64 count,
+// [count x i8] }) — the canonical name's UTF-8 bytes. Single-parameter so it can
+// return a Class borrow (a multi-param @Native returning a borrow is rejected,
+// CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM); the length comes from the array's
+// count header. Returns the #ClassObject pointer (a borrow of a process-lifetime
+// static) or NULL when no class with that canonical name is registered.
+void* __cajeta_class_for_name(void* nameBytes) {
+    if (!nameBytes) return NULL;
+    int64_t len = *((int64_t*) nameBytes);              // the i64 count header
+    if (len < 0) return NULL;
+    const char* data = (const char*) nameBytes + 8;
+    for (int i = 0; i < g_cajeta_class_count; ++i) {
+        const char* n = g_cajeta_classes[i].name;
+        if (n && (int64_t) strlen(n) == len && memcmp(n, data, (size_t) len) == 0)
+            return g_cajeta_classes[i].classObject;
+    }
+    return NULL;
+}
+
+// REFL-10: registry enumeration for Class.allClasses / classesInPackage /
+// classesAnnotated. The filtering (package match, annotation match) is done in
+// cajeta over getName()/hasAnnotation(); these two primitives just expose the
+// registry as an indexable list. __cajeta_class_at returns a #ClassObject
+// pointer (a borrow of a process-lifetime static) or NULL when out of range.
+int32_t __cajeta_class_count(void) {
+    return (int32_t) g_cajeta_class_count;
+}
+void* __cajeta_class_at(int32_t idx) {
+    if (idx < 0 || idx >= g_cajeta_class_count) return NULL;
+    return g_cajeta_classes[idx].classObject;
+}
+
+// RTTI scalar readers — `rtti` is a CajetaRtti* (the #RttiGlobal address a
+// Class instance holds in its `rtti` field).
+int32_t __cajeta_rtti_field_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->propertyCount : 0;
+}
+int32_t __cajeta_rtti_method_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->methodCount : 0;
+}
+int32_t __cajeta_rtti_parent_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->parentCount : 0;
+}
+int32_t __cajeta_rtti_modifiers(void* rtti) {
+    return rtti ? ((CajetaRtti*) rtti)->modifiers : 0;
+}
+int64_t __cajeta_rtti_alloc_size(void* rtti) {
+    return rtti ? ((CajetaRtti*) rtti)->allocationSize : 0;
+}
+int32_t __cajeta_rtti_name_len(void* rtti) {
+    if (!rtti) return 0;
+    const char* n = ((CajetaRtti*) rtti)->typeName;
+    return n ? (int32_t) strlen(n) : 0;
+}
+// Copy the canonical type name into a caller-allocated int8[] (`out` =
+// { i64 count, [count x i8] }), clamped to the array's capacity. Out-param
+// rather than a returned int8[] because a `@Native` int8[] return isn't
+// drop-tracked (see Sha256.cajeta); the caller does
+// `int8[] out = heap int8[len]; nameInto(rtti, out); heap String(#out, len)`.
+void __cajeta_rtti_name_into(void* rtti, void* out) {
+    if (!out) return;
+    const char* n = rtti ? ((CajetaRtti*) rtti)->typeName : "";
+    if (!n) n = "";
+    int64_t cap = *((int64_t*) out);
+    int64_t len = (int64_t) strlen(n);
+    if (len > cap) len = cap;
+    if (len > 0) memcpy((char*) out + 8, n, (size_t) len);
+}
+// Copy the declared field name at `idx` into a caller-allocated int8[].
+void __cajeta_rtti_field_name_into(void* rtti, int32_t idx, void* out) {
+    if (!out) return;
+    const char* n = "";
+    if (rtti) {
+        CajetaRtti* r = (CajetaRtti*) rtti;
+        if (idx >= 0 && idx < r->propertyCount && r->properties)
+            n = r->properties[idx].name ? r->properties[idx].name : "";
+    }
+    int64_t cap = *((int64_t*) out);
+    int64_t len = (int64_t) strlen(n);
+    if (len > cap) len = cap;
+    if (len > 0) memcpy((char*) out + 8, n, (size_t) len);
+}
+int32_t __cajeta_rtti_field_name_len(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
+    const char* n = r->properties[idx].name;
+    return n ? (int32_t) strlen(n) : 0;
+}
+int32_t __cajeta_rtti_field_modifiers(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
+    return r->properties[idx].modifiers;
+}
+int32_t __cajeta_rtti_method_modifiers(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return 0;
+    return r->methods[idx].modifiers;
+}
+int32_t __cajeta_rtti_constructor_modifiers(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->constructorCount || !r->constructors) return 0;
+    return r->constructors[idx].modifiers;
+}
+
+// REFL-3.3 (decision D1): reflective access is DEFAULT-OPEN, but a `@Sealed`
+// class bars access to its PRIVATE members. These helpers fold "is the owning
+// class sealed AND is this member private" into one boolean the reflect API
+// (Field/Method/Constructor) checks before reading/writing/invoking — it throws
+// IllegalAccessException when set. The modifier bits mirror cajeta.type.Modifier
+// (PRIVATE=0x04) and the synthesized class modifier SEALED=0x100.
+#define CAJETA_MOD_PRIVATE 0x04
+#define CAJETA_MOD_SEALED  0x100
+static int32_t cajeta_reflect_blocked(int32_t classMods, int32_t memberMods) {
+    return ((classMods & CAJETA_MOD_SEALED) && (memberMods & CAJETA_MOD_PRIVATE))
+        ? 1 : 0;
+}
+int32_t __cajeta_reflect_field_blocked(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
+    return cajeta_reflect_blocked(r->modifiers, r->properties[idx].modifiers);
+}
+int32_t __cajeta_reflect_method_blocked(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return 0;
+    return cajeta_reflect_blocked(r->modifiers, r->methods[idx].modifiers);
+}
+int32_t __cajeta_reflect_ctor_blocked(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->constructorCount || !r->constructors) return 0;
+    return cajeta_reflect_blocked(r->modifiers, r->constructors[idx].modifiers);
+}
+// Byte offset of field `idx` within the instance struct (-1 if static / out of
+// range). The data-driven hook reflective field get/set keys off — see
+// StructureMetadata getFieldStructType / emitFieldTable.
+int32_t __cajeta_rtti_field_offset(void* rtti, int32_t idx) {
+    if (!rtti) return -1;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return -1;
+    return r->properties[idx].byteOffset;
+}
+// Field `idx`'s type-flag word (CajetaType TYPE_ID: size / int-vs-float /
+// signed / primitive-vs-reference bits). 0 if out of range.
+int64_t __cajeta_rtti_field_type_flags(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return 0;
+    return r->properties[idx].typeFlags;
+}
+
+// REFL-3 data-driven field read/write. Each resolves field `idx`'s byteOffset
+// from the #FieldDesc table (REFL-2A) and loads/stores at obj+offset — no
+// per-class accessor codegen. Returns -1 offset (static / out of range) ⇒
+// read yields 0/null and write is a no-op. The CALLER is responsible for
+// matching the field's type (typed accessors); a size mismatch is unchecked
+// (REFL-3.3 visibility/type enforcement is a later sub-task).
+static int32_t cajeta_field_offset(void* rtti, int32_t idx) {
+    if (!rtti) return -1;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return -1;
+    return r->properties[idx].byteOffset;
+}
+int32_t __cajeta_field_get_i32(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return *(int32_t*) ((char*) obj + off);
+}
+// W2 boxing: width-correct 8/16-bit field loads (the i32 load above would
+// over-read a 1/2-byte field). Signed variants sign-extend, unsigned zero-extend
+// (into the int32 return), so Field.getBoxed casts back to the exact wrapper
+// type losslessly. 32-bit (uint32/char) and 64-bit (uint64) field reads reuse
+// __cajeta_field_get_i32 / _i64 — same width, just reinterpreted in cajeta.
+int32_t __cajeta_field_get_i8(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (int32_t) *(int8_t*) ((char*) obj + off);
+}
+int32_t __cajeta_field_get_u8(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (int32_t) *(uint8_t*) ((char*) obj + off);
+}
+int32_t __cajeta_field_get_i16(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (int32_t) *(int16_t*) ((char*) obj + off);
+}
+int32_t __cajeta_field_get_u16(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (int32_t) *(uint16_t*) ((char*) obj + off);
+}
+void __cajeta_field_set_i32(void* obj, void* rtti, int32_t idx, int32_t v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(int32_t*) ((char*) obj + off) = v;
+}
+int64_t __cajeta_field_get_i64(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return *(int64_t*) ((char*) obj + off);
+}
+void __cajeta_field_set_i64(void* obj, void* rtti, int32_t idx, int64_t v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(int64_t*) ((char*) obj + off) = v;
+}
+// boolean is a 1-byte field (i1 stored as i8). Read as 0/1.
+int32_t __cajeta_field_get_bool(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0;
+    return (*(int8_t*) ((char*) obj + off)) != 0 ? 1 : 0;
+}
+void __cajeta_field_set_bool(void* obj, void* rtti, int32_t idx, int32_t v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(int8_t*) ((char*) obj + off) = (int8_t) (v != 0 ? 1 : 0);
+}
+// float (f32) / double (f64) fields. Same byteOffset path as the integer
+// accessors; the value is passed across the native boundary in its own FP ABI
+// register, so no bit-casting is needed here.
+float __cajeta_field_get_f32(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0.0f;
+    return *(float*) ((char*) obj + off);
+}
+void __cajeta_field_set_f32(void* obj, void* rtti, int32_t idx, float v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(float*) ((char*) obj + off) = v;
+}
+double __cajeta_field_get_f64(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return 0.0;
+    return *(double*) ((char*) obj + off);
+}
+void __cajeta_field_set_f64(void* obj, void* rtti, int32_t idx, double v) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return;
+    *(double*) ((char*) obj + off) = v;
+}
+// Reference (object/pointer) field: a borrow of whatever the slot points to.
+void* __cajeta_field_get_ref(void* obj, void* rtti, int32_t idx) {
+    int32_t off = cajeta_field_offset(rtti, idx);
+    if (!obj || off < 0) return NULL;
+    return *(void**) ((char*) obj + off);
+}
+// Method `idx`'s canonical signature name length / copy (parallel to the field
+// name readers). Used to locate a method by name and for diagnostics.
+int32_t __cajeta_rtti_method_name_len(void* rtti, int32_t idx) {
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return 0;
+    const char* n = r->methods[idx].name;
+    return n ? (int32_t) strlen(n) : 0;
+}
+void __cajeta_rtti_method_name_into(void* rtti, int32_t idx, void* out) {
+    if (!out) return;
+    const char* n = "";
+    if (rtti) {
+        CajetaRtti* r = (CajetaRtti*) rtti;
+        if (idx >= 0 && idx < r->methodCount && r->methods)
+            n = r->methods[idx].name ? r->methods[idx].name : "";
+    }
+    int64_t cap = *((int64_t*) out);
+    int64_t len = (int64_t) strlen(n);
+    if (len > cap) len = cap;
+    if (len > 0) memcpy((char*) out + 8, n, (size_t) len);
+}
+// Declared parameter count of method `idx` (-1 if out of range). Lets a caller
+// pick out no-arg methods before a reflective invoke.
+int32_t __cajeta_rtti_method_param_count(void* rtti, int32_t idx) {
+    if (!rtti) return -1;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return -1;
+    return r->methods[idx].parameterCount;
+}
+
+// REFL-2 reflective invoke (no-arg, scalar return path). Resolves `obj`'s
+// per-class invoke adapter through its vtable -> #ClassObject -> #Rtti, then
+// dispatches method `idx` with no arguments, returning the result widened to
+// int64 (smaller scalars occupy the low bytes; pointers fit whole). Returns 0
+// if obj/adapter is null or the index isn't a marshallable method.
+//   vtable.classObject (offset 24) -> #ClassObject{ Class#VTable, rtti }
+//   so rtti = *(classObject + 8).
+int64_t __cajeta_object_invoke_scalar0(void* obj, int32_t idx) {
+    if (!obj) return 0;
+    void* vtable = *(void**) obj;
+    if (!vtable) return 0;
+    void* classObject = *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return 0;
+    void* rtti = *(void**) ((char*) classObject + 8);
+    if (!rtti) return 0;
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
+    if (!adapter) return 0;
+    int64_t ret = 0;
+    adapter(obj, idx, NULL, &ret);
+    return ret;
+}
+
+// REFL-4 reflective invoke WITH arguments. `argArray` is a cajeta int64[]
+// ({ i64 count, [i64 elems...] }) or NULL — each element is one raw user
+// argument (scalars zero/sign-extended, pointers whole), in declared order.
+// The per-class adapter reads them from an 8-byte-strided buffer, so we hand
+// it the element region (skip the 8-byte count header). Result widened to int64.
+int64_t __cajeta_object_invoke_scalar(void* obj, int32_t idx, void* argArray) {
+    if (!obj) return 0;
+    void* vtable = *(void**) obj;
+    if (!vtable) return 0;
+    void* classObject = *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return 0;
+    void* rtti = *(void**) ((char*) classObject + 8);
+    if (!rtti) return 0;
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
+    if (!adapter) return 0;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    int64_t ret = 0;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+
+// REFL-4 typed FP return paths. The per-class invoke adapter already stores a
+// float/double result into the 8-byte `ret` buffer (emitReflectInvokeBody
+// marshals floating-point returns); these variants read that buffer in the FP
+// register so the value crosses the native boundary as a real float/double
+// instead of as raw bits widened to int64. `argArray` is the same int64[]
+// element-region convention as the scalar path. Resolve the adapter once via a
+// shared helper to avoid duplicating the vtable->classObject->rtti walk.
+static void* cajeta_resolve_invoke_adapter(void* obj) {
+    if (!obj) return NULL;
+    void* vtable = *(void**) obj;
+    if (!vtable) return NULL;
+    void* classObject = *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return NULL;
+    void* rtti = *(void**) ((char*) classObject + 8);
+    if (!rtti) return NULL;
+    return ((CajetaRtti*) rtti)->invokeAdapter;
+}
+float __cajeta_object_invoke_f32(void* obj, int32_t idx, void* argArray) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0.0f;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    // 8-byte buffer; the adapter stores a 4-byte float into its low bytes.
+    int64_t retBits = 0;
+    adapter(obj, idx, args, &retBits);
+    float out;
+    memcpy(&out, &retBits, sizeof(out));
+    return out;
+}
+double __cajeta_object_invoke_f64(void* obj, int32_t idx, void* argArray) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0.0;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    double ret = 0.0;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+// REFL-4: invoke a method whose return type is a reference (object/pointer).
+// The per-class adapter stores the returned pointer to the ret buffer (the
+// marshaller accepts isPointerTy returns); we read it back whole. Ownership
+// transfers per the invoked method's signature — a method returning `heap T`
+// hands the caller an owned reference (Method.invokeObject is typed #Object so
+// the result is drop-tracked); a method returning a borrow would be unsafe to
+// reflect this way (documented on Method.invokeObject).
+void* __cajeta_object_invoke_obj(void* obj, int32_t idx, void* argArray) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return NULL;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    void* ret = NULL;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+
+// REFL-4.4 (Strategy 6): fiber-stack argument buffers. For a small, statically
+// known argument count the caller hands the raw args as discrete int64
+// parameters instead of building a heap int64[]. Each native assembles the
+// adapter's 8-byte-strided arg buffer (`buf`) on its own C stack frame — which
+// IS the calling fiber's stack — so there is no heap allocation and no count
+// header to skip past. Result is widened to int64; the cajeta layer narrows to
+// int32 where wanted, exactly as the int64[]-path variants do. (FP-return and
+// reference-return stack-arg siblings are a mechanical extension of this same
+// `buf` pattern, reading the ret buffer as float/double/pointer instead.)
+int64_t __cajeta_object_invoke_scalar1(void* obj, int32_t idx, int64_t a0) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0;
+    int64_t buf[1] = { a0 };
+    int64_t ret = 0;
+    adapter(obj, idx, buf, &ret);
+    return ret;
+}
+int64_t __cajeta_object_invoke_scalar2(void* obj, int32_t idx, int64_t a0, int64_t a1) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0;
+    int64_t buf[2] = { a0, a1 };
+    int64_t ret = 0;
+    adapter(obj, idx, buf, &ret);
+    return ret;
+}
+int64_t __cajeta_object_invoke_scalar3(void* obj, int32_t idx,
+                                       int64_t a0, int64_t a1, int64_t a2) {
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
+    if (!adapter) return 0;
+    int64_t buf[3] = { a0, a1, a2 };
+    int64_t ret = 0;
+    adapter(obj, idx, buf, &ret);
+    return ret;
+}
+
+// REFL-4 parameter introspection. `isCtor` selects the constructor table vs
+// the method table; memberIdx is the method/constructor index; paramIdx is the
+// USER parameter index (the implicit `this` is excluded from the table).
+static const CajetaParamDesc* cajeta_param_desc(
+        void* rtti, int32_t isCtor, int32_t memberIdx, int32_t paramIdx) {
+    if (!rtti) return NULL;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    const CajetaMethodDesc* tbl = isCtor ? r->constructors : r->methods;
+    int32_t cnt = isCtor ? r->constructorCount : r->methodCount;
+    if (!tbl || memberIdx < 0 || memberIdx >= cnt) return NULL;
+    const CajetaMethodDesc* m = &tbl[memberIdx];
+    if (!m->parameters || paramIdx < 0 || paramIdx >= m->parameterCount) return NULL;
+    return &m->parameters[paramIdx];
+}
+static void cajeta_copy_into(const char* s, void* out) {
+    if (!out) return;
+    if (!s) s = "";
+    int64_t cap = *((int64_t*) out);
+    int64_t len = (int64_t) strlen(s);
+    if (len > cap) len = cap;
+    if (len > 0) memcpy((char*) out + 8, s, (size_t) len);
+}
+int32_t __cajeta_rtti_param_name_len(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx) {
+    const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
+    return (p && p->name) ? (int32_t) strlen(p->name) : 0;
+}
+void __cajeta_rtti_param_name_into(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx, void* out) {
+    const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
+    cajeta_copy_into(p ? p->name : "", out);
+}
+int32_t __cajeta_rtti_param_type_len(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx) {
+    const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
+    return (p && p->type) ? (int32_t) strlen(p->type) : 0;
+}
+void __cajeta_rtti_param_type_into(void* rtti, int32_t isCtor, int32_t mIdx, int32_t pIdx, void* out) {
+    const CajetaParamDesc* p = cajeta_param_desc(rtti, isCtor, mIdx, pIdx);
+    cajeta_copy_into(p ? p->type : "", out);
+}
+
+// REFL-6a annotation NAME reflection. Every annotatable owner stores its
+// annotation type names as a (count, const char**) pair in the RTTI; this one
+// resolver addresses any of them so the cajeta side needs a single native
+// family. `ownerKind` selects the owner:
+//   0 = class, 1 = field[ownerIndex], 2 = method[ownerIndex],
+//   3 = constructor[ownerIndex],
+//   4 = parameter subIndex of method[ownerIndex],
+//   5 = parameter subIndex of constructor[ownerIndex].
+// `ownerIndex` is the field/method/ctor index (ignored for the class); for the
+// parameter kinds it is the owning member's index and `subIndex` is the
+// user-visible parameter position. Returns the name array and writes its length
+// to *outCount; NULL (count 0) for an out-of-range owner. Each descriptor
+// carries the annotation's canonical name (REFL-6a) plus its captured argument
+// values (REFL-6b).
+static const CajetaAnnotationDesc* cajeta_annotation_list(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t* outCount) {
+    *outCount = 0;
+    if (!rtti) return NULL;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    switch (ownerKind) {
+        case 0:
+            *outCount = r->classAnnotationCount;
+            return r->classAnnotations;
+        case 1:
+            if (ownerIndex < 0 || ownerIndex >= r->propertyCount || !r->properties)
+                return NULL;
+            *outCount = r->properties[ownerIndex].annotationCount;
+            return r->properties[ownerIndex].annotations;
+        case 2:
+            if (ownerIndex < 0 || ownerIndex >= r->methodCount || !r->methods)
+                return NULL;
+            *outCount = r->methods[ownerIndex].annotationCount;
+            return r->methods[ownerIndex].annotations;
+        case 3:
+            if (ownerIndex < 0 || ownerIndex >= r->constructorCount || !r->constructors)
+                return NULL;
+            *outCount = r->constructors[ownerIndex].annotationCount;
+            return r->constructors[ownerIndex].annotations;
+        case 4:
+        case 5: {
+            const CajetaParamDesc* p =
+                cajeta_param_desc(rtti, ownerKind == 5, ownerIndex, subIndex);
+            if (!p) return NULL;
+            *outCount = p->annotationCount;
+            return p->annotations;
+        }
+        default:
+            return NULL;
+    }
+}
+int32_t __cajeta_rtti_annotation_count(void* rtti, int32_t ownerKind,
+                                       int32_t ownerIndex, int32_t subIndex) {
+    int32_t n = 0;
+    cajeta_annotation_list(rtti, ownerKind, ownerIndex, subIndex, &n);
+    return n;
+}
+// Resolve one annotation descriptor by its locator (rtti + ownerKind/
+// ownerIndex/subIndex + annIdx). NULL when out of range.
+static const CajetaAnnotationDesc* cajeta_annotation_desc(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
+    int32_t n = 0;
+    const CajetaAnnotationDesc* list =
+        cajeta_annotation_list(rtti, ownerKind, ownerIndex, subIndex, &n);
+    if (!list || annIdx < 0 || annIdx >= n) return NULL;
+    return &list[annIdx];
+}
+static const char* cajeta_annotation_name(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
+    const CajetaAnnotationDesc* d =
+        cajeta_annotation_desc(rtti, ownerKind, ownerIndex, subIndex, annIdx);
+    return (d && d->name) ? d->name : "";
+}
+int32_t __cajeta_rtti_annotation_name_len(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
+    return (int32_t) strlen(
+        cajeta_annotation_name(rtti, ownerKind, ownerIndex, subIndex, annIdx));
+}
+void __cajeta_rtti_annotation_name_into(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, void* out) {
+    cajeta_copy_into(
+        cajeta_annotation_name(rtti, ownerKind, ownerIndex, subIndex, annIdx), out);
+}
+
+// REFL-6b annotation ARGUMENT VALUE reflection. Indexed by the same owner
+// locator as the name natives, plus `annIdx` (which annotation) and `argIdx`
+// (which argument within it). All return a sentinel (0 / "" / kind -1) for an
+// out-of-range locator so the cajeta side reads uniformly.
+static const CajetaAnnotationArgDesc* cajeta_annotation_arg(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationDesc* d =
+        cajeta_annotation_desc(rtti, ownerKind, ownerIndex, subIndex, annIdx);
+    if (!d || !d->args || argIdx < 0 || argIdx >= d->argCount) return NULL;
+    return &d->args[argIdx];
+}
+int32_t __cajeta_rtti_annotation_arg_count(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
+    const CajetaAnnotationDesc* d =
+        cajeta_annotation_desc(rtti, ownerKind, ownerIndex, subIndex, annIdx);
+    return d ? (int32_t) d->argCount : 0;
+}
+int32_t __cajeta_rtti_annotation_arg_kind(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return a ? a->kind : -1;
+}
+int64_t __cajeta_rtti_annotation_arg_int(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return a ? a->i64Val : 0;
+}
+int32_t __cajeta_rtti_annotation_arg_bool(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return (a && a->boolVal) ? 1 : 0;
+}
+static const char* cajeta_annotation_arg_name(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return (a && a->name) ? a->name : "";
+}
+int32_t __cajeta_rtti_annotation_arg_name_len(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    return (int32_t) strlen(
+        cajeta_annotation_arg_name(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx));
+}
+void __cajeta_rtti_annotation_arg_name_into(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, void* out) {
+    cajeta_copy_into(
+        cajeta_annotation_arg_name(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx), out);
+}
+static const char* cajeta_annotation_arg_str(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return (a && a->strVal) ? a->strVal : "";
+}
+int32_t __cajeta_rtti_annotation_arg_str_len(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    return (int32_t) strlen(
+        cajeta_annotation_arg_str(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx));
+}
+void __cajeta_rtti_annotation_arg_str_into(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, void* out) {
+    cajeta_copy_into(
+        cajeta_annotation_arg_str(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx), out);
+}
+
+// REFL-6b list-valued arguments (`@SuppressLint({"a","b"})`, `@Sizes({1,2})`,
+// `@Flags({true,false})`). Element data lives in arg->listData, shaped by the
+// arg's kind: int64[] (Int64List), char*[] (StringList), int8[] (BoolList).
+// elemIdx selects within the list; out-of-range reads return a sentinel.
+int32_t __cajeta_rtti_annotation_arg_list_count(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    return a ? a->listCount : 0;
+}
+int64_t __cajeta_rtti_annotation_arg_list_int(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    if (!a || a->kind != CAJETA_AK_INT64LIST || !a->listData
+            || elemIdx < 0 || elemIdx >= a->listCount) return 0;
+    return ((const int64_t*) a->listData)[elemIdx];
+}
+int32_t __cajeta_rtti_annotation_arg_list_bool(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    if (!a || a->kind != CAJETA_AK_BOOLLIST || !a->listData
+            || elemIdx < 0 || elemIdx >= a->listCount) return 0;
+    return ((const int8_t*) a->listData)[elemIdx] ? 1 : 0;
+}
+static const char* cajeta_annotation_arg_list_str(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx) {
+    const CajetaAnnotationArgDesc* a =
+        cajeta_annotation_arg(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx);
+    if (!a || a->kind != CAJETA_AK_STRINGLIST || !a->listData
+            || elemIdx < 0 || elemIdx >= a->listCount) return "";
+    const char* s = ((const char* const*) a->listData)[elemIdx];
+    return s ? s : "";
+}
+int32_t __cajeta_rtti_annotation_arg_list_str_len(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx) {
+    return (int32_t) strlen(cajeta_annotation_arg_list_str(
+        rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx, elemIdx));
+}
+void __cajeta_rtti_annotation_arg_list_str_into(void* rtti, int32_t ownerKind,
+        int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx, int32_t elemIdx, void* out) {
+    cajeta_copy_into(cajeta_annotation_arg_list_str(
+        rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx, elemIdx), out);
+}
+
+// REFL-7 template reflection. A template instantiation (Box<int32>) carries its
+// declared template parameters (the `<T>`) and the concrete template arguments
+// it was materialized with (int32). Both are read by index off the #Rtti.
+int32_t __cajeta_rtti_template_param_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->templateParamCount : 0;
+}
+static const CajetaTemplateParamDesc* cajeta_template_param(void* rtti, int32_t idx) {
+    if (!rtti) return NULL;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->templateParamCount || !r->templateParams) return NULL;
+    return &r->templateParams[idx];
+}
+static const char* cajeta_template_param_name(void* rtti, int32_t idx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    return (p && p->name) ? p->name : "";
+}
+int32_t __cajeta_rtti_template_param_name_len(void* rtti, int32_t idx) {
+    return (int32_t) strlen(cajeta_template_param_name(rtti, idx));
+}
+void __cajeta_rtti_template_param_name_into(void* rtti, int32_t idx, void* out) {
+    cajeta_copy_into(cajeta_template_param_name(rtti, idx), out);
+}
+int32_t __cajeta_rtti_template_param_is_nontype(void* rtti, int32_t idx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    return (p && p->isNonType) ? 1 : 0;
+}
+static const char* cajeta_template_param_nontype(void* rtti, int32_t idx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    return (p && p->nonTypePrimitive) ? p->nonTypePrimitive : "";
+}
+int32_t __cajeta_rtti_template_param_nontype_len(void* rtti, int32_t idx) {
+    return (int32_t) strlen(cajeta_template_param_nontype(rtti, idx));
+}
+void __cajeta_rtti_template_param_nontype_into(void* rtti, int32_t idx, void* out) {
+    cajeta_copy_into(cajeta_template_param_nontype(rtti, idx), out);
+}
+int32_t __cajeta_rtti_template_param_bound_count(void* rtti, int32_t idx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    return p ? (int32_t) p->boundCount : 0;
+}
+static const char* cajeta_template_param_bound(void* rtti, int32_t idx, int32_t boundIdx) {
+    const CajetaTemplateParamDesc* p = cajeta_template_param(rtti, idx);
+    if (!p || !p->bounds || boundIdx < 0 || boundIdx >= p->boundCount) return "";
+    const char* b = p->bounds[boundIdx];
+    return b ? b : "";
+}
+int32_t __cajeta_rtti_template_param_bound_len(void* rtti, int32_t idx, int32_t boundIdx) {
+    return (int32_t) strlen(cajeta_template_param_bound(rtti, idx, boundIdx));
+}
+void __cajeta_rtti_template_param_bound_into(void* rtti, int32_t idx, int32_t boundIdx, void* out) {
+    cajeta_copy_into(cajeta_template_param_bound(rtti, idx, boundIdx), out);
+}
+
+int32_t __cajeta_rtti_template_arg_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->templateArgCount : 0;
+}
+static const char* cajeta_template_arg_name(void* rtti, int32_t idx) {
+    if (!rtti) return "";
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->templateArgCount || !r->templateArgs) return "";
+    const char* n = r->templateArgs[idx];
+    return n ? n : "";
+}
+int32_t __cajeta_rtti_template_arg_name_len(void* rtti, int32_t idx) {
+    return (int32_t) strlen(cajeta_template_arg_name(rtti, idx));
+}
+void __cajeta_rtti_template_arg_name_into(void* rtti, int32_t idx, void* out) {
+    cajeta_copy_into(cajeta_template_arg_name(rtti, idx), out);
+}
+
+// REFL-4.1 (boxing, plan W5): classify a method's return type into a compact
+// kind so Method.invokeBoxed can pick the right wrapper / invoke path without
+// re-parsing the type string in cajeta. The kinds the W1 wrapper family boxes
+// exactly map to their own value; OTHER is a primitive with no W1 wrapper yet
+// (int8/16/128, unsigned, char, ML floats, raw pointer) — invokeBoxed throws
+// for those until W2-W4 land. A non-primitive return is REFERENCE (boxed via
+// the existing invokeObject path). Keep these constants in sync with the
+// REFLECT_KIND_* mirror in Method.cajeta.
+#define CAJETA_RK_VOID       0
+#define CAJETA_RK_BOOLEAN    1
+#define CAJETA_RK_INT32      2
+#define CAJETA_RK_INT64      3
+#define CAJETA_RK_FLOAT32    4
+#define CAJETA_RK_FLOAT64    5
+#define CAJETA_RK_REFERENCE  6
+#define CAJETA_RK_OTHER      7
+// W2 widths (box through the 64-bit invoke/field machinery + truncation; the
+// 8/16-bit field reads use dedicated width-correct natives below).
+#define CAJETA_RK_INT8       8
+#define CAJETA_RK_INT16      9
+#define CAJETA_RK_UINT8      10
+#define CAJETA_RK_UINT16     11
+#define CAJETA_RK_UINT32     12
+#define CAJETA_RK_UINT64     13
+#define CAJETA_RK_CHAR       14
+static int32_t cajeta_return_kind(const char* t) {
+    if (!t) return CAJETA_RK_REFERENCE;
+    if (!strcmp(t, "void"))    return CAJETA_RK_VOID;
+    if (!strcmp(t, "boolean")) return CAJETA_RK_BOOLEAN;
+    if (!strcmp(t, "int32"))   return CAJETA_RK_INT32;
+    if (!strcmp(t, "int64"))   return CAJETA_RK_INT64;
+    if (!strcmp(t, "float32")) return CAJETA_RK_FLOAT32;
+    if (!strcmp(t, "float64")) return CAJETA_RK_FLOAT64;
+    if (!strcmp(t, "int8"))    return CAJETA_RK_INT8;
+    if (!strcmp(t, "int16"))   return CAJETA_RK_INT16;
+    if (!strcmp(t, "uint8") || !strcmp(t, "uchar")) return CAJETA_RK_UINT8;
+    if (!strcmp(t, "uint16"))  return CAJETA_RK_UINT16;
+    if (!strcmp(t, "uint32"))  return CAJETA_RK_UINT32;
+    if (!strcmp(t, "uint64"))  return CAJETA_RK_UINT64;
+    if (!strcmp(t, "char"))    return CAJETA_RK_CHAR;
+    // Primitives still without a wrapper — 128-bit ints (don't fit the 64-bit
+    // paths) and the half/quad/ML floats + raw pointer. Not boxable yet
+    // (honest, rather than widening and lying about the boxed type's identity).
+    if (!strcmp(t, "int128")  || !strcmp(t, "uint128")  || !strcmp(t, "float16") ||
+        !strcmp(t, "bfloat16")|| !strcmp(t, "float128") || !strcmp(t, "pointer") ||
+        !strcmp(t, "float4e2m1")     || !strcmp(t, "float6e2m3")     ||
+        !strcmp(t, "float6e3m2")     || !strcmp(t, "float8e4m3")     ||
+        !strcmp(t, "float8e5m2")     || !strcmp(t, "float8e4m3fnuz") ||
+        !strcmp(t, "float8e5m2fnuz")) return CAJETA_RK_OTHER;
+    return CAJETA_RK_REFERENCE;
+}
+int32_t __cajeta_rtti_method_return_kind(void* rtti, int32_t idx) {
+    if (!rtti) return CAJETA_RK_REFERENCE;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->methodCount || !r->methods) return CAJETA_RK_REFERENCE;
+    return cajeta_return_kind(r->methods[idx].returnType);
+}
+// W5b: same classification for a field's declared type, so Field.getBoxed can
+// pick the wrapper / refuse a reference field (which can't be handed back as an
+// owned #Object without a borrow-return surface). Reuses the field-desc `type`
+// string (CajetaFieldDesc also carries typeFlags, but the string keeps one
+// shared classifier with the method path).
+int32_t __cajeta_rtti_field_kind(void* rtti, int32_t idx) {
+    if (!rtti) return CAJETA_RK_REFERENCE;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return CAJETA_RK_REFERENCE;
+    return cajeta_return_kind(r->properties[idx].type);
+}
+
+// REFL-2C constructor introspection + reflective construction.
+int32_t __cajeta_rtti_constructor_count(void* rtti) {
+    return rtti ? (int32_t) ((CajetaRtti*) rtti)->constructorCount : 0;
+}
+int32_t __cajeta_rtti_constructor_param_count(void* rtti, int32_t idx) {
+    if (!rtti) return -1;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->constructorCount || !r->constructors) return -1;
+    return r->constructors[idx].parameterCount;
+}
+// Reflectively construct an instance via the class's newInstance adapter
+// (no-arg constructor path). `rtti` is the class's #Rtti pointer (a Class
+// instance's `rtti` field). Returns the new object (owned by the caller) or
+// NULL if there's no adapter / the index isn't a marshallable constructor.
+void* __cajeta_class_new0(void* rtti, int32_t ctorIdx) {
+    if (!rtti) return NULL;
+    void* (*adapter)(int32_t, void*) =
+        (void* (*)(int32_t, void*)) ((CajetaRtti*) rtti)->newInstanceAdapter;
+    if (!adapter) return NULL;
+    return adapter(ctorIdx, NULL);
+}
+// REFL-4 reflective construction WITH arguments. `argArray` is a cajeta
+// int64[] ({ count, elems }) or NULL; hand the adapter the element region.
+void* __cajeta_class_new(void* rtti, int32_t ctorIdx, void* argArray) {
+    if (!rtti) return NULL;
+    void* (*adapter)(int32_t, void*) =
+        (void* (*)(int32_t, void*)) ((CajetaRtti*) rtti)->newInstanceAdapter;
+    if (!adapter) return NULL;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    return adapter(ctorIdx, args);
 }
 
 // UnrecoverableException's vtable address, published by codegen.
@@ -4032,6 +5031,66 @@ const char* __cajeta_bool_to_str(int32_t v) {
     return v ? "true" : "false";
 }
 
+// --- wrapper-type toString() formatters (plan W6) ----------------------------
+//
+// `cajeta.lang` numeric/Boolean wrappers render their value into a heap
+// `cajeta.lang.String` using the same length-then-fill idiom the reflection
+// API uses for names (Method.getName / Field.getName): a `_len` native sizes
+// the decimal/`true`/`false` text, then an `_into` native copies it into a
+// caller-allocated `int8[]` whose layout is `{ int64 capacity; bytes... }`
+// (the cajeta array header is the 8-byte count, data follows). No allocation
+// crosses the boundary, so there's nothing to leak — unlike the `_to_str`
+// concat helpers above. Signed/unsigned/float are split so a `uint64` with the
+// high bit set formats as its true magnitude (%llu), not a negative %lld.
+static void cajeta_str_into(void* out, const char* src, int n) {
+    if (!out) return;
+    if (n < 0) n = 0;
+    int64_t cap = *((int64_t*) out);
+    if ((int64_t) n > cap) n = (int) cap;
+    if (n > 0) memcpy((char*) out + 8, src, (size_t) n);
+}
+
+int32_t __cajeta_int64_to_str_len(int64_t v) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long) v);
+    return n < 0 ? 0 : n;
+}
+void __cajeta_int64_to_str_into(int64_t v, void* out) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long) v);
+    cajeta_str_into(out, buf, n);
+}
+
+int32_t __cajeta_uint64_to_str_len(uint64_t v) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long) v);
+    return n < 0 ? 0 : n;
+}
+void __cajeta_uint64_to_str_into(uint64_t v, void* out) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long) v);
+    cajeta_str_into(out, buf, n);
+}
+
+int32_t __cajeta_float64_to_str_len(double v) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%g", v);
+    return n < 0 ? 0 : n;
+}
+void __cajeta_float64_to_str_into(double v, void* out) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%g", v);
+    cajeta_str_into(out, buf, n);
+}
+
+int32_t __cajeta_bool_to_str_len(int32_t v) {
+    return v ? 4 : 5;   // "true" / "false"
+}
+void __cajeta_bool_to_str_into(int32_t v, void* out) {
+    const char* s = v ? "true" : "false";
+    cajeta_str_into(out, s, (int) strlen(s));
+}
+
 // Copy `length` bytes from `data` into a freshly malloc'd null-terminated
 // string. Used by struct-view field reads on `String`-typed fields: the
 // inline bytes in the buffer aren't null-terminated, so we materialize an
@@ -4365,7 +5424,7 @@ double __cajeta_random(void) {
 // indices clamp; result is a freshly malloc'd null-terminated copy.
 //
 // Note: cajeta.lang.String (the class form) substring is view-based
-// per the never-drop rule (see cajeta-docs/stdlib/lang/String.md §
+// per the never-drop rule (see docs/stdlib/lang/String.md §
 // "Substring + slicing"). This C-string variant still copies because
 // the null-terminated ABI can't express a slice (a subspan of a longer
 // string would continue to the original terminator). The class
@@ -4538,9 +5597,88 @@ int64_t __cajeta_hash_float32(float value) {
     return (int64_t) splitmix64_finalize((uint64_t) bits ^ __cajeta_hash_seed_load());
 }
 
+// Bitwise hash of an IEEE-754 binary128 (LLVM fp128 / C __float128), plan W3.
+// float16/bfloat16 hash by widening to float64 (lossless, injective) and
+// reusing __cajeta_hash_float64, but float128 → float64 is *lossy*, so distinct
+// float128 values could collide and wrongly compare equal (Object.operator== is
+// hash-equality). Hash the full 128 bits instead: canonicalize -0.0 to +0.0
+// (IEEE says +0 == -0) and mix both 64-bit halves through the shared SplitMix
+// finalizer. x86-64 is little-endian, so the sign bit is the MSB of the high
+// half (bits[15] & 0x80); -0.0 is sign-only with an all-zero significand/exp.
+int64_t __cajeta_hash_float128(__float128 value) {
+    unsigned char bits[16];
+    memcpy(bits, &value, sizeof(bits));
+    int signOnly = (bits[15] == 0x80);
+    for (int i = 0; i < 15 && signOnly; i++) if (bits[i]) signOnly = 0;
+    if (signOnly) bits[15] = 0;            // -0.0 -> +0.0
+    uint64_t lo, hi;
+    memcpy(&lo, bits, 8);
+    memcpy(&hi, bits + 8, 8);
+    uint64_t h = splitmix64_finalize(lo ^ __cajeta_hash_seed_load());
+    h = splitmix64_finalize(h ^ hi);
+    return (int64_t) h;
+}
+
 int64_t __cajeta_hash_boolean(int8_t value) {
     return (int64_t) splitmix64_finalize(
         (value ? 1ULL : 0ULL) ^ __cajeta_hash_seed_load());
+}
+
+// cajeta.lang.Guid hash — mixes both 64-bit halves of the 128-bit value through
+// the shared SplitMix finalizer (same construction as __cajeta_hash_float128).
+// 128 bits of identity can't inject into a 64-bit hash, so Object.operator==
+// (hash equality) carries the usual ~2^-64 collision caveat; Guid.equals() is
+// the exact 128-bit comparison.
+int64_t __cajeta_hash_guid(int64_t hi, int64_t lo) {
+    uint64_t h = splitmix64_finalize((uint64_t) hi ^ __cajeta_hash_seed_load());
+    h = splitmix64_finalize(h ^ (uint64_t) lo);
+    return (int64_t) h;
+}
+
+// Fill `n` bytes with cryptographic entropy: BCryptGenRandom (Windows) /
+// /dev/urandom (POSIX), with a rand() fallback only if the OS CSPRNG is
+// unavailable. Mirrors the per-process hash-seed init above so Guid.random()
+// is strong on every platform, not just where /dev/urandom exists.
+static void cajeta_fill_entropy(unsigned char* b, int n) {
+#if defined(_WIN32)
+#  include <bcrypt.h>
+#  pragma comment(lib, "bcrypt.lib")
+    if (BCryptGenRandom(NULL, (PUCHAR) b, (ULONG) n,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 /* STATUS_SUCCESS */) {
+        return;
+    }
+#else
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        int got = 0;
+        while (got < n) {
+            ssize_t r = read(fd, b + got, (size_t) (n - got));
+            if (r <= 0) break;
+            got += (int) r;
+        }
+        close(fd);
+        if (got == n) return;
+    }
+#endif
+    for (int i = 0; i < n; i++) b[i] = (unsigned char) (rand() & 0xFF);
+}
+
+// cajeta.lang.Guid.random() — generate a RFC 4122 version-4 (random) UUID.
+// `out` is a cajeta int64[2] ({ i64 count; i64 hi; i64 lo }); we fill the two
+// element slots with the big-endian-packed high/low 64 bits. Version nibble (4)
+// and variant bits (10xx) are forced per the spec.
+void __cajeta_guid_random_fill(void* out) {
+    if (!out) return;
+    unsigned char b[16];
+    cajeta_fill_entropy(b, 16);
+    b[6] = (unsigned char) ((b[6] & 0x0F) | 0x40);   // version 4
+    b[8] = (unsigned char) ((b[8] & 0x3F) | 0x80);   // variant 10xx
+    uint64_t hi = 0, lo = 0;
+    for (int i = 0; i < 8; i++)  hi = (hi << 8) | b[i];
+    for (int i = 8; i < 16; i++) lo = (lo << 8) | b[i];
+    int64_t* o = (int64_t*) out;
+    o[1] = (int64_t) hi;   // o[0] is the array's count header
+    o[2] = (int64_t) lo;
 }
 
 // Pointer-identity hash. Used by IdentityHashMap, observer registries,
@@ -6069,6 +7207,18 @@ static void* cajeta_xpu_libsym(void* lib, const char* name) {
 #endif
 }
 
+// Portable shared-library open (the open twin of cajeta_xpu_libsym). The CUDA/HIP
+// backends inline LoadLibraryA/dlopen at their single load site; the Vulkan path
+// loops over candidate ICD names, so it shares this helper. RTLD_NOW|RTLD_LOCAL on
+// POSIX matches those backends.
+static void* cajeta_xpu_libopen(const char* name) {
+#if defined(_WIN32)
+    return (void*) LoadLibraryA(name);
+#else
+    return dlopen(name, RTLD_NOW | RTLD_LOCAL);
+#endif
+}
+
 // Resolve the driver and create a context. Returns 1 on success. Caller holds
 // g_xpu_cuda_lock. Idempotent via the `loaded` tri-state. The driver API
 // exposes size-versioned symbols (cuMemAlloc_v2, …); we bind those explicitly.
@@ -6077,9 +7227,9 @@ static int cajeta_xpu_cuda_init_locked(void) {
     if (g_xpu_cuda.loaded == -1) return 0;
     g_xpu_cuda.loaded = -1;  // assume failure until everything resolves
 #if defined(_WIN32)
-    g_xpu_cuda.lib = (void*) LoadLibraryA("nvcuda.dll");
+    g_xpu_cuda.lib = cajeta_xpu_libopen("nvcuda.dll");
 #else
-    g_xpu_cuda.lib = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    g_xpu_cuda.lib = cajeta_xpu_libopen("libcuda.so.1");
 #endif
     if (!g_xpu_cuda.lib) return 0;
     #define CAJ_BIND(fp, nm)                                                  \
@@ -6601,7 +7751,25 @@ static struct cajeta_kparams* cajeta_xpu_find_kparams(const char* name) {
 #  endif
 #endif
 
-#if defined(CAJETA_RT_HAS_VULKAN) && !defined(_WIN32)
+// Per-binding resource kind, after launch_vulkan has wrapped scalars into SSBOs.
+// Defined unconditionally (not inside the Vulkan block below): the kernel-param
+// dispatch loop tags every binding with one of these regardless of whether the
+// real Vulkan path or the no-op stub is compiled. Keeping them out of the
+// CAJETA_RT_HAS_VULKAN guard is what makes the Windows build (where that guard
+// is off) link — see cajeta_xpu_vk_launch's two definitions.
+#define CAJ_VKB_BUFFER  0   // bindings[i] = buffer-table handle  -> STORAGE_BUFFER
+#define CAJ_VKB_TEXTURE 1   // bindings[i] = texture-table handle -> SAMPLED_IMAGE
+#define CAJ_VKB_SAMPLER 2   // bindings[i] = (int64) VkSampler    -> SAMPLER
+#define CAJ_VKB_ACCEL   3   // bindings[i] = accel-table handle   -> ACCELERATION_STRUCTURE_KHR
+#define CAJ_VKB_STORAGE_IMAGE 4 // bindings[i] = texture-table handle (storage) -> STORAGE_IMAGE
+#define CAJ_VKB_BUFFER_ARRAY  5 // bindings[i] = ptr to [int64 count, int64 h0…] -> STORAGE_BUFFER array
+// Fixed bindless descriptor-array size — MUST equal the SPIR-V handlefrombinding
+// `range` (kMaxBindlessBuffers in SpirvKernelLowering.cpp) and the launch
+// marshalling cap (CallExpression.cpp). The layout binds this many descriptors;
+// the runtime fills `count` real + pads the rest with a valid buffer.
+#define CAJ_VK_BINDLESS_MAX 16
+
+#if defined(CAJETA_RT_HAS_VULKAN)
 #include <vulkan/vulkan.h>
 
 struct cajeta_vk {
@@ -6754,15 +7922,19 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // libMoltenVK.dylib. (On-device validation is gated on Apple hardware.)
     const char* libnames[] = {"libvulkan.1.dylib", "libvulkan.dylib",
                               "libMoltenVK.dylib"};
+#elif defined(_WIN32)
+    // The Vulkan loader the GPU driver / Vulkan runtime installs into System32
+    // (on PATH via the default DLL search). LoadLibraryA resolves it there.
+    const char* libnames[] = {"vulkan-1.dll"};
 #else
     const char* libnames[] = {"libvulkan.so.1", "libvulkan.so"};
 #endif
     const int nlibs = (int) (sizeof(libnames) / sizeof(libnames[0]));
     for (int i = 0; i < nlibs && !g_xpu_vk.lib; ++i)
-        g_xpu_vk.lib = dlopen(libnames[i], RTLD_NOW | RTLD_LOCAL);
+        g_xpu_vk.lib = cajeta_xpu_libopen(libnames[i]);
     if (!g_xpu_vk.lib) return 0;
     g_xpu_vk.getInstanceProcAddr =
-        (PFN_vkGetInstanceProcAddr) dlsym(g_xpu_vk.lib, "vkGetInstanceProcAddr");
+        (PFN_vkGetInstanceProcAddr) cajeta_xpu_libsym(g_xpu_vk.lib, "vkGetInstanceProcAddr");
     if (!g_xpu_vk.getInstanceProcAddr) return 0;
 
     g_xpu_vk.vkCreateInstance = (PFN_vkCreateInstance)
@@ -6898,6 +8070,27 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         }
     }
 
+    // shaderInt8 probe: SPIR-V the device backend emits can declare the Int8
+    // capability (e.g. byte-addressed loads, the ray-query candidate-type read),
+    // which VUID-VkShaderModuleCreateInfo-pCode-08740 requires shaderInt8 to back.
+    // Enable it when supported; left off (no chain) otherwise so vkCreateDevice
+    // still succeeds on devices lacking it.
+    // shaderInt64 (core feature) is the same story for kernels that touch 64-bit
+    // ints (e.g. device handles); read it from the same features2 query.
+    int wantInt8 = 0, wantInt64 = 0;
+    if (getFeatures2) {
+        VkPhysicalDeviceShaderFloat16Int8Features qi8;
+        memset(&qi8, 0, sizeof(qi8));
+        qi8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        VkPhysicalDeviceFeatures2 qf2;
+        memset(&qf2, 0, sizeof(qf2));
+        qf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        qf2.pNext = &qi8;
+        getFeatures2(g_xpu_vk.phys, &qf2);
+        wantInt8 = qi8.shaderInt8 ? 1 : 0;
+        wantInt64 = qf2.features.shaderInt64 ? 1 : 0;
+    }
+
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci;
     memset(&qci, 0, sizeof(qci));
@@ -6938,27 +8131,25 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         dci.ppEnabledExtensionNames = rtExts;
     }
 
-    // Enable shaderInt8 when supported: the software ray-query variant ($sw)
-    // declares the SPIR-V Int8 capability (the SoftwareRayQuery walk uses
-    // byte-width values), which Vulkan requires this feature for. Prepended to the
-    // feature chain so it composes with the RT features above. Core in Vulkan 1.2+.
+    // Prepend shaderInt8 to whatever feature chain is set (the RT chain, or NULL).
+    // shaderInt8 is required by the software ray-query variant ($sw), which declares
+    // the SPIR-V Int8 capability (the SoftwareRayQuery walk uses byte-width values);
+    // wantInt8 is set from the device's queried shaderInt8 support. Core in Vk 1.2+.
     VkPhysicalDeviceShaderFloat16Int8Features enInt8;
-    memset(&enInt8, 0, sizeof(enInt8));
-    enInt8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
-    if (getFeatures2) {
-        VkPhysicalDeviceShaderFloat16Int8Features q;
-        memset(&q, 0, sizeof(q));
-        q.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
-        VkPhysicalDeviceFeatures2 qf2;
-        memset(&qf2, 0, sizeof(qf2));
-        qf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-        qf2.pNext = &q;
-        getFeatures2(g_xpu_vk.phys, &qf2);
-        if (q.shaderInt8) {
-            enInt8.shaderInt8 = VK_TRUE;
-            enInt8.pNext = (void*) dci.pNext;   // prepend to the existing chain
-            dci.pNext = &enInt8;
-        }
+    if (wantInt8) {
+        memset(&enInt8, 0, sizeof(enInt8));
+        enInt8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        enInt8.shaderInt8 = VK_TRUE;
+        enInt8.pNext = (void*) dci.pNext;
+        dci.pNext = &enInt8;
+    }
+    // shaderInt64 is a CORE feature -> pEnabledFeatures (legal alongside the pNext
+    // extension-feature chain, which carries no VkPhysicalDeviceFeatures2).
+    VkPhysicalDeviceFeatures coreFeats;
+    memset(&coreFeats, 0, sizeof(coreFeats));
+    if (wantInt64) {
+        coreFeats.shaderInt64 = VK_TRUE;
+        dci.pEnabledFeatures = &coreFeats;
     }
 
     if (g_xpu_vk.vkCreateDevice(g_xpu_vk.phys, &dci, NULL, &g_xpu_vk.device)
@@ -7631,9 +8822,15 @@ static void cajeta_xpu_vk_destroy_sampler(int64_t handle) {
 // in a kernel as VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR (see the launch
 // path). Only reached when g_xpu_vk.rayQuery == 1.
 struct cajeta_vk_accel {
-    VkAccelerationStructureKHR accel;
-    VkBuffer asBuf;          // AS backing store (must outlive the AS)
+    // `accel` is the TOP-LEVEL AS — the only thing a ray-query descriptor may bind
+    // (VUID-VkWriteDescriptorSetAccelerationStructureKHR-pAccelerationStructures-03579).
+    // It instances the bottom-level AS, which must outlive it, so we own both here.
+    VkAccelerationStructureKHR accel;   // TLAS (bound by the descriptor)
+    VkBuffer asBuf;                     // TLAS backing store (must outlive the AS)
     VkDeviceMemory asMem;
+    VkAccelerationStructureKHR blas;    // BLAS the TLAS references (must outlive it)
+    VkBuffer blasBuf;
+    VkDeviceMemory blasMem;
     int live;
 };
 #define CAJETA_VK_MAX_ACCELS 256
@@ -7716,11 +8913,16 @@ static VkDeviceAddress cajeta_xpu_vk_buf_addr(VkBuffer b) {
     return g_xpu_vk.vkGetBufferDeviceAddress(g_xpu_vk.device, &i);
 }
 
-// Build a bottom-level AS over `count` AABBs, each packed as 6 float32
+// Build a ray-traceable scene over `count` AABBs, each packed as 6 float32
 // (minX,minY,minZ,maxX,maxY,maxZ) — byte-identical to VkAabbPositionsKHR, so the
-// cajeta float32[] uploads straight in. Returns a 1-based table handle (0 on
-// failure / no RT device). The AS + its backing store outlive this call; the
-// AABB input and scratch are transient and freed before returning.
+// cajeta float32[] uploads straight in. A ray-query descriptor can ONLY bind a
+// TOP-LEVEL AS (VUID-...-03579), so we build a bottom-level AS over the AABBs and
+// then a top-level AS with one identity-transform instance referencing it. Both
+// survive in the table (the TLAS references the BLAS by device address); the AABB
+// input, instance buffer, and scratch are transient and freed before returning.
+// (Binding the BLAS directly happens to traverse on AMD but yields zero hits on
+// NVIDIA — caught by the validation layer.) Returns a 1-based table handle (0 on
+// failure / no RT device).
 static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t count) {
     if (!g_xpu_vk.rayQuery || !aabbs || count == 0) return 0;
 
@@ -7728,97 +8930,181 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
     // mutates the g_vk_accels table (slot-find + count++), both of which race
     // a concurrent launch/build/free from another OS thread without this.
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
-    VkBuffer aabbBuf = VK_NULL_HANDLE, asBuf = VK_NULL_HANDLE,
-             scratchBuf = VK_NULL_HANDLE;
-    VkDeviceMemory aabbMem = VK_NULL_HANDLE, asMem = VK_NULL_HANDLE,
-                   scratchMem = VK_NULL_HANDLE;
-    VkAccelerationStructureKHR accel = VK_NULL_HANDLE;
+    // Transient build inputs/scratch (freed at accel_done).
+    VkBuffer aabbBuf = VK_NULL_HANDLE, instBuf = VK_NULL_HANDLE,
+             blScratch = VK_NULL_HANDLE, tlScratch = VK_NULL_HANDLE;
+    VkDeviceMemory aabbMem = VK_NULL_HANDLE, instMem = VK_NULL_HANDLE,
+                   blScratchMem = VK_NULL_HANDLE, tlScratchMem = VK_NULL_HANDLE;
+    void* aabbMapped = NULL; void* instMapped = NULL;
+    // BLAS + TLAS (survive on success; torn down on failure).
+    VkBuffer blasBuf = VK_NULL_HANDLE, tlasBuf = VK_NULL_HANDLE;
+    VkDeviceMemory blasMem = VK_NULL_HANDLE, tlasMem = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR blas = VK_NULL_HANDLE, tlas = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     int64_t result = 0;
+    // Scratch device addresses must be aligned to minAccelerationStructureScratch
+    // OffsetAlignment (VUID-...-scratchData-03710); over-allocate by (align-1) and
+    // round the address up. A power of two (Vulkan requires it).
+    VkDeviceSize scratchAlign = g_xpu_vk.scratchAlign ? g_xpu_vk.scratchAlign : 256;
 
-    // 1. AABB input buffer (count * 24 bytes), filled from the host.
+    // ===== Bottom-level AS over the AABBs =====
     uint64_t aabbBytes = (uint64_t) count * sizeof(VkAabbPositionsKHR);
-    void* aabbMapped = NULL;
     if (!cajeta_xpu_vk_make_addr_buffer(
             aabbBytes,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            &aabbBuf, &aabbMem, &aabbMapped))   // host-mapped: filled by memcpy
+            &aabbBuf, &aabbMem, &aabbMapped))
         goto accel_done;
     memcpy(aabbMapped, aabbs, (size_t) aabbBytes);
 
-    // 2. Geometry descriptor (opaque procedural AABBs).
-    VkAccelerationStructureGeometryKHR geom;
-    memset(&geom, 0, sizeof(geom));
-    geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-    geom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
-    geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
-    geom.geometry.aabbs.sType =
+    VkAccelerationStructureGeometryKHR blGeom;
+    memset(&blGeom, 0, sizeof(blGeom));
+    blGeom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    blGeom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+    blGeom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    blGeom.geometry.aabbs.sType =
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
-    geom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
-    geom.geometry.aabbs.data.deviceAddress = cajeta_xpu_vk_buf_addr(aabbBuf);
+    blGeom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
+    blGeom.geometry.aabbs.data.deviceAddress = cajeta_xpu_vk_buf_addr(aabbBuf);
 
-    // 3. Build-geometry info (sizes query needs geometry but not yet dst/scratch).
-    VkAccelerationStructureBuildGeometryInfoKHR bgi;
-    memset(&bgi, 0, sizeof(bgi));
-    bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
-    bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-    bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    bgi.geometryCount = 1;
-    bgi.pGeometries = &geom;
+    VkAccelerationStructureBuildGeometryInfoKHR blBgi;
+    memset(&blBgi, 0, sizeof(blBgi));
+    blBgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    blBgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    blBgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    blBgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    blBgi.geometryCount = 1;
+    blBgi.pGeometries = &blGeom;
 
-    uint32_t primCount = count;
-    VkAccelerationStructureBuildSizesInfoKHR sizes;
-    memset(&sizes, 0, sizeof(sizes));
-    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    uint32_t blPrim = count;
+    VkAccelerationStructureBuildSizesInfoKHR blSizes;
+    memset(&blSizes, 0, sizeof(blSizes));
+    blSizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
     g_xpu_vk.vkGetAccelerationStructureBuildSizesKHR(
-        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bgi,
-        &primCount, &sizes);
-    if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0)
+        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &blBgi,
+        &blPrim, &blSizes);
+    if (blSizes.accelerationStructureSize == 0 || blSizes.buildScratchSize == 0)
         goto accel_done;
 
-    // 4. AS backing store + the AS object over it.
     if (!cajeta_xpu_vk_make_addr_buffer(
-            sizes.accelerationStructureSize,
+            blSizes.accelerationStructureSize,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,   // device-only (host never touches)
-            &asBuf, &asMem, NULL))
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &blasBuf, &blasMem, NULL))
         goto accel_done;
-    VkAccelerationStructureCreateInfoKHR aci;
-    memset(&aci, 0, sizeof(aci));
-    aci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-    aci.buffer = asBuf;
-    aci.size = sizes.accelerationStructureSize;
-    aci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &aci, NULL,
-                                                  &accel) != VK_SUCCESS)
+    VkAccelerationStructureCreateInfoKHR blAci;
+    memset(&blAci, 0, sizeof(blAci));
+    blAci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    blAci.buffer = blasBuf;
+    blAci.size = blSizes.accelerationStructureSize;
+    blAci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &blAci, NULL,
+                                                  &blas) != VK_SUCCESS)
         goto accel_done;
 
-    // 5. Scratch buffer; complete the build-geometry info. The scratch device
-    // address MUST be aligned to minAccelerationStructureScratchOffsetAlignment
-    // (VUID-VkAccelerationStructureBuildGeometryInfoKHR-scratchData-03710) — a raw
-    // buffer base is not guaranteed to satisfy it, so over-allocate by (align-1)
-    // and round the address up. scratchAlign is a power of two (Vulkan requires it).
-    VkDeviceSize scratchAlign = g_xpu_vk.scratchAlign ? g_xpu_vk.scratchAlign : 256;
-    if (!cajeta_xpu_vk_make_addr_buffer(sizes.buildScratchSize + scratchAlign - 1,
+    if (!cajeta_xpu_vk_make_addr_buffer(blSizes.buildScratchSize + scratchAlign - 1,
                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                        &scratchBuf, &scratchMem, NULL))
+                                        &blScratch, &blScratchMem, NULL))
         goto accel_done;
-    bgi.dstAccelerationStructure = accel;
+    blBgi.dstAccelerationStructure = blas;
     {
-        VkDeviceAddress sAddr = cajeta_xpu_vk_buf_addr(scratchBuf);
-        sAddr = (sAddr + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
-        bgi.scratchData.deviceAddress = sAddr;
+        VkDeviceAddress s = cajeta_xpu_vk_buf_addr(blScratch);
+        s = (s + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
+        blBgi.scratchData.deviceAddress = s;
     }
+    VkAccelerationStructureBuildRangeInfoKHR blRange;
+    memset(&blRange, 0, sizeof(blRange));
+    blRange.primitiveCount = count;
+    const VkAccelerationStructureBuildRangeInfoKHR* blRanges = &blRange;
 
-    // 6. Record + submit the build.
-    VkAccelerationStructureBuildRangeInfoKHR range;
-    memset(&range, 0, sizeof(range));
-    range.primitiveCount = count;
-    const VkAccelerationStructureBuildRangeInfoKHR* pranges = &range;
+    // ===== Top-level AS over one instance referencing the BLAS =====
+    VkAccelerationStructureDeviceAddressInfoKHR blAddrInfo;
+    memset(&blAddrInfo, 0, sizeof(blAddrInfo));
+    blAddrInfo.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    blAddrInfo.accelerationStructure = blas;   // valid once the AS object exists
+    VkDeviceAddress blasAddr =
+        g_xpu_vk.vkGetAccelerationStructureDeviceAddressKHR(g_xpu_vk.device,
+                                                            &blAddrInfo);
 
+    VkAccelerationStructureInstanceKHR inst;
+    memset(&inst, 0, sizeof(inst));
+    inst.transform.matrix[0][0] = 1.0f;        // identity 3x4 (row-major)
+    inst.transform.matrix[1][1] = 1.0f;
+    inst.transform.matrix[2][2] = 1.0f;
+    inst.mask = 0xFF;                          // matches the kernel's cullMask
+    inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    inst.accelerationStructureReference = (uint64_t) blasAddr;
+
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            sizeof(inst),
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &instBuf, &instMem, &instMapped))
+        goto accel_done;
+    memcpy(instMapped, &inst, sizeof(inst));
+
+    VkAccelerationStructureGeometryKHR tlGeom;
+    memset(&tlGeom, 0, sizeof(tlGeom));
+    tlGeom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    tlGeom.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    tlGeom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    tlGeom.geometry.instances.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    tlGeom.geometry.instances.arrayOfPointers = VK_FALSE;
+    tlGeom.geometry.instances.data.deviceAddress = cajeta_xpu_vk_buf_addr(instBuf);
+
+    VkAccelerationStructureBuildGeometryInfoKHR tlBgi;
+    memset(&tlBgi, 0, sizeof(tlBgi));
+    tlBgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    tlBgi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    tlBgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    tlBgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    tlBgi.geometryCount = 1;
+    tlBgi.pGeometries = &tlGeom;
+
+    uint32_t tlPrim = 1;
+    VkAccelerationStructureBuildSizesInfoKHR tlSizes;
+    memset(&tlSizes, 0, sizeof(tlSizes));
+    tlSizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    g_xpu_vk.vkGetAccelerationStructureBuildSizesKHR(
+        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlBgi,
+        &tlPrim, &tlSizes);
+    if (tlSizes.accelerationStructureSize == 0 || tlSizes.buildScratchSize == 0)
+        goto accel_done;
+
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            tlSizes.accelerationStructureSize,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &tlasBuf, &tlasMem, NULL))
+        goto accel_done;
+    VkAccelerationStructureCreateInfoKHR tlAci;
+    memset(&tlAci, 0, sizeof(tlAci));
+    tlAci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    tlAci.buffer = tlasBuf;
+    tlAci.size = tlSizes.accelerationStructureSize;
+    tlAci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &tlAci, NULL,
+                                                  &tlas) != VK_SUCCESS)
+        goto accel_done;
+
+    if (!cajeta_xpu_vk_make_addr_buffer(tlSizes.buildScratchSize + scratchAlign - 1,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                        &tlScratch, &tlScratchMem, NULL))
+        goto accel_done;
+    tlBgi.dstAccelerationStructure = tlas;
+    {
+        VkDeviceAddress s = cajeta_xpu_vk_buf_addr(tlScratch);
+        s = (s + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
+        tlBgi.scratchData.deviceAddress = s;
+    }
+    VkAccelerationStructureBuildRangeInfoKHR tlRange;
+    memset(&tlRange, 0, sizeof(tlRange));
+    tlRange.primitiveCount = 1;
+    const VkAccelerationStructureBuildRangeInfoKHR* tlRanges = &tlRange;
+
+    // ===== Record both builds in one command buffer: BLAS, barrier, TLAS =====
     VkCommandBufferAllocateInfo cbai;
     memset(&cbai, 0, sizeof(cbai));
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -7833,7 +9119,34 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
-    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &bgi, &pranges);
+    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &blBgi, &blRanges);
+    // BLAS write -> TLAS-build read: the TLAS build reads the just-built BLAS.
+    {
+        VkMemoryBarrier b;
+        memset(&b, 0, sizeof(b));
+        b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        b.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        b.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        g_xpu_vk.vkCmdPipelineBarrier(
+            cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &b, 0,
+            NULL, 0, NULL);
+    }
+    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &tlBgi, &tlRanges);
+    // TLAS write -> ray-query read. vkQueueWaitIdle below guarantees the builds
+    // EXECUTED, but the memory model still needs this availability/visibility
+    // dependency before the read. dst stage is COMPUTE because ray *query* (vs. a
+    // ray-tracing pipeline) runs in the compute shader.
+    {
+        VkMemoryBarrier b;
+        memset(&b, 0, sizeof(b));
+        b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        b.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        b.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        g_xpu_vk.vkCmdPipelineBarrier(
+            cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &b, 0, NULL, 0, NULL);
+    }
     g_xpu_vk.vkEndCommandBuffer(cmd);
     VkSubmitInfo si;
     memset(&si, 0, sizeof(si));
@@ -7845,8 +9158,8 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
         goto accel_done;
     g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
 
-    // 7. Record the AS in the table (asBuf/asMem/accel survive; clear locals so
-    // the cleanup below doesn't tear them down).
+    // Record in the table (TLAS bound by the descriptor; BLAS kept alive). Clear
+    // the survivors so the cleanup below doesn't tear them down.
     {
         int slot = -1;
         for (int i = 0; i < g_vk_accel_count; ++i)
@@ -7855,27 +9168,38 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
             if (g_vk_accel_count >= CAJETA_VK_MAX_ACCELS) goto accel_done;
             slot = g_vk_accel_count++;
         }
-        g_vk_accels[slot].accel = accel;
-        g_vk_accels[slot].asBuf = asBuf;
-        g_vk_accels[slot].asMem = asMem;
+        g_vk_accels[slot].accel = tlas;
+        g_vk_accels[slot].asBuf = tlasBuf;
+        g_vk_accels[slot].asMem = tlasMem;
+        g_vk_accels[slot].blas = blas;
+        g_vk_accels[slot].blasBuf = blasBuf;
+        g_vk_accels[slot].blasMem = blasMem;
         g_vk_accels[slot].live = 1;
         result = (int64_t) (slot + 1);
-        accel = VK_NULL_HANDLE; asBuf = VK_NULL_HANDLE; asMem = VK_NULL_HANDLE;
+        tlas = VK_NULL_HANDLE; tlasBuf = VK_NULL_HANDLE; tlasMem = VK_NULL_HANDLE;
+        blas = VK_NULL_HANDLE; blasBuf = VK_NULL_HANDLE; blasMem = VK_NULL_HANDLE;
     }
 
 accel_done:
     if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1,
                                            &cmd);
-    if (scratchBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, scratchBuf, NULL);
-    if (scratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, scratchMem, NULL);
+    if (blScratch) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, blScratch, NULL);
+    if (blScratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, blScratchMem, NULL);
+    if (tlScratch) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, tlScratch, NULL);
+    if (tlScratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, tlScratchMem, NULL);
     if (aabbMapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, aabbMem);
     if (aabbBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, aabbBuf, NULL);
     if (aabbMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, aabbMem, NULL);
-    // On failure these are still set (success cleared them); tear them down.
-    if (accel) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, accel,
-                                                          NULL);
-    if (asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, asBuf, NULL);
-    if (asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, asMem, NULL);
+    if (instMapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, instMem);
+    if (instBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, instBuf, NULL);
+    if (instMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, instMem, NULL);
+    // On failure these survive (success cleared them); tear them down.
+    if (tlas) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, tlas, NULL);
+    if (tlasBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, tlasBuf, NULL);
+    if (tlasMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, tlasMem, NULL);
+    if (blas) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, blas, NULL);
+    if (blasBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, blasBuf, NULL);
+    if (blasMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, blasMem, NULL);
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return result;
 }
@@ -8046,30 +9370,24 @@ static void cajeta_xpu_vk_accel_free(int64_t handle) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);   // serialize vs build/launch + table
     struct cajeta_vk_accel* a = cajeta_xpu_vk_accel_rec(handle);
     if (!a) { pthread_mutex_unlock(&g_xpu_vk_submit_mu); return; }
+    // Tear down the TLAS then the BLAS it referenced (+ each one's backing store).
     if (a->accel)
         g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, a->accel, NULL);
     if (a->asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, a->asBuf, NULL);
     if (a->asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, a->asMem, NULL);
-    a->accel = VK_NULL_HANDLE; a->asBuf = VK_NULL_HANDLE;
-    a->asMem = VK_NULL_HANDLE; a->live = 0;
+    if (a->blas)
+        g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, a->blas, NULL);
+    if (a->blasBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, a->blasBuf, NULL);
+    if (a->blasMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, a->blasMem, NULL);
+    a->accel = VK_NULL_HANDLE; a->asBuf = VK_NULL_HANDLE; a->asMem = VK_NULL_HANDLE;
+    a->blas = VK_NULL_HANDLE; a->blasBuf = VK_NULL_HANDLE; a->blasMem = VK_NULL_HANDLE;
+    a->live = 0;
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
 // One dispatch: shader module + descriptor set (binding i = bindings[i]) +
 // pipeline + command buffer + submit + wait. `bindings` are 1-based table
 // handles, in kernel-parameter order. Mirrors VulkanDriver::launch.
-// Per-binding resource kind, after launch_vulkan has wrapped scalars into SSBOs.
-#define CAJ_VKB_BUFFER  0   // bindings[i] = buffer-table handle  -> STORAGE_BUFFER
-#define CAJ_VKB_TEXTURE 1   // bindings[i] = texture-table handle -> SAMPLED_IMAGE
-#define CAJ_VKB_SAMPLER 2   // bindings[i] = (int64) VkSampler    -> SAMPLER
-#define CAJ_VKB_ACCEL   3   // bindings[i] = accel-table handle   -> ACCELERATION_STRUCTURE_KHR
-#define CAJ_VKB_STORAGE_IMAGE 4 // bindings[i] = texture-table handle (storage) -> STORAGE_IMAGE
-#define CAJ_VKB_BUFFER_ARRAY  5 // bindings[i] = ptr to [int64 count, int64 h0…] -> STORAGE_BUFFER array
-// Fixed bindless descriptor-array size — MUST equal the SPIR-V handlefrombinding
-// `range` (kMaxBindlessBuffers in SpirvKernelLowering.cpp) and the launch
-// marshalling cap (CallExpression.cpp). The layout binds this many descriptors;
-// the runtime fills `count` real + pads the rest with a valid buffer.
-#define CAJ_VK_BINDLESS_MAX 16
 
 static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
     if (kind == CAJ_VKB_TEXTURE) return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;

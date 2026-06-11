@@ -7,7 +7,7 @@ import cajeta.lang.String;
  * socket holds it, or it is in `TIME_WAIT` and `SO_REUSEADDR` was not
  * set). POSIX `EADDRINUSE` / Winsock `WSAEADDRINUSE`.
  * `kind == NetException.KIND_ADDRESS_IN_USE` (5). See
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class AddressInUseException extends NetException {
     public AddressInUseException(String message) {

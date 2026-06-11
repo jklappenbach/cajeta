@@ -6,8 +6,8 @@ import cajeta.net.ServerState;
 import cajeta.net.SocketAddress;
 import cajeta.net.TcpListener;
 import cajeta.net.TcpStream;
-import cajeta.threading.AtomicInt32;
-import cajeta.threading.Channel;
+import cajeta.concurrent.AtomicInt32;
+import cajeta.concurrent.Channel;
 import cajeta.time.Duration;
 
 /**
@@ -15,13 +15,13 @@ import cajeta.time.Duration;
  * A bounded pool of `N` worker fibers drains a readiness/work queue: the
  * NET-4.1 accept loop registers each accepted socket and pushes a
  * "this connection is ready" event onto a **bounded**
- * [`Channel`](../threading/Channel.cajeta); the pool workers pull events
+ * [`Channel`](../concurrent/Channel.cajeta); the pool workers pull events
  * and run a handler turn. Where **Model A — fiber-per-connection**
  * ([`Server.dispatch`](Server.cajeta#dispatch)) spends one ~64KB fiber
  * stack **per connection**, this model caps the live connection-handling
  * fibers at the pool size — bounded memory under C10K-style fan-in, at a
- * slightly higher per-turn overhead (a [`Channel`](../threading/Channel.cajeta)
- * hop). See [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models)
+ * slightly higher per-turn overhead (a [`Channel`](../concurrent/Channel.cajeta)
+ * hop). See [`docs/Net.md` §Server accept models](../../../../../docs/Net.md#server-accept-models)
  * for the when-to-use-which tradeoff.
  *
  * ## What it re-uses from the core (NET-4.1)
@@ -50,7 +50,7 @@ import cajeta.time.Duration;
  *      fibers — the bounded-memory property.
  *   2. [`serve`](#serve) spawns the `N` [`worker`](#worker) fibers
  *      alongside the accept loop inside one owning `scope`, and tears the
- *      pool down by [`close`](../threading/Channel.cajeta#close)-ing the
+ *      pool down by [`close`](../concurrent/Channel.cajeta#close)-ing the
  *      queue so the workers drain remaining events and exit.
  *
  * ## Shape
@@ -74,7 +74,7 @@ import cajeta.time.Duration;
  *
  * ## The work queue is bounded (back-pressure)
  *
- * [`queue`](#queue) is a fixed-capacity [`Channel`](../threading/Channel.cajeta)
+ * [`queue`](#queue) is a fixed-capacity [`Channel`](../concurrent/Channel.cajeta)
  * (capacity = `poolSize` by default, so the accept loop may stage one
  * pending connection per worker). When every worker is busy and the queue
  * fills, the accept loop's [`dispatch`](#dispatch) `send` **parks** — new
@@ -99,7 +99,7 @@ public class SharedPoolServer extends Server {
      * [`TcpStream`](TcpStream.cajeta) here ([`dispatch`](#dispatch)) and the
      * [`worker`](#worker) fibers dequeue + handle them. Capacity bounds how
      * many accepted-but-not-yet-handled connections may stage before the
-     * accept loop back-pressures. Owned; [`close`](../threading/Channel.cajeta#close)d
+     * accept loop back-pressures. Owned; [`close`](../concurrent/Channel.cajeta#close)d
      * on [`shutdown`](#shutdown) so the workers exit. Field index after the
      * inherited [`Server`](Server.cajeta) fields.
      */
@@ -116,11 +116,11 @@ public class SharedPoolServer extends Server {
      * work [`queue`](#queue). Bumped by [`dispatch`](#dispatch) on enqueue,
      * dropped by [`worker`](#worker) the instant it dequeues one — so it is
      * the depth of the back-pressure buffer (`0..capacity`). A dedicated
-     * counter rather than reaching into the [`Channel`](../threading/Channel.cajeta)'s
+     * counter rather than reaching into the [`Channel`](../concurrent/Channel.cajeta)'s
      * internal `size`, so this stays inside the public `cajeta.net` surface.
      * Distinct from [`inflight`](Server.cajeta#inflight): a connection is
      * *queued* between [`dispatch`](#dispatch) and the worker's
-     * [`receive`](../threading/Channel.cajeta#receive), and *in-flight*
+     * [`receive`](../concurrent/Channel.cajeta#receive), and *in-flight*
      * (but no longer queued) while the handler runs.
      */
     public AtomicInt32 queued;
@@ -222,7 +222,7 @@ public class SharedPoolServer extends Server {
      * When [`shutdown`](#shutdown) closes the listener, `acceptNext` returns
      * `null`, the accept loop exits, and `shutdown` closes the
      * [`queue`](#queue) — so the workers, blocked in
-     * [`Channel.receive`](../threading/Channel.cajeta#receive), drain any
+     * [`Channel.receive`](../concurrent/Channel.cajeta#receive), drain any
      * staged connections then observe the closed-and-drained queue and
      * return. The scope then joins them.
      */
@@ -267,7 +267,7 @@ public class SharedPoolServer extends Server {
      * mid-response."
      *
      * A **full queue parks this (the accept-loop) fiber** in
-     * [`Channel.send`](../threading/Channel.cajeta#send) until a worker frees
+     * [`Channel.send`](../concurrent/Channel.cajeta#send) until a worker frees
      * a slot — the back-pressure that keeps the pool bounded: connections
      * wait in the kernel accept backlog rather than spawning unbounded user
      * fibers.
@@ -289,7 +289,7 @@ public class SharedPoolServer extends Server {
      * server's shared in-flight counter each turn drops, `queued` the staged
      * counter dropped on dequeue, `queue` the shared work queue.
      *
-     * Loop: [`receive`](../threading/Channel.cajeta#receive) parks the worker
+     * Loop: [`receive`](../concurrent/Channel.cajeta#receive) parks the worker
      * fiber while the queue is empty and open; a present
      * [`Optional`](../lang/Optional.cajeta) carries the next connection — the
      * worker drops the [`queued`](#queued) counter (it is now in-handler, not
@@ -356,7 +356,7 @@ public class SharedPoolServer extends Server {
      *   2. [`close`](TcpListener.cajeta#close) the listener — wakes the
      *      parked [`acceptNext`](Server.cajeta#acceptNext), which (state no
      *      longer `RUNNING`) returns `null`, so the accept loop exits.
-     *   3. [`close`](../threading/Channel.cajeta#close) the work
+     *   3. [`close`](../concurrent/Channel.cajeta#close) the work
      *      [`queue`](#queue) — wakes the workers parked in `receive`; they
      *      drain any staged connections, then see the closed-and-drained
      *      queue and exit. (The [`serve`](#serve) loop also closes the queue

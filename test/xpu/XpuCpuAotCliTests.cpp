@@ -14,11 +14,13 @@
 
 #include "cajeta/compile/Compiler.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <random>
 #include <sstream>
 #include <string>
+#include <vector>
 
 using cajeta::Compiler;
 using cajeta::EmitMode;
@@ -58,9 +60,23 @@ std::pair<fs::path, fs::path> makeProject() {
 
 fs::path findArtifact(const fs::path& root, const std::string& ext) {
     if (!fs::exists(root)) return {};
+    // recursive_directory_iterator's order is unspecified and differs by
+    // platform — on Windows the root-level embedded-stdlib module file
+    // (cajeta.runtime.__stdlib__.ll) is visited before descending into
+    // test/, so returning the first hit would hand back the stdlib's IR
+    // instead of the user kernel module's (test/M.ll). Collect, sort for
+    // determinism, and skip the stdlib/runtime module so callers reliably
+    // get the *user* module's artifact. (For --xpu-emit=obj only the kernel
+    // object exists, so the skip is a no-op there.)
+    std::vector<fs::path> hits;
     for (auto& e : fs::recursive_directory_iterator(root))
-        if (e.is_regular_file() && e.path().extension() == ext) return e.path();
-    return {};
+        if (e.is_regular_file() && e.path().extension() == ext)
+            hits.push_back(e.path());
+    std::sort(hits.begin(), hits.end());
+    for (auto& p : hits)
+        if (p.filename().string().find("__stdlib__") == std::string::npos)
+            return p;
+    return hits.empty() ? fs::path{} : hits.front();
 }
 
 std::string readFile(const fs::path& p) {
@@ -134,11 +150,26 @@ TEST(XpuCpuAotCliTests, cpuBackendEmitsObjectArtifact) {
     ASSERT_FALSE(objPath.empty()) << "no .o written under " << build;
     std::string bytes = readFile(objPath);
     ASSERT_GE(bytes.size(), 4u);
-    // ELF magic 0x7f 'E' 'L' 'F' (host is Linux here).
+    // The kernel object is a host-native relocatable — its magic is
+    // platform-specific, so assert per host format.
+#if defined(_WIN32)
+    // COFF (mingw): the file begins with the Machine field,
+    // IMAGE_FILE_MACHINE_AMD64 (0x8664) little-endian → 0x64 0x86.
+    EXPECT_EQ((unsigned char) bytes[0], 0x64u);
+    EXPECT_EQ((unsigned char) bytes[1], 0x86u);
+#elif defined(__APPLE__)
+    // Mach-O 64-bit, little-endian: 0xCF 0xFA 0xED 0xFE.
+    EXPECT_EQ((unsigned char) bytes[0], 0xCFu);
+    EXPECT_EQ((unsigned char) bytes[1], 0xFAu);
+    EXPECT_EQ((unsigned char) bytes[2], 0xEDu);
+    EXPECT_EQ((unsigned char) bytes[3], 0xFEu);
+#else
+    // ELF: 0x7f 'E' 'L' 'F'.
     EXPECT_EQ((unsigned char) bytes[0], 0x7Fu);
     EXPECT_EQ(bytes[1], 'E');
     EXPECT_EQ(bytes[2], 'L');
     EXPECT_EQ(bytes[3], 'F');
+#endif
 
     fs::remove_all(src.parent_path());
 }

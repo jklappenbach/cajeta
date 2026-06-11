@@ -28,6 +28,15 @@ namespace cajeta {
 
     class AbstractSyntaxNode;
 
+    // Thrown by the template instantiator when reuse-cache hazard detection is
+    // armed (Compiler::setReuseHazardArmed) and a novel stdlib-template
+    // instantiation would emit into a per-test user module. Deliberately NOT a
+    // cajeta::Exception subclass so the compile loop's catch(Exception&)
+    // diagnostic wrapper ignores it and it propagates straight to the JIT
+    // harness's fresh-fallback handler. Carries no payload — it's a control
+    // signal, not an error.
+    struct ReuseHazardAbort {};
+
     // Walk every .cajeta file under `rootPath` and register every
     // declared class/interface/struct's (canonical, shortName) pair
     // in the archive (CajetaType::registerArchive). Used by the
@@ -85,13 +94,33 @@ namespace cajeta {
         string targetTriple;
         const llvm::Target* target;
         llvm::LLVMContext llvmContext;
+        // The context every module this Compiler creates is bound to. Defaults
+        // to the owned `llvmContext`. When a process-global shared context has
+        // been installed (test stdlib-reuse path, see s_sharedContext), it
+        // points there instead so the stdlib module + its cached llvm::Type*
+        // survive across Compiler instances. Production leaves it at the owned
+        // context — behavior is identical.
+        llvm::LLVMContext* activeContext = &llvmContext;
+        // Process-global shared context for the test stdlib-reuse path. When
+        // non-null, newly constructed Compilers bind to it and SKIP the
+        // global-state reset/init (the StdlibCache owns that lifecycle).
+        // nullptr in production — every Compiler is fully self-contained.
+        static llvm::LLVMContext* s_sharedContext;
+        // One-time guard: the FIRST Compiler built under a shared context
+        // resets + inits the global type tables in that context (priming);
+        // every Compiler after reuses them. Reset to false when the shared
+        // context is cleared so a later priming starts clean.
+        static bool s_sharedInitialized;
+        // Armed only during a JIT-harness stdlib-reuse attempt; see
+        // setReuseHazardArmed / ReuseHazardAbort. Always false in production.
+        static bool s_reuseHazardArmed;
         string cpu = "generic";
         string features = "";
         llvm::TargetMachine* targetMachine;
         llvm::TargetOptions opt;
         std::optional<llvm::Reloc::Model> RM;
         list<CajetaModulePtr> modules;
-        // Compiler mode + per-feature toggle struct (cajeta-docs/CompilerModes.md).
+        // Compiler mode + per-feature toggle struct (docs/CompilerModes.md).
         // CLI flavor flags (--debug, --release, ...) set `mode` and reset `flags`
         // to that mode's defaults; per-feature flags (--bounds=, --source-tags=, ...)
         // override individual fields after. Forwarded to each CajetaModule on creation
@@ -213,14 +242,34 @@ namespace cajeta {
             llvm::InitializeAllAsmPrinters();
             llvm::InitializeAllAsmParsers();
             targetTriple = llvm::sys::getDefaultTargetTriple();
-            // Drop cached llvm::Type* and module/method tables from any previous Compiler;
-            // they hold pointers tied to a now-destroyed LLVMContext. Without this each
-            // new Compiler instance crashes on first use of a stale entry.
-            CajetaType::resetGlobals();
-            CajetaModule::resetGlobals();
-            rebuildTargetMachine();
-            if (target) {
-                CajetaType::init(llvmContext);
+            if (s_sharedContext) {
+                // Stdlib-reuse path (tests): a process-global context + the
+                // parsed stdlib and its llvm::Type* cache persist across
+                // Compilers. The first Compiler primes the global type tables
+                // in that context; the rest reuse them (the test harness
+                // restores a clean per-test baseline itself). Either way we
+                // bind the context and build this instance's target machine.
+                activeContext = s_sharedContext;
+                rebuildTargetMachine();
+                if (!s_sharedInitialized) {
+                    CajetaType::resetGlobals();
+                    CajetaModule::resetGlobals();
+                    if (target) {
+                        CajetaType::init(*activeContext);
+                    }
+                    s_sharedInitialized = true;
+                }
+            } else {
+                // Drop cached llvm::Type* and module/method tables from any
+                // previous Compiler; they hold pointers tied to a
+                // now-destroyed LLVMContext. Without this each new Compiler
+                // instance crashes on first use of a stale entry.
+                CajetaType::resetGlobals();
+                CajetaModule::resetGlobals();
+                rebuildTargetMachine();
+                if (target) {
+                    CajetaType::init(*activeContext);
+                }
             }
         }
 
@@ -252,6 +301,33 @@ namespace cajeta {
         void setFeatures(const string& features) {
             this->features = features;
         }
+
+        // Install (or clear, with nullptr) the process-global shared LLVMContext
+        // used by the test stdlib-reuse path. Compilers constructed after this
+        // bind their modules to `ctx` and skip the per-instance global-state
+        // reset, so a primed stdlib persists across them. Test-only;
+        // production never calls this and is unaffected.
+        // Toggling the shared context on/off (reuse vs fresh-isolated test)
+        // must NOT clear s_sharedInitialized: the shared context is primed once
+        // per process and its stdlib persists. Clearing it here would make the
+        // next shared-context Compiler re-run resetGlobals/init and wipe the
+        // cached baseline. A fresh-isolated test (ctx == nullptr) takes the
+        // else-branch and is unaffected either way.
+        static void setSharedContext(llvm::LLVMContext* ctx) { s_sharedContext = ctx; }
+        static llvm::LLVMContext* getSharedContext() { return s_sharedContext; }
+        llvm::LLVMContext* getActiveContext() { return activeContext; }
+
+        // Reuse-cache hazard gate (test-only). When ARMED (set by the JIT test
+        // harness during a stdlib-reuse attempt), the template instantiator
+        // throws ReuseHazardAbort the first time a NOVEL stdlib-template
+        // instantiation would emit its IR into a per-test USER module
+        // (emitOwner != stdlib module) — the one operation that contaminates the
+        // shared reuse context with module-bound llvm pointers outliving that
+        // user module. The harness catches it and transparently re-runs the test
+        // on a fresh, fully-isolated Compiler. Disarmed in production and on the
+        // fresh fallback path, so --emit and non-reuse tests never throw.
+        static void setReuseHazardArmed(bool v) { s_reuseHazardArmed = v; }
+        static bool isReuseHazardArmed() { return s_reuseHazardArmed; }
 
         // Bounds-check accessors — convenience over the new flags struct.
         // Existing callers (CLI parser, CajetaModule plumbing) read these;

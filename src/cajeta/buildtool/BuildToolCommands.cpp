@@ -364,7 +364,7 @@ namespace cajeta::buildtool {
         // template to disk. The archetype source lives in
         // samples/buildtool/<type>/; CMake embeds those bytes at
         // build time so the binary is self-contained (no repo lookup
-        // at runtime). See cajeta-docs/BuildTool.md "Project shapes".
+        // at runtime). See docs/BuildTool.md "Project shapes".
         int initCommand(int argc, const char* argv[]) {
             std::string templateName = "basic";
             std::string destDir = ".";

@@ -1,11 +1,11 @@
 //
-// cajeta.threading.Mutex<T> — the fused mutual-exclusion + protected-data
+// cajeta.concurrent.Mutex<T> — the fused mutual-exclusion + protected-data
 // primitive (R7-C). The mutex owns a single T; the only way to touch it is
 // through withLock, whose closure is the critical section (Java
 // synchronized(obj){...} shape). get() snapshots the value under the lock.
 //
 // These tests load Mutex<T> from the embedded standard library
-// (runtime/src/cajeta/threading/Mutex.cajeta) — they only `import` it,
+// (runtime/src/cajeta/concurrent/Mutex.cajeta) — they only `import` it,
 // exercising the real stdlib type. Single-threaded (main-thread,
 // uncontended) JIT runs: lockAcquire takes the lock immediately, the
 // closure runs, the method-scoped LockGuard drop releases.
@@ -23,7 +23,7 @@ namespace {
 
 std::string mutexTestSource(const std::string& dBody) {
     return std::string("package test;\n")
-        + "import cajeta.threading.Mutex;\n"
+        + "import cajeta.concurrent.Mutex;\n"
         + "public final class D {\n" + dBody + "}\n";
 }
 

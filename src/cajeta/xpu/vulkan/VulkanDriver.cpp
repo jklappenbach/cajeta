@@ -16,7 +16,32 @@
 
 #include <cstdio>
 #include <cstring>
-#include <dlfcn.h>
+#if defined(_WIN32)
+// POSIX dl* shim over the Win32 loader so the dlopen/dlsym/dlclose call sites
+// below stay identical across platforms. Mirrors the Cuda/Hip drivers' Win32
+// loadLib/loadSym split, but as drop-in dl* names because this driver also
+// dlclose's on its cleanup paths. RTLD_* have no Win32 analogue -> ignored.
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#  ifndef RTLD_NOW
+#    define RTLD_NOW 0
+#  endif
+#  ifndef RTLD_LOCAL
+#    define RTLD_LOCAL 0
+#  endif
+static inline void* dlopen(const char* name, int) {
+    return reinterpret_cast<void*>(LoadLibraryA(name));
+}
+static inline void* dlsym(void* handle, const char* sym) {
+    return reinterpret_cast<void*>(
+        GetProcAddress(reinterpret_cast<HMODULE>(handle), sym));
+}
+static inline int dlclose(void* handle) {
+    return FreeLibrary(reinterpret_cast<HMODULE>(handle)) ? 0 : -1;
+}
+#else
+#  include <dlfcn.h>
+#endif
 #include <string>
 
 namespace cajeta {
@@ -151,6 +176,10 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
                              "libMoltenVK.dylib"}) {
+#elif defined(_WIN32)
+    // The Vulkan loader the GPU driver / runtime installs into System32;
+    // LoadLibraryA resolves it via the default DLL search path.
+    for (const char* name : {"vulkan-1.dll"}) {
 #else
     for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
 #endif
@@ -227,6 +256,33 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
+    // Enable shaderInt8 / shaderInt64 when present so SPIR-V that declares those
+    // capabilities (byte-addressed ops, 64-bit device handles) is valid on this
+    // launch device too — VUID-VkShaderModuleCreateInfo-pCode-08740. Mirrors the
+    // in-process runtime device (cajeta_runtime.c). int8 is an extension feature
+    // (pNext chain); int64 is core (pEnabledFeatures).
+    VkPhysicalDeviceShaderFloat16Int8Features int8f{};
+    int8f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+    VkPhysicalDeviceFeatures coreF{};
+    auto getF2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+        d.getInstanceProcAddr(d.instance, "vkGetPhysicalDeviceFeatures2"));
+    if (getF2) {
+        VkPhysicalDeviceShaderFloat16Int8Features q8{};
+        q8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        VkPhysicalDeviceFeatures2 qf2{};
+        qf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        qf2.pNext = &q8;
+        getF2(d.phys, &qf2);
+        if (q8.shaderInt8) {
+            int8f.shaderInt8 = VK_TRUE;
+            int8f.pNext = const_cast<void*>(dci.pNext);
+            dci.pNext = &int8f;
+        }
+        if (qf2.features.shaderInt64) {
+            coreF.shaderInt64 = VK_TRUE;
+            dci.pEnabledFeatures = &coreF;
+        }
+    }
     r = d.createDevice(d.phys, &dci, nullptr, &d.device);
     if (r != VK_SUCCESS) { logvk("vkCreateDevice", r); return false; }
 
@@ -300,6 +356,10 @@ bool VulkanDriver::rayQueryAvailable() {
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
                              "libMoltenVK.dylib"}) {
+#elif defined(_WIN32)
+    // The Vulkan loader the GPU driver / runtime installs into System32;
+    // LoadLibraryA resolves it via the default DLL search path.
+    for (const char* name : {"vulkan-1.dll"}) {
 #else
     for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
 #endif
@@ -400,6 +460,10 @@ bool VulkanDriver::coopMatrixAvailable() {
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
                              "libMoltenVK.dylib"}) {
+#elif defined(_WIN32)
+    // The Vulkan loader the GPU driver / runtime installs into System32;
+    // LoadLibraryA resolves it via the default DLL search path.
+    for (const char* name : {"vulkan-1.dll"}) {
 #else
     for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
 #endif

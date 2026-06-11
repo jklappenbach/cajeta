@@ -402,6 +402,23 @@ class CajetaType : public Modifiable, public Annotatable,
         // pointers from a previous Compiler's now-destroyed context.
         static void resetGlobals();
 
+        // Test stdlib-reuse support. captureBaseline() snapshots every global
+        // type container (canonicalMap, typeMap, archives, …) right after the
+        // pristine stdlib is built; restoreBaseline() assigns those snapshots
+        // back, wiping all user-added types AND any user-triggered stdlib
+        // template instantiations in one shot, so each test starts from the
+        // exact post-stdlib state without re-parsing. No-ops outside the
+        // reuse path (production never calls them).
+        static void captureBaseline();
+        static void restoreBaseline();
+        // Test stdlib-reuse support: free the shared-context LLVM struct NAMES of
+        // the transient user types a THROWING compile left behind (a test whose
+        // compile threw never reached its normal end-of-compile struct-name
+        // release), so a later same-named test can't pick up a stale layout via
+        // StructType::getTypeByName. Preserves stdlib-resident (reusable)
+        // instantiations. No-op outside the reuse path.
+        static void releaseThrownTransientStructNames();
+
 
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties);
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name);
@@ -442,7 +459,7 @@ class CajetaType : public Modifiable, public Annotatable,
         // CAJETA_WILDCARDS env var (or a test override) so the existing
         // throw at the wildcard-parse site stays the default while the
         // foundation lands. Rationale, costs, and full staging plan
-        // live in cajeta-docs/TemplateWildcard.md and todo.md.
+        // live in docs/TemplateWildcard.md and todo.md.
         static bool wildcardsEnabled();
 
         // Forces the wildcard flag on/off regardless of the env var.
@@ -500,7 +517,7 @@ class CajetaType : public Modifiable, public Annotatable,
                                           CajetaTypePtr bound);
 
         // Capture conversion projection at read positions
-        // (cajeta-docs/TemplateWildcard.md § 3 Capture identity). When
+        // (docs/TemplateWildcard.md § 3 Capture identity). When
         // an expression's static type comes back from method
         // resolution as a bounded-extends wildcard — typically the
         // return type of a method on a `Foo<? extends B>` receiver —

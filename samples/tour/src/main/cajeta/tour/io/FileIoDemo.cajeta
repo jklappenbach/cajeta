@@ -1,0 +1,95 @@
+package tour.io;
+
+import tour.DemoClass;
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+
+// File I/O — `cajeta.io.file` ships three layers:
+//
+//   1. One-shot helpers — `File.readAllBytes(path)` /
+//      `File.writeAllBytes(path, bytes, len)`. Best for small
+//      files where allocating the whole content at once is fine.
+//   2. Streaming reader / writer — `File.openRead(path)` returns a
+//      `#FileReader` carrying its own fd; `r.read(buf, max)` pulls
+//      up to `max` bytes into a caller-owned buffer and returns
+//      the count actually read. `File.openWrite(path, mode)`
+//      mirrors the shape; `w.writeString(String)` is a convenience
+//      that pumps the String's bytes directly.
+//   3. Random-access — `File.open(path, mode)` returns a `#File`
+//      with `read / write / seek / position / size`; used for
+//      memory-mapped-record style access. (Not exercised here;
+//      see test/expression/FileIoTests.cpp for the full surface.)
+//
+// Ownership: every File* class returned with `#` is owned by the
+// caller. The drop chain reclaims them at scope exit — including
+// closing the fd through the user-defined destructor. Forgetting
+// `close()` doesn't leak: leaving scope IS close-and-free.
+
+public class FileIoDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- File I/O --");
+
+        this.oneShotRoundTrip();
+        this.streamingWriter();
+        this.streamingReader();
+    }
+
+    // 1. One-shot write + read. Both helpers go through the C
+    // runtime's `__cajeta_io_*` calls; the bytes-in is a plain
+    // `int8[]` literal here.
+    public void oneShotRoundTrip() {
+        String path = "/tmp/cajeta_tour_oneshot.txt";
+
+        // "Hello" — five bytes, ASCII so the int8 literals match.
+        int8[] data = heap int8[5];
+        data[0] = (int8) 72;   // 'H'
+        data[1] = (int8) 101;  // 'e'
+        data[2] = (int8) 108;  // 'l'
+        data[3] = (int8) 108;  // 'l'
+        data[4] = (int8) 111;  // 'o'
+
+        File.writeAllBytes(path, data, 5);
+        int8[] back = File.readAllBytes(path);
+        System.stdout.println("  oneShot: wrote 5 bytes, readAllBytes returned "
+            + back.count() + " bytes");
+    }
+
+    // 2. Streaming writer. openWrite returns a FileWriter; the
+    // caller writes incrementally, then either calls close()
+    // explicitly OR lets the drop chain call it. Using OpenMode for
+    // truncate-or-create semantics.
+    public void streamingWriter() {
+        String path = "/tmp/cajeta_tour_streaming.txt";
+
+        FileWriter w = File.openWrite(path, OpenMode.WRITE);
+        w.writeString("first line\n");
+        w.writeString("second line\n");
+        w.flush();
+        w.close();
+
+        // Read back via one-shot to verify the writer landed bytes
+        // on disk.
+        int8[] back = File.readAllBytes(path);
+        System.stdout.println("  streamingWriter: wrote 2 lines, total bytes = "
+            + back.count());
+    }
+
+    // 3. Streaming reader. openRead returns a FileReader; read into
+    // a fixed-size buffer in chunks until the read returns 0
+    // (EOF). The reader's `position()` tracks the cumulative bytes
+    // pulled.
+    public void streamingReader() {
+        String path = "/tmp/cajeta_tour_streaming.txt";
+        FileReader r = File.openRead(path);
+        int8[] buf = heap int8[64];
+        int32 n = r.read(buf, 64);
+        int64 pos = r.position();
+        r.close();
+
+        System.stdout.println("  streamingReader: read " + n
+            + " bytes; position after read = " + pos);
+    }
+}

@@ -1,7 +1,7 @@
 package cajeta.lang.stream;
 
 import cajeta.error.Exception;
-import cajeta.threading.AtomicInt32;
+import cajeta.concurrent.AtomicInt32;
 
 /**
  * Fork/join orchestrator for parallel stream terminals.
@@ -20,7 +20,7 @@ import cajeta.threading.AtomicInt32;
  * yields a single split) the orchestrator walks the source on this
  * fiber — no spawn overhead for tiny / single-element sources.
  *
- * Today's scheduler is cooperative single-carrier (per Thread.md §
+ * Today's scheduler is cooperative single-carrier (per Concurrency.md §
  * Status); the orchestration topology is fork-ready, and once a
  * multi-carrier scheduler lands the same driver yields wall-clock
  * parallelism without a code change.
@@ -40,7 +40,7 @@ import cajeta.threading.AtomicInt32;
  * single-element results as `Optional`, and coordinates short-circuit
  * workers through a shared `AtomicInt32` cancel flag.
  *
- * See cajeta-docs/stdlib/StreamParallelism.md.
+ * See docs/stdlib/StreamParallelism.md.
  */
 public class ParallelDriver {
     /**
