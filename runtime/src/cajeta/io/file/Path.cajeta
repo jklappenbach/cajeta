@@ -301,6 +301,44 @@ public class Path {
     }
 
     /**
+     * Add the executable bits to this file (chmod a+x, preserving
+     * the other permission bits — a 0644 file becomes 0755). Used to
+     * make a freshly written/downloaded binary runnable. Returns true
+     * on success. No-ops successfully on Windows (no POSIX execute
+     * bit; runnability is by file extension there).
+     *
+     * Intrinsic-lowered to `__cajeta_path_set_executable(bytes, len)`.
+     *
+     * ```cajeta
+     * Path.of("~/.cajeta/versions/1.0/cajeta").setExecutable();
+     * ```
+     */
+    public boolean setExecutable() {
+        return false;
+    }
+
+    /**
+     * Create THIS path as a symbolic link pointing at `target`
+     * (POSIX `symlink(target, this)`, i.e. `ln -s target this`). If
+     * this path already exists it is replaced, so the link can be
+     * re-pointed. Returns true on success; false on failure or on
+     * Windows v0.1 (where elevation-free symlinks aren't supported).
+     *
+     * Intrinsic-lowered to
+     * `__cajeta_path_symlink(targetBytes, targetLen, bytes, len)`.
+     *
+     * ```cajeta
+     * // Point the shim at the active toolchain.
+     * Path shim   = Path.of("~/.cajeta/bin/cajeta");
+     * Path active = Path.of("~/.cajeta/versions/1.0/cajeta");
+     * shim.symlinkTo(active);
+     * ```
+     */
+    public boolean symlinkTo(Path target) {
+        return false;
+    }
+
+    /**
      * Resolved absolute path with symlinks walked. POSIX
      * `realpath(3)`. Returns a freshly heap-allocated Path
      * (caller owns); the call throws (eventually — see

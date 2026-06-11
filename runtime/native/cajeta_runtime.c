@@ -7069,6 +7069,50 @@ void* __cajeta_path_canonical(const char* bytes, int64_t length) {
     return hdr;
 }
 
+// chmod a+x — add the executable bits (owner/group/other) to an existing
+// file, preserving its other permission bits (so a 0644 download becomes
+// 0755). Used by cvm to make a freshly written toolchain binary runnable.
+// Returns 0 on success, -1 on failure. Windows has no POSIX execute bit
+// (runnability is by file extension), so the shim succeeds as a no-op.
+int32_t __cajeta_path_set_executable(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return -1;
+#if defined(_WIN32)
+    (void) path;
+    return 0;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    mode_t mode = st.st_mode | S_IXUSR | S_IXGRP | S_IXOTH;
+    return chmod(path, mode) == 0 ? 0 : -1;
+#endif
+}
+
+// Create a symbolic link at `link` pointing to `target` (POSIX
+// `symlink(target, link)`, i.e. `ln -s target link`). If `link` already
+// exists it is removed first so the link can be re-pointed — cvm repoints
+// the active-toolchain shim (~/.cajeta/bin/cajeta) this way. Returns 0 on
+// success, -1 on failure. Not supported on Windows v0.1 (CreateSymbolicLink
+// needs elevation / a different model) — returns -1 there.
+int32_t __cajeta_path_symlink(const char* targetBytes, int64_t targetLen,
+                              const char* linkBytes, int64_t linkLen) {
+    char target[__CAJETA_PATH_MAX];
+    char link[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(target, sizeof(target), targetBytes, targetLen) != 0) return -1;
+    if (__cajeta_copy_path_with_nul(link, sizeof(link), linkBytes, linkLen) != 0) return -1;
+#if defined(_WIN32)
+    (void) target; (void) link;
+    return -1;
+#else
+    // Replace any existing entry at `link` so the shim can be re-pointed.
+    struct stat st;
+    if (lstat(link, &st) == 0) {
+        unlink(link);
+    }
+    return symlink(target, link) == 0 ? 0 : -1;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // At-exit registry — used by @PreDestroy synthesis (AspectModel.md § A11).
 //
