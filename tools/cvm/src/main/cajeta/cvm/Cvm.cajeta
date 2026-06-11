@@ -26,13 +26,7 @@ public final class Cvm {
 
     // cvm's own version (its build version — distinct from any cajeta
     // toolchain version it manages). Tracks repo VERSION at release time.
-    // A method, not a `static String` field: static String-field
-    // initializers don't run correctly under --emit=exe yet (the field
-    // reads back null and crashes on use), whereas a string literal
-    // returned from a method is fine.
-    private static String version() {
-        return "0.1.0";
-    }
+    private static String VERSION = "0.1.0";
 
     // Program entry. `args` is the full C-style argv: args[0] is the
     // program path, args[1..] are the user arguments (cajeta forwards argv
@@ -47,7 +41,7 @@ public final class Cvm {
         String cmd = args[1];
 
         if (cmd.equals("--version") || cmd.equals("-V") || cmd.equals("version")) {
-            System.stdout.println("cvm " + version());
+            System.stdout.println("cvm " + VERSION);
             return 0;
         }
 
@@ -140,7 +134,7 @@ public final class Cvm {
     // home from. Useful before any network/install work exists.
     private static int32 doctor() {
         System.stdout.println("cvm doctor");
-        System.stdout.println("  version:        " + version());
+        System.stdout.println("  version:        " + VERSION);
         reportEnv("CAJETA_HOME");
         reportEnv("XDG_DATA_HOME");
         reportEnv("HOME");
@@ -188,7 +182,7 @@ public final class Cvm {
     }
 
     private static void usage() {
-        System.stdout.println("cvm " + version()
+        System.stdout.println("cvm " + VERSION
             + " — the Cajeta Version Manager");
         System.stdout.println("");
         System.stdout.println("Usage: cvm <command> [args]");

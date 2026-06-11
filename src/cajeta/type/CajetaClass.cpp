@@ -2108,15 +2108,20 @@ namespace cajeta {
             llvm::Value* val = expr->generateCode(module);
             if (!val) continue;
 
-            // Load-through if the expression returned an l-value
-            // (DotExpression on a class-static returns the global, an
-            // alloca, or a field GEP). For the supported v1 shapes
-            // (arithmetic on int/float literals + static field refs),
-            // we expect rvalues; only the static-field-ref case
-            // returns a global directly that hasn't been loaded yet.
-            if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(val)) {
-                val = builder->CreateLoad(gv->getValueType(), gv);
-            }
+            // Load-through if the expression returned an l-value (a static
+            // field reference yields the field's global slot; a local an
+            // alloca; a struct field a GEP). Use the canonical
+            // loadIfLValue, which carries the l-value/r-value rules
+            // INCLUDING the carve-outs for reference-type *r-value*
+            // literals: a String literal (and `T.class`) returns its own
+            // private instance global whose ADDRESS is the value. The old
+            // naive `dyn_cast<GlobalVariable>` load fired on those too,
+            // read the instance struct instead of using the pointer,
+            // mismatched the ptr-typed field, and skipped the store —
+            // leaving the static field null and crashing on use under
+            // --emit=exe (static int fields folded, so only String/object
+            // fields hit this path).
+            val = loadIfLValue(module, val, expr);
 
             // Coerce to the stored type so the verifier accepts the store.
             llvm::Type* storedType = g->getValueType();
