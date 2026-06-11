@@ -62,9 +62,11 @@ namespace cajeta {
     // (CUDA's kernelParams convention). Buffer<T> args contribute their device
     // pointer (the `deviceHandle` field); scalars contribute their value.
     //
-    // The stream argument is accepted syntactically but not yet plumbed —
-    // ordering is currently the default stream; Stream.sync() handles the
-    // host/device barrier separately.
+    // The stream argument IS plumbed: its handle is loaded below and passed as
+    // the trailing i64 to __cajeta_xpu_launch, which routes it to
+    // cuLaunchKernel/hipModuleLaunchKernel for per-stream ordering (async copies
+    // + Event cross-stream deps ride the same handle). Vulkan/CPU accept the
+    // handle but run synchronously today (no overlap); Stream.sync() drains it.
     llvm::Value* CallExpression::generateCode(CajetaModulePtr module) {
         auto callee = std::dynamic_pointer_cast<MethodCallExpression>(getCallee());
         if (!callee || callee->getMethodCallName() != "launch") {

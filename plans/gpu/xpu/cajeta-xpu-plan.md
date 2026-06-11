@@ -120,9 +120,16 @@ Part II + the Part I follow-ups is the **definition of done** for `cajeta-xpu`.
 - [x] On-device tests: histogram, reduction-by-atomics, spin-free counters (Tour `histogram` + `reduceAtomic` + shared-atomic-counter demos)
 
 ### Stage 10 — Streams & async compute
-- [ ] `Stream` real semantics — overlap copy/compute, dependency ordering (the copy *primitive* is `cajeta-gpu`; the compute-overlap scheduling is here)
-- [ ] Multiple in-flight launches; event-based dependencies between kernels
-- [ ] CPU: map streams onto the threadpool; GPU: native queues
+> **Status (reconciled with committed state):** the GPU substance is **built +
+> device-verified** — the plan lagged reality. `Stream`/`Event`/`Fence` are full
+> prelude types; the stream handle threads through `kernel.launch(stream, …)` →
+> `__cajeta_xpu_launch` → `cuLaunchKernel`/`hipModuleLaunchKernel`; async copies
+> (`uploadAsync`/`downloadAsync`) and cross-stream device-side deps
+> (`Event.recordOn` + `Stream.waitFor`) all work on CUDA/HIP. The open work is
+> **concurrency on CPU/Vulkan** (both correct today, but serialized — no overlap).
+- [x] `Stream` real semantics — overlap copy/compute, dependency ordering. **HIP/CUDA: done, device-verified gfx1151** (`asyncCopyPipelineRoutesToHipOnDevice` — H2D-async → launch → D2H-async, ordered on one stream). CPU runs the same API synchronously (portable, `asyncCopyPipelineOnCpu`).
+- [x] Multiple in-flight launches; event-based dependencies between kernels. **HIP/CUDA: done, device-verified** (`eventFenceSyncRoutesToHipOnDevice` — two streams, `Event.recordOn(s1)` + `s2.waitFor(e)` cross-stream device dep, `Fence.signal`/`waitHost`).
+- [~] CPU: map streams onto the threadpool (concurrent multi-stream); Vulkan: per-stream native queues / command-buffer chaining (today the Vulkan launch is synchronous and **ignores** the stream handle — correct, no overlap). The remaining Stage-10 work — perf concurrency, not a correctness gap.
 
 ### Stage 11 — Kernel-language completeness
 - [ ] Labeled `break`/`continue` in kernels (deferred `XPU-N01`)
