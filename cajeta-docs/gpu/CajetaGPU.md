@@ -183,7 +183,7 @@ device-verified · **◐** emit-only (NVIDIA) · **◷** intended-core, fallback
 | Verb | CPU | VK | AMD | NV | Metal |
 |------|:--:|:--:|:--:|:--:|:--:|
 | `bufferElementPtr` / `bufferParamType` | ● | ● | ● | ◐ | ✗ |
-| `bufferArrayElement` (bindless `Buffer<T>[]`) | ● | ● | — | — | ✗ |
+| `bufferArrayElement` (bindless `Buffer<T>[]`) | ● | ● | ● | — | ✗ |
 | `Buffer<T>` alloc/upload/download · `MemoryKind` (Device/Pinned/Unified) · `slice` | ● | ● | ● | ◐ | ✗ |
 
 ### 3.3 Value types & math ([`ValueTypeCatalog.md`](ValueTypeCatalog.md))
