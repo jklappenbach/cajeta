@@ -13,8 +13,8 @@ import cajeta.lang.System;
 // The layout under the resolved home (created lazily by Phase 1):
 //   bin/cvm                  — the manager (only on PATH when shim-installed)
 //   bin/cajeta               — shim → the active toolchain (on PATH)
-//   versions/<version>/      — each installed toolchain
-//   settings.toml            — default toolchain + config
+//   versions/<version>/cajeta — each installed toolchain's binary
+//   settings                 — default toolchain + config (key = value)
 public final class Home {
 
     // The resolved ~/.cajeta directory, or null if even $HOME is unset
@@ -38,8 +38,22 @@ public final class Home {
         return null;
     }
 
-    // Convenience sub-paths under the resolved home (null-propagating).
+    // Convenience sub-paths under the resolved home.
     public static String binDir(String home)      { return home + "/bin"; }
     public static String versionsDir(String home) { return home + "/versions"; }
-    public static String settingsFile(String home){ return home + "/settings.toml"; }
+    public static String settingsFile(String home){ return home + "/settings"; }
+
+    // The active-toolchain shim — bin/cajeta, the `cajeta` that lands on PATH.
+    public static String shimFile(String home)    { return home + "/bin/cajeta"; }
+
+    // A specific installed toolchain's directory and its binary. These
+    // take two reference parameters and return a freshly built string, so
+    // they must return ownership (`#String`): the borrow checker can't
+    // attribute the result to a single parameter.
+    public static #String versionDir(String home, String version) {
+        return home + "/versions/" + version;
+    }
+    public static #String versionBin(String home, String version) {
+        return home + "/versions/" + version + "/cajeta";
+    }
 }

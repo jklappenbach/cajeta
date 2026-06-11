@@ -99,23 +99,51 @@ public final class Cvm {
     }
 
     // ── default <version> ───────────────────────────────────────────
-    // Phase 1: repoint ~/.cajeta/bin/cajeta at the chosen toolchain.
+    // Make an already-installed toolchain the active one: repoint
+    // ~/.cajeta/bin/cajeta at versions/<version>/cajeta and record it in
+    // settings. (Installing a toolchain over the network is the separate
+    // `install` verb — D12 Phase 1 network half.)
     private static int32 setDefault(String[] args) {
         if (args.count() < 3) {
             System.stderr.println("cvm: 'default' needs a version "
                 + "(e.g. 'cvm default 1.0').");
             return 1;
         }
-        System.stdout.println("cvm: would set default toolchain to '"
-            + args[2] + "'.");
-        notImplemented("default (repoint active shim)");
-        return 2;
+        String version = args[2];
+
+        String home = Home.dir();
+        if (home == null) {
+            System.stderr.println("cvm: cannot resolve a home directory "
+                + "(set $CAJETA_HOME or $HOME).");
+            return 1;
+        }
+
+        if (!Toolchains.isInstalled(home, version)) {
+            System.stderr.println("cvm: toolchain '" + version
+                + "' is not installed (" + Home.versionBin(home, version)
+                + " not found). Install it first.");
+            return 1;
+        }
+
+        if (!Toolchains.repointShim(home, version)) {
+            System.stderr.println("cvm: failed to repoint the shim "
+                + Home.shimFile(home) + " (symlinks may be unsupported "
+                + "on this platform).");
+            return 1;
+        }
+        Toolchains.writeDefault(home, version);
+
+        System.stdout.println("cvm: default toolchain set to '" + version
+            + "'.");
+        System.stdout.println("  " + Home.shimFile(home) + " -> "
+            + Home.versionBin(home, version));
+        return 0;
     }
 
     // ── which ───────────────────────────────────────────────────────
-    // Show the resolved cvm home + active-toolchain shim path. (Listing
-    // every `cajeta` on PATH and who owns each is Phase 1 — it needs
-    // process exec to walk PATH.)
+    // Show the resolved cvm home, the active toolchain (from settings),
+    // and the shim. (Listing every `cajeta` on PATH and who owns each is
+    // the network/Phase-2 half — it needs process exec to walk PATH.)
     private static int32 which() {
         String home = Home.dir();
         if (home == null) {
@@ -124,7 +152,20 @@ public final class Cvm {
             return 1;
         }
         System.stdout.println("cvm home:   " + home);
-        System.stdout.println("active shim: " + Home.binDir(home) + "/cajeta");
+
+        String active = Toolchains.activeVersion(home);
+        if (active == null) {
+            System.stdout.println("active:     <none set>  "
+                + "(run 'cvm default <version>')");
+        } else {
+            System.stdout.println("active:     " + active);
+            System.stdout.println("  binary:   " + Home.versionBin(home, active));
+            if (!Toolchains.isInstalled(home, active)) {
+                System.stdout.println("  warning:  the active toolchain's "
+                    + "binary is missing — reinstall or pick another.");
+            }
+        }
+        System.stdout.println("shim:       " + Home.shimFile(home));
         System.stdout.println("toolchains: " + Home.versionsDir(home));
         return 0;
     }
@@ -146,6 +187,16 @@ public final class Cvm {
             return 1;
         }
         System.stdout.println("  resolved home:  " + home);
+
+        String active = Toolchains.activeVersion(home);
+        if (active == null) {
+            System.stdout.println("  active toolchain: <none set>");
+        } else if (Toolchains.isInstalled(home, active)) {
+            System.stdout.println("  active toolchain: " + active);
+        } else {
+            System.stdout.println("  active toolchain: " + active
+                + "  (binary MISSING)");
+        }
         return 0;
     }
 
