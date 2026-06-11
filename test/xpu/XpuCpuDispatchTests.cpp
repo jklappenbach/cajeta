@@ -2210,3 +2210,46 @@ TEST(XpuCpuDispatchTests, memoryFenceOnCpu) {
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100+i: out[i] != 2i+1 — memory fence broke codegen)";
 }
+
+// Stage 9: the MemoryOrder surface — an explicit MemoryOrder.Relaxed on a kernel
+// atomic. CPU is the oracle: N threads each atomicAdd(0, 1, Relaxed); relaxed
+// atomics still guarantee atomicity (just not ordering), so the count is exact
+// (out[0] == N). Proves enum constants resolve in kernels + the relaxed atomic
+// path runs. (Cross-checks the VK/AMD device runs of the same kernel.)
+TEST(XpuCpuDispatchTests, relaxedAtomicCounterOnCpu) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.MemoryOrder;\n"
+        "public class RAC {\n"
+        "    @Kernel\n"
+        "    public static void count(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            out.atomicAdd(0, 1, MemoryOrder.Relaxed);\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 256;\n"
+        "        Buffer<int32> out = heap Buffer<int32>(1);\n"
+        "        int32[] z = heap int32[1];\n"
+        "        z[0] = 0;\n"
+        "        out.upload(z);\n"
+        "        Stream s = Stream.current();\n"
+        "        count.launch(s, grid: [1], block: [256])(out, n);\n"
+        "        s.sync();\n"
+        "        int32[] ho = heap int32[1];\n"
+        "        out.download(ho);\n"
+        "        if (ho[0] != 256) { return ho[0]; }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.RAC", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "got " << r << " (expected 256 — relaxed atomic count)";
+}

@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/AtomicOrdering.h"   // llvm::AtomicOrdering (atomic/fence seams)
 
 namespace llvm {
     class Value;
@@ -75,6 +76,25 @@ namespace xpu {
         // global-memory visibility across the whole device.
         enum class FenceScope { Workgroup, Device };
 
+        // User-selectable memory ordering for a kernel atomic / fence (mirrors
+        // the cajeta cajeta.gpu.core.MemoryOrder enum — ordinals MUST match).
+        // `Default` = no explicit order given: each backend keeps its
+        // established default (Monotonic on the portable seam, AcquireRelease on
+        // Vulkan). LLVM bakes ordering at IR-build time, so the value is always
+        // a compile-time constant.
+        enum class MemoryOrder {
+            Relaxed = 0, Acquire = 1, Release = 2, AcqRel = 3, SeqCst = 4,
+            Default = -1
+        };
+
+        // Map a user MemoryOrder to an LLVM AtomicOrdering; `Default` falls back
+        // to `fallback` (the backend's established default). The CAS failure
+        // ordering is derived from the success ordering per LLVM's rule (no
+        // stronger than success; never Release/AcqRel).
+        static llvm::AtomicOrdering toAtomicOrdering(MemoryOrder o,
+                                                     llvm::AtomicOrdering fallback);
+        static llvm::AtomicOrdering casFailureOrdering(llvm::AtomicOrdering success);
+
         // Address space for entry-block allocas (the mutable scalar-slot model
         // — loop counters, reassigned locals). NVPTX: 0 (generic). AMDGPU: 5
         // (private). Getting this wrong on AMDGPU is the classic first bug
@@ -117,13 +137,15 @@ namespace xpu {
                                       llvm::Module& m) = 0;
 
         // Scoped memory fence (Stage 9): order/make-visible memory accesses at
-        // `scope`, with NO thread rendezvous (unlike workgroupBarrier). Fixed
-        // AcquireRelease ordering for now; the explicit memory-order surface is
-        // a separate Stage-9 brick. Default emits a system-scope acq_rel
-        // `fence` (the CPU oracle); GPU backends override with the native op
-        // (SPIR-V OpMemoryBarrier, AMDGPU scoped fence, NVPTX membar).
+        // `scope`, with NO thread rendezvous (unlike workgroupBarrier). `order`
+        // selects the ordering (MemoryOrder.Default = AcquireRelease, the safe
+        // fence default; Relaxed is treated as AcqRel since a relaxed fence is a
+        // no-op). Default emits a system-scope acq_rel `fence` (the CPU oracle);
+        // GPU backends override with the native op (SPIR-V OpMemoryBarrier,
+        // AMDGPU scoped fence, NVPTX membar).
         virtual void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
-                                 FenceScope scope);
+                                 FenceScope scope,
+                                 MemoryOrder order = MemoryOrder::Default);
 
         // Decorate a freshly-created kernel function: calling convention +
         // any kernel-marker metadata. NVPTX: ptx_kernel CC + nvvm.annotations.
@@ -415,10 +437,13 @@ namespace xpu {
         // FMinEXT / FMaxEXT (spirv-val rejects SequentiallyConsistent and
         // relaxed-with-storage-class semantics on OpAtomicF*EXT, and CrossDevice
         // scope, so the Vulkan path uses Device scope + AcquireRelease).
+        // `order` selects the memory ordering (MemoryOrder.Default keeps the
+        // backend's established default — see toAtomicOrdering).
         enum class AtomicFloatOp { Add, Min, Max };
         virtual llvm::Value* atomicFloatRMW(
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
-            llvm::Value* ptr, llvm::Value* value);
+            llvm::Value* ptr, llvm::Value* value,
+            MemoryOrder order = MemoryOrder::Default);
 
         // --- integer atomics (core SPIR-V — no extension) --------------------
         // `Buffer<int32|uint32>.atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange}(i, v)`:
@@ -434,7 +459,8 @@ namespace xpu {
         enum class AtomicIntOp { Add, Sub, Min, Max, And, Or, Xor, Exchange };
         virtual llvm::Value* atomicIntRMW(
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicIntOp op,
-            llvm::Value* ptr, llvm::Value* value, bool isSigned);
+            llvm::Value* ptr, llvm::Value* value, bool isSigned,
+            MemoryOrder order = MemoryOrder::Default);
 
         // `Buffer<int32|uint32>.atomicCompareExchange(i, expected, desired)`: the
         // universal lock-free primitive — atomically set element `i` to `desired`
@@ -445,7 +471,8 @@ namespace xpu {
         // AcquireRelease/Acquire (success/failure orderings).
         virtual llvm::Value* atomicCompareExchange(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
-            llvm::Value* expected, llvm::Value* desired);
+            llvm::Value* expected, llvm::Value* desired,
+            MemoryOrder order = MemoryOrder::Default);
 
         // --- shader clock (SPV_KHR_shader_clock) -----------------------------
         // `Thread.clock()` — read a free-running hardware counter for in-kernel

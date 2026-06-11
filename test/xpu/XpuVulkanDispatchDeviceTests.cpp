@@ -1978,3 +1978,50 @@ TEST(XpuVulkanDispatchDeviceTests, memoryFenceOnDevice) {
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100+i: out[i] != 2i+1 — memory fence on device)";
 }
+
+// Stage 9: a kernel atomic with an explicit MemoryOrder.Relaxed runs on the
+// Vulkan device. Vulkan clamps relaxed→acq_rel internally (its memory model has
+// no bare-relaxed device atomic), so the count is still exact: N threads each
+// atomicAdd(0, 1, Relaxed) → out[0] == N. Same kernel as the CPU oracle.
+TEST(XpuVulkanDispatchDeviceTests, relaxedAtomicCounterOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.MemoryOrder;\n"
+        "public class RACVk {\n"
+        "    @Kernel\n"
+        "    public static void count(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            out.atomicAdd(0, 1, MemoryOrder.Relaxed);\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 256;\n"
+        "        Buffer<int32> out = heap Buffer<int32>(1);\n"
+        "        int32[] z = heap int32[1];\n"
+        "        z[0] = 0;\n"
+        "        out.upload(z);\n"
+        "        Stream s = Stream.current();\n"
+        "        count.launch(s, grid: [1], block: [256])(out, n);\n"
+        "        s.sync();\n"
+        "        int32[] ho = heap int32[1];\n"
+        "        out.download(ho);\n"
+        "        if (ho[0] != 256) { return ho[0]; }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.RACVk", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "got " << r << " (expected 256 — relaxed atomic count)";
+}

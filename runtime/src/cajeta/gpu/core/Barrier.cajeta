@@ -35,6 +35,12 @@ public final class Barrier {
     @Native("__cajeta_xpu_barrier_workgroup_memory")
     public static void workgroupMemory();
 
+    @Native("__cajeta_xpu_barrier_workgroup_memory_ord")
+    public static void workgroupMemory(MemoryOrder order);
+
     @Native("__cajeta_xpu_barrier_device_memory")
     public static void deviceMemory();
+
+    @Native("__cajeta_xpu_barrier_device_memory_ord")
+    public static void deviceMemory(MemoryOrder order);
 }

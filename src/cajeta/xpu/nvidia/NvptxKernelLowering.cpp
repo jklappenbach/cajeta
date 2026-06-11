@@ -76,11 +76,12 @@ public:
             llvm::Type::getInt32Ty(m.getContext()), 0)});
     }
 
-    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
-                     FenceScope scope) override {
+    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m, FenceScope scope,
+                     MemoryOrder /*order*/ = MemoryOrder::Default) override {
         // membar — a memory fence with no bar.sync (no thread rendezvous).
         // membar.cta orders within the CTA (workgroup); membar.gl orders
-        // global memory across the device.
+        // global memory across the device. membar is a full fence with no
+        // weaker variant, so the requested order doesn't change the op.
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, scope == FenceScope::Workgroup
                     ? llvm::Intrinsic::nvvm_membar_cta

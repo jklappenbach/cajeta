@@ -1211,8 +1211,19 @@ private:
             if (llvm::Value* fv = structFieldRead(expr)) return fv;
             // Vector component read `v.x` / `v.r` (extractelement).
             if (llvm::Value* cv = vectorComponentRead(dot)) return cv;
-            unsupported("field access — only POD-struct kernel params "
-                        "support 'name.field'");
+            // Enum constant `Enum.NAME` → its ordinal i32 (e.g. MemoryOrder.AcqRel,
+            // TextureFormat.R32F). A compile-time constant, like the host path
+            // (DotExpression.cpp); the LHS is the enum type name.
+            if (auto lhs = std::dynamic_pointer_cast<IdentifierExpression>(
+                    exprChild(dot, 0))) {
+                if (auto v = CajetaType::lookupEnumConstant(lhs->getTextValue(),
+                                                            dot->getIdentifier()))
+                    return llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), (uint64_t) *v,
+                        /*isSigned=*/true);
+            }
+            unsupported("field access — only POD-struct kernel params and enum "
+                        "constants support 'name.field'");
         }
         if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(expr)) {
             return lowerBinaryOp(bin);
@@ -1985,15 +1996,28 @@ private:
             }
             // Scoped memory fence (Stage 9) — a memory barrier with no thread
             // rendezvous (unlike workgroup() above). Orders/makes-visible memory
-            // at the given scope.
-            if (name == "workgroupMemory") {
+            // at the given scope, with an optional compile-time MemoryOrder.
+            if (name == "workgroupMemory" || name == "deviceMemory") {
+                const auto& fargs = mc->getParameters();
+                if (fargs.size() > 1)
+                    unsupported("Barrier." + name + " expects ([order])");
+                LoweringTarget::MemoryOrder order =
+                    LoweringTarget::MemoryOrder::Default;
+                if (fargs.size() == 1) {
+                    auto* ci = llvm::dyn_cast<llvm::ConstantInt>(
+                        lowerExpr(fargs[0].expression));
+                    if (!ci)
+                        unsupported("memory order must be a compile-time "
+                                    "MemoryOrder constant");
+                    uint64_t k = ci->getZExtValue();
+                    if (k > 4) unsupported("invalid MemoryOrder value");
+                    order = static_cast<LoweringTarget::MemoryOrder>((int) k);
+                }
                 target.memoryFence(builder, mod,
-                                   LoweringTarget::FenceScope::Workgroup);
-                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
-            }
-            if (name == "deviceMemory") {
-                target.memoryFence(builder, mod,
-                                   LoweringTarget::FenceScope::Device);
+                                   name == "workgroupMemory"
+                                       ? LoweringTarget::FenceScope::Workgroup
+                                       : LoweringTarget::FenceScope::Device,
+                                   order);
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
         } else if (recv == "Wave") {
@@ -2166,11 +2190,26 @@ private:
              name == "atomicCompareExchange")) {
             const auto& args = mc->getParameters();
             const bool isCas = (name == "atomicCompareExchange");
-            const size_t wantArgs = isCas ? 3 : 2;
-            if (args.size() != wantArgs)
+            const size_t baseArgs = isCas ? 3 : 2;
+            // Optional trailing compile-time MemoryOrder constant:
+            // atomicX(index, value[, order]) / atomicCompareExchange(i, e, d[, order]).
+            const bool hasOrder = (args.size() == baseArgs + 1);
+            if (args.size() != baseArgs && !hasOrder)
                 unsupported("Buffer." + name +
-                            (isCas ? " expects (index, expected, desired)"
-                                   : " expects (index, value)"));
+                            (isCas ? " expects (index, expected, desired[, order])"
+                                   : " expects (index, value[, order])"));
+            auto parseOrder = [&](const auto& e) -> LoweringTarget::MemoryOrder {
+                auto* ci = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(e));
+                if (!ci)
+                    unsupported("memory order must be a compile-time "
+                                "MemoryOrder constant");
+                uint64_t k = ci->getZExtValue();
+                if (k > 4) unsupported("invalid MemoryOrder value");
+                return static_cast<LoweringTarget::MemoryOrder>((int) k);
+            };
+            LoweringTarget::MemoryOrder order =
+                hasOrder ? parseOrder(args[baseArgs].expression)
+                         : LoweringTarget::MemoryOrder::Default;
             llvm::Type* elemTy = bufferElems[recv];
             const bool elemSigned =
                 bufferElemSigned.count(recv) ? bufferElemSigned[recv] : true;
@@ -2193,7 +2232,7 @@ private:
                 llvm::Value* desired =
                     coerceTo(lowerExpr(args[2].expression), elemTy);
                 return target.atomicCompareExchange(builder, mod, ptr, expected,
-                                                    desired);
+                                                    desired, order);
             }
             llvm::Value* val = coerceTo(lowerExpr(args[1].expression), elemTy);
             if (elemIsFloat) {
@@ -2203,7 +2242,8 @@ private:
                         name == "atomicAdd" ? LoweringTarget::AtomicFloatOp::Add
                       : name == "atomicMin" ? LoweringTarget::AtomicFloatOp::Min
                                             : LoweringTarget::AtomicFloatOp::Max;
-                    return target.atomicFloatRMW(builder, mod, op, ptr, val);
+                    return target.atomicFloatRMW(builder, mod, op, ptr, val,
+                                                 order);
                 }
                 unsupported("Buffer." + name + " is not supported on float32 "
                             "buffers (float atomics: atomicAdd/atomicMin/"
@@ -2220,7 +2260,7 @@ private:
                   : name == "atomicXor"  ? LoweringTarget::AtomicIntOp::Xor
                                          : LoweringTarget::AtomicIntOp::Exchange;
                 return target.atomicIntRMW(builder, mod, op, ptr, val,
-                                           elemSigned);
+                                           elemSigned, order);
             }
             unsupported("Buffer." + name + " requires a float32 or int32/uint32 "
                         "buffer (v1)");
@@ -4026,27 +4066,58 @@ llvm::Value* LoweringTarget::integerDot4x8(
     return vecops::idotWiden(b, a, c, acc, isSigned);
 }
 
-// Default scoped memory fence: a system-scope AcquireRelease `fence`. On CPU
-// (the oracle) work-items in a workgroup run sequentially under loop fission,
-// so a plain acq_rel fence is the correct, conservative ordering; it also
-// serves as the fallback. GPU backends override with the native scoped op.
-void LoweringTarget::memoryFence(llvm::IRBuilderBase& b, llvm::Module& /*m*/,
-                                 FenceScope /*scope*/) {
-    b.CreateFence(llvm::AtomicOrdering::AcquireRelease);
+// Map a user MemoryOrder to an LLVM AtomicOrdering; Default falls back to the
+// backend's established default ordering.
+llvm::AtomicOrdering LoweringTarget::toAtomicOrdering(
+        MemoryOrder o, llvm::AtomicOrdering fallback) {
+    switch (o) {
+        case MemoryOrder::Relaxed: return llvm::AtomicOrdering::Monotonic;
+        case MemoryOrder::Acquire: return llvm::AtomicOrdering::Acquire;
+        case MemoryOrder::Release: return llvm::AtomicOrdering::Release;
+        case MemoryOrder::AcqRel:  return llvm::AtomicOrdering::AcquireRelease;
+        case MemoryOrder::SeqCst:  return llvm::AtomicOrdering::SequentiallyConsistent;
+        case MemoryOrder::Default:
+        default:                   return fallback;
+    }
 }
 
-// Default float atomic: a relaxed, system-scope atomicrmw. Selects the native
-// global FP atomic on AMDGPU/NVPTX and a lock/cmpxchg on CPU. Vulkan overrides
-// (it needs Device scope + AcquireRelease to satisfy spirv-val).
+// cmpxchg failure ordering: LLVM requires it be no stronger than success and
+// never Release/AcquireRelease. Downgrade those; pass the rest through.
+llvm::AtomicOrdering LoweringTarget::casFailureOrdering(
+        llvm::AtomicOrdering success) {
+    switch (success) {
+        case llvm::AtomicOrdering::Release:        return llvm::AtomicOrdering::Monotonic;
+        case llvm::AtomicOrdering::AcquireRelease: return llvm::AtomicOrdering::Acquire;
+        default:                                   return success;
+    }
+}
+
+// Default scoped memory fence: a system-scope `fence` at `order` (Default/Relaxed
+// → AcquireRelease, since a relaxed fence is a no-op). On CPU (the oracle)
+// work-items in a workgroup run sequentially under loop fission, so an acq_rel
+// fence is the correct, conservative ordering. GPU backends override.
+void LoweringTarget::memoryFence(llvm::IRBuilderBase& b, llvm::Module& /*m*/,
+                                 FenceScope /*scope*/, MemoryOrder order) {
+    llvm::AtomicOrdering ord =
+        toAtomicOrdering(order, llvm::AtomicOrdering::AcquireRelease);
+    if (ord == llvm::AtomicOrdering::Monotonic)      // a relaxed fence is a no-op
+        ord = llvm::AtomicOrdering::AcquireRelease;
+    b.CreateFence(ord);
+}
+
+// Default float atomic: a system-scope atomicrmw at `order` (Default → relaxed/
+// Monotonic). Selects the native global FP atomic on AMDGPU/NVPTX and a
+// lock/cmpxchg on CPU. Vulkan overrides (Device scope + AcquireRelease default).
 llvm::Value* LoweringTarget::atomicFloatRMW(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, AtomicFloatOp op,
-    llvm::Value* ptr, llvm::Value* value) {
+    llvm::Value* ptr, llvm::Value* value, MemoryOrder order) {
     llvm::AtomicRMWInst::BinOp binop =
         op == AtomicFloatOp::Add ? llvm::AtomicRMWInst::FAdd
       : op == AtomicFloatOp::Min ? llvm::AtomicRMWInst::FMin
                                  : llvm::AtomicRMWInst::FMax;
     return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
-                             llvm::AtomicOrdering::Monotonic);
+                             toAtomicOrdering(order,
+                                              llvm::AtomicOrdering::Monotonic));
 }
 
 // Map an AtomicIntOp (+ signedness for min/max) to the LLVM atomicrmw BinOp. The
@@ -4073,19 +4144,23 @@ static llvm::AtomicRMWInst::BinOp atomicIntBinOp(
 // AMDGPU/NVPTX, locked on CPU). Vulkan overrides for Device scope + AcquireRelease.
 llvm::Value* LoweringTarget::atomicIntRMW(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, AtomicIntOp op,
-    llvm::Value* ptr, llvm::Value* value, bool isSigned) {
+    llvm::Value* ptr, llvm::Value* value, bool isSigned, MemoryOrder order) {
     return b.CreateAtomicRMW(atomicIntBinOp(op, isSigned), ptr, value,
-                             llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
+                             llvm::MaybeAlign(),
+                             toAtomicOrdering(order,
+                                              llvm::AtomicOrdering::Monotonic));
 }
 
-// Default compare-exchange: a relaxed cmpxchg; returns the OLD value (element 0
-// of the {value, success} aggregate). Vulkan overrides the orderings/scope.
+// Default compare-exchange: a cmpxchg at `order` (Default → relaxed); returns the
+// OLD value (element 0 of the {value, success} aggregate). Vulkan overrides scope.
 llvm::Value* LoweringTarget::atomicCompareExchange(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* ptr,
-    llvm::Value* expected, llvm::Value* desired) {
+    llvm::Value* expected, llvm::Value* desired, MemoryOrder order) {
+    llvm::AtomicOrdering success =
+        toAtomicOrdering(order, llvm::AtomicOrdering::Monotonic);
     llvm::Value* pair = b.CreateAtomicCmpXchg(
         ptr, expected, desired, llvm::MaybeAlign(),
-        llvm::AtomicOrdering::Monotonic, llvm::AtomicOrdering::Monotonic);
+        success, casFailureOrdering(success));
     return b.CreateExtractValue(pair, 0, "atomic.cas.old");
 }
 

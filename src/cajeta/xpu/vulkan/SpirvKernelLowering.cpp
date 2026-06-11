@@ -234,12 +234,13 @@ public:
         b.CreateCall(f, {});
     }
 
-    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
-                     FenceScope scope) override {
+    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m, FenceScope scope,
+                     MemoryOrder /*order*/ = MemoryOrder::Default) override {
         // Memory-only OpMemoryBarrier (no OpControlBarrier / group sync). The
         // dedicated *_memory_barrier intrinsics carry the scope: Workgroup vs
-        // Device. SpirvBackend's post-emit pass fixes the memory-semantics
-        // operand to a Vulkan-valid value (WorkgroupMemory|AcquireRelease).
+        // Device. SpirvBackend's post-emit pass pins the memory-semantics operand
+        // to a Vulkan-valid AcquireRelease, so the fence is AcqRel regardless of
+        // the requested order (Vulkan has no weaker valid memory fence here).
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, scope == FenceScope::Workgroup
                     ? llvm::Intrinsic::spv_group_memory_barrier
@@ -619,6 +620,19 @@ public:
         return m.getContext().getOrInsertSyncScopeID(name);
     }
 
+    // Vulkan memory-model clamp for a user-requested order. A device-scope atomic
+    // with bare Monotonic (None) or SequentiallyConsistent memory semantics is
+    // rejected by strict spirv-val (Vulkan needs storage-class acquire/release
+    // semantics on the atomic) — so raise both to AcquireRelease, the Vulkan
+    // default. Net: Vulkan honours Acquire/Release/AcqRel; Relaxed and SeqCst
+    // clamp UP to AcqRel (CPU/AMD/NVPTX honour Relaxed natively — that's where
+    // the relaxed-atomic perf win lands). Int and float share the constraint.
+    static llvm::AtomicOrdering vkClamp(llvm::AtomicOrdering o) {
+        return (o == llvm::AtomicOrdering::Monotonic ||
+                o == llvm::AtomicOrdering::SequentiallyConsistent)
+                   ? llvm::AtomicOrdering::AcquireRelease : o;
+    }
+
     // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) -----------
     // Vulkan rejects CrossDevice scope and SequentiallyConsistent / relaxed-with-
     // storage-class memory semantics on OpAtomicF*EXT, so emit the atomicrmw with
@@ -628,14 +642,17 @@ public:
     // selected by the backend from the BinOp.
     llvm::Value* atomicFloatRMW(llvm::IRBuilderBase& b, llvm::Module& m,
                                 AtomicFloatOp op, llvm::Value* ptr,
-                                llvm::Value* value) override {
+                                llvm::Value* value,
+                                MemoryOrder order = MemoryOrder::Default) override {
         llvm::AtomicRMWInst::BinOp binop =
             op == AtomicFloatOp::Add ? llvm::AtomicRMWInst::FAdd
           : op == AtomicFloatOp::Min ? llvm::AtomicRMWInst::FMin
                                      : llvm::AtomicRMWInst::FMax;
-        return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
-                                 llvm::AtomicOrdering::AcquireRelease,
-                                 atomicScope(m, ptr));
+        return b.CreateAtomicRMW(
+            binop, ptr, value, llvm::MaybeAlign(),
+            vkClamp(toAtomicOrdering(order,
+                                          llvm::AtomicOrdering::AcquireRelease)),
+            atomicScope(m, ptr));
     }
 
     // --- integer atomics (core SPIR-V) ----------------------------------------
@@ -644,7 +661,8 @@ public:
     // the BinOp to OpAtomicIAdd/ISub/And/Or/Xor/Exchange/SMin/UMin/SMax/UMax.
     llvm::Value* atomicIntRMW(llvm::IRBuilderBase& b, llvm::Module& m,
                               AtomicIntOp op, llvm::Value* ptr,
-                              llvm::Value* value, bool isSigned) override {
+                              llvm::Value* value, bool isSigned,
+                              MemoryOrder order = MemoryOrder::Default) override {
         llvm::AtomicRMWInst::BinOp binop;
         switch (op) {
             case AtomicIntOp::Add:      binop = llvm::AtomicRMWInst::Add; break;
@@ -661,9 +679,11 @@ public:
                                  : llvm::AtomicRMWInst::UMax; break;
             default:                    binop = llvm::AtomicRMWInst::Add; break;
         }
-        return b.CreateAtomicRMW(binop, ptr, value, llvm::MaybeAlign(),
-                                 llvm::AtomicOrdering::AcquireRelease,
-                                 atomicScope(m, ptr));
+        return b.CreateAtomicRMW(
+            binop, ptr, value, llvm::MaybeAlign(),
+            vkClamp(toAtomicOrdering(order,
+                                        llvm::AtomicOrdering::AcquireRelease)),
+            atomicScope(m, ptr));
     }
 
     // Compare-exchange → OpAtomicCompareExchange. Storage-matched scope (Device
@@ -672,11 +692,14 @@ public:
     // release). Returns the OLD value (element 0).
     llvm::Value* atomicCompareExchange(llvm::IRBuilderBase& b, llvm::Module& m,
                                        llvm::Value* ptr, llvm::Value* expected,
-                                       llvm::Value* desired) override {
+                                       llvm::Value* desired,
+                                       MemoryOrder order = MemoryOrder::Default)
+                                       override {
+        llvm::AtomicOrdering success = vkClamp(
+            toAtomicOrdering(order, llvm::AtomicOrdering::AcquireRelease));
         llvm::Value* pair = b.CreateAtomicCmpXchg(
             ptr, expected, desired, llvm::MaybeAlign(),
-            llvm::AtomicOrdering::AcquireRelease, llvm::AtomicOrdering::Acquire,
-            atomicScope(m, ptr));
+            success, casFailureOrdering(success), atomicScope(m, ptr));
         return b.CreateExtractValue(pair, 0, "atomic.cas.old");
     }
 

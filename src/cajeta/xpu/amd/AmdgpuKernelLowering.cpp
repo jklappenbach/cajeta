@@ -96,15 +96,20 @@ public:
         b.CreateFence(llvm::AtomicOrdering::Acquire, wg);
     }
 
-    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
-                     FenceScope scope) override {
-        // A scoped acq_rel fence — no s_barrier, so no thread rendezvous. The
+    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m, FenceScope scope,
+                     MemoryOrder order = MemoryOrder::Default) override {
+        // A scoped fence at `order` — no s_barrier, so no thread rendezvous. The
         // AMDGPU sync-scope name selects the reach: "workgroup" (LDS+global
-        // within the block) vs "agent" (the whole device). The backend lowers
-        // this to the right s_waitcnt / cache-flush sequence.
+        // within the block) vs "agent" (the whole device). Default/Relaxed →
+        // AcqRel (a relaxed fence is a no-op). The backend lowers this to the
+        // right s_waitcnt / cache-flush sequence.
         llvm::SyncScope::ID sc = m.getContext().getOrInsertSyncScopeID(
             scope == FenceScope::Workgroup ? "workgroup" : "agent");
-        b.CreateFence(llvm::AtomicOrdering::AcquireRelease, sc);
+        llvm::AtomicOrdering ord =
+            toAtomicOrdering(order, llvm::AtomicOrdering::AcquireRelease);
+        if (ord == llvm::AtomicOrdering::Monotonic)
+            ord = llvm::AtomicOrdering::AcquireRelease;
+        b.CreateFence(ord, sc);
     }
 
     // AMDGPU marks kernels purely by calling convention — no metadata
