@@ -1,164 +1,91 @@
 {
-    // Single-package starter — what `cajeta init` writes by default
-    // (per BuildTool.md "Default cajeta init manifest").
+    // cvm — the Cajeta Version Manager — built with the cajeta build
+    // tool. Governed by plans/installer/installer-plan.md (D12). cvm is
+    // written in Cajeta and compiled --emit=exe by the just-built
+    // compiler (dogfooding); the release workflow ships its binary per
+    // target. It is version-independent by contract: a 1.0 cvm installs
+    // an 8.0 cajeta by resolving a stable release manifest — it bakes in
+    // no knowledge of any cajeta version.
+    //
+    // Layout follows the standard project shape (see
+    // samples/buildtool/basic and docs/BuildTool.md):
+    //   cajeta.json                       ← this manifest
+    //   src/main/cajeta/cvm/*.cajeta      ← sources (package `cvm`)
+    //   build/cvm                         ← built binary (gitignored)
+    //
+    // Build + run from this directory:
+    //   cajeta build     → build/cvm
+    //   cajeta run       → build + execute (what run.sh does)
+    //   cajeta clean     → wipe build/
 
     "details": {
-        "name":               "com.example.basic",
-        "version":            "0.1.0",
-        "description":        "Single-package buildtool sample",
-        "license":            "Apache-2.0",
-        "authors":            ["sample"],
+        "name":                "cvm",
+        "version":             "0.1.0",
+        "description":         "Cajeta Version Manager — toolchain installer/switcher",
+        "license":             "Apache-2.0",
+        "authors":             ["Julian Klappenbach <jklappenbach@gmail.com>"],
         "cajeta-lang-version": "1.0"
     },
 
-    "properties": {
-        // Centralize repeated values here. ${stack-version} below
-        // demonstrates the substitution mechanism.
-        "stack-version": "1.0.0"
-    },
-
     "settings": {
-        "capabilities": ["filesystem", "clock"],
+        // cvm reads/writes ~/.cajeta (filesystem), reads the environment
+        // (CAJETA_HOME / XDG_DATA_HOME / HOME / PATH), and — once Phase 1
+        // lands — fetches the release manifest + toolchain over the
+        // network. The network capability is declared now so the manifest
+        // resolver can be wired without a manifest change.
+        "capabilities": ["filesystem", "env", "network"],
 
-        // First-party plugins (`cajeta.*`) get a wider default
-        // allowlist; user plugins fall back to ["filesystem"].
-        // Override here when a project pulls in plugins that need
-        // additional capabilities.
-        "plugins-allowed-capabilities": ["filesystem"],
-
-        // Third-party runtime dependencies go here. The core standard
-        // library (cajeta.lang, cajeta.io, cajeta.codec, …, cajeta.xpu) is
-        // built into the toolchain — neither declared nor fetched — and only
-        // the parts your code actually uses are linked into the binary
-        // (dead-code elimination). The stdlib API level is pinned by
-        // `details.cajeta-lang-version` above.
+        // The core stdlib is built into the toolchain — not declared or
+        // fetched — and dead-code elimination links only what cvm uses.
+        // cvm has no third-party dependencies (version-independence means
+        // it must stay self-contained and minimal).
         "dependencies": {},
 
-        "dev-dependencies": {
-            "cajeta.testkit": "1.0.*"
-        },
-
-        // First-party lint + coverage plugins. Optional — comment
-        // out when not in use; `lint` + `test` tasks fall back to
-        // native-only actions.
-        "plugins": {
-            "cajeta.lint.security": "1.0.*",
-            "cajeta.coverage":      "1.0.*"
-        },
-
-        "repositories": [
-            { "name": "central", "url": "https://repo.cajeta.org",
-              "priority": 0 }
-        ],
-
         "build": {
+            // src/main/cajeta is the default source root; stated for
+            // clarity. Entry is cvm.Cvm::main(String[]).
+            "source-root":  "src/main/cajeta",
             "target":       "host",
-            "entry-method": "com.example.basic.Main::main"
+            "entry-method": "cvm.Cvm::main"
         }
     },
 
     "tasks": {
 
-        // ─── Starter build tasks ────────────────────────────────────
-        // Each task carries its own profile + flavor literals.
-        // Profile names are arbitrary; rename to match your envs.
-
+        // output-path puts the binary at build/cvm rather than the
+        // default build/exe/<name>: the project name `cvm` matches the
+        // top-level package `cvm`, so the default build/exe/cvm/ would
+        // collide with the object directory of the same name.
         "build": {
-            "description": "Local development build",
-            "params": {
-                "profile": { "type": "string", "default": "dev" }
-            },
+            "description": "Build cvm to a native binary (build/cvm)",
             "actions": [
-                { "action":  "build",
-                  "flavor":  "debug",
-                  "profile": "${params.profile}",
-                  "id":      "art" }
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/cvm", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
-        "test": {
-            "description": "Unit tests with coverage instrumentation",
+        "run": {
+            "description": "Build cvm and run it",
             "actions": [
-                { "action":  "build",
-                  "flavor":  "debug",
-                  "profile": "test",
-                  "id":      "art" },
-
-                // Instrument the build for coverage. The plugin
-                // emits a probed binary + records the map file path
-                // its `collect` action will write to.
-                { "action":  "cajeta.coverage.instrument",
-                  "params":  { "input": "${art.path}" },
-                  "id":      "instr" },
-
-                // Run the (probed) tests; on success the coverage
-                // map is read + gated by `min` / `min-per-file`.
-                // Reports land in build/reports/.
-                { "action":  "test",
-                  "params": {
-                      "input": "${instr.path}",
-                      "coverage": {
-                          "map":          "${workdir}/build/cov.map",
-                          "min":           80,
-                          "min-per-file":  50,
-                          "exclude":       ["test/**", "**/fixtures/**"],
-                          "report": {
-                              "console": "${workdir}/build/reports/cov.txt",
-                              "html":    "${workdir}/build/reports/cov.html",
-                              "sarif":   "${workdir}/build/reports/cov.sarif"
-                          }
-                      }
-                  } }
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/cvm", "id": "art" },
+                { "action": "exec", "command": "${art.path}" }
             ]
         },
 
         "release": {
-            "description": "Release build + ship",
+            "description": "Optimized release build of cvm (shipped per target)",
             "actions": [
-                { "action":  "build",
-                  "flavor":  "release",
-                  "profile": "release",
-                  "id":      "art" },
-                { "action": "exec", "command": "echo",
-                  "args":   ["[release] would sign + publish ${art.path}"] }
-            ]
+                { "action": "build", "flavor": "release",
+                  "output-path": "build/cvm", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
         "clean": {
             "description": "Wipe build outputs",
             "actions": [ { "action": "clean" } ]
-        },
-
-        // ─── Default `lint` task ────────────────────────────────────
-        // Wires native + plugin actions into one task. Findings from
-        // every action stream into ActionResult.findings; the task
-        // runner aggregates them across actions into one unified
-        // report. Native actions for the language-level lint live
-        // alongside `cajeta.lint.security` (banned-imports +
-        // secret-pattern scan).
-        //
-        // Override at the project level to add custom rule sets, or
-        // delete + replace if you only want one of the two pillars.
-        "lint": {
-            "description": "Run native + plugin lint actions",
-            "actions": [
-                // Native compiler lint pass — shape pinned by the
-                // language; here we just route to the `exec` action
-                // with the lint subcommand so projects without the
-                // plugin still get a useful baseline.
-                { "action":  "exec",
-                  "command": "cajeta",
-                  "args":    ["lint", "--manifest", "${cajeta.json}"],
-                  "id":      "native" },
-
-                // First-party security plugin — banned-imports +
-                // secret-pattern scan. Findings carry through the
-                // typed ActionResult.findings channel.
-                { "action":  "cajeta.lint.security.scan",
-                  "params":  { "target-dir": "${workdir}/src" },
-                  "id":      "sec" }
-            ]
         }
     }
 }
