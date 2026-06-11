@@ -1,0 +1,45 @@
+package cvm;
+
+import cajeta.lang.System;
+
+// Resolves cvm's state directory — where it installs and switches cajeta
+// toolchains. Per installer-plan.md (D12 / §2) cvm manages cajeta under
+// ~/.cajeta, honoring $CAJETA_HOME / $XDG_DATA_HOME. Resolution order:
+//
+//   1. $CAJETA_HOME              — explicit override, used verbatim.
+//   2. $XDG_DATA_HOME/cajeta     — XDG base-dir spec, when set.
+//   3. $HOME/.cajeta             — the default.
+//
+// The layout under the resolved home (created lazily by Phase 1):
+//   bin/cvm                  — the manager (only on PATH when shim-installed)
+//   bin/cajeta               — shim → the active toolchain (on PATH)
+//   versions/<version>/      — each installed toolchain
+//   settings.toml            — default toolchain + config
+public final class Home {
+
+    // The resolved ~/.cajeta directory, or null if even $HOME is unset
+    // (a broken environment cvm can't recover from on its own).
+    public static String dir() {
+        String explicit = System.env.get("CAJETA_HOME");
+        if (explicit != null && !explicit.isEmpty()) {
+            return explicit;
+        }
+
+        String xdg = System.env.get("XDG_DATA_HOME");
+        if (xdg != null && !xdg.isEmpty()) {
+            return xdg + "/cajeta";
+        }
+
+        String home = System.env.get("HOME");
+        if (home != null && !home.isEmpty()) {
+            return home + "/.cajeta";
+        }
+
+        return null;
+    }
+
+    // Convenience sub-paths under the resolved home (null-propagating).
+    public static String binDir(String home)      { return home + "/bin"; }
+    public static String versionsDir(String home) { return home + "/versions"; }
+    public static String settingsFile(String home){ return home + "/settings.toml"; }
+}

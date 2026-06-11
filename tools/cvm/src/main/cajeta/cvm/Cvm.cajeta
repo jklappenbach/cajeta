@@ -1,0 +1,212 @@
+package cvm;
+
+import cajeta.lang.System;
+
+// cvm — the Cajeta Version Manager. Entry point + command dispatch.
+//
+// Governed by plans/installer/installer-plan.md (D12). cvm is written in
+// Cajeta and compiled --emit=exe by the just-built compiler (dogfooding;
+// compiling cvm is itself the release workflow's real-world test of exe
+// emission on every target). It is **version-independent by contract**:
+// it bakes in no knowledge of any cajeta version, instead resolving a
+// selector (latest / a version / a channel) against a stable release
+// manifest, downloading the self-contained binary for the host triple,
+// installing it under ~/.cajeta (see Home), and repointing the active
+// shim. So a 1.0 cvm installs an 8.0 cajeta, unchanged.
+//
+// THIS IS THE PHASE-0 BOOTSTRAP SKELETON: real CLI structure + working
+// environment/path resolution (which, doctor) so the project builds and
+// dogfoods exe emission today. The verbs that fetch + install a toolchain
+// (install, default, self update) are honest stubs that announce intent
+// and point at the Phase-1 work; they do not yet touch the network or the
+// filesystem. Fill them in per D12 Phase 1 (manifest resolve → download →
+// verify checksum → install to ~/.cajeta/versions/<ver> → wire PATH;
+// install-method detection; coexist/takeover reconciliation).
+public final class Cvm {
+
+    // cvm's own version (its build version — distinct from any cajeta
+    // toolchain version it manages). Tracks repo VERSION at release time.
+    // A method, not a `static String` field: static String-field
+    // initializers don't run correctly under --emit=exe yet (the field
+    // reads back null and crashes on use), whereas a string literal
+    // returned from a method is fine.
+    private static String version() {
+        return "0.1.0";
+    }
+
+    // Program entry. `args` is the full C-style argv: args[0] is the
+    // program path, args[1..] are the user arguments (cajeta forwards argv
+    // verbatim through the --emit=exe main shim). Returns the process exit
+    // code: 0 ok, 1 usage error, 2 not-yet-built.
+    public static int32 main(String[] args) {
+        if (args.count() < 2) {
+            usage();
+            return 1;
+        }
+
+        String cmd = args[1];
+
+        if (cmd.equals("--version") || cmd.equals("-V") || cmd.equals("version")) {
+            System.stdout.println("cvm " + version());
+            return 0;
+        }
+
+        if (cmd.equals("--help") || cmd.equals("-h") || cmd.equals("help")) {
+            usage();
+            return 0;
+        }
+
+        if (cmd.equals("install")) {
+            return install(args);
+        }
+
+        if (cmd.equals("default")) {
+            return setDefault(args);
+        }
+
+        if (cmd.equals("which")) {
+            return which();
+        }
+
+        if (cmd.equals("doctor")) {
+            return doctor();
+        }
+
+        if (cmd.equals("self")) {
+            return self(args);
+        }
+
+        System.stderr.println("cvm: unknown command '" + cmd + "'");
+        System.stderr.println("Run 'cvm --help' for usage.");
+        return 1;
+    }
+
+    // ── install <selector> ──────────────────────────────────────────
+    // Phase 1: resolve the selector against the release manifest, fetch
+    // the host-triple binary, verify its checksum, install under
+    // ~/.cajeta/versions/<ver>, and repoint the active shim.
+    private static int32 install(String[] args) {
+        String selector = "latest";
+        if (args.count() > 2) {
+            selector = args[2];
+        }
+
+        String home = Home.dir();
+        if (home == null) {
+            System.stderr.println("cvm: cannot resolve a home directory "
+                + "(set $CAJETA_HOME or $HOME).");
+            return 1;
+        }
+
+        System.stdout.println("cvm: would install cajeta '" + selector
+            + "' into " + Home.versionsDir(home));
+        notImplemented("install (manifest resolve + download + verify)");
+        return 2;
+    }
+
+    // ── default <version> ───────────────────────────────────────────
+    // Phase 1: repoint ~/.cajeta/bin/cajeta at the chosen toolchain.
+    private static int32 setDefault(String[] args) {
+        if (args.count() < 3) {
+            System.stderr.println("cvm: 'default' needs a version "
+                + "(e.g. 'cvm default 1.0').");
+            return 1;
+        }
+        System.stdout.println("cvm: would set default toolchain to '"
+            + args[2] + "'.");
+        notImplemented("default (repoint active shim)");
+        return 2;
+    }
+
+    // ── which ───────────────────────────────────────────────────────
+    // Show the resolved cvm home + active-toolchain shim path. (Listing
+    // every `cajeta` on PATH and who owns each is Phase 1 — it needs
+    // process exec to walk PATH.)
+    private static int32 which() {
+        String home = Home.dir();
+        if (home == null) {
+            System.stderr.println("cvm: cannot resolve a home directory "
+                + "(set $CAJETA_HOME or $HOME).");
+            return 1;
+        }
+        System.stdout.println("cvm home:   " + home);
+        System.stdout.println("active shim: " + Home.binDir(home) + "/cajeta");
+        System.stdout.println("toolchains: " + Home.versionsDir(home));
+        return 0;
+    }
+
+    // ── doctor ──────────────────────────────────────────────────────
+    // Environment diagnostics: what cvm sees and where it resolved its
+    // home from. Useful before any network/install work exists.
+    private static int32 doctor() {
+        System.stdout.println("cvm doctor");
+        System.stdout.println("  version:        " + version());
+        reportEnv("CAJETA_HOME");
+        reportEnv("XDG_DATA_HOME");
+        reportEnv("HOME");
+
+        String home = Home.dir();
+        if (home == null) {
+            System.stdout.println("  resolved home:  <none> "
+                + "(set $CAJETA_HOME or $HOME)");
+            return 1;
+        }
+        System.stdout.println("  resolved home:  " + home);
+        return 0;
+    }
+
+    // ── self <subcommand> ───────────────────────────────────────────
+    // self-update defers to the installer. Phase 1 detects cvm's install
+    // method by its own exe path: under a package-manager prefix → update
+    // via that PM (cvm self update disabled); under ~/.cajeta/bin → the
+    // shim install, which self-updates. Version-independence makes a stale
+    // PM-managed cvm harmless regardless.
+    private static int32 self(String[] args) {
+        if (args.count() < 3 || !args[2].equals("update")) {
+            System.stderr.println("cvm: usage: cvm self update");
+            return 1;
+        }
+        System.stdout.println("cvm: self-update defers to your installer.");
+        notImplemented("self update (install-method detection)");
+        return 2;
+    }
+
+    // ── helpers ─────────────────────────────────────────────────────
+
+    private static void reportEnv(String name) {
+        String v = System.env.get(name);
+        if (v == null || v.isEmpty()) {
+            System.stdout.println("  $" + name + ": <unset>");
+        } else {
+            System.stdout.println("  $" + name + ": " + v);
+        }
+    }
+
+    private static void notImplemented(String what) {
+        System.stderr.println("cvm: " + what
+            + " is not implemented yet (installer-plan.md D12, Phase 1).");
+    }
+
+    private static void usage() {
+        System.stdout.println("cvm " + version()
+            + " — the Cajeta Version Manager");
+        System.stdout.println("");
+        System.stdout.println("Usage: cvm <command> [args]");
+        System.stdout.println("");
+        System.stdout.println("Commands:");
+        System.stdout.println("  install [latest|<version>]  "
+            + "Install a cajeta toolchain (default: latest)");
+        System.stdout.println("  default <version>           "
+            + "Make an installed toolchain the active one");
+        System.stdout.println("  which                       "
+            + "Show the cvm home + active toolchain shim");
+        System.stdout.println("  doctor                      "
+            + "Diagnose the environment cvm sees");
+        System.stdout.println("  self update                 "
+            + "Update cvm itself (shim installs only)");
+        System.stdout.println("  --version                   "
+            + "Print cvm's version");
+        System.stdout.println("  --help                      "
+            + "Show this help");
+    }
+}
