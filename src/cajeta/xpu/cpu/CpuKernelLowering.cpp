@@ -85,6 +85,27 @@ public:
         b.CreateCall(callee, {});
     }
 
+    void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* fmt,
+                      llvm::ArrayRef<llvm::Value*> args) override {
+        // The CPU kernel runs as host code via LLJIT, so a direct call to libc
+        // `printf` works. Promote each f32 to double (C's default varargs
+        // promotion — `%f` reads a double); ints pass through.
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* ptr = llvm::PointerType::get(ctx, 0);
+        auto* fnTy = llvm::FunctionType::get(i32, {ptr}, /*vararg=*/true);
+        llvm::FunctionCallee pf = m.getOrInsertFunction("printf", fnTy);
+        std::vector<llvm::Value*> call;
+        call.reserve(args.size() + 1);
+        call.push_back(fmt);
+        for (llvm::Value* a : args) {
+            if (a->getType()->isFloatTy())
+                a = b.CreateFPExt(a, llvm::Type::getDoubleTy(ctx), "printf.f2d");
+            call.push_back(a);
+        }
+        b.CreateCall(pf, call);
+    }
+
     void decorateKernel(llvm::Function*, llvm::Module&) override {
         // Default C calling convention + external linkage (set at creation) is
         // exactly what the host driver / JIT looks up. Nothing to mark.

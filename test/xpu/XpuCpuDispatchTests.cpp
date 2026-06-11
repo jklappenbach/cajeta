@@ -1691,6 +1691,54 @@ TEST(XpuCpuDispatchTests, labeledBreakContinueOnCpu) {
                       << " (100+g: break outer wrong; 200+g: continue outer wrong)";
 }
 
+// Stage 11: device printf on CPU (the kernel runs as host code via LLJIT, so
+// Debug.printf lowers to a direct libc printf — the oracle + the only fully
+// runnable backend; NVPTX is emit-only). Exercises a kernel string literal, the
+// %d/%f format, and the f32→double varargs promotion. Captures stdout to verify.
+TEST(XpuCpuDispatchTests, devicePrintfOnCpu) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class Prnt {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            if (i == 0) {\n"
+        "                Debug.printf(\"cajeta-pf %d %f end\\n\", (int32) 7, 1.5f);\n"
+        "            }\n"
+        "            out[i] = (int32) i;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 4;\n"
+        "        int32[] hout = heap int32[n];\n"
+        "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+        "        Stream s = Stream.current();\n"
+        "        k.launch(s, grid: [1], block: [4])(out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (int32) i) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.Prnt", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    testing::internal::CaptureStdout();
+    int r = fn();
+    std::fflush(stdout);
+    std::string out = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (kernel result wrong)";
+    EXPECT_NE(out.find("cajeta-pf 7 1.500000 end"), std::string::npos)
+        << "device printf output not found; captured: [" << out << "]";
+}
+
 // Buffer.slice — a non-owning sub-view passed to a kernel writes through the
 // parent's storage at the slice offset; the head half stays untouched.
 TEST(XpuCpuDispatchTests, bufferSliceKernelOnCpu) {

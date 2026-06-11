@@ -147,6 +147,16 @@ namespace xpu {
                                  FenceScope scope,
                                  MemoryOrder order = MemoryOrder::Default);
 
+        // Device printf (Stage 11): `fmt` is an i8* constant format string;
+        // `args` are the already-lowered scalar arguments (Path A — explicit
+        // args, no C varargs in the language). CPU calls host printf (the kernel
+        // runs as host code); NVPTX emits `vprintf`. The default REJECTS —
+        // AMD (__ockl_printf hostcall) and Vulkan (NonSemantic.DebugPrintf) need
+        // runtime integration and are deferred.
+        virtual void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m,
+                                  llvm::Value* fmt,
+                                  llvm::ArrayRef<llvm::Value*> args);
+
         // Decorate a freshly-created kernel function: calling convention +
         // any kernel-marker metadata. NVPTX: ptx_kernel CC + nvvm.annotations.
         // AMDGPU: amdgpu_kernel CC, no metadata.

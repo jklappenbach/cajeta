@@ -503,3 +503,45 @@ TEST(XpuNvptxEmitTests, lowersRelaxedAtomicToMonotonicPtx) {
     EXPECT_NE(ir.find("monotonic"), std::string::npos) << ir;  // Relaxed
     EXPECT_NE(ir.find("acq_rel"), std::string::npos) << ir;    // AcqRel
 }
+
+// Stage 11: device printf on NVPTX is the external `vprintf(i8* fmt, i8* args)` —
+// the format string lowers to a private constant, the args pack into a stack
+// buffer. Emit-only (no CUDA hardware here): assert the IR + PTX carry vprintf.
+TEST(XpuNvptxEmitTests, lowersDebugPrintfToVprintf) {
+    auto src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class Prnt {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            Debug.printf(\"cajeta-pf %d\\n\", (int32) i);\n"
+        "            out[i] = (int32) i;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.Prnt");
+    auto klass = module->getStructures()["test.Prnt"];
+    ASSERT_NE(klass, nullptr);
+    auto k = findMethod(klass, "k");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_printf_device", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_NE(ir.find("vprintf"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("cajeta-pf"), std::string::npos) << ir;  // the format const
+
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+    EXPECT_NE(ptx.find("vprintf"), std::string::npos) << ptx;
+}
