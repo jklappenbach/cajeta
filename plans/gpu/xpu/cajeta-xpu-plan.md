@@ -135,7 +135,7 @@ Part II + the Part I follow-ups is the **definition of done** for `cajeta-xpu`.
 - [x] Labeled `break`/`continue` in kernels — `label: for(…)` + `break label;`/`continue label;` jump to an outer loop (`IdentifierLabel` stashes the label, the loop's `pushLoop` attaches it, `findLoopTarget` walks outward). Device-verified CPU + Vulkan (`labeledBreakContinueOn{Cpu,Device}`, with results that distinguish a labeled jump from an innermost one). *(Was deferred `XPU-N01`.)*
 - [x] Cross-class `@Device` helpers — a kernel calls a `@Device` method in another class (a shared device-math library); resolved via the canonicalMap, the foreign owner's body lowered in its own context (`lowerDeviceFn`). Device-verified on CPU + Vulkan (`crossClassDeviceHelperOn{Cpu,Device}`). *(Still always-inline; the true non-inline call ABI is a separate follow-up where backends allow.)*
 - [ ] Function pointers / device-side dispatch (bounded)
-- [ ] Printf-style device debug (`printf` on NV/AMD; VK debug-printf extension)
+- [~] Printf-style device debug — `Debug.printf("fmt", a, b, …)` (explicit args, Path A). Needed a prereq: **string literals in kernel bodies** now lower to a private `i8*` constant (reusable). **CPU done + runnable** (the kernel runs as host code → libc `printf`, f32→double varargs promotion; device-verified via captured stdout). **NVPTX emit-only** (external `vprintf` + packed arg buffer; PTX-verified, no CUDA HW). **AMD** (`__ockl_printf` hostcall) and **Vulkan** (`NonSemantic.DebugPrintf` + validation layer) **deferred** — they need runtime integration; the seam rejects them (`XPU-N01`).
 - [ ] Kernel specialization constants surfaced to the language (compile-time `const` params)
 
 ### Stage 12 — Compute launch & FFI handoff

@@ -89,6 +89,39 @@ public:
         b.CreateCall(f, {});
     }
 
+    void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* fmt,
+                      llvm::ArrayRef<llvm::Value*> args) override {
+        // CUDA device printf is the external `i32 vprintf(i8* fmt, i8* args)`:
+        // the varargs are packed (declaration order, f32→double per varargs
+        // promotion) into a stack buffer whose address is the second operand.
+        // Emit-only (no CUDA hardware here).
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* ptr = llvm::PointerType::get(ctx, 0);
+        llvm::Value* argBuf = llvm::ConstantPointerNull::get(ptr);
+        if (!args.empty()) {
+            std::vector<llvm::Type*> ftys;
+            std::vector<llvm::Value*> vals;
+            ftys.reserve(args.size());
+            vals.reserve(args.size());
+            for (llvm::Value* a : args) {
+                llvm::Value* v = a;
+                if (a->getType()->isFloatTy())
+                    v = b.CreateFPExt(a, llvm::Type::getDoubleTy(ctx), "printf.f2d");
+                ftys.push_back(v->getType());
+                vals.push_back(v);
+            }
+            auto* bufTy = llvm::StructType::get(ctx, ftys);
+            llvm::Value* buf = b.CreateAlloca(bufTy, nullptr, "printf.args");
+            for (unsigned i = 0; i < vals.size(); ++i)
+                b.CreateStore(vals[i], b.CreateStructGEP(bufTy, buf, i));
+            argBuf = buf;
+        }
+        auto* fnTy = llvm::FunctionType::get(i32, {ptr, ptr}, /*vararg=*/false);
+        llvm::FunctionCallee vp = m.getOrInsertFunction("vprintf", fnTy);
+        b.CreateCall(vp, {fmt, argBuf});
+    }
+
     void decorateKernel(llvm::Function* fn, llvm::Module& m) override {
         llvm::LLVMContext& ctx = m.getContext();
         fn->setCallingConv(llvm::CallingConv::PTX_Kernel);

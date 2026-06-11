@@ -549,6 +549,33 @@ private:
         return nullptr;
     }
 
+    // Decode a kernel string literal (raw text incl. surrounding quotes) for a
+    // C-string constant — strip the quotes and the common escapes a printf
+    // format needs. (`%d`/`%f` are not escapes; they pass straight through.)
+    static std::string decodeKernelString(const std::string& raw) {
+        std::string s = raw;
+        if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+            s = s.substr(1, s.size() - 2);
+        std::string out;
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '\\' && i + 1 < s.size()) {
+                switch (s[++i]) {
+                    case 'n': out += '\n'; break;
+                    case 't': out += '\t'; break;
+                    case 'r': out += '\r'; break;
+                    case '\\': out += '\\'; break;
+                    case '"': out += '"'; break;
+                    case '0': out += '\0'; break;
+                    default: out += s[i]; break;
+                }
+            } else {
+                out += s[i];
+            }
+        }
+        return out;
+    }
+
     // Allocate a slot in the function entry block (so it dominates every use
     // regardless of which loop/branch block is current). The alloca address
     // space is the backend's (0 on NVPTX, 5/private on AMDGPU) — a fork point
@@ -1213,6 +1240,15 @@ private:
             if (tl->getLiteralType() == LITERAL_TYPE_BOOL) {
                 return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx),
                                               tl->getRawValue() == "true" ? 1 : 0);
+            }
+            if (tl->getLiteralType() == LITERAL_TYPE_STRING ||
+                tl->getLiteralType() == LITERAL_TYPE_TEXT_BLOCK) {
+                // A string literal in a kernel materializes as a private constant
+                // i8* (a C-string), the form Debug.printf's format expects — NOT
+                // the host's cajeta.lang.String object. addrspace 0 (generic) so
+                // it serves CPU (host printf) and NVPTX (vprintf) alike.
+                return builder.CreateGlobalString(decodeKernelString(tl->getRawValue()),
+                                                  "kstr");
             }
             unsupported("text/string literal in kernel body");
         }
@@ -2052,6 +2088,23 @@ private:
                                        ? LoweringTarget::FenceScope::Workgroup
                                        : LoweringTarget::FenceScope::Device,
                                    order);
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+            }
+        } else if (recv == "Debug") {
+            // Device printf (Stage 11): Debug.printf("fmt", a, b, …). The first
+            // arg is a string-literal format (→ i8*); the rest are explicit
+            // scalar values (Path A — no C varargs in the language). CPU calls
+            // host printf; NVPTX emits vprintf; AMD/Vulkan reject (deferred).
+            if (name == "printf") {
+                const auto& args = mc->getParameters();
+                if (args.empty())
+                    unsupported("Debug.printf needs a format string");
+                llvm::Value* fmt = lowerExpr(args[0].expression);
+                std::vector<llvm::Value*> pargs;
+                pargs.reserve(args.size() - 1);
+                for (size_t i = 1; i < args.size(); ++i)
+                    pargs.push_back(lowerExpr(args[i].expression));
+                target.devicePrintf(builder, mod, fmt, pargs);
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
         } else if (recv == "Wave") {
@@ -4162,6 +4215,15 @@ void LoweringTarget::memoryFence(llvm::IRBuilderBase& b, llvm::Module& /*m*/,
     if (ord == llvm::AtomicOrdering::Monotonic)      // a relaxed fence is a no-op
         ord = llvm::AtomicOrdering::AcquireRelease;
     b.CreateFence(ord);
+}
+
+// Default device printf: rejected. CPU + NVPTX override; AMD/Vulkan need
+// hostcall / DebugPrintf runtime integration (deferred).
+void LoweringTarget::devicePrintf(llvm::IRBuilderBase&, llvm::Module&,
+                                  llvm::Value*, llvm::ArrayRef<llvm::Value*>) {
+    throw cajeta::Exception(
+        "Debug.printf is not supported on this backend (CPU + NVPTX only; AMD "
+        "hostcall / Vulkan DebugPrintf deferred)", "XPU-N01");
 }
 
 // Default float atomic: a system-scope atomicrmw at `order` (Default → relaxed/

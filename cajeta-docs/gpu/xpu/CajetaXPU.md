@@ -483,7 +483,7 @@ Where each cell stands, per backend.
 | Atomics on float                 | `atomicAdd` float    | `flat_atomic_fadd`       | `VK_EXT_shader_atomic_float`           |
 | Raw device pointers              | yes (default)        | yes (default)            | `KHR_buffer_device_address` + `PhysicalStorageBuffer` |
 | `malloc` inside kernel           | yes (device heap)    | yes                      | no                                     |
-| `printf` inside kernel           | yes (`vprintf`)      | yes (hostcall)           | `KHR_non_semantic_info` debug printf   |
+| `printf` inside kernel — `Debug.printf("fmt", a, …)` (explicit args). **CPU: done + runnable** (host `printf`). NVPTX: **emit-only** below. AMD/Vulkan: **deferred** (runtime integration). | emit-only (`vprintf`) | deferred (hostcall) | deferred (`KHR_non_semantic_info` debug printf) |
 | Graph capture                    | yes (CUDA graphs)    | yes (HIP graphs)         | n/a (use secondary cmd buffers)        |
 | Ray-tracing acceleration         | OptiX (external)     | HIP-RT (external)        | `VK_KHR_ray_tracing_pipeline`          |
 
