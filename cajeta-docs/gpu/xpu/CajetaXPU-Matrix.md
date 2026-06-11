@@ -270,7 +270,7 @@ These are backend-neutral gaps, unaffected by the Vulkan column.
 
 | Capability | Status |
 |------------|--------|
-| Real `launch(stream, grid:, block:)(args)` postfix grammar | deferred |
+| Real `launch(stream, grid:, block:)(args)` postfix grammar | **done** — the stream handle threads through to `cuLaunchKernel`/`hipModuleLaunchKernel`; async copies + cross-stream Event deps device-verified on HIP/CUDA. Vulkan/CPU accept the handle but serialize (no overlap yet). |
 | Launch-site resolution into `XpuMirLaunchSite` | placeholder |
 | MIR body-op walker (`Op_ThreadId`, `Op_BarrierWorkgroup`, …) | empty |
 | `@Device` user-defined helper calls | ✅ scalar + Buffer<T> params, same-class, helper-chains; alwaysinline-folded per backend (Vulkan: `bufferParamType` = the storage-buffer handle + AlwaysInliner before SPIR-V isel); verified on AMD & Vulkan |
