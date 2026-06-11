@@ -2074,3 +2074,76 @@ TEST(XpuVulkanDispatchDeviceTests, crossClassDeviceHelperOnDevice) {
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100+i: out[i] != i*i — cross-class @Device on device)";
 }
+
+// Stage 11: labeled break/continue (to an OUTER loop) on the Vulkan device. The
+// structurizer must keep the multi-level exits structured for SPIR-V. Results
+// distinguish a labeled jump from an innermost one: `break outer` → g*8+4,
+// `continue outer` → 8 (see labeledBreakContinueOnCpu for the reasoning).
+TEST(XpuVulkanDispatchDeviceTests, labeledBreakContinueOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class LabLoopVk {\n"
+        "    @Kernel\n"
+        "    public static void brk(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 g = Thread.globalIdX();\n"
+        "        if (g < n) {\n"
+        "            int32 acc = 0;\n"
+        "            outer: for (int32 i = 0; i < 8; i = i + 1) {\n"
+        "                for (int32 j = 0; j < 8; j = j + 1) {\n"
+        "                    acc = acc + 1;\n"
+        "                    if (i == (int32) g && j == 3) { break outer; }\n"
+        "                }\n"
+        "            }\n"
+        "            out[g] = acc;\n"
+        "        }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void cont(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 g = Thread.globalIdX();\n"
+        "        if (g < n) {\n"
+        "            int32 acc = 0;\n"
+        "            outer: for (int32 i = 0; i < 4; i = i + 1) {\n"
+        "                for (int32 j = 0; j < 4; j = j + 1) {\n"
+        "                    if (j == 2) { continue outer; }\n"
+        "                    acc = acc + 1;\n"
+        "                }\n"
+        "                acc = acc + 100;\n"
+        "            }\n"
+        "            out[g] = acc;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 8;\n"
+        "        int32[] hb = heap int32[n];\n"
+        "        int32[] hc = heap int32[n];\n"
+        "        Buffer<int32> ob = heap Buffer<int32>(n);\n"
+        "        Buffer<int32> oc = heap Buffer<int32>(n);\n"
+        "        Stream s = Stream.current();\n"
+        "        brk.launch(s, grid: [1], block: [8])(ob, n);\n"
+        "        cont.launch(s, grid: [1], block: [8])(oc, n);\n"
+        "        s.sync();\n"
+        "        ob.download(hb);\n"
+        "        oc.download(hc);\n"
+        "        for (uint32 g = 0; g < n; g = g + 1) {\n"
+        "            if (hb[g] != (int32)(g * 8 + 4)) { return (int32)(100 + g); }\n"
+        "            if (hc[g] != 8) { return (int32)(200 + g); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.LabLoopVk", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+g: break outer wrong; 200+g: continue outer wrong)";
+}

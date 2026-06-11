@@ -132,7 +132,7 @@ Part II + the Part I follow-ups is the **definition of done** for `cajeta-xpu`.
 - [~] CPU: map streams onto the threadpool (concurrent multi-stream); Vulkan: per-stream native queues / command-buffer chaining (today the Vulkan launch is synchronous and **ignores** the stream handle — correct, no overlap). The remaining Stage-10 work — perf concurrency, not a correctness gap.
 
 ### Stage 11 — Kernel-language completeness
-- [ ] Labeled `break`/`continue` in kernels (deferred `XPU-N01`)
+- [x] Labeled `break`/`continue` in kernels — `label: for(…)` + `break label;`/`continue label;` jump to an outer loop (`IdentifierLabel` stashes the label, the loop's `pushLoop` attaches it, `findLoopTarget` walks outward). Device-verified CPU + Vulkan (`labeledBreakContinueOn{Cpu,Device}`, with results that distinguish a labeled jump from an innermost one). *(Was deferred `XPU-N01`.)*
 - [x] Cross-class `@Device` helpers — a kernel calls a `@Device` method in another class (a shared device-math library); resolved via the canonicalMap, the foreign owner's body lowered in its own context (`lowerDeviceFn`). Device-verified on CPU + Vulkan (`crossClassDeviceHelperOn{Cpu,Device}`). *(Still always-inline; the true non-inline call ABI is a separate follow-up where backends allow.)*
 - [ ] Function pointers / device-side dispatch (bounded)
 - [ ] Printf-style device debug (`printf` on NV/AMD; VK debug-printf extension)

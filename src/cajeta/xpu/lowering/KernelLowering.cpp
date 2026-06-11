@@ -525,8 +525,29 @@ private:
     bool emittedDynamicShared = false;
 
     // continue/break targets for the innermost enclosing loop.
-    struct LoopTarget { llvm::BasicBlock* continueBB; llvm::BasicBlock* breakBB; };
+    struct LoopTarget {
+        llvm::BasicBlock* continueBB;
+        llvm::BasicBlock* breakBB;
+        std::string label;            // "" for an unlabeled loop
+    };
     std::vector<LoopTarget> loopTargets;
+    std::string pendingLoopLabel_;    // set by an IdentifierLabel; the next loop consumes it
+
+    // Push a loop's break/continue targets, attaching any pending label (from a
+    // preceding `label:`), then clear it so it binds to exactly one loop.
+    void pushLoop(llvm::BasicBlock* continueBB, llvm::BasicBlock* breakBB) {
+        loopTargets.push_back({continueBB, breakBB, pendingLoopLabel_});
+        pendingLoopLabel_.clear();
+    }
+    // Resolve a break/continue target: a named label walks outward for a match;
+    // an empty label is the innermost loop. nullptr ⇒ no such target.
+    const LoopTarget* findLoopTarget(const std::string& label) {
+        if (label.empty())
+            return loopTargets.empty() ? nullptr : &loopTargets.back();
+        for (auto it = loopTargets.rbegin(); it != loopTargets.rend(); ++it)
+            if (it->label == label) return &*it;
+        return nullptr;
+    }
 
     // Allocate a slot in the function entry block (so it dominates every use
     // regardless of which loop/branch block is current). The alloca address
@@ -549,6 +570,15 @@ private:
         }
         if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
             lowerStatement(ls->getBlock());
+            return;
+        }
+        if (auto il = std::dynamic_pointer_cast<IdentifierLabel>(node)) {
+            // `label: <loop>` — stash the label so the labeled loop's pushLoop
+            // attaches it (mirrors the host IdentifierLabel). A label on a
+            // non-loop statement is harmless: it's cleared after the body runs.
+            pendingLoopLabel_ = il->getIdentifier();
+            lowerStatement(il->getBody());
+            pendingLoopLabel_.clear();
             return;
         }
         if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
@@ -576,18 +606,22 @@ private:
             return;
         }
         if (auto bs = std::dynamic_pointer_cast<BreakStatement>(node)) {
-            if (!bs->getLabel().empty()) unsupported("labeled break");
-            if (loopTargets.empty()) unsupported("break outside loop");
-            builder.CreateBr(loopTargets.back().breakBB);
+            const LoopTarget* t = findLoopTarget(bs->getLabel());
+            if (!t) unsupported(bs->getLabel().empty()
+                    ? "break outside loop"
+                    : "break: no enclosing loop labeled '" + bs->getLabel() + "'");
+            builder.CreateBr(t->breakBB);
             // Trailing (dead) statements need somewhere to land; the
             // enclosing loop's tail-branch fixup terminates this block.
             builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "after.break", fn));
             return;
         }
         if (auto cs = std::dynamic_pointer_cast<ContinueStatement>(node)) {
-            if (!cs->getLabel().empty()) unsupported("labeled continue");
-            if (loopTargets.empty()) unsupported("continue outside loop");
-            builder.CreateBr(loopTargets.back().continueBB);
+            const LoopTarget* t = findLoopTarget(cs->getLabel());
+            if (!t) unsupported(cs->getLabel().empty()
+                    ? "continue outside loop"
+                    : "continue: no enclosing loop labeled '" + cs->getLabel() + "'");
+            builder.CreateBr(t->continueBB);
             builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "after.continue", fn));
             return;
         }
@@ -877,7 +911,7 @@ private:
             : llvm::ConstantInt::getTrue(ctx);   // null cond ⇒ always-true
         builder.CreateCondBr(cond, body, exit);
         builder.SetInsertPoint(body);
-        loopTargets.push_back({upd, exit});
+        pushLoop(upd, exit);
         lowerStatement(fs->getBody());
         loopTargets.pop_back();
         if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(upd);
@@ -986,7 +1020,7 @@ private:
             target.bufferElementPtr(builder, mod, bv->second, elemTy, i64idx);
         builder.CreateStore(builder.CreateLoad(elemTy, addr, "fe.elem"),
                             elemSlot);
-        loopTargets.push_back({upd, exit});
+        pushLoop(upd, exit);
         lowerStatement(efs->getBody());
         loopTargets.pop_back();
         if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(upd);
@@ -1009,7 +1043,7 @@ private:
         builder.SetInsertPoint(head);
         builder.CreateCondBr(toI1(lowerExpr(ws->getCondition())), body, exit);
         builder.SetInsertPoint(body);
-        loopTargets.push_back({head, exit});
+        pushLoop(head, exit);
         lowerStatement(ws->getBody());
         loopTargets.pop_back();
         if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(head);
@@ -1023,7 +1057,7 @@ private:
         auto* exit = llvm::BasicBlock::Create(ctx, "do.exit", fn);
         builder.CreateBr(body);
         builder.SetInsertPoint(body);
-        loopTargets.push_back({tail, exit});
+        pushLoop(tail, exit);
         lowerStatement(ds->getBody());
         loopTargets.pop_back();
         if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(tail);
