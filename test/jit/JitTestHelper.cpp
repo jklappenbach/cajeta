@@ -613,6 +613,23 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                     fqEntryClass.c_str());
             }
             // loop: re-run the parse on a fresh, isolated Compiler
+        } catch (...) {
+            // A reusing test whose compile THROWS (e.g. an expected-error test
+            // such as TemplateBasicTests.diamondWithoutInferableConstructorThrows)
+            // never reaches the end-of-compile struct-name release below. The
+            // user structs it created keep their names in the shared LLVMContext
+            // and poison a later same-named test (TemplatedInterfaceV2Tests'
+            // `Holder<int32>` GEPs into the stale layout). Free those names now —
+            // while this test's modules and type tables are still intact — then
+            // rethrow so the test still observes its expected failure. Only on
+            // the reuse path; the ReuseHazardAbort retry above is handled
+            // separately and never reaches here.
+            if (reuseStdlib) {
+                cajeta::CajetaType::releaseThrownTransientStructNames();
+                cajeta::CajetaModule::setReuseEmitModule(nullptr);
+                cajeta::Compiler::setReuseHazardArmed(false);
+            }
+            throw;
         }
     }
     cajeta::Compiler::setReuseHazardArmed(false);

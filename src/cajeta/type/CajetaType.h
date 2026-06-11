@@ -411,6 +411,13 @@ class CajetaType : public Modifiable, public Annotatable,
         // reuse path (production never calls them).
         static void captureBaseline();
         static void restoreBaseline();
+        // Test stdlib-reuse support: free the shared-context LLVM struct NAMES of
+        // the transient user types a THROWING compile left behind (a test whose
+        // compile threw never reached its normal end-of-compile struct-name
+        // release), so a later same-named test can't pick up a stale layout via
+        // StructType::getTypeByName. Preserves stdlib-resident (reusable)
+        // instantiations. No-op outside the reuse path.
+        static void releaseThrownTransientStructNames();
 
 
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties);
