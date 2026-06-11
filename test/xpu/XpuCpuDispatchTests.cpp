@@ -2419,3 +2419,44 @@ TEST(XpuCpuDispatchTests, relaxedAtomicCounterOnCpu) {
     int r = fn();
     EXPECT_EQ(r, 777) << "got " << r << " (expected 256 — relaxed atomic count)";
 }
+
+// Stage 11: a specialization constant on CPU. `Spec.geti(0, 4242)` bakes its
+// compile-time default as an i32 literal (CPU recompiles per launch — there is
+// no pipeline-time binding to specialize against), so every element reads 4242.
+// This is the oracle for the Vulkan OpSpecConstant path, which reads the same
+// default until the launch contract can override it.
+TEST(XpuCpuDispatchTests, specConstantBakesDefaultOnCpu) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class SC {\n"
+        "    @Kernel\n"
+        "    public static void fill(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { out[i] = Spec.geti(0, 4242); }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        int32[] hout = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+        "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != 4242) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.SC", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "got " << r << " (spec default not baked as 4242?)";
+}

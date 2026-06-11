@@ -383,6 +383,108 @@ bool injectDynamicSharedSpecConstant(std::vector<uint8_t>& bytes) {
     return true;
 }
 
+// Turn ONE user spec-constant witness — a Private OpVariable named
+// `cajeta_spec_<specId>` seeded with the compile-time default (emitted by
+// SpirvKernelLowering::specConstantI32) — into a real OpSpecConstant. Create an
+// OpSpecConstant(int, default) decorated SpecId <specId> (parsed from the name)
+// and repoint the variable's initializer operand to it (a single-operand
+// rewrite, exactly like the dynamic-shared length). The launch can then override
+// it via VkSpecializationInfo (host override = the deferred launch contract;
+// today the runtime supplies nothing for SpecId ≥ 4, so it reads the default).
+// Patches the FIRST unpatched witness (one whose initializer is still a plain
+// OpConstant); injectUserSpecConstants loops until none remain. Op/enum:
+// OpName=5, OpDecorate=71, OpConstant=43, OpVariable=59, OpSpecConstant=50,
+// OpFunction=54; SpecId deco=1.
+bool injectOneUserSpecConstant(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+
+    constexpr uint32_t kOpName = 5, kOpDecorate = 71, kOpConstant = 43,
+                       kOpVariable = 59, kOpSpecConstant = 50, kOpFunction = 54,
+                       kSpecId = 1;
+
+    std::map<uint32_t, uint32_t> nameSpecId;   // OpVariable result -> specId (from name)
+    std::map<uint32_t, size_t> varInitWord;    // OpVariable result -> initializer-operand word
+    std::map<uint32_t, uint32_t> constType;    // OpConstant result -> type id
+    std::map<uint32_t, uint32_t> constVal;     // OpConstant result -> literal
+    size_t firstFn = 0, decoEnd = 0;
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if (op == kOpName && wc >= 3) {
+            const char* s = reinterpret_cast<const char*>(&w[i + 2]);
+            size_t maxLen = (wc - 2) * 4;
+            if (strnlen(s, maxLen) < maxLen) {
+                std::string nm(s);
+                const std::string pfx = "cajeta_spec_";
+                if (nm.size() > pfx.size() &&
+                    nm.compare(0, pfx.size(), pfx) == 0) {
+                    uint32_t sid = 0;
+                    bool ok = true;
+                    for (size_t k = pfx.size(); k < nm.size(); ++k) {
+                        if (nm[k] < '0' || nm[k] > '9') { ok = false; break; }
+                        sid = sid * 10 + (uint32_t) (nm[k] - '0');
+                    }
+                    if (ok) nameSpecId[w[i + 1]] = sid;
+                }
+            }
+        } else if (op == kOpVariable && wc >= 5) {   // OpVariable WITH initializer
+            // OpVariable <result-type> <result> <storage-class> <initializer>
+            varInitWord[w[i + 2]] = i + 4;
+        } else if (op == kOpConstant && wc >= 4) {
+            constType[w[i + 2]] = w[i + 1];
+            constVal[w[i + 2]] = w[i + 3];
+        } else if (op >= 71 && op <= 76) {           // any OpDecorate* / member
+            decoEnd = i + wc;
+        } else if (op == kOpFunction) {
+            firstFn = i; break;
+        }
+        i += wc;
+    }
+    if (decoEnd == 0 || firstFn == 0) return false;
+
+    // First witness whose initializer is still a plain OpConstant. An already-
+    // patched var points its initializer at the new OpSpecConstant (absent from
+    // constType/constVal), so the lookup below naturally skips it.
+    for (const auto& kv : nameSpecId) {
+        auto iw = varInitWord.find(kv.first);
+        if (iw == varInitWord.end()) continue;
+        uint32_t initId = w[iw->second];
+        auto ct = constType.find(initId);
+        auto cv = constVal.find(initId);
+        if (ct == constType.end() || cv == constVal.end()) continue;
+
+        uint32_t newId = w[3];
+        w[3] = newId + 1;
+        w[iw->second] = newId;                       // repoint the initializer
+
+        uint32_t spec[4] = {(4u << 16) | kOpSpecConstant, ct->second, newId,
+                            cv->second};             // default = the witness seed
+        uint32_t deco[4] = {(4u << 16) | kOpDecorate, newId, kSpecId, kv.second};
+        // The spec constant must precede the OpVariable that references it;
+        // insert it just before that variable. Decorations (earlier in the
+        // module) may forward-reference, so insert at decoEnd — which is < the
+        // variable position, hence unshifted by the later insert above it.
+        size_t varStart = iw->second - 4;            // OpVariable instruction start
+        w.insert(w.begin() + varStart, spec, spec + 4);
+        w.insert(w.begin() + decoEnd, deco, deco + 4);
+
+        bytes.resize(w.size() * 4);
+        std::memcpy(bytes.data(), w.data(), bytes.size());
+        return true;
+    }
+    return false;
+}
+
+// Patch every user spec-constant witness (Spec.geti). No-op without any.
+bool injectUserSpecConstants(std::vector<uint8_t>& bytes) {
+    bool any = false;
+    while (injectOneUserSpecConstant(bytes)) any = true;
+    return any;
+}
+
 } // namespace
 
 std::unique_ptr<llvm::TargetMachine>
@@ -438,6 +540,9 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     // Make a dynamic shared array's length a spec constant (SpecId 3) set from
     // the launch's sharedBytes. No-op for kernels without dynamic shared.
     injectDynamicSharedSpecConstant(spirv);
+    // Turn each Spec.geti witness global into a real OpSpecConstant (SpecId 4+,
+    // default the witness seed). No-op for kernels without Spec.geti.
+    injectUserSpecConstants(spirv);
     return spirv;
 }
 

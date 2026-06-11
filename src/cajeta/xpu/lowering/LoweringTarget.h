@@ -95,6 +95,13 @@ namespace xpu {
                                                      llvm::AtomicOrdering fallback);
         static llvm::AtomicOrdering casFailureOrdering(llvm::AtomicOrdering success);
 
+        // User specialization-constant slots (Stage 11) map to SpecId
+        // kFirstUserSpecId + slot. SpecId 0/1/2 are the workgroup-size dims and
+        // SpecId 3 is the dynamic-shared length — the runtime's reserved bank
+        // (see SpirvBackend's inject* patches) — so user slots start at 4.
+        static constexpr unsigned kFirstUserSpecId = 4;
+        static constexpr unsigned kMaxUserSpecConstants = 16;
+
         // Address space for entry-block allocas (the mutable scalar-slot model
         // — loop counters, reassigned locals). NVPTX: 0 (generic). AMDGPU: 5
         // (private). Getting this wrong on AMDGPU is the classic first bug
@@ -156,6 +163,18 @@ namespace xpu {
         virtual void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* fmt,
                                   llvm::ArrayRef<llvm::Value*> args);
+
+        // Specialization constant (Stage 11): `Spec.geti(slot, default)` → i32.
+        // `slot` selects SpecId (kFirstUserSpecId + slot); `defaultValue` is its
+        // compile-time default. The DEFAULT bakes the value as an i32 literal —
+        // correct for CPU/AMD/NVPTX, which (re)compile the kernel per launch and
+        // have no late pipeline-time binding. Vulkan overrides with a genuine
+        // OpSpecConstant so the value is override-able at pipeline creation (the
+        // host override is the deferred launch contract; for now it reads the
+        // default).
+        virtual llvm::Value* specConstantI32(llvm::IRBuilderBase& b,
+                                             llvm::Module& m, unsigned slot,
+                                             int32_t defaultValue);
 
         // Decorate a freshly-created kernel function: calling convention +
         // any kernel-marker metadata. NVPTX: ptx_kernel CC + nvvm.annotations.
