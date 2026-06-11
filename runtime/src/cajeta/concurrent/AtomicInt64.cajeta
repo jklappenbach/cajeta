@@ -1,0 +1,109 @@
+package cajeta.concurrent;
+
+/**
+ * Atomic 64-bit signed integer — a lock-free `int64` cell that multiple
+ * threads can read, write, and update without tearing or data races.
+ *
+ * Same design as `AtomicInt32` (a heap cell + compiler-emitted inline LLVM
+ * atomic instructions); see that class's doc for the rationale, the v1
+ * surface contract, and the ordered-overload constraints. The 64-bit variant
+ * matters for sequence numbers, timestamps, and generation counters that
+ * overflow `int64`'s narrower sibling under sustained traffic.
+ *
+ * The default `load`/`store`/`fetchAdd`/`compareAndSet` operations use
+ * sequentially-consistent ordering. When you need weaker guarantees, reach for
+ * the explicitly-named `*Relaxed`/`*Acquire`/`*Release` variants below.
+ *
+ * ```cajeta
+ * stack counter = AtomicInt64(0);
+ * counter.fetchAdd(1);           // returns prior value, now holds 1
+ * int64 seq = counter.load();    // 1
+ * ```
+ */
+public class AtomicInt64 {
+    pointer cell;
+
+    /**
+     * Creates an atomic cell seeded with `initial`.
+     *
+     * ```cajeta
+     * stack generation = AtomicInt64(1L);
+     * ```
+     */
+    public AtomicInt64(int64 initial) {
+        this.cell = Cajeta.atomicI64New(initial);
+    }
+
+    public ~AtomicInt64() {
+        Cajeta.atomicI64Destroy(this.cell);
+    }
+
+    /** Atomically reads the current value (sequentially consistent). */
+    public int64 load() {
+        return Cajeta.atomicI64Load(this.cell);
+    }
+
+    /** Atomically overwrites the value with `v` (sequentially consistent). */
+    public void store(int64 v) {
+        Cajeta.atomicI64Store(this.cell, v);
+    }
+
+    /**
+     * Atomically adds `delta` and returns the value held *before* the add.
+     * Wraps on `int64` overflow.
+     *
+     * ```cajeta
+     * stack seq = AtomicInt64(0L);
+     * int64 mine = seq.fetchAdd(1L);   // claim a unique id, mine == 0
+     * ```
+     */
+    public int64 fetchAdd(int64 delta) {
+        return Cajeta.atomicI64FetchAdd(this.cell, delta);
+    }
+
+    /**
+     * Atomically sets the value to `desired` only if it currently equals
+     * `expected`; returns `true` on success, `false` if another thread won.
+     *
+     * ```cajeta
+     * stack ts = AtomicInt64(0L);
+     * int64 prev = ts.load();
+     * boolean won = ts.compareAndSet(prev, prev + 1L);
+     * ```
+     */
+    public boolean compareAndSet(int64 expected, int64 desired) {
+        return Cajeta.atomicI64CompareAndSet(this.cell, expected, desired);
+    }
+
+    // ----- Fixed-ordering variants (R8.1b) — see AtomicInt32 for the
+    // rationale (distinct method names per (op, ordering) instead of an
+    // enum-based ordered overload).
+
+    /** `load` with relaxed ordering: atomicity only, no synchronization. */
+    public int64 loadRelaxed() {
+        return Cajeta.atomicI64LoadRelaxed(this.cell);
+    }
+    /** `load` with acquire ordering: pairs with a release store on another thread. */
+    public int64 loadAcquire() {
+        return Cajeta.atomicI64LoadAcquire(this.cell);
+    }
+
+    /** `store` with relaxed ordering: atomicity only, no synchronization. */
+    public void storeRelaxed(int64 v) {
+        Cajeta.atomicI64StoreRelaxed(this.cell, v);
+    }
+    /** `store` with release ordering: publishes prior writes to acquiring readers. */
+    public void storeRelease(int64 v) {
+        Cajeta.atomicI64StoreRelease(this.cell, v);
+    }
+
+    /** `fetchAdd` with relaxed ordering; returns the prior value, wraps on overflow. */
+    public int64 fetchAddRelaxed(int64 delta) {
+        return Cajeta.atomicI64FetchAddRelaxed(this.cell, delta);
+    }
+
+    /** `compareAndSet` with acquire ordering on success; returns `true` if it swapped. */
+    public boolean compareAndSetAcquire(int64 expected, int64 desired) {
+        return Cajeta.atomicI64CompareAndSetAcquire(this.cell, expected, desired);
+    }
+}

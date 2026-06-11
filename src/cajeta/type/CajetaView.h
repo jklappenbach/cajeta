@@ -50,10 +50,11 @@ namespace cajeta {
     private:
         ViewEndianness endianness = ViewEndianness::Host;
         ViewAlignment alignment = ViewAlignment::Packed;
-        // Tracks whether endianness was explicitly annotated. Views.md
-        // requires every view declaration to carry @BigEndian / @LittleEndian
-        // / @HostEndian; the default value of `endianness` alone can't
-        // distinguish "user wrote @HostEndian" from "user wrote nothing".
+        // Tracks whether endianness was explicitly annotated. A view with no
+        // annotation defaults to host order, but nested views inherit their
+        // outer's order when unannotated (Views.md § Endianness inheritance);
+        // the default value of `endianness` alone can't distinguish
+        // "user wrote @HostEndian" from "user wrote nothing".
         bool endiannessExplicit = false;
         // Count of variable-size fields. Populated during generatePrototype;
         // used by getMinimumSize and the construction-time validation sweep.

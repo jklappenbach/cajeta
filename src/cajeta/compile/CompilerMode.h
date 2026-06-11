@@ -1,7 +1,7 @@
 //
 // CompilerMode + per-feature toggle struct.
 //
-// Spec: cajeta-docs/CompilerModes.md. The flavor flags (`--debug`, `--release`,
+// Spec: docs/CompilerModes.md. The flavor flags (`--debug`, `--release`,
 // `--fast`, `--debug-release`, `--minimal`) on the CLI expand into a
 // CompilerFlags struct, which holds one field per toggleable feature. Per-
 // feature CLI overrides (`--bounds=on`, `--source-tags=on`, etc.) override

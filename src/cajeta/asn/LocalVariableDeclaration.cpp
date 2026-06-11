@@ -174,7 +174,7 @@ namespace cajeta {
             // function type down to the lambda so it can use the declared
             // return type (and, eventually, expected param types) rather
             // than trying to infer them from a body whose own resolvedType
-            // isn't always populated. See cajeta-docs/stdlib/Lambdas.md.
+            // isn't always populated. See docs/stdlib/Lambdas.md.
             if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
                 auto& children = varInit->getChildren();
                 if (!children.empty()) {
@@ -596,7 +596,7 @@ namespace cajeta {
                                         // doesn't fire pre-overwrite drops, so a
                                         // value type that owns heap fields leaks
                                         // one set of fields per iteration. See
-                                        // cajeta-docs/stdlib/ValueReturns.md (M5).
+                                        // docs/stdlib/ValueReturns.md (M5).
                                         initIsStackAlloc = true;
                                     } else {
                                         // Non-# return — the local is a borrow
@@ -737,7 +737,7 @@ namespace cajeta {
             // primitive-alias String path (i8* C-strings, with malloc'd
             // buffers that need free). cajeta.lang.String (the class
             // form) follows the never-drop rule per
-            // cajeta-docs/stdlib/lang/String.md § Memory model — its
+            // docs/stdlib/lang/String.md § Memory model — its
             // method implementations don't register drops at all, and
             // its substring is a view, not an allocation.
             //
@@ -766,7 +766,7 @@ namespace cajeta {
                         // Owned-string detection. Only applies to the
                         // LEGACY primitive String shape (i8* malloc'd
                         // buffer) — the class String follows the never-
-                        // drop rule (cajeta-docs/stdlib/lang/String.md
+                        // drop rule (docs/stdlib/lang/String.md
                         // § Memory model) and registering a drop here
                         // would double-free. Gate on ptrLike: class-
                         // typed locals (typeIsClass branch) skip this
@@ -883,7 +883,7 @@ namespace cajeta {
             // literals live in static storage, owned-mode allocations
             // (concat results, substring copies, etc.) are intentionally
             // never reclaimed per the never-drop spec
-            // (cajeta-docs/stdlib/lang/String.md § Memory model). Skip
+            // (docs/stdlib/lang/String.md § Memory model). Skip
             // the drop wiring entirely; vtable.drop_fn stays NULL.
             // (Reclaiming would require a boundary-transfer mechanism
             // for cajeta heap that escapes to C++ via the JIT lookup

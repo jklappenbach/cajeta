@@ -1,5 +1,5 @@
 // cajeta.lang.Math — Math.max / Math.min / Math.clamp end-to-end.
-// Each is a static method-level-templated utility (cajeta-docs/stdlib/
+// Each is a static method-level-templated utility (docs/stdlib/
 // MethodLevelTemplate.md). The test exercises monomorphization per
 // primitive T at the call site.
 

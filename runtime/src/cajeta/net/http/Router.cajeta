@@ -39,7 +39,7 @@ import cajeta.net.http.PathParams;
  * ## What it is — and isn't
  *
  * "**Deliberately minimal — not a web framework**" (NET-9.3 /
- * `cajeta-docs/Net.md` §HTTP-server). It is the stdlib *transport*'s
+ * `docs/Net.md` §HTTP-server). It is the stdlib *transport*'s
  * dispatch primitive: exact-method + segment-pattern matching with path
  * params, and the two HTTP defaults. It has **no** middleware chain, no
  * content negotiation, no wildcard / regex / optional segments, no route

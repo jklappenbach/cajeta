@@ -31,7 +31,7 @@ package tour;
 // lifetime; `#`-transferred values move into the worker; primitives
 // pass by value. No `Send` trait, no `Sync` trait.
 //
-// See cajeta-docs/stdlib/Thread.md for the full design.
+// See docs/stdlib/Concurrency.md for the full design.
 public class AsyncDemo extends DemoClass {
 
     // Async leaf returning a constant — exercised by the await/spawn

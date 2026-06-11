@@ -41,7 +41,7 @@ namespace cajeta {
         // NRVO sret slot, set by ReturnStatement when this `stack X(...)` is
         // the returned expression of a value-returning method. Forwarded to
         // the CreatorRest at generateCode so the instance is built directly
-        // into the caller's return slot. See cajeta-docs/stdlib/ValueReturns.md.
+        // into the caller's return slot. See docs/stdlib/ValueReturns.md.
         llvm::Value* nrvoTarget = nullptr;
     public:
         void setStackAlloc(bool v) { stackAlloc = v; }
@@ -88,6 +88,37 @@ namespace cajeta {
                                     typeArguments.push_back(CajetaConstantType::of(
                                         CajetaConstantType::parseLiteral(
                                             targ->integerLiteral())));
+                                    continue;
+                                }
+                                // Wildcard arg — `?`, `? extends T`, `? super T`
+                                // — in a `heap T<?>(...)` / `heap T<?>[n]`
+                                // creator. Mirrors CajetaType::fromContext's
+                                // wildcard branch (REFL-1.7 needs `heap
+                                // Class<?>[n]` for the registry queries). The
+                                // grammar puts the BOUND, if any, in typeType().
+                                if (targ->QUESTION() != nullptr) {
+                                    if (!CajetaType::wildcardsEnabled()) {
+                                        throw "wildcard type arguments not supported in v1";
+                                    }
+                                    CajetaTypePtr bound = nullptr;
+                                    if (targ->typeType() != nullptr) {
+                                        bound = CajetaType::fromContext(targ->typeType(), nullptr);
+                                        if (!bound) {
+                                            throw "unresolved wildcard bound type";
+                                        }
+                                    }
+                                    CajetaTypePtr wild;
+                                    if (targ->EXTENDS() != nullptr) {
+                                        wild = CajetaType::wildcardSentinelExtends(bound);
+                                    } else if (targ->SUPER() != nullptr) {
+                                        wild = CajetaType::wildcardSentinelSuper(bound);
+                                    } else {
+                                        wild = CajetaType::wildcardSentinel();
+                                    }
+                                    if (!wild) {
+                                        throw "wildcard sentinel construction failed";
+                                    }
+                                    typeArguments.push_back(wild);
                                     continue;
                                 }
                                 if (!targ->typeType()) {

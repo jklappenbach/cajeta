@@ -1,5 +1,5 @@
 //
-// Phase 3a of #68 (cajeta-docs/stdlib/OwnershipTransfer.md): body-side
+// Phase 3a of #68 (docs/stdlib/OwnershipTransfer.md): body-side
 // borrow-escape checks. When a method's formal parameter is declared
 // plain `T` (class-typed), it's a borrow — the caller still owns the
 // value and the callee can use it within the call but can't escape it

@@ -7,7 +7,7 @@ import cajeta.lang.String;
  * listening on the target address/port (the peer sent a TCP RST in
  * response to the SYN). POSIX `ECONNREFUSED` / Winsock
  * `WSAECONNREFUSED`. `kind == NetException.KIND_CONNECTION_REFUSED`
- * (2). See [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * (2). See [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  *
  * The message cites the address that refused (the connecting code
  * formats `host:port` into it) so the diagnostic is actionable.

@@ -1,0 +1,106 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// Numerics for Bounded Templates. Three built-in pseudo-bounds — Numeric,
+// Integral, Floating — admit primitive numeric type arguments at template
+// instantiation, in place of the standard class/interface bound check.
+// Each instantiation monomorphizes: `Vec3<int32>` and `Vec3<float64>` are
+// distinct compiled classes with int32 / float64 field layouts, and the
+// arithmetic on T lowers to the primitive op directly (no vtable hop, no
+// boxing).
+//
+// Hierarchy:
+//   - Numeric  admits int8..int64, uint8..uint64, float32, float64
+//   - Integral admits int8..int64, uint8..uint64               (subset of Numeric)
+//   - Floating admits             float32, float64             (subset of Numeric)
+//
+// Boolean is explicitly excluded from Numeric/Integral despite carrying
+// INT_FLAG — its zero/one storage isn't an arithmetic semantics.
+public class NumericTemplatesDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Numeric Bounded Templates --");
+
+        // Numeric bound: arithmetic over any primitive numeric T.
+        Vec3<int32> vi = heap Vec3<int32>(1, 2, 3);
+        Vec3<int32> wi = heap Vec3<int32>(10, 20, 30);
+        Vec3<int32> si = vi.add(wi);
+        System.stdout.println("  Vec3<int32>(1,2,3) + Vec3<int32>(10,20,30) = (" + si.x + "," + si.y + "," + si.z + ")");
+
+        Vec3<float64> vd = heap Vec3<float64>(0.5, 1.5, 2.5);
+        Vec3<float64> wd = heap Vec3<float64>(0.25, 0.5, 0.75);
+        Vec3<float64> sd = vd.add(wd);
+        System.stdout.println("  Vec3<float64>(0.5,1.5,2.5) + Vec3<float64>(0.25,0.5,0.75) = (" + sd.x + "," + sd.y + "," + sd.z + ")");
+
+        // Integral bound: bitwise ops legal only when T is an integer type.
+        // `Bitset<int64>` instantiates; `Bitset<float64>` would fail at
+        // instantiation time with CAJETA_ERROR_TYPE_PARAMETER_BOUND.
+        Bitset<int64> bs = heap Bitset<int64>(0L);
+        bs.set(3);
+        bs.set(7);
+        // (1 << 3) | (1 << 7) = 8 + 128 = 136
+        System.stdout.println("  Bitset<int64> after set(3) + set(7) = " + bs.value + " (bits 3,7)");
+
+        // Floating bound: float-only operations like a normalize that
+        // needs division by the L2-norm. `Vec3F<int32>` would be rejected.
+        Vec3F<float64> u = heap Vec3F<float64>(3.0, 0.0, 4.0);
+        float64 mag = u.magnitude();
+        System.stdout.println("  Vec3F<float64>(3,0,4).magnitude() = " + mag);
+    }
+}
+
+// Numeric bound: works for any primitive numeric type. Field storage,
+// constructor params, and the `+` lowering all monomorphize per
+// instantiation — no boxing, no vtable hop.
+public class Vec3<T extends Numeric> {
+    public T x;
+    public T y;
+    public T z;
+
+    public Vec3(T x, T y, T z) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+    }
+
+    public Vec3<T> add(Vec3<T> other) {
+        return stack Vec3<T>(this.x + other.x, this.y + other.y, this.z + other.z);
+    }
+}
+
+// Integral bound: bitwise shift / OR are legal because the substituted
+// primitive is always an integer (uint*, int*). Instantiating with a
+// float type fails at compile time.
+public class Bitset<T extends Integral> {
+    public T value;
+
+    public Bitset(T initial) {
+        this.value = initial;
+    }
+
+    public void set(int32 bit) {
+        T mask = 1L << bit;
+        this.value = this.value | mask;
+    }
+}
+
+// Floating bound: needs division (`/`) and the `Math.sqrt` overload
+// that takes a floating-point primitive. `Vec3F<int32>` would be a
+// CAJETA_ERROR_TYPE_PARAMETER_BOUND at instantiation.
+public class Vec3F<T extends Floating> {
+    public T x;
+    public T y;
+    public T z;
+
+    public Vec3F(T x, T y, T z) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+    }
+
+    public T magnitude() {
+        T sq = this.x * this.x + this.y * this.y + this.z * this.z;
+        return Math.sqrt(sq);
+    }
+}

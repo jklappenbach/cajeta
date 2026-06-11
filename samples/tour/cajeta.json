@@ -1,0 +1,82 @@
+{
+    // Cajeta language tour — built with the cajeta build tool.
+    // Layout follows the standard project shape (see
+    // samples/buildtool/basic and docs/BuildTool.md):
+    //   cajeta.json                         ← this manifest
+    //   src/main/cajeta/<package>/*.cajeta  ← sources (package `tour`)
+    //   build/exe/tour                      ← built binary (gitignored)
+    //
+    // Build + run from this directory:
+    //   cajeta build     → build/exe/tour
+    //   cajeta run       → build + execute (what run.sh does)
+    //   cajeta clean     → wipe build/
+
+    "details": {
+        "name":                "tour",
+        "version":             "0.1.0",
+        "description":         "Cajeta language feature tour",
+        "license":             "Apache-2.0",
+        "authors":             ["cajeta"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        // The tour exercises file I/O (FileIoDemo) and the clock
+        // (time/async demos); no network capability needed.
+        "capabilities": ["filesystem", "clock"],
+
+        // The core stdlib (cajeta.lang, cajeta.io, cajeta.concurrent,
+        // cajeta.time, …) is built into the toolchain — not declared or
+        // fetched — and dead-code elimination links only what the tour
+        // actually uses. The tour has no third-party dependencies.
+        "dependencies": {},
+
+        "build": {
+            // src/main/cajeta is the default source root; stated here
+            // for clarity. Entry is tour.Tour::main(String[]).
+            "source-root":  "src/main/cajeta",
+            "target":       "host",
+            "entry-method": "tour.Tour::main"
+        }
+    },
+
+    "tasks": {
+
+        // `output-path` puts the binary at build/tour rather than the
+        // default build/exe/<name>: the project name `tour` matches the
+        // top-level package `tour`, so the default would collide with the
+        // build/exe/tour/ object directory. build/tour also matches the
+        // location the old build-bin.sh produced.
+        "build": {
+            "description": "Build the tour to a native binary (build/tour)",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/tour", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "run": {
+            "description": "Build the tour and run it",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/tour", "id": "art" },
+                { "action": "exec", "command": "${art.path}" }
+            ]
+        },
+
+        "release": {
+            "description": "Optimized release build of the tour",
+            "actions": [
+                { "action": "build", "flavor": "release",
+                  "output-path": "build/tour", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

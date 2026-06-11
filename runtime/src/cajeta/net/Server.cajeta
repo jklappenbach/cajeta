@@ -5,7 +5,7 @@ import cajeta.net.SocketAddress;
 import cajeta.net.TcpListener;
 import cajeta.net.TcpStream;
 import cajeta.net.ServerState;
-import cajeta.threading.AtomicInt32;
+import cajeta.concurrent.AtomicInt32;
 import cajeta.time.Duration;
 
 /**
@@ -26,7 +26,7 @@ import cajeta.time.Duration;
  *
  * Backpressure / connection caps (NET-4.4) and the `Server.builder()`
  * model-selection surface (NET-4.5) layer on top — see
- * [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models).
+ * [`docs/Net.md` §Server accept models](../../../../../docs/Net.md#server-accept-models).
  *
  * ## Shape
  *
@@ -48,7 +48,7 @@ import cajeta.time.Duration;
  *
  * ## Lifecycle (NET-4.1)
  *
- * A single [`AtomicInt32`](../threading/AtomicInt32.cajeta) `state` runs
+ * A single [`AtomicInt32`](../concurrent/AtomicInt32.cajeta) `state` runs
  * the [`ServerState`](ServerState.cajeta) machine
  * (`NEW → RUNNING → DRAINING → STOPPED`). `serve` / `runAsync` flips
  * `NEW → RUNNING` (refusing a double-start), the accept loop runs while
@@ -131,7 +131,7 @@ public class Server {
      * [`build`](ServerBuilder.cajeta#build) dispatches to either
      * [`Server.bind`](#bind) or
      * [`SharedPoolServer.bind`](SharedPoolServer.cajeta#bind). See
-     * [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models)
+     * [`docs/Net.md` §Server accept models](../../../../../docs/Net.md#server-accept-models)
      * for the when-to-use-which tradeoff.
      */
     public static #ServerBuilder builder() {
@@ -359,7 +359,7 @@ public class Server {
      * connections still running.
      *
      * The wait is a poll-with-backoff over the atomic in-flight count —
-     * the same shape [`Tasks.selectReceive`](../threading/Tasks.cajeta#selectReceive)
+     * the same shape [`Tasks.selectReceive`](../concurrent/Tasks.cajeta#selectReceive)
      * uses — rather than a condition variable, because the decrements come
      * from `finally` blocks on independent connection fibers and a poll
      * keeps the drain free of a shared wait primitive on the hot accept

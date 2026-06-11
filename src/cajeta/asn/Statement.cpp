@@ -256,8 +256,8 @@ namespace cajeta {
             // fire deterministically at the closing `}` of the
             // resource's declaring block, so the wrapped-declaration
             // dance was strictly redundant with `{ R r = …; … }`.
-            // See cajeta-docs/MemoryModel.md § Destructors and
-            // cajeta-docs/stdlib/io/file/Readme.md § Design tenets.
+            // See docs/MemoryModel.md § Destructors and
+            // docs/stdlib/io/file/Readme.md § Design tenets.
             BlockPtr tryBlk = ctx->block() ? buildBlock(ctx->block()) : nullptr;
             std::vector<CatchClause> catches;
             for (auto* ccCtx : ctx->catchClause()) {
@@ -342,7 +342,7 @@ namespace cajeta {
     }
 
     llvm::Value* ExpressionStatement::generateCode(CajetaModulePtr module) {
-        // discarded-wildcard-next (cajeta-docs/LintRules.md). When an
+        // discarded-wildcard-next (docs/LintRules.md). When an
         // element-producing call on a wildcard receiver appears in
         // statement position — the returned `#Optional<?>` is allocated
         // and immediately discarded — both the heap allocation and the
@@ -410,7 +410,7 @@ namespace cajeta {
         return nullptr;
     }
 
-    // cajeta-docs/stdlib/Thread.md — `scope { ... }` is a structured-concurrency block.
+    // docs/stdlib/Concurrency.md — `scope { ... }` is a structured-concurrency block.
     // R5-A: every spawn site inside the block registers its task's done-
     // addr with the active scope frame; at the closing `}` we wait for
     // each one before letting control past. The scope frame stack is
@@ -1388,7 +1388,7 @@ namespace cajeta {
         // ABI in Method.cpp) and for lambdas via the LLVM signature itself
         // (M5(b) — lambdas have no Method context but their underlying
         // function carries the sret attribute on arg 0).
-        // See cajeta-docs/stdlib/ValueReturns.md.
+        // See docs/stdlib/ValueReturns.md.
         llvm::Function* curFn = builder->GetInsertBlock()->getParent();
         bool sretMethod = false;
         if (auto m = module->getCurrentMethod()) {
@@ -1530,7 +1530,7 @@ namespace cajeta {
                         "freed by this function's scope-exit drop chain "
                         "and hands back a dangling pointer. Fix: change "
                         "the return type to `#T` so ownership transfers "
-                        "to the caller. See cajeta-docs/stdlib/"
+                        "to the caller. See docs/stdlib/"
                         "MemoryModel.md § Function signatures.",
                         "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
                 }
@@ -1567,7 +1567,7 @@ namespace cajeta {
                                     "signature — won't register a fresh drop "
                                     "entry on receipt: the allocation silently "
                                     "leaks. Fix: change the return type to "
-                                    "`#T`. See cajeta-docs/stdlib/MemoryModel"
+                                    "`#T`. See docs/stdlib/MemoryModel"
                                     ".md § Function signatures.",
                                     "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
                             }
@@ -1612,7 +1612,7 @@ namespace cajeta {
                                             "caller transfers ownership, or "
                                             "change the return type to plain "
                                             "`T` (borrow pass-through). See "
-                                            "cajeta-docs/stdlib/OwnershipTransfer.md.",
+                                            "docs/stdlib/OwnershipTransfer.md.",
                                         "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
                                 }
                             }

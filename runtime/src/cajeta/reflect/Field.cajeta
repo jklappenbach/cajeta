@@ -1,0 +1,225 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+import cajeta.lang.Boolean;
+import cajeta.lang.Int8;
+import cajeta.lang.Int16;
+import cajeta.lang.Int32;
+import cajeta.lang.Int64;
+import cajeta.lang.UInt8;
+import cajeta.lang.UInt16;
+import cajeta.lang.UInt32;
+import cajeta.lang.UInt64;
+import cajeta.lang.Char;
+import cajeta.lang.Float32;
+import cajeta.lang.Float64;
+
+/**
+ * A declared field (property) of a class (REFL-4). Reflective access is
+ * data-driven: get/set load/store at the field's byte offset (REFL-2A) — no
+ * per-class accessor code. The accessor's type must match the field's type
+ * (type/visibility enforcement arrives with REFL-3.3).
+ */
+public final class Field {
+    pointer rtti;
+    int32 index;
+
+    @Native("__cajeta_rtti_field_name_len")
+    private static int32 nameLen(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_field_name_into")
+    private static void nameInto(pointer rtti, int32 idx, int8[] out);
+    @Native("__cajeta_rtti_field_modifiers")
+    private static int32 modsOf(pointer rtti, int32 idx);
+    // REFL-3.3 (D1): 1 if this field is private AND its class is @Sealed.
+    @Native("__cajeta_reflect_field_blocked")
+    private static int32 accessBlocked(pointer rtti, int32 idx);
+    @Native("__cajeta_rtti_field_type_flags")
+    private static int64 typeFlagsOf(pointer rtti, int32 idx);
+    @Native("__cajeta_field_get_i32")
+    private static int32 getI32(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_i32")
+    private static void setI32(Object o, pointer rtti, int32 idx, int32 v);
+    @Native("__cajeta_field_get_i64")
+    private static int64 getI64(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_i64")
+    private static void setI64(Object o, pointer rtti, int32 idx, int64 v);
+    @Native("__cajeta_field_get_bool")
+    private static int32 getBoolNative(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_bool")
+    private static void setBoolNative(Object o, pointer rtti, int32 idx, int32 v);
+    @Native("__cajeta_field_get_f32")
+    private static float32 getF32(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_f32")
+    private static void setF32(Object o, pointer rtti, int32 idx, float32 v);
+    @Native("__cajeta_field_get_f64")
+    private static float64 getF64(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_f64")
+    private static void setF64(Object o, pointer rtti, int32 idx, float64 v);
+    // REFL-4.1 boxing (W5b): this field's type kind (CAJETA_RK_* mirror).
+    @Native("__cajeta_rtti_field_kind")
+    private static int32 fieldKind(pointer rtti, int32 idx);
+    // W2 boxing: width-correct 8/16-bit field reads (the i32 load over-reads a
+    // 1/2-byte field). Signed sign-extend, unsigned zero-extend into int32.
+    @Native("__cajeta_field_get_i8")
+    private static int32 getI8(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_get_u8")
+    private static int32 getU8(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_get_i16")
+    private static int32 getI16(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_get_u16")
+    private static int32 getU16(Object o, pointer rtti, int32 idx);
+    // REFL-6a annotation reflection. ownerKind 1 = a field; the field index is
+    // passed as ownerIndex.
+    @Native("__cajeta_rtti_annotation_count")
+    private static int32 annCountNative(pointer rtti, int32 ok, int32 oi, int32 si);
+    @Native("__cajeta_rtti_annotation_name_len")
+    private static int32 annNameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_name_into")
+    private static void annNameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int8[] out);
+
+    public Field(pointer rtti, int32 index) {
+        this.rtti = rtti;
+        this.index = index;
+    }
+
+    public int32 getIndex() { return this.index; }
+
+    /** The declared field name (e.g. `"id"`). */
+    public #String getName() {
+        int32 len = nameLen(this.rtti, this.index);
+        int8[] out = heap int8[len];
+        nameInto(this.rtti, this.index, out);
+        return heap String(#out, len);
+    }
+
+    /** Raw modifier bit field (see Modifier). */
+    public int32 getModifierFlags() { return modsOf(this.rtti, this.index); }
+
+    /** This field's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
+    public #Modifiers getModifiers() { return heap Modifiers(modsOf(this.rtti, this.index)); }
+
+    /** Field type-flag word (CajetaType TYPE_ID bits). */
+    public int64 getTypeFlags() { return typeFlagsOf(this.rtti, this.index); }
+
+    // --- annotations (REFL-6a; names only — arguments are REFL-6b) ----------
+
+    /** Number of annotations declared on this field. */
+    public int32 getAnnotationCount() {
+        return annCountNative(this.rtti, 1, this.index, 0);
+    }
+
+    /** Canonical name of this field's annotation at `i` (empty if out of range). */
+    public #String getAnnotationName(int32 i) {
+        int32 len = annNameLen(this.rtti, 1, this.index, 0, i);
+        int8[] out = heap int8[len];
+        annNameInto(this.rtti, 1, this.index, 0, i, out);
+        return heap String(#out, len);
+    }
+
+    /** This field's annotation at `i` as an {@link Annotation} object. */
+    public #Annotation getAnnotation(int32 i) {
+        return heap Annotation(this.rtti, 1, this.index, 0, i);
+    }
+
+    /** Whether this field declares an annotation with the given canonical name. */
+    public boolean hasAnnotation(String name) {
+        int32 n = this.getAnnotationCount();
+        int32 i = 0;
+        while (i < n) {
+            if (this.getAnnotationName(i).equals(name)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * REFL-3.3 visibility gate (decision D1). Reflective field access is
+     * default-open; a `@Sealed` class bars access to its private fields. Every
+     * get/set runs this first and throws if the field is sealed-off.
+     */
+    private void checkAccess() {
+        if (accessBlocked(this.rtti, this.index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective access to a private field of a @Sealed class is denied");
+        }
+    }
+
+    public int32 getInt32(Object o) { checkAccess(); return getI32(o, this.rtti, this.index); }
+    public void setInt32(Object o, int32 v) { checkAccess(); setI32(o, this.rtti, this.index, v); }
+    public int64 getInt64(Object o) { checkAccess(); return getI64(o, this.rtti, this.index); }
+    public void setInt64(Object o, int64 v) { checkAccess(); setI64(o, this.rtti, this.index, v); }
+    public boolean getBoolean(Object o) { checkAccess(); return getBoolNative(o, this.rtti, this.index) != 0; }
+    public void setBoolean(Object o, boolean v) { checkAccess(); setBoolNative(o, this.rtti, this.index, v ? 1 : 0); }
+    public float32 getFloat32(Object o) { checkAccess(); return getF32(o, this.rtti, this.index); }
+    public void setFloat32(Object o, float32 v) { checkAccess(); setF32(o, this.rtti, this.index, v); }
+    public float64 getFloat64(Object o) { checkAccess(); return getF64(o, this.rtti, this.index); }
+    public void setFloat64(Object o, float64 v) { checkAccess(); setF64(o, this.rtti, this.index, v); }
+
+    /**
+     * REFL-4.1 boxing (plan W5b). Read this field as a uniform owned `#Object`,
+     * regardless of its type — the field-side counterpart to
+     * `Method.invokeBoxed`, for generic consumers (serializers, inspectors)
+     * walking fields of unknown type.
+     *
+     * A primitive field is boxed into its `cajeta.lang` wrapper. A primitive
+     * with no W1 wrapper yet (int8/16/128, unsigned, char, half/quad/ML floats)
+     * raises `UnsupportedReflectionException` (plan W2-W4). A **reference**
+     * field also raises it: handing the held reference back as an owned
+     * `#Object` would double-drop (the object still owns it), and reflection has
+     * no borrow-return surface yet — read such fields with the typed accessors
+     * or recurse through a future borrow-returning API instead.
+     */
+    public #Object getBoxed(Object o) {
+        checkAccess();
+        int32 kind = fieldKind(this.rtti, this.index);
+        if (kind == 1) {                               // boolean
+            return Boolean.of(getBoolNative(o, this.rtti, this.index) != 0);
+        }
+        if (kind == 2) {                               // int32
+            return Int32.of(getI32(o, this.rtti, this.index));
+        }
+        if (kind == 3) {                               // int64
+            return Int64.of(getI64(o, this.rtti, this.index));
+        }
+        if (kind == 4) {                               // float32
+            return Float32.of(getF32(o, this.rtti, this.index));
+        }
+        if (kind == 5) {                               // float64
+            return Float64.of(getF64(o, this.rtti, this.index));
+        }
+        // W2 widths — 8/16-bit need width-correct loads; 32/64-bit reuse the
+        // i32/i64 loads (same width, reinterpreted to the exact wrapper type).
+        if (kind == 8) {                               // int8
+            return Int8.of((int8) getI8(o, this.rtti, this.index));
+        }
+        if (kind == 9) {                               // int16
+            return Int16.of((int16) getI16(o, this.rtti, this.index));
+        }
+        if (kind == 10) {                              // uint8
+            return UInt8.of((uint8) getU8(o, this.rtti, this.index));
+        }
+        if (kind == 11) {                              // uint16
+            return UInt16.of((uint16) getU16(o, this.rtti, this.index));
+        }
+        if (kind == 12) {                              // uint32
+            return UInt32.of((uint32) getI32(o, this.rtti, this.index));
+        }
+        if (kind == 13) {                              // uint64
+            return UInt64.of((uint64) getI64(o, this.rtti, this.index));
+        }
+        if (kind == 14) {                              // char (i32)
+            return Char.of((char) getI32(o, this.rtti, this.index));
+        }
+        // kind 6 (reference — ownership-unsafe, would double-drop) or 7 (128-bit
+        // int, half/quad/ML float, or pointer). The W3/W4 wrapper CLASSES exist
+        // now, but reflective auto-boxing of these FIELDS isn't wired — the
+        // width-correct loads (2-byte half/bfloat, 16-byte float128, sub-byte
+        // ML) have no field-read natives yet. Read with the typed accessors and
+        // box manually until those land.
+        throw heap UnsupportedReflectionException(
+            "getBoxed: this field type is not auto-boxable (reference, 128-bit int, half/quad/ML float, or pointer); read it with a typed accessor and box manually");
+    }
+}

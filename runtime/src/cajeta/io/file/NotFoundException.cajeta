@@ -6,7 +6,7 @@ import cajeta.lang.String;
  * Thrown when an operation names a path that does not exist —
  * opening, reading, or stat-ing a missing file or a path whose
  * parent directory is absent. Maps to POSIX `ENOENT`. See
- * `cajeta-docs/stdlib/io/file/Errors.md`.
+ * `docs/stdlib/io/file/Errors.md`.
  *
  * A recoverable subtype of `IoException`: catch it to create
  * the file on demand or report a clean "not found" to the user,

@@ -1,5 +1,5 @@
 // Compiler-diagnostic helpers for the --diag-hints feature
-// (cajeta-docs/CompilerModes.md § --diag-hints). When the flag is on,
+// (docs/CompilerModes.md § --diag-hints). When the flag is on,
 // error and warning messages that name an unresolved identifier are
 // enriched with "did you mean..." suggestions drawn from contextually
 // available names. When the flag is off, callers skip the lookup

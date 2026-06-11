@@ -109,6 +109,14 @@ namespace cajeta {
         // and !prototypeBuilt is the next candidate to lay out.
         bool prototypeBuilt = false;
         CajetaModulePtr module;
+        // Emit target for this class's own IR (vtable / RTTI / clinit / static
+        // fields). Null → getEmitModule() falls back to `module` (production /
+        // non-reuse: resolution and emission coincide). Set only in the stdlib
+        // test-reuse path for a stdlib-template instantiation over a USER type:
+        // `module` stays the stdlib template module (resolution), emitModule is
+        // the user module, so this instantiation's globals land there and the
+        // cached stdlib stays pristine. Methods inherit it at construction.
+        CajetaModulePtr emitModule;
         ScopePtr scope;
 
         // Templates. `typeParameters` non-empty AND `typeArguments` empty =
@@ -144,6 +152,12 @@ namespace cajeta {
         llvm::StructType* llvmRttiType = nullptr;
         llvm::StructType* llvmReferenceType = nullptr;
         llvm::GlobalVariable* llvmRttiGlobal = nullptr;
+        // Cached per-class reflection object — a constant
+        // `cajeta.reflect.Class` instance { ptr Class#VTable, ptr rtti }.
+        // `T.class` lowers to its address; `getClass()` reaches it through
+        // the vtable's classObject slot. One per type, no allocation
+        // (Reflection.md Strategy 7).
+        llvm::GlobalVariable* llvmClassObjectGlobal = nullptr;
         // Synthesized drop wrapper for this class — see getOrCreateDropFunction.
         // Cached on first request so LocalVariableDeclaration's drop-entry
         // registration is a constant-time lookup per declaration site.
@@ -159,6 +173,24 @@ namespace cajeta {
         // multiple heap-class local sites all see a no-op after the
         // first patch.
         bool llvmDropFunctionPatched = false;
+
+        // REFL-2: synthesized per-class reflection adapters. The invoke adapter
+        // is `void(ptr obj, i32 methodIndex, ptr args, ptr ret)` — a switch over
+        // the class's method-list index that marshals args and makes a direct
+        // call. Forward-declared (no body) when the #Rtti constant is built so
+        // it can take the address; emitReflectInvokeBody fills the body in a
+        // post-quiescence pass once every method's LLVM function exists.
+        llvm::Function* llvmReflectInvokeFunction = nullptr;
+        bool llvmReflectInvokeBodyEmitted = false;
+
+        // REFL-2C: synthesized per-class newInstance adapter. Shape:
+        //   ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)
+        // a switch over the constructor index (see getReflectConstructorList)
+        // that allocates + zeroes + installs the vtable(s) + runs the chosen
+        // constructor, returning the new instance. Forward-declared when #Rtti
+        // is built; body filled by emitReflectNewBody post-quiescence.
+        llvm::Function* llvmReflectNewFunction = nullptr;
+        bool llvmReflectNewBodyEmitted = false;
 
         // Per-(class, interface) vtable globals. Keyed by interface
         // canonical name; value is a `[N x ptr]` constant whose entries
@@ -196,7 +228,39 @@ namespace cajeta {
         // shift after a template instantiation refresh).
         std::map<std::string, llvm::GlobalVariable*> secondaryVTables;
 
-        // MultiClassing Phase 3 v4 vbase ABI (cajeta-docs/stdlib/
+        // Reuse-cache baseline of this class's MODULE-BOUND llvm bindings,
+        // snapshotted at stdlib prime (StdlibReuseCache). All of these are
+        // lazily materialized into whatever llvm::Module is active at first use;
+        // on the test stdlib-reuse path that can be a per-test USER module, and
+        // the cached pointer then outlives that module, producing "references a
+        // function/global in a different module" on the NEXT reusing test.
+        // restoreReuseBaseline() resets them to the snapshot so each test
+        // regenerates into its own module. StructType*/layout fields are NOT
+        // snapshotted — they're context-bound (the reuse context is shared) and
+        // module-independent, so they stay valid across tests.
+        struct ReuseBindingBaseline {
+            bool valid = false;
+            // The class's emit-target module at prime. If a reusing test sets
+            // emitModule to its per-test module (redirect / reuse sink), every
+            // subsequent getEmitModule()-driven lookup on this PERSISTENT class —
+            // e.g. the runtime-fn callees (__cajeta_free / __cajeta_class_virtual_drop)
+            // resolved inside its drop body — lands in that now-freed module,
+            // producing cross-module references on the next test. Restored so
+            // baseline classes fall back to their own (stdlib) module each test.
+            CajetaModulePtr emitModule;
+            llvm::GlobalVariable* vtableGlobal = nullptr;
+            llvm::GlobalVariable* rttiGlobal = nullptr;
+            llvm::Function* dropFunction = nullptr;
+            llvm::Function* stackDropFunction = nullptr;
+            bool dropFunctionPatched = false;
+            std::map<std::string, llvm::GlobalVariable*> interfaceVTables;
+            std::map<std::string, llvm::GlobalVariable*> staticFieldGlobals;
+            std::map<std::string, llvm::GlobalVariable*> secondaryVTables;
+            std::map<Method*, llvm::Function*> methodFns;
+        };
+        ReuseBindingBaseline reuseBaseline;
+
+        // MultiClassing Phase 3 v4 vbase ABI (docs/stdlib/
         // MultiClassing.md § Phase 3): for every transitive non-self
         // ancestor of this class, the layout reserves a `ptr` slot at
         // the END of own-fields (after all sub-objects + own properties).
@@ -297,6 +361,14 @@ namespace cajeta {
         ScopePtr getScope() { return scope; }
 
         void addMethod(MethodPtr method);
+        // Fully unregister a method from every per-class map addMethod populates
+        // (methods, staticMethods, methodList, labeled/unlabeled method+ctor
+        // maps). Used by the stdlib test-reuse path to drop a prior test's
+        // method-template instantiation that was registered on a persistent
+        // stdlib host class, so the next test can re-register + re-codegen it into
+        // its own module. No production caller (instantiations there live as long
+        // as the class).
+        void removeMethod(const MethodPtr& method);
 
         void addMethods(list<MethodPtr> methods);
 
@@ -320,9 +392,30 @@ namespace cajeta {
 
         map<string, MethodPtr>& getMethods() { return methods; }
 
+        // Reparent the emit-target module of an instantiation. Used by the stdlib
+        // test-reuse path (Design B): a user-triggered stdlib-template
+        // instantiation is owned by the USER module so its vtable/RTTI/bodies
+        // emit there, leaving the cached stdlib module pristine. Call BEFORE
+        // generatePrototype. `module->getLlvmModule()` is the codegen target.
+        void setModuleForInstantiation(CajetaModulePtr m) { module = m; }
+
         list<MethodPtr>& getMethodList() { return methodList; }
 
+        // Reuse-cache only (StdlibReuseCache). captureReuseBaseline() snapshots
+        // this class's module-bound llvm bindings at stdlib prime;
+        // restoreReuseBaseline() resets any that drifted (lazily generated into a
+        // per-test user module) back to the snapshot between tests, so the next
+        // reusing test regenerates into its own module. No-ops / unused in
+        // production. See ReuseBindingBaseline.
+        void captureReuseBaseline();
+        void restoreReuseBaseline();
+
         CajetaModulePtr getModule() { return module; }
+
+        // The module this class's own IR is CREATED in (see emitModule). Falls
+        // back to the resolution module when unset — production / non-reuse.
+        CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
+        void setEmitModule(CajetaModulePtr m) { emitModule = m; }
 
         list<CajetaClassPtr>& getSuperClasses() { return superClasses; }
 
@@ -508,6 +601,45 @@ namespace cajeta {
         // owned by the stack frame, not the heap allocator.
         llvm::Function* getOrCreateStackDropFunction();
 
+        // REFL-2: return (creating on first call) the DECLARATION of this
+        // class's reflective invoke adapter — `void(ptr obj, i32 methodIndex,
+        // ptr args, ptr ret)`. No body is emitted here; the #Rtti constant
+        // references the declaration, and emitReflectInvokeBody fills it in
+        // later. Returns null only if creation isn't possible.
+        llvm::Function* getOrCreateReflectInvokeDecl();
+
+        // REFL-2: emit the body of the reflective invoke adapter (idempotent).
+        // Called once per class after the Phase-1/2 codegen loop quiesces, so
+        // every method's getLlvmFunction() is available for a direct call.
+        void emitReflectInvokeBody();
+
+        // REFL-2C: deterministically-ordered list of this class's constructors
+        // (sorted by canonical signature). The index space the newInstance
+        // adapter switches over and the #Rtti constructor table report.
+        std::vector<MethodPtr> getReflectConstructorList();
+
+        // REFL-2C: declaration / body of the reflective newInstance adapter,
+        // mirroring getOrCreateReflectInvokeDecl / emitReflectInvokeBody.
+        llvm::Function* getOrCreateReflectNewDecl();
+        void emitReflectNewBody();
+
+        // REFL-8/REFL-10: post-pass that patches a deferred #ClassObject. A
+        // class parsed before cajeta.reflect.Class gets a #ClassObject whose
+        // slot 0 (Class#VTable) was NULL at populate time and was left out of
+        // the process registry. Once the whole stdlib (Class included) is built,
+        // this fills slot 0 with the real Class#VTable and registers the class,
+        // so forName/allClasses/classesInPackage/classesAnnotated can reflect on
+        // it without a null-vtable virtual-dispatch crash. No-op for classes
+        // whose slot 0 already resolved (and were already registered).
+        void finalizeClassObject();
+
+        // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
+        // canonical wildcard instantiation Class<?> (idempotent, no-op if Class
+        // isn't a template or is absent). Called once after parse/prototype and
+        // before Phase 1/2 codegen so its method bodies are emitted and every
+        // type's #ClassObject can embed its (shared) vtable.
+        static void ensureClassWildcardInstantiated();
+
         // Implicit destructor chaining helpers (MemoryModel.md § 140,
         // C++ semantics).
         //
@@ -607,6 +739,14 @@ namespace cajeta {
             return llvmRttiGlobal;
         }
 
+        void setClassObjectGlobal(llvm::GlobalVariable* g) {
+            this->llvmClassObjectGlobal = g;
+        }
+
+        llvm::GlobalVariable* getClassObjectGlobal() {
+            return llvmClassObjectGlobal;
+        }
+
         void setClassBody(ClassBodyDeclarationPtr classBody);
 
         // Resolve names in `qExtended` to actual CajetaClassPtr instances and
@@ -669,7 +809,7 @@ namespace cajeta {
         CajetaClassPtr instantiate(vector<CajetaTypePtr> args);
         // The actual instantiation logic; `instantiate` is a thin wrapper that
         // also records cross-module instantiation obligations (incremental
-        // compilation, Phase 2/3 — cajeta-docs/IncrementalCompilation.md).
+        // compilation, Phase 2/3 — docs/IncrementalCompilation.md).
         CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args);
 
         // Diamond-operator inference (TPL-7). Given the argument types of a
@@ -738,7 +878,7 @@ namespace cajeta {
         // when an unsupported field type is encountered.
         void synthesizeAutoHash();
 
-        // Lombok-mirror synthesizers (cajeta-docs/stdlib/Annotations.md
+        // Lombok-mirror synthesizers (docs/stdlib/Annotations.md
         // § Section 2). Each is gated on a class-level or field-level
         // annotation and runs once during generatePrototype after
         // ensureDefaultConstructor + synthesizeAutoHash. User-declared
@@ -802,7 +942,7 @@ namespace cajeta {
         // encoder owns the wire format. Phase A in v1 reserves the
         // surface + enforces mutual exclusion + emits "not yet
         // implemented" until Phase B lands the actual synthesis.
-        // See cajeta-docs/stdlib/Annotations.md § @Encoding for views.
+        // See docs/stdlib/Annotations.md § @Encoding for views.
         void synthesizeEncoding();
 
         // @Builder on class. Synthesizes a nested `Outer.Builder` class

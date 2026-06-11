@@ -4,7 +4,7 @@
 // `Cajeta.lockDestroy`. These are the low-level building blocks the
 // future user-facing `Lock` class will wrap with RAII semantics once
 // user-defined-drop-on-class infrastructure lands. See
-// cajeta-docs/stdlib/Thread.md § Synchronization primitives.
+// docs/stdlib/Concurrency.md § Synchronization primitives.
 //
 // These tests exercise the intrinsics on a single thread — sufficient
 // to verify the API behaves and the runtime helpers wire correctly.

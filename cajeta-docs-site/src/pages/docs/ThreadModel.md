@@ -126,7 +126,7 @@ The token is propagated automatically; user code rarely sees it explicitly. For 
 
 ## Synchronization primitives
 
-All core sync primitives live in package **`cajeta.threading`** — `cajeta.threading.Mutex`, `cajeta.threading.Lock`, `cajeta.threading.RwLock`, `cajeta.threading.ConditionVariable`, and the guard types (`MutexGuard`, `LockGuard`, `ReadGuard`, `WriteGuard`). The future async runtime (`Task<T>`, scope/spawn/detach machinery) also lives there. Stdlib types built on these primitives (`Channel<T>`, `Semaphore`) are in the same package by convention. The code examples below omit the package qualifier for brevity, but the actual type names are fully qualified.
+All core sync primitives live in package **`cajeta.concurrent`** — `cajeta.concurrent.Mutex`, `cajeta.concurrent.Lock`, `cajeta.concurrent.RwLock`, `cajeta.concurrent.ConditionVariable`, and the guard types (`MutexGuard`, `LockGuard`, `ReadGuard`, `WriteGuard`). The future async runtime (`Task<T>`, scope/spawn/detach machinery) also lives there. Stdlib types built on these primitives (`Channel<T>`, `Semaphore`) are in the same package by convention. The code examples below omit the package qualifier for brevity, but the actual type names are fully qualified.
 
 All core sync primitives use the **RAII guard pattern**: acquiring the lock returns a guard whose lifetime is the critical section. When the guard drops (scope exit, early return, exception unwind — all handled by the existing drop chain), the lock releases automatically. "Forgot to unlock" is structurally unrepresentable.
 
@@ -411,7 +411,7 @@ A small C runtime ships in `runtime/native/`, paralleling the existing exception
 - **Executor** — N OS-thread carriers, each owning a Chase–Lev work-stealing deque. N defaults to `min(_SC_NPROCESSORS_ONLN, 4)`; `CAJETA_CARRIERS=N` overrides (clamped to `[1, 16]`). The pool condvar (`__cajeta_task_queue_cond`) wakes idle carriers when work appears anywhere in the pool.
 - **Token primitive** — atomic flag for cancellation; tasks check on resume. (Not yet implemented; lands with R5.)
 
-The user-facing `cajeta.threading.*` classes wrap these C helpers — the runtime entry points are an implementation detail. Today's intrinsic-level path (`Cajeta.lockNew()` / `Cajeta.lockAcquire(p)` / etc.) is a transitional bootstrap that the future `cajeta.threading.Lock` class will subsume; user code should target the class API, not the intrinsics, once they exist.
+The user-facing `cajeta.concurrent.*` classes wrap these C helpers — the runtime entry points are an implementation detail. Today's intrinsic-level path (`Cajeta.lockNew()` / `Cajeta.lockAcquire(p)` / etc.) is a transitional bootstrap that the future `cajeta.concurrent.Lock` class will subsume; user code should target the class API, not the intrinsics, once they exist.
 
 Suspension is delivered by `ucontext.h` (`getcontext` / `makecontext` / `swapcontext`). The compiler doesn't transform `async fn` bodies at all — they compile like ordinary functions; the trampoline emitted at each spawn site wraps the call and runs inside the spawned fiber's stack.
 

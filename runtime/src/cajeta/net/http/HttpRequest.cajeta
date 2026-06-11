@@ -381,7 +381,7 @@ public class HttpRequest {
      * segment, or the request never went through a router). The value is
      * **percent-decoded** — the [`Router`](Router.cajeta) decodes captured
      * segments before binding. Mirrors the `req.pathParam("id")` surface
-     * in `cajeta-docs/Net.md`'s HTTP-server example.
+     * in `docs/Net.md`'s HTTP-server example.
      */
     public #String pathParam(String name) {
         if (this.pathParams == null) {

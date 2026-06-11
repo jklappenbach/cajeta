@@ -99,7 +99,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // cajeta-docs/stdlib/Thread.md — `scope { ... }` is a structured-concurrency block that
+    // docs/stdlib/Concurrency.md — `scope { ... }` is a structured-concurrency block that
     // owns every Task spawned inside it; control doesn't leave the block
     // until every child task has finished or been cancelled. In the sync-
     // lowering MVP this is just a block: spawns run inline, so there are no
@@ -287,7 +287,7 @@ namespace cajeta {
     // ResourceTryStatement was removed 2026-05-20 together with the
     // grammar's `TRY resourceSpecification …` alternative —
     // destructors fire deterministically at scope exit and made
-    // try-with-resources redundant. See cajeta-docs/MemoryModel.md
+    // try-with-resources redundant. See docs/MemoryModel.md
     // § Destructors.
 
     // One labeled group within a switch — e.g. `case 1: case 2: stmts...`.

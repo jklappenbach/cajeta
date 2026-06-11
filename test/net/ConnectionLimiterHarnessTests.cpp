@@ -5,7 +5,7 @@
 // (runtime/src/cajeta/net/ConnectionLimiter.cajeta + ConnectionLimits.cajeta
 // + LoadShedPolicy.cajeta), modeled one level down via
 // ConnectionLimiterHarness.h (std::atomic standing in for
-// cajeta.threading.AtomicInt32), in the deterministic, scheduler-free
+// cajeta.concurrent.AtomicInt32), in the deterministic, scheduler-free
 // posture the other net harnesses use (ServerLifecycleHarness.h) while the
 // cajeta-surface accept loop that drives a live limiter is still being
 // wired. Three groups:

@@ -7,7 +7,7 @@
     //   - cajeta.coverage.report      — emit reports, gate on min %
     //
     // See README.md for action-by-action params/outputs.
-    // See cajeta-docs/BuildTool.md "Code coverage" for the user spec.
+    // See docs/BuildTool.md "Code coverage" for the user spec.
 
     "details": {
         "name":               "cajeta.coverage",

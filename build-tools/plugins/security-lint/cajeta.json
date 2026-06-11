@@ -8,7 +8,7 @@
     //
     // Consumed by the default `lint` task; findings merge into the
     // native lint action's unified report via the `include-findings`
-    // param. See cajeta-docs/BuildTool.md "Plugins" and "lint task".
+    // param. See docs/BuildTool.md "Plugins" and "lint task".
 
     "details": {
         "name":               "cajeta.lint.security",

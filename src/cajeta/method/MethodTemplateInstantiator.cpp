@@ -1,6 +1,6 @@
 //
 // Method::instantiateMethodTemplate(args) — per-call monomorphization of a
-// method-templated declaration into a concrete Method (cajeta-docs/stdlib/
+// method-templated declaration into a concrete Method (docs/stdlib/
 // MethodLevelTemplate.md). Mirrors the class-template TemplateInstantiator
 // flow: synthesize a re-parseable snippet from the captured method source +
 // the module's package / imports, parse with a fresh ANTLR pipeline, push
@@ -23,6 +23,7 @@
 #include "../codec/JsonSynthesizer.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/CajetaLlvmVisitor.h"
+#include "../compile/Compiler.h"
 #include "../error/Exception.h"
 #include "CajetaParser.h"
 #include "CajetaLexer.h"
@@ -72,6 +73,22 @@ namespace cajeta {
     }
 
     MethodPtr Method::instantiateMethodTemplate(std::vector<CajetaTypePtr> args) {
+        MethodPtr inst = instantiateMethodTemplateInternal(std::move(args));
+        // Incremental compilation (Phase 3): record the instantiation as an
+        // obligation of whichever module's codegen triggered us. The capture
+        // sits in this wrapper — not the internal body — so it also fires when
+        // the internal returns a cached instance (a second call site requesting
+        // the same specialization during codegen). noteCrossModuleMethodInstantiation
+        // no-ops outside codegen (currentCodegenModule null) and for same-module
+        // instantiations. Mirrors the CajetaClass::instantiate choke point.
+        if (inst) {
+            CajetaModule::noteCrossModuleMethodInstantiation(
+                CajetaModule::getCurrentCodegenModule(), inst);
+        }
+        return inst;
+    }
+
+    MethodPtr Method::instantiateMethodTemplateInternal(std::vector<CajetaTypePtr> args) {
         if (!isMethodTemplate()) {
             throw Exception(
                 "instantiateMethodTemplate invoked on non-template method "
@@ -123,11 +140,116 @@ namespace cajeta {
             }
         }
 
+        // Reuse path: this cache lives on the persistent stdlib template Method,
+        // so a hit from a PRIOR test would hand back an instantiation whose emit
+        // module (a user module) has been freed. Self-invalidate when the test
+        // generation advanced. No-op in production (epoch never bumps).
+        uint64_t epoch = CajetaModule::getReuseEpoch();
+        if (epoch != methodInstantiationCacheEpoch) {
+            // Also UNREGISTER the stale instantiations from the host class's
+            // method map. bringMethodTemplateInstantiationToLife (CajetaClass.cpp)
+            // registered each there + emitted its body into the PREVIOUS test's
+            // (now-freed) user emit module; left in place, that registration makes
+            // the next test's codegen short-circuit ("already registered") and
+            // never re-emit the body into ITS module — the call site then
+            // references an undefined symbol at JIT link. The host is the
+            // template's own parent class (persistent stdlib class), so its method
+            // map outlives the per-test modules. No-op in production (epoch never
+            // bumps; the cache is empty).
+            if (parent) {
+                for (auto& entry : methodInstantiationCache) {
+                    if (entry.second) {
+                        // Full unregister from EVERY per-class map (not just
+                        // `methods`): addMethod's duplicate-static check reads
+                        // unlabeledMethodMap, so a partial erase would re-trip it.
+                        parent->removeMethod(entry.second);
+                    }
+                }
+            }
+            methodInstantiationCache.clear();
+            methodInstantiationCacheEpoch = epoch;
+        }
+
         // Cache hit?
         std::string suffix = buildMethodArgSuffix(args);
         auto cached = methodInstantiationCache.find(suffix);
         if (cached != methodInstantiationCache.end()) {
             return cached->second;
+        }
+
+        // Emit target for this instantiation (resolution/emit separation,
+        // reuse-gated) — mirrors the class-template choke point. A stdlib method
+        // template specialized over a USER type emits into the user module so
+        // the cached stdlib stays pristine. Chosen from: a user-type method arg's
+        // emit module; the receiver class's emit module (e.g. Stream<test.M>);
+        // the active codegen frame; the per-test sink. module in production.
+        CajetaModulePtr emitOwner = module;
+        if (Compiler::getSharedContext()
+                && module == CajetaModule::getStdlibModule()) {
+            for (auto& arg : args) {
+                auto ac = std::dynamic_pointer_cast<CajetaClass>(arg);
+                if (ac && ac->getEmitModule() && ac->getEmitModule() != module) {
+                    emitOwner = ac->getEmitModule();
+                    break;
+                }
+            }
+            if (emitOwner == module && parent && parent->getEmitModule()
+                    && parent->getEmitModule() != module) {
+                emitOwner = parent->getEmitModule();
+            }
+            if (emitOwner == module
+                    && CajetaModule::getCurrentCodegenModule()
+                    && CajetaModule::getCurrentCodegenModule() != module) {
+                emitOwner = CajetaModule::getCurrentCodegenModule();
+            }
+            if (emitOwner == module
+                    && CajetaModule::getReuseEmitModule()
+                    && CajetaModule::getReuseEmitModule() != module) {
+                emitOwner = CajetaModule::getReuseEmitModule();
+            }
+        }
+
+        // Reuse-cache hazard gate (test-only; see Compiler::setReuseHazardArmed
+        // and the twin gate in TemplateInstantiator.cpp). We are past the
+        // per-arg cache check, so this is a NOVEL method-template instantiation
+        // about to be parsed + emitted. When emitOwner != module its body IR
+        // (plus its JSON-synth string constants, spawn trampolines, and any
+        // nested instantiations) lands in a per-test user module while the
+        // host stdlib template Method persists in the shared context — leaving
+        // module-bound llvm pointers on persistent objects that outlive that
+        // module and dangle on the next reusing test (observed as a null
+        // operand mid-body: BinaryOpExpression::generateCode → getTypeFlagsOf,
+        // crashing JsonSynthesizerTests.parseNestedClass). Abort BEFORE the
+        // walk emits anything so the harness re-runs this test on a fresh,
+        // fully-isolated Compiler. Disarmed in production and on the fresh
+        // fallback path; a primed (already-cached) instantiation returned above
+        // and never reaches here.
+        if (Compiler::isReuseHazardArmed() && emitOwner != module) {
+            // The cross-module method-template EMIT path (specialize a stdlib
+            // method template over a user type, emit the body into the user
+            // module, keep the cached stdlib byte-pristine) is the same path
+            // production --emit uses, and is now correct under reuse after the
+            // scope-barrier fix in bringMethodTemplateInstantiationToLife
+            // (CajetaClass.cpp). CAJETA_REUSE_FORCE_EMIT=1 selects it: the test
+            // REUSES (fast) instead of degrading to a fresh fallback.
+            //
+            // It stays OFF by default — DO NOT flip kForceEmit's default to true
+            // yet. A clean full-suite W=24 run with FORCE_EMIT=1 (2026-06-10)
+            // validated this *method*-template path (zero crashes, stdlib stays
+            // byte-pristine) but surfaced a residual cross-test MISCOMPILE on the
+            // CLASS-template-with-interface path that the twin gate in
+            // TemplateInstantiator.cpp still guards: under FORCE_EMIT,
+            // TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch
+            // emitted an invalid GEP into test.Holder<int32>'s interface vtable
+            // slots (JIT verify: "Invalid indices for GEP pointer type"), failing
+            // only in a cross-suite sequence. Forcing emit here is only safe once
+            // that class-template gate gets the same emit-module reparenting fix.
+            // Until then the conservative fresh fallback is the blessed default.
+            static const bool kForceEmit =
+                std::getenv("CAJETA_REUSE_FORCE_EMIT") != nullptr;
+            if (!kForceEmit) {
+                throw cajeta::ReuseHazardAbort{};
+            }
         }
 
         if (methodSource.empty()) {
@@ -281,6 +403,14 @@ namespace cajeta {
         // canonical-name building uses the right class name. The visitor
         // set it to the wrapper class.
         inst->setParentForInstantiation(parent);
+        // Emit this specialization into the user module in reuse mode (its body
+        // is codegen'd later via the cross-module obligation recorded by
+        // noteCrossModuleMethodInstantiation; Method::generateCode then swaps to
+        // this emit module so the body + its spawn trampolines / string
+        // constants land in the user module, not the cached stdlib). The walk
+        // above only built the AST; no IR has been emitted yet. No-op in
+        // production (emitOwner == module).
+        if (emitOwner != module) inst->setEmitModule(emitOwner);
         // Keep the bare method name. Two-layer naming (Method::getMapKey
         // + Method::getLlvmSymbolName) appends the method-arg suffix to
         // the addMethod map keys and the LLVM symbol for instantiations,

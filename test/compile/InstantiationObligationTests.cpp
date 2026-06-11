@@ -1,5 +1,5 @@
 // Per-module instantiation-obligation capture (incremental compilation,
-// Phase 2 — cajeta-docs/IncrementalCompilation.md).
+// Phase 2 — docs/IncrementalCompilation.md).
 //
 // When a module's codegen drives a template instantiation into ANOTHER
 // module (e.g. `xs.stream()` instantiates ArrayStream<int32> into stdlib),
@@ -107,6 +107,30 @@ TEST(InstantiationObligation, ArrayStreamUseRecordsCrossModuleObligation) {
     // stdlib by test.S's codegen, so it must appear in test.S's obligations.
     EXPECT_NE(contents.find("ArrayStream"), std::string::npos) << contents;
     EXPECT_NE(contents.find("int32"), std::string::npos) << contents;
+}
+
+TEST(InstantiationObligation, MethodTemplateUseRecordsCrossModuleObligation) {
+    // A method-template instantiation (`.map<int32>`) lands its body in the
+    // host class's (stdlib) module, separate from the class instantiation —
+    // so it gets its own obligation, keyed by getMapKey(false). The `::`
+    // separator distinguishes a method obligation from a class one.
+    std::string sidecar = compileAndSidecarPath(
+        "package test;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {10, 20, 30, 40};\n"
+        "        return xs.stream().map<int32>((x) -> x * 10).count();\n"
+        "    }\n"
+        "}\n");
+    if (sidecar.empty()) GTEST_SKIP() << "compiler binary unavailable";
+    ASSERT_TRUE(fs::exists(sidecar))
+        << "expected an obligation sidecar at " << sidecar;
+    std::string contents = readAll(sidecar);
+    // The cross-module method instantiation Stream<int32>::map<…><int32> was
+    // driven into stdlib by test.S's codegen, so it must appear as a method
+    // obligation (recognizable by the `::` host/method separator).
+    EXPECT_NE(contents.find("::map"), std::string::npos) << contents;
+    EXPECT_NE(contents.find("<int32>"), std::string::npos) << contents;
 }
 
 TEST(InstantiationObligation, NoTemplateUseRecordsNothing) {

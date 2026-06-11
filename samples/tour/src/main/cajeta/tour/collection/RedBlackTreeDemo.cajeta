@@ -1,0 +1,25 @@
+package tour.collection;
+
+import tour.DemoClass;
+import cajeta.collection.RedBlackTree;
+
+// Self-balancing ordered map (red-black tree). Insertions rebalance
+// to keep height O(log n), so `get` / `min` stay fast even with
+// sorted-order inserts (the degenerate case for an unbalanced BST).
+public class RedBlackTreeDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- RedBlackTree (ordered map) --");
+
+        RedBlackTree<int32, int32> t = heap RedBlackTree<int32, int32>();
+        int32 i = 0;
+        while (i < 100) {
+            t.put(i, i * 2);
+            i = i + 1;
+        }
+
+        System.stdout.println("  count   = " + (int32) t.count());
+        System.stdout.println("  get(50) = " + t.get(50));
+        System.stdout.println("  min     = " + t.min());
+    }
+}

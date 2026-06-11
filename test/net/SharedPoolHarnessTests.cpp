@@ -4,7 +4,7 @@
 // Pins the pure-dispatch contract of the NET-4.3 shared-pool server
 // (runtime/src/cajeta/net/SharedPoolServer.cajeta), modeled one level down
 // via SharedPoolHarness.h (a std::mutex+condvar BoundedQueue standing in for
-// cajeta.threading.Channel<TcpStream>, std::atomic for AtomicInt32, and
+// cajeta.concurrent.Channel<TcpStream>, std::atomic for AtomicInt32, and
 // std::thread for the worker fibers), in the deterministic, scheduler-free
 // posture the other net harnesses use while the cajeta-surface accept loop is
 // still being wired.

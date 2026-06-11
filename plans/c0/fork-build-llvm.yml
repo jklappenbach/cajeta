@@ -47,9 +47,9 @@ jobs:
           # - host: macos-arm64
           #   runs-on: macos-14
           #   asset_os: macos-arm64
-          # - host: windows-x64                  # RELEASE-ONLY, DEFERRED (mingw-w64; MSVC/CUDA tension).
-          #   runs-on: windows-latest            # NOT needed for NVIDIA bring-up — that runs in WSL2.
-          #   asset_os: windows-x64
+          # windows-x64 is NOT in this matrix — it can't share the apt/bash steps
+          # below (different shell, package manager, ccache path, tar host). It is a
+          # dedicated job (`build-windows`) at the end of this file instead.
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v4
@@ -97,6 +97,138 @@ jobs:
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           # TAG already begins with "cajeta-llvm-"; don't re-prepend it.
           NAME="${TAG}-${{ matrix.asset_os }}.tar.zst"
+          tar --zstd -cf "$NAME" -C "$PWD" llvm-install
+          sha256sum "$NAME" > "$NAME.sha256"
+          echo "asset=$NAME" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.pack.outputs.tag }}
+          files: |
+            ${{ steps.pack.outputs.asset }}
+            ${{ steps.pack.outputs.asset }}.sha256
+
+  # ===========================================================================
+  # build-windows — the x86_64-w64-mingw32 host leg (the C0 runbook's "fiddliest,
+  # release-only" leg, now active because cajeta's Tier-1 SPIR-V codegen references
+  # fork-only intrinsic enums that stock MSYS2 LLVM 22 lacks — so the Windows
+  # release can no longer fall back to distro LLVM and MUST link the fork).
+  #
+  # Built NATIVELY under MSYS2 / MinGW-w64 — the SAME environment cajeta is built
+  # in on Windows (cajeta release.yml uses msys2/setup-msys2 MINGW64). That parity
+  # is the whole point: cajeta's C++ is compiled by mingw `c++` (g++) and links the
+  # fork's STATIC LLVM archives, so those archives must be produced by the matching
+  # mingw toolchain + the shared GCC libstdc++ ABI. clang+lld are bundled per the
+  # build contract — and lld in particular MUST come from the fork (cajeta links
+  # lldELF/lldCommon in-process for --emit=exe; mingw's lld-22 cannot link against
+  # fork LLVM-23 libs without a symbol/ABI mismatch).
+  #
+  # COST WARNING: a full clang+lld+llvm build on a 2-core GH-hosted windows-latest
+  # runner is slow and can hit the 6 h job cap or OOM at link. Prefer a SELF-HOSTED
+  # Windows runner (swap `runs-on`). ccache + LLVM_PARALLEL_LINK_JOBS=1 mitigate but
+  # don't eliminate the risk. The C0 runbook flagged this leg as the hard one.
+  # ===========================================================================
+  build-windows:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/cajeta-llvm-') }}
+    runs-on: windows-latest            # swap for [self-hosted, windows, x64] if available
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    env:
+      # Keep ccache inside the workspace so both MSYS2 (bash) and actions/cache
+      # (node, Windows paths) address the same dir. ccache.exe accepts this path.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+
+      # MINGW64 to match cajeta's own Windows build env (native PE, libstdc++).
+      - name: Setup MSYS2 (MinGW64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-lld
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-python
+            tar
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-llvm-windows-${{ github.sha }}
+          restore-keys: ccache-llvm-windows-
+
+      # Native mingw build. Bootstrap with mingw clang/clang++ (its libstdc++ is the
+      # same GCC libstdc++ cajeta's g++ links, so the produced archives are ABI-
+      # compatible). If a libstdc++ ABI mismatch ever shows up at cajeta link time,
+      # the fallback is to build the fork with gcc/g++ here instead (-DCMAKE_*
+      # _COMPILER=gcc/g++) to byte-match cajeta's c++.exe; clang is the contract default.
+      - name: Configure
+        run: |
+          set -euo pipefail
+          cmake -G Ninja -S llvm -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_ENABLE_RTTI=ON \
+            -DLLVM_TARGETS_TO_BUILD="X86;NVPTX;AMDGPU;SPIRV" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_BUILD_LLVM_DYLIB=ON -DLLVM_LINK_LLVM_DYLIB=ON \
+            -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_DOCS=OFF \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_USE_LINKER=lld \
+            -DLLVM_PARALLEL_LINK_JOBS=1 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX="$PWD/llvm-install"
+
+      - name: Build + install
+        run: ninja -C build install
+
+      # Slim the install to a dylib-only distribution. cajeta on Windows links
+      # the monolithic libLLVM-<ver>.dll (src/CMakeLists.txt: WIN32 +
+      # LLVM_LINK_LLVM_DYLIB), so the static component archives, the ~100 LLVM
+      # tool binaries, and the libclang* libs/DLLs are all dead weight. Keep only:
+      # the dylib + its import lib, the LLVM/clang/lld headers, the cmake export
+      # config, the lld static libs (cajeta links those for --emit=exe), clang.exe
+      # + its resource dir (the runtime-bitcode step), and llvm-config. This drops
+      # the artifact from ~1.2 GB to ~70 MB compressed. (The Linux build job stays
+      # static — cajeta on Linux links the static components.)
+      - name: Slim install to dylib distribution
+        run: |
+          set -euo pipefail
+          D="$PWD/llvm-install"
+          # Static component archives — keep import libs (*.dll.a), drop the rest.
+          find "$D/lib" -maxdepth 1 -name 'libLLVM*.a'  ! -name '*.dll.a' -delete
+          find "$D/lib" -maxdepth 1 -name 'libclang*.a' ! -name '*.dll.a' -delete
+          # Tool binaries: cajeta needs only clang (bitcode) + llvm-config; the
+          # libLLVM/libclang DLLs clang.exe does NOT depend on (only the dylib).
+          find "$D/bin" -maxdepth 1 -name '*.exe' ! -name 'clang.exe' ! -name 'llvm-config.exe' -delete
+          rm -f "$D"/bin/libclang-cpp.dll "$D"/bin/libclang.dll \
+                "$D"/bin/libLTO.dll "$D"/bin/libRemarks.dll
+          rm -rf "$D/share" "$D/libexec"
+          # LLVMExports.cmake verifies every exported target's file exists; the
+          # pruned static-lib/tool targets are unused (cajeta links only the `LLVM`
+          # dylib target, intact), so neuter that one existence check.
+          sed -i 's|if(NOT EXISTS "${_cmake_file}")|if(FALSE)  # slimmed dylib distribution|' \
+            "$D/lib/cmake/llvm/LLVMExports.cmake"
+          du -sh "$D"
+
+      - name: Package
+        id: pack
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="${TAG}-windows-x64.tar.zst"
           tar --zstd -cf "$NAME" -C "$PWD" llvm-install
           sha256sum "$NAME" > "$NAME.sha256"
           echo "asset=$NAME" >> "$GITHUB_OUTPUT"

@@ -4,7 +4,7 @@
 > construction, element/row/column + `m[i][j]` access, `matmul`/transpose/identity/
 > elementwise, by-value params, methods. The follow-ons below (determinant/inverse,
 > `Quaternion`, swizzles, comparison masks) have since landed in the gpu foundation — see
-> `cajeta-gpu-plan.md` B1 and `cajeta-docs/gpu/ValueTypeCatalog.md`. Retained as the B1
+> `cajeta-gpu-plan.md` B1 and `docs/gpu/ValueTypeCatalog.md`. Retained as the B1
 > design record.
 
 Linear-algebra value types, the first real exercise of the operator-overloading

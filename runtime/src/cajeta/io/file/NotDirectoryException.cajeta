@@ -6,7 +6,7 @@ import cajeta.lang.String;
  * A `Path` is a non-directory where a directory was expected — for
  * example a `mkdirs()` whose chain runs through a file-shaped
  * intermediate component. POSIX `ENOTDIR`. See
- * `cajeta-docs/stdlib/io/file/Errors.md`.
+ * `docs/stdlib/io/file/Errors.md`.
  *
  * Subclass of `IoException`; the counterpart to `IsDirectoryException`.
  *

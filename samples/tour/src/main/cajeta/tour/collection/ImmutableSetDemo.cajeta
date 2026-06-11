@@ -1,0 +1,26 @@
+package tour.collection;
+
+import tour.DemoClass;
+import cajeta.collection.ArrayList;
+import cajeta.collection.ImmutableSet;
+
+// Immutable set. The constructor dedups its source snapshot, so
+// duplicate inputs collapse to a single member. `contains(v)` is the
+// membership test; `count()` reflects the deduped size.
+public class ImmutableSetDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- ImmutableSet --");
+
+        ArrayList<int32> src = heap ArrayList<int32>();
+        src.add(1);
+        src.add(2);
+        src.add(2);
+        src.add(3);
+
+        ImmutableSet<int32> s = heap ImmutableSet<int32>(src);
+        System.stdout.println("  count (deduped) = " + (int32) s.count());
+        System.stdout.println("  contains(2) = " + s.contains(2));
+        System.stdout.println("  contains(9) = " + s.contains(9));
+    }
+}

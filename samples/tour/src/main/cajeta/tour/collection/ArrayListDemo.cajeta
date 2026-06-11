@@ -1,0 +1,42 @@
+package tour.collection;
+
+import tour.DemoClass;
+import tour.Point;
+import cajeta.collection.ArrayList;
+
+// Dynamic array backed by a heap-allocated T[] that grows on demand.
+// Exposes count() (matching the cajeta convention across HashMap /
+// HashSet / LinkedList); size() doesn't exist.
+//
+// Two instantiations exercised: a primitive-typed `ArrayList<int32>`
+// and a class-typed `ArrayList<Point>` where Point is a user class
+// declared elsewhere in the tour package. The class-typed path goes
+// through the forward-reference placeholder mechanism (this file
+// is parsed before Point.cajeta in alphabetical order) — the
+// instantiation references the placeholder until Point's body walk
+// fills it in.
+public class ArrayListDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- ArrayList --");
+
+        ArrayList<int32> ints = heap ArrayList<int32>();
+        ints.add(10);
+        ints.add(20);
+        ints.add(30);
+        int32 total = ints.stream().reduce(0, (a, b) -> a + b);
+        System.stdout.println("  ArrayList<int32> count = " + ints.count());
+        System.stdout.println("  ArrayList<int32> sum   = " + total);
+
+        // Class-typed elements. add() / count() / stream() all
+        // dispatch on the instantiated `ArrayList<Point>`.
+        ArrayList<Point> pts = heap ArrayList<Point>();
+        pts.add(heap Point(1, 2));
+        pts.add(heap Point(3, 4));
+        pts.add(heap Point(5, 6));
+        int32 xSum = pts.stream().fold<int32>(0,
+            (acc, p) -> acc + p.x);
+        System.stdout.println("  ArrayList<Point> count = " + pts.count());
+        System.stdout.println("  ArrayList<Point> xSum  = " + xSum);
+    }
+}

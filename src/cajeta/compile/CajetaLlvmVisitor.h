@@ -17,6 +17,7 @@
 #include "cajeta/asn/LocalVariableDeclaration.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/asn/ClassBodyDeclaration.h"
+#include "cajeta/asn/AnnotationParser.h"
 #include "cajeta/error/Exception.h"
 
 
@@ -298,6 +299,24 @@ namespace cajeta {
                 }
             }
 
+            // REFL-3.3 (decision D1): `@Sealed` bars reflective access to the
+            // class's private members. Record it as the SEALED class modifier
+            // so it both (a) rides into the RTTI header's modifiers word the
+            // reflect API reads, and (b) is visible to the invoke/newInstance
+            // adapter codegen, which omits private cases for a sealed class.
+            if (structure->findAnnotation("Sealed")) {
+                structure->addModifier(REFLECT_SEALED);
+            }
+
+            // REFL-8: `@Retained` keeps a class in the Class.forName registry
+            // even when nothing statically references it. Advisory until AOT
+            // stripping lands (every compiled class is registered today);
+            // recorded as a class modifier so the future stripping pass and the
+            // reflect API can both read it from the RTTI modifiers word.
+            if (structure->findAnnotation("Retained")) {
+                structure->addModifier(REFLECT_RETAINED);
+            }
+
             pModule->getStructureStack().push_back(structure);
             // Aspect registration (AspectModel.md § A2). A class
             // annotated `@Aspect` joins the process-global aspect
@@ -384,7 +403,7 @@ namespace cajeta {
                 structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
 
                 // Hash / equals + != / == consistency checks
-                // (cajeta-docs/OperatorOverloading.md §7). Skipped for
+                // (docs/OperatorOverloading.md §7). Skipped for
                 // templates (whose body walk is skipped above —
                 // re-runs at instantiation time).
                 bool hasOpEq = false;
@@ -413,7 +432,7 @@ namespace cajeta {
                         "operator!= is almost always a mistake. Fix: define "
                         "operator== too, and remove operator!= unless its "
                         "behavior genuinely differs from `!(a == b)`. "
-                        "See cajeta-docs/OperatorOverloading.md §7.",
+                        "See docs/OperatorOverloading.md §7.",
                         structure->getQName()->toCanonical().c_str());
                     throw Exception(buf,
                         "CAJETA_ERROR_OPERATOR_NE_WITHOUT_EQ");
@@ -426,7 +445,7 @@ namespace cajeta {
                                  "==-equal instances with different identity "
                                  "hashes. Fix: add `@AutoHash` to the class "
                                  "to synthesize structural hash, or override "
-                                 "hash() manually. See cajeta-docs/"
+                                 "hash() manually. See docs/"
                                  "OperatorOverloading.md §7. "
                                  "[CAJETA_WARN_HASH_EQUALS_MISMATCH]\n";
                 }
@@ -861,209 +880,6 @@ namespace cajeta {
             }
         }
 
-        // Strip surrounding ASCII whitespace from a literal's text.
-        // Annotation argument tokens come from ANTLR's getText() which
-        // concatenates token text verbatim — array initializers in
-        // particular contain interior whitespace around the commas.
-        static std::string trimWs(const std::string& s) {
-            size_t b = 0, e = s.size();
-            while (b < e && std::isspace((unsigned char) s[b])) ++b;
-            while (e > b && std::isspace((unsigned char) s[e - 1])) --e;
-            return s.substr(b, e - b);
-        }
-
-        // Classify a single element-value token text and write the
-        // discriminated result into `out`. Recognized shapes:
-        //   "foo"     → AnnotationArgKind::String,   strVal=foo
-        //   123       → AnnotationArgKind::Int64,    i64Val=123
-        //   true      → AnnotationArgKind::Bool,     boolVal=true
-        //   Foo.class → AnnotationArgKind::ClassRef, strVal=Foo
-        // Anything else falls through to String with the raw text —
-        // the user gets back what they typed, which is enough for
-        // the current annotation surface (no nested annotations
-        // here; A2+ may add typed references). Returns true on a
-        // confident classification.
-        static bool classifyLiteral(const std::string& raw, AnnotationArg& out) {
-            std::string t = trimWs(raw);
-            if (t.empty()) {
-                out.kind = AnnotationArgKind::String;
-                out.strVal = "";
-                return false;
-            }
-            if (t.size() >= 2 && t.front() == '"' && t.back() == '"') {
-                out.kind = AnnotationArgKind::String;
-                out.strVal = t.substr(1, t.size() - 2);
-                return true;
-            }
-            if (t == "true" || t == "false") {
-                out.kind = AnnotationArgKind::Bool;
-                out.boolVal = (t == "true");
-                return true;
-            }
-            // Class literal — `Foo.class`. The grammar's primary
-            // production for `typeTypeOrVoid '.' CLASS` produces this
-            // text. Strip the suffix and capture the type-name
-            // prefix; pointcut matching (A3) then resolves it
-            // against the registered classes. Qualified names
-            // (`pkg.Foo.class`) keep the dots; the matcher looks up
-            // by short name first, then canonical.
-            {
-                static const std::string suffix = ".class";
-                if (t.size() > suffix.size()
-                        && std::equal(suffix.rbegin(), suffix.rend(), t.rbegin())) {
-                    out.kind = AnnotationArgKind::ClassRef;
-                    out.strVal = t.substr(0, t.size() - suffix.size());
-                    return true;
-                }
-            }
-            // Integer (decimal, with optional leading sign). Hex/oct/
-            // binary literals can land here later when annotations
-            // actually use them.
-            bool numeric = !t.empty();
-            size_t i = 0;
-            if (t[0] == '+' || t[0] == '-') ++i;
-            if (i == t.size()) numeric = false;
-            for (; i < t.size() && numeric; ++i) {
-                if (!std::isdigit((unsigned char) t[i])) numeric = false;
-            }
-            if (numeric) {
-                try {
-                    out.kind = AnnotationArgKind::Int64;
-                    out.i64Val = (int64_t) std::stoll(t);
-                    return true;
-                } catch (...) {
-                    // Fall through to raw-string fallback.
-                }
-            }
-            // Unknown shape (identifier reference, enum constant, etc.).
-            // Keep as a raw string so consumers see the source text;
-            // A2+ may parse these into typed references.
-            out.kind = AnnotationArgKind::String;
-            out.strVal = t;
-            return false;
-        }
-
-        // Build an AnnotationInstance from an ANTLR annotation context.
-        // Walks elementValuePairs (name = value, name = value, ...) or
-        // a single bare elementValue (the unnamed-arg form, stored
-        // with name="" and looked up by callers as the conventional
-        // "value" key). Array initializers map to *List kinds; each
-        // element classifies independently and the list takes the
-        // dominant kind (all-strings → StringList, all-ints → Int64List,
-        // all-bools → BoolList; mixed lists fall back to StringList of
-        // the raw text). Unsupported elementValue shapes (nested
-        // annotation, expressions beyond literals) are captured with
-        // their raw getText() as a String; A2+ can refine.
-        //
-        // `ann` may be null — returns nullptr in that case. The
-        // returned instance always has a resolvable name (or nullptr
-        // if the annotation context didn't yield one, which is a
-        // malformed parser state we don't try to recover from).
-        static AnnotationInstancePtr parseAnnotationInstance(
-                CajetaParser::AnnotationContext* ann) {
-            if (!ann) return nullptr;
-            QualifiedNamePtr qn;
-            if (ann->qualifiedName()) {
-                qn = QualifiedName::fromContext(ann->qualifiedName());
-            } else if (auto* alt = ann->altAnnotationQualifiedName()) {
-                // `pkg.@MyAnn` form — leaf identifier is the
-                // annotation name. v1 takes the short name only;
-                // package-qualified annotation lookups can be added
-                // when reflection consumers need the full canonical.
-                const auto& ids = alt->identifier();
-                if (!ids.empty()) {
-                    qn = QualifiedName::getOrInsert(
-                        ids.back()->getText(), "");
-                }
-            }
-            if (!qn) return nullptr;
-
-            auto inst = std::make_shared<AnnotationInstance>(qn);
-
-            // Helper to populate a single AnnotationArg from one
-            // elementValue context. Recursively handles array
-            // initializers by collecting child element-value texts.
-            std::function<void(CajetaParser::ElementValueContext*,
-                               AnnotationArg&)> readArg =
-                [&](CajetaParser::ElementValueContext* ev, AnnotationArg& arg) {
-                    if (!ev) return;
-                    if (auto* arr = ev->elementValueArrayInitializer()) {
-                        // Array — first pass classifies each child,
-                        // second pass picks the dominant kind.
-                        std::vector<AnnotationArg> parts;
-                        for (auto* child : arr->elementValue()) {
-                            AnnotationArg p;
-                            readArg(child, p);
-                            parts.push_back(std::move(p));
-                        }
-                        // Pick dominant kind. All-same wins; mixed
-                        // collapses to StringList of the raw text.
-                        bool allString = !parts.empty(), allInt = !parts.empty(), allBool = !parts.empty();
-                        for (auto& p : parts) {
-                            if (p.kind != AnnotationArgKind::String) allString = false;
-                            if (p.kind != AnnotationArgKind::Int64)  allInt = false;
-                            if (p.kind != AnnotationArgKind::Bool)   allBool = false;
-                        }
-                        if (allInt) {
-                            arg.kind = AnnotationArgKind::Int64List;
-                            for (auto& p : parts) arg.i64List.push_back(p.i64Val);
-                        } else if (allBool) {
-                            arg.kind = AnnotationArgKind::BoolList;
-                            for (auto& p : parts) arg.boolList.push_back(p.boolVal);
-                        } else {
-                            arg.kind = AnnotationArgKind::StringList;
-                            for (auto& p : parts) {
-                                // For a homogeneous string array each
-                                // p.strVal is already the unquoted
-                                // payload; for mixed shapes, fall back
-                                // to whatever classifyLiteral put in
-                                // strVal (or stringify ints/bools).
-                                if (p.kind == AnnotationArgKind::String) {
-                                    arg.strList.push_back(p.strVal);
-                                } else if (p.kind == AnnotationArgKind::Int64) {
-                                    arg.strList.push_back(std::to_string(p.i64Val));
-                                } else if (p.kind == AnnotationArgKind::Bool) {
-                                    arg.strList.push_back(p.boolVal ? "true" : "false");
-                                } else {
-                                    arg.strList.push_back(p.strVal);
-                                }
-                            }
-                        }
-                        return;
-                    }
-                    if (auto* nested = ev->annotation()) {
-                        // Nested annotation — captured as raw text for
-                        // now; A2+ can promote to a real nested
-                        // AnnotationInstance.
-                        arg.kind = AnnotationArgKind::String;
-                        arg.strVal = nested->getText();
-                        return;
-                    }
-                    // expression — text-classify the leaf token.
-                    classifyLiteral(ev->getText(), arg);
-                };
-
-            if (auto* evp = ann->elementValuePairs()) {
-                // `@Foo(name = value, other = thing)`.
-                for (auto* pair : evp->elementValuePair()) {
-                    AnnotationArg arg;
-                    if (pair->identifier()) {
-                        arg.name = pair->identifier()->getText();
-                    }
-                    readArg(pair->elementValue(), arg);
-                    inst->addArg(std::move(arg));
-                }
-            } else if (auto* ev = ann->elementValue()) {
-                // `@Foo(value)` — single unnamed arg. Stored with
-                // empty name; findArg("value") routes through to it.
-                AnnotationArg arg;
-                readArg(ev, arg);
-                inst->addArg(std::move(arg));
-            }
-            // `@Foo` with no parens at all — empty args, the instance
-            // still records the annotation by name.
-            return inst;
-        }
 
         virtual std::any visitClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext* ctx) override {
             // Nested class declaration: the grammar lists `classDeclaration`
@@ -1153,7 +969,7 @@ namespace cajeta {
                 memberDeclaration->onModifier(any_cast<Modifier>(visitModifier(modifierContext)));
             }
 
-            // Method-level template post-check (cajeta-docs/stdlib/
+            // Method-level template post-check (docs/stdlib/
             // MethodLevelTemplate.md): a declaration that introduces
             // method-level type parameters MUST be declared `final` or
             // `static`. The rule surfaces the non-virtuality at the
@@ -1164,7 +980,7 @@ namespace cajeta {
             // here so per-call monomorphization can re-parse the
             // method with substitutions pushed without needing to
             // retain ANTLR contexts.
-            // Operator-overload post-check (cajeta-docs/OperatorOverloading.md §1).
+            // Operator-overload post-check (docs/OperatorOverloading.md §1).
             // Enforces the per-category staticness + arity rules AFTER
             // the modifier walk above has stamped STATIC onto the
             // method's modifier set. Per §1:
@@ -1223,7 +1039,7 @@ namespace cajeta {
                                 "operator overloads are static — both "
                                 "operands are explicit, neither is mutated, "
                                 "the return is a fresh value. See "
-                                "cajeta-docs/OperatorOverloading.md §2-3. "
+                                "docs/OperatorOverloading.md §2-3. "
                                 "Fix: rewrite as `public static T %s (...)`.",
                                 name.c_str(), arityHint, name.c_str());
                             throw Exception(buf,
@@ -1241,7 +1057,7 @@ namespace cajeta {
                                 "Mutating unary, indexed access, and compound "
                                 "assignment operators have a privileged "
                                 "receiver — the host IS the target. See "
-                                "cajeta-docs/OperatorOverloading.md §§4-6.",
+                                "docs/OperatorOverloading.md §§4-6.",
                                 name.c_str(), expected,
                                 expected == 1 ? "" : "s");
                             throw Exception(buf,
@@ -1276,7 +1092,7 @@ namespace cajeta {
                                     "operator returning a fresh value (e.g. "
                                     "`%s` -> a static op or a method returning a "
                                     "new instance). Read-only `operator[]` is "
-                                    "allowed. See cajeta-docs/"
+                                    "allowed. See docs/"
                                     "OperatorOverloading.md and "
                                     "plans/value-type-overloading-plan.md.",
                                     enclosing->toCanonical().c_str(),
@@ -1298,7 +1114,7 @@ namespace cajeta {
                                 "'static'. Method-level templates are non-"
                                 "virtual (they occupy no vtable slot) and must "
                                 "be marked explicitly to surface that property "
-                                "at the declaration site. See cajeta-docs/"
+                                "at the declaration site. See docs/"
                                 "stdlib/MethodLevelTemplate.md. Fix: add "
                                 "'final' modifier (or 'static' if no receiver "
                                 "is needed).",
@@ -1423,7 +1239,7 @@ namespace cajeta {
         virtual std::any visitMethodDeclaration(CajetaParser::MethodDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
 
-            // Method-level templates (cajeta-docs/stdlib/MethodLevelTemplate.md):
+            // Method-level templates (docs/stdlib/MethodLevelTemplate.md):
             // capture <R, ...> if present, push a placeholder substitution so
             // formals + return type referencing R resolve cleanly during this
             // pass, then capture the body source for per-call re-parse instead
@@ -1620,7 +1436,7 @@ namespace cajeta {
         // class-drop wrapper machinery (CajetaClass::getOrCreateDropFunction)
         // picks it up unchanged. The identifier between ~ and ( must
         // match the enclosing class name, same convention as the
-        // constructor's identifier. See cajeta-docs/stdlib/MemoryModel.md §
+        // constructor's identifier. See docs/stdlib/MemoryModel.md §
         // Destructors.
         virtual std::any visitDestructorDeclaration(CajetaParser::DestructorDeclarationContext* ctx) override {
             string declaredName = ctx->identifier()->getText();
@@ -1961,7 +1777,7 @@ namespace cajeta {
 
         // Try-with-resources grammar rules removed 2026-05-20 —
         // destructors fire deterministically at scope exit, see
-        // cajeta-docs/stdlib/MemoryModel.md § "No try-with-resources".
+        // docs/stdlib/MemoryModel.md § "No try-with-resources".
 
         virtual std::any
         visitSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext* ctx) override {

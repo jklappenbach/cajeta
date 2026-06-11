@@ -1,0 +1,218 @@
+package tour.lang;
+
+import tour.DemoClass;
+import tour.Counter;
+
+// Operator overloading — see docs/OperatorOverloading.md for
+// the full spec. Two rules carry everything:
+//
+//   1. Binary arithmetic / comparison / bitwise operators (and the
+//      non-mutating unaries `- + ! ~`) are `public static`. Both
+//      operands are explicit parameters, no `this`, returns a fresh
+//      value. `a + b` lowers to `Vec2.operator+(a, b)`.
+//   2. Mutating unaries (`++`, `--`) and indexed access (`[]`, `[]=`)
+//      stay instance — the receiver IS the target, and the borrow
+//      checker enforces a mutable borrow at the call site.
+//
+// This demo exercises five flavors:
+//
+//   1. Static arithmetic on a Vec2 value class — `+`, `-`, `*` all
+//      take two operands, return a fresh Vec2. The chain `acc + b - c`
+//      builds two temporaries and `result` is a fresh value distinct
+//      from `acc`, `b`, `c` (which all survive unchanged).
+//   2. Static equality (`==`) on Vec2 — returns boolean.
+//   3. Instance subscript `[]` (read) + `[]=` (write) on a Grid wrapper.
+//      cajeta's HashMap exposes the same pair (see
+//      runtime/src/cajeta/collection/HashMap.cajeta).
+//   4. Instance `++` on a Counter class — mutates `this`, returns
+//      void. Both `x++` and `++x` lower to `x.operator++()` for
+//      class-typed operands (the pre/post distinction is moot —
+//      the operator mutates the receiver and the expression value
+//      is the receiver pointer either way).
+//   5. Compound assignment `+=` on Vec2 — derived automatically from
+//      the static `operator+`. No explicit `operator+=` declaration
+//      needed; the compiler rewrites `a += b` to `a = Vec2.operator+(a, b)`.
+
+// 2-D vector with the canonical static-operator surface. Compare to
+// any C# / Rust / Scala Vec2 — same shape, different syntax skin.
+public class Vec2 {
+    public int32 x;
+    public int32 y;
+
+    public Vec2(int32 x, int32 y) {
+        this.x = x;
+        this.y = y;
+    }
+
+    // Binary arithmetic — `a + b` dispatches to this static method
+    // with both operands as explicit parameters. Returns a fresh
+    // heap-allocated Vec2 via the `#Vec2` ownership-transfer return
+    // shape (multi-parameter free functions can't return a borrow —
+    // there's no privileged receiver whose lifetime anchors it, so
+    // the borrow checker requires ownership). Neither operand is
+    // mutated.
+    public static #Vec2 operator+ (Vec2 a, Vec2 b) {
+        return heap Vec2(a.x + b.x, a.y + b.y);
+    }
+
+    public static #Vec2 operator- (Vec2 a, Vec2 b) {
+        return heap Vec2(a.x - b.x, a.y - b.y);
+    }
+
+    // Scalar multiplication. cajeta dispatches on the LHS type only,
+    // so `Vec2 * int32` lands here. The reversed form `int32 * Vec2`
+    // would need a separate overload on int32 (which primitives can't
+    // declare today). One-direction is the practical scope.
+    public static #Vec2 operator* (Vec2 v, int32 k) {
+        return heap Vec2(v.x * k, v.y * k);
+    }
+
+    // Equality — static, two operands, returns boolean. Two Vec2s
+    // with identical fields compare equal even though they're distinct
+    // allocations. != is derived automatically (returns the negation),
+    // so we only declare ==.
+    public static boolean operator== (Vec2 a, Vec2 b) {
+        return a.x == b.x && a.y == b.y;
+    }
+}
+
+// Counter-shaped class for the `++` demo — distinct from the
+// `Counter` class earlier in the Tour project. Mutating-unary,
+// instance method, no parameters, void return. The body mutates
+// `this` in place; the borrow checker requires a mutable borrow of
+// the receiver at the call site (so `x++` on an immutable borrow
+// is a compile error).
+public class Ticker {
+    public int32 count;
+
+    public Ticker() {
+        this.count = 0;
+    }
+
+    public void operator++ () {
+        this.count = this.count + 1;
+    }
+
+    public void operator-- () {
+        this.count = this.count - 1;
+    }
+}
+
+// A tiny grid that supports `g[i] = v` and `g[i]` via int64 index.
+// Subscript operators are INSTANCE — the host IS the target.
+// Backing store is a fixed-size int32[] so the demo doesn't depend
+// on HashMap (whose own operator overloads are exercised any time
+// user code writes `m[k]`).
+public class Grid {
+    public int32[] cells;
+
+    public Grid() {
+        this.cells = heap int32[4];
+        this.cells[0] = 0;
+        this.cells[1] = 0;
+        this.cells[2] = 0;
+        this.cells[3] = 0;
+    }
+
+    // `g[i]` lowers to this. Instance method — `this` is the grid
+    // being read from. cajeta hands int64 to subscript expressions
+    // by default; the resolver matches strictly on parameter type.
+    public int32 operator[] (int64 i) {
+        return this.cells[(int32) i];
+    }
+
+    // `g[i] = v` lowers to this. Instance method that mutates the
+    // backing array. Returns void; the assignment expression's own
+    // value is the RHS, not the operator return.
+    public void operator[]= (int64 i, int32 v) {
+        this.cells[(int32) i] = v;
+    }
+}
+
+public class OperatorOverloadDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Operator overloading --");
+
+        this.arithmetic();
+        this.equality();
+        this.indexing();
+        this.mutatingUnary();
+        this.compoundAssign();
+    }
+
+    // 1. Chained `acc + b - c`. Each static binary op builds a fresh
+    // Vec2 temporary; `result` is a brand-new value, and `acc`/`b`/`c`
+    // all survive unchanged.
+    public void arithmetic() {
+        Vec2 acc = stack Vec2(1, 2);
+        Vec2 b   = stack Vec2(3, 4);
+        Vec2 c   = stack Vec2(2, 1);
+
+        Vec2 result = acc + b - c;        // result = (1+3-2, 2+4-1) = (2, 5)
+
+        System.stdout.println("  starting acc=(1,2), b=(3,4), c=(2,1)");
+        System.stdout.println("  after  acc + b - c:");
+        System.stdout.println("    acc    = (" + acc.x    + ", " + acc.y    + ")  (unchanged)");
+        System.stdout.println("    result = (" + result.x + ", " + result.y + ")");
+    }
+
+    // 2. Static equality. `a == b` lowers to Vec2.operator==(a, b),
+    // returns boolean. Two Vec2s with identical fields compare equal
+    // even though they're distinct allocations.
+    public void equality() {
+        Vec2 p = stack Vec2(5, 7);
+        Vec2 q = stack Vec2(5, 7);
+        Vec2 r = stack Vec2(5, 8);
+
+        if (p == q) {
+            System.stdout.println("  p == q? yes (same fields, distinct allocations)");
+        } else {
+            System.stdout.println("  p == q? no");
+        }
+        if (p == r) {
+            System.stdout.println("  p == r? yes");
+        } else {
+            System.stdout.println("  p == r? no (y differs)");
+        }
+    }
+
+    // 4. Mutating unary `++`/`--` on a Ticker class. Both x++ and ++x
+    // lower to x.operator++() — the receiver IS the target.
+    public void mutatingUnary() {
+        Ticker t = stack Ticker();
+        t++;
+        t++;
+        t++;
+        t--;
+        System.stdout.println("  Ticker after 3 ++ then 1 -- = " + t.count);
+    }
+
+    // 5. Compound assignment `+=` derives from binary `+`. Vec2 only
+    // declares `operator+` (static); the compiler rewrites `a += b` to
+    // `a = Vec2.operator+(a, b)`. No explicit operator+= needed.
+    public void compoundAssign() {
+        Vec2 acc = heap Vec2(1, 2);
+        Vec2 b   = stack Vec2(10, 20);
+        acc += b;                     // acc = (1+10, 2+20) = (11, 22)
+        acc += b;                     // acc = (21, 42)
+        System.stdout.println("  Vec2 after acc += b twice = (" + acc.x + ", " + acc.y + ")");
+    }
+
+    // 3. Instance subscript get + set. Both forms route through the
+    // operator methods; the Grid's backing int32[] stays encapsulated.
+    public void indexing() {
+        Grid g = stack Grid();
+        int64 i0 = 0;
+        int64 i1 = 1;
+        int64 i2 = 2;
+
+        g[i0] = 10;
+        g[i1] = 20;
+        g[i2] = 30;
+
+        System.stdout.println("  g[0] = " + g[i0]);
+        System.stdout.println("  g[1] = " + g[i1]);
+        System.stdout.println("  g[2] = " + g[i2]);
+    }
+}

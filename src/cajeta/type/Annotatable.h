@@ -129,7 +129,7 @@ namespace cajeta {
         // empty args vector, so findAnnotation works uniformly.
         vector<AnnotationInstancePtr> annotationInstances;
         // Lint rule IDs suppressed at this declaration via
-        // @SuppressLint(...). See cajeta-docs/LintRules.md. Now
+        // @SuppressLint(...). See docs/LintRules.md. Now
         // derived from the captured AnnotationInstance for
         // @SuppressLint, kept as a denormalized vector so the
         // hot-path lint check (isLintSuppressed) is an O(N) scan

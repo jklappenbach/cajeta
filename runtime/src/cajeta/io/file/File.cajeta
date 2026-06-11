@@ -4,7 +4,7 @@ import cajeta.lang.String;
 
 /**
  * Filesystem access in two patterns under one class name (see
- * `cajeta-docs/stdlib/io/file/File.md`):
+ * `docs/stdlib/io/file/File.md`):
  *
  *   - **Static one-shots** — `readAllBytes` / `writeAllBytes`,
  *     and the `openRead` / `openWrite` factories that return

@@ -9,7 +9,7 @@ import cajeta.lang.String;
  * `kind == NetException.KIND_HOST_UNREACHABLE` (7). Compare
  * [`NetworkUnreachableException`](NetworkUnreachableException.cajeta),
  * which is the whole-network variant. See
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class HostUnreachableException extends NetException {
     public HostUnreachableException(String message) {

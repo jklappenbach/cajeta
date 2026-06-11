@@ -1,0 +1,607 @@
+package cajeta.reflect;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+import cajeta.lang.Optional;
+
+/**
+ * Runtime representation of a class — the entry point to `cajeta.reflect`.
+ *
+ * Obtain one via `obj.getClass()` (the object's dynamic type) or `T.class`
+ * (a statically-known type). Each is a **borrow** of a process-lifetime
+ * cached instance — one `Class` per declared type, emitted by the compiler
+ * next to the type's RTTI (Reflection.md Strategy 7). The caller never frees
+ * it; assigning `Class c = obj.getClass();` registers no drop entry.
+ *
+ * REFL-1 surface: read-only introspection backed by the fixed-layout RTTI
+ * (`cajeta.reflect.#Rtti`) the compiler emits for every class. Reflective
+ * value access (Field.get/set, Method.invoke, Constructor.heapInstance) lands
+ * in later phases.
+ *
+ * `Class` is `final` so its accessors dispatch statically — the cached
+ * instance's vtable slot is never consulted, which is what lets `T.class` /
+ * `getClass()` hand back a constant with a null vtable header safely.
+ *
+ * REFL-1.7: `Class<T>` is a template. The type parameter is a *phantom* — it
+ * records the statically-known reflected type for callers (`Foo.class` →
+ * `Class<Foo>`) but never appears in a field, so every instantiation shares an
+ * identical layout `{ vtable, rtti }` and identical method code. That lets one
+ * canonical `Class<?>` vtable be embedded in every type's `#ClassObject`
+ * (regardless of T) while still typing reflective results precisely. The
+ * dynamic entry points (`of`, `forName`, the registry queries) return
+ * `Class<?>` — the runtime type is unknown at the call site.
+ */
+public final class Class<T> {
+
+    // Address of this class's #RttiGlobal (a cajeta.reflect.#Rtti header).
+    // Initialized by the compiler in the cached #ClassObject constant
+    // { Class#VTable, rtti } — never mutated at runtime.
+    pointer rtti;
+
+    // --- @Native RTTI bridges (operate on the raw #Rtti pointer) ----------
+
+    @Native("__cajeta_rtti_name_into")
+    private static void nameInto(pointer rtti, int8[] out);
+
+    @Native("__cajeta_rtti_name_len")
+    private static int32 nameLength(pointer rtti);
+
+    @Native("__cajeta_rtti_field_count")
+    private static int32 fieldCountOf(pointer rtti);
+
+    @Native("__cajeta_rtti_method_count")
+    private static int32 methodCountOf(pointer rtti);
+
+    @Native("__cajeta_rtti_parent_count")
+    private static int32 parentCountOf(pointer rtti);
+
+    @Native("__cajeta_rtti_modifiers")
+    private static int32 modifiersOf(pointer rtti);
+
+    @Native("__cajeta_rtti_alloc_size")
+    private static int64 allocSizeOf(pointer rtti);
+
+    @Native("__cajeta_rtti_field_name_into")
+    private static void fieldNameInto(pointer rtti, int32 idx, int8[] out);
+
+    @Native("__cajeta_rtti_field_name_len")
+    private static int32 fieldNameLength(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_field_modifiers")
+    private static int32 fieldModifiersOf(pointer rtti, int32 idx);
+
+    // REFL-3.3 (D1): 1 if the member at `idx` is private AND this class is
+    // @Sealed — the index-form accessors below gate on these before touching it.
+    @Native("__cajeta_reflect_field_blocked")
+    private static int32 fieldBlocked(pointer rtti, int32 idx);
+    @Native("__cajeta_reflect_ctor_blocked")
+    private static int32 ctorBlocked(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_field_offset")
+    private static int32 fieldOffsetOf(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_field_type_flags")
+    private static int64 fieldTypeFlagsOf(pointer rtti, int32 idx);
+
+    // REFL-3 data-driven typed field accessors (read/write at the field's
+    // byteOffset; no per-class codegen).
+    @Native("__cajeta_field_get_i32")
+    private static int32 fieldGetI32(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_i32")
+    private static void fieldSetI32(Object o, pointer rtti, int32 idx, int32 v);
+    @Native("__cajeta_field_get_i64")
+    private static int64 fieldGetI64(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_i64")
+    private static void fieldSetI64(Object o, pointer rtti, int32 idx, int64 v);
+    // boolean routed through int32 at the native boundary (0/1) to keep the
+    // ABI unambiguous; the public accessors convert.
+    @Native("__cajeta_field_get_bool")
+    private static int32 fieldGetBool(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_bool")
+    private static void fieldSetBool(Object o, pointer rtti, int32 idx, int32 v);
+    @Native("__cajeta_field_get_f32")
+    private static float32 fieldGetF32(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_f32")
+    private static void fieldSetF32(Object o, pointer rtti, int32 idx, float32 v);
+    @Native("__cajeta_field_get_f64")
+    private static float64 fieldGetF64(Object o, pointer rtti, int32 idx);
+    @Native("__cajeta_field_set_f64")
+    private static void fieldSetF64(Object o, pointer rtti, int32 idx, float64 v);
+
+    @Native("__cajeta_rtti_method_param_count")
+    private static int32 methodParamCountOf(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_method_name_len")
+    private static int32 methodNameLength(pointer rtti, int32 idx);
+
+    @Native("__cajeta_rtti_method_name_into")
+    private static void methodNameInto(pointer rtti, int32 idx, int8[] out);
+
+    @Native("__cajeta_object_invoke_scalar0")
+    private static int64 invokeScalar0Native(Object o, int32 idx);
+
+    @Native("__cajeta_rtti_constructor_count")
+    private static int32 constructorCountOf(pointer rtti);
+
+    @Native("__cajeta_rtti_constructor_param_count")
+    private static int32 constructorParamCountOf(pointer rtti, int32 idx);
+
+    @Native("__cajeta_class_new0")
+    private static #Object new0Native(pointer rtti, int32 ctorIdx);
+
+    // REFL-6a annotation reflection. ownerKind 0 = the class itself.
+    @Native("__cajeta_rtti_annotation_count")
+    private static int32 annCountNative(pointer rtti, int32 ok, int32 oi, int32 si);
+    @Native("__cajeta_rtti_annotation_name_len")
+    private static int32 annNameLen(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai);
+    @Native("__cajeta_rtti_annotation_name_into")
+    private static void annNameInto(pointer rtti, int32 ok, int32 oi, int32 si, int32 ai, int8[] out);
+
+    // --- entry points -----------------------------------------------------
+
+    /**
+     * The runtime `Class` of `o` (its dynamic type) — equivalent to the
+     * spec's `o.getClass()`. Offered as a static factory so the root
+     * `Object` need not depend on `cajeta.reflect`. The result is a borrow
+     * of a cached per-type instance reached through `o`'s vtable.
+     */
+    @Native("__cajeta_object_get_class")
+    public static Class<?> of(Object o);
+
+    // REFL-8: resolve a canonical name to a registered #ClassObject (NULL if
+    // none). The compiler emits an llvm.global_ctors entry per class that
+    // registers its #ClassObject under its canonical name at startup.
+    @Native("__cajeta_class_for_name")
+    private static Class<?> forNameNative(int8[] nameBytes);
+
+    /**
+     * Resolve a class by its canonical name (e.g. `"test.User"`,
+     * `"cajeta.lang.String"`) to its cached `Class` — the inverse of
+     * {@link #getName}. Returns an empty `Optional` when no class with that name
+     * is in the process registry (decision D3: a single `Optional`-returning
+     * lookup, no throwing/null pair). Primitives (`"int32"`) are not classes and
+     * never resolve. The registry holds every class the binary retains; a class
+     * marked `@Retained` stays discoverable even when nothing else references it
+     * (advisory until AOT class-stripping lands — today every compiled class is
+     * registered). The result is a borrow of a process-lifetime cached instance;
+     * the caller never frees it.
+     *
+     * ```cajeta
+     * Optional<Class<?>> c = Class.forName("test.User");
+     * if (c.isPresent()) {
+     *     int32 fields = c.get().getFieldCount();
+     * }
+     * ```
+     */
+    public static Optional<Class<?>> forName(String name) {
+        Class<?> c = forNameNative(name.bytes);
+        if (c == null) {
+            return stack Optional<Class<?>>(false, #null);
+        }
+        return stack Optional<Class<?>>(true, c);
+    }
+
+    // --- identity ---------------------------------------------------------
+
+    /** The fully-qualified canonical class name, e.g. `"test.User"`. */
+    public #String getName() {
+        int32 len = nameLength(this.rtti);
+        int8[] out = heap int8[len];
+        nameInto(this.rtti, out);
+        return heap String(#out, len);
+    }
+
+    /** Heap size of an instance in bytes (the RTTI allocationSize). */
+    public int64 getInstanceSize() {
+        return allocSizeOf(this.rtti);
+    }
+
+    /**
+     * Raw modifier bit field for the class. Bits follow `cajeta.type.Modifier`:
+     * PACKAGE=0x01, PUBLIC=0x02, PRIVATE=0x04, PROTECTED=0x08, STATIC=0x10,
+     * FINAL=0x20, SYNCHRONIZED=0x40, ASYNC=0x80. A typed `Modifiers` wrapper
+     * lands later; this is the underlying data.
+     */
+    public int32 getModifierFlags() {
+        return modifiersOf(this.rtti);
+    }
+
+    public boolean isPublic() { return (modifiersOf(this.rtti) & 0x02) != 0; }
+    public boolean isFinal()  { return (modifiersOf(this.rtti) & 0x20) != 0; }
+
+    /** This class's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
+    public #Modifiers getModifiers() {
+        return heap Modifiers(modifiersOf(this.rtti));
+    }
+
+    // --- members (counts + per-index access; Field/Method objects later) --
+
+    /** Number of declared fields (properties). */
+    public int32 getFieldCount() {
+        return fieldCountOf(this.rtti);
+    }
+
+    // --- typed field read/write (REFL-3; data-driven over the byte offset) --
+    // The index is the declared-field index (as getFieldName/getFieldOffset).
+    // The accessor's type must match the field's type — a mismatch is unchecked
+    // (type/visibility enforcement arrives with the Field API / REFL-3.3).
+
+    /**
+     * REFL-3.3 visibility gate (decision D1). The index-form field accessors
+     * are default-open; a `@Sealed` class bars access to its private fields.
+     * Throws IllegalAccessException for a sealed-off field.
+     */
+    private void checkFieldAccess(int32 index) {
+        if (fieldBlocked(this.rtti, index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective access to a private field of a @Sealed class is denied");
+        }
+    }
+
+    /** Read the int32 field at `index` from instance `o`. */
+    public int32 getInt32(Object o, int32 index) {
+        checkFieldAccess(index);
+        return fieldGetI32(o, this.rtti, index);
+    }
+    /** Write `value` to the int32 field at `index` of instance `o`. */
+    public void setInt32(Object o, int32 index, int32 value) {
+        checkFieldAccess(index);
+        fieldSetI32(o, this.rtti, index, value);
+    }
+    /** Read the int64 field at `index` from instance `o`. */
+    public int64 getInt64(Object o, int32 index) {
+        checkFieldAccess(index);
+        return fieldGetI64(o, this.rtti, index);
+    }
+    /** Write `value` to the int64 field at `index` of instance `o`. */
+    public void setInt64(Object o, int32 index, int64 value) {
+        checkFieldAccess(index);
+        fieldSetI64(o, this.rtti, index, value);
+    }
+    /** Read the boolean field at `index` from instance `o`. */
+    public boolean getBoolean(Object o, int32 index) {
+        checkFieldAccess(index);
+        return fieldGetBool(o, this.rtti, index) != 0;
+    }
+    /** Write `value` to the boolean field at `index` of instance `o`. */
+    public void setBoolean(Object o, int32 index, boolean value) {
+        checkFieldAccess(index);
+        fieldSetBool(o, this.rtti, index, value ? 1 : 0);
+    }
+    /** Read the float32 field at `index` from instance `o`. */
+    public float32 getFloat32(Object o, int32 index) {
+        checkFieldAccess(index);
+        return fieldGetF32(o, this.rtti, index);
+    }
+    /** Write `value` to the float32 field at `index` of instance `o`. */
+    public void setFloat32(Object o, int32 index, float32 value) {
+        checkFieldAccess(index);
+        fieldSetF32(o, this.rtti, index, value);
+    }
+    /** Read the float64 field at `index` from instance `o`. */
+    public float64 getFloat64(Object o, int32 index) {
+        checkFieldAccess(index);
+        return fieldGetF64(o, this.rtti, index);
+    }
+    /** Write `value` to the float64 field at `index` of instance `o`. */
+    public void setFloat64(Object o, int32 index, float64 value) {
+        checkFieldAccess(index);
+        fieldSetF64(o, this.rtti, index, value);
+    }
+
+    /** Number of declared methods. */
+    public int32 getMethodCount() {
+        return methodCountOf(this.rtti);
+    }
+
+    /** Number of direct superclasses (1 for most classes, 0 for Object). */
+    public int32 getParentCount() {
+        return parentCountOf(this.rtti);
+    }
+
+    /** Declared field name at `index` (0-based); empty if out of range. */
+    public #String getFieldName(int32 index) {
+        int32 len = fieldNameLength(this.rtti, index);
+        int8[] out = heap int8[len];
+        fieldNameInto(this.rtti, index, out);
+        return heap String(#out, len);
+    }
+
+    /** Raw modifier bit field for the field at `index`. */
+    public int32 getFieldModifierFlags(int32 index) {
+        return fieldModifiersOf(this.rtti, index);
+    }
+
+    /**
+     * Byte offset of the field at `index` within an instance, or -1 for a
+     * static field (which lives in a global, not the instance). This is the
+     * data-driven hook reflective field get/set uses — no per-class accessor
+     * code is generated for fields.
+     */
+    public int32 getFieldOffset(int32 index) {
+        return fieldOffsetOf(this.rtti, index);
+    }
+
+    /**
+     * The field's type-flag word (`cajeta.type` TYPE_ID bits: size,
+     * int-vs-float, signed, primitive-vs-reference). Used by typed reflective
+     * accessors to validate and size a get/set.
+     */
+    public int64 getFieldTypeFlags(int32 index) {
+        return fieldTypeFlagsOf(this.rtti, index);
+    }
+
+    // --- methods: invocation (REFL-2 infra; full Method API in REFL-4) -----
+
+    /** Number of declared parameters of the method at `index`. */
+    public int32 getMethodParamCount(int32 index) {
+        return methodParamCountOf(this.rtti, index);
+    }
+
+    /** Canonical signature of the method at `index` (e.g. `"bump()"`). */
+    public #String getMethodName(int32 index) {
+        int32 len = methodNameLength(this.rtti, index);
+        int8[] out = heap int8[len];
+        methodNameInto(this.rtti, index, out);
+        return heap String(#out, len);
+    }
+
+    /**
+     * REFL-2 infrastructure: reflectively invoke the NO-ARGUMENT method at
+     * `index` on `o` (the object's dynamic-class adapter is used), returning
+     * its result widened to int64 — a smaller scalar occupies the low bytes, a
+     * pointer fits whole, `void` yields 0. The typed `Method.invoke` surface
+     * with full argument marshalling lands in REFL-4; this is the minimal
+     * entry that proves the synthesized per-class adapter end to end.
+     */
+    public static int64 invokeScalar0(Object o, int32 index) {
+        return invokeScalar0Native(o, index);
+    }
+
+    // --- member objects (REFL-4 object model) ------------------------------
+
+    /** The declared field at `index` as a {@link Field} object. */
+    public #Field getField(int32 index) {
+        return heap Field(this.rtti, index);
+    }
+
+    /**
+     * REFL-4.1 boxing (plan W5b). Read field `index` of `o` as a uniform owned
+     * `#Object` — boxes a primitive into its `cajeta.lang` wrapper; throws
+     * `UnsupportedReflectionException` for reference/unwrapped-primitive fields.
+     * Convenience over `getField(index).getBoxed(o)`.
+     */
+    public #Object getBoxed(Object o, int32 index) {
+        return this.getField(index).getBoxed(o);
+    }
+
+    /** The declared method at `index` as a {@link Method} object. */
+    public #Method getMethod(int32 index) {
+        return heap Method(this.rtti, index);
+    }
+
+    /** The declared constructor at `index` as a {@link Constructor} object. */
+    public #Constructor getConstructor(int32 index) {
+        return heap Constructor(this.rtti, index);
+    }
+
+    // --- template reflection (REFL-7) --------------------------------------
+    // Cajeta has TEMPLATES, not erased generics: every instantiation
+    // (`Box<int32>`) is its own monomorphized class that retains both its
+    // declared parameters (the `<T>`) and its concrete arguments (`int32`).
+
+    @Native("__cajeta_rtti_template_param_count")
+    private static int32 templateParamCountOf(pointer rtti);
+    @Native("__cajeta_rtti_template_arg_count")
+    private static int32 templateArgCountOf(pointer rtti);
+
+    /** Number of declared template parameters (`class Box<T>` → 1; 0 if none). */
+    public int32 getTemplateParameterCount() {
+        return templateParamCountOf(this.rtti);
+    }
+
+    /** The declared template parameter at `index` as a {@link TemplateParameter}. */
+    public #TemplateParameter getTemplateParameter(int32 index) {
+        return heap TemplateParameter(this.rtti, index);
+    }
+
+    /**
+     * Number of concrete template arguments this class was instantiated with
+     * (`Box<int32>` → 1). Zero for a non-template class or an unmaterialized
+     * template.
+     */
+    public int32 getTemplateArgumentCount() {
+        return templateArgCountOf(this.rtti);
+    }
+
+    /** The concrete template argument at `index` as a {@link TemplateArgument}. */
+    public #TemplateArgument getTemplateArgument(int32 index) {
+        return heap TemplateArgument(this.rtti, index);
+    }
+
+    /** True when this class is a materialized template instantiation. */
+    public boolean isTemplateInstantiation() {
+        return templateArgCountOf(this.rtti) > 0;
+    }
+
+    // --- construction (REFL-2C infra; full Constructor API in REFL-4) ------
+
+    /** Number of declared constructors. */
+    public int32 getConstructorCount() {
+        return constructorCountOf(this.rtti);
+    }
+
+    /** Number of declared parameters of the constructor at `index`. */
+    public int32 getConstructorParamCount(int32 index) {
+        return constructorParamCountOf(this.rtti, index);
+    }
+
+    /**
+     * REFL-2C infrastructure: reflectively construct a new instance via the
+     * NO-ARGUMENT constructor at `index` — allocates, installs the vtable, and
+     * runs the constructor through the synthesized per-class adapter. Returns
+     * the new (owned) object, or null if the index isn't a no-arg constructor.
+     * The typed `Constructor.heapInstance` surface with argument marshalling
+     * lands in REFL-4.
+     */
+    public #Object heapInstance(int32 index) {
+        if (ctorBlocked(this.rtti, index) != 0) {
+            throw heap IllegalAccessException(
+                "reflective construction via a private constructor of a @Sealed class is denied");
+        }
+        return new0Native(this.rtti, index);
+    }
+
+    // --- annotations (REFL-6a; names only — arguments are REFL-6b) ----------
+
+    /** Number of annotations declared on this class. */
+    public int32 getAnnotationCount() {
+        return annCountNative(this.rtti, 0, 0, 0);
+    }
+
+    /**
+     * Canonical name of the class annotation at `index` (e.g. `"code.Component"`
+     * for a bare `@Component`). Empty if out of range.
+     */
+    public #String getAnnotationName(int32 index) {
+        int32 len = annNameLen(this.rtti, 0, 0, 0, index);
+        int8[] out = heap int8[len];
+        annNameInto(this.rtti, 0, 0, 0, index, out);
+        return heap String(#out, len);
+    }
+
+    /** The class annotation at `index` as an {@link Annotation} object. */
+    public #Annotation getAnnotation(int32 index) {
+        return heap Annotation(this.rtti, 0, 0, 0, index);
+    }
+
+    /**
+     * Whether this class declares an annotation whose canonical name equals
+     * `name`. Matching is exact, so pass the canonical form (a bare
+     * `@Component` is `"code.Component"`).
+     */
+    public boolean hasAnnotation(String name) {
+        int32 n = this.getAnnotationCount();
+        int32 i = 0;
+        while (i < n) {
+            if (this.getAnnotationName(i).equals(name)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // --- REFL-10: registry queries ---------------------------------------
+    // The process-wide registry (built at startup by the per-class
+    // llvm.global_ctors that REFL-8 emits) is exposed as an indexable list by
+    // two natives; the package / annotation filtering runs here in cajeta over
+    // getName()/hasAnnotation(). Each returned `Class` is a borrow of a
+    // process-lifetime cached instance — the array owns its buffer, not its
+    // elements, so freeing the array frees no `Class`.
+
+    @Native("__cajeta_class_count")
+    private static int32 registryCount();
+
+    @Native("__cajeta_class_at")
+    private static Class<?> registryAt(int32 index);
+
+    /**
+     * Whether `c`'s package (the canonical name up to the last `.`) equals
+     * `packageName`. A class with no `.` in its name (none today, but a
+     * top-level type in principle) is "in" the empty package.
+     */
+    private static boolean inPackage(Class<?> c, String packageName) {
+        String full = c.getName();
+        int32 len = (int32) full.size();
+        int32 lastDot = -1;
+        int32 i = len - 1;
+        while (i >= 0) {
+            if (full.charAt(i) == (int8) 46) {     // 46 = '.'
+                lastDot = i;
+                break;
+            }
+            i = i - 1;
+        }
+        if (lastDot < 0) {
+            return packageName.size() == 0;
+        }
+        String pkg = full.substring(0, lastDot);
+        return pkg.equals(packageName);
+    }
+
+    /**
+     * Every class the binary retains, as `Class` borrows. Order follows
+     * registration order (startup global-ctor order). The registry holds every
+     * compiled class today; once AOT class-stripping lands it holds the
+     * statically-reachable set plus every `@Retained` class.
+     */
+    public static #Class<?>[] allClasses() {
+        int32 n = registryCount();
+        Class<?>[] arr = heap Class<?>[n];
+        int32 i = 0;
+        while (i < n) {
+            arr[i] = registryAt(i);
+            i = i + 1;
+        }
+        return #arr;
+    }
+
+    /**
+     * Every retained class whose package equals `packageName` (exact match on
+     * the segment before the last `.` of the canonical name). Two-pass: count
+     * the matches, then fill a right-sized array.
+     */
+    public static #Class<?>[] classesInPackage(String packageName) {
+        int32 n = registryCount();
+        int32 matches = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (inPackage(registryAt(i), packageName)) {
+                matches = matches + 1;
+            }
+            i = i + 1;
+        }
+        Class<?>[] arr = heap Class<?>[matches];
+        int32 j = 0;
+        i = 0;
+        while (i < n) {
+            Class<?> c = registryAt(i);
+            if (inPackage(c, packageName)) {
+                arr[j] = c;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #arr;
+    }
+
+    /**
+     * Every retained class that declares an annotation whose canonical name
+     * equals `annotationName` (e.g. `"code.Component"` for a bare `@Component`).
+     * Two-pass over the registry, reusing {@link #hasAnnotation}.
+     */
+    public static #Class<?>[] classesAnnotated(String annotationName) {
+        int32 n = registryCount();
+        int32 matches = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (registryAt(i).hasAnnotation(annotationName)) {
+                matches = matches + 1;
+            }
+            i = i + 1;
+        }
+        Class<?>[] arr = heap Class<?>[matches];
+        int32 j = 0;
+        i = 0;
+        while (i < n) {
+            Class<?> c = registryAt(i);
+            if (c.hasAnnotation(annotationName)) {
+                arr[j] = c;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #arr;
+    }
+}

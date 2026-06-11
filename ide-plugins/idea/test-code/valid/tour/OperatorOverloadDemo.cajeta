@@ -1,6 +1,6 @@
 package tour;
 
-// Operator overloading — see cajeta-docs/OperatorOverloading.md for
+// Operator overloading — see docs/OperatorOverloading.md for
 // the full spec. Two rules carry everything:
 //
 //   1. Binary arithmetic / comparison / bitwise operators (and the

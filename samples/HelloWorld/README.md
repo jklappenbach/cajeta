@@ -53,7 +53,7 @@ ls build/ir/
 | Cja archive | `build-cja.sh` | `build/cja/HelloWorld.cja` — project-only library form (no stdlib, no deps) |
 | Uber archive | `build-uber.sh` | `build/uber/HelloWorld.cja` — project + stdlib + transitively-referenced deps under `deps/<name>-<ver>/` |
 
-See [`cajeta-docs/Compilation.md`](../../cajeta-docs/Compilation.md) for the full output-mode reference and the `.cja` container spec.
+See [`docs/Compilation.md`](../../docs/Compilation.md) for the full output-mode reference and the `.cja` container spec.
 
 ## What's in the source
 
@@ -70,7 +70,7 @@ public final class HelloWorld {
 
 - `package helloworld;` — every file declares its package; the path under `src/` must match (`src/helloworld/HelloWorld.cajeta` ↔ `helloworld.HelloWorld`).
 - `public static int32 run()` — the static no-arg entry method the compiler wires up as the program's C `main`. Its `int32` return becomes the exit status.
-- `System.stdout.println(...)` — cajeta's stdout intrinsic; see [`cajeta-docs/stdlib/lang/System.md`](../../cajeta-docs/stdlib/lang/System.md) for the full surface (multi-arg `{}` formatting, `System.env`, `System.property`, …).
+- `System.stdout.println(...)` — cajeta's stdout intrinsic; see [`docs/stdlib/lang/System.md`](../../docs/stdlib/lang/System.md) for the full surface (multi-arg `{}` formatting, `System.env`, `System.property`, …).
 
 ## Next steps
 

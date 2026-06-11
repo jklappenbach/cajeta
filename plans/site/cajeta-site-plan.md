@@ -20,7 +20,7 @@ Required top-level destinations (from the brief):
 1. **What is Cajeta** — landing / elevator pitch.
 2. **Why Cajeta** — motivation & differentiators.
 3. **Code Examples** — real Cajeta snippets with syntax highlighting.
-4. **Full Documentation** — the `cajeta-docs/` tree, browsable with search.
+4. **Full Documentation** — the `docs/` tree, browsable with search.
 5. **Cajeta Repo** — the package registry (Maven-Central-style: search, bundling, publish).
 6. **Contact** — reach Julian Klappenbach.
 
@@ -32,7 +32,7 @@ Required top-level destinations (from the brief):
 `./site` **replaces** the existing **`../cajeta-docs-site/`** (an Astro/AstroWind
 site). Its docs are stale hand-copies styled with generic Tailwind `prose` (the
 "raw md" look to be fixed). We migrate its *value* — the category taxonomy and
-branding — into `./site`, wire docs to the **canonical `cajeta-docs/`** tree so
+branding — into `./site`, wire docs to the **canonical `docs/`** tree so
 edits auto-reflect, then **delete `cajeta-docs-site/`**. Full migration plan in
 **§14**.
 
@@ -41,8 +41,8 @@ edits auto-reflect, then **delete `cajeta-docs-site/`**. Full migration plan in
 Two repos, not three. The boundary falls where **content ownership** falls, not
 where the tech stack changes:
 
-- **`cajeta`** (this repo) — compiler + canonical `cajeta-docs/` + the wire
-  **spec** (`cajeta-docs/specs/`) + **`./site`**. The site lives **in-repo**.
+- **`cajeta`** (this repo) — compiler + canonical `docs/` + the wire
+  **spec** (`docs/specs/`) + **`./site`**. The site lives **in-repo**.
 - **`cajeta-olla`** — the registry **service** (server, `/v2` API, web app), in
   its own repo: **https://github.com/jklappenbach/cajeta-olla** (infra plan
   there; see also the §15 pointer below).
@@ -51,7 +51,7 @@ where the tech stack changes:
 "different stack" is *not* the test. The test is **what each consumes**:
 
 - **The site consumes *living content from this repo*.** Per §9/§14 it renders
-  `../cajeta-docs/**` (processed into styled, searchable pages via the Fumadocs
+  `../docs/**` (processed into styled, searchable pages via the Fumadocs
   pipeline, §14.2), plus `../samples/**`, `../VERSION`, and `README.md`/
   `Features.md` quoted verbatim. The "processed cajetadocs → made available" step
   is a **build transform over files in the same working tree**. Splitting the
@@ -59,7 +59,7 @@ where the tech stack changes:
   CI trigger on every docs/version change) just to recover the auto-reflect
   guarantee the plan is built around. Co-location is what makes auto-reflect free.
 - **Olla consumes a *stable, versioned contract*.** It needs only
-  `cajeta-docs/specs/*`, pulled as a submodule / published schema package and
+  `docs/specs/*`, pulled as a submodule / published schema package and
   conformance-tested. That contract changes rarely and deliberately, so Olla can
   version and deploy on its own clock.
 
@@ -73,7 +73,7 @@ because the compiler did (independence is correct there).
 - Cloudflare Pages builds fine from a **subdirectory**: set the project root to
   `site/` (§15.3 step D).
 - If a real web-contributor pool ever appears, the escape hatch is a git
-  submodule pulling `cajeta-docs` — strictly more plumbing, no benefit today.
+  submodule pulling `docs` — strictly more plumbing, no benefit today.
 
 ---
 
@@ -278,7 +278,7 @@ export at build (or via the asset spec in §11).
 /                     What is Cajeta  (landing / hero)
 /why                  Why Cajeta      (motivation, comparisons)
 /examples             Code Examples   (curated, highlighted snippets)
-/docs/**              Full Documentation (Fumadocs over cajeta-docs/)
+/docs/**              Full Documentation (Fumadocs over docs/)
 /repo                 Cajeta Repo     (package registry front door)
 /contact              Contact         (Julian)
 ```
@@ -295,7 +295,7 @@ Global chrome:
 ## 5. Page-by-page content
 
 Content below is drawn from real project sources: `README.md`, `Features.md`,
-`samples/Tour/`, `cajeta-docs/`, and `cajeta-docs/specs/`.
+`samples/Tour/`, `docs/`, and `docs/specs/`.
 
 ### 5.1 `/` — What is Cajeta (landing)
 - **Hero:** caramel-cube logo with glow; headline + the README elevator pitch:
@@ -358,7 +358,7 @@ Build-time approach: read the actual sample files so snippets never drift
 (script that imports from `../samples/Tour/...` into MDX, or a small loader).
 
 ### 5.4 `/docs/**` — Full Documentation (Fumadocs)
-- Source: the `cajeta-docs/` tree (`stdlib/`, top-level specs, `specs/`).
+- Source: the `docs/` tree (`stdlib/`, top-level specs, `specs/`).
 - Sidebar groups (from real files):
   - **Language:** `Lang.md`, `UnifiedClasses.md`, `MemoryModel.md`,
     `FieldOwnership.md`, `Primitives.md`, `FloatingPointModel.md`,
@@ -369,11 +369,11 @@ Build-time approach: read the actual sample files so snippets never drift
     `StreamParallelism.md`, `Hashing.md`.
   - **Features:** `Lambdas.md`, `Annotations.md`, `AspectModel.md`,
     `ErrorModel.md`, `Views.md`.
-  - **Concurrency:** `Thread.md`, `AsyncStatus.md`.
+  - **Concurrency:** `Concurrency.md`, `AsyncStatus.md`.
   - **Codec / IO:** `codec/Json.md`, `io/`.
   - **Compiler & build:** `Compilation.md`, `CompilerModes.md`, `BuildTool.md`,
     `LintRules.md`, `HarnessDesign.md`, `ArchiveManagement.md`, `Embedded.md`.
-  - **GPU/XPU/GFX:** the `cajeta-docs/gpu/` tree — foundation value-type/math
+  - **GPU/XPU/GFX:** the `docs/gpu/` tree — foundation value-type/math
     docs at `gpu/`, compute at `gpu/xpu/` (`CajetaXPU.md`, `CajetaCPU.md`,
     `CajetaXPU-Matrix.md`, `CajetaXPU-Variance.md`), graphics at `gpu/gfx/`
     (`CajetaRender.md`).
@@ -381,7 +381,7 @@ Build-time approach: read the actual sample files so snippets never drift
     `lockfile-v1.json`, `action-catalog-v1.json`, `capabilities-v1.json`,
     `extension-api-v1.md`, `toolchain-registry-v1.md`, `schema-versioning.md`,
     `tour-build-your-first-package.md`.
-- **Single source of truth = `../cajeta-docs/`** (canonical, current). The site
+- **Single source of truth = `../docs/`** (canonical, current). The site
   is a pure *consumer*; we never hand-copy/author doc bodies in `site/`. The
   sync + auto-reflect mechanism and structure-preservation are specified in §14.
 - Features: full-text search (Orama), TOC, "edit on GitHub", prev/next,
@@ -390,7 +390,7 @@ Build-time approach: read the actual sample files so snippets never drift
 
 ### 5.5 `/repo` — Cajeta Repo (package registry front door)
 The Maven-Central-style registry. Design reflects the **real** protocol in
-`cajeta-docs/specs/repository-protocol-v1.md` + `tour-build-your-first-package.md`.
+`docs/specs/repository-protocol-v1.md` + `tour-build-your-first-package.md`.
 
 - **Hero:** "The Cajeta package registry" — search bar front-and-center
   (`repo.cajeta.org`). Tagline: signed, content-addressed, reproducible.
@@ -399,7 +399,7 @@ The Maven-Central-style registry. Design reflects the **real** protocol in
   version, description, license, capabilities, retracted/CVE badge).
 - **Featured / well-known bundles:** `stdlib@1.0.0` (from the capability probe's
   `well-known-bundles`), core modules: `cajeta.lang`, `cajeta.collection`,
-  `cajeta.codec.json`, `cajeta.threading`, `cajeta.xpu`.
+  `cajeta.codec.json`, `cajeta.concurrent`, `cajeta.xpu`.
 - **How it works** (illustrated, from the protocol):
   - *Resolve & bundle* — `POST /v2/bundle` with `have`/`want` digest
     negotiation; transitive MVS pinning; `tar.zst` stream.
@@ -480,7 +480,7 @@ site/
       [[...slug]]/page.tsx  # Fumadocs page renderer
     api/contact/route.ts    # (server route — only if SSR hosting; else Formspree)
   content/
-    docs/                   # MDX (generated/copied from ../cajeta-docs by prebuild)
+    docs/                   # MDX (generated/copied from ../docs by prebuild)
   components/
     ui/                     # shadcn/ui
     marketing/  content/  registry/  layout/
@@ -495,7 +495,7 @@ site/
   next.config.mjs           # (output:'export' toggle behind env)
   tailwind.config / globals.css   # @theme tokens (palette §3.1)
   package.json  tsconfig.json  .eslintrc  .prettierrc
-  scripts/sync-docs.ts      # copy cajeta-docs -> content/docs + meta.json
+  scripts/sync-docs.ts      # copy docs -> content/docs + meta.json
   README.md                 # how to dev/build/deploy this site
 ```
 
@@ -516,7 +516,7 @@ inside `/repo` and its children it searches the **registry** (library entries,
 Same hotkey, context-routed to the correct index — the two never merge or
 cross-query.
 
-### 8.1 Site search — Orama static (over `cajeta-docs/`)
+### 8.1 Site search — Orama static (over `docs/`)
 Active everywhere **except** the `/repo` section. Opened by **Cmd/Ctrl+K** (or a
 visible search box). Scope: docs + static site content only — it does **not**
 query the registry.
@@ -585,7 +585,7 @@ endpoint.**
 
 - Snippets: load from `../samples/Tour/**` and `../samples/HelloWorld/**` at
   build (don't hand-copy).
-- Docs: sync from `../cajeta-docs/**` via `scripts/sync-docs.ts` (Approach A, §5.4).
+- Docs: sync from `../docs/**` via `scripts/sync-docs.ts` (Approach A, §5.4).
 - Version: read `../VERSION` (currently `0.5.1`) into `site-config.ts` for the
   footer/badge. **`VERSION` is law** — the site always reflects it and never
   hard-codes a version. (README prose still says `0.1.0`; that's stale — correct
@@ -653,7 +653,7 @@ SEO; provide static `out/` + optional `Dockerfile` instructions in `site/README.
 4. **Examples** — sample loader + `CodeBlock` + Cajeta highlighting (interim
    Java/Rust alias, then real grammar).
 5. **Docs migration** (§14) — Fumadocs wiring, `sync-docs.ts` sourcing
-   canonical `cajeta-docs/`, `docs-manifest.ts` taxonomy, caramel recolor,
+   canonical `docs/`, `docs-manifest.ts` taxonomy, caramel recolor,
    search, grouped `/docs` index. Verify auto-reflect.
    - **5a–5d. Doc editorial + Tour + stdlib review + `cajetadoc`** — see §21.1
      (doc catalog/edit §16, Tour reorg §17, stdlib code §19 + comment §20 review,
@@ -664,7 +664,7 @@ SEO; provide static `out/` + optional `Dockerfile` instructions in `site/README.
 8. **Polish** — SEO/OG, motion, a11y pass (keyboard/contrast), Lighthouse,
    responsive QA, `site/README.md`.
 9. **Retire `cajeta-docs-site/`** (§14.4) — reconcile old-only content into
-   `cajeta-docs/`, add redirects, then `git rm -r cajeta-docs-site/` on a branch.
+   `docs/`, add redirects, then `git rm -r cajeta-docs-site/` on a branch.
 10. **Deploy** — finalize hosting choice, CI build, sitemap/robots.
 
 ---
@@ -689,8 +689,8 @@ SEO; provide static `out/` + optional `Dockerfile` instructions in `site/README.
 5. **Logo** — keep SVG, or commission a Blender/photo render later? (§11)
 6. **Stale docs taxonomy** — the old Astro `category` values (`CajetaTorch`,
    `CajetaML`, `StandardLibrary`, `Structs`…) reference docs that no longer
-   exist as such in `cajeta-docs/`. Confirm the new category→file mapping in
-   §14.2 (built from the *current* `cajeta-docs/` tree).
+   exist as such in `docs/`. Confirm the new category→file mapping in
+   §14.2 (built from the *current* `docs/` tree).
 7. **Contact channels** — beyond email/GitHub, any socials / Discord to list?
 8. **GitHub URL** — old site links `github.com/jklappenbach/cajeta`; the active
    repo is `cajeta-two`. Which is the public canonical repo for links?
@@ -721,39 +721,39 @@ Astro site** once `./site` reaches parity.
 - `navigation.ts` defines header/footer doc menus per category.
 - **Problem:** these `.md` are **hand-copied & stale** — divergent filenames
   (`CajetaTorch`, `CajetaML`, `StandardLibrary`, `Structs`, `CajetaHttp`,
-  `ImplementationStatus`…) that don't match the live `cajeta-docs/` tree. Editing
-  a real doc in `cajeta-docs/` does **not** update the site today.
+  `ImplementationStatus`…) that don't match the live `docs/` tree. Editing
+  a real doc in `docs/` does **not** update the site today.
 
 ### 14.2 New docs pipeline in `./site` (Fumadocs, single source of truth)
 
-**Source of truth:** `../cajeta-docs/**` only. Never copy bodies by hand.
+**Source of truth:** `../docs/**` only. Never copy bodies by hand.
 
 **Auto-reflect mechanism (keeps "md → styled html, automatically"):**
 - **Dev:** `fumadocs-mdx` source dir points at the synced content; a chokidar
-  watcher (or symlink, below) makes saving a `cajeta-docs/*.md` hot-reload the
+  watcher (or symlink, below) makes saving a `docs/*.md` hot-reload the
   page. Two viable wirings:
-  - **(A) Symlink** `site/content/docs` → `../cajeta-docs` (zero copy; edits are
+  - **(A) Symlink** `site/content/docs` → `../docs` (zero copy; edits are
     literally the same files). Simplest auto-reflect; caveat: Fumadocs wants a
     `meta.json` sidebar + per-file front-matter (title/order) which canonical
     `.md` lack — solved by the manifest in the next bullet rather than editing
     canonical files.
-  - **(B) `scripts/sync-docs.ts` prebuild + `--watch`** copies `cajeta-docs/**`
+  - **(B) `scripts/sync-docs.ts` prebuild + `--watch`** copies `docs/**`
     → `site/content/docs/**`, and **injects** front-matter (derive `title` from
     the first `# H1`, `category`/order from the manifest) so canonical `.md`
     stays clean. **Recommended** — keeps the repo docs annotation-free and gives
     Fumadocs what it needs. CI/build runs it; dev runs it in `--watch`.
 - **Build:** the same sync runs as a `prebuild` step, so production always
-  matches the committed `cajeta-docs/`.
+  matches the committed `docs/`.
 
 **Structure preservation:** a single `site/lib/docs-manifest.ts` reproduces the
 old taxonomy against the *current* tree — e.g.:
-| Category | Current `cajeta-docs/` files (illustrative) |
+| Category | Current `docs/` files (illustrative) |
 |----------|---------------------------------------------|
 | Language | `stdlib/Lang.md`, `stdlib/UnifiedClasses.md`, `stdlib/MemoryModel.md`, `stdlib/FieldOwnership.md`, `stdlib/Primitives.md`, `stdlib/FloatingPointModel.md`, `OperatorOverloading.md`, `stdlib/Views.md`, `stdlib/Lambdas.md`, `stdlib/ErrorModel.md` |
 | Stdlib   | `stdlib/Collections.md`, `stdlib/Streams.md`, `stdlib/StreamParallelism.md`, `stdlib/Hashing.md`, `stdlib/codec/Json.md`, `stdlib/Annotations.md`, `stdlib/AspectModel.md` |
-| Concurrency | `stdlib/Thread.md`, `stdlib/AsyncStatus.md` |
+| Concurrency | `stdlib/Concurrency.md`, `stdlib/AsyncStatus.md` |
 | Tooling  | `Compilation.md`, `CompilerModes.md`, `BuildTool.md`, `LintRules.md`, `HarnessDesign.md`, `ArchiveManagement.md` |
-| GPU/XPU/GFX | `../../cajeta-docs/gpu/` tree — foundation at `gpu/`, compute at `gpu/xpu/` (`CajetaXPU.md`, `CajetaCPU.md`, `CajetaXPU-Matrix.md`, `CajetaXPU-Variance.md`), graphics at `gpu/gfx/` (`CajetaRender.md`) |
+| GPU/XPU/GFX | `../../docs/gpu/` tree — foundation at `gpu/`, compute at `gpu/xpu/` (`CajetaXPU.md`, `CajetaCPU.md`, `CajetaXPU-Matrix.md`, `CajetaXPU-Variance.md`), graphics at `gpu/gfx/` (`CajetaRender.md`) |
 | Specs    | `specs/*` (repository-protocol, manifest, lockfile, action-catalog, capabilities, extension-api, toolchain-registry, schema-versioning, tour) |
 | Status   | `Features.md`, `Embedded.md` |
 
@@ -770,8 +770,8 @@ sidebar tree, TOC, breadcrumb, prev/next, and Orama search. A docs landing
 - Category taxonomy + per-category taglines/subtitles/icons (`docs/index.astro`).
 - Branding bits in `src/config.yaml` (site name, metadata, theme defaults) and
   `src/assets/favicons/` (compare with new caramel favicon — likely replace).
-- Any doc prose that exists **only** in the old copies and not in `cajeta-docs/`
-  → reconcile into `cajeta-docs/` first (don't lose content). Diff the two sets
+- Any doc prose that exists **only** in the old copies and not in `docs/`
+  → reconcile into `docs/` first (don't lose content). Diff the two sets
   during migration; the old set may contain notes worth porting back to canon.
 - Contact/About copy from `src/pages/contact.astro` / `about.astro` if useful.
 
@@ -779,8 +779,8 @@ sidebar tree, TOC, breadcrumb, prev/next, and Orama search. A docs landing
 1. Build `./site` docs to **parity**: every doc reachable, categorized, styled,
    searchable; links updated; redirects for any old `/docs/<Name>` URLs that
    should survive (map to new slugs).
-2. Reconcile any old-only content back into `cajeta-docs/` (§14.3).
-3. Verify auto-reflect: edit a `cajeta-docs/*.md`, confirm the dev site updates.
+2. Reconcile any old-only content back into `docs/` (§14.3).
+3. Verify auto-reflect: edit a `docs/*.md`, confirm the dev site updates.
 4. **`git rm -r cajeta-docs-site/`** and remove its references (CI, Netlify/
    Vercel configs, any links). Commit on a branch; PR for review.
 5. Update root README / links to point at `./site`.
@@ -800,7 +800,7 @@ The Olla registry **service + infrastructure** plan now lives in its **own repo*
 Algolia search, and cost.
 
 **What stays in *this* (`cajeta`) repo:**
-- The wire **spec** — `cajeta-docs/specs/` (`repository-protocol-v1.md`,
+- The wire **spec** — `docs/specs/` (`repository-protocol-v1.md`,
   `manifest-v1.json`, `lockfile-v1.json`). Olla consumes it and conformance-tests
   against it.
 - The build-tool **client** — `src/cajeta/buildtool/repo/`.
@@ -808,13 +808,13 @@ Algolia search, and cost.
   §8.2, §8.3.
 - **Spec/protocol follow-ups** the registry needs: index-on-publish + `GET
   /v2/search?q=` (§8.2 / §13), and the `repo.cajeta.org` → `olla.cajeta.dev`
-  endpoint rename across `cajeta-docs/specs/*` and the build-tool default.
+  endpoint rename across `docs/specs/*` and the build-tool default.
 
 ---
 
 ## 16. Documentation organization & editing
 
-The `cajeta-docs/` tree (≈60 markdown files, ~38k lines) grew organically over a
+The `docs/` tree (≈60 markdown files, ~38k lines) grew organically over a
 long time. Symptoms: some docs are **too low-level** for a developer/user audience
 (cross-machine handoffs, bring-up logs, status trackers); some are **stale**; some
 are **far too verbose** (`BuildTool.md` is 4568 lines, `StreamParallelism.Examples.md`
@@ -823,7 +823,7 @@ files). This section is the editorial pass that turns that corpus into the
 **styled docs portion of cajeta.dev** (§14 wires it; this section *curates* it).
 
 > **XPU docs are out of scope for this editorial pass.** A separate session with
-> deeper XPU context owns the `cajeta-docs/gpu/` tree — `gpu/CajetaGPU.md`,
+> deeper XPU context owns the `docs/gpu/` tree — `gpu/CajetaGPU.md`,
 > `gpu/xpu/CajetaXPU.md`, `gpu/xpu/CajetaCPU.md`, `gpu/xpu/CajetaXPU-Matrix.md`,
 > `gpu/xpu/CajetaXPU-Variance.md`, `gpu/gfx/CajetaGFX.md`, `gpu/gfx/CajetaRender.md`,
 > and `ci-validation-targets.md`. (That session has since reorganized these into the
@@ -877,7 +877,7 @@ implemented") · **CUT** (delete or archive).
 (The root bring-up logs `cajeta-xpu.md` / `cajeta-vulkan.md` / `cajeta-amd.md` were retired in the gpu/xpu/gfx reorg — superseded by the matrix, the variance doc, and the layer plans.)
 | `exception-fix-plan.md` | 143 | CUT | Open bug plan; archive when fixed, never publish. | — |
 
-#### `cajeta-docs/` (root)
+#### `docs/` (root)
 
 | Doc | Lines | Verdict | Notes | Group |
 |-----|------:|---------|-------|-------|
@@ -902,14 +902,14 @@ implemented") · **CUT** (delete or archive).
 | `CajetaRender.md` | 869 | ROADMAP | Design for unbuilt `cajeta.render`. | Roadmap |
 | `CajetaTorch.md` | 700 | ROADMAP | Design for unbuilt `cajeta.torch`. | Roadmap |
 
-#### `cajeta-docs/history/`
+#### `docs/history/`
 
 | Doc | Lines | Verdict | Notes | Group |
 |-----|------:|---------|-------|-------|
 | `history/ImplementationStatus.md` | 93 | INTERNAL | Memory-model rollout tracker. | Internal |
 | `history/StructsViewsStatus.md` | 282 | INTERNAL | Structs/Views rollout tracker; salvage any design prose into `Views.md` before excluding (resolves the dangling old-site `Structs` category, §13.6). | Internal |
 
-#### `cajeta-docs/specs/`
+#### `docs/specs/`
 
 | Doc | Lines | Verdict | Notes | Group |
 |-----|------:|---------|-------|-------|
@@ -919,7 +919,7 @@ implemented") · **CUT** (delete or archive).
 | `specs/schema-versioning.md` | 128 | KEEP | Manifest/lockfile evolution policy. | Registry & Specs |
 | `specs/tour-build-your-first-package.md` | 179 | KEEP | Tutorial — also surface under **Start Here**. | Start Here |
 
-#### `cajeta-docs/stdlib/` (language & core)
+#### `docs/stdlib/` (language & core)
 
 | Doc | Lines | Verdict | Notes | Group |
 |-----|------:|---------|-------|-------|
@@ -938,7 +938,7 @@ implemented") · **CUT** (delete or archive).
 | `stdlib/MultiClassing.md` | 917 | SPLIT/EDIT | Multiple inheritance + vtable; split. | Types & Generics |
 | `stdlib/NumericBoundedTemplates.md` | 136 | CHILD→Types | Numeric pseudo-bounds; child. | Types & Generics |
 
-#### `cajeta-docs/stdlib/` (collections, streams, library, concurrency)
+#### `docs/stdlib/` (collections, streams, library, concurrency)
 
 | Doc | Lines | Verdict | Notes | Group |
 |-----|------:|---------|-------|-------|
@@ -960,10 +960,10 @@ implemented") · **CUT** (delete or archive).
 | `stdlib/Views.md` | 626 | KEEP | Wire-format views; absorb any Structs prose (history salvage). | Serialization & Codecs |
 | `stdlib/Process.md` | 77 | MERGE→System | Tiny; fold into System or I/O. | Standard Library |
 | `stdlib/Time.md` | 76 | KEEP | Time/duration; small but standalone. | Standard Library |
-| `stdlib/Thread.md` | 537 | KEEP | Structured concurrency (async/await/scope/spawn). | Concurrency |
-| `stdlib/AsyncStatus.md` | 226 | INTERNAL | Async rollout tracker; salvage live design into `Thread.md`, then exclude. | Internal |
+| `stdlib/Concurrency.md` | 537 | KEEP | Structured concurrency (async/await/scope/spawn). | Concurrency |
+| `stdlib/AsyncStatus.md` | 226 | INTERNAL | Async rollout tracker; salvage live design into `Concurrency.md`, then exclude. | Internal |
 
-#### `cajeta-docs/stdlib/codec/` · `io/`
+#### `docs/stdlib/codec/` · `io/`
 
 | Doc | Lines | Verdict | Notes | Group |
 |-----|------:|---------|-------|-------|
@@ -1053,7 +1053,7 @@ deep-internal rationale to `Internal` or footnotes.
 deferred to the XPU session — §16 banner.)*
 
 **Salvage-before-exclude** (don't lose design content):
-- [ ] Pull live async-runtime design from `AsyncStatus.md` into `Thread.md`.
+- [ ] Pull live async-runtime design from `AsyncStatus.md` into `Concurrency.md`.
 - [ ] Pull any Structs design prose from `history/StructsViewsStatus.md` into `Views.md` (closes the dangling old-site `Structs` category, §13.6).
 
 **Parent/child decisions (which docs nest under which):**
@@ -1200,7 +1200,7 @@ to teach the feature and adds depth or companion demos. Initial targets:
 
 A JavaDoc-style tool that turns the `/** … */` doc comments in
 `runtime/src/cajeta/**` into a **browsable website hierarchy**, with Markdown
-markup support. **The spec already exists** — `cajeta-docs/Documentation.md`
+markup support. **The spec already exists** — `docs/Documentation.md`
 (630 lines) defines the comment syntax, the `@`-tag catalog, Markdown-in-comments,
 and a `cajeta doc` subcommand. **This item implements it** and wires the output
 into the site as the *reference* sibling to the hand-written *guides* (§21).
@@ -1310,7 +1310,7 @@ before `cajetadoc` (§18) publishes them.
 The three workstreams above combine into the documentation portion of
 **cajeta.dev** (§4, `/docs`):
 
-1. **Curated guides** — the hand-written `cajeta-docs/**`, edited and grouped per
+1. **Curated guides** — the hand-written `docs/**`, edited and grouped per
    §16, converted to styled HTML through the Fumadocs pipeline (§14.2),
    caramel-themed (§3).
 2. **Tour examples injected by subject** — real, compiling snippets from the

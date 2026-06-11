@@ -44,8 +44,8 @@ namespace cajeta::buildtool {
         bool isBuiltinStdlibDep(const std::string& name) {
             static const char* const kStdlibRoots[] = {
                 "cajeta.codec", "cajeta.collection", "cajeta.error",
-                "cajeta.hash", "cajeta.io", "cajeta.lang", "cajeta.threading",
-                "cajeta.time", "cajeta.wire", "cajeta.xpu",
+                "cajeta.hash", "cajeta.io", "cajeta.lang", "cajeta.concurrent",
+                "cajeta.reflect", "cajeta.time", "cajeta.wire", "cajeta.xpu",
             };
             for (const char* root : kStdlibRoots) {
                 std::string r(root);

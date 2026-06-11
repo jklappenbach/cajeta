@@ -1,0 +1,45 @@
+Current focus:
+- Finish the build-tool            → plans/buildtool/build-tool-plan.md
+  - Build tool interface in Intellij Plugin  → ide-plugins/idea/Plan.md (L1418, deferred until build tool ships)
+- Continue on gpu/xpu/gfx           → plans/gpu/cajeta-gpu-plan.md
+- Olle (= Olla registry)            → plans/site/cajeta-site-plan.md (§15) + cajeta-olla repo
+  - Cloudflare Setup and Launch     → cajeta-olla/plans/to-launch.md (NEW; runbook) + olla-infrastructure-plan.md §3
+  - Proper icon / logo for Olle     → plans/site/cajeta-site-plan.md §11 + plans/site/cajeta-cube-proposals.md
+- Tour                              → plans/tour/tour-refactor-plan.md (NEW)
+  - [x] switch/ternary/instanceof demo (SwitchTernaryDemo.cajeta, wired into Tour.cajeta)
+  - [x] ViewsDemo: unsigned (uint32[]) buffers; CacheEntry demonstrates the @HostEndian default
+  - [x] Refactor tour into proper cajeta project with build file (cajeta.json + src/main/cajeta/tour/; build.sh/run.sh drive the build tool)
+  - [x] lower case Tour
+  - Organize into directory reflecting major packages (optional: split flat `tour` pkg into sub-packages — see plan D1)
+  - [x] time (TimeDemo — every cajeta.time class exercised)
+  - [x] concurrent (ConcurrentDemo — Channel/Atomic32+64/Mutex/RwLock/Semaphore/Lock+LockGuard; async is in AsyncDemo)
+  - [x] net (NetDemo — TCP loopback echo over cajeta.net)
+  - reflection (demo — BLOCKED on building cajeta.reflect; impl plan: plans/reflection/reflection-plan.md — tour demo lands after REFL phases 1–4)
+- Views
+  - [x] Default byte ordering is @HostEndian (unannotated view == @HostEndian; CajetaView rejection removed, Views.md updated, ViewEndiannessDefaultTests)
+- Profiler                          → plans/profiler/profiler-plan.md (NEW)
+  - Profiler interface in IntelliJ Plugin   → ide-plugins/idea/Plan.md (Phase ≥2; consumes the report format)
+  - Report format
+  - Broad Capture
+  - Specific method timing
+- Installer - finish it             → plans/installer/installer-plan.md
+  - cvm - finish it                 → plans/installer/installer-plan.md (§ cvm, D12)
+- Unit Test Fx                      → plans/testing/unit-test-framework-plan.md (NEW; scaffold — design forks open)
+  - CUnit
+  - Mocks
+  - Fakes
+- Network                           → plans/net/cajeta-net-plan.md
+  - Workout network layer
+  - Tour examples
+  - Clients & Servers
+    - TCP Server
+    - Web Server
+    - ThreadPerConnection
+    - ThreadPooled (event driven / completion port)
+    - Zero copy
+    - View example
+    - UDP Multicast
+    - Gossip
+  - MessageDriven
+- Compiler
+  - Enhanced output (curses) to provide completion feedback  → plans/compiler/curses-output-plan.md (NEW; scaffold — design forks open)

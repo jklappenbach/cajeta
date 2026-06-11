@@ -268,19 +268,28 @@ jobs:
       # 22). Other Linux legs fall through to distro LLVM until their fork artifact
       # is built (expand the gate as fork-build-llvm.yml adds host legs).
       - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
-        if: runner.os == 'Linux' && matrix.target == 'x86_64-linux-gnu'
+        # Legs that link the fork toolchain (carrying the SPIR-V ray-query +
+        # Tier-1 intrinsic patches). Windows is here because cajeta's Tier-1 SPIR-V
+        # codegen now references fork-only intrinsic enums that stock MSYS2 LLVM 22
+        # lacks — so the Windows release MUST link the fork (no distro fallback).
+        if: >-
+          (runner.os == 'Linux' && matrix.target == 'x86_64-linux-gnu') ||
+          (runner.os == 'Windows' && matrix.target == 'x86_64-w64-mingw32')
         env:
           # Bump when re-cutting the toolchain (new pinned base or new SPIR-V
-          # patches). r3 is the first release containing the ray-query lowering.
+          # patches). r3 is the first release containing the ray-query lowering;
+          # the windows-x64 asset must be published under whatever tag this names
+          # (re-run fork-build-llvm.yml's build-windows job for this tag, or bump).
           LLVM_RELEASE_TAG: cajeta-llvm-23-r3
         run: |
           set -euo pipefail
           # The fork names assets by host (asset_os), NOT by cajeta's target triple:
-          # x86_64-linux-gnu -> linux-x64, aarch64-linux-gnu -> linux-arm64
-          # (see fork-build-llvm.yml matrix). Map before building the URL.
+          # x86_64-linux-gnu -> linux-x64, aarch64-linux-gnu -> linux-arm64,
+          # x86_64-w64-mingw32 -> windows-x64 (see fork-build-llvm.yml). Map first.
           case "${{ matrix.target }}" in
-            x86_64-linux-gnu)  ASSET_OS=linux-x64 ;;
-            aarch64-linux-gnu) ASSET_OS=linux-arm64 ;;
+            x86_64-linux-gnu)   ASSET_OS=linux-x64 ;;
+            aarch64-linux-gnu)  ASSET_OS=linux-arm64 ;;
+            x86_64-w64-mingw32) ASSET_OS=windows-x64 ;;
             *) echo "::error::no fork asset_os mapping for ${{ matrix.target }}"; exit 1 ;;
           esac
           ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
@@ -368,10 +377,17 @@ jobs:
           msystem: MINGW64
           update: false
           path-type: inherit  # inherit Windows PATH so `java` from setup-java is visible
+          # NO mingw llvm/lld/clang here: this leg links the cajeta-llvm FORK
+          # (fetched below), and a second stock LLVM 22 on PATH/in the lib search
+          # dirs would mis-resolve at link (the runbook's "two LLVMs" trap — cajeta
+          # links lldELF/lldCommon + libLLVM*, which must ALL be the fork's v23).
+          # cajeta's C++ is compiled by mingw `c++` (g++), so install gcc explicitly
+          # (previously pulled transitively by the clang package). The runtime-bitcode
+          # `clang` and in-process `lld` both come from the fork tree on PATH.
+          # vulkan-headers: <vulkan/vulkan.h> for the runtime's Vulkan compute
+          # path (the loader vulkan-1.dll is dlopen'd at run time, no link dep).
           install: >-
-            mingw-w64-x86_64-clang
-            mingw-w64-x86_64-llvm
-            mingw-w64-x86_64-lld
+            mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-antlr4-runtime-cpp
@@ -380,6 +396,7 @@ jobs:
             mingw-w64-x86_64-glog
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-vulkan-headers
             vim
 
       # ---- Fetch the prebuilt IDE plugin for embedding ------------------
@@ -404,6 +421,14 @@ jobs:
         run: |
           set -euo pipefail
           export CAJETA_SKIP_DEPS=1
+          # Windows links the cajeta-llvm fork (fetched above). Build cajeta's C++
+          # with mingw g++, NOT the fork's clang++ — the fork bin is first on PATH,
+          # so CMake would auto-pick clang++, which on mingw doesn't auto-link
+          # winpthreads and fails the LLVM/libstdc++ pthread_* symbols at link. The
+          # fork still supplies the LLVM libs/headers + clang for the bitcode step.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            export CC=gcc CXX=g++
+          fi
           ./setup.sh
 
       - name: Build

@@ -1,0 +1,19 @@
+package tour.lang;
+
+import tour.DemoClass;
+import tour.Counter;
+
+// Bare-identifier params (`(x) -> ...`) infer types from the surrounding
+// context. Captures by borrow on outer locals; ownership-transfer
+// captures (#name) work too.
+public class LambdasDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Lambdas --");
+        int32[] xs = {1, 2, 3, 4};
+        // Closure over a local — `accum` is captured by borrow.
+        Counter accum = stack Counter();
+        xs.stream().forEach((x) -> accum.bumpBy(x));
+        System.stdout.println("  sum via forEach + captured Counter = " + accum.value());
+    }
+}

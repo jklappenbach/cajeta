@@ -28,14 +28,14 @@ import cajeta.net.TcpStream;
  *   - **Model B — event-driven shared-pool**
  *     ([`SharedPoolServer`](SharedPoolServer.cajeta), NET-4.3): a
  *     bounded pool of `N` worker fibers drains a bounded work
- *     [`Channel`](../threading/Channel.cajeta). **Bounded memory**
+ *     [`Channel`](../concurrent/Channel.cajeta). **Bounded memory**
  *     (≈ pool-size live handler fibers, not one per connection) under
  *     C10K-style fan-in, at a slightly higher per-turn overhead (a
  *     `Channel` hop). **Use when** many mostly-idle connections fan in
  *     and bounded memory matters more than per-connection latency.
  *
  * The full tradeoff prose lives in
- * [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models).
+ * [`docs/Net.md` §Server accept models](../../../../../docs/Net.md#server-accept-models).
  *
  * ## Why a carrier, not a bare ordinal
  *

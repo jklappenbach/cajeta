@@ -6,7 +6,7 @@ import cajeta.lang.String;
  * Thrown when the filesystem denies an operation for lack of
  * permission — opening, reading, writing, or stat-ing a path the
  * process is not allowed to touch. Maps to POSIX `EACCES`. See
- * `cajeta-docs/stdlib/io/file/Errors.md`.
+ * `docs/stdlib/io/file/Errors.md`.
  *
  * A recoverable subtype of `IoException`: catch it to retry with
  * elevated privileges, fall back to a writable location, or report

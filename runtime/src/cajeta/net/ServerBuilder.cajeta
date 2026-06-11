@@ -31,7 +31,7 @@ import cajeta.net.TcpStream;
  *
  * which mirror the spec's `.model(FiberPerConnection)` and
  * `.model(SharedPool(8))` (see
- * [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models)).
+ * [`docs/Net.md` §Server accept models](../../../../../docs/Net.md#server-accept-models)).
  *
  * ## The selection seam
  *

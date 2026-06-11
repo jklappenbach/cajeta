@@ -9,7 +9,7 @@ import cajeta.lang.String;
  * fills up mid-operation. As a subtype of `IoException` it is recoverable:
  * catch it specifically (or declare it in your throws clause) to react —
  * free space, flush buffers, or fail the write cleanly. See
- * `cajeta-docs/stdlib/io/file/Errors.md` for the full errno → exception chart.
+ * `docs/stdlib/io/file/Errors.md` for the full errno → exception chart.
  *
  * ```cajeta
  * try {

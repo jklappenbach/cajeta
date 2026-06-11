@@ -40,7 +40,7 @@ import cajeta.net.NetException;
  * The precise ordinal is preserved on each subtype's `resolveErrno`
  * field, so the coarse split never loses the fine cause (e.g. a retry
  * policy can still single out `AGAIN`). See
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  *
  * ## Totality
  *

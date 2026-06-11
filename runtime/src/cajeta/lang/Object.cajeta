@@ -7,7 +7,7 @@ package cajeta.lang;
  * pass in `CajetaLlvmVisitor::visitClassDeclaration`), so the three
  * methods declared here are inherited by every user class unless
  * manually overridden. See
- * [stdlib/Lang.md § Object](../../../../../cajeta-docs/stdlib/Lang.md)
+ * [stdlib/Lang.md § Object](../../../../../docs/stdlib/Lang.md)
  * for the full design.
  *
  * ## Default behaviour
@@ -194,7 +194,7 @@ public class Object {
      * `~T()` is the supported way to answer _"when was this instance
      * destructed?"_** — an ordinary source breakpoint, no special machinery.
      *
-     * @See cajeta-docs/stdlib/MemoryModel.md § Destructors
+     * @See docs/stdlib/MemoryModel.md § Destructors
      */
     ~Object() {
     }

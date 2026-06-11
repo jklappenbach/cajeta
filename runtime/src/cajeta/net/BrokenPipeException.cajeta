@@ -9,7 +9,7 @@ import cajeta.lang.String;
  * `SO_NOSIGPIPE` so the error surfaces as a return value, not a
  * signal); Winsock reports the corresponding `WSAESHUTDOWN`.
  * `kind == NetException.KIND_BROKEN_PIPE` (9). See
- * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ * [`docs/stdlib/net/Errors.md`](../../../../../docs/stdlib/net/Errors.md).
  */
 public class BrokenPipeException extends NetException {
     public BrokenPipeException(String message) {

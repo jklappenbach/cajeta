@@ -16,7 +16,7 @@
 > Scope: implement the `cajeta.time` package, a `java.time` (JSR-310)-style
 > date/time library, in cajeta source (`runtime/src/cajeta/time/`) plus the
 > small native clock surface it needs.
-> Authoritative spec: **`cajeta-docs/stdlib/Time.md`**. Feature tracker:
+> Authoritative spec: **`docs/stdlib/Time.md`**. Feature tracker:
 > **`Features.md` § "Stdlib — `cajeta.time`"** (S-501 … S-507).
 > Today only `Duration.cajeta` (a minimal nanos wrapper) exists; everything
 > else is unimplemented.

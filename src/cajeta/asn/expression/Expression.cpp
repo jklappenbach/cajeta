@@ -88,7 +88,7 @@ namespace cajeta {
             // branch above.
             result = make_shared<MethodCallExpression>(ctx->methodCall(), token);
         } else if (ctx->HEAP()) {
-            // Unified-class allocation prefix (cajeta-docs/stdlib/UnifiedClasses.md). Phase 2a:
+            // Unified-class allocation prefix (docs/stdlib/UnifiedClasses.md). Phase 2a:
             // both forms codegen.
             // - `heap MyClass(args)` routes through NewExpression (today's
             //   `NEW creator` path; malloc + ctor).
@@ -104,7 +104,7 @@ namespace cajeta {
                 result = agg;
             }
         } else if (ctx->STACK()) {
-            // Unified-class allocation prefix (cajeta-docs/stdlib/UnifiedClasses.md). Phase 2a:
+            // Unified-class allocation prefix (docs/stdlib/UnifiedClasses.md). Phase 2a:
             // both forms now codegen.
             // - `stack MyClass { ... }` routes through aggregate-init
             //   (today's bare aggregate-init path; stack-allocated body).
@@ -767,7 +767,7 @@ namespace cajeta {
     // method taking 0 params; for `- + ! ~` (non-mutating), the lookup
     // is for a STATIC method taking 1 param. Returns the call's result
     // when dispatched, nullptr to fall through to the primitive path
-    // (cajeta-docs/OperatorOverloading.md §§3-4 + §8 dispatch table).
+    // (docs/OperatorOverloading.md §§3-4 + §8 dispatch table).
     static llvm::Value* tryDispatchUnaryClassOperator(
             CajetaModulePtr module, AbstractSyntaxNodePtr operandAst,
             llvm::Value* operandVal, const char* opSym, bool mutating) {
@@ -1005,16 +1005,27 @@ namespace cajeta {
         bool dstPtr = dstTy->isPointerTy();
         unsigned long destFlags = destType->getTypeFlags();
         bool destSigned = (destFlags & SIGNED_FLAG) != 0;
+        // Integer WIDENING and int→fp conversion must follow the SOURCE
+        // operand's signedness, not the destination's: a `uint8` zero-extends to
+        // `int32` (sign-extending it — the old `destSigned` behavior — turned
+        // 200 into -56), and a `uint64` converts to fp via UIToFP. Truncation
+        // ignores the flag, and fp→int (below) correctly keys off the
+        // destination integer's signedness, so only these two cases change.
+        bool srcSigned = destSigned;
+        if (childAst && childAst->getResolvedType()) {
+            srcSigned = (childAst->getResolvedType()->getTypeFlags()
+                         & SIGNED_FLAG) != 0;
+        }
 
         if (srcInt && dstInt) {
-            return builder->CreateIntCast(val, dstTy, destSigned);
+            return builder->CreateIntCast(val, dstTy, srcSigned);
         }
         if (srcFp && dstFp) {
             return builder->CreateFPCast(val, dstTy);
         }
         if (srcInt && dstFp) {
-            return destSigned ? builder->CreateSIToFP(val, dstTy)
-                              : builder->CreateUIToFP(val, dstTy);
+            return srcSigned ? builder->CreateSIToFP(val, dstTy)
+                             : builder->CreateUIToFP(val, dstTy);
         }
         if (srcFp && dstInt) {
             return destSigned ? builder->CreateFPToSI(val, dstTy)
@@ -1119,6 +1130,12 @@ namespace cajeta {
             // `[e1, e2, ...]` list literal (XPU launch dims; general-purpose).
             result = make_shared<ArrayLiteralExpression>(
                 ctx->arrayLiteral(), ctx->getStart());
+        } else if (ctx->typeTypeOrVoid() && ctx->CLASS()) {
+            // REFL-1.5: `T.class` — the statically-known type's reflective Class.
+            // Capture the type's text now (the ANTLR context is freed before
+            // codegen); the class is resolved by name at resolveTypes time.
+            result = make_shared<ClassLiteralExpression>(
+                ctx->typeTypeOrVoid()->getText(), ctx->getStart());
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), true);
         } else if (ctx->THIS()) {
@@ -1156,6 +1173,49 @@ namespace cajeta {
 
     llvm::Value* PrimaryExpression::generateCode(CajetaModulePtr module) {
         return nullptr;
+    }
+
+    // REFL-1.5: `T.class`.
+    void ClassLiteralExpression::resolveTypes(CajetaModulePtr module) {
+        if (resolvedType) return;
+        // Resolve the named type by name from canonicalMap (keyed by both short
+        // typeName and full canonical), now that every class is registered.
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto nit = cmap.find(namedTypeName);
+        if (nit != cmap.end()) {
+            namedType = nit->second;
+        }
+        if (!namedType) return;   // unresolved type — generateCode reports it
+        // resolvedType = Class<T> (the wildcard-phantom template instantiated
+        // with the named type). Requires cajeta.reflect.Class on the path.
+        auto it = cmap.find("cajeta.reflect.Class");
+        auto classTmpl = (it != cmap.end())
+            ? dynamic_pointer_cast<CajetaClass>(it->second) : nullptr;
+        if (classTmpl && classTmpl->isTemplate()) {
+            resolvedType = classTmpl->instantiate({namedType});
+        }
+    }
+
+    llvm::Value* ClassLiteralExpression::generateCode(CajetaModulePtr module) {
+        if (!resolvedType) resolveTypes(module);
+        auto klass = dynamic_pointer_cast<CajetaClass>(namedType);
+        if (!klass) {
+            throw Exception(
+                "`.class` requires a class type — a primitive has no runtime "
+                "Class object; use a reference type before `.class`",
+                "CAJETA_ERROR_CLASS_LITERAL");
+        }
+        // The cached #ClassObject IS the Class<T> instance: a process-lifetime
+        // constant { Class<?>#VTable, rtti }. Its ADDRESS is the borrow we hand
+        // back (never freed). Mirror obj.getClass()/Class.of, but statically.
+        llvm::GlobalVariable* co = klass->getClassObjectGlobal();
+        if (!co) {
+            throw Exception(
+                "no #ClassObject for '" + klass->toCanonical()
+                + "' — its reflection metadata was not emitted",
+                "CAJETA_ERROR_CLASS_LITERAL");
+        }
+        return CajetaModule::ensureGlobalInModule(module->getLlvmModule(), co);
     }
 
     // Helper used by ternary/instanceof: load value from an alloca-style l-value.
@@ -1594,7 +1654,7 @@ namespace cajeta {
 
     // Collect the names of outer-scope identifiers transferred into the
     // closure via `#name` in the lambda body. Rule 3 from
-    // cajeta-docs/stdlib/Lambdas.md: ownership moves into the closure and the
+    // docs/stdlib/Lambdas.md: ownership moves into the closure and the
     // outer name becomes unreadable afterwards. Uses the same statement-
     // shape recursion as collectFreeIdentifiers so block bodies pick up
     // `#name` anywhere it appears (return value, initializer, condition,
@@ -1679,7 +1739,7 @@ namespace cajeta {
         }
     }
 
-    // Rule 5 from cajeta-docs/stdlib/Lambdas.md: writing to a primitive that was
+    // Rule 5 from docs/stdlib/Lambdas.md: writing to a primitive that was
     // captured by value is a compile error — the lambda is mutating a
     // private copy, so the write would silently fail to propagate. The
     // user must use a mutable wrapper (Cell-style) to opt into shared
@@ -2030,7 +2090,7 @@ namespace cajeta {
                 + std::to_string(lambdaCounter++);
         }
 
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = module->emitTargetLlvmModule();
         // Already emitted? (Re-entering codegen for the same lambda — rare,
         // but harmless to return the existing function pointer.)
         if (auto* existing = lmod->getFunction(synthesizedName)) {
@@ -2823,7 +2883,7 @@ namespace cajeta {
             // allocation and the vtable slot) and the ctor's LLVM
             // function pointer for the thunk's call.
             auto& llvmCtx = *module->getLlvmContext();
-            auto* lmod = module->getLlvmModule();
+            auto* lmod = module->emitTargetLlvmModule();
             llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
             auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(resolvedType);
@@ -2939,7 +2999,7 @@ namespace cajeta {
         }
 
         auto& llvmCtx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = module->emitTargetLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
         // Synthesize a thunk function matching the closure ABI:
@@ -3495,8 +3555,8 @@ namespace cajeta {
     //     typed scope field — local, parameter, or capture): trampoline
     //     loads the closure record at fn+captures (L3-3 ABI) and
     //     indirect-dispatches. Lets `withTimeout(d, () -> compute())`
-    //     work — see cajeta-docs/stdlib/Thread.md § withTimeout, and the
-    //     #-transfer lifetime invariant in cajeta-docs/stdlib/AsyncStatus.md
+    //     work — see docs/stdlib/Concurrency.md § withTimeout, and the
+    //     #-transfer lifetime invariant in docs/stdlib/AsyncStatus.md
     //     § Plan: Task<T>.
     //   - Instance-method dispatch (`spawn obj.method()`) is still
     //     deferred — it needs the receiver captured into the ctx struct
@@ -3563,7 +3623,7 @@ namespace cajeta {
 
         auto* outerBuilder = module->getBuilder();
         auto& llvmCtx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        auto* lmod = module->emitTargetLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
         // Step 1: Evaluate every arg at the spawn site. Any side effects
@@ -3779,10 +3839,17 @@ namespace cajeta {
                     /*label=*/string(), loaded));
             }
             string methodNameCopy = innerCall->getMethodCallName();
-            // For static methods, thisValue is nullptr.
+            // For static methods, thisValue is nullptr. Pass `module` as the
+            // caller module so the worker call is emitted with THIS module's
+            // builder/insert point (the trampoline we just built) — not the
+            // receiver class's. For a stdlib-template worker resolved via the
+            // uninstantiated `ParallelDriver` template (structureStack.back()),
+            // the class's own emit module is the cached stdlib, whose builder
+            // points at some unrelated stdlib function; using it would emit the
+            // call into the wrong function ("instruction in another function").
             innerResult = targetClass->invokeMethod(
                 methodNameCopy, entries, /*isConstructor=*/false,
-                /*thisValue=*/nullptr);
+                /*thisValue=*/nullptr, /*callerModule=*/module);
             if (innerResult) {
                 innerType = CajetaType::of(innerResult);
                 // CajetaType::of can't recover a class type from an opaque-
@@ -3913,12 +3980,12 @@ namespace cajeta {
         // array-local drops already use.
         //
         // detachMode skips this — `detach` deliberately opts out of
-        // scope-anchored cleanup (cajeta-docs/stdlib/Thread.md § detach semantics).
+        // scope-anchored cleanup (docs/stdlib/Concurrency.md § detach semantics).
         // The Task wrapper leaks for the process lifetime; the body's
         // own locals still drop normally on the carrier-side chain.
         if (!detachMode) {
             // Pick the push variant + entry size based on the CompilerFlags
-            // (cajeta-docs/CompilerModes.md). Mirrors the LVD path's choice
+            // (docs/CompilerModes.md). Mirrors the LVD path's choice
             // so the chain has uniformly-shaped entries within a build.
             bool debugTags = module->getFlags().sourceTags;
             llvm::Function* dropPush = module->getRuntimeFunction(
@@ -4034,7 +4101,7 @@ namespace cajeta {
         resolvedType = CajetaType::of("void");
     }
 
-    // cajeta-docs/stdlib/Thread.md § detach semantics requires every argument to the
+    // docs/stdlib/Concurrency.md § detach semantics requires every argument to the
     // detached call to be either a #-transferred value, a primitive,
     // or a fresh allocator (NewExpression — auto-promoted in transfer
     // position per MemoryModel.md § Borrow / transfer rules). A bare
@@ -4095,7 +4162,7 @@ namespace cajeta {
         // Reuse SpawnExpression's full lowering — same trampoline, same
         // fiber enqueue, same Task struct. Detach-mode flag skips
         // scope_register and drop_push so the task escapes scope-anchored
-        // cleanup. See cajeta-docs/stdlib/Thread.md § detach semantics for the
+        // cleanup. See docs/stdlib/Concurrency.md § detach semantics for the
         // implementation-vs-spawn delta. Passing nullptr for the token
         // is fine: SpawnExpression doesn't retain it beyond extracting
         // source-position metadata for diagnostics, which here would

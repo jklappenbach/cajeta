@@ -1,7 +1,7 @@
 //
 // Phase 1a — heap/stack expression prefixes for class allocation.
 //
-// First sub-phase of the unified-class rollout (cajeta-docs/stdlib/UnifiedClasses.md):
+// First sub-phase of the unified-class rollout (docs/stdlib/UnifiedClasses.md):
 //   - `heap MyClass(args)` parses and behaves as today's `heap MyClass(args)`
 //     (malloc + ctor call, returns a heap reference).
 //   - `stack MyClass { ... }` parses and behaves as today's bare

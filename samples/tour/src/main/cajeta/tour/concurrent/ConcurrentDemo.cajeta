@@ -1,0 +1,96 @@
+package tour.concurrent;
+
+import tour.DemoClass;
+
+// cajeta.concurrent — the synchronization + communication primitives that sit
+// alongside the fiber scheduler. AsyncDemo covers async / spawn / await; this
+// demo exercises the rest, each once:
+//
+//   Channel<T>      — bounded MPMC queue (send / receive / close)
+//   AtomicInt32/64  — lock-free cells (fetchAdd / compareAndSet / load)
+//   Mutex<T>        — a lock fused with the data it protects (withLock)
+//   RwLock<T>       — many readers / one writer (read / withWrite)
+//   Semaphore       — a permit counter (acquire / release / availablePermits)
+//   Lock + LockGuard — a no-data RAII gate (acquire / tryAcquire / releaseLock)
+//
+// Everything here runs on a single fiber: a buffered Channel takes sends and
+// hands them back on the same fiber, and the locks are uncontended — so the
+// demo is deterministic without spawning anything.
+
+import cajeta.concurrent.Channel;
+import cajeta.concurrent.AtomicInt32;
+import cajeta.concurrent.AtomicInt64;
+import cajeta.concurrent.Mutex;
+import cajeta.concurrent.RwLock;
+import cajeta.concurrent.Semaphore;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
+import cajeta.lang.Optional;
+
+public class ConcurrentDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Concurrency primitives (cajeta.concurrent) --");
+
+        // Channel<T> — buffer three, close, then drain to empty.
+        Channel<int32> ch = heap Channel<int32>(4);
+        ch.send(10);
+        ch.send(20);
+        ch.send(30);
+        ch.close();
+        int32 sum = 0;
+        Optional<int32> o = ch.receive();
+        while (o.isPresent()) {
+            sum = sum + o.get();
+            o = ch.receive();
+        }
+        System.stdout.println("  Channel sent 10/20/30, drained sum = " + sum
+            + " (closed = " + ch.isClosed() + ")");
+
+        // AtomicInt32 — fetchAdd returns the prior value; CAS swaps on match.
+        AtomicInt32 a = heap AtomicInt32(7);
+        int32 prior = a.fetchAdd(5);            // returns 7, cell now 12
+        boolean swapped = a.compareAndSet(12, 100);
+        System.stdout.println("  AtomicInt32 fetchAdd(5) prior = " + prior
+            + ", after CAS(12->100) = " + a.load() + " (swapped = " + swapped + ")");
+
+        // AtomicInt64 — same, 64-bit.
+        AtomicInt64 big = heap AtomicInt64(1000000000000L);
+        big.fetchAdd(1L);
+        System.stdout.println("  AtomicInt64 load = " + big.load());
+
+        // Mutex<T> — withLock's closure is the critical section; its result
+        // becomes the new protected value.
+        Mutex<int32> m = heap Mutex<int32>(0);
+        m.withLock((int32 v) -> v + 5);
+        m.withLock((int32 v) -> v + 37);
+        System.stdout.println("  Mutex after withLock +5 +37 = " + m.get());
+
+        // RwLock<T> — read() takes the shared lock; withWrite the exclusive one.
+        RwLock<int32> rw = heap RwLock<int32>(5);
+        rw.withWrite((int32 v) -> v + 9);
+        System.stdout.println("  RwLock read after withWrite(+9) = " + rw.read());
+
+        // Semaphore — acquire one of two permits, observe the count, release.
+        Semaphore sem = heap Semaphore(2);
+        sem.acquire();
+        int32 avail = sem.availablePermits();
+        sem.release();
+        System.stdout.println("  Semaphore avail after 1 acquire = " + avail
+            + ", after release = " + sem.availablePermits());
+
+        // Lock + LockGuard — the RAII guard releases when this method returns.
+        Lock gate = heap Lock();
+        #LockGuard guard = gate.acquire();
+        System.stdout.println("  Lock acquired (RAII LockGuard held to scope end)");
+
+        // A separate Lock for the manual tryAcquire / releaseLock pairing.
+        Lock gate2 = heap Lock();
+        int32 t1 = gate2.tryAcquire();          // 1 = acquired
+        gate2.releaseLock();
+        int32 t2 = gate2.tryAcquire();          // 1 again after release
+        gate2.releaseLock();
+        System.stdout.println("  Lock.tryAcquire / release / tryAcquire = "
+            + t1 + " / " + t2);
+    }
+}

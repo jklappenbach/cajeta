@@ -105,19 +105,19 @@ Generated: 2026-06-05.
 - runtime/src/cajeta/lang/stream/Stream.cajeta
 - runtime/src/cajeta/lang/stream/TakeStream.cajeta
 
-## cajeta.threading
-- runtime/src/cajeta/threading/AsyncIterator.cajeta
-- runtime/src/cajeta/threading/AtomicInt32.cajeta
-- runtime/src/cajeta/threading/AtomicInt64.cajeta
-- runtime/src/cajeta/threading/Channel.cajeta
-- runtime/src/cajeta/threading/Lock.cajeta
-- runtime/src/cajeta/threading/LockGuard.cajeta
-- runtime/src/cajeta/threading/Mutex.cajeta
-- runtime/src/cajeta/threading/RwLock.cajeta
-- runtime/src/cajeta/threading/SelectResult.cajeta
-- runtime/src/cajeta/threading/Semaphore.cajeta
-- runtime/src/cajeta/threading/Tasks.cajeta
-- runtime/src/cajeta/threading/WriteGuard.cajeta
+## cajeta.concurrent
+- runtime/src/cajeta/concurrent/AsyncIterator.cajeta
+- runtime/src/cajeta/concurrent/AtomicInt32.cajeta
+- runtime/src/cajeta/concurrent/AtomicInt64.cajeta
+- runtime/src/cajeta/concurrent/Channel.cajeta
+- runtime/src/cajeta/concurrent/Lock.cajeta
+- runtime/src/cajeta/concurrent/LockGuard.cajeta
+- runtime/src/cajeta/concurrent/Mutex.cajeta
+- runtime/src/cajeta/concurrent/RwLock.cajeta
+- runtime/src/cajeta/concurrent/SelectResult.cajeta
+- runtime/src/cajeta/concurrent/Semaphore.cajeta
+- runtime/src/cajeta/concurrent/Tasks.cajeta
+- runtime/src/cajeta/concurrent/WriteGuard.cajeta
 
 ## cajeta.time
 - runtime/src/cajeta/time/Clock.cajeta

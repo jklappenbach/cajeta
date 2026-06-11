@@ -22,6 +22,7 @@
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
+#include "LiteralExpression.h"
 #include "NewExpression.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
@@ -147,7 +148,7 @@ namespace cajeta {
     //
     // The optional `<typeList>` between name and '(' is Form C explicit
     // call-site type args for method-templated callees (see
-    // cajeta-docs/stdlib/MethodLevelTemplate.md). Inference is the
+    // docs/stdlib/MethodLevelTemplate.md). Inference is the
     // common case; explicit args are required only when inference
     // can't bind every type parameter (e.g. T appears only in the
     // return type).
@@ -357,6 +358,195 @@ namespace cajeta {
             }
         }
 
+        // ----- REFL-11: constant-fold statically-known reflection -----
+        // Fold `Class.of(<ident>).<accessor>(...)` to a compile-time constant or
+        // a direct field load when <ident> is a `final`-class-typed identifier —
+        // so its dynamic type provably equals its static type and the layout /
+        // metadata the fold bakes in is exactly what the runtime reflective
+        // native would read (spec Strategy 5). Restricting the receiver to an
+        // identifier means there are no side effects to preserve when the inner
+        // `Class.of(...)` call is elided. A sealed class's private field is left
+        // un-folded so the runtime IllegalAccessException path is preserved.
+        if (!children.empty()) {
+            // Identify `cajeta.reflect.Class.of(<ident>)`. `Class.of(arg)` is a
+            // qualified static call: its receiver `Class` is a child. We cannot
+            // read of()'s RETURN type without generating the call (the very call
+            // we want to elide), but the receiver identifier resolves statically
+            // by name — CajetaType::of(text) gives cajeta.reflect.Class. That,
+            // plus method "of" + one arg, pins it down precisely.
+            auto innerCall =
+                std::dynamic_pointer_cast<MethodCallExpression>(children[0]);
+            bool isClassOf = false;
+            if (innerCall && innerCall->getMethodCallName() == "of"
+                    && innerCall->getParameters().size() == 1
+                    && !innerCall->getChildren().empty()) {
+                if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        innerCall->getChildren()[0])) {
+                    auto rt = CajetaType::of(recvId->getTextValue());
+                    isClassOf =
+                        rt && rt->toCanonical() == "cajeta.reflect.Class";
+                }
+            }
+            if (isClassOf) {
+                {
+                    ExpressionPtr ofArg = innerCall->getParameters()[0].expression;
+                    auto ofIdent =
+                        std::dynamic_pointer_cast<IdentifierExpression>(ofArg);
+                    if (ofIdent) {
+                        if (!ofArg->getResolvedType()) ofArg->resolveTypes(module);
+                        auto K = std::dynamic_pointer_cast<CajetaClass>(
+                            ofArg->getResolvedType());
+                        // Exact-type guard: only a `final` class is provably its
+                        // own runtime type through an identifier binding.
+                        if (K && K->getModifiers().count(FINAL) > 0) {
+                            // (a) integer metadata accessors -> ConstantInt.
+                            if (parameters.empty()) {
+                                auto* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                                if (methodCallName == "getFieldCount") {
+                                    resolvedType = CajetaType::of("int32");
+                                    return llvm::ConstantInt::get(i32Ty,
+                                        (uint64_t)(uint32_t)
+                                            K->getPropertyList().size());
+                                }
+                                if (methodCallName == "getMethodCount") {
+                                    resolvedType = CajetaType::of("int32");
+                                    return llvm::ConstantInt::get(i32Ty,
+                                        (uint64_t)(uint32_t)
+                                            K->getMethodList().size());
+                                }
+                                if (methodCallName == "getParentCount") {
+                                    resolvedType = CajetaType::of("int32");
+                                    return llvm::ConstantInt::get(i32Ty,
+                                        (uint64_t)(uint32_t)
+                                            K->getSuperClasses().size());
+                                }
+                                if (methodCallName == "getModifierFlags") {
+                                    int32_t bits = 0;
+                                    for (auto m : K->getModifiers())
+                                        bits |= (int32_t) m;
+                                    resolvedType = CajetaType::of("int32");
+                                    return llvm::ConstantInt::get(i32Ty,
+                                        (uint64_t)(uint32_t) bits);
+                                }
+                                if (methodCallName == "getInstanceSize") {
+                                    uint64_t sz = 0;
+                                    if (auto lt = K->getLlvmType())
+                                        sz = module->getLlvmModule()
+                                                 ->getDataLayout()
+                                                 .getTypeAllocSize(lt);
+                                    resolvedType = CajetaType::of("int64");
+                                    return llvm::ConstantInt::get(
+                                        llvm::Type::getInt64Ty(llvmCtx), sz);
+                                }
+                            }
+                            // (b) typed primitive field load -> direct
+                            //     (obj + byteOffset) load, byte-identical to the
+                            //     reflective native. Shape:
+                            //     Class.of(g).getInt32(g, <literal index>).
+                            const char* wantFieldType = nullptr;
+                            if (methodCallName == "getInt32")
+                                wantFieldType = "int32";
+                            else if (methodCallName == "getInt64")
+                                wantFieldType = "int64";
+                            else if (methodCallName == "getFloat32")
+                                wantFieldType = "float32";
+                            else if (methodCallName == "getFloat64")
+                                wantFieldType = "float64";
+                            if (wantFieldType && parameters.size() == 2) {
+                                // arg0 must be the SAME identifier we proved
+                                // exact; arg1 a non-negative decimal literal.
+                                auto objIdent =
+                                    std::dynamic_pointer_cast<IdentifierExpression>(
+                                        parameters[0].expression);
+                                auto idxLit =
+                                    std::dynamic_pointer_cast<
+                                        IntegerLiteralExpression>(
+                                            parameters[1].expression);
+                                bool sameRecv = objIdent
+                                    && objIdent->getTextValue()
+                                           == ofIdent->getTextValue();
+                                int64_t litIdx = -1;
+                                if (idxLit && idxLit->getIntegerLiteralType()
+                                        == INTEGER_LITERAL_TYPE_DECIMAL) {
+                                    bool ok = true;
+                                    std::string digits;
+                                    for (char ch : idxLit->getRawValue()) {
+                                        if (ch == '_') continue;
+                                        if (ch < '0' || ch > '9') { ok = false; break; }
+                                        digits.push_back(ch);
+                                    }
+                                    if (ok && !digits.empty()) {
+                                        try { litIdx = std::stoll(digits); }
+                                        catch (...) { litIdx = -1; }
+                                    }
+                                }
+                                auto& props = K->getPropertyList();
+                                if (sameRecv && litIdx >= 0
+                                        && (size_t) litIdx < props.size()) {
+                                    auto it = props.begin();
+                                    std::advance(it, (size_t) litIdx);
+                                    StructurePropertyPtr p = *it;
+                                    bool sealed =
+                                        K->getModifiers().count(REFLECT_SEALED) > 0;
+                                    bool priv =
+                                        p->getModifiers().count(PRIVATE) > 0;
+                                    bool typeMatch = p->getType()
+                                        && p->getType()->toCanonical()
+                                               == wantFieldType;
+                                    int llvmIdx = K->getFieldLlvmIndex(p);
+                                    auto* instStruct =
+                                        llvm::dyn_cast_or_null<llvm::StructType>(
+                                            K->getLlvmType());
+                                    if (!(sealed && priv) && typeMatch
+                                            && !p->isStatic() && instStruct
+                                            && llvmIdx >= 0
+                                            && (unsigned) llvmIdx
+                                                   < instStruct->getNumElements()) {
+                                        const llvm::StructLayout* layout =
+                                            module->getLlvmModule()
+                                                ->getDataLayout()
+                                                .getStructLayout(instStruct);
+                                        uint64_t off = layout->getElementOffset(
+                                            (unsigned) llvmIdx);
+                                        // generateCode on a local identifier
+                                        // yields its alloca (l-value: the slot
+                                        // holding the object pointer), not the
+                                        // pointer itself. Load through it so the
+                                        // GEP base is the object, mirroring the
+                                        // normal argument-lowering coercion.
+                                        llvm::Value* objSlot =
+                                            parameters[0].expression
+                                                ->generateCode(module);
+                                        llvm::Value* objVal = objSlot
+                                            ? builder->CreateLoad(
+                                                  llvm::PointerType::get(
+                                                      llvmCtx, 0),
+                                                  objSlot, "refl.fold.obj")
+                                            : nullptr;
+                                        if (objVal) {
+                                            llvm::Value* fieldPtr =
+                                                builder->CreateGEP(
+                                                    llvm::Type::getInt8Ty(llvmCtx),
+                                                    objVal,
+                                                    llvm::ConstantInt::get(
+                                                        llvm::Type::getInt64Ty(
+                                                            llvmCtx),
+                                                        off),
+                                                    "refl.fold.fieldptr");
+                                            resolvedType = p->getType();
+                                            return builder->CreateLoad(
+                                                p->getType()->getLlvmType(),
+                                                fieldPtr, "refl.fold.load");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // CajetaXPU launch borrow scope (§3.5 / §11). A `kernel.launch(...)`
         // borrows each Buffer arg until the next Stream.sync() /
         // Event.waitHost(); freeing a still-borrowed buffer is a use-after-
@@ -486,7 +676,7 @@ namespace cajeta {
         // both fields, and indirect-dispatch with captures prepended to the
         // user args. Matches when the call is bare (no receiver) AND a
         // scope lookup of methodCallName yields a function-typed field.
-        // See cajeta-docs/stdlib/Lambdas.md.
+        // See docs/stdlib/Lambdas.md.
         if (children.empty() && !module->getScopeStack().isEmpty()) {
             auto scope = module->getScopeStack().peek();
             FieldPtr field = scope ? scope->getField(methodCallName) : nullptr;
@@ -760,7 +950,7 @@ namespace cajeta {
             }
         }
 
-        // ----- Bare class-construction syntax rejected (cajeta-docs/stdlib/UnifiedClasses.md P1b) -----
+        // ----- Bare class-construction syntax rejected (docs/stdlib/UnifiedClasses.md P1b) -----
         // `MyClass(args)` without an explicit `heap` / `stack` / `new`
         // prefix is ambiguous (parses as a methodCall) and now rejected in
         // v2. Catches the case where the "method name" resolves to a class
@@ -1997,7 +2187,7 @@ namespace cajeta {
                 // `acquire()` that returns a RAII guard) will wrap them
                 // once user-defined-drop-on-class machinery lands. For
                 // now Cajeta source can use them directly. See
-                // cajeta-docs/stdlib/Thread.md § Synchronization primitives.
+                // docs/stdlib/Concurrency.md § Synchronization primitives.
                 if (ns == "Cajeta" && methodCallName == "lockNew" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_new");
                     return builder->CreateCall(fn, {});
@@ -2027,7 +2217,7 @@ namespace cajeta {
                 // condvarWait(cv, lock) atomically releases `lock`, parks the
                 // fiber (or cond_waits on the main thread), and reacquires
                 // `lock` on wake. condvarNotifyAll wakes every waiter (which
-                // re-checks its own predicate). See cajeta-docs/stdlib/Thread.md.
+                // re-checks its own predicate). See docs/stdlib/Concurrency.md.
                 if (ns == "Cajeta" && methodCallName == "condvarNew" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_new");
                     return builder->CreateCall(fn, {});
@@ -2081,8 +2271,8 @@ namespace cajeta {
                 // defeat atomicity's whole purpose and block the optimizer
                 // from reasoning about ordering. All seq_cst for v1;
                 // memory-order parameterization is R8 Slice 1b.
-                // See cajeta-docs/stdlib/Thread.md and the AtomicInt32 /
-                // AtomicInt64 wrapper classes in cajeta.threading.
+                // See docs/stdlib/Concurrency.md and the AtomicInt32 /
+                // AtomicInt64 wrapper classes in cajeta.concurrent.
                 if (ns == "Cajeta" && methodCallName == "atomicI32New" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_new");
                     llvm::Value* v = loadValue(0);
@@ -2181,7 +2371,7 @@ namespace cajeta {
                 // variable ordering would force a per-op switch (collapsed
                 // only via the inliner, perf-unpredictable at -O0). So each
                 // (op, ordering) combo is its own intrinsic + class method,
-                // matching the named-method approach in cajeta.threading.
+                // matching the named-method approach in cajeta.concurrent.
                 // AtomicInt32 / AtomicInt64. The orderings shipped now are
                 // the ones the work-stealing deque (R8.2) needs; add more
                 // when a concrete consumer surfaces.
@@ -2274,7 +2464,7 @@ namespace cajeta {
                 // deadline, 0 if the deadline expired first. deadline_ns
                 // is a CLOCK_MONOTONIC absolute timestamp; compute one via
                 // currentTimeNanos() + a duration in nanos. See R9 plan
-                // and Thread.md § withTimeout for the eventual stdlib API.
+                // and Concurrency.md § withTimeout for the eventual stdlib API.
                 if (ns == "Cajeta" && methodCallName == "taskWaitTimeout"
                         && parameters.size() == 2) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_task_wait_timeout");
@@ -2291,7 +2481,7 @@ namespace cajeta {
                     return builder->CreateCall(fn, {});
                 }
                 // R9.3 — surface the Task<T>'s done-flag address as a raw
-                // pointer so user-level withTimeout (cajeta.threading.Tasks)
+                // pointer so user-level withTimeout (cajeta.concurrent.Tasks)
                 // can feed it to taskWaitTimeout. The Task is heap-allocated
                 // and the call arg is the pointer to it; we GEP at the
                 // DONE_FIELD_INDEX defined in CajetaTask.h. The argument
@@ -2366,7 +2556,7 @@ namespace cajeta {
                 // catches the cancellation throw and stores it on
                 // task->exception; a subsequent `await` will re-raise,
                 // letting callers wrap it in try/catch. Used by
-                // cajeta.threading.Tasks.withTimeout to terminate slow
+                // cajeta.concurrent.Tasks.withTimeout to terminate slow
                 // bodies on deadline rather than letting them run to
                 // natural completion.
                 if (ns == "Cajeta" && methodCallName == "taskCancel"
@@ -2604,6 +2794,40 @@ namespace cajeta {
                     exprChild->resolveTypes(module);
                 }
                 receiverType = exprChild->getResolvedType();
+            }
+            // REFL-1.6: `obj.getClass()` — the object's dynamic Class. Synthesized
+            // as a call to __cajeta_object_get_class(obj) (the same native that
+            // backs Class.of), returning Class<?>. No method is declared on
+            // Object — doing this here sidesteps the Object→cajeta.reflect
+            // bootstrap cycle. Gated on a class-instance receiver, no args, and
+            // the class not declaring its own getClass (a user override wins).
+            // Must run BEFORE the generic invokeMethod dispatch below, which
+            // would otherwise find no `getClass` method and resolve to null.
+            // The wildcard return Class<?> is the force-built canonical
+            // instantiation (REFL-1.7).
+            if (methodCallName == "getClass" && parameters.empty()
+                    && receiverType) {
+                auto recvCls = dynamic_pointer_cast<CajetaClass>(receiverType);
+                if (recvCls && !recvCls->isInterface()
+                        && recvCls->getMethods().find("getClass")
+                                == recvCls->getMethods().end()) {
+                    auto& cmap = CajetaType::getCanonicalMap();
+                    auto wcIt = cmap.find("cajeta.reflect.Class<?>");
+                    if (wcIt != cmap.end() && wcIt->second) {
+                        llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                        llvm::Value* objPtr =
+                            loadIfLValue(module, receiver, exprChild);
+                        llvm::FunctionType* ft =
+                            llvm::FunctionType::get(ptrTy, {ptrTy}, false);
+                        llvm::FunctionCallee fn =
+                            module->getLlvmModule()->getOrInsertFunction(
+                                "__cajeta_object_get_class", ft);
+                        llvm::Value* co = builder->CreateCall(fn, {objPtr},
+                            "refl.getClass");
+                        resolvedType = wcIt->second;
+                        return co;
+                    }
+                }
             }
             // Vector geometry methods: a.dot(b) -> T, v.length() -> T,
             // v.normalize() -> Vector. Intercepted on a CajetaVector receiver
@@ -3125,9 +3349,29 @@ namespace cajeta {
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(exprChild)) {
                     auto& cmap = CajetaType::getCanonicalMap();
                     auto it = cmap.find(idExpr->getTextValue());
-                    if (it != cmap.end()
-                            && dynamic_pointer_cast<CajetaClass>(it->second)) {
-                        receiverType = it->second;
+                    if (it != cmap.end()) {
+                        if (auto cls = dynamic_pointer_cast<CajetaClass>(it->second)) {
+                            // REFL-1.7: a static call on a bare TEMPLATE name
+                            // (e.g. `Class.of(...)`, `Class.forName(...)`). The
+                            // template itself is never built, so static dispatch
+                            // against it would silently resolve to null. Static
+                            // methods don't depend on the type arguments, so
+                            // route through the canonical all-wildcard
+                            // instantiation (Class<?>), which is fully built.
+                            if (cls->isTemplate()) {
+                                std::vector<CajetaTypePtr> wildArgs;
+                                for (size_t i = 0;
+                                        i < cls->getTypeParameters().size(); ++i) {
+                                    wildArgs.push_back(
+                                        CajetaType::wildcardSentinel());
+                                }
+                                auto inst = cls->instantiate(wildArgs);
+                                receiverType = inst ? std::static_pointer_cast<
+                                    CajetaType>(inst) : it->second;
+                            } else {
+                                receiverType = it->second;
+                            }
+                        }
                     }
                 }
             }
@@ -4072,7 +4316,7 @@ namespace cajeta {
                 }
             }
 
-            // wildcard-materialize-in-loop (cajeta-docs/LintRules.md).
+            // wildcard-materialize-in-loop (docs/LintRules.md).
             // An element-producing call on a wildcard-typed receiver
             // inside a loop body forces template-relative vtable
             // dispatch on every iteration — the inliner can't see
@@ -4082,7 +4326,7 @@ namespace cajeta {
             // set (next / get). Suppressible per enclosing method via
             // @SuppressLint("wildcard-materialize-in-loop").
             //
-            // wildcard-crosses-hot-boundary (cajeta-docs/LintRules.md).
+            // wildcard-crosses-hot-boundary (docs/LintRules.md).
             // A wildcard-return call inside a loop pays a downcast at
             // every receive site that wants the concrete type, and
             // the call itself can't be inline-specialized. Trigger:
@@ -4164,7 +4408,7 @@ namespace cajeta {
         }
         bool isSuperCall = (superLhs != nullptr);
 
-        // MultiClassing Phase 3 v3 (cajeta-docs/stdlib/MultiClassing.md
+        // MultiClassing Phase 3 v3 (docs/stdlib/MultiClassing.md
         // § P-4): inherited-method re-adjustment for diamond. When the
         // user writes `super<C>.method()` and `method` is INHERITED from
         // an ancestor A (not declared on C itself), the dispatch lands
@@ -4372,7 +4616,7 @@ namespace cajeta {
         //
         // The cajeta-side bodies are stubs; we lower calls to direct
         // runtime helpers via the receiver's `fd` field. Matches the
-        // spec in cajeta-docs/stdlib/io/file/{FileReader,FileWriter,
+        // spec in docs/stdlib/io/file/{FileReader,FileWriter,
         // File}.md.
         if (thisValue && targetClass && targetClass->getQName()) {
             const std::string canonical = targetClass->getQName()->toCanonical();
@@ -5718,7 +5962,7 @@ namespace cajeta {
             // IdentifierExpression of a class-typed local whose Field
             // carries an active drop entry. Primitives, fresh ctors,
             // null literals, and locals without drop entries naturally
-            // pass through. See cajeta-docs/stdlib/OwnershipTransfer.md.
+            // pass through. See docs/stdlib/OwnershipTransfer.md.
             bool callFloatingX = true;
             for (auto& e : entries) {
                 if (e.label.empty()) { callFloatingX = false; break; }
@@ -5757,7 +6001,7 @@ namespace cajeta {
                             "write `#" + idExpr->getTextValue() + "` at the call site "
                             "to surrender ownership of the source local, or pass a "
                             "fresh `heap T(...)` / `stack T(...)` construction. "
-                            "See cajeta-docs/stdlib/OwnershipTransfer.md.",
+                            "See docs/stdlib/OwnershipTransfer.md.",
                         "CAJETA_ERROR_TRANSFER_REQUIRED");
                 }
             }

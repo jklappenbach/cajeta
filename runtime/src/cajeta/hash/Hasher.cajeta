@@ -36,7 +36,7 @@ import cajeta.lang.String;
  *
  * See `Hash` for the convenience facade over these algorithms.
  *
- * @See [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
+ * @See [stdlib/Hashing.md](../../../../../docs/stdlib/Hashing.md)
  */
 public interface Hasher {
     /** Feeds a single `boolean` into the digest as one byte. */

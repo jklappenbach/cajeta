@@ -39,7 +39,7 @@ int64_t runI64(const std::string& src) {
 TEST(AtomicTests, i32LoadStoreRoundTrip) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt32;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        AtomicInt32 a = heap AtomicInt32(7);\n"
@@ -53,7 +53,7 @@ TEST(AtomicTests, i32LoadStoreRoundTrip) {
 TEST(AtomicTests, i32FetchAddReturnsPriorValue) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt32;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        AtomicInt32 a = heap AtomicInt32(10);\n"
@@ -67,7 +67,7 @@ TEST(AtomicTests, i32FetchAddReturnsPriorValue) {
 TEST(AtomicTests, i32FetchAddAccumulatesAcrossCalls) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt32;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        AtomicInt32 a = heap AtomicInt32(0);\n"
@@ -83,7 +83,7 @@ TEST(AtomicTests, i32FetchAddAccumulatesAcrossCalls) {
 TEST(AtomicTests, i32CompareAndSetSuccess) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt32;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        AtomicInt32 a = heap AtomicInt32(7);\n"
@@ -98,7 +98,7 @@ TEST(AtomicTests, i32CompareAndSetSuccess) {
 TEST(AtomicTests, i32CompareAndSetFailureLeavesCellUntouched) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt32;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        AtomicInt32 a = heap AtomicInt32(7);\n"
@@ -113,7 +113,7 @@ TEST(AtomicTests, i32CompareAndSetFailureLeavesCellUntouched) {
 TEST(AtomicTests, i64LoadStoreRoundTrip) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt64;\n"
+        "import cajeta.concurrent.AtomicInt64;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        AtomicInt64 a = heap AtomicInt64(0L);\n"
@@ -127,7 +127,7 @@ TEST(AtomicTests, i64LoadStoreRoundTrip) {
 TEST(AtomicTests, i64FetchAddAccumulates) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt64;\n"
+        "import cajeta.concurrent.AtomicInt64;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        AtomicInt64 a = heap AtomicInt64(1000000000000L);\n"
@@ -143,7 +143,7 @@ TEST(AtomicTests, i64FetchAddAccumulates) {
 TEST(AtomicTests, i64CompareAndSetSwapsLargeValues) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt64;\n"
+        "import cajeta.concurrent.AtomicInt64;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        AtomicInt64 a = heap AtomicInt64(9000000000000L);\n"
@@ -164,7 +164,7 @@ TEST(AtomicTests, i64CompareAndSetSwapsLargeValues) {
 TEST(AtomicTests, i32RelaxedFetchAddAccumulates) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt32;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        AtomicInt32 a = heap AtomicInt32(0);\n"
@@ -183,7 +183,7 @@ TEST(AtomicTests, i32ReleaseStoreAcquireLoadHandshake) {
     // value path; the ordering pair is the contract the codegen pins.
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt32;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        AtomicInt32 flag = heap AtomicInt32(0);\n"
@@ -197,7 +197,7 @@ TEST(AtomicTests, i32ReleaseStoreAcquireLoadHandshake) {
 TEST(AtomicTests, i32AcquireCasSuccessAndFailure) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt32;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        AtomicInt32 a = heap AtomicInt32(7);\n"
@@ -214,7 +214,7 @@ TEST(AtomicTests, i32AcquireCasSuccessAndFailure) {
 TEST(AtomicTests, i64ReleaseStoreAcquireLoadHandshake) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt64;\n"
+        "import cajeta.concurrent.AtomicInt64;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        AtomicInt64 seq = heap AtomicInt64(0L);\n"
@@ -228,7 +228,7 @@ TEST(AtomicTests, i64ReleaseStoreAcquireLoadHandshake) {
 TEST(AtomicTests, i64RelaxedFetchAddAccumulates) {
     auto src =
         "package test;\n"
-        "import cajeta.threading.AtomicInt64;\n"
+        "import cajeta.concurrent.AtomicInt64;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        AtomicInt64 a = heap AtomicInt64(1000000000000L);\n"

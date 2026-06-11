@@ -788,7 +788,7 @@ signature before installing.
 ## Open specifications
 
 Every interface the build tool exposes is published as a versioned
-spec under `cajeta-docs/specs/`. Third parties can implement
+spec under `docs/specs/`. Third parties can implement
 against the spec without reverse-engineering the official
 toolchain.
 

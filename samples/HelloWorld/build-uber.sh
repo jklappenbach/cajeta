@@ -8,7 +8,7 @@
 # the transitive-dep bundling lands when --classpath comes online.
 # Consumers can still identify it as uber-intent today.
 #
-# See cajeta-docs/Compilation.md § Uber archives for the design.
+# See docs/Compilation.md § Uber archives for the design.
 
 set -euo pipefail
 

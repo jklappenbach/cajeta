@@ -125,6 +125,16 @@ if(WIN32)
   # via RUNTIME_DEPENDENCY_SET (rather than a hardcoded list that drifts with the
   # LLVM/toolchain version on each runner) and drop the resolved DLLs into bin/.
   get_filename_component(CAJETA_MINGW_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+  # When cajeta links the monolithic LLVM dylib (the slim cajeta-llvm Windows
+  # distribution), libLLVM-<ver>.dll lives in the LLVM toolchain's bin, NOT the
+  # mingw bin — add it to the resolver's search dirs so it gets bundled beside
+  # cajeta.exe. LLVM_DIR (cached by find_package(LLVM) in src/) is
+  # <llvm>/lib/cmake/llvm; its bin is three dirs up + /bin. Harmless when the
+  # static toolchain is used (no libLLVM.dll dependency to resolve).
+  set(CAJETA_LLVM_BIN "")
+  if(LLVM_DIR)
+    get_filename_component(CAJETA_LLVM_BIN "${LLVM_DIR}/../../../bin" ABSOLUTE)
+  endif()
   install(TARGETS cajeta
           RUNTIME_DEPENDENCY_SET cajeta_runtime_deps
           RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -134,7 +144,7 @@ if(WIN32)
           # resolves out of the Windows system directories.
           PRE_EXCLUDE_REGEXES "api-ms-.*" "ext-ms-.*"
           POST_EXCLUDE_REGEXES ".*[/\\\\][Ss]ystem32[/\\\\].*" ".*[/\\\\]SysWOW64[/\\\\].*"
-          DIRECTORIES "${CAJETA_MINGW_BIN}"
+          DIRECTORIES "${CAJETA_MINGW_BIN}" "${CAJETA_LLVM_BIN}"
           DESTINATION ${CMAKE_INSTALL_BINDIR}
           COMPONENT cajeta)
 else()

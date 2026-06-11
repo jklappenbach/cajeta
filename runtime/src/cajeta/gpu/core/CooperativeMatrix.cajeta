@@ -124,7 +124,7 @@ import cajeta.gpu.core.Buffer;
  *   automatically uses the hardware matrix cores on backends that do expose the
  *   config (e.g. bf16 WMMA on AMD).
  * ```
- * See cajeta-docs/LintRules.md § Notes for the `note:` severity.
+ * See docs/LintRules.md § Notes for the `note:` severity.
  *
  * The method bodies are resolution placeholders — never emitted as real calls.
  * Each is lowered at its `@Kernel` call site to the chosen tier (the native

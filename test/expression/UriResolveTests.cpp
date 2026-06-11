@@ -14,7 +14,7 @@
 //      end-to-end against the spec's own examples.
 //
 //   2. Focused builder + toString round-trip cases (the API surface in
-//      cajeta-docs/Net.md).
+//      docs/Net.md).
 //
 // Harness mirrors UriParseTests: compile a cajeta source through the
 // JIT, call run() -> int32 returning 1 on match / 0 otherwise.

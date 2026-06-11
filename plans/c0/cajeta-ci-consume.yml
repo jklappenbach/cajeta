@@ -16,12 +16,19 @@
 # └─────────────────────────────────────────────────────────────────────────────┘
 #
 # ARTIFACT COVERAGE (gate the `if:` to match what the fork has actually built):
-#   x86_64-linux-gnu   — artifact exists (the only LLVM-23 leg today). ENABLE.
+#   x86_64-linux-gnu   — artifact exists (the first LLVM-23 leg). ENABLED.
+#   x86_64-w64-mingw32 — NO LONGER deferred. cajeta's Tier-1 SPIR-V codegen now
+#                        references fork-only intrinsic enums absent from stock MSYS2
+#                        LLVM 22, so the Windows leg can no longer fall back to distro
+#                        LLVM and MUST link the fork's windows-x64 artifact (built by
+#                        fork-build-llvm.yml's `build-windows` job). The cajeta-side
+#                        wiring (fetch gate + dropping mingw llvm/lld/clang) is already
+#                        applied in release.yml; this leg just needs the published asset.
 #   aarch64-linux-gnu  — enable once the fork builds its aarch64 artifact (runbook
 #                        priority #2; also serves Jetson/cradle). Until then this leg
 #                        stays on distro LLVM (and cannot lower ray-query — release-only).
-#   aarch64-apple-darwin / x86_64-w64-mingw32 — no fork artifact yet (deferred);
-#                        these legs keep their Homebrew / MSYS2 LLVM for now.
+#   aarch64-apple-darwin — no fork artifact yet; keeps its Homebrew LLVM for now
+#                        (advanced SPIR-V ops emit the clean XPU-N0x diagnostic).
 
       - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
         # Expand this gate as the fork publishes more host artifacts. Only the legs

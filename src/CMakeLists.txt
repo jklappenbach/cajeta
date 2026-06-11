@@ -29,7 +29,7 @@ find_package(GTest REQUIRED)
 find_package(ZLIB REQUIRED)
 # libcrypto from OpenSSL backs `cajeta archive sign` / `verify-sig`
 # (ed25519 detached signatures + PEM key parsing). See
-# cajeta-docs/ArchiveManagement.md §8.
+# docs/ArchiveManagement.md §8.
 find_package(OpenSSL REQUIRED)
 
 # libcurl powers the HTTP repository driver (Phase 6b: bearer + mTLS
@@ -443,6 +443,40 @@ set(CAJETA_TLS_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_tls.c)
 set_source_files_properties(${CAJETA_TLS_SRC} PROPERTIES LANGUAGE C)
 list(APPEND GENERATED_SOURCES ${CAJETA_TLS_SRC})
 
+# ── AOT standalone-exe support (Windows only). Embed the COMPILED TLS native
+# object into the compiler binary so `--emit=exe` can produce a self-contained
+# executable. Background: a produced exe references `__cajeta_tls_*` from the
+# stdlib TlsConnection @Native thunks, which are ALWAYS linked — cajeta roots
+# every class's metadata via eager clinit global-constructors, so `--gc-sections`
+# can't drop the unused TLS/net subsystem on PE-COFF (an orthogonal, deeper
+# codegen change). Those natives live in this standalone object (kept out of the
+# embedded JIT bitcode on purpose, see above), and the machine running
+# `--emit=exe` has the mingw toolchain but not cajeta's runtime source — so the
+# object bytes ride along in cajeta.exe (mirrors the runtime-bitcode embed) and
+# Compiler::linkExecutable materializes + links them. Compiled with the build's
+# own C compiler so the COFF/SEH ABI matches the gcc link driver used for the
+# produced exe; Windows-only because that's where the host object format matches.
+if(WIN32)
+    set(CAJETA_TLS_OBJ   ${CMAKE_CURRENT_BINARY_DIR}/cajeta_tls.o)
+    set(CAJETA_TLS_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_tls_embedded.cpp)
+    add_custom_command(
+            OUTPUT ${CAJETA_TLS_OBJ}
+            COMMAND ${CMAKE_C_COMPILER} -c -O2 -fno-builtin
+                    -ffunction-sections -fdata-sections
+                    -I${OPENSSL_INCLUDE_DIR}
+                    -o ${CAJETA_TLS_OBJ} ${CAJETA_TLS_SRC}
+            DEPENDS ${CAJETA_TLS_SRC}
+            COMMENT "Compiling cajeta TLS native object for AOT exe embedding")
+    add_custom_command(
+            OUTPUT ${CAJETA_TLS_EMBED}
+            COMMAND ${CAJETA_XXD} -i cajeta_tls.o ${CAJETA_TLS_EMBED}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+            DEPENDS ${CAJETA_TLS_OBJ}
+            COMMENT "Embedding cajeta TLS native object")
+    set_source_files_properties(${CAJETA_TLS_EMBED} PROPERTIES GENERATED TRUE)
+    list(APPEND GENERATED_SOURCES ${CAJETA_TLS_EMBED})
+endif()
+
 # Embed the cajeta stdlib `.cajeta` source files into the compiler binary.
 # The Compiler iterates the resulting cajeta::stdlib::g_files manifest at
 # parse time, treating each entry as a stdlib prelude source. Sources live
@@ -465,16 +499,19 @@ set(CAJETA_STDLIB_ROOT ${PROJECT_SOURCE_DIR}/runtime/src)
 set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
+        # cajeta.reflect (REFL-1): Class + RTTI introspection. Depends only on
+        # cajeta.lang (Object, String), already in the prelude above.
+        ${CAJETA_STDLIB_ROOT}/cajeta/reflect
         ${CAJETA_STDLIB_ROOT}/cajeta/error
-        # cajeta/time before cajeta/threading: R9.3's withTimeout (a stdlib
-        # function in cajeta.threading) takes a Duration parameter, so the
+        # cajeta/time before cajeta/concurrent: R9.3's withTimeout (a stdlib
+        # function in cajeta.concurrent) takes a Duration parameter, so the
         # Duration class has to be loadable when threading parses.
         ${CAJETA_STDLIB_ROOT}/cajeta/time
         # Threading sync primitives (Lock/LockGuard today; Mutex/RwLock/
         # ConditionVariable/Channel/Semaphore land in later R7 sub-phases).
         # After cajeta/lang (needs Object) and cajeta/error (future
         # Channel close/timeout throws).
-        ${CAJETA_STDLIB_ROOT}/cajeta/threading
+        ${CAJETA_STDLIB_ROOT}/cajeta/concurrent
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection

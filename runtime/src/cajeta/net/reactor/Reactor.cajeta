@@ -3,7 +3,7 @@ package cajeta.net.reactor;
 /**
  * **The async I/O reactor** — the internal engine that lets a fiber wait
  * for socket readiness *without blocking its carrier thread* (plan item
- * **NET-3.1**; see [`cajeta-docs/Net.md` §The reactor](../../../../../cajeta-docs/Net.md)).
+ * **NET-3.1**; see [`docs/Net.md` §The reactor](../../../../../docs/Net.md)).
  *
  * This type is **internal plumbing**, not an application surface. The
  * only public-facing methods on `cajeta.net` are the socket types'
@@ -28,7 +28,7 @@ package cajeta.net.reactor;
  * runs other fibers. The reactor blocks in `epoll_wait` / `kevent` /
  * `GetQueuedCompletionStatus`; on an event it moves the registered
  * fiber onto the carrier's ready deque (the same wake path
- * [`Channel`](../../threading/Channel.cajeta) and the timer wheel use).
+ * [`Channel`](../../concurrent/Channel.cajeta) and the timer wheel use).
  * The carrier resumes the fiber, which retries / finishes the syscall.
  * **No carrier ever blocks on socket I/O** — the invariant the whole
  * design protects.
@@ -232,7 +232,7 @@ public final class Reactor {
      * readable, returns an error, *or* the wait is abandoned because the
      * enclosing `Tasks.withTimeout` / `withDeadline` fired the fiber's
      * `cancel_with` and the runtime threw the cancellation sentinel through
-     * this frame** (see [`cajeta-docs/Net.md` §The async model](../../../../../cajeta-docs/Net.md)).
+     * this frame** (see [`docs/Net.md` §The async model](../../../../../docs/Net.md)).
      * That is the *deregister-on-cancel* contract every reactor op honors:
      * a cancelled or timed-out await leaves the live-registration balance
      * back at the value it had on entry — never a leak.
@@ -251,7 +251,7 @@ public final class Reactor {
      * that yields the carrier so other fibers (crucially, the peer this fiber is
      * waiting on) get to run — then retries with an exponential backoff capped
      * at 2ms. This is the same poll+backoff shape
-     * [`Tasks.selectReceive`](../../threading/Tasks.cajeta) uses, and it is what
+     * [`Tasks.selectReceive`](../../concurrent/Tasks.cajeta) uses, and it is what
      * lets two interdependent fibers (e.g. both halves of a TLS handshake over a
      * loopback socket) make progress where a carrier-blocking `select` would
      * starve them. Returns `true` on readiness, `false` on a probe error.
@@ -331,9 +331,9 @@ public final class Reactor {
     // The untimed [`awaitReadable`](#awaitReadable) / [`awaitWritable`](#awaitWritable)
     // adapters above deregister on **completion**, **error**, and the
     // **cancellation-sentinel** unwind (an enclosing `Tasks.withTimeout` firing
-    // the fiber's `cancel_with` — see [`cajeta.threading.Tasks`](../../threading/Tasks.cajeta)).
+    // the fiber's `cancel_with` — see [`cajeta.concurrent.Tasks`](../../concurrent/Tasks.cajeta)).
     // That is the canonical deadline composition the spec names
-    // ([`cajeta-docs/Net.md` §The async model](../../../../../cajeta-docs/Net.md)):
+    // ([`docs/Net.md` §The async model](../../../../../docs/Net.md)):
     // `Tasks.withTimeout(d, spawn conn.readAsync(buf))` cancels the parked fiber,
     // the sentinel unwinds through `awaitReadable`'s `finally`, and the
     // registration is dropped — *deregister-on-cancel*, the contract every

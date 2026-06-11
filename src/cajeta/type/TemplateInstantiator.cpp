@@ -29,11 +29,14 @@
 #include "../asn/ClassBodyDeclaration.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/CajetaLlvmVisitor.h"
+#include "../compile/Compiler.h"   // Compiler::getSharedContext() — reuse-mode gate
 #include "../error/Exception.h"
 #include "CajetaParser.h"
 #include "CajetaLexer.h"
 
 #include "antlr4-runtime/antlr4-runtime.h"
+
+#include <cassert>
 
 namespace cajeta {
 
@@ -83,7 +86,7 @@ namespace cajeta {
         // module's codegen triggered us. noteCrossModuleInstantiation no-ops
         // outside codegen (currentCodegenModule null) and for same-module
         // instantiations. This is the single choke point through which every
-        // class-template instantiation flows. (cajeta-docs/IncrementalCompilation.md.)
+        // class-template instantiation flows. (docs/IncrementalCompilation.md.)
         if (result && result.get() != this) {
             CajetaModule::noteCrossModuleInstantiation(
                 CajetaModule::getCurrentCodegenModule(), result);
@@ -358,6 +361,45 @@ namespace cajeta {
         string suffix = buildArgSuffix(args);
         string instCanonical = qName->toCanonical() + suffix;
 
+        // Emit target (resolution/emit separation, reuse-gated). The
+        // instantiation is RESOLVED against `module` (the stdlib template
+        // module — its imports/substitution), but its IR is EMITTED into
+        // `emitOwner`. In production emitOwner == module (bit-for-bit
+        // unchanged). In the stdlib test-reuse path a stdlib template
+        // specialized over a USER type emits into that user type's module, so
+        // the cached stdlib stays pristine across tests. The owner is chosen at
+        // CREATION time (instantiation IR emits during the body walk below, so
+        // the emit module must be known before then) by, in order: the first
+        // user-type argument's emit module (principled — the instantiation can't
+        // outlive its type arg; nested user-type args resolve transitively); the
+        // active codegen frame; the harness's per-test fallback sink. Methods
+        // adopt `inst`'s emit module at construction (Method ctor), so IR
+        // emitted mid-walk already targets the user module — no after-the-fact
+        // reparent. Pure-stdlib instantiations (`Stream<String>`) keep stdlib
+        // args → emitOwner stays the stdlib module (primed once).
+        CajetaModulePtr emitOwner = module;
+        if (Compiler::getSharedContext()
+                && module == CajetaModule::getStdlibModule()) {
+            for (auto& arg : args) {
+                auto argClass = dynamic_pointer_cast<CajetaClass>(arg);
+                if (argClass && argClass->getEmitModule()
+                        && argClass->getEmitModule() != module) {
+                    emitOwner = argClass->getEmitModule();
+                    break;
+                }
+            }
+            if (emitOwner == module
+                    && CajetaModule::getCurrentCodegenModule()
+                    && CajetaModule::getCurrentCodegenModule() != module) {
+                emitOwner = CajetaModule::getCurrentCodegenModule();
+            }
+            if (emitOwner == module
+                    && CajetaModule::getReuseEmitModule()
+                    && CajetaModule::getReuseEmitModule() != module) {
+                emitOwner = CajetaModule::getReuseEmitModule();
+            }
+        }
+
         auto& structures = module->getStructures();
         auto cached = structures.find(instCanonical);
         if (cached != structures.end()) {
@@ -382,6 +424,29 @@ namespace cajeta {
                     return cachedGlobal->second;
                 }
             }
+        }
+
+        // Reuse-cache hazard gate (test-only; see Compiler::setReuseHazardArmed).
+        // We are past every cache lookup, so this is a NOVEL instantiation about
+        // to be built. When emitOwner != module its IR emits into a per-test user
+        // module, leaving module-bound llvm pointers cached on persistent objects
+        // that outlive that module → cross-module references on the next reusing
+        // test. Abort BEFORE the build emits anything so the harness re-runs this
+        // test on a fresh, fully-isolated Compiler. Disarmed in production and on
+        // the fresh fallback path; a primed (already-cached) instantiation
+        // returned above and never reaches here.
+        //
+        // Unlike the method-template gate (MethodTemplateInstantiator.cpp), this
+        // class-template gate has NO CAJETA_REUSE_FORCE_EMIT escape hatch: the
+        // cross-module CLASS-template emit path is NOT yet correct under reuse.
+        // The 2026-06-10 W=24 FORCE_EMIT run caught it producing an invalid GEP
+        // into test.Holder<int32>'s interface vtable slots
+        // (TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch). This
+        // gate is what keeps that miscompile from shipping — it must stay an
+        // unconditional fresh fallback until the struct/vtable layout pointers get
+        // the same emit-module reparenting the method path received.
+        if (Compiler::isReuseHazardArmed() && emitOwner != module) {
+            throw cajeta::ReuseHazardAbort{};
         }
 
         // Templated-interface instantiation. We re-parse the captured
@@ -454,17 +519,24 @@ namespace cajeta {
                     }
                 }
             }
+            // Resolution module = `module` (stdlib template); emit target set
+            // separately below so IR lands in the user module in reuse mode.
             auto ifInst = make_shared<CajetaClass>(
                 module, ifInstQName, ifExtended, ifImplemented);
             ifInst->setIsInterface(true);
+            if (emitOwner != module) ifInst->setEmitModule(emitOwner);
             ifInst->setTypeParameters(typeParameters);
             ifInst->setTypeArguments(args);
             ifInst->setTemplateOrigin(
                 static_pointer_cast<CajetaClass>(shared_from_this()));
 
             // Cache BEFORE walking — same self-reference rule as the
-            // class path.
-            structures[instCanonical] = ifInst;
+            // class path. Registered under emitOwner (the module whose codegen
+            // worklist emits it and that owns its definition); set
+            // structureToModule too so a self-reference resolves when
+            // emitOwner != module.
+            emitOwner->getStructures()[instCanonical] = ifInst;
+            CajetaModule::getStructureToModule()[instCanonical] = emitOwner;
 
             // Inline interface-body walk: build abstract methods with
             // formal-parameter / return types resolved through the
@@ -511,12 +583,17 @@ namespace cajeta {
                 }
             }
             ifInst->setClassBody(ifBody);
+
+            // Emit target propagated to methods at construction (Method ctor
+            // reads parent->getEmitModule(), set above before this walk), so no
+            // after-the-fact reparent is needed. Interface methods are abstract
+            // (no llvm function) anyway.
             ifInst->generatePrototype();
 
             CajetaModule::setActiveModule(prevActive);
             module->popTypeSubstitution();
 
-            CajetaModule::getStructureToModule()[instCanonical] = module;
+            CajetaModule::getStructureToModule()[instCanonical] = emitOwner;
             return ifInst;
         }
 
@@ -651,7 +728,32 @@ namespace cajeta {
         }
         CajetaModule::setActiveModule(prevActiveForSupers);
 
+        // Auto-extend Object: a template with no explicit `extends` clause
+        // (`class Box<T> { ... }`) implicitly inherits cajeta.lang.Object, just
+        // like a regular class. The visitor injects this for ordinary class
+        // declarations (CajetaLlvmVisitor.h), but instantiations are built here
+        // straight from the parse tree's extends clause, so they bypass that
+        // injection. Without it an instantiation has zero parents and is not
+        // recognized as `<: Object` — so passing one to an `Object` parameter
+        // (e.g. `Class.of(box)`) fails method resolution and silently compiles
+        // to null. Mirror the visitor's rule. Skip Object itself (self-cycle).
+        // Runs before make_shared so the prepared parent list reaches the ctor.
+        bool isObjectItself = instQName
+            && instQName->getTypeName() == "Object"
+            && instQName->getPackageName() == "cajeta.lang";
+        if (instExtended.empty() && !isObjectItself) {
+            instExtended.push_back(
+                QualifiedName::getOrInsert("Object", "cajeta.lang"));
+        }
+
+        // Resolution module = `module` (stdlib template — its imports/
+        // substitution drive the body walk); emit target set separately so the
+        // class's own IR + its methods' IR (methods adopt this at construction)
+        // land in the user module in reuse mode. Set emit BEFORE the walk: the
+        // body walk emits method IR (prototype-on-reference), so the emit target
+        // must already be in place.
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
+        if (emitOwner != module) inst->setEmitModule(emitOwner);
         inst->setQImplementedTypeArgs(std::move(instImplementedTypeArgs));
         inst->setTypeParameters(typeParameters);   // retained for debugging / introspection
         inst->setTypeArguments(args);
@@ -663,8 +765,13 @@ namespace cajeta {
         // Cache BEFORE we walk the body. Lets self-referential templates
         // like `class List<T> { List<T> next; }` resolve their own type
         // during the walk — the second reference finds the partially-built
-        // instantiation in the cache instead of recursing forever.
-        structures[instCanonical] = inst;
+        // instantiation in the cache instead of recursing forever. Registered
+        // under `emitOwner` (== module in production); a self-reference during
+        // the walk then resolves via the structureToModule branch above (the
+        // `module->getStructures()` check misses when emitOwner != module, so
+        // structureToModule must be set here too, before the walk).
+        emitOwner->getStructures()[instCanonical] = inst;
+        CajetaModule::getStructureToModule()[instCanonical] = emitOwner;
 
         // Isolate the instantiation walk with a clean structure stack
         // containing only `inst`. The visitor's `visitMethodDeclaration`
@@ -693,6 +800,12 @@ namespace cajeta {
         CajetaLlvmVisitor visitor(module);
         auto bodyAny = visitor.visitClassBody(classDecl->classBody());
         inst->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(bodyAny));
+
+        // Emit target was set on `inst` before the walk and propagated to each
+        // method at construction (Method ctor reads parent->getEmitModule()), so
+        // any IR the walk emitted already targets the emit module — no
+        // after-the-fact reparent. generatePrototype emits the class's own
+        // vtable/RTTI/struct into the emit module via its own swap.
         inst->generatePrototype();
 
         CajetaModule::setActiveModule(prevActive);
@@ -700,7 +813,7 @@ namespace cajeta {
         stack.swap(savedStack);
         module->popTypeSubstitution();
 
-        CajetaModule::getStructureToModule()[instCanonical] = module;
+        CajetaModule::getStructureToModule()[instCanonical] = emitOwner;
         return inst;
     }
 

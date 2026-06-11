@@ -95,7 +95,7 @@ namespace cajeta {
         // by-value copy lowered through the sret + NRVO ABI rather than a
         // pointer. Storage class lives on the construction expression, so this
         // scan is the single source of truth — there is no `stack T` return
-        // type. See cajeta-docs/stdlib/ValueReturns.md.
+        // type. See docs/stdlib/ValueReturns.md.
         int returnsStackValueCache = -1;
         BlockPtr block;
         bool constructor;
@@ -124,7 +124,7 @@ namespace cajeta {
         vector<QualifiedNamePtr> throwsList;
         int virtualTableIndex;
 
-        // Method-level templates (cajeta-docs/stdlib/MethodLevelTemplate.md).
+        // Method-level templates (docs/stdlib/MethodLevelTemplate.md).
         // `methodTypeParameters` non-empty AND `methodTypeArguments` empty =
         // a method-template declaration (no LLVM function emitted; body source
         // captured for re-parse at call sites that instantiate it). Both non-
@@ -143,6 +143,11 @@ namespace cajeta {
         // one with empty methodTypeArguments); instantiations themselves
         // don't recurse.
         map<string, MethodPtr> methodInstantiationCache;
+        // Reuse epoch this cache was last valid for. When it lags
+        // CajetaModule::getReuseEpoch() (a new test in the reuse path), the
+        // cache holds instantiations bound to a freed user emit module and is
+        // cleared on next use. Unused (epoch never bumps) in production.
+        uint64_t methodInstantiationCacheEpoch = 0;
 
         // Stack of drop frames. Each Block::generateCode pushes a frame
         // at entry, registers any owned locals declared inside into the
@@ -155,9 +160,24 @@ namespace cajeta {
         vector<vector<llvm::Value*>> dropFrameStack;
 
         CajetaModulePtr module;
+        // Emit target — the llvm::Module that this method's Function/IR is
+        // CREATED in. Defaults to null (→ getEmitModule() returns `module`, so
+        // resolution and emission coincide, the production behavior). Set only
+        // in the stdlib test-reuse path: a stdlib-template instantiation over a
+        // USER type keeps `module` = the stdlib template module (name resolution
+        // needs its imports/substitution) but sets emitModule = the user module,
+        // so its IR lands there and the cached stdlib module stays pristine.
+        // Context is shared in reuse mode, so only Function/global CREATION sites
+        // (module->getLlvmModule()) consult getEmitModule(); getLlvmContext()
+        // (type creation) and getBuilder() (context-bound insert point) do not.
+        CajetaModulePtr emitModule;
         llvm::IRBuilder<>* builder;
-        llvm::FunctionType* llvmFunctionType;
-        llvm::Function* llvmFunction;
+        // Initialized to null so getLlvmFunction()/getLlvmFunctionType() return
+        // null (not uninitialized garbage) before generatePrototype runs — a
+        // method may be reached (e.g. reflection's adapter pass over every
+        // class) before it has been prototyped.
+        llvm::FunctionType* llvmFunctionType = nullptr;
+        llvm::Function* llvmFunction = nullptr;
         // A5 method extraction: when at least one @Around advice
         // matches this method, the user-written body emits into THIS
         // separately-named llvm Function (canonical + `__original`
@@ -240,7 +260,7 @@ namespace cajeta {
         void emitBeforeAdvice(CajetaModulePtr module);
         void emitAfterAdvice(CajetaModulePtr module);
 
-        // @NonNull (cajeta-docs/stdlib/Annotations.md § Null safety).
+        // @NonNull (docs/stdlib/Annotations.md § Null safety).
         // Emit entry-point null-checks for every @NonNull-annotated
         // pointer parameter. Skipped for the implicit `this` and for
         // non-reference parameters. Called from generateCode after
@@ -299,6 +319,11 @@ namespace cajeta {
         void emitAroundWrapper();
 
         llvm::Function* getLlvmFunction() { return llvmFunction; }
+        // Reuse-cache only (StdlibReuseCache::restoreBaseline): reset the cached
+        // module-bound llvm::Function* to its stdlib-prime value (or null) so the
+        // next reusing test regenerates the body into ITS module instead of
+        // referencing a freed/foreign one. Not for production codegen.
+        void setLlvmFunction(llvm::Function* f) { llvmFunction = f; }
         // Extracted-body function for @Around-wrapped methods. Null
         // unless A5 method extraction kicked in. External callers
         // shouldn't usually need this — the public entry is
@@ -349,13 +374,32 @@ namespace cajeta {
         //
         // Only valid on a template method (asserts isMethodTemplate()).
         // Implemented in MethodTemplateInstantiator.cpp.
+        //
+        // Thin choke point: forwards to instantiateMethodTemplateInternal and
+        // then records a cross-module instantiation obligation (incremental
+        // compilation — docs/IncrementalCompilation.md). Capture lives
+        // in the wrapper so it fires on cache hits too, mirroring the
+        // CajetaClass::instantiate / instantiateInternal split.
         MethodPtr instantiateMethodTemplate(vector<CajetaTypePtr> args);
+
+    private:
+        MethodPtr instantiateMethodTemplateInternal(vector<CajetaTypePtr> args);
+
+    public:
 
         // Used by MethodTemplateInstantiator to reparent an instantiation
         // from the throwaway wrapper class (used to host the re-parse) to
         // the original template's parent. Call sites otherwise shouldn't
         // change a method's parent after construction.
         void setParentForInstantiation(CajetaClassPtr p) { parent = p; }
+
+        // Reparent the emit-target module of an instantiation's method. Used by
+        // the stdlib test-reuse path (Design B): a user-triggered stdlib-template
+        // instantiation's bodies must emit into the USER module, not the stdlib
+        // module, so the cached stdlib module is never mutated. Must be called
+        // BEFORE generatePrototype (nothing emitted yet); `module->getLlvmModule()`
+        // is the codegen target (Method.cpp ~994/998/1024).
+        void setModuleForInstantiation(CajetaModulePtr m) { module = m; }
 
         vector<FormalParameterPtr> getParameterList() { return parameterList; }
 
@@ -453,6 +497,11 @@ namespace cajeta {
 
         CajetaModulePtr getModule() { return module; }
 
+        // The module this method's IR is CREATED in (see emitModule). Falls back
+        // to the resolution module when unset — i.e. production / non-reuse.
+        CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
+        void setEmitModule(CajetaModulePtr m) { emitModule = m; }
+
         const string toCanonical(bool labeled = false) {
             return buildCanonical(parent, name, parameterList, labeled);
         }
@@ -473,7 +522,7 @@ namespace cajeta {
         // and T=String thereby get distinct keys even though their
         // value-param signatures (and so their `toCanonical()`) are
         // identical — which is what lets addMethod's duplicate-static
-        // check accept both. See cajeta-docs/stdlib/MethodLevelTemplate.md
+        // check accept both. See docs/stdlib/MethodLevelTemplate.md
         // § two-layer naming.
         //
         // resolveMethod looks up ordinary methods by their plain
@@ -508,7 +557,7 @@ namespace cajeta {
 
         // Emit a thin forwarding wrapper to a C-runtime symbol named
         // `symbol`. Called by generateCode() when the method carries an
-        // @Native annotation. See cajeta-docs/stdlib/
+        // @Native annotation. See docs/stdlib/
         // "Native methods" for the user-facing contract.
         void emitNativeForwardingBody(const std::string& symbol);
 

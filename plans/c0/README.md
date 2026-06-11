@@ -7,7 +7,14 @@ vendors LLVM source. This is the gate for every later Part C backend patch (ray 
 **Build contract** (must match — from `cpp/llvm-project/build/CMakeCache.txt`):
 - Pinned base commit: **`203c0668d4b098714d1748de766e890fe6296891`** (LLVM 23-git)
 - `CMAKE_BUILD_TYPE=Release` · `LLVM_ENABLE_RTTI=ON` · `LLVM_ENABLE_ASSERTIONS=OFF`
-- `LLVM_TARGETS_TO_BUILD=X86;NVPTX;AMDGPU;SPIRV` · static libs (no dylib)
+- `LLVM_TARGETS_TO_BUILD=X86;NVPTX;AMDGPU;SPIRV` · static libs (no dylib) on Linux/macOS
+- **Windows is the exception:** `LLVM_BUILD_LLVM_DYLIB=ON LLVM_LINK_LLVM_DYLIB=ON`, then
+  the install is slimmed to a dylib-only distribution (static component archives + the
+  ~100 LLVM tools + libclang* pruned; keep the dylib + import lib + headers + cmake
+  exports + lld libs + clang.exe + llvm-config). cajeta on Windows links the monolithic
+  `libLLVM-<ver>.dll` (src/CMakeLists.txt: `WIN32 AND LLVM_LINK_LLVM_DYLIB`), so the
+  static soup is dead weight. Drops the windows-x64 artifact from ~1.2 GB to ~70 MB
+  compressed. See fork-build-llvm.yml's `build-windows` "Slim install" step.
 - **`LLVM_ENABLE_PROJECTS=clang;lld`** — the artifact MUST bundle a version-matched
   `clang-23` (cajeta compiles its runtime to bitcode via
   `find_program(clang-${LLVM_VERSION_MAJOR})`; there is no clang-23 on the dev box today).
@@ -99,9 +106,15 @@ break. C0 must replace that distro-LLVM step in each release leg with the LLVM-2
    vendors (see runners). Build this one now.
 2. `aarch64-linux-gnu` next — double-serves release **and** Jetson Orin / cradle (arm64).
 3. `aarch64-apple-darwin` — release parity.
-4. **`x86_64-w64-mingw32` — RELEASE-ONLY, DEFERRED.** Native Windows is the fiddliest
-   leg (mingw-w64 LLVM build) and tangles with MSVC-centric CUDA. **Not** needed for NV
-   bring-up (see below). Do it only when shipping Windows binaries with 23-only features.
+4. **`x86_64-w64-mingw32` — NOW ACTIVE (was deferred).** Forced active because cajeta's
+   Tier-1 SPIR-V codegen began referencing fork-only intrinsic enums that stock MSYS2
+   LLVM 22 lacks — so the Windows build no longer even *compiles* against distro LLVM,
+   let alone lowers 23-only features. Built natively under MSYS2/MinGW-w64 by
+   `fork-build-llvm.yml`'s dedicated `build-windows` job (NOT the apt matrix — different
+   shell/pm/ccache/tar). Still the fiddliest leg (libstdc++ ABI parity with cajeta's
+   `c++`/g++ build; clang+lld must come from the fork, not mingw). Prefer a self-hosted
+   Windows runner — a full clang+lld+llvm build can exceed the GH-hosted 6 h cap / OOM
+   at link. cajeta-side consumption (release.yml) is already wired.
 
 ### Self-hosted runners (two boxes, both Linux-flavored)
 | Box | Role | Toolchain it uses |

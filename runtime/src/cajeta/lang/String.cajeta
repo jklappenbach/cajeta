@@ -3,7 +3,7 @@ package cajeta.lang;
 /**
  * Immutable UTF-8 text, the single string type for Cajeta.
  *
- * See `cajeta-docs/stdlib/lang/String.md` for the full design — this
+ * See `docs/stdlib/lang/String.md` for the full design — this
  * file is the load-bearing data definition; method implementations land
  * in subsequent phases (Phase 2c+).
  *
