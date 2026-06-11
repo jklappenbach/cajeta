@@ -443,39 +443,44 @@ set(CAJETA_TLS_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_tls.c)
 set_source_files_properties(${CAJETA_TLS_SRC} PROPERTIES LANGUAGE C)
 list(APPEND GENERATED_SOURCES ${CAJETA_TLS_SRC})
 
-# ── AOT standalone-exe support (Windows only). Embed the COMPILED TLS native
+# ── AOT standalone-exe support (ALL platforms). Embed the COMPILED TLS native
 # object into the compiler binary so `--emit=exe` can produce a self-contained
 # executable. Background: a produced exe references `__cajeta_tls_*` from the
 # stdlib TlsConnection @Native thunks, which are ALWAYS linked — cajeta roots
 # every class's metadata via eager clinit global-constructors, so `--gc-sections`
-# can't drop the unused TLS/net subsystem on PE-COFF (an orthogonal, deeper
-# codegen change). Those natives live in this standalone object (kept out of the
-# embedded JIT bitcode on purpose, see above), and the machine running
-# `--emit=exe` has the mingw toolchain but not cajeta's runtime source — so the
-# object bytes ride along in cajeta.exe (mirrors the runtime-bitcode embed) and
-# Compiler::linkExecutable materializes + links them. Compiled with the build's
-# own C compiler so the COFF/SEH ABI matches the gcc link driver used for the
-# produced exe; Windows-only because that's where the host object format matches.
-if(WIN32)
-    set(CAJETA_TLS_OBJ   ${CMAKE_CURRENT_BINARY_DIR}/cajeta_tls.o)
-    set(CAJETA_TLS_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_tls_embedded.cpp)
-    add_custom_command(
-            OUTPUT ${CAJETA_TLS_OBJ}
-            COMMAND ${CMAKE_C_COMPILER} -c -O2 -fno-builtin
-                    -ffunction-sections -fdata-sections
-                    -I${OPENSSL_INCLUDE_DIR}
-                    -o ${CAJETA_TLS_OBJ} ${CAJETA_TLS_SRC}
-            DEPENDS ${CAJETA_TLS_SRC}
-            COMMENT "Compiling cajeta TLS native object for AOT exe embedding")
-    add_custom_command(
-            OUTPUT ${CAJETA_TLS_EMBED}
-            COMMAND ${CAJETA_XXD} -i cajeta_tls.o ${CAJETA_TLS_EMBED}
-            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-            DEPENDS ${CAJETA_TLS_OBJ}
-            COMMENT "Embedding cajeta TLS native object")
-    set_source_files_properties(${CAJETA_TLS_EMBED} PROPERTIES GENERATED TRUE)
-    list(APPEND GENERATED_SOURCES ${CAJETA_TLS_EMBED})
+# can't drop the unused TLS/net subsystem (true on ELF as well as PE-COFF — an
+# orthogonal, deeper codegen change). Those natives live in this standalone
+# object (kept out of the embedded JIT bitcode on purpose, see above), and the
+# machine running `--emit=exe` has a C toolchain but not cajeta's runtime source
+# — so the object bytes ride along in the compiler binary (mirrors the
+# runtime-bitcode embed) and Compiler::linkExecutable materializes + links them
+# alongside `-lssl -lcrypto`. Compiled with the build's own C compiler so the
+# object ABI matches the C link driver used for the produced exe. Originally
+# Windows-only; extended to Linux/macOS so `--emit=exe` links there too (the
+# undefined `__cajeta_tls_*` symbols broke ANY exe, not just TLS-using programs).
+set(CAJETA_TLS_OBJ   ${CMAKE_CURRENT_BINARY_DIR}/cajeta_tls.o)
+set(CAJETA_TLS_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_tls_embedded.cpp)
+set(CAJETA_TLS_CFLAGS -c -O2 -fno-builtin -ffunction-sections -fdata-sections)
+if(NOT WIN32)
+    # The cajeta-emitted objects are PIC (so they link into the default PIE
+    # executable); compile the TLS native PIC too for a clean ELF/Mach-O link.
+    list(APPEND CAJETA_TLS_CFLAGS -fPIC)
 endif()
+add_custom_command(
+        OUTPUT ${CAJETA_TLS_OBJ}
+        COMMAND ${CMAKE_C_COMPILER} ${CAJETA_TLS_CFLAGS}
+                -I${OPENSSL_INCLUDE_DIR}
+                -o ${CAJETA_TLS_OBJ} ${CAJETA_TLS_SRC}
+        DEPENDS ${CAJETA_TLS_SRC}
+        COMMENT "Compiling cajeta TLS native object for AOT exe embedding")
+add_custom_command(
+        OUTPUT ${CAJETA_TLS_EMBED}
+        COMMAND ${CAJETA_XXD} -i cajeta_tls.o ${CAJETA_TLS_EMBED}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS ${CAJETA_TLS_OBJ}
+        COMMENT "Embedding cajeta TLS native object")
+set_source_files_properties(${CAJETA_TLS_EMBED} PROPERTIES GENERATED TRUE)
+list(APPEND GENERATED_SOURCES ${CAJETA_TLS_EMBED})
 
 # Embed the cajeta stdlib `.cajeta` source files into the compiler binary.
 # The Compiler iterates the resulting cajeta::stdlib::g_files manifest at

@@ -1228,21 +1228,20 @@ namespace cajeta {
         if (!haveLld) haveLld = (bool) llvm::sys::findProgramByName("lld-link");
 #endif
 
-#if defined(_WIN32)
         // Materialize the embedded TLS native object beside the output so it can
         // be added to the link. The produced exe references `__cajeta_tls_*` from
         // the always-linked stdlib TlsConnection thunks, but those natives live in
         // a standalone object kept out of the embedded JIT bitcode (see
-        // EmbeddedTls.h / src/CMakeLists.txt). The build machine has the mingw
-        // toolchain but not cajeta's runtime source, so the bytes ride along in
-        // the compiler binary.
+        // EmbeddedTls.h / src/CMakeLists.txt). The build machine has a C toolchain
+        // but not cajeta's runtime source, so the bytes ride along in the compiler
+        // binary. All platforms — on Linux/macOS the undefined `__cajeta_tls_*`
+        // symbols otherwise break ANY exe, not just TLS-using programs.
         std::string tlsObjPath = archiveRootPath + "__cajeta_tls.o";
         {
             std::ofstream tlsOut(tlsObjPath, std::ios::binary);
             tlsOut.write(reinterpret_cast<const char*>(cajeta_tls_o),
                          (std::streamsize) cajeta_tls_o_len);
         }
-#endif
 
         buildtool::SubprocessResult res;
         bool launched = false;
@@ -1252,9 +1251,10 @@ namespace cajeta {
             opt.argv.push_back(drv);
             if (haveLld) opt.argv.push_back("-fuse-ld=lld");
             for (const auto& obj : objectFiles) opt.argv.push_back(obj);
-#if defined(_WIN32)
+            // The standalone TLS native object (resolves `__cajeta_tls_*`,
+            // always referenced by the stdlib). Linked on every platform; the
+            // matching OpenSSL libs are added per-OS below.
             opt.argv.push_back(tlsObjPath);
-#endif
             opt.argv.push_back("-o");
             opt.argv.push_back(outPath);
             // Dead-strip unreferenced sections. The codegen emits one section
@@ -1292,8 +1292,16 @@ namespace cajeta {
             opt.argv.push_back("-luser32");
             opt.argv.push_back("-lpthread");  // winpthreads (resolved static via -static)
 #elif defined(__APPLE__)
+            // TLS natives (cajeta_tls.o) → OpenSSL. cajeta_tls.c uses only
+            // portable OpenSSL on non-Windows (SSL_CTX_set_default_verify_paths),
+            // so no Security.framework is needed.
+            opt.argv.push_back("-lssl");
+            opt.argv.push_back("-lcrypto");
             opt.argv.push_back("-lpthread");
 #else
+            // TLS natives (cajeta_tls.o) → OpenSSL, then the base runtime libs.
+            opt.argv.push_back("-lssl");
+            opt.argv.push_back("-lcrypto");
             opt.argv.push_back("-lpthread");
             opt.argv.push_back("-lm");
             opt.argv.push_back("-ldl");
