@@ -54,6 +54,30 @@ namespace cajeta {
     // Construct a LocalVariableDeclaration from a parse context. Used by nested-block
     // building and by FOR's variable-decl init form. Returns nullptr on malformed
     // input.
+    // Build an Initializer from a `variableInitializer` context, handling both
+    // alternatives of `variableInitializer : arrayInitializer | expression`.
+    // Recursive so nested array literals (`{{...}, {...}}`) and array literals
+    // of method references (`{ A::f, B::g }` — a device dispatch table) build
+    // correctly. Mirrors CajetaLlvmVisitor::visitVariableInitializer; the
+    // Statement path is module-free (kernel bodies, FOR-decls) so it can't use
+    // the visitor. Returns nullptr for a malformed/empty initializer.
+    static InitializerPtr buildVariableInitializer(
+            CajetaParser::VariableInitializerContext* viCtx) {
+        if (!viCtx) return nullptr;
+        if (auto* aiCtx = viCtx->arrayInitializer()) {
+            list<InitializerPtr> elements;
+            for (auto* childVi : aiCtx->variableInitializer()) {
+                elements.push_back(buildVariableInitializer(childVi));
+            }
+            return make_shared<ArrayInitializer>(elements, aiCtx->getStart());
+        }
+        if (viCtx->expression()) {
+            return make_shared<VariableInitializer>(
+                Expression::fromContext(viCtx->expression()), viCtx->getStart());
+        }
+        return nullptr;
+    }
+
     static shared_ptr<LocalVariableDeclaration>
     buildLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext* lvdCtx) {
         if (!lvdCtx) return nullptr;
@@ -67,14 +91,8 @@ namespace cajeta {
         list<VariableDeclaratorPtr> declarators;
         if (auto* vdsCtx = lvdCtx->variableDeclarators()) {
             for (auto* vdCtx : vdsCtx->variableDeclarator()) {
-                InitializerPtr initializer;
-                if (auto* viCtx = vdCtx->variableInitializer()) {
-                    if (viCtx->expression()) {
-                        initializer = make_shared<VariableInitializer>(
-                            Expression::fromContext(viCtx->expression()),
-                            viCtx->getStart());
-                    }
-                }
+                InitializerPtr initializer =
+                    buildVariableInitializer(vdCtx->variableInitializer());
                 string identName = vdCtx->variableDeclaratorId()->identifier()->getText();
                 int arrayDim = static_cast<int>(vdCtx->variableDeclaratorId()->LBRACK().size());
                 // The legacy `REFERENCE? variableInitializer` form was removed

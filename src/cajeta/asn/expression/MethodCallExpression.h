@@ -8,6 +8,8 @@
 
 namespace cajeta {
 
+    class CajetaFunctionType;
+
     struct MethodCallParameter {
         string label;
         ExpressionPtr expression;
@@ -18,6 +20,22 @@ namespace cajeta {
         // is `#T`-marked. Either suffices; either acknowledges transfer.
         bool callerTransferred = false;
     };
+
+    // Emit an indirect call through a closure value of function type `fnType`.
+    // `closurePtr` is a `ptr` to the closure record `{ ptr fn, ptr captures,
+    // ptr drop }` (the L3-3 ABI). `args` are the source-level argument
+    // expressions (labels ignored). On an sret value-return this allocates the
+    // result slot, threads it as the hidden arg 0, sets `outResolvedType` to the
+    // function's return type, and returns the slot; otherwise it returns the
+    // call result. Shared by the bare-identifier indirect call
+    // (`op(args)` in MethodCallExpression) and the postfix expression/indexed
+    // call (`arr[i](args)` in CallExpression) so the closure ABI lives in one
+    // place. See docs/stdlib/Lambdas.md.
+    llvm::Value* emitClosureCall(CajetaModulePtr module,
+                                 llvm::Value* closurePtr,
+                                 const std::shared_ptr<CajetaFunctionType>& fnType,
+                                 const vector<MethodCallParameter>& args,
+                                 CajetaTypePtr& outResolvedType);
 
     class MethodCallExpression : public Expression {
         string methodCallName;

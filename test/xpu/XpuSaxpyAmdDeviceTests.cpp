@@ -227,3 +227,92 @@ TEST(XpuSaxpyAmdDeviceTests, multiArchBundleRunsOnDevice) {
         if (result[i] != a * x[i] + 1.0f) ++mismatches;
     EXPECT_EQ(mismatches, 0u);
 }
+
+// ----- Stage 11: bounded device-side dispatch on a real AMD device -----
+//
+// An indexed dispatch table over three @Device statics, lowered to AMDGPU ISA:
+// `((int32)->int32)[] ops = { sq, cube, neg }` is an i32 tag over a closed
+// candidate set; `ops[i % 3](i)` lowers to an if/else chain of DIRECT calls (no
+// function pointers). i%3==0 -> i*i, ==1 -> i*i*i, ==2 -> -i. The index is a
+// runtime value, so a constant-folded single candidate would fail. n kept small
+// so cube(i) stays in int32 range.
+TEST(XpuSaxpyAmdDeviceTests, deviceDispatchTableOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class Ops {\n"
+        "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
+        "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
+        "    @Device public static int32 neg(int32 x)  { return 0 - x; }\n"
+        "}\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void dispatch(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            ((int32) -> int32)[] ops = { Ops::sq, Ops::cube, Ops::neg };\n"
+        "            uint32 sel = i % 3;\n"
+        "            out[i] = ops[sel]((int32) i);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto dispatch = findMethod(module->getStructures()["test.M"], "dispatch");
+    ASSERT_NE(dispatch, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_dispatch_amddevice", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(dispatch, deviceModule);
+    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    const unsigned n = 96;            // multiple of 3; cube(95) in int32 range
+    std::vector<int32_t> out(n, -999);
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "dispatch");
+    ASSERT_NE(fn, nullptr);
+
+    const std::size_t bytes = std::size_t(n) * sizeof(int32_t);
+    HipDevicePtr dOut = hip.alloc(bytes);
+    ASSERT_NE(dOut, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), bytes));
+
+    void* params[] = { &dOut, (void*) &n };
+    const unsigned block = 64;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(hip.launch(fn, grid, block, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<int32_t> result(n);
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, bytes));
+    hip.free(dOut);
+
+    size_t mismatches = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        int32_t want;
+        switch (i % 3) {
+            case 0:  want = (int32_t)(i * i);         break;
+            case 1:  want = (int32_t)(i * i * i);      break;
+            default: want = -(int32_t) i;             break;
+        }
+        if (result[i] != want) {
+            if (mismatches < 5)
+                ADD_FAILURE() << "i=" << i << " got " << result[i]
+                              << " expected " << want;
+            ++mismatches;
+        }
+    }
+    EXPECT_EQ(mismatches, 0u);
+}

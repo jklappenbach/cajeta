@@ -619,12 +619,30 @@ namespace cajeta {
             // CajetaFunctionType with a null return; buildCanonical
             // already handles it ("?" slot).
             std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
+            CajetaTypePtr fnAsType;
             auto it = canonicalMap.find(canon);
-            if (it != canonicalMap.end()) return it->second;
-            auto fnType = std::make_shared<CajetaFunctionType>(
-                module, std::move(paramTypes), std::move(ret), returnsOwn);
-            canonicalMap[canon] = static_pointer_cast<CajetaType>(fnType);
-            return static_pointer_cast<CajetaType>(fnType);
+            if (it != canonicalMap.end()) {
+                fnAsType = it->second;
+            } else {
+                auto fnType = std::make_shared<CajetaFunctionType>(
+                    module, std::move(paramTypes), std::move(ret), returnsOwn);
+                canonicalMap[canon] = static_pointer_cast<CajetaType>(fnType);
+                fnAsType = static_pointer_cast<CajetaType>(fnType);
+            }
+            // Array-of-function-type: the parenthesized-arrayed form `((T)->R)[]`
+            // (grammar alt `'(' functionType ')' ('[' ']')*`). The inner
+            // functionType is what `ctx->functionType()` matched above; any `[`
+            // `]` pairs here belong to the *outer* grouping, so wrap the function
+            // type in `CajetaArray` per pair — mirroring the class/primitive
+            // bracket loop below. Bare `(T)->R` has no brackets and falls through
+            // returning the function type itself.
+            CajetaTypePtr type = fnAsType;
+            int bracketPairs = static_cast<int>(ctx->LBRACK().size());
+            for (int i = 0; i < bracketPairs; i++) {
+                type = make_shared<CajetaArray>(module, type);
+                module->getStructures()[type->toCanonical()] = static_pointer_cast<CajetaClass>(type);
+            }
+            return type;
         }
         CajetaTypePtr type;
         QualifiedNamePtr qName;

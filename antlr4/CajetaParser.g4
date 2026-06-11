@@ -916,6 +916,13 @@ typeList
 
 typeType
     : functionType
+    // Parenthesized function type, optionally arrayed: `((T)->R)[]`. The grouping
+    // parens are what make an array-OF-function-type expressible — without them
+    // `(T)->R[]` binds the `[]` to the RETURN (a function returning `R[]`). The
+    // inner is restricted to `functionType` (not a general `'(' typeType ')'`) so
+    // the `(`...`)` here never collides with the C-style cast `'(' typeType ')' expr`:
+    // it only matches when a `->` proves the parens wrap a function type.
+    | '(' functionType ')' (annotation* '[' ']')*
     | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' ']')*
     | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' expression ']')*
     ;

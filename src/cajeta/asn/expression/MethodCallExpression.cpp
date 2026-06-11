@@ -142,6 +142,90 @@ namespace cajeta {
         return sPtr;
     }
 
+    // Indirect call through a closure value — shared by the bare-identifier
+    // form `op(args)` (MethodCallExpression) and the postfix expression/indexed
+    // form `arr[i](args)` (CallExpression). `closurePtr` is a `ptr` to the
+    // closure record `{ ptr fn, ptr captures, ptr drop_fn }` (L3-3 ABI); the
+    // call reads fn (offset 0) + captures (offset 1) and dispatches with
+    // captures prepended to the user args. Declared in MethodCallExpression.h.
+    llvm::Value* emitClosureCall(CajetaModulePtr module,
+                                 llvm::Value* closurePtr,
+                                 const std::shared_ptr<CajetaFunctionType>& fnType,
+                                 const vector<MethodCallParameter>& args,
+                                 CajetaTypePtr& outResolvedType) {
+        auto& llvmCtx = *module->getLlvmContext();
+        auto* builder = module->getBuilder();
+        llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+        // L3-3 closure layout: { ptr fn, ptr captures, ptr drop_fn }. The call
+        // site only reads fn + captures; drop_fn is the runtime's concern at
+        // scope exit. Keeping the struct shape consistent with the layout
+        // LambdaExpression / MethodReferenceExpression emit so GEPs stay valid.
+        llvm::StructType* closureTy = llvm::StructType::get(
+            llvmCtx, {ptrTy, ptrTy, ptrTy});
+        llvm::Value* fnSlot = builder->CreateStructGEP(
+            closureTy, closurePtr, 0, "closure.fn");
+        llvm::Value* callee = builder->CreateLoad(ptrTy, fnSlot, "fn_ptr");
+        llvm::Value* capSlot = builder->CreateStructGEP(
+            closureTy, closurePtr, 1, "closure.captures");
+        llvm::Value* captures = builder->CreateLoad(
+            ptrTy, capSlot, "captures_ptr");
+
+        // M5(b) — sret form: caller allocates the result slot in its own frame
+        // and threads it as the closure's hidden arg 0. The call returns void;
+        // the call's value is the slot pointer (chained into like a class
+        // instance pointer).
+        llvm::Value* sretSlot = nullptr;
+        auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+        if (fnType->usesSret() && retClass) {
+            llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+            llvm::IRBuilder<> entryBuilder(
+                &curFn->getEntryBlock(), curFn->getEntryBlock().begin());
+            sretSlot = entryBuilder.CreateAlloca(
+                retClass->getLlvmType(), nullptr, "fn_sret");
+        }
+        vector<llvm::Value*> callArgs;
+        if (sretSlot) callArgs.push_back(sretSlot);
+        callArgs.push_back(captures);  // implicit captures arg per L2 ABI
+        size_t baseIdx = sretSlot ? 2 : 1;
+        llvm::FunctionType* sig = fnType->getLlvmFunctionType();
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (args[i].expression && !args[i].expression->getResolvedType()) {
+                args[i].expression->resolveTypes(module);
+            }
+            llvm::Value* v = args[i].expression->generateCode(module);
+            // l-value coercion: handles ArrayIndex / Dot GEPs uniformly so a
+            // primitive element / field load is passed by value, not as the
+            // slot pointer (JIT verify rejects a ptr where a scalar is wanted).
+            auto exprAst = dynamic_pointer_cast<Expression>(args[i].expression);
+            v = loadIfLValue(module, v, exprAst);
+            // Width-coerce to the signature's expected param type (matches the
+            // coercion invokeMethod does for ordinary calls). Signature index
+            // is baseIdx + i (sret-shifted when applicable).
+            size_t sigIdx = baseIdx + i;
+            if (sig && sigIdx < sig->getNumParams() && v
+                    && v->getType() != sig->getParamType(sigIdx)) {
+                llvm::Type* expected = sig->getParamType(sigIdx);
+                if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
+                    v = builder->CreateIntCast(v, expected, /*isSigned=*/true);
+                } else if (expected->isFloatingPointTy()
+                        && v->getType()->isFloatingPointTy()) {
+                    v = builder->CreateFPCast(v, expected);
+                }
+            }
+            callArgs.push_back(v);
+        }
+        llvm::CallInst* call = builder->CreateCall(sig, callee, callArgs);
+        if (sretSlot && retClass) {
+            call->addParamAttr(0, llvm::Attribute::get(
+                llvmCtx, llvm::Attribute::StructRet, retClass->getLlvmType()));
+            // Pin resolvedType so chained `.field` / `.method()` see the
+            // value-typed result the sret slot holds.
+            if (fnType->getReturnType()) outResolvedType = fnType->getReturnType();
+            return sretSlot;
+        }
+        return call;
+    }
+
     // methodCall: `identifier ('<' typeList '>')? '(' parameterList? ')'`
     //           | `THIS '(' parameterList? ')'`
     //           | `SUPER '(' parameterList? ')'`
@@ -683,92 +767,14 @@ namespace cajeta {
             if (field) {
                 auto fnType = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
                 if (fnType) {
+                    // The field's slot holds a `ptr` to the closure record;
+                    // load it and dispatch through the shared closure ABI.
                     llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
-                    // L3-3 closure layout: { ptr fn, ptr captures, ptr drop_fn }.
-                    // The call site only reads fn (offset 0) and captures
-                    // (offset 1); drop_fn (offset 2) is the runtime's
-                    // concern at scope exit. Keeping the struct type
-                    // consistent with the layout LambdaExpression emits
-                    // so any future GEP arithmetic stays valid.
-                    llvm::StructType* closureTy = llvm::StructType::get(
-                        llvmCtx, {ptrTy, ptrTy, ptrTy});
                     llvm::AllocaInst* slot = field->getOrCreateAllocation();
                     llvm::Value* closurePtr = builder->CreateLoad(
                         ptrTy, slot, "closure_ptr");
-                    llvm::Value* fnSlot = builder->CreateStructGEP(
-                        closureTy, closurePtr, 0, "closure.fn");
-                    llvm::Value* callee = builder->CreateLoad(
-                        ptrTy, fnSlot, "fn_ptr");
-                    llvm::Value* capSlot = builder->CreateStructGEP(
-                        closureTy, closurePtr, 1, "closure.captures");
-                    llvm::Value* captures = builder->CreateLoad(
-                        ptrTy, capSlot, "captures_ptr");
-
-                    // M5(b) — sret form: caller allocates the result slot
-                    // in its own frame and threads it as the closure's
-                    // hidden arg 0. The call returns void; MCE's value is
-                    // the slot pointer (callers chain into it like any
-                    // class instance pointer).
-                    llvm::Value* sretSlot = nullptr;
-                    auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
-                    if (fnType->usesSret() && retClass) {
-                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
-                        llvm::IRBuilder<> entryBuilder(
-                            &curFn->getEntryBlock(),
-                            curFn->getEntryBlock().begin());
-                        sretSlot = entryBuilder.CreateAlloca(
-                            retClass->getLlvmType(), nullptr, "fn_sret");
-                    }
-                    vector<llvm::Value*> args;
-                    if (sretSlot) args.push_back(sretSlot);
-                    args.push_back(captures);  // implicit captures arg per L2 ABI
-                    size_t baseIdx = sretSlot ? 2 : 1;
-                    llvm::FunctionType* sig = fnType->getLlvmFunctionType();
-                    for (size_t i = 0; i < parameters.size(); ++i) {
-                        if (parameters[i].expression
-                                && !parameters[i].expression->getResolvedType()) {
-                            parameters[i].expression->resolveTypes(module);
-                        }
-                        llvm::Value* v = parameters[i].expression->generateCode(module);
-                        // l-value coercion: handles ArrayIndex / Dot
-                        // GEPs uniformly. Without this, `fn(acc,
-                        // partials[i])` where partials is T[] of a
-                        // primitive T passes the slot ptr (GEP) to fn
-                        // instead of the loaded primitive value, and
-                        // JIT verify rejects the call ("Call parameter
-                        // type does not match function signature").
-                        auto exprAst = dynamic_pointer_cast<Expression>(parameters[i].expression);
-                        v = loadIfLValue(module, v, exprAst);
-                        // Width-coerce to the function signature's expected
-                        // param type (matches the coercion invokeMethod does
-                        // for ordinary calls). Signature index is baseIdx + i
-                        // (sret-shifted when applicable).
-                        size_t sigIdx = baseIdx + i;
-                        if (sig && sigIdx < sig->getNumParams() && v
-                                && v->getType() != sig->getParamType(sigIdx)) {
-                            llvm::Type* expected = sig->getParamType(sigIdx);
-                            if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
-                                v = builder->CreateIntCast(v, expected, /*isSigned=*/true);
-                            } else if (expected->isFloatingPointTy()
-                                    && v->getType()->isFloatingPointTy()) {
-                                v = builder->CreateFPCast(v, expected);
-                            }
-                        }
-                        args.push_back(v);
-                    }
-                    llvm::CallInst* call = builder->CreateCall(sig, callee, args);
-                    if (sretSlot && retClass) {
-                        call->addParamAttr(0, llvm::Attribute::get(
-                            llvmCtx, llvm::Attribute::StructRet,
-                            retClass->getLlvmType()));
-                        // Pin resolvedType so chained `.field` / `.method()`
-                        // see the value-typed result the sret slot holds.
-                        if (fnType->getReturnType()) {
-                            resolvedType = fnType->getReturnType();
-                        }
-                        return sretSlot;
-                    }
-                    return call;
+                    return emitClosureCall(module, closurePtr, fnType,
+                                           parameters, resolvedType);
                 }
             }
         }
