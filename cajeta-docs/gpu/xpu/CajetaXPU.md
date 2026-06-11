@@ -370,6 +370,15 @@ models.
   targets it is a no-op because waves are lock-stepped, but it is
   required on Volta+ (independent thread scheduling) and is mandatory
   before any `wave.shuffle.sync` op.
+- `Barrier.workgroupMemory()` / `Barrier.deviceMemory()` are scoped
+  **memory fences** — they order and make memory writes visible at
+  workgroup or device scope with **no thread rendezvous** (a barrier
+  minus the wait; use to publish data before an atomic flag store).
+  AcquireRelease ordering. Lower to `OpMemoryBarrier` (SPIR-V, via
+  `llvm.spv.{group,device}.memory.barrier`), an `agent`/`workgroup`-
+  scoped `acq_rel` fence (AMDGPU), `membar.gl`/`membar.cta` (NVPTX),
+  and a system `acq_rel` fence on CPU. Device-verified on CPU/VK/AMD;
+  NVPTX emit-only. Distinct from the host-facing `xpu.Fence` below.
 
 ### 3.5 Streams, events, and ordering
 

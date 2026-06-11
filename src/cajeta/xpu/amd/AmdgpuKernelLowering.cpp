@@ -96,6 +96,17 @@ public:
         b.CreateFence(llvm::AtomicOrdering::Acquire, wg);
     }
 
+    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
+                     FenceScope scope) override {
+        // A scoped acq_rel fence — no s_barrier, so no thread rendezvous. The
+        // AMDGPU sync-scope name selects the reach: "workgroup" (LDS+global
+        // within the block) vs "agent" (the whole device). The backend lowers
+        // this to the right s_waitcnt / cache-flush sequence.
+        llvm::SyncScope::ID sc = m.getContext().getOrInsertSyncScopeID(
+            scope == FenceScope::Workgroup ? "workgroup" : "agent");
+        b.CreateFence(llvm::AtomicOrdering::AcquireRelease, sc);
+    }
+
     // AMDGPU marks kernels purely by calling convention — no metadata
     // analogue to nvvm.annotations.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {

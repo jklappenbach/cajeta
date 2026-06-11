@@ -76,6 +76,18 @@ public:
             llvm::Type::getInt32Ty(m.getContext()), 0)});
     }
 
+    void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
+                     FenceScope scope) override {
+        // membar — a memory fence with no bar.sync (no thread rendezvous).
+        // membar.cta orders within the CTA (workgroup); membar.gl orders
+        // global memory across the device.
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, scope == FenceScope::Workgroup
+                    ? llvm::Intrinsic::nvvm_membar_cta
+                    : llvm::Intrinsic::nvvm_membar_gl);
+        b.CreateCall(f, {});
+    }
+
     void decorateKernel(llvm::Function* fn, llvm::Module& m) override {
         llvm::LLVMContext& ctx = m.getContext();
         fn->setCallingConv(llvm::CallingConv::PTX_Kernel);

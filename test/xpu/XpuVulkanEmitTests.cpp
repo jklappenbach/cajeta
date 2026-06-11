@@ -1675,3 +1675,72 @@ TEST(XpuVulkanEmitTests, lowersBindlessBufferArrayToSpirv) {
     else
         GTEST_SUCCEED() << "spirv-val not installed; skipped";
 }
+
+// Stage 9: scoped memory fences (Barrier.workgroupMemory / .deviceMemory) lower
+// to memory-only OpMemoryBarrier (NOT OpControlBarrier — no thread rendezvous),
+// via the dedicated llvm.spv.{group,device}.memory.barrier intrinsics. The proof
+// that matters here is spirv-val: OpMemoryBarrier with Vulkan-invalid memory
+// semantics (e.g. SequentiallyConsistent) is rejected, so a clean spirv-val
+// confirms the semantics-fixup pass covers OpMemoryBarrier too.
+TEST(XpuVulkanEmitTests, lowersMemoryFenceToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.Barrier;\n"
+        "public class MF {\n"
+        "    @Kernel\n"
+        "    public static void fence(Buffer<int32> data, Buffer<int32> out,\n"
+        "                             uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            data[i] = (int32)(i * 2);\n"
+        "            Barrier.deviceMemory();\n"
+        "            Barrier.workgroupMemory();\n"
+        "            out[i] = data[i] + 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.MF");
+    auto klass = module->getStructures()["test.MF"];
+    ASSERT_NE(klass, nullptr);
+    auto fence = findMethod(klass, "fence");
+    ASSERT_NE(fence, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_fence_vulkan_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    llvm::Function* fn = lowerKernel(fence, irModule);
+    ASSERT_NE(fn, nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("llvm.spv.device.memory.barrier"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.group.memory.barrier"), std::string::npos) << ir;
+    // It is a memory fence, NOT a control barrier — no group-sync intrinsic.
+    EXPECT_EQ(ir.find("memory.barrier.with.group.sync"), std::string::npos) << ir;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_fence_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(fence, binModule);
+    std::string text = emitSpirvText(binModule, *tmBin);
+    EXPECT_NE(text.find("OpMemoryBarrier"), std::string::npos) << text;
+
+    auto tmBin2 = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin2, nullptr);
+    llvm::LLVMContext bin2Ctx;
+    llvm::Module bin2Module("xpu_fence_vulkan_bin2", bin2Ctx);
+    configureDeviceModule(bin2Module, *tmBin2);
+    lowerKernel(fence, bin2Module);
+    std::vector<uint8_t> spirv = emitSpirv(bin2Module, *tmBin2);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "memory-fence kernel produced invalid SPIR-V "
+                               "(OpMemoryBarrier semantics not Vulkan-valid?)";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped";
+}

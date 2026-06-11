@@ -2162,3 +2162,51 @@ TEST(XpuCpuDispatchTests, imageLoadStoreRmwOnCpu) {
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100+i: out[i] != 2*i+1 — storeImage/loadImage RMW)";
 }
+
+// Stage 9: a kernel using scoped memory fences (Barrier.deviceMemory /
+// .workgroupMemory) runs on CPU — the reference oracle. On CPU the fence
+// lowers to a system acq_rel `fence`; a single-thread write→fence→read
+// deterministically yields out[i] == 2i+1, proving the verb compiles to valid
+// runnable code (cross-checks the VK/AMD device runs of the same kernel).
+TEST(XpuCpuDispatchTests, memoryFenceOnCpu) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.core.Barrier;\n"
+        "public class MFCpu {\n"
+        "    @Kernel\n"
+        "    public static void fence(Buffer<int32> data, Buffer<int32> out,\n"
+        "                             uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            data[i] = (int32)(i * 2);\n"
+        "            Barrier.deviceMemory();\n"
+        "            Barrier.workgroupMemory();\n"
+        "            out[i] = data[i] + 1;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        Buffer<int32> data = heap Buffer<int32>(n);\n"
+        "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+        "        Stream s = Stream.current();\n"
+        "        fence.launch(s, grid: [1], block: [64])(data, out, n);\n"
+        "        s.sync();\n"
+        "        int32[] ho = heap int32[n];\n"
+        "        out.download(ho);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (ho[i] != (int32)(2 * i + 1)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.MFCpu", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != 2i+1 — memory fence broke codegen)";
+}

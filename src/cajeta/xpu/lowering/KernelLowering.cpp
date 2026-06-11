@@ -1983,6 +1983,19 @@ private:
                 target.workgroupBarrier(builder, mod);
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
+            // Scoped memory fence (Stage 9) — a memory barrier with no thread
+            // rendezvous (unlike workgroup() above). Orders/makes-visible memory
+            // at the given scope.
+            if (name == "workgroupMemory") {
+                target.memoryFence(builder, mod,
+                                   LoweringTarget::FenceScope::Workgroup);
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+            }
+            if (name == "deviceMemory") {
+                target.memoryFence(builder, mod,
+                                   LoweringTarget::FenceScope::Device);
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+            }
         } else if (recv == "Wave") {
             const auto& args = mc->getParameters();
             if (name == "width") return target.waveWidth(builder, mod);
@@ -4011,6 +4024,15 @@ llvm::Value* LoweringTarget::integerDot4x8(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* a, llvm::Value* c,
     llvm::Value* acc, bool isSigned) {
     return vecops::idotWiden(b, a, c, acc, isSigned);
+}
+
+// Default scoped memory fence: a system-scope AcquireRelease `fence`. On CPU
+// (the oracle) work-items in a workgroup run sequentially under loop fission,
+// so a plain acq_rel fence is the correct, conservative ordering; it also
+// serves as the fallback. GPU backends override with the native scoped op.
+void LoweringTarget::memoryFence(llvm::IRBuilderBase& b, llvm::Module& /*m*/,
+                                 FenceScope /*scope*/) {
+    b.CreateFence(llvm::AtomicOrdering::AcquireRelease);
 }
 
 // Default float atomic: a relaxed, system-scope atomicrmw. Selects the native

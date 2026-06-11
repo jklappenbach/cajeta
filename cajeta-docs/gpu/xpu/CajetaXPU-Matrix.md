@@ -258,7 +258,7 @@ check is width-agnostic — sum of 1s over a full wave == wave width ∈ {32, 64
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
 | Atomic RMW on global / shared | LLVM `atomicrmw` + scope | `native` | `native` | `native` · SPIR-V atomic ops with explicit Scope + Memory-Semantics (by construction; not exercised on-device this pass) |
-| Scoped fences | `Fence` (type declared, not yet functional) | `native` | `native` (workgroup release/acquire already used for the barrier) | `native` · `OpMemoryBarrier` with scope |
+| Scoped fences | `Barrier.workgroupMemory()` / `.deviceMemory()` — a memory fence with NO thread rendezvous, fixed AcquireRelease (the `memoryFence(scope)` seam). Device-verified CPU/VK/AMD; NVPTX emit-only. The host-facing `Fence` class is a separate, unrelated thing (stream sync). | `native` · `membar.cta` (workgroup) / `membar.gl` (device) — emit-verified | `native` · `agent`/`workgroup`-scoped `acq_rel` fence (no `s_barrier`) — on-device gfx1151 | `native` · `OpMemoryBarrier` via `llvm.spv.{group,device}.memory.barrier` — `spirv-val` clean + on-device RADV |
 
 ---
 

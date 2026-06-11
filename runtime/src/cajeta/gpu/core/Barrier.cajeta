@@ -14,6 +14,15 @@ package cajeta.gpu.core;
  *                 waves are lock-stepped, but mandatory on Volta+
  *                 (independent thread scheduling) and required
  *                 before any wave.shuffleSync op.
+ *
+ *   workgroupMemory() / deviceMemory():
+ *                 scoped MEMORY fences — order and make memory writes
+ *                 visible at workgroup or device scope, with NO thread
+ *                 rendezvous (a barrier minus the wait). Use to publish
+ *                 data before an atomic flag store, etc. Lowers to
+ *                 OpMemoryBarrier (SPIR-V), a scoped acq_rel fence
+ *                 (AMDGPU), membar.cta/.gl (NVPTX); a system acq_rel
+ *                 fence on CPU. AcquireRelease ordering.
  */
 public final class Barrier {
 
@@ -22,4 +31,10 @@ public final class Barrier {
 
     @Native("__cajeta_xpu_barrier_wave")
     public static void wave();
+
+    @Native("__cajeta_xpu_barrier_workgroup_memory")
+    public static void workgroupMemory();
+
+    @Native("__cajeta_xpu_barrier_device_memory")
+    public static void deviceMemory();
 }
