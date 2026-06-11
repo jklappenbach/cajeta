@@ -45,7 +45,6 @@ CONST:              'const';
 CONTINUE:           'continue';
 DEFAULT:            'default';
 DO:                 'do';
-DOUBLE:             'double';
 ELSE:               'else';
 ENUM:               'enum';
 EXTENDS:            'extends';
