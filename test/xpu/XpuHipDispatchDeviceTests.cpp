@@ -1702,3 +1702,69 @@ TEST(XpuHipDispatchDeviceTests, imageLoadStoreRmwRoutesToHipOnDevice) {
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100+i: out[i] != 2*i+1 — storeImage/loadImage RMW)";
 }
+
+// Bindless Buffer<T>[] (descriptor-indexed buffers) on AMD/HIP. The compiler
+// lowering already routes a buffer-array param to the default pointer path (a
+// ptr addrspace(1) kernarg whose default bufferArrayElement flat-loads each
+// device handle); the AMD-specific work is purely runtime — the launch copies
+// the host-marshalled [count, h0 …] handle array into device memory and passes
+// a device pointer, so the kernel can read it. Same gather kernel + values as
+// the CPU oracle (XpuCpuDispatchTests.bindlessBufferArrayOnCpu) and the Vulkan
+// device test, so all three cross-check to out[i] == 60 + 3i.
+TEST(XpuHipDispatchDeviceTests, bindlessBufferArrayOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class BindlessHip {\n"
+        "    @Kernel\n"
+        "    public static void gather(Buffer<int32>[] bufs, uint32 count,\n"
+        "                              Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            int32 s = 0;\n"
+        "            for (uint32 b = 0; b < count; b = b + 1) {\n"
+        "                s = s + bufs[b][i];\n"
+        "            }\n"
+        "            out[i] = s;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        uint32 k = 3;\n"
+        "        Buffer<int32>[] bufs = heap Buffer<int32>[k];\n"
+        "        for (uint32 b = 0; b < k; b = b + 1) {\n"
+        "            int32[] h = heap int32[n];\n"
+        "            for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "                h[i] = (int32)((b + 1) * 10 + i);\n"
+        "            }\n"
+        "            bufs[b] = heap Buffer<int32>(n);\n"
+        "            bufs[b].upload(h);\n"
+        "        }\n"
+        "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+        "        Stream s = Stream.current();\n"
+        "        gather.launch(s, grid: [1], block: [64])(bufs, k, out, n);\n"
+        "        s.sync();\n"
+        "        int32[] ho = heap int32[n];\n"
+        "        out.download(ho);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (ho[i] != (int32)(60 + 3 * i)) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(src, "test.BindlessHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100+i: out[i] != 60+3i — bindless descriptor-array "
+                         "indexing wrong on HIP)";
+}

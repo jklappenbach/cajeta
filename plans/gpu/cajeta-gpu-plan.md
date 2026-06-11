@@ -94,7 +94,10 @@ The verb seam exists; the rest of the model from doc §1 does not.
 
 - [x] **Execution** — coordinates, barriers, grid-stride, dynamic shared, kernel ABI.
 - [x] **Memory** — `bufferElementPtr`, `MemoryKind` (Device/Pinned/Unified), `Buffer.slice`.
-  `[~]` bindless `Buffer<T>[]` is CPU + Vulkan only (AMD/NV open).
+  bindless `Buffer<T>[]` is CPU + Vulkan + **AMD** (device-verified gfx1151 — the
+  launch device-copies the `[count, h…]` handle array; the default pointer lowering
+  flat-loads each handle). `[~]` NV open (default path inherits; CUDA runtime
+  marshalling + emit pending B5).
 - [x] **Value types & math** — `Vector`/`Matrix`/`Quaternion` (+ mask comparisons),
   transcendentals (AMD ocml), integer dot (DP4a), `Bits.*`, f32/f16/**bf16**.
 - [x] **Textures** — 2D/3D/**1D/2DArray/Cube** + integer formats + mipmaps/LOD, device-verified

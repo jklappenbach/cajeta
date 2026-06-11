@@ -11010,15 +11010,19 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
     void* surfObjVals[8];
     int64_t surfObjs[8];
     int nsurf = 0;
+    void* bufArrVals[8];   // bindless device-array pointer values (&slot stays stable)
+    void* bufArrDev[8];    // device copies of [count, h…] to free after the launch
+    int nbufarr = 0;
     int launchOk = 1;
     struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
     if (kp && kp->count > 0 && kp->count <= 64) {
-        int hasTex = 0, hasImg = 0;
+        int hasTex = 0, hasImg = 0, hasBufArr = 0;
         for (int i = 0; i < kp->count; ++i) {
             if (kp->kind[i] == CAJETA_KP_TEXTURE) hasTex = 1;
             else if (kp->kind[i] == CAJETA_KP_IMAGE) hasImg = 1;
+            else if (kp->kind[i] == CAJETA_KP_BUFFER_ARRAY) hasBufArr = 1;
         }
-        if (hasTex || hasImg) {
+        if (hasTex || hasImg || hasBufArr) {
             // The (single, v1) Sampler param supplies the filter/address modes.
             int32_t filterMode = CAJ_HIP_FILTER_LINEAR, addressMode = 0;
             for (int i = 0; i < kp->count; ++i)
@@ -11065,6 +11069,44 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                     surfObjVals[nsurf] = (void*) (intptr_t) obj;
                     subArgv[i] = &surfObjVals[nsurf];    // arg = the surfObj ptr
                     ++nsurf;
+                } else if (kp->kind[i] == CAJETA_KP_BUFFER_ARRAY) {
+                    // Bindless Buffer<T>[]: argv[i] points at the HOST-marshalled
+                    // [i64 count, i64 h0 … ] handle array. The device kernel takes a
+                    // global pointer to it (the default bufferArrayElement flat-loads
+                    // each handle, which is itself a device address). Copy the array
+                    // into device memory and pass &devPtr as the kernarg.
+                    if (nbufarr >= 8) {
+                        fprintf(stderr, "cajeta.xpu: HIP kernel '%s' uses more than "
+                                "8 bindless buffer arrays (unsupported); not "
+                                "launching\n", kernelName);
+                        launchOk = 0; break;
+                    }
+                    const int64_t* hostArr = (const int64_t*) argv[i];
+                    int64_t cnt = hostArr ? hostArr[0] : -1;
+                    if (cnt < 0 || cnt > 16) {   // 16 = kMaxBindlessBuffers (host cap)
+                        fprintf(stderr, "cajeta.xpu: HIP kernel '%s' bindless buffer-"
+                                "array count %lld out of range; not launching\n",
+                                kernelName, (long long) cnt);
+                        launchOk = 0; break;
+                    }
+                    size_t bytes = (size_t) (cnt + 1) * sizeof(int64_t);
+                    void* dev = NULL;
+                    if (g_xpu_hip.hipMalloc(&dev, bytes) != 0 || !dev) {
+                        fprintf(stderr, "cajeta.xpu: HIP bindless buffer-array device "
+                                "alloc failed for kernel '%s'; not launching\n",
+                                kernelName);
+                        launchOk = 0; break;
+                    }
+                    if (g_xpu_hip.hipMemcpyHtoD(dev, hostArr, bytes) != 0) {
+                        g_xpu_hip.hipFree(dev);
+                        fprintf(stderr, "cajeta.xpu: HIP bindless buffer-array upload "
+                                "failed for kernel '%s'; not launching\n", kernelName);
+                        launchOk = 0; break;
+                    }
+                    bufArrDev[nbufarr] = dev;
+                    bufArrVals[nbufarr] = dev;           // the device-array address
+                    subArgv[i] = &bufArrVals[nbufarr];   // kernarg = &devPtr
+                    ++nbufarr;
                 }
             }
             useArgv = subArgv;
@@ -11078,15 +11120,18 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                                         (unsigned) sharedBytes,
                                         /*stream=*/(void*) (intptr_t) streamHandle,
                                         useArgv, /*extra=*/NULL);
-    if (ntex > 0 || nsurf > 0) {
+    if (ntex > 0 || nsurf > 0 || nbufarr > 0) {
         if (launchOk)
-            g_xpu_hip.hipDeviceSynchronize();   // finish before destroying objects
+            g_xpu_hip.hipDeviceSynchronize();   // finish before freeing resources
         for (int i = 0; i < ntex; ++i)          // also frees objs made before a skip
             if (texObjs[i] && g_xpu_hip.hipDestroyTextureObject)
                 g_xpu_hip.hipDestroyTextureObject((void*) (intptr_t) texObjs[i]);
         for (int i = 0; i < nsurf; ++i)
             if (surfObjs[i] && g_xpu_hip.hipDestroySurfaceObject)
                 g_xpu_hip.hipDestroySurfaceObject((void*) (intptr_t) surfObjs[i]);
+        for (int i = 0; i < nbufarr; ++i)       // free the device handle-array copies
+            if (bufArrDev[i] && g_xpu_hip.hipFree)
+                g_xpu_hip.hipFree(bufArrDev[i]);
     }
 }
 
