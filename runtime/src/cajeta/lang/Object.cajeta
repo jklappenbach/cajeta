@@ -168,6 +168,15 @@ public class Object {
      * compiler synthesizes `a != b` as the negation of `a == b`.
      */
     public static boolean operator== (Object a, Object b) {
+        // Null-safe: a reference may be null (an unset field, a NIL tree
+        // leaf, an absent map entry). Comparing against the `null` literal
+        // lowers to a pointer `icmp` — NOT back through this method — so the
+        // guard is non-recursive. Two nulls are equal; one null is not. Only
+        // when both are non-null do we dispatch hash() (which would otherwise
+        // load a vtable from a null pointer and segfault).
+        if (a == null || b == null) {
+            return a == null && b == null;
+        }
         return a.hash() == b.hash();
     }
 
