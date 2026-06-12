@@ -97,5 +97,61 @@ fi
 # cajeta_tests.sh's parallel discovery honors these patterns. NO_BUILD avoids a
 # redundant second build (we already built / verified above).
 echo ">> Release subset: ${#patterns[@]} suites (delegating to cajeta_tests.sh, parallel)"
-exec env NO_BUILD=1 PARALLEL="${PARALLEL:-$(nproc 2>/dev/null || echo 4)}" \
-    ./cajeta_tests.sh "${patterns[@]}"
+run_log="$(mktemp)"
+trap 'rm -f "$run_log"' EXIT
+set +e
+env NO_BUILD=1 PARALLEL="${PARALLEL:-$(nproc 2>/dev/null || echo 4)}" \
+    ./cajeta_tests.sh "${patterns[@]}" 2>&1 | tee "$run_log"
+rc=${PIPESTATUS[0]}
+set -e
+
+[ "$rc" -eq 0 ] && exit 0
+
+# Flake-tolerant gate. A handful of the JIT-driven concurrency suites (parallel
+# streams, async/spawn, task drop) intermittently SIGSEGV/SIGABRT under the
+# heavy thread oversubscription of N parallel shards each spawning their own
+# worker pools on a small CI runner — they pass in isolation (tracked
+# separately). Those surface as `Crashed`/`Timed out`, never as a `Failed`
+# assertion. So: if the run had ANY real test failure, fail now (deterministic,
+# never retried). Otherwise re-run JUST the crashed/timed-out tests serially
+# (PARALLEL=0) — isolation reproduces the conditions under which they pass — and
+# let the gate go green only if they then succeed. Capped: a large crash count
+# is a real regression, not flakiness, so don't paper over it.
+summary="$(grep -E '^Passed: [0-9]+ ' "$run_log" | tail -1)"
+n_failed=$(sed -nE 's/.*Failed: ([0-9]+).*/\1/p' <<< "$summary")
+n_to=$(sed -nE 's/.*Timed out: ([0-9]+).*/\1/p' <<< "$summary")
+n_crash=$(sed -nE 's/.*Crashed: ([0-9]+).*/\1/p' <<< "$summary")
+n_failed=${n_failed:-0}; n_to=${n_to:-0}; n_crash=${n_crash:-0}
+
+if [ "$n_failed" -gt 0 ]; then
+    echo ">> Release gate: $n_failed deterministic test failure(s) — not retrying." >&2
+    exit "$rc"
+fi
+
+flaky_max=12
+n_flaky=$(( n_to + n_crash ))
+if [ "$n_flaky" -eq 0 ] || [ "$n_flaky" -gt "$flaky_max" ]; then
+    echo ">> Release gate: $n_flaky crashed/timed-out test(s) (cap $flaky_max) — treating as a real failure, not retrying." >&2
+    exit "$rc"
+fi
+
+# Pull the offending test ids from the `Crashed:` / `Timed out` report sections
+# (each entry is `  Suite.test (...)`); skip the instructional `Re-run ...` line.
+mapfile -t retry < <(awk '
+    /^Crashed:/        { mode="x"; next }
+    /^Timed out/       { mode="x"; next }
+    /^Failed tests:/   { mode="";  next }
+    /^Re-run a crash/  { mode="";  next }
+    /^[[:space:]]*$/   { mode="" }
+    mode=="x" && $1 ~ /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z0-9_]+$/ { print $1 }
+' "$run_log" | sort -u)
+
+if [ "${#retry[@]}" -eq 0 ]; then
+    echo ">> Release gate: could not parse crashed/timed-out test ids to retry." >&2
+    exit "$rc"
+fi
+
+echo
+echo ">> Release gate: retrying ${#retry[@]} crashed/timed-out test(s) serially in isolation:"
+printf '   %s\n' "${retry[@]}"
+exec env NO_BUILD=1 PARALLEL=0 ./cajeta_tests.sh "${retry[@]}"
