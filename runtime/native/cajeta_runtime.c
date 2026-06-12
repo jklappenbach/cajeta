@@ -5598,7 +5598,12 @@ int64_t __cajeta_hash_float32(float value) {
     return (int64_t) splitmix64_finalize((uint64_t) bits ^ __cajeta_hash_seed_load());
 }
 
-// Bitwise hash of an IEEE-754 binary128 (LLVM fp128 / C __float128), plan W3.
+// Bitwise hash of an IEEE-754 binary128 (LLVM fp128), plan W3. Takes the raw
+// 128 bits as `__uint128_t` rather than `__float128`: clang has no `__float128`
+// type on aarch64 (Linux or Apple), which broke the runtime-bitcode compile on
+// every ARM target, whereas `__uint128_t` is supported everywhere. A caller
+// emits `bitcast fp128 -> i128` before the call; the hash is over the bits, so
+// it's identical. (Currently no codegen call site references this.)
 // float16/bfloat16 hash by widening to float64 (lossless, injective) and
 // reusing __cajeta_hash_float64, but float128 → float64 is *lossy*, so distinct
 // float128 values could collide and wrongly compare equal (Object.operator== is
@@ -5606,7 +5611,7 @@ int64_t __cajeta_hash_float32(float value) {
 // (IEEE says +0 == -0) and mix both 64-bit halves through the shared SplitMix
 // finalizer. x86-64 is little-endian, so the sign bit is the MSB of the high
 // half (bits[15] & 0x80); -0.0 is sign-only with an all-zero significand/exp.
-int64_t __cajeta_hash_float128(__float128 value) {
+int64_t __cajeta_hash_float128(__uint128_t value) {
     unsigned char bits[16];
     memcpy(bits, &value, sizeof(bits));
     int signOnly = (bits[15] == 0x80);
