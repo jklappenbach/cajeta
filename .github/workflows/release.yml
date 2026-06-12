@@ -269,28 +269,27 @@ jobs:
       # 22). Other Linux legs fall through to distro LLVM until their fork artifact
       # is built (expand the gate as fork-build-llvm.yml adds host legs).
       - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
-        # Legs that link the fork toolchain (carrying the SPIR-V ray-query +
-        # Tier-1 intrinsic patches). Windows is here because cajeta's Tier-1 SPIR-V
-        # codegen now references fork-only intrinsic enums that stock MSYS2 LLVM 22
-        # lacks — so the Windows release MUST link the fork (no distro fallback).
-        if: >-
-          (runner.os == 'Linux' && matrix.target == 'x86_64-linux-gnu') ||
-          (runner.os == 'Windows' && matrix.target == 'x86_64-w64-mingw32')
+        # EVERY target links the fork toolchain — cajeta's SPIR-V codegen
+        # references fork-only intrinsic enums that stock distro/brew LLVM lacks,
+        # so a non-fork LLVM can't build a correct cajeta. The fork publishes one
+        # toolchain per target (build-cajeta-llvm.yml); there is no distro/brew
+        # fallback.
         env:
           # Bump when re-cutting the toolchain (new pinned base or new SPIR-V
-          # patches). r3 is the first release containing the ray-query lowering;
-          # the windows-x64 asset must be published under whatever tag this names
-          # (re-run fork-build-llvm.yml's build-windows job for this tag, or bump).
-          LLVM_RELEASE_TAG: cajeta-llvm-23-r3
+          # patches). r4 is the first release that publishes ALL four targets
+          # (linux-x64/arm64, macos-arm64, windows-x64).
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r4
         run: |
           set -euo pipefail
           # The fork names assets by host (asset_os), NOT by cajeta's target triple:
           # x86_64-linux-gnu -> linux-x64, aarch64-linux-gnu -> linux-arm64,
-          # x86_64-w64-mingw32 -> windows-x64 (see fork-build-llvm.yml). Map first.
+          # aarch64-apple-darwin -> macos-arm64, x86_64-w64-mingw32 -> windows-x64
+          # (see build-cajeta-llvm.yml). Map first.
           case "${{ matrix.target }}" in
-            x86_64-linux-gnu)   ASSET_OS=linux-x64 ;;
-            aarch64-linux-gnu)  ASSET_OS=linux-arm64 ;;
-            x86_64-w64-mingw32) ASSET_OS=windows-x64 ;;
+            x86_64-linux-gnu)     ASSET_OS=linux-x64 ;;
+            aarch64-linux-gnu)    ASSET_OS=linux-arm64 ;;
+            aarch64-apple-darwin) ASSET_OS=macos-arm64 ;;
+            x86_64-w64-mingw32)   ASSET_OS=windows-x64 ;;
             *) echo "::error::no fork asset_os mapping for ${{ matrix.target }}"; exit 1 ;;
           esac
           ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
@@ -301,27 +300,6 @@ jobs:
           echo "LLVM_DIR=$HOME/cajeta-llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
           echo "$HOME/cajeta-llvm/bin" >> "$GITHUB_PATH"
 
-      # Legs without a fork artifact yet: distro LLVM 22 from apt.llvm.org. (These
-      # legs cannot lower ray query — release-only until their fork artifact lands.)
-      - name: Install distro LLVM 22 (Linux legs without a fork artifact)
-        if: runner.os == 'Linux' && matrix.target != 'x86_64-linux-gnu'
-        run: |
-          set -euo pipefail
-          # LLVM 22 isn't in Ubuntu's stock repos yet, so add the official
-          # apt.llvm.org source for this release's codename (serves amd64+arm64).
-          . /etc/os-release
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
-          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-22 main" \
-            | sudo tee /etc/apt/sources.list.d/llvm-22.list >/dev/null
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            clang-22 \
-            llvm-22-dev \
-            libllvm22
-          sudo apt-get install -y lld-22-dev || \
-            echo "::warning::lld-22-dev unavailable on this runner; --emit=exe will fall back to system linker"
-
       # ---- macOS dependency install (brew) ------------------------------
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
@@ -331,21 +309,18 @@ jobs:
           # (Apple Silicon) it's at /opt/homebrew. `brew --prefix`
           # abstracts that for us.
           brew update
-          # Homebrew has no versioned llvm@22 formula; the unversioned `llvm`
-          # is currently 22.x. The compiler only needs the LLVM >= 21 API
-          # (the Triple-based lookupTarget / createTargetMachine), so tracking
-          # `llvm` is fine -- LLVM_DIR below pins CMake to whatever it resolves.
+          # No brew `llvm` here: macOS links the cajeta-spirv FORK toolchain
+          # (fetched above, which sets LLVM_DIR), same as every other target —
+          # stock LLVM lacks the fork-only SPIR-V intrinsics cajeta needs.
           brew install \
             cmake \
             ninja \
-            llvm \
             antlr4-cpp-runtime \
             openjdk@21 \
             googletest \
             glog \
             zstd \
             xxhash
-          echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm" >> "$GITHUB_ENV"
           # Apple's system clang doesn't know about the brew llvm headers/libs
           # unless we point CMake at the brew prefix explicitly.
           echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"
