@@ -538,6 +538,35 @@ jobs:
           [ -f LICENSE ] && cp LICENSE "$STAGE/" || true
           echo "STAGE_DIR=$STAGE" >> "$GITHUB_ENV"
 
+      # ---- cvm download asset (D12) ------------------------------------
+      # cvm installs the BARE binary — it writes the downloaded bytes
+      # straight to ~/.cajeta/versions/<ver>/cajeta and chmod +x, with no
+      # tar/zip extractor. So publish the raw executable per target (named
+      # by triple) plus its SHA-256 in a small `<triple>.cvmmeta` metadata
+      # file that the release job folds into index.json (the cvm manifest).
+      - name: Stage cvm download asset + checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.ref_version }}"
+          T="${{ matrix.target }}"
+          mkdir -p cvm-dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN=build/src/cajeta.exe
+            ASSET="cajeta-v${V}-${T}.exe"
+          else
+            BIN=build/src/cajeta
+            ASSET="cajeta-v${V}-${T}"
+          fi
+          cp "$BIN" "cvm-dist/${ASSET}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            SHA=$(sha256sum "cvm-dist/${ASSET}" | cut -d' ' -f1)
+          else
+            SHA=$(shasum -a 256 "cvm-dist/${ASSET}" | cut -d' ' -f1)
+          fi
+          printf '%s\t%s\t%s\n' "$T" "$ASSET" "$SHA" > "cvm-dist/${T}.cvmmeta"
+          echo "cvm asset: ${ASSET}  sha256=${SHA}"
+
       - name: Archive (tar.gz)
         if: matrix.archive_ext == 'tar.gz'
         run: tar -czf "${STAGE_DIR}.tar.gz" "$STAGE_DIR"
@@ -558,6 +587,7 @@ jobs:
           path: |
             cajeta-v${{ steps.version.outputs.ref_version }}-${{ matrix.target }}.tar.gz
             cajeta-v${{ steps.version.outputs.ref_version }}-${{ matrix.target }}.zip
+            cvm-dist/*
             build/*.deb
             build/*.rpm
             build/*.msi
@@ -605,8 +635,16 @@ jobs:
             TAG=""
             REL_NAME=""
           fi
+          # ref_version mirrors the build job: the version without a leading
+          # 'v', used in the cvm asset filenames + the manifest `version`.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            REF="${GITHUB_REF_NAME#v}"
+          else
+            REF="$V"
+          fi
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref_version=$REF" >> "$GITHUB_OUTPUT"
           echo "release_name=$REL_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
@@ -616,6 +654,42 @@ jobs:
 
       - name: Show staged artifacts
         run: ls -laR artifacts
+
+      # ---- cvm manifest (index.json) -----------------------------------
+      # Fold every build job's `<triple>.cvmmeta` (triple, asset filename,
+      # sha256) into one self-describing per-release manifest cvm fetches
+      # via the stable `releases/{latest,download/<tag>}/download/index.json`
+      # URL. Also collects the raw per-triple binaries cvm downloads. The
+      # manifest + binaries upload only on production (the release step is
+      # gated on mode), but assembling always lets dry-run inspect it.
+      - name: Assemble cvm manifest (index.json)
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.params.outputs.ref_version }}"
+          TAG="${{ steps.params.outputs.tag }}"
+          # Dry-run has no tag; use the would-be tag so URLs are well-formed.
+          [ -n "$TAG" ] || TAG="v${V}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          mkdir -p release-assets
+          ASSETS=""
+          while IFS=$'\t' read -r T ASSET SHA; do
+            [ -n "$T" ] || continue
+            ENTRY="\"${T}\": { \"url\": \"${BASE}/${ASSET}\", \"sha256\": \"${SHA}\" }"
+            if [ -z "$ASSETS" ]; then ASSETS="$ENTRY"; else ASSETS="${ASSETS}, ${ENTRY}"; fi
+          done < <(cat artifacts/**/*.cvmmeta 2>/dev/null | sort)
+          if [ -z "$ASSETS" ]; then
+            echo "::warning::no .cvmmeta files found — skipping cvm manifest"
+            exit 0
+          fi
+          printf '{ "schemaVersion": 1, "version": "%s", "assets": { %s } }\n' \
+            "$V" "$ASSETS" > release-assets/index.json
+          echo "=== index.json ==="; cat release-assets/index.json
+          # The bare binaries cvm downloads (raw exe per triple — not the
+          # tarballs/zips, which cvm can't extract).
+          find artifacts -type f -name 'cajeta-v*' \
+            ! -name '*.tar.gz' ! -name '*.zip' -exec cp {} release-assets/ \;
+          echo "=== release-assets ==="; ls -la release-assets
 
       - name: Create / update GitHub Release
         # Skip on dry-run: artifacts uploaded by the build job stay
@@ -648,6 +722,8 @@ jobs:
             artifacts/**/*.msi
             artifacts/**/*.pkg
             artifacts/**/*.sha256
+            release-assets/index.json
+            release-assets/cajeta-v*
 
       - name: Dry-run summary
         if: steps.params.outputs.mode == 'dry-run'
