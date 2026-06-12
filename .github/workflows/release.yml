@@ -686,7 +686,7 @@ jobs:
             [ -n "$T" ] || continue
             ENTRY="\"${T}\": { \"url\": \"${BASE}/${ASSET}\", \"sha256\": \"${SHA}\" }"
             if [ -z "$ASSETS" ]; then ASSETS="$ENTRY"; else ASSETS="${ASSETS}, ${ENTRY}"; fi
-          done < <(cat artifacts/**/*.cvmmeta 2>/dev/null | sort)
+          done < <(find artifacts -type f -name '*.cvmmeta' -exec cat {} + 2>/dev/null | sort)
           if [ -z "$ASSETS" ]; then
             echo "::warning::no .cvmmeta files found — skipping cvm manifest"
             exit 0
