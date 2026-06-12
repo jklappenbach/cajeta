@@ -801,6 +801,11 @@ void __cajeta_closure_drop(void* p) {
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#  include <bcrypt.h>   // BCryptGenRandom for cajeta_fill_entropy (Guid.random).
+                        // Must be at file scope (after windows.h): an in-body
+                        // #include doesn't declare it, and mingw ignores the
+                        // MSVC `#pragma comment(lib, ...)` — the bcrypt import
+                        // lib is linked from src/CMakeLists.txt instead.
 
 typedef struct {
     LPVOID fiber;                         // Windows fiber handle
@@ -5649,8 +5654,7 @@ int64_t __cajeta_hash_guid(int64_t hi, int64_t lo) {
 // is strong on every platform, not just where /dev/urandom exists.
 static void cajeta_fill_entropy(unsigned char* b, int n) {
 #if defined(_WIN32)
-#  include <bcrypt.h>
-#  pragma comment(lib, "bcrypt.lib")
+    // <bcrypt.h> is included at file scope (after windows.h); see note there.
     if (BCryptGenRandom(NULL, (PUCHAR) b, (ULONG) n,
             BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 /* STATUS_SUCCESS */) {
         return;
