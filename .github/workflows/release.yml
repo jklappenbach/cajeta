@@ -95,14 +95,14 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon -PpluginVersion="${PLUGIN_VERSION}" buildPlugin
 
-      # Structural / compatibility verification (242 … 261.*). Non-fatal: the
-      # JetBrains plugin verifier downloads IDE distributions and can be flaky /
-      # slow; a verifier hiccup shouldn't red the whole release. Tighten to a
-      # gate once it's proven stable in CI.
-      - name: Verify plugin (non-fatal)
-        working-directory: ide-plugins/idea
-        continue-on-error: true
-        run: ./gradlew --no-daemon -PpluginVersion="${PLUGIN_VERSION}" verifyPlugin
+      # NOTE: `verifyPlugin` was removed from the release path. The JetBrains
+      # plugin verifier spins up a full headless IDEA and downloads multiple
+      # IDE distributions; in CI it hung/exhausted the runner, and a lost
+      # runner fails the job even with continue-on-error — which then skips the
+      # whole compiler matrix (needs: plugin) and reds the release. It's a
+      # non-gating compatibility check with no release-blocking value, so it
+      # belongs in a dedicated PR/CI workflow, not here. (Installer plan §7:
+      # "tighten into a hard gate once proven stable" — it proved unstable.)
 
       - name: Upload plugin artifact
         uses: actions/upload-artifact@v4
