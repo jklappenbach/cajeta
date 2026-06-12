@@ -209,6 +209,20 @@ antlr_target(CajetaGrammarParser ${CMAKE_SOURCE_DIR}/antlr4/CajetaParser.g4 PARS
 include_directories(${ANTLR_CajetaGrammarLexer_OUTPUT_DIR})
 include_directories(${ANTLR_CajetaGrammarParser_OUTPUT_DIR})
 
+# Named global target standing in for "the ANTLR lexer/parser has been
+# generated". cajeta_lib lists the generated .cpp's as sources so it already
+# orders after generation, but OTHER targets that merely #include the generated
+# headers without compiling the sources (notably cajetadoc_core, which pulls in
+# CajetaParser.h) have no such ordering. Without an explicit dependency a
+# parallel build can compile those TUs before ANTLR writes the header, failing
+# intermittently with "CajetaParser.h: No such file or directory". The
+# dependency is wired up at the top-level CMakeLists (cajetadoc is configured
+# before src/, so the edge is added once both targets exist).
+add_custom_target(cajeta_antlr_generated
+        DEPENDS
+            ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
+            ${ANTLR_CajetaGrammarParser_CXX_OUTPUTS})
+
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 message(STATUS "Using LLVM includes at: ${LLVM_INCLUDE_DIRS}")
