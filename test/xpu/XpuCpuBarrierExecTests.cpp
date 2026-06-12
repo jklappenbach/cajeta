@@ -16,6 +16,7 @@
 //
 
 #include "gtest/gtest.h"
+#include "../PortableEnv.h"   // portable setenv/unsetenv on MinGW
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/compile/Compiler.h"
