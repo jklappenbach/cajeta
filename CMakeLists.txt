@@ -99,6 +99,15 @@ if(CAJETA_BUILD_CAJETADOC)
 endif()
 
 add_subdirectory(src)
+
+# cajetadoc_core (configured above, before src/) #includes the ANTLR-generated
+# CajetaParser.h but doesn't compile the generated sources, so it has no
+# build-order edge to the generation. Add it here, now that both targets exist,
+# so a parallel build can't race Ingest.cpp ahead of the generated header.
+if(TARGET cajetadoc_core AND TARGET cajeta_antlr_generated)
+    add_dependencies(cajetadoc_core cajeta_antlr_generated)
+endif()
+
 add_subdirectory(test)
 
 # Debugger / in-process JIT host sub-project test target. Separate executable
