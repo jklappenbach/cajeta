@@ -72,6 +72,13 @@ public class HttpClient {
     /** True once [`trustAnchor`](#trustAnchor) pinned an explicit anchor. */
     boolean hasTrustAnchor;
 
+    /**
+     * Maximum number of 3xx redirects [`get`](#get) follows before giving up
+     * and returning the last redirect response to the caller. Bounds redirect
+     * loops (`A → B → A …`).
+     */
+    public static final int32 MAX_REDIRECTS = 10;
+
     /** A client trusting the OS CA store (the default public-PKI path). */
     public HttpClient() {
         int8[] e = heap int8[0];
@@ -140,12 +147,63 @@ public class HttpClient {
 
     /**
      * `GET url` — parse `url` to a [`Uri`](../uri/Uri.cajeta), build the
-     * origin-form request (with `Host`), and [`send`](#send) it.
+     * origin-form request (with `Host`), and [`send`](#send) it, **following
+     * up to [`MAX_REDIRECTS`](#MAX_REDIRECTS) 3xx redirects** (NET-8.3). Each
+     * redirect's `Location` (absolute, or origin-relative `"/path"`) becomes
+     * the next GET target. This is required for real-world download URLs —
+     * e.g. GitHub `releases/.../download/...` 302s to a signed CDN URL. If the
+     * redirect limit is hit, or a 3xx arrives with no `Location`, the last
+     * response is returned as-is (the caller sees the 3xx status).
      */
     public #HttpResponse get(String url) {
-        Uri uri = Uri.parse(url);
-        HttpRequest req = HttpRequest.fromUri("GET", uri);
-        return this.send(uri, req);
+        String current = heap String(url.bytes, url.byteLength);
+        int32 hops = 0;
+        while (true) {
+            Uri uri = Uri.parse(current);
+            HttpRequest req = HttpRequest.fromUri("GET", uri);
+            HttpResponse resp = this.send(uri, req);
+            // Follow a 3xx with a Location while under the hop cap; otherwise
+            // hand the response (2xx, 4xx, or an unfollowable 3xx) back. All
+            // reads of `resp` happen here, before the single `return #resp`.
+            if (HttpClient.isRedirect(resp.status) && hops < HttpClient.MAX_REDIRECTS) {
+                String loc = resp.headers.get("Location");
+                if (loc != null) {
+                    String next = HttpClient.resolveRedirect(current, loc);
+                    current = #next;
+                    hops = hops + 1;
+                    continue;
+                }
+            }
+            return #resp;
+        }
+    }
+
+    /** True for the redirect status codes [`get`](#get) follows. */
+    static boolean isRedirect(int32 status) {
+        return status == 301 || status == 302 || status == 303
+            || status == 307 || status == 308;
+    }
+
+    /**
+     * Resolve a redirect `Location` against the URL it came from. An absolute
+     * `http(s)://…` target is taken verbatim; an origin-relative `"/path"` is
+     * rebased onto `base`'s scheme + authority. Other relative forms (rare in
+     * practice) are rebased onto the origin as well.
+     */
+    static #String resolveRedirect(String base, String loc) {
+        if (loc.startsWith("https://") || loc.startsWith("http://")) {
+            return heap String(loc.bytes, loc.byteLength);
+        }
+        Uri b = Uri.parse(base);
+        String origin = b.getScheme() + "://" + b.getHost();
+        int32 port = b.getPort();
+        if (port >= 0) {
+            origin = origin + ":" + port;
+        }
+        if (loc.startsWith("/")) {
+            return #(origin + loc);
+        }
+        return #(origin + "/" + loc);
     }
 
     // ----- transport wiring (static; no captured `this`) -------------------
