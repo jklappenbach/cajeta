@@ -108,7 +108,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                           const std::vector<llvm::Value*>& ntid,
                           const std::vector<llvm::Value*>& nctaid,
                           llvm::Module& hostModule,
-                          std::vector<llvm::BranchInst*>* workItemLatches,
+                          std::vector<llvm::UncondBrInst*>* workItemLatches,
                           llvm::Value* dynSharedBytes) {
     llvm::LLVMContext& ctx = wrapper->getContext();
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
@@ -199,8 +199,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             llvm::SmallVector<llvm::BasicBlock*, 4> exiting;
             L->getExitingBlocks(exiting);
             for (llvm::BasicBlock* xb : exiting)
-                if (auto* br = llvm::dyn_cast<llvm::BranchInst>(xb->getTerminator()))
-                    if (br->isConditional() && tainted.count(br->getCondition()))
+                if (auto* br = llvm::dyn_cast<llvm::CondBrInst>(xb->getTerminator()))
+                    if (tainted.count(br->getCondition()))
                         unsupported("a barrier in a loop with a work-item-"
                                     "dependent trip count (must be uniform)");
         }
@@ -421,7 +421,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 pterm->setSuccessor(s, ph); redirected = true;
             }
         if (!redirected) unsupported("region predecessor edge not found");
-        llvm::BranchInst::Create(zHd, ph);
+        llvm::UncondBrInst::Create(zHd, ph);
 
         llvm::IRBuilder<> zb(zHd);                              // tid.z loop
         auto* tz = zb.CreatePHI(i32, 2, "wi.tz");
@@ -458,7 +458,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             auto* term = bb->getTerminator();
             if (llvm::isa<llvm::ReturnInst>(term)) {
                 term->eraseFromParent();
-                llvm::BranchInst::Create(xLat, bb);
+                llvm::UncondBrInst::Create(xLat, bb);
             } else {
                 for (unsigned s = 0; s < term->getNumSuccessors(); ++s)
                     if (term->getSuccessor(s) == J.doneTarget)
