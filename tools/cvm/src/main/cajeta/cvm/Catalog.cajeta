@@ -1,0 +1,36 @@
+package cvm;
+
+import cajeta.lang.System;
+
+// Builds the URLs cvm fetches release metadata + binaries from. The catalog
+// is GitHub Releases: each release carries a self-describing `index.json`
+// asset (our schema, schemaVersion-gated) listing, per host triple, the
+// asset download URL + its SHA-256. cvm fetches ONE static asset — a CDN
+// redirect via the `releases/.../download/...` path, NOT the GitHub API —
+// so there's no rate limit and no coupling to GitHub's API JSON shape. The
+// release workflow generates each `index.json` (see release.yml).
+//
+// The base is overridable via $CVM_DIST_BASE (point it at a local mock or a
+// fork); it defaults to the canonical cajeta release base.
+public final class Catalog {
+
+    // The release-base URL, honoring $CVM_DIST_BASE for testing/forks.
+    public static #String base() {
+        String env = System.env.get("CVM_DIST_BASE");
+        if (env != null && !env.isEmpty()) {
+            return env + "";
+        }
+        return "https://github.com/jklappenbach/cajeta/releases";
+    }
+
+    // The manifest URL for a selector. `latest` uses GitHub's stable
+    // "latest release asset" path; a concrete version targets that release's
+    // tag directory (v<version>). Both resolve to a static `index.json`.
+    public static #String manifestUrl(String selector) {
+        String b = Catalog.base();
+        if (selector.equals("latest")) {
+            return b + "/latest/download/index.json";
+        }
+        return b + "/download/v" + selector + "/index.json";
+    }
+}

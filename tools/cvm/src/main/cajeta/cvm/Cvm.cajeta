@@ -75,10 +75,10 @@ public final class Cvm {
         return 1;
     }
 
-    // ── install <selector> ──────────────────────────────────────────
-    // Phase 1: resolve the selector against the release manifest, fetch
-    // the host-triple binary, verify its checksum, install under
-    // ~/.cajeta/versions/<ver>, and repoint the active shim.
+    // ── install [latest|<version>] ──────────────────────────────────
+    // Resolve the selector against the release manifest, fetch the
+    // host-triple binary, verify its checksum, install under
+    // ~/.cajeta/versions/<ver>, and make it the active toolchain.
     private static int32 install(String[] args) {
         String selector = "latest";
         if (args.count() > 2) {
@@ -92,10 +92,7 @@ public final class Cvm {
             return 1;
         }
 
-        System.stdout.println("cvm: would install cajeta '" + selector
-            + "' into " + Home.versionsDir(home));
-        notImplemented("install (manifest resolve + download + verify)");
-        return 2;
+        return Installer.install(home, selector);
     }
 
     // ── default <version> ───────────────────────────────────────────
