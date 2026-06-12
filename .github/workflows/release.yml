@@ -258,6 +258,7 @@ jobs:
             vim-common \
             libxxhash-dev \
             libssl-dev \
+            libcurl4-openssl-dev \
             rpm \
             file
 
@@ -396,6 +397,7 @@ jobs:
             mingw-w64-x86_64-glog
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-curl
             mingw-w64-x86_64-vulkan-headers
             vim
 
