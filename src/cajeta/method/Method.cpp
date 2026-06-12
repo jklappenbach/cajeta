@@ -367,18 +367,46 @@ namespace cajeta {
         // The forwarding wrapper IS this method's llvmFunction (in the emit
         // module); its runtime-symbol extern must be co-resident there.
         llvm::Module* lmod = getEmitModule()->getLlvmModule();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+
+        // Runtime-ABI coercion for 128-bit floats: the C runtime takes the raw
+        // bits of an fp128 as `__uint128_t` (LLVM i128), NOT as a C float128
+        // type — `__float128` isn't a portable spelling across our clang
+        // targets (it doesn't exist on aarch64, Linux or Apple), whereas i128
+        // is universal. So a fp128 @Native parameter forwards as a bitcast to
+        // i128 (e.g. Float128.hashBits -> __cajeta_hash_float128, whose C
+        // signature is `int64_t(__uint128_t)`). The bitcast preserves the bit
+        // pattern and the i128 calling convention matches the C definition;
+        // without it the JIT/AOT verifier rejects the call ("Call parameter
+        // type does not match function signature: fp128 vs i128").
+        auto* i128Ty = llvm::Type::getInt128Ty(ctx);
+        auto coerceTy = [&](llvm::Type* t) -> llvm::Type* {
+            return t->isFP128Ty() ? i128Ty : t;
+        };
+
+        // Build the runtime symbol's type from the wrapper's, mapping fp128
+        // params to i128 so the extern matches the C definition exactly.
+        std::vector<llvm::Type*> targetParams;
+        targetParams.reserve(llvmFunctionType->getNumParams());
+        for (llvm::Type* pt : llvmFunctionType->params()) {
+            targetParams.push_back(coerceTy(pt));
+        }
+        llvm::FunctionType* targetFnType = llvm::FunctionType::get(
+            llvmFunctionType->getReturnType(), targetParams,
+            llvmFunctionType->isVarArg());
+
         // Insert (or reuse) the extern declaration of the runtime symbol.
         llvm::Function* targetFn = lmod->getFunction(symbol);
         if (!targetFn) {
             targetFn = llvm::Function::Create(
-                llvmFunctionType,
+                targetFnType,
                 llvm::Function::ExternalLinkage,
                 symbol,
                 lmod);
         }
 
         llvmBasicBlock = llvm::BasicBlock::Create(
-            *module->getLlvmContext(), "entry", llvmFunction);
+            ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
 
         std::vector<llvm::Value*> args;
@@ -386,9 +414,14 @@ namespace cajeta {
         // @Native ABI convention: an `int8[]` (CajetaArray) argument is passed
         // as its HEADER pointer ({ i64 count, [N x i8] data }); the C bridge
         // skips the 8-byte length header itself (`hdr + 8`), as e.g.
-        // __cajeta_sha256_update does. So the forwarder passes args verbatim.
+        // __cajeta_sha256_update does. So the forwarder passes args verbatim,
+        // except fp128 -> i128 bitcast per the runtime-ABI note above.
         for (auto& arg : llvmFunction->args()) {
-            args.push_back(&arg);
+            if (arg.getType()->isFP128Ty()) {
+                args.push_back(b.CreateBitCast(&arg, i128Ty));
+            } else {
+                args.push_back(&arg);
+            }
         }
 
         if (llvmFunction->getReturnType()->isVoidTy()) {

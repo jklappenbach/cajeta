@@ -5603,7 +5603,9 @@ int64_t __cajeta_hash_float32(float value) {
 // type on aarch64 (Linux or Apple), which broke the runtime-bitcode compile on
 // every ARM target, whereas `__uint128_t` is supported everywhere. A caller
 // emits `bitcast fp128 -> i128` before the call; the hash is over the bits, so
-// it's identical. (Currently no codegen call site references this.)
+// it's identical. The bitcast is injected by Method::emitNativeForwardingBody
+// (fp128 @Native params forward as i128), so e.g. Float128.hashBits lowers to
+// a matching `call i64 @__cajeta_hash_float128(i128 ...)`.
 // float16/bfloat16 hash by widening to float64 (lossless, injective) and
 // reusing __cajeta_hash_float64, but float128 → float64 is *lossy*, so distinct
 // float128 values could collide and wrongly compare equal (Object.operator== is
