@@ -394,6 +394,20 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND CMAKE_SYSTEM_NAME STRE
 endif()
 if(APPLE)
     list(APPEND CAJETA_RT_FLAGS "-fno-emulated-tls")
+    # The fork's clang-23 is a vanilla LLVM build with no embedded macOS SDK,
+    # so <math.h> and the other system headers aren't on its default search
+    # path (Apple's own clang resolves these via xcrun). Point it at the
+    # active SDK explicitly, or the runtime-bitcode compile fails with
+    # "'math.h' file not found".
+    execute_process(
+            COMMAND xcrun --show-sdk-path
+            OUTPUT_VARIABLE CAJETA_MACOS_SDK
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+    if(CAJETA_MACOS_SDK)
+        list(APPEND CAJETA_RT_FLAGS "-isysroot" "${CAJETA_MACOS_SDK}")
+        message(STATUS "CAJETA_RT macOS SDK: ${CAJETA_MACOS_SDK}")
+    endif()
 endif()
 
 # cajeta_runtime.c is a single TU that `#include`s the per-subsystem native
