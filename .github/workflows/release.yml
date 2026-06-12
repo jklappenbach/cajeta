@@ -383,6 +383,10 @@ jobs:
           # No brew `llvm` here: macOS links the cajeta-spirv FORK toolchain
           # (fetched above, which sets LLVM_DIR), same as every other target —
           # stock LLVM lacks the fork-only SPIR-V intrinsics cajeta needs.
+          # coreutils provides `gtimeout`: macOS has no GNU `timeout`, which
+          # the test harness needs for its per-test wall-clock cap. Without it
+          # the harness falls back to running tests untimed (a hang could stall
+          # a worker), so install it to keep the timeout protection on macOS.
           brew install \
             cmake \
             ninja \
@@ -391,7 +395,8 @@ jobs:
             googletest \
             glog \
             zstd \
-            xxhash
+            xxhash \
+            coreutils
           # Apple's system clang doesn't know about the brew llvm headers/libs
           # unless we point CMake at the brew prefix explicitly.
           echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"
