@@ -596,10 +596,13 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    # `if: always()` so partial-matrix successes still publish what was
-    # built. Use `needs.build.result != 'cancelled'` to suppress publish
-    # on a user-initiated cancel.
-    if: always() && needs.build.result != 'cancelled'
+    # Publish ONLY when every build leg succeeded. A release is an all-or-
+    # nothing set — shipping a tag with a missing target (or, worse, marking
+    # it "latest" with only the IDE plugin because the compiler legs failed)
+    # is actively harmful: cvm would resolve a manifest with no/partial
+    # binaries. `needs.build.result == 'success'` is true only if all matrix
+    # legs passed; `always()` keeps this evaluable rather than auto-skipped.
+    if: always() && needs.build.result == 'success'
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -639,10 +642,19 @@ jobs:
           else
             REF="$V"
           fi
+          # Pre-release detection: a semver pre-release suffix (the `-` in
+          # `v0.7.0-rc1`, `-beta1`, etc.) means this must NOT be marked the
+          # "latest" release. Computed explicitly rather than relying on the
+          # release action's auto-detection, which has proven unreliable.
+          case "$TAG" in
+            *-*) PRERELEASE="true" ;;
+            *)   PRERELEASE="false" ;;
+          esac
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "ref_version=$REF" >> "$GITHUB_OUTPUT"
           echo "release_name=$REL_NAME" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -694,15 +706,18 @@ jobs:
         # run page, 90-day default expiry), but no public Release or
         # git tag is created. That's the whole point of dry-run mode.
         #
-        # Pre-releases: softprops/action-gh-release auto-detects from
-        # the tag's semver — `v0.2.0-rc1` and similar suffixed tags
-        # land as pre-releases automatically, regular `v0.2.0` tags
-        # land as "latest". No explicit prerelease flag needed.
+        # Pre-releases: a `-`-suffixed semver tag (`v0.7.0-rc1`) is marked
+        # prerelease and explicitly kept off "latest" via make_latest. We set
+        # both flags explicitly (steps.params.outputs.prerelease) rather than
+        # trusting the action's auto-detection, which published a `-rc1` tag
+        # as "latest" in practice.
         if: steps.params.outputs.mode != 'dry-run'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.params.outputs.tag }}
           name: ${{ steps.params.outputs.release_name }}
+          prerelease: ${{ steps.params.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.params.outputs.prerelease != 'true' }}
           body: |
             Automated release of cajeta `${{ steps.params.outputs.tag }}`.
 
