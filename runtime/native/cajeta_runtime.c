@@ -77,6 +77,7 @@ static char** backtrace_symbols(void* const* buf, int n) { (void) buf; (void) n;
 #define realpath(in, _ignored) _fullpath(NULL, (in), 0)
 #else
 #include <execinfo.h>
+#include <sys/utsname.h>   // uname() for the host-triple system property
 #define cajeta_mkdir(path, mode) mkdir(path, mode)
 #endif
 
@@ -6567,6 +6568,38 @@ void __cajeta_property_install(const char* keyEqValue) {
     key[keyLen] = '\0';
     __cajeta_property_set(key, eq + 1);
     free(key);
+}
+
+// Publish the host's release target triple as the `cajeta.host.triple`
+// system property at startup, so programs (notably cvm, the version
+// manager) can pick the matching release asset WITHOUT a build-time -D or
+// a process exec. POSIX maps uname's machine+sysname into the release
+// triple vocabulary; Windows is fixed to the single supported MinGW
+// target. Unknown arch/OS leaves the property unset (the reader degrades
+// to "unknown host" rather than a wrong guess). Runs as a startup
+// constructor — placed after __cajeta_property_set so no forward decl is
+// needed; main() runs after every constructor, so the property is set by
+// the time any user code reads it.
+__attribute__((constructor))
+static void __cajeta_install_host_triple(void) {
+#if defined(_WIN32)
+    __cajeta_property_set("cajeta.host.triple", "x86_64-w64-mingw32");
+#else
+    struct utsname u;
+    if (uname(&u) != 0) return;
+    const char* os = NULL;
+    if (strcmp(u.sysname, "Linux") == 0)       os = "linux-gnu";
+    else if (strcmp(u.sysname, "Darwin") == 0) os = "apple-darwin";
+    if (!os) return;
+    const char* arch = NULL;
+    if (strcmp(u.machine, "x86_64") == 0)      arch = "x86_64";
+    else if (strcmp(u.machine, "aarch64") == 0
+          || strcmp(u.machine, "arm64") == 0)  arch = "aarch64";
+    if (!arch) return;
+    char triple[64];
+    snprintf(triple, sizeof(triple), "%s-%s", arch, os);
+    __cajeta_property_set("cajeta.host.triple", triple);
+#endif
 }
 
 // ---------------------------------------------------------------------------
