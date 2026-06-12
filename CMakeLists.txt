@@ -6,7 +6,19 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.25 FATAL_ERROR)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" CAJETA_VERSION)
 string(STRIP "${CAJETA_VERSION}" CAJETA_VERSION)
 
-project(cajeta VERSION ${CAJETA_VERSION})
+# CAJETA_VERSION is the full, human-facing version string and may carry a
+# semver pre-release suffix (e.g. "0.7.0-rc1") — that's what gets baked into
+# `cajeta --version` and used for asset/package naming. CMake's project(VERSION)
+# however only accepts a numeric dotted form (<major>[.<minor>[.<patch>]]); a
+# "-rc1" suffix makes configure fail outright. Strip the suffix for project()
+# only, so pre-release tags (a documented release path) configure cleanly while
+# the binary still reports the true pre-release version.
+string(REGEX MATCH "^[0-9]+(\\.[0-9]+)*" CAJETA_VERSION_NUMERIC "${CAJETA_VERSION}")
+if(NOT CAJETA_VERSION_NUMERIC)
+    message(FATAL_ERROR "VERSION file '${CAJETA_VERSION}' has no numeric version prefix")
+endif()
+
+project(cajeta VERSION ${CAJETA_VERSION_NUMERIC})
 
 cmake_policy(SET CMP0135 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
