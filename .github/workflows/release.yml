@@ -452,6 +452,17 @@ jobs:
       # __emutls_get_address on macOS arm64) that don't affect AOT releases.
       # Known issues are tracked separately; gating the release on them would
       # be too tight a contract for v0.x.
+      # TEMP diagnostic: the sharded release runner suppresses per-test stderr
+      # (only the summary is echoed). Run a single trivial JIT test directly
+      # with full output so the actual JIT/runtime-link error surfaces in the
+      # job log. Non-fatal; remove once the all-platform gate is green.
+      - name: JIT diagnostic (single test, full output)
+        if: matrix.target == 'x86_64-linux-gnu'
+        continue-on-error: true
+        run: |
+          set -x
+          ./build/test/cajeta_test --gtest_filter='BinaryOpTests.intSubtract' 2>&1 | tail -80
+
       - name: Run release tests
         continue-on-error: ${{ matrix.target != 'x86_64-linux-gnu' }}
         run: NO_BUILD=1 ./release_tests.sh
