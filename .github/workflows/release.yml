@@ -244,9 +244,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # Mirror setup.sh's install_linux_apt list, MINUS LLVM (provisioned
-          # separately below: the fork toolchain on x86_64-linux-gnu, distro
-          # LLVM 22 on the other legs).
+          # Mirror setup.sh's install_linux_apt list, MINUS LLVM — every leg
+          # fetches the cajeta-llvm fork toolchain below (no distro LLVM).
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             cmake \
             ninja-build \
@@ -262,18 +261,70 @@ jobs:
             rpm \
             file
 
-      # x86_64-linux-gnu consumes the prebuilt fork toolchain (LLVM 23 + clang +
-      # lld) carrying the SPV_KHR_ray_query patches — see plans/c0/. This is the
-      # ONLY toolchain that can lower ray query; distro LLVM 22 cannot (and cajeta
-      # now references fork-only intrinsic enums, so it wouldn't even build against
-      # 22). Other Linux legs fall through to distro LLVM until their fork artifact
-      # is built (expand the gate as fork-build-llvm.yml adds host legs).
+      # ---- Windows: MSYS2 / MinGW-w64 (set up BEFORE the fetch) ----------
+      #
+      # MSYS2's mingw-w64 environment provides a near-POSIX surface on
+      # Windows (winpthreads, libucontext, etc.) so the Unix-style cajeta
+      # runtime compiles with minimal conditionals. Produces a native PE
+      # binary (no cygwin1.dll dependency); the toolchain triple is
+      # x86_64-w64-mingw32.
+      #
+      # This leg's default shell is `msys2 {0}` (defaults.run.shell ->
+      # matrix.shell), so MSYS2 MUST be installed before any `run:` step that
+      # uses it — including the toolchain fetch below, which needs curl/zstd/
+      # tar from the MSYS2 environment. (On Linux/macOS these setup steps are
+      # skipped and the fetch runs in plain bash.)
+      #
+      # Java is installed via actions/setup-java rather than pacman — MSYS2's
+      # Java packaging is inconsistent (mingw-w64-x86_64-jre / -jdk-openjdk
+      # don't exist). setup-java works across all platforms and adds java to
+      # PATH so MSYS2's bash inherits it.
+      - name: Setup Java (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          path-type: inherit  # inherit Windows PATH so `java` from setup-java is visible
+          # NO mingw llvm/lld/clang here: this leg links the cajeta-llvm FORK
+          # (fetched below), and a second stock LLVM 22 on PATH/in the lib search
+          # dirs would mis-resolve at link (the runbook's "two LLVMs" trap — cajeta
+          # links lldELF/lldCommon + libLLVM*, which must ALL be the fork's v23).
+          # cajeta's C++ is compiled by mingw `c++` (g++), so install gcc explicitly
+          # (previously pulled transitively by the clang package). The runtime-bitcode
+          # `clang` and in-process `lld` both come from the fork tree on PATH.
+          # vulkan-headers: <vulkan/vulkan.h> for the runtime's Vulkan compute
+          # path (the loader vulkan-1.dll is dlopen'd at run time, no link dep).
+          # tar: used (with zstd) to unpack the fork toolchain in the fetch step.
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-antlr4-runtime-cpp
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-xxhash
+            mingw-w64-x86_64-glog
+            mingw-w64-x86_64-gtest
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-curl
+            mingw-w64-x86_64-vulkan-headers
+            tar
+            vim
+
+      # EVERY target links the cajeta-llvm FORK toolchain (LLVM 23 + clang +
+      # lld) carrying the SPIR-V / SPV_KHR_ray_query patches — see plans/c0/.
+      # Stock distro/brew/mingw LLVM can't build a correct cajeta (it now
+      # references fork-only intrinsic enums), so there is NO fallback: the
+      # fork publishes one toolchain per target (build-cajeta-llvm.yml) and
+      # each leg fetches the asset matching its host.
       - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
-        # EVERY target links the fork toolchain — cajeta's SPIR-V codegen
-        # references fork-only intrinsic enums that stock distro/brew LLVM lacks,
-        # so a non-fork LLVM can't build a correct cajeta. The fork publishes one
-        # toolchain per target (build-cajeta-llvm.yml); there is no distro/brew
-        # fallback.
         env:
           # Bump when re-cutting the toolchain (new pinned base or new SPIR-V
           # patches). r4 is the first release that publishes ALL four targets
@@ -294,11 +345,25 @@ jobs:
           esac
           ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
           URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
-          mkdir -p "$HOME/cajeta-llvm"
-          curl -fsSL "$URL" -o /tmp/llvm.tar.zst
-          tar --zstd -xf /tmp/llvm.tar.zst -C "$HOME/cajeta-llvm" --strip-components=1
-          echo "LLVM_DIR=$HOME/cajeta-llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
-          echo "$HOME/cajeta-llvm/bin" >> "$GITHUB_PATH"
+          DEST="$HOME/cajeta-llvm"
+          mkdir -p "$DEST"
+          # Bare relative filename: resolves in $CWD (the workspace) for BOTH
+          # msys2's tools and the native mingw curl/zstd — avoids the MSYS
+          # '/tmp' -> 'C:\tmp' translation trap when a native binary gets the path.
+          curl -fsSL "$URL" -o llvm.tar.zst
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # mingw GNU tar's --zstd plugin lookup is unreliable; pipe zstd
+            # explicitly (msys tar just reads the plain tarstream from stdin).
+            # A native (mingw) CMake later can't resolve an MSYS '/home/...'
+            # mount path, so emit LLVM_DIR / PATH in Windows (C:/ and C:\) form.
+            zstd -dc llvm.tar.zst | tar -x -C "$DEST" --strip-components=1
+            echo "LLVM_DIR=$(cygpath -m "$DEST")/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "$(cygpath -w "$DEST")\\bin" >> "$GITHUB_PATH"
+          else
+            tar --zstd -xf llvm.tar.zst -C "$DEST" --strip-components=1
+            echo "LLVM_DIR=$DEST/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "$DEST/bin" >> "$GITHUB_PATH"
+          fi
 
       # ---- macOS dependency install (brew) ------------------------------
       - name: Install dependencies (macOS)
@@ -324,57 +389,6 @@ jobs:
           # Apple's system clang doesn't know about the brew llvm headers/libs
           # unless we point CMake at the brew prefix explicitly.
           echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"
-
-      # ---- Windows: MSYS2 / MinGW-w64 ----------------------------------
-      #
-      # MSYS2's mingw-w64 environment provides a near-POSIX surface on
-      # Windows (winpthreads, libucontext, etc.) so the Unix-style cajeta
-      # runtime compiles with minimal conditionals. All deps land via
-      # pacman — no LLVM tarball, no vcpkg-from-source, no MSVC env, no
-      # diaguids hack. Produces a native PE binary (no cygwin1.dll
-      # runtime dependency); the toolchain triple is x86_64-w64-mingw32.
-      #
-      # Java is installed via actions/setup-java rather than pacman —
-      # MSYS2's Java packaging is inconsistent (both mingw-w64-x86_64-jre
-      # and mingw-w64-x86_64-jdk-openjdk don't exist). setup-java works
-      # reliably across all platforms and adds java to PATH so MSYS2's
-      # bash inherits it.
-      - name: Setup Java (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Setup MSYS2 (Windows)
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: false
-          path-type: inherit  # inherit Windows PATH so `java` from setup-java is visible
-          # NO mingw llvm/lld/clang here: this leg links the cajeta-llvm FORK
-          # (fetched below), and a second stock LLVM 22 on PATH/in the lib search
-          # dirs would mis-resolve at link (the runbook's "two LLVMs" trap — cajeta
-          # links lldELF/lldCommon + libLLVM*, which must ALL be the fork's v23).
-          # cajeta's C++ is compiled by mingw `c++` (g++), so install gcc explicitly
-          # (previously pulled transitively by the clang package). The runtime-bitcode
-          # `clang` and in-process `lld` both come from the fork tree on PATH.
-          # vulkan-headers: <vulkan/vulkan.h> for the runtime's Vulkan compute
-          # path (the loader vulkan-1.dll is dlopen'd at run time, no link dep).
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-antlr4-runtime-cpp
-            mingw-w64-x86_64-zstd
-            mingw-w64-x86_64-xxhash
-            mingw-w64-x86_64-glog
-            mingw-w64-x86_64-gtest
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-curl
-            mingw-w64-x86_64-vulkan-headers
-            vim
 
       # ---- Fetch the prebuilt IDE plugin for embedding ------------------
       # The `plugin` job built Cajeta's IDEA plugin once; drop its zip where
