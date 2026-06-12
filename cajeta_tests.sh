@@ -200,6 +200,23 @@ fi
 # per-shard cap — a worker runs until its whole bucket is exhausted.
 TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 
+# Portable per-test timeout wrapper. GNU coreutils `timeout` is standard on
+# Linux and MSYS2 but ABSENT on macOS (where coreutils, if brew-installed,
+# ships it as `gtimeout`). Without this detection every test invocation on
+# macOS failed with exit 127 ("timeout: command not found") and was recorded
+# as a crash — silently, because the macOS release-test step is non-fatal.
+# Prefer `timeout`, fall back to `gtimeout`, and as a last resort run the test
+# directly (no timeout — a hung test could stall its worker, but coverage is
+# far more valuable than losing it entirely to a missing wrapper).
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="gtimeout"
+else
+    TIMEOUT_CMD=""
+    echo ">> WARNING: no 'timeout'/'gtimeout' found — running tests without a per-test timeout." >&2
+fi
+
 # Enumerate tests. gtest emits one line per suite ending in `.`, then indented
 # test names. Format example:
 #     BinaryOpTests.
@@ -304,11 +321,18 @@ for ((s=0; s<shards; s++)); do
         tf="$tmpdir/t_${s}.out"
         while IFS= read -r t; do
             [ -z "$t" ] && continue
-            timeout --kill-after=10 "$TEST_TIMEOUT" \
+            if [ -n "$TIMEOUT_CMD" ]; then
+                "$TIMEOUT_CMD" --kill-after=10 "$TEST_TIMEOUT" \
+                    env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+                    "--gtest_filter=$t" \
+                    "$shard_brief" \
+                    > "$tf" 2>&1
+            else
                 env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-                "--gtest_filter=$t" \
-                "$shard_brief" \
-                > "$tf" 2>&1
+                    "--gtest_filter=$t" \
+                    "$shard_brief" \
+                    > "$tf" 2>&1
+            fi
             trc=$?
             cat "$tf" >> "$out_file"
             if [ "$trc" -ne 0 ]; then
