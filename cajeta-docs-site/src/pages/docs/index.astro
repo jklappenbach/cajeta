@@ -1,0 +1,88 @@
+---
+import { getCollection } from 'astro:content';
+import Layout from '~/layouts/PageLayout.astro';
+import HeroText from '~/components/widgets/HeroText.astro';
+import Features2 from '~/components/widgets/Features2.astro';
+import { getPermalink } from '~/utils/permalinks';
+import { docTitle, docDescription, docCategory } from '~/utils/docs';
+
+// Every doc is sourced live from the canonical `docs/` tree (the `docs`
+// content collection). Title/description/category are derived — see
+// src/utils/docs.ts.
+const entries = await getCollection('docs');
+const docs = entries.map((entry) => ({
+  slug: entry.id,
+  title: docTitle(entry),
+  description: docDescription(entry),
+  category: docCategory(entry),
+}));
+
+const CATEGORY_ORDER = ['Core', 'Stdlib', 'GPU', 'Specs', 'Status'];
+
+const CATEGORY_META: Record<string, { tagline: string; subtitle: string; icon: string }> = {
+  Core: {
+    tagline: 'Core language & toolchain',
+    subtitle: 'Type system, memory model, templates, concurrency, the compiler, and the build tool.',
+    icon: 'tabler:code',
+  },
+  Stdlib: {
+    tagline: 'Standard library',
+    subtitle: 'Collections, streams, lang, I/O, networking, codecs, reflection, annotations.',
+    icon: 'tabler:package',
+  },
+  GPU: {
+    tagline: 'GPU / compute (XPU)',
+    subtitle: 'The four-backend kernel path, value types, atomics, wave ops, ray query, graphics.',
+    icon: 'tabler:cpu',
+  },
+  Specs: {
+    tagline: 'Tooling specs',
+    subtitle: 'Versioned manifest, lockfile, capability, and registry-protocol contracts.',
+    icon: 'tabler:file-text',
+  },
+  Status: {
+    tagline: 'Implementation status',
+    subtitle: 'Point-in-time rollout snapshots.',
+    icon: 'tabler:progress',
+  },
+};
+
+const grouped = CATEGORY_ORDER.map((cat) => ({
+  category: cat,
+  items: docs.filter((d) => d.category === cat).sort((a, b) => a.title.localeCompare(b.title)),
+})).filter((g) => g.items.length > 0);
+
+const metadata = {
+  title: 'Documentation',
+  description: 'Cajeta language, standard library, GPU, and toolchain documentation.',
+};
+---
+
+<Layout metadata={metadata}>
+  <HeroText
+    tagline="Cajeta documentation"
+    title="The Cajeta language, library, and toolchain"
+    subtitle="Specifications and implementation notes for the Cajeta compiler — a hybrid Java/C++/Rust-style language with a single-owner memory model, AoT aspect weaving, and a high-throughput async runtime. Rendered directly from the repository's docs/ tree."
+  />
+
+  {
+    grouped.map(({ category, items }) => (
+      <Features2
+        id={category.toLowerCase()}
+        tagline={CATEGORY_META[category].tagline}
+        title={category}
+        subtitle={CATEGORY_META[category].subtitle}
+        columns={2}
+        items={items.map((d) => ({
+          title: d.title,
+          description: d.description,
+          icon: CATEGORY_META[category].icon,
+          callToAction: {
+            text: 'Read',
+            href: getPermalink(`/docs/${d.slug}`),
+          },
+        }))}
+      />
+    ))
+  }
+</Layout>

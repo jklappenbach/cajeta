@@ -1,0 +1,69 @@
+{
+  "name": "@onwidget/astrowind",
+  "version": "1.0.0-beta.62",
+  "description": "AstroWind: A free template using Astro 6 and Tailwind CSS v4. Astro starter theme.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "check": "npm run check:astro && npm run check:eslint && npm run check:prettier",
+    "check:astro": "astro check",
+    "check:eslint": "eslint .",
+    "check:prettier": "prettier --check .",
+    "fix": "npm run fix:eslint && npm run fix:prettier",
+    "fix:eslint": "eslint --fix .",
+    "fix:prettier": "prettier -w ."
+  },
+  "dependencies": {
+    "@astrojs/rss": "^4.0.18",
+    "@astrojs/sitemap": "^3.7.2",
+    "@fontsource-variable/inter": "^5.2.8",
+    "astro": "^6.3.1",
+    "astro-embed": "^0.13.0",
+    "astro-icon": "^1.1.5",
+    "astro-seo": "^1.1.0",
+    "limax": "4.1.0",
+    "lodash.merge": "^4.6.2",
+    "unpic": "^4.2.2"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "@astrojs/mdx": "^5.0.4",
+    "@astrojs/partytown": "^2.1.7",
+    "@eslint/js": "^10.0.1",
+    "@iconify-json/flat-color-icons": "^1.2.1",
+    "@iconify-json/tabler": "^1.2.20",
+    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/lodash.merge": "^4.6.9",
+    "@types/mdx": "^2.0.13",
+    "@typescript-eslint/eslint-plugin": "^8.59.2",
+    "@typescript-eslint/parser": "^8.59.2",
+    "astro-compress": "^2.4.1",
+    "astro-eslint-parser": "^1.4.0",
+    "eslint": "^10.3.0",
+    "eslint-plugin-astro": "^1.7.0",
+    "globals": "^17.6.0",
+    "js-yaml": "^4.1.0",
+    "mdast-util-to-string": "^4.0.0",
+    "prettier": "^3.8.3",
+    "prettier-plugin-astro": "^0.14.1",
+    "reading-time": "^1.5.0",
+    "sharp": "0.34.5",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.59.2"
+  },
+  "overrides": {
+    "yaml": ">=2.8.3"
+  }
+}
