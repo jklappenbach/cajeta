@@ -10,22 +10,48 @@
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <filesystem>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+
+// Windows opens text-mode by default, translating \n<->\r\n and corrupting the
+// byte counts these round-trip tests assert; force binary like the cajeta
+// runtime does. No-op on POSIX (open has no O_BINARY).
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
 using cajeta_test::CajetaJit;
 
 namespace {
 
+// Portable temp root. Prefer $TEST_TMPDIR (CI override); else the OS temp dir
+// (std::filesystem honors %TEMP%/%TMP% on Windows, $TMPDIR or /tmp on POSIX —
+// a hard-coded "/tmp" doesn't exist on Windows, which failed every FileIoTest
+// there at open()=-1). Backslashes are normalized to '/': this path is embedded
+// verbatim into cajeta SOURCE string literals (File.openRead("...")) where '\'
+// would start an escape sequence, and '/' is accepted by both the OS and
+// cajeta's open().
 const char* tmpRoot() {
-    const char* r = std::getenv("TEST_TMPDIR");
-    return r && *r ? r : "/tmp";
+    static const std::string root = [] {
+        std::string p;
+        if (const char* r = std::getenv("TEST_TMPDIR"); r && *r) {
+            p = r;
+        } else {
+            p = std::filesystem::temp_directory_path().string();
+        }
+        std::replace(p.begin(), p.end(), '\\', '/');
+        while (p.size() > 1 && p.back() == '/') p.pop_back();
+        return p;
+    }();
+    return root.c_str();
 }
 
 std::string uniquePath(const std::string& name) {
@@ -38,7 +64,7 @@ std::string uniquePath(const std::string& name) {
 }
 
 void writeRaw(const std::string& path, const std::string& content) {
-    int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     ASSERT_GE(fd, 0) << "open(" << path << ") failed";
     ssize_t n = ::write(fd, content.data(), content.size());
     ASSERT_EQ((size_t) n, content.size());
@@ -46,7 +72,7 @@ void writeRaw(const std::string& path, const std::string& content) {
 }
 
 std::string readRaw(const std::string& path) {
-    int fd = ::open(path.c_str(), O_RDONLY);
+    int fd = ::open(path.c_str(), O_RDONLY | O_BINARY);
     if (fd < 0) return std::string();
     std::string out;
     char buf[1024];

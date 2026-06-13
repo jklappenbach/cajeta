@@ -367,18 +367,48 @@ namespace cajeta {
         // The forwarding wrapper IS this method's llvmFunction (in the emit
         // module); its runtime-symbol extern must be co-resident there.
         llvm::Module* lmod = getEmitModule()->getLlvmModule();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+
+        // Runtime-ABI coercion for 128-bit floats: a fp128 @Native parameter is
+        // forwarded BY POINTER — the wrapper stores the fp128 to a stack slot
+        // and passes its address; the C runtime reads 16 bytes from it (e.g.
+        // Float128.hashBits -> __cajeta_hash_float128(const void*)). Earlier
+        // this passed the bits as i128 by value (bitcast fp128 -> i128), which
+        // matched the C `__uint128_t` param on x86-64/AArch64 — but NOT on
+        // Win64 (mingw), where clang lowers a 128-bit integer param INDIRECTLY
+        // (`i64(ptr dead_on_return)`). The i128-by-value call then mismatched
+        // the embedded definition and JIT-verify rejected the whole module on
+        // Windows ("Call parameter type does not match function signature"),
+        // failing every test. Passing by pointer is `i64(ptr)` uniformly. (We
+        // never spell the C float128 type — it doesn't exist on aarch64.)
+        auto* ptrTy = llvm::PointerType::get(ctx, 0);
+        auto coerceTy = [&](llvm::Type* t) -> llvm::Type* {
+            return t->isFP128Ty() ? ptrTy : t;
+        };
+
+        // Build the runtime symbol's type from the wrapper's, mapping fp128
+        // params to i128 so the extern matches the C definition exactly.
+        std::vector<llvm::Type*> targetParams;
+        targetParams.reserve(llvmFunctionType->getNumParams());
+        for (llvm::Type* pt : llvmFunctionType->params()) {
+            targetParams.push_back(coerceTy(pt));
+        }
+        llvm::FunctionType* targetFnType = llvm::FunctionType::get(
+            llvmFunctionType->getReturnType(), targetParams,
+            llvmFunctionType->isVarArg());
+
         // Insert (or reuse) the extern declaration of the runtime symbol.
         llvm::Function* targetFn = lmod->getFunction(symbol);
         if (!targetFn) {
             targetFn = llvm::Function::Create(
-                llvmFunctionType,
+                targetFnType,
                 llvm::Function::ExternalLinkage,
                 symbol,
                 lmod);
         }
 
         llvmBasicBlock = llvm::BasicBlock::Create(
-            *module->getLlvmContext(), "entry", llvmFunction);
+            ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
 
         std::vector<llvm::Value*> args;
@@ -386,9 +416,19 @@ namespace cajeta {
         // @Native ABI convention: an `int8[]` (CajetaArray) argument is passed
         // as its HEADER pointer ({ i64 count, [N x i8] data }); the C bridge
         // skips the 8-byte length header itself (`hdr + 8`), as e.g.
-        // __cajeta_sha256_update does. So the forwarder passes args verbatim.
+        // __cajeta_sha256_update does. So the forwarder passes args verbatim,
+        // except fp128 -> spill-to-stack-slot + pass pointer per the runtime-ABI
+        // note above.
         for (auto& arg : llvmFunction->args()) {
-            args.push_back(&arg);
+            if (arg.getType()->isFP128Ty()) {
+                // Spill the fp128 to a stack slot and pass its address. The
+                // store is a plain 16-byte move (no soft-float helper).
+                llvm::Value* slot = b.CreateAlloca(arg.getType());
+                b.CreateStore(&arg, slot);
+                args.push_back(slot);
+            } else {
+                args.push_back(&arg);
+            }
         }
 
         if (llvmFunction->getReturnType()->isVoidTy()) {

@@ -10,9 +10,11 @@
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <unistd.h>
 
@@ -20,9 +22,23 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
+// Portable temp root. Prefer $TEST_TMPDIR (CI override); else the OS temp dir.
+// A hard-coded "/tmp" doesn't exist on Windows, which crashed the file-backed
+// B+tree tests there. Backslashes normalized to '/' since this path is embedded
+// verbatim into cajeta source string literals. See FileIoTests.cpp tmpRoot.
 const char* tmpRoot() {
-    const char* r = std::getenv("TEST_TMPDIR");
-    return r && *r ? r : "/tmp";
+    static const std::string root = [] {
+        std::string p;
+        if (const char* r = std::getenv("TEST_TMPDIR"); r && *r) {
+            p = r;
+        } else {
+            p = std::filesystem::temp_directory_path().string();
+        }
+        std::replace(p.begin(), p.end(), '\\', '/');
+        while (p.size() > 1 && p.back() == '/') p.pop_back();
+        return p;
+    }();
+    return root.c_str();
 }
 
 std::string uniquePath(const std::string& name) {

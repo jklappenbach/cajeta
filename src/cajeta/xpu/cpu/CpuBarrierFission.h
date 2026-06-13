@@ -28,7 +28,7 @@ namespace llvm {
     class Function;
     class Module;
     class Value;
-    class BranchInst;
+    class UncondBrInst;
 }
 
 namespace cajeta {
@@ -55,7 +55,7 @@ namespace cpu {
                               const std::vector<llvm::Value*>& ntid,
                               const std::vector<llvm::Value*>& nctaid,
                               llvm::Module& hostModule,
-                              std::vector<llvm::BranchInst*>* workItemLatches
+                              std::vector<llvm::UncondBrInst*>* workItemLatches
                                   = nullptr,
                               llvm::Value* dynSharedBytes = nullptr);
 

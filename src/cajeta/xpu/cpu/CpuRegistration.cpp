@@ -329,7 +329,7 @@ unsigned rewriteWaveWidth(llvm::Function& f, unsigned W) {
 // Force `latch` (a work-item loop's back-edge branch) to vectorize at width W
 // via self-referential `!llvm.loop` metadata — so the forced VF equals the
 // variant's VF and LoopVectorize substitutes it.
-void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
+void forceLoopVectorWidth(llvm::UncondBrInst* latch, unsigned W) {
     llvm::LLVMContext& ctx = latch->getContext();
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     auto md = [&](const char* key, llvm::Constant* val) {
@@ -498,7 +498,7 @@ void foldWaveVariants(llvm::Function& f) {
             // wrapper directly; fission per region), so a multi-dim block runs on
             // either (2D/3D stage 4).
             if (usesBarrier(*linked)) {
-                std::vector<llvm::BranchInst*> wiLatches;
+                std::vector<llvm::UncondBrInst*> wiLatches;
                 try {
                     std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
                     std::vector<llvm::Value*> ntidV  = {ntidX,  ntidY,  ntidZ};
@@ -526,7 +526,7 @@ void foldWaveVariants(llvm::Function& f) {
                     waveKernel = setupWaveVariants(*wrapper, hostModule, waveW);
                     if (waveKernel) {
                         rewriteWaveWidth(*wrapper, waveW);
-                        for (llvm::BranchInst* latch : wiLatches)
+                        for (llvm::UncondBrInst* latch : wiLatches)
                             forceLoopVectorWidth(latch, waveW);
                     }
                 }
@@ -589,7 +589,7 @@ void foldWaveVariants(llvm::Function& f) {
             kArgs.push_back(nctaidX); kArgs.push_back(nctaidY); kArgs.push_back(nctaidZ);
             llvm::CallInst* kcall = b.CreateCall(linked, kArgs);
             tid->addIncoming(b.CreateAdd(tid, one, "tid.next"), wBody);
-            llvm::BranchInst* latchBr = b.CreateBr(wHead);   // inner (x) back-edge
+            llvm::UncondBrInst* latchBr = b.CreateBr(wHead);   // inner (x) back-edge
 
             b.SetInsertPoint(yLatch);
             ty->addIncoming(b.CreateAdd(ty, one, "tid.y.next"), yLatch);

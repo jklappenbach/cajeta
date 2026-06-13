@@ -4575,6 +4575,57 @@ namespace cajeta {
                 }
             }
 
+            // setExecutable() — chmod a+x on the file (preserving other
+            // bits), so a freshly written/downloaded binary becomes
+            // runnable. Runtime helper returns int32 0/-1; the cajeta
+            // signature is `boolean` (true on success).
+            if (methodCallName == "setExecutable" && parameters.empty()) {
+                llvm::Function* fn = module->getRuntimeFunction(
+                    "__cajeta_path_set_executable");
+                if (fn) {
+                    auto bd = loadBytesAndLen();
+                    llvm::Value* result = builder->CreateCall(fn,
+                        {bd.first, bd.second}, "path.setx");
+                    llvm::Value* ok = builder->CreateICmpEQ(result,
+                        llvm::ConstantInt::get(i32Ty, 0), "path.setx.ok");
+                    resolvedType = CajetaType::of("boolean");
+                    return ok;
+                }
+            }
+
+            // symlinkTo(Path target) — create `this` as a symlink pointing
+            // at `target` (ln -s target this). cvm repoints the active
+            // toolchain shim this way. `this` is the link location; the
+            // argument Path is the target. Runtime helper returns 0/-1.
+            if (methodCallName == "symlinkTo" && parameters.size() == 1) {
+                llvm::Function* fn = module->getRuntimeFunction(
+                    "__cajeta_path_symlink");
+                if (fn) {
+                    // Extract (data, len) from the argument Path the same
+                    // way loadBytesAndLen() does for `this`.
+                    llvm::Value* targetPtr = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Value* tBytesSlot = builder->CreateStructGEP(
+                        pathStructTy, targetPtr, 1, "tgt.bytes_slot");
+                    llvm::Value* tArrPtr = builder->CreateLoad(
+                        ptrTy, tBytesSlot, "tgt.arr");
+                    llvm::Value* tLen = builder->CreateLoad(
+                        i64Ty, tArrPtr, "tgt.len");
+                    llvm::Value* tData = builder->CreateInBoundsGEP(
+                        i8Ty, tArrPtr,
+                        llvm::ConstantInt::get(i64Ty, 8), "tgt.data");
+                    auto link = loadBytesAndLen();  // this = link location
+                    llvm::Value* result = builder->CreateCall(fn,
+                        {tData, tLen, link.first, link.second},
+                        "path.symlink");
+                    llvm::Value* ok = builder->CreateICmpEQ(result,
+                        llvm::ConstantInt::get(i32Ty, 0), "path.symlink.ok");
+                    resolvedType = CajetaType::of("boolean");
+                    return ok;
+                }
+            }
+
             // canonical() — returns a fresh Path wrapping the
             // realpath result. The runtime hands back a
             // CajetaArray header for the bytes; we wrap that in a

@@ -77,6 +77,7 @@ static char** backtrace_symbols(void* const* buf, int n) { (void) buf; (void) n;
 #define realpath(in, _ignored) _fullpath(NULL, (in), 0)
 #else
 #include <execinfo.h>
+#include <sys/utsname.h>   // uname() for the host-triple system property
 #define cajeta_mkdir(path, mode) mkdir(path, mode)
 #endif
 
@@ -800,6 +801,11 @@ void __cajeta_closure_drop(void* p) {
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#  include <bcrypt.h>   // BCryptGenRandom for cajeta_fill_entropy (Guid.random).
+                        // Must be at file scope (after windows.h): an in-body
+                        // #include doesn't declare it, and mingw ignores the
+                        // MSVC `#pragma comment(lib, ...)` — the bcrypt import
+                        // lib is linked from src/CMakeLists.txt instead.
 
 typedef struct {
     LPVOID fiber;                         // Windows fiber handle
@@ -863,6 +869,7 @@ static inline int __cajeta_w32_swapcontext(ucontext_t* from, ucontext_t* to) {
 
 #else
 #include <ucontext.h>
+#include <sys/mman.h>   // mmap/mprotect for guard-paged fiber stacks
 #endif
 #include <string.h>
 
@@ -894,15 +901,18 @@ static inline int __cajeta_swapcontext(ucontext_t* from, ucontext_t* to) {
 // Per-fiber stack size. A fiber runs arbitrary Cajeta code, which routinely
 // calls down into native C libraries (OpenSSL during a TLS handshake parses an
 // X.509 chain, runs ECDSA P-256, decodes ASN.1 — a call tree that alone wants
-// well over 64 KB of stack). The fiber stack is a plain `malloc` with NO guard
-// page, so an overflow does not fault cleanly — it silently scribbles over
-// adjacent heap and surfaces later as a SIGSEGV (full speed) or a wedged
-// scheduler (under a debugger, where the heap layout differs). 64 KB was enough
-// for the shallow channel/fan-out fibers the early tests exercised but far too
-// little for a fiber that drives a real native library; size it like a
-// conventional OS thread stack (1 MB) so any reasonable native call depth fits.
-// Overridable via $CAJETA_FIBER_STACK_KB for pathological depths or tight
-// memory budgets.
+// well over 64 KB of stack). 64 KB was enough for the shallow channel/fan-out
+// fibers the early tests exercised but far too little for a fiber that drives
+// a real native library; size it like a conventional OS thread stack (1 MB) so
+// any reasonable native call depth fits. Overridable via $CAJETA_FIBER_STACK_KB
+// for pathological depths or tight memory budgets.
+//
+// On POSIX the stack is an mmap'd region with a PROT_NONE guard page below it
+// (stacks grow down), so an overflow faults cleanly AT the overflow site
+// instead of silently scribbling over adjacent heap and surfacing later as
+// heap corruption far from the bug (see __cajeta_fiber_stack_alloc). On
+// Windows the Win32 fiber shim ignores this buffer entirely — CreateFiber
+// allocates its own stack with the OS's standard guard pages.
 #define CAJETA_FIBER_STACK_SIZE (1024 * 1024)
 
 // Resolve the per-fiber stack size once, honoring $CAJETA_FIBER_STACK_KB (a
@@ -922,6 +932,74 @@ static size_t __cajeta_fiber_stack_size(void) {
         cached = sz;
     }
     return cached;
+}
+
+// Allocate / free one fiber stack of __cajeta_fiber_stack_size() bytes.
+//
+// POSIX: an anonymous mmap of guard-page + stack, with the LOWEST page made
+// PROT_NONE — stacks grow down on every supported target, so an overflow hits
+// the guard and faults cleanly at the overflowing frame instead of corrupting
+// whatever the heap happened to place below the buffer. The returned pointer
+// is the USABLE base (just above the guard); ss_sp/ss_size wiring at the
+// call site is unchanged. The stack size is rounded up to a page multiple so
+// free can reconstruct the exact mapping from the cached size alone.
+//
+// Windows: plain malloc, as before — the Win32 fiber shim never uses this
+// buffer (CreateFiber allocates its own guarded stack); it exists only so the
+// fiber init/teardown paths stay uniform across platforms.
+//
+// Allocation failure aborts with a message (matches the prior malloc-fail
+// behavior): a program that cannot allocate a fiber stack cannot run its task.
+static size_t __cajeta_fiber_stack_alloc_size(void) {
+#if defined(_WIN32)
+    return __cajeta_fiber_stack_size();
+#else
+    static size_t cached = 0;
+    if (cached == 0) {
+        size_t page = (size_t) sysconf(_SC_PAGESIZE);
+        size_t sz = __cajeta_fiber_stack_size();
+        cached = (sz + page - 1) & ~(page - 1);   // round up to page multiple
+    }
+    return cached;
+#endif
+}
+
+static void* __cajeta_fiber_stack_alloc(void) {
+#if defined(_WIN32)
+    void* p = malloc(__cajeta_fiber_stack_alloc_size());
+    if (!p) {
+        fprintf(stderr, "cajeta: fiber stack malloc failed\n");
+        abort();
+    }
+    return p;
+#else
+    size_t page = (size_t) sysconf(_SC_PAGESIZE);
+    size_t size = __cajeta_fiber_stack_alloc_size();
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if defined(MAP_STACK)
+    flags |= MAP_STACK;   // advisory on Linux; tells the kernel it's a stack
+#endif
+    void* base = mmap(NULL, page + size, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (base == MAP_FAILED) {
+        fprintf(stderr, "cajeta: fiber stack mmap failed\n");
+        abort();
+    }
+    if (mprotect(base, page, PROT_NONE) != 0) {
+        fprintf(stderr, "cajeta: fiber stack guard mprotect failed\n");
+        abort();
+    }
+    return (char*) base + page;
+#endif
+}
+
+static void __cajeta_fiber_stack_free(void* stack) {
+    if (!stack) return;
+#if defined(_WIN32)
+    free(stack);
+#else
+    size_t page = (size_t) sysconf(_SC_PAGESIZE);
+    munmap((char*) stack - page, page + __cajeta_fiber_stack_alloc_size());
+#endif
 }
 
 typedef void (*cajeta_task_trampoline_fn)(void* arg);
@@ -1514,12 +1592,8 @@ static void* __cajeta_carrier_loop(void* arg) {
             // arch-dependently into the synthesized frame). v1 punts:
             // stealing is disabled below until the cross-carrier
             // uc_link handoff is solved at a deeper layer.
-            size_t stack_size = __cajeta_fiber_stack_size();
-            f->stack = malloc(stack_size);
-            if (!f->stack) {
-                fprintf(stderr, "cajeta: fiber stack malloc failed\n");
-                abort();
-            }
+            size_t stack_size = __cajeta_fiber_stack_alloc_size();
+            f->stack = __cajeta_fiber_stack_alloc();   // guard-paged on POSIX
             // First dispatch: this carrier becomes the fiber's home. From here
             // on the fiber's saved ucontext is bound to this carrier, so only
             // this carrier may resume it (steal/publish honor home_carrier).
@@ -1549,7 +1623,7 @@ static void* __cajeta_carrier_loop(void* arg) {
             // to avoid leaking one OS fiber + its stack per completed task.
             if (f->ctx.fiber) DeleteFiber(f->ctx.fiber);
 #endif
-            free(f->stack);
+            __cajeta_fiber_stack_free(f->stack);
             free(f);
         }
         // Parked fibers stay on __cajeta_parked_head awaiting a wake.
@@ -1616,7 +1690,7 @@ void __cajeta_task_shutdown(void) {
     for (struct cajeta_fiber* f = __cajeta_parked_head; f; ) {
         struct cajeta_fiber* nx = f->next;
         if (f->slot_ptr) *f->slot_ptr = NULL;
-        free(f->stack); free(f); f = nx;
+        __cajeta_fiber_stack_free(f->stack); free(f); f = nx;
     }
     __cajeta_parked_head = NULL;
     __cajeta_task_shutdown_requested = 0;
@@ -1807,6 +1881,23 @@ void __cajeta_task_complete(int32_t* done_addr) {
     // Phase 1 — flip the done flag, wake any main-thread awaiters, and
     // detach the parked list (under pool_mutex only).
     pthread_mutex_lock(&__cajeta_task_mutex);
+    // Null the Task's fiber slot BEFORE publishing done. The moment
+    // *done_addr = 1 becomes visible, the awaiter can return from
+    // __cajeta_task_wait and the Task can be dropped + freed — so the
+    // runtime must never touch Task memory after this point. The carrier's
+    // post-swap cleanup used to perform this null AFTER the done signal,
+    // and under CPU oversubscription (carrier preempted between the signal
+    // and the cleanup) that write landed in freed/recycled heap: the
+    // corrupted-size/SIGSEGV crashes the parallel suites hit under load.
+    // Doing it here, under the same mutex scope-cancel takes, preserves
+    // C2's invariant: a concurrent cancel sees the live fiber or NULL,
+    // never a dangling pointer. slot_ptr is also cleared on the fiber so
+    // the carrier's (now redundant) backstop null is a no-op.
+    struct cajeta_fiber* self = __cajeta_current_fiber;
+    if (self && self->slot_ptr) {
+        *self->slot_ptr = NULL;
+        self->slot_ptr = NULL;
+    }
     *done_addr = 1;
     pthread_cond_broadcast(&__cajeta_task_done_cond);
     struct cajeta_fiber* woken = __cajeta_drain_parked_locked();
@@ -3377,12 +3468,101 @@ void __cajeta_install_sigabrt_handler(void) {
 
 #endif
 
+// SIGSEGV / SIGBUS backtrace handler (POSIX). SIGABRT above catches glibc
+// heap-corruption aborts; a SIGSEGV/SIGBUS is the OTHER way a memory bug
+// surfaces — a wild pointer, a use-after-free deref, or a fiber-stack
+// overflow hitting the guard page (__cajeta_fiber_stack_alloc). Without a
+// handler those die silently with just "exit 139", which is exactly what the
+// parallel-stream crashes on aarch64 do — no location, no context. This
+// prints the faulting address, the running carrier/fiber, and a native
+// backtrace to stderr (captured per-test by KEEP_LOGS in CI), then re-raises
+// the default action so the process still dies with the right signal.
+//
+// Signal-safety: backtrace()/backtrace_symbols_fd() are async-signal-safe
+// (no malloc, write directly to the fd); the fprintf lines match the SIGABRT
+// handler's existing (accepted) practice. The handler runs on an alternate
+// stack (sigaltstack + SA_ONSTACK) so a stack-overflow fault — where the
+// normal stack is unusable — can still report.
+#if !defined(_WIN32)
+
+static struct sigaction __cajeta_prev_sigsegv;
+static struct sigaction __cajeta_prev_sigbus;
+
+static void __cajeta_segv_handler(int signo, siginfo_t* info, void* uctx) {
+    (void) uctx;
+    const char* name = (signo == SIGBUS) ? "SIGBUS" : "SIGSEGV";
+    fprintf(stderr, "\ncajeta: %s caught — fault addr %p\n",
+            name, info ? info->si_addr : NULL);
+    // Running context, if any. __cajeta_current_fiber / __cajeta_my_carrier
+    // are this TU's TLS; reading them here is best-effort diagnostic.
+    struct cajeta_carrier* c = __cajeta_my_carrier;
+    struct cajeta_fiber* f = __cajeta_current_fiber;
+    fprintf(stderr, "cajeta: carrier=%d fiber=%d\n",
+            c ? c->carrier_id : -1, f ? f->dbg_id : 0);
+    void* frames[64];
+    int n = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, n, 2 /*stderr*/);
+    // Dump the running thread's drop chain — its entries carry cajeta source
+    // tags (file:line of the owner being dropped). If the fault is mid-drop
+    // (a double-drop / freed-then-freed-again pointer, which the libc free
+    // frames in the aarch64 backtraces suggest), this names the cajeta-level
+    // objects in flight — the one piece of source-level context a JIT'd
+    // backtrace can't give.
+    __cajeta_dump_drop_chain();
+    // Chain to the previous handler, else restore default and re-raise so the
+    // process dies with the correct signal (and CI records exit 139/138).
+    struct sigaction* prev =
+        (signo == SIGBUS) ? &__cajeta_prev_sigbus : &__cajeta_prev_sigsegv;
+    if (prev->sa_flags & SA_SIGINFO) {
+        if (prev->sa_sigaction) { prev->sa_sigaction(signo, info, uctx); return; }
+    } else if (prev->sa_handler != SIG_DFL && prev->sa_handler != SIG_IGN
+               && prev->sa_handler != NULL) {
+        prev->sa_handler(signo); return;
+    }
+    signal(signo, SIG_DFL);
+    raise(signo);
+}
+
+void __cajeta_install_segv_handler(void) {
+    // Same "already installed?" guard as the SIGABRT path: each JIT module's
+    // runtime copy runs its own constructor, and chaining a handler whose code
+    // later unmaps would crash. The host's lifetime-stable static copy wins.
+    struct sigaction cur;
+    if (sigaction(SIGSEGV, NULL, &cur) == 0) {
+        bool already = (cur.sa_flags & SA_SIGINFO)
+            ? (cur.sa_sigaction != NULL)
+            : (cur.sa_handler != SIG_DFL && cur.sa_handler != SIG_IGN
+               && cur.sa_handler != NULL);
+        if (already) return;
+    }
+    // Alternate signal stack so a stack-overflow fault can still be reported.
+    // Fixed 64 KiB — SIGSTKSZ is no longer a compile-time constant on modern
+    // glibc, and 64 KiB comfortably covers backtrace()'s frame needs.
+    static char altstack[65536];
+    stack_t ss;
+    ss.ss_sp = altstack;
+    ss.ss_size = sizeof(altstack);
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);
+    struct sigaction sa;
+    sa.sa_sigaction = __cajeta_segv_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &__cajeta_prev_sigsegv);
+    sigaction(SIGBUS, &sa, &__cajeta_prev_sigbus);
+}
+
+#else
+void __cajeta_install_segv_handler(void) {}
+#endif
+
 // Auto-install at runtime load. Constructor runs before main(); the handler
 // is then armed for the program lifetime, including before any Cajeta code
 // has executed (so a stdlib-load-time abort is also caught).
 __attribute__((constructor))
 static void __cajeta_runtime_init(void) {
     __cajeta_install_sigabrt_handler();
+    __cajeta_install_segv_handler();
 }
 
 // Pop the topmost entry and run its drop function if still active. Caller
@@ -5597,7 +5777,19 @@ int64_t __cajeta_hash_float32(float value) {
     return (int64_t) splitmix64_finalize((uint64_t) bits ^ __cajeta_hash_seed_load());
 }
 
-// Bitwise hash of an IEEE-754 binary128 (LLVM fp128 / C __float128), plan W3.
+// Bitwise hash of an IEEE-754 binary128 (LLVM fp128), plan W3. Takes the raw
+// 128 bits BY POINTER (16 bytes at `value_ptr`), not by value. An earlier
+// version took `__uint128_t` by value, but that param's ABI is NOT uniform
+// across our targets: x86-64 SysV / AArch64 pass i128 in register pairs, but
+// the Win64 (mingw) ABI passes a 128-bit integer INDIRECTLY — clang lowers the
+// param to `i64(ptr dead_on_return)`. The compiler emitted the call as
+// `i64(i128)` (matching Linux/macOS), so on mingw the JIT-verify rejected the
+// embedded module ("Call parameter type does not match function signature") and
+// EVERY test failed. Passing by pointer makes the ABI `i64(ptr)` on all three
+// targets. Method::emitNativeForwardingBody stores the fp128 to a stack slot
+// and passes its address (a bitcast/store, no soft-float), so Float128.hashBits
+// lowers to a matching `call i64 @__cajeta_hash_float128(ptr ...)`. (`__float128`
+// isn't spellable on aarch64 anyway; we never name the C float type here.)
 // float16/bfloat16 hash by widening to float64 (lossless, injective) and
 // reusing __cajeta_hash_float64, but float128 → float64 is *lossy*, so distinct
 // float128 values could collide and wrongly compare equal (Object.operator== is
@@ -5605,9 +5797,9 @@ int64_t __cajeta_hash_float32(float value) {
 // (IEEE says +0 == -0) and mix both 64-bit halves through the shared SplitMix
 // finalizer. x86-64 is little-endian, so the sign bit is the MSB of the high
 // half (bits[15] & 0x80); -0.0 is sign-only with an all-zero significand/exp.
-int64_t __cajeta_hash_float128(__float128 value) {
+int64_t __cajeta_hash_float128(const void* value_ptr) {
     unsigned char bits[16];
-    memcpy(bits, &value, sizeof(bits));
+    memcpy(bits, value_ptr, sizeof(bits));
     int signOnly = (bits[15] == 0x80);
     for (int i = 0; i < 15 && signOnly; i++) if (bits[i]) signOnly = 0;
     if (signOnly) bits[15] = 0;            // -0.0 -> +0.0
@@ -5641,8 +5833,7 @@ int64_t __cajeta_hash_guid(int64_t hi, int64_t lo) {
 // is strong on every platform, not just where /dev/urandom exists.
 static void cajeta_fill_entropy(unsigned char* b, int n) {
 #if defined(_WIN32)
-#  include <bcrypt.h>
-#  pragma comment(lib, "bcrypt.lib")
+    // <bcrypt.h> is included at file scope (after windows.h); see note there.
     if (BCryptGenRandom(NULL, (PUCHAR) b, (ULONG) n,
             BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 /* STATUS_SUCCESS */) {
         return;
@@ -6569,6 +6760,38 @@ void __cajeta_property_install(const char* keyEqValue) {
     free(key);
 }
 
+// Publish the host's release target triple as the `cajeta.host.triple`
+// system property at startup, so programs (notably cvm, the version
+// manager) can pick the matching release asset WITHOUT a build-time -D or
+// a process exec. POSIX maps uname's machine+sysname into the release
+// triple vocabulary; Windows is fixed to the single supported MinGW
+// target. Unknown arch/OS leaves the property unset (the reader degrades
+// to "unknown host" rather than a wrong guess). Runs as a startup
+// constructor — placed after __cajeta_property_set so no forward decl is
+// needed; main() runs after every constructor, so the property is set by
+// the time any user code reads it.
+__attribute__((constructor))
+static void __cajeta_install_host_triple(void) {
+#if defined(_WIN32)
+    __cajeta_property_set("cajeta.host.triple", "x86_64-w64-mingw32");
+#else
+    struct utsname u;
+    if (uname(&u) != 0) return;
+    const char* os = NULL;
+    if (strcmp(u.sysname, "Linux") == 0)       os = "linux-gnu";
+    else if (strcmp(u.sysname, "Darwin") == 0) os = "apple-darwin";
+    if (!os) return;
+    const char* arch = NULL;
+    if (strcmp(u.machine, "x86_64") == 0)      arch = "x86_64";
+    else if (strcmp(u.machine, "aarch64") == 0
+          || strcmp(u.machine, "arm64") == 0)  arch = "aarch64";
+    if (!arch) return;
+    char triple[64];
+    snprintf(triple, sizeof(triple), "%s-%s", arch, os);
+    __cajeta_property_set("cajeta.host.triple", triple);
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // cajeta.io.file — Phase A runtime helpers.
 //
@@ -7067,6 +7290,50 @@ void* __cajeta_path_canonical(const char* bytes, int64_t length) {
     memcpy(((char*) hdr) + 8, canon, n);
     free(canon);
     return hdr;
+}
+
+// chmod a+x — add the executable bits (owner/group/other) to an existing
+// file, preserving its other permission bits (so a 0644 download becomes
+// 0755). Used by cvm to make a freshly written toolchain binary runnable.
+// Returns 0 on success, -1 on failure. Windows has no POSIX execute bit
+// (runnability is by file extension), so the shim succeeds as a no-op.
+int32_t __cajeta_path_set_executable(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return -1;
+#if defined(_WIN32)
+    (void) path;
+    return 0;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    mode_t mode = st.st_mode | S_IXUSR | S_IXGRP | S_IXOTH;
+    return chmod(path, mode) == 0 ? 0 : -1;
+#endif
+}
+
+// Create a symbolic link at `link` pointing to `target` (POSIX
+// `symlink(target, link)`, i.e. `ln -s target link`). If `link` already
+// exists it is removed first so the link can be re-pointed — cvm repoints
+// the active-toolchain shim (~/.cajeta/bin/cajeta) this way. Returns 0 on
+// success, -1 on failure. Not supported on Windows v0.1 (CreateSymbolicLink
+// needs elevation / a different model) — returns -1 there.
+int32_t __cajeta_path_symlink(const char* targetBytes, int64_t targetLen,
+                              const char* linkBytes, int64_t linkLen) {
+    char target[__CAJETA_PATH_MAX];
+    char link[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(target, sizeof(target), targetBytes, targetLen) != 0) return -1;
+    if (__cajeta_copy_path_with_nul(link, sizeof(link), linkBytes, linkLen) != 0) return -1;
+#if defined(_WIN32)
+    (void) target; (void) link;
+    return -1;
+#else
+    // Replace any existing entry at `link` so the shim can be re-pointed.
+    struct stat st;
+    if (lstat(link, &st) == 0) {
+        unlink(link);
+    }
+    return symlink(target, link) == 0 ? 0 : -1;
+#endif
 }
 
 // ---------------------------------------------------------------------------
