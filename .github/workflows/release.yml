@@ -491,6 +491,13 @@ jobs:
       # `conclusion` to `success` (only `outcome` stays `failure`), so a masked
       # leg looks green in the API too. Keep this a hard gate.
       - name: Run release tests
+        env:
+          # Windows JIT compiles are ~40-60s each (vs ~15s on macOS, ~5s on
+          # Linux); tests that JIT multiple programs (the uber-archive dedup,
+          # the double-compile stderr-routing test) legitimately exceed the
+          # 120s per-test default and were killed mid-progress. Give the
+          # Windows leg headroom; the fast legs keep the default.
+          TEST_TIMEOUT: ${{ matrix.target == 'x86_64-w64-mingw32' && '300' || '120' }}
         run: NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
 
       # Persist the raw per-shard test output (full gtest failure text +
