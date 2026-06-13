@@ -480,16 +480,17 @@ jobs:
       # codegen/dispatch smoke. NO_BUILD=1 — the Build step above already
       # built the tree; the script just runs against it (sharded).
       #
-      # HARD GATE on the primary platform (x86_64-linux-gnu) only. On every
-      # other target it runs but failures are non-fatal
-      # (`continue-on-error: true`) — the binary shipped by --emit=obj works
-      # fine, but JIT-driven tests can hit platform-specific lowering issues
-      # (e.g. __aarch64_outline_atomics_* helpers on ARM Linux LLJIT,
-      # __emutls_get_address on macOS arm64) that don't affect AOT releases.
-      # Known issues are tracked separately; gating the release on them would
-      # be too tight a contract for v0.x.
+      # HARD GATE on ALL FOUR targets. A failing release-test run fails the
+      # leg (and the run) — no exceptions. The earlier per-target masking
+      # (continue-on-error on the non-x86 legs) hid genuine JIT lowering bugs:
+      # the aarch64 sret call-site ABI crash, the macOS missing-fp128-builtins
+      # materialization failure, and the Windows fabsf / hash_float128 ABI
+      # failures all shipped "green" under it. Those are now fixed at the
+      # source (not masked), so every leg gates honestly. NOTE: `continue-on-
+      # error` does NOT just skip the failure — it also rewrites the step's
+      # `conclusion` to `success` (only `outcome` stays `failure`), so a masked
+      # leg looks green in the API too. Keep this a hard gate.
       - name: Run release tests
-        continue-on-error: ${{ matrix.target != 'x86_64-linux-gnu' }}
         run: NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
 
       # Persist the raw per-shard test output (full gtest failure text +
