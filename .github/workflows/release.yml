@@ -465,7 +465,23 @@ jobs:
       # be too tight a contract for v0.x.
       - name: Run release tests
         continue-on-error: ${{ matrix.target != 'x86_64-linux-gnu' }}
-        run: NO_BUILD=1 ./release_tests.sh
+        run: NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
+
+      # Persist the raw per-shard test output (full gtest failure text +
+      # crash markers, kept by KEEP_LOGS above) as an artifact. if: always()
+      # — the logs matter MOST when the test step failed, and on non-primary
+      # targets that failure is masked by continue-on-error, leaving the
+      # step's compact summary (test names only) as the sole trace. With the
+      # artifact, a red/masked leg can be diagnosed from the run page without
+      # reproducing on that platform.
+      - name: Upload test run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.target }}
+          path: run-logs/
+          if-no-files-found: ignore
+          retention-days: 14
 
       # ---- Provision the installer toolchain ----------------------------
       # WiX Toolset for the Windows MSI. Pinned to v5: v6/v7 require accepting

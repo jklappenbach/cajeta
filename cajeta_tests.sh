@@ -32,6 +32,14 @@
 #   TEST_TIMEOUT=N  per-test wall-clock timeout in seconds (default 120). A test
 #                that runs longer is killed and reported as a timeout; the rest
 #                of its worker's tests continue.
+#   KEEP_LOGS=dir  (parallel mode only) persist each shard's raw output —
+#                the full per-test gtest text including assertion detail and
+#                the synthetic >>> CRASH / >>> TIMEOUT markers — into `dir`
+#                before the shard tmpdir is deleted. Relative paths resolve
+#                against the repo root (this script cd's there); CI uses
+#                KEEP_LOGS=run-logs (gitignored) and uploads it as an
+#                artifact so a failing platform leg can be diagnosed from
+#                the run page without reproducing on that platform.
 
 set -e
 
@@ -549,6 +557,19 @@ if [ "${VERBOSE:-}" = "1" ]; then
         echo "----- shard ${s} -----"
         cat "$tmpdir/shard_${s}.out"
     done
+fi
+
+# KEEP_LOGS: persist the raw shard outputs (full per-test gtest text +
+# crash/timeout markers) before the EXIT trap deletes the shard tmpdir.
+# Best-effort — a log-copy failure must never change the run's verdict.
+if [ -n "${KEEP_LOGS:-}" ]; then
+    if mkdir -p "$KEEP_LOGS" 2>/dev/null \
+        && cp "$tmpdir"/shard_*.out "$KEEP_LOGS"/ 2>/dev/null; then
+        echo
+        echo ">> Shard logs kept in: $KEEP_LOGS"
+    else
+        echo ">> WARNING: KEEP_LOGS=$KEEP_LOGS — could not persist shard logs" >&2
+    fi
 fi
 
 if [ "$total_failed" -gt 0 ] || [ "$num_timeouts" -gt 0 ] || [ "$num_crashes" -gt 0 ]; then
