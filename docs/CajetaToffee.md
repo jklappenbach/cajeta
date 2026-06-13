@@ -1,5 +1,32 @@
 # CajetaToffee.md
 
+> **Status: design spec — almost entirely unbuilt.** Toffee is the **modern
+> successor to PyTorch**: it aims to provide the full capability torch offers
+> today (tensors, reverse-mode autograd/backprop, modules, optimizers, data
+> pipelines) redesigned for cajeta, **and** a first-class **SPELA forward-
+> propagation training framework** for exploring new classes of training
+> algorithms that operate on functioning models. These are two co-equal axes,
+> not alternatives (see `plans/cajeta-toffee-plan.md`):
+>
+> 1. **Conventional / torch-parity path** — reverse-mode autograd, `nn`-style
+>    modules, optimizers. Everything a torch user expects, with shape, dtype,
+>    device, and grad-tracking lifted into the type system. (See `CajetaTorch.md`
+>    for the API-faithful PyTorch *migration* port — a sibling, narrower goal.)
+> 2. **SPELA forward path (the distinctive focus)** — single-forward-pass,
+>    per-layer local-loss training with **no global backprop**, plus the
+>    continual / online-adaptation regimes it unlocks. This path needs **no
+>    reverse-mode autodiff**, which is a major simplification over torch. The
+>    canonical reference implementation is `~/code/ml/spela-training`
+>    (`SpelaTrainer` / `SpelaConfig`, PyTorch + TF). See "SPELA forward-
+>    propagation training" below.
+>
+> As of this writing **almost none of either axis is implemented.** What ships
+> today lives in the sibling `cajeta-toffee` repo under package `toffee.*` (not
+> `cajeta.toffee.*`): `src/toffee/spatial/SpatialIndex.cajeta` (the RT-as-compute
+> spatial index — see "What exists today (shipped)"). Everything else here is
+> **planned**, including the `cajeta.math.tensor.Tensor` backing referenced
+> throughout (`cajeta.math` currently ships only `Matrix`).
+
 A specification for `cajeta.toffee`, a deep-learning framework
 designed from first principles for cajeta — leveraging the type
 system, ownership model, fiber runtime, and `cajeta.math` numerical
@@ -13,8 +40,11 @@ For the PyTorch migration target, see `CajetaTorch.md`. cajeta.toffee
 and cajeta.torch coexist; they have different audiences and different
 goals. Most users will pick one or the other for a given project.
 
-Implementation lands incrementally as `.cajeta` files under
-`./libraries/cajeta.toffee/src/`. Ships as its own package.
+Implementation lands incrementally as `.cajeta` files in the sibling
+`cajeta-toffee` repo under `src/toffee/` (current seed package: `toffee.*`).
+Ships as its own package. (The `cajeta.toffee.*` module names used throughout
+this document are aspirational; the seed code uses the shorter `toffee.*`
+namespace — e.g. the shipped `package toffee.spatial`.)
 
 ## Why a separate library from cajeta.torch
 
@@ -56,7 +86,15 @@ cajeta.toffee is for users who:
   are different types. `grad(fn)` produces a new pure function; no
   graph build at runtime, no Python-style "variables that secretly
   record." When the function is sufficiently typed, the compiler
-  emits the backward pass at compile time.
+  emits the backward pass at compile time. This is the torch-parity
+  axis — full reverse-mode training, redesigned for cajeta.
+- **Forward-propagation training as a first-class path.** Alongside
+  backprop, Toffee ships **SPELA** — single-forward-pass, per-layer
+  local-loss training with no global backprop (see the
+  `cajeta.toffee.spela` section). It needs no reverse-mode autodiff,
+  enables early-exit inference, and adapts already-functioning models
+  to drifting streams cheaply enough for edge devices. This is the
+  distinctive axis, not an afterthought.
 - **Functional transformations are the primitives.**
   `jit`, `grad`, `vmap`, `pmap`, `scan`, `checkpoint` take pure
   functions and return pure functions. Composable in any order.
@@ -118,7 +156,13 @@ cajeta.toffee.tensor       — Typed Tensor, Shape, DType, Device,
                             factory functions, ops, broadcasting,
                             indexing, shape ops
 cajeta.toffee.autograd     — grad, value_and_grad, jacobian, hessian,
-                            jvp, vjp, gradient surrogates
+                            jvp, vjp, gradient surrogates (torch-parity axis)
+cajeta.toffee.spela        — SpelaTrainer, SpelaConfig, symmetric-vector
+                            embeddings, per-layer local losses; forward-only
+                            training + online adaptation (no backprop axis)
+cajeta.toffee.spatial      — RT-as-compute spatial index (kNN / fixed-radius
+                            via hardware ray query); the one package that
+                            ships today. Feeds GNN / cooperative-matrix ops.
 cajeta.toffee.transform    — jit, vmap, pmap, scan, checkpoint, remat
 cajeta.toffee.random       — RngKey, split, normal, uniform,
                             categorical, ... (PRNG-key-threaded)
@@ -174,6 +218,57 @@ cajeta.toffee.compile          — XLA-equivalent graph compiler
 
 ---
 
+## What exists today (shipped)
+
+Exactly one piece of Toffee is implemented, and it is **not** part of the
+tensor / autograd surface below: the **RT-as-compute spatial index** (plan P1,
+Stage P1.0), in the sibling `cajeta-toffee` repo at
+`src/toffee/spatial/SpatialIndex.cajeta` (package `toffee.spatial`). None of the
+tensor / autograd / module / optimizer APIs in the rest of this document exist
+yet.
+
+`SpatialIndex` builds a GPU bottom-level acceleration structure (a BVH over
+per-point AABBs) and answers fixed-radius neighbour queries by walking it with a
+`RayQuery` inside a `@Kernel` — hardware ray tracing repurposed as a spatial
+accelerator (the RTNN pattern). The "rays" are entirely library-internal; the
+user-facing model is a spatial index. It is built directly on the
+`cajeta.gpu.core` foundation (`AccelerationStructure`, `Buffer`, `RayQuery`,
+`Stream`, `Thread`).
+
+```cajeta
+package toffee.spatial;
+
+public final class SpatialIndex {
+    // Build an index over `count` 3-D points (packed xyz, 3 float32/point),
+    // each wrapped in an axis-aligned box of half-extent `radius`.
+    public SpatialIndex(float32[] points, uint32 count, float32 radius);
+
+    public uint32 count();        // indexed point count
+
+    // Fixed-radius (L-infinity / box-overlap) neighbour count: out[i] = number
+    // of indexed points within radius of query point i. SHIPPED + exec-verified.
+    public void countWithin(Buffer<float32> qx, Buffer<float32> qy,
+                            Buffer<float32> qz, Buffer<uint32> out, uint32 n);
+
+    // Exact-L2 refinement (plan P1.1, present in source): re-checks each box
+    // candidate against the true squared distance via its primitive index.
+    public void radiusExact(Buffer<float32> dpx, Buffer<float32> dpy,
+                            Buffer<float32> dpz, Buffer<float32> qx,
+                            Buffer<float32> qy, Buffer<float32> qz,
+                            Buffer<uint32> out, uint32 n, float32 radius);
+}
+```
+
+Status: `countWithin` is exec-verified through the cajeta compiler's JIT test
+harness (`test/xpu/ToffeeSpatialIndexDeviceTests.cpp`) on a real,
+ray-query-capable Vulkan device — gated to SKIP when either the device or the
+sibling source is absent. `radiusExact` is the P1.1 exact-L2 follow-up (in
+source). Toffee has no standalone build yet. The other planned query verbs
+(`knn`, `radius`, `range`, `contains`) and the compute fallback are later P1
+stages — **not started**.
+
+---
+
 ## cajeta.toffee.tensor
 
 The foundational type. Shape, dtype, device, and grad-tracking all
@@ -198,7 +293,7 @@ public final class Tensor<S extends Shape, T extends DType, D extends Device, G 
 
     // ----- shape inspection (compile-time when S is concrete) -----
     public S      shape();
-    public int64  numel();
+    public int64  count();   // total element count (cajeta count() convention)
     public int8   rank();
 
     // ----- arithmetic (compile-checked broadcast) -----
@@ -298,6 +393,86 @@ ops defined in `cajeta.toffee.tensor`), the compiler generates the
 backward pass at compile time. User code never sees a graph object.
 Higher-order derivatives compose naturally — `grad(grad(fn))` is a
 function, not a special case.
+
+The autograd path above is the **torch-parity axis** — it exists so any
+backprop-trained model works. The next section is the other axis: forward-only
+training that needs none of this machinery.
+
+---
+
+## cajeta.toffee.spela — forward-propagation training
+
+Toffee's distinctive training axis is **SPELA(O)** — *Solo Pass Embedded
+Learning Algorithm*. It trains a network with **local, per-layer losses in a
+single forward sweep — no global backprop**, which makes it a natural fit for
+on-device, streaming, and continual-learning workloads, and a testbed for new
+training algorithms that operate on already-functioning models. The canonical
+reference implementation (PyTorch + TF/Keras) lives in `~/code/ml/spela-training`
+(`SpelaTrainer`, `SpelaConfig`); this section is the planned Toffee surface, not
+yet built.
+
+### How it works
+
+Each layer is trained against a fixed set of per-class target embeddings — the
+**symmetric vectors** — points spread on the unit sphere (chosen farthest-point
+or random, one set per layer). For each layer, in the single forward pass:
+
+1. Run the layer, optionally normalize its output to the unit sphere.
+2. Compute a **local loss** between the activation and the target class's
+   symmetric vector — either paper-exact cosine (`-cos(h, target)`) or a
+   CosFace-style cross-entropy over the cosines to *all* class vectors (with an
+   additive margin), which pushes activations away from non-target classes too.
+3. Take a per-layer optimizer step from that local loss alone.
+4. **Detach** the layer's output before feeding the next layer, so no gradient
+   ever flows backward across layers — the whole pass is forward-only.
+
+Because every layer is independently classifying toward the same class vectors,
+**any layer can produce a prediction** (early-exit inference), and a model can be
+**adapted in place** — freeze the trunk and train only the head, or adapt all
+layers — against a live, drifting stream.
+
+### Planned API (mirrors the reference)
+
+```cajeta
+public final class SpelaConfig {
+    int32   numClasses;
+    String  optimizer = "adamw";        // "adamw" | "sgd"
+    float32 lr = 0.001;
+    String  lossType = "cosface";       // "cosface" | "cosine" (paper-exact)
+    float32 cosineMargin = 0.0;
+    float32 cosineScale = 30.0;
+    String  embeddingsMethod = "farthest";   // "farthest" | "random"
+    boolean normalizeLayerInputs = true;
+    // ... lr schedule, weight decay, seed, dtype, device ...
+}
+
+// A trainer wraps an ordered list of (layer, activation) pairs.
+SpelaConfig cfg = stack SpelaConfig { numClasses: 10, lr: 0.01 };
+SpelaTrainer trainer = heap SpelaTrainer(layers, activations, cfg);
+
+trainer.fit(trainLoader, epochs: 10, valLoader: testLoader);
+
+// Early-exit inference: predict from the final layer, or any earlier one.
+float32 accFinal  = trainer.evaluate(testLoader, fromLayer: -1);
+float32 accHidden = trainer.evaluate(testLoader, fromLayer: 0);
+```
+
+### Online / continual adaptation
+
+The same trainer adapts a functioning model to a drifting input distribution in
+real time — the `online_personalization` regime in the reference (frozen vs
+adapt-head vs adapt-all). Because training is forward-only and per-layer, this
+costs roughly one inference pass plus a local step per adapted layer — no
+backward graph, no second pass — which is what makes it viable on edge devices.
+
+### Why this is a major simplification
+
+The SPELA path needs **no reverse-mode autodiff**: the per-layer local loss and
+its gradient are single-layer / closed-form, so none of the
+`cajeta.toffee.autograd` machinery above is required for it. Reverse-mode is only
+pulled in for the torch-parity workloads. The two axes share Toffee's tensor,
+module, optimizer, and data-loading layers but diverge entirely in how loss and
+parameter updates flow.
 
 ---
 

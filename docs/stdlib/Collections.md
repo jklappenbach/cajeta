@@ -1,26 +1,33 @@
 # `cajeta.collection` — Lists, Sets, Maps, and friends
 
-The container types. Each is designed to multiple-inherit
-`cajeta.lang.stream.Stream<E>` of the appropriate element type so the
-container IS a stream — no `.iterator()` factory needed. See
-Streams.md for the full stream protocol and combinator surface.
+The container types in `runtime/src/cajeta/collection/`. Today each
+container exposes its elements as a `cajeta.lang.stream.Stream<E>`
+through a factory method (`stream()`, or `keys()`/`values()`/`entries()`
+on `HashMap`) rather than multiple-inheriting `Stream` directly; the
+multiple-inheritance "container IS a stream" design is still pending.
+See Streams.md for the full stream protocol and combinator surface.
+
+All containers report their element count via `count()` (never `size`
+or `length`); `count()` returns `int64` except on `ArrayList`, where it
+is `int32`.
 
 ## Status snapshot
 
 | Type | Status |
 |------|--------|
-| `ArrayList<T>` | shipped (with `.stream()` factory; multi-inheritance from Stream not yet) |
-| `HashMap<K, V>` | shipped (no Stream surface yet) |
-| `HashSet<T>` | shipped |
-| `LinkedList<T>` | shipped |
-| `Deque<T>` / `Stack<T>` | designed, not implemented |
-| `Heap<T>` (priority queue) | implemented — min-heap, `<`-ordered (pending compile/test) |
-| `ImmutableList<T>` / `ImmutableSet<T>` / `ImmutableMap<K, V>` | implemented — Guava-style frozen snapshots (pending compile/test) |
-| `RedBlackTree<K, V>` (ordered map) | implemented — insert/lookup, delete deferred (pending compile/test) |
-| `BPlusTree<K, V>` (ordered map) | implemented — insert/lookup, delete deferred (pending compile/test) |
+| `ArrayList<T>` | shipped — `count`/`isEmpty`/`get`/`set`/`add`/`appendAll`/`stream` |
+| `HashMap<K, V>` | shipped — incl. `keys()`/`values()`/`entries()` `Splittable` stream views |
+| `HashSet<T>` | shipped — backed by `HashMap<T, _>` |
+| `LinkedList<T>` | shipped — doubly-linked, head/tail ops |
+| `Heap<T>` (priority queue) | shipped — binary min-heap, `<`-ordered |
+| `ImmutableList<T>` / `ImmutableSet<T>` / `ImmutableMap<K, V>` | shipped — frozen snapshots with `.stream()` |
+| `RedBlackTree<K, V>` (ordered map) | shipped — insert/lookup/min/max/`keysInOrder`; delete deferred |
+| `BPlusTree<K, V>` (ordered map) | shipped — insert/lookup/min/`keysInOrder`; delete deferred |
+| `Cache<K, V>` (LRU + TTL) | shipped — `get`/`put`/`evict`, age-bounded |
+| `Collector<T, R>` + `Collectors` | shipped — `Collector` triple + `Collectors.toList<T>()` |
+| `Deque<T>` / `Stack<T>` | designed, not implemented (no source yet) |
 | `ltm.BPlusTree<K, V>` (larger-than-memory, disk-backed) | planned — see "Larger-than-memory" below |
-| Tree types (`TreeMap`, `TreeSet`, `BTreeMap`, …) | superseded by `RedBlackTree` / `BPlusTree` |
-| `Collector<T, R>` + `Collectors` | designed, not implemented |
+| `TreeMap` / `TreeSet` / `BTreeMap` | not built — superseded by `RedBlackTree` / `BPlusTree` |
 
 ## `ArrayList<T>` — shipped
 
@@ -30,14 +37,18 @@ Dynamic array. Heap-allocated `T[]` that grows on demand. Source at
 ```cajeta
 public class ArrayList<T> {
     public ArrayList();                       // initial capacity 16
-    public int32 size();
+    public int32 count();                     // element count
     public boolean isEmpty();
     public T get(int32 i);
     public void set(int32 i, T v);
-    public void add(T v);                     // amortized O(1)
-    public ArrayStream<T> stream();           // returns Stream<T>
+    public void add(T v);                     // amortized O(1), capacity doubles
+    public void appendAll(ArrayList<T> other);// append other's elements (non-consuming)
+    public #ArrayStream<T> stream();          // owned Stream<T> over live elements
 }
 ```
+
+`appendAll` is the combiner used when parallel `Collectors.toList<T>()`
+merges per-worker partial lists.
 
 ### Examples
 
@@ -49,7 +60,7 @@ list.add(10);
 list.add(20);
 list.add(30);
 
-int32 n = list.size();                        // 3
+int32 n = list.count();                       // 3
 int32 first = list.get(0);                    // 10
 list.set(1, 200);
 
@@ -75,21 +86,28 @@ Open-addressing hash map with linear probing + tombstones. Source at
 
 ```cajeta
 public class HashMap<K, V> {
-    public HashMap(int64 initialCapacity);
+    public HashMap(int64 initialCapacity);     // power-of-2 capacity
     public void put(K key, V value);
-    public V get(K key);                       // returns 0/null on miss
+    public V get(K key);                        // returns 0/null on miss
     public boolean containsKey(K key);
-    public boolean remove(K key);
+    public boolean remove(K key);              // leaves a reusable tombstone
     public int64 count();
 
     public V operator[](K key);                // sugar for get
     public void operator[]=(K key, V value);   // sugar for put
+
+    // Splittable stream views (snapshots; slot-walk order):
+    public #Stream<K> keys();                  // HashMapKeyStream<K, V>
+    public #Stream<V> values();                // HashMapValueStream<K, V>
+    public #Stream<Pair<K, V>> entries();      // HashMapEntryStream<K, V>
 }
 ```
 
-K is constrained to class types (or primitive types with the
-primitive-hash intrinsics) because the bucket index uses `key.hash()`
-and bucket equality uses `==`.
+`K` may be a **class type or a primitive** — no boxing either way. The
+bucket index uses `key.hash()` and bucket equality uses `==`; primitive
+keys lower `.hash()` to the `__cajeta_hash_*` runtime helpers via a
+compiler intrinsic. (Views are not allowed as `K` or `V` — see
+`Views.md`.)
 
 Capacity is power-of-2; auto-grows past 0.75 load factor with
 tombstone compaction on each resize.
@@ -110,40 +128,39 @@ boolean has = counts.containsKey("kiwis");    // false
 counts["grapes"] = 7;
 int32 grapes = counts["grapes"];
 
-// Iteration: requires the planned multiple-inheritance from
-// Stream<Pair<K, V>>; not yet shipped.
+// Iterate via a stream view (keys / values / entries):
+int64 distinct = counts.keys().count();
 ```
 
-Pinned by `test/collections/HashMapTests.cpp` and
-`test/collections/PrimitiveHashMapTests.cpp`.
+Pinned by `test/collections/HashMapTests.cpp`,
+`test/collections/PrimitiveHashMapTests.cpp`, and the stream-view
+suites `test/collections/HashMapStreamTests.cpp` /
+`HashMapStreamParallelTests.cpp`.
 
 ### Open items
 
 - Multiple-inherit `Stream<Pair<K, V>>` so the map IS its entry-
-  stream.
-- `keys()` / `values()` projections (lazy streams over the underlying
-  arrays).
+  stream (today `entries()` is the factory).
 - `getOrDefault(K, V)`, `putIfAbsent(K, V)`, `merge`.
 
-## `HashSet<T>` — designed
+## `HashSet<T>` — shipped
 
-Thin wrapper over `HashMap<T, Unit>` (or a dedicated lower-overhead
-open-address table). Same key constraint as `HashMap`.
+Thin wrapper over a backing `HashMap<T, _>`. Same key constraint as
+`HashMap` (class or primitive `T`).
 
 ```cajeta
 public class HashSet<T> {
-    public HashSet();
-    public HashSet(int64 initialCapacity);
-    public boolean add(T v);                   // true if new
+    public HashSet(int64 initialCapacity);     // power-of-2 capacity
+    public void add(T v);
     public boolean contains(T v);
-    public boolean remove(T v);
+    public boolean remove(T v);                // true if present and removed
     public int64 count();
 }
 ```
 
-Multiple-inherits `Stream<T>` for iteration.
+(No no-arg constructor and no `Stream` surface yet; `add` returns void.)
 
-## `LinkedList<T>` — designed
+## `LinkedList<T>` — shipped
 
 Doubly-linked list with head/tail pointers.
 
@@ -153,14 +170,21 @@ public class LinkedList<T> {
     public int64 count();
     public T head();                           // O(1)
     public T tail();                           // O(1)
-    public void addFirst(T v);
-    public void addLast(T v);
-    public T removeFirst();
-    public T removeLast();
+    public void add(T v);                      // alias of addTail
+    public void addFirst(T v);                 // alias of addHead
+    public void addTail(T v);                  // append at tail
+    public void addHead(T v);                  // prepend at head
+    public T popHead();                        // remove + return front
+    public T popTail();                        // remove + return back
+    public T get(int64 idx);                   // walk to index
+    public boolean contains(T v);
+    public boolean remove(T v);
 }
 ```
 
-Multiple-inherits `Stream<T>`.
+`head()`/`tail()`/`get()`/`popHead()`/`popTail()` return a zero/null
+sentinel on an empty list (no bounds error yet) — guard with `count()`.
+No `Stream` surface yet.
 
 ## `Deque<T>` / `Stack<T>` — designed
 
@@ -190,72 +214,77 @@ public class Stack<T> {
 Both multiple-inherit `Stream<T>` (Deque in front-to-back order;
 Stack in pop-order, top-to-bottom).
 
-## `Heap<T>` — designed
+## `Heap<T>` — shipped
 
-Binary min-heap (or max-heap via a comparator).
+Binary min-heap, ordered by `<` on `T` (the smallest element pops
+first). No comparator parameter today.
 
 ```cajeta
 public class Heap<T> {
-    public Heap((T, T) -> int32 compare);
+    public Heap();
     public void push(T v);
     public T pop();                            // minimum
-    public T peek();
+    public T peek();                           // minimum, no removal
+    public boolean isEmpty();
     public int64 count();
 }
 ```
 
-Multiple-inherits `Stream<T>` (yield order = pop order).
+No `Stream` surface yet.
 
-## Tree types — designed (TreeMap, TreeSet, BTreeMap, BTreeSet)
+## Ordered maps: `RedBlackTree<K, V>` / `BPlusTree<K, V>` — shipped
 
-Ordered map / set. `TreeMap` keys carry the bound
-`K extends Comparable<K>` (the only place in the v1 stdlib where a
-`Comparable` bound is required). BTreeMap is a sorted-by-key variant
-backed by a cache-friendly B-tree node layout for large keyspaces.
+These replace the never-built `TreeMap` / `TreeSet`. Both are ordered
+maps keyed by `<` / `>` on `K`; `RedBlackTree` is a balanced BST,
+`BPlusTree` a cache-friendly B+ tree. Insert/lookup ship; **delete is
+deferred**.
 
 ```cajeta
-public class TreeMap<K extends Comparable<K>, V> {
+public class RedBlackTree<K, V> {       // BPlusTree<K, V> mirrors this
+    public boolean isEmpty();
     public void put(K key, V value);
-    public V get(K key);
-    public Optional<K> firstKey();
-    public Optional<K> lastKey();
-    public Stream<Pair<K, V>> range(K fromInclusive, K toExclusive);
+    public V get(K key);                       // 0/null on miss
+    public boolean containsKey(K key);
+    public K min();
+    public K max();                            // RedBlackTree only
+    public #ArrayList<K> keysInOrder();        // sorted keys
+    public int64 count();
 }
 ```
 
-## `Collector<T, R>` and `Collectors` — designed
+## `Collector<T, R>` and `Collectors` — shipped
 
-Terminal that materializes a stream into something else (a list, a
-map, a count). The contract is the standard supplier/accumulator/
-finisher triple:
+`Collector<T, R>` reduces a `Stream<T>` into a single `R`. It is a
+**class** holding three function-typed fields (not an interface with
+methods); the `Stream<T>.collect<R>` terminal consumes it. All three
+callables are required so the same collector works sequentially and
+under `.parallel()` (each worker calls `supplier()` for a fresh partial;
+the orchestrator merges with `combiner`).
 
 ```cajeta
-public interface Collector<T, R> {
-    public R supply();                         // initial accumulator
-    public void accumulate(R acc, T element);
-    public R finish(R acc);
+public class Collector<T, R> {
+    public () -> #R supplier;                  // fresh accumulator per worker
+    public (R, T) -> #R accumulator;           // fold one element in
+    public (R, R) -> #R combiner;              // merge two partials
+
+    public Collector(() -> #R supplier,
+                     (R, T) -> #R accumulator,
+                     (R, R) -> #R combiner);
 }
 
-public final class Collectors {
-    public static Collector<T, ArrayList<T>> toList();
-    public static Collector<T, HashSet<T>> toSet();
-    public static Collector<T, HashMap<K, V>> toMap(...);
-    public static Collector<T, int64> counting();
-    public static Collector<T, int64> summingInt32((T) -> int32 fn);
-    public static Collector<T, String> joining(String sep);
+public class Collectors {
+    public static #Collector<T, ArrayList<T>> toList<T>();
 }
 ```
 
-Used at the terminal end of a stream chain:
+Only `toList<T>()` ships today (`toSet` / `toMap` / `counting` /
+`joining` are not built). Used at the terminal end of a chain:
 
 ```cajeta
-ArrayList<int32> evens = xs.stream()
+#ArrayList<int32> evens = xs.stream()
     .filter(isEven)
-    .collect(Collectors.toList());
+    .collect(Collectors.toList<int32>());
 ```
-
-Blocked on `Stream.collect(Collector<T, R>)` and on the chained-form
-parsing (P6.6).
 
 ## For-loop desugaring through Stream
 
@@ -340,11 +369,15 @@ types stay generic.
 
 Tracked in Features.md:
 
-- Collection types listed as "designed" above.
-- Multiple-inheritance from `Stream<E>` on `ArrayList`, `HashMap`
-  (and `HashSet` / `LinkedList` / etc. when they land).
-- `Collector<T, R>` interface + `Collectors` factories +
-  `Stream.collect`.
-- For-loop desugaring for `Stream`-typed receivers (P6.x).
-- Chained-form parsing (P6.6) so `xs.stream().filter(p).map(f).count()`
-  works without intermediate locals.
+- `Deque<T>` / `Stack<T>` (still designed-only); delete on the ordered
+  trees; the `ltm` disk-backed variants.
+- Multiple-inheritance from `Stream<E>` on `ArrayList`, `HashMap`,
+  `HashSet`, `LinkedList`, `Heap` so they ARE streams (today they
+  expose `stream()` / `keys()` / `values()` / `entries()` factories).
+- More `Collectors` factories beyond `toList<T>()` (`toSet`, `toMap`,
+  `counting`, `joining`).
+- For-loop desugaring for `Stream`-typed receivers.
+
+(Shipped since earlier drafts: `Collector<T, R>` + `Collectors.toList`
++ `Stream.collect<R>`, and fluent chained-form parsing —
+`xs.stream().filter(p).count()` no longer needs intermediate locals.)

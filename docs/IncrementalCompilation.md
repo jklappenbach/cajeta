@@ -27,23 +27,22 @@ explains why that's non-trivial and how to do it.
 The naive plan — "for each unchanged source, load its cached `.bc`
 instead of compiling it" — does not work against the compiler's actual
 architecture. `Compiler::compile(entry, sourceRoot, archiveRoot)`
-(`src/cajeta/compile/Compiler.cpp:664`) runs in two phases that are
+(`src/cajeta/compile/Compiler.cpp:699`) runs in two phases that are
 **not** per-file:
 
 **Phase A — declaration registration (per source, but globally
-visible).** `prescanSourceRoot` (`Compiler.cpp:285`) then
-`compile(module)` → `parse(module)` (`Compiler.cpp:647`) register every
+visible).** `prescanSourceRoot` (`Compiler.cpp:300`) then
+`compile(module)` (`Compiler.cpp:682`) → `parse(module)` register every
 module's classes, interfaces, methods, and field layouts into a
 **global type archive**. Every module must be registered so that any
 other module can resolve references to it.
 
 **Phase B — whole-program iterative codegen.** A single loop
-(`Compiler.cpp:769-790`) runs `getLlvmFunctionType()` + `generateCode()`
+(`Compiler.cpp:808-826`) runs `getLlvmFunctionType()` + `generateCode()`
 across **all** modules together, iterated to a fixed point. It must
 iterate because a method body in one module can trigger a **template
 instantiation that lands in the *stdlib* module** (e.g. `xs.stream()`
-→ `ArrayStream<int32>`, instantiated into stdlib's structures, per the
-comment at `Compiler.cpp:759-767`).
+→ `ArrayStream<int32>`, instantiated into stdlib's structures).
 
 Two consequences make naive `.bc` reuse incorrect:
 
@@ -60,7 +59,8 @@ Two consequences make naive `.bc` reuse incorrect:
 
 The one thing the architecture *does* give us for free: cross-module
 references are emitted as module-local **extern declarations** via
-`getOrInsertFunction` (`CajetaModule.cpp:764-790`) and resolved by
+`getOrInsertFunction` (`CajetaModule::ensureFunctionVisible` /
+`ensureFunctionInModule`, `CajetaModule.cpp:919-953`) and resolved by
 symbol name at link time. So a per-module `.bc`, once produced, **is**
 linkable in isolation. The problem is purely about safely *not
 regenerating* one, not about linking it.
@@ -157,21 +157,23 @@ into the *same* sorted sidecar set, distinguished by their key shape:
 ## Determinism prerequisites
 
 Module-granular caching is only as trustworthy as the byte-stability of
-a `.bc`. One known defect blocks "byte-identical IR" independent of
-everything above:
+a `.bc`. One known defect formerly blocked "byte-identical IR":
 
-- `CajetaModule.cpp:102` calls `setSourceFileName(sourcePath)` with the
-  **absolute** path, baking a machine-specific string into every
-  module. Two machines produce different bitcode for identical source.
-  **Fix:** route the name through the already-plumbed
-  `--debug-prefix-map` (`flags.debugPrefixMap`) so the embedded name is
-  the canonical `cajeta:`-relative path. Small, contained, and correct
-  regardless of caching.
+- `CajetaModule.cpp:106` constructs each module with
+  `setSourceFileName(sourcePath)` — the **absolute** path, which would
+  bake a machine-specific string into every module. **This is now
+  scrubbed:** `canonicalizeSourceFileName()` (`CajetaModule.cpp:159`,
+  called from `Compiler.cpp:540`) rewrites the embedded name via
+  `remapSourcePath()`, honoring an explicit `--debug-prefix-map`
+  (`flags.debugPrefixMap`) and otherwise falling back to a
+  `sourceRoot`-relative path, so the embedded name is machine-
+  independent even when the compiler is driven directly. The fix this
+  section originally proposed has landed.
 
 Other determinism surfaces to audit before trusting the cache: symbol
 iteration order during emit, any timestamp/host embedding, and seed
-propagation (`--seed` is already plumbed). These are verification
-tasks, not redesigns.
+propagation (`--seed`, `--source-date-epoch` are already plumbed into
+`CompilerFlags`). These are verification tasks, not redesigns.
 
 ## Build-tool ↔ compiler protocol
 

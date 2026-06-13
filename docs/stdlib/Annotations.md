@@ -1,22 +1,26 @@
 # Annotations.md
 
-Catalog of every annotation cajeta recognizes today, plus the
-planned Lombok-mirror surface that lands in stages, plus the new
-`@Encoding` annotation for views.
+Catalog of every annotation cajeta recognizes, including the
+Lombok-mirror surface (`@Getter` / `@Setter` / `@Data` / `@Builder` / …,
+now implemented, not planned) and the `@Encoding` annotation for views.
 
 The annotation system is a compile-time-only metadata channel:
 the parser parses `@Name(arg = value, ...)` into
 `AnnotationInstance` records attached to the element below,
 which `Annotatable::findAnnotation(name)` lets the codegen + later
-analysis stages consult. Most annotations have semantics that
-fire at codegen; a few (`@Throws`, `@Override`) are pure
-declarations the compiler verifies but emits no code for.
+analysis stages consult. Argument values of **every** kind — strings,
+integers, booleans, class literals (`Foo.class`), arrays, nested
+annotations — are captured uniformly by the annotation parser
+(`AnnotationParser.cpp`); they are not a per-annotation special case.
+Most annotations have semantics that fire at codegen; a couple
+(`@Override`, the aspirational `@Throws`) are declaration/verification
+annotations the compiler checks but emits no code for.
 
 ## Table of contents
 
 1. [Conventions](#conventions)
 2. [Section 1 — Implemented today](#section-1--implemented-today)
-3. [Section 2 — Lombok-mirror additions](#section-2--lombok-mirror-additions)
+3. [Section 2 — Lombok-mirror annotations](#section-2--lombok-mirror-annotations-implemented)
 4. [Section 3 — `@Encoding` for views](#section-3--encoding-for-views)
 5. [Section 4 — Aspirational (documented, not implemented)](#section-4--aspirational-documented-not-implemented)
 6. [Section 5 — User-defined marker annotations](#section-5--user-defined-marker-annotations)
@@ -48,7 +52,7 @@ declarations the compiler verifies but emits no code for.
   compiler resolves bare names via the implicit import of each
   `cajeta.*` annotation package.
 - User-defined annotation types use the `@interface` declaration
-  syntax (grammar at `antlr4/CajetaParser.g4:452`).
+  syntax (`annotationTypeDeclaration`, `antlr4/CajetaParser.g4:471`).
 
 ---
 
@@ -62,63 +66,75 @@ design doc is the prose spec.
 
 | Annotation        | Target               | Effect                                          | Handler                                            | Spec                                 |
 |-------------------|----------------------|-------------------------------------------------|----------------------------------------------------|--------------------------------------|
-| `@Component`      | class                | Class joins the compile-time DI graph; the synthesized `__cajeta_inject` provides instances at injection sites. | `CajetaLlvmVisitor.h:255`                          | `AspectModel.md` § Components       |
+| `@Component`      | class                | Class joins the compile-time DI graph; the synthesized `__cajeta_inject` provides instances at injection sites. | `CajetaLlvmVisitor.h:352`                          | `AspectModel.md` § Components       |
 | `@Component(name="primary")` | class     | Named variant of the above; multiple instances of the same type differentiated by name at injection sites via `@Inject(name="primary")`. | same                                               | `AspectModel.md` § Named components |
-| `@Repository`     | class                | Stereotype for data-access components. Identical wiring to `@Component`; the marker is for `@Aspect` pointcuts to target the data layer specifically (`@Around(Repository.class)`). | `CajetaLlvmVisitor.h:256`                          | `AspectModel.md` § Stereotypes      |
-| `@TestComponent`  | class                | Component visible only when `--profile=test` is active. Lets a test build substitute fakes / stubs for production components without touching production source. | `CajetaLlvmVisitor.h:257`                          | `AspectModel.md` § TestComponent    |
-| `@Profile("name")` | class               | Component is conditional on the active build profile (default, test, custom). Class is registered with the DI graph only if its `@Profile` matches the active profile. | `CajetaLlvmVisitor.h` (profile-filtering)          | `AspectModel.md` § Profiles         |
+| `@Repository`     | class                | Stereotype for data-access components. Identical wiring to `@Component`; the marker is for `@Aspect` pointcuts to target the data layer specifically (`@Around(Repository.class)`). | `CajetaLlvmVisitor.h:353`                          | `AspectModel.md` § Stereotypes      |
+| `@TestComponent`  | class                | Component visible only when `--profile=test` is active. Lets a test build substitute fakes / stubs for production components without touching production source. | `CajetaLlvmVisitor.h:354`                          | `AspectModel.md` § TestComponent    |
+| `@Profile("name")` | class               | Component is conditional on the active build profile (default, test, custom). Class is registered with the DI graph only if its `@Profile` matches the active profile. | `CajetaLlvmVisitor.h:365`; filtered in `CajetaModule.cpp:571` | `AspectModel.md` § Profiles    |
 | `@PostConstruct`  | method (instance, no args, void) | Called by the DI runtime once after construction + all field injections complete. Per-instance. | `ComponentInjectMethod.cpp:294`                    | `AspectModel.md` § Lifecycle        |
 | `@PreDestroy`     | method (instance, no args, void) | Called before the component's scope drop. Per-instance. Useful for resources that need ordered teardown beyond what the destructor + field auto-drop cover. | `ComponentInjectMethod.cpp:320`                    | `AspectModel.md` § Lifecycle        |
-| `@Inject`         | field, parameter     | Marks an injection site. The DI graph resolves it to a component instance at the point of construction (field) or invocation (parameter). | `CajetaModule.cpp:528`                             | `AspectModel.md` § Injection        |
+| `@Inject`         | field, parameter     | Marks an injection site. The DI graph resolves it to a component instance at the point of construction (field) or invocation (parameter). | `CajetaModule.cpp:718`                             | `AspectModel.md` § Injection        |
 | `@Inject(name="primary")` | same        | Disambiguates when multiple `@Component(name=...)` variants of the same type exist. | same                                               | same                                |
 
 ### Aspects (`cajeta.aot`)
 
 | Annotation                          | Target            | Effect                                                                                  | Handler                                      | Spec                                                       |
 |-------------------------------------|-------------------|-----------------------------------------------------------------------------------------|----------------------------------------------|------------------------------------------------------------|
-| `@Aspect`                           | class             | Marks an aspect class. Itself also a `@Component`, so it can have `@Inject` fields.     | `CajetaLlvmVisitor.h:241`                    | `AspectModel.md` § Aspect class                            |
-| `@Before(Marker.class)`             | method in `@Aspect` | Run before any method annotated with `Marker`. Pointcut is by marker annotation.       | `CajetaModule.cpp:192` (advice match)        | `AspectModel.md` § Advice kinds                            |
+| `@Aspect`                           | class             | Marks an aspect class. Itself also a `@Component`, so it can have `@Inject` fields.     | `CajetaLlvmVisitor.h:334`                    | `AspectModel.md` § Aspect class                            |
+| `@Before(Marker.class)`             | method in `@Aspect` | Run before any method annotated with `Marker`. Pointcut is by marker annotation.       | `CajetaModule.cpp:372` (advice match)        | `AspectModel.md` § Advice kinds                            |
 | `@After(Marker.class)`              | method in `@Aspect` | Run after, regardless of normal/throw exit.                                            | same                                         | same                                                       |
 | `@AfterReturning(Marker.class)`     | method in `@Aspect` | Run after only on normal return. Optional `returning="binding"` captures the return value. | same                                       | `AspectModel.md` § AfterReturning                          |
 | `@AfterThrowing(Marker.class)`      | method in `@Aspect` | Run after only on exception exit. Optional `throwing="binding"` captures the exception. | same                                       | `AspectModel.md` § AfterThrowing                           |
-| `@Around(Marker.class)`             | method in `@Aspect` | Wraps the target. Body must invoke `@Original` to forward.                              | `Method.cpp` extracted-body machinery        | `AspectModel.md` § Around                                  |
-| `@Order(n)`                         | aspect method     | Controls execution order when multiple aspects match the same target. Lower runs first. | `CajetaModule.cpp:339`                       | `AspectModel.md` § Ordering                                |
+| `@Around(Marker.class)`             | method in `@Aspect` | Wraps the target. Body must invoke `@Original` to forward.                              | `Method.cpp:1185` (extracted-body machinery) | `AspectModel.md` § Around                                  |
+| `@Order(n)`                         | aspect method     | Controls execution order when multiple aspects match the same target. Lower runs first. | `CajetaModule.cpp:527`                       | `AspectModel.md` § Ordering                                |
 | `@Original`                         | call site inside `@Around` | Pseudo-marker the body uses to forward to the wrapped method. Lowered to a direct call of the extracted body. | grammar + codegen                            | `AspectModel.md` § Around                                  |
 
 ### Wire formats / views (`cajeta.wire`)
 
 | Annotation        | Target           | Effect                                              | Handler                              | Spec                                  |
 |-------------------|------------------|-----------------------------------------------------|--------------------------------------|---------------------------------------|
-| `@BigEndian`      | view class       | Numeric fields read/written in big-endian order. Bswap inserted at each access. | `CajetaLlvmVisitor.h:368`            | `WireFormats.md` § Endianness         |
-| `@LittleEndian`   | view class       | Same, little-endian.                                | `CajetaLlvmVisitor.h:370`            | same                                  |
-| `@HostEndian`     | view class       | Explicit "use host order"; required even when host == desired so the declaration is unambiguous. | `CajetaLlvmVisitor.h:372`            | same                                  |
-| `@Align(natural)` | view class       | Opt out of the default packed layout; insert ABI-natural padding between fields. | `CajetaLlvmVisitor.h:374`            | `WireFormats.md` § Alignment          |
+| `@BigEndian`      | view class       | Numeric fields read/written in big-endian order. Bswap inserted at each access. | `CajetaLlvmVisitor.h:552`            | `WireFormats.md` § Endianness         |
+| `@LittleEndian`   | view class       | Same, little-endian.                                | `CajetaLlvmVisitor.h:554`            | same                                  |
+| `@HostEndian`     | view class       | Explicit "use host order"; required even when host == desired so the declaration is unambiguous. | `CajetaLlvmVisitor.h:556`            | same                                  |
+| `@Align(natural)` | view class       | Opt out of the default packed layout; insert ABI-natural padding between fields. | `CajetaLlvmVisitor.h:558`            | `WireFormats.md` § Alignment          |
 
 ### Method body source (`cajeta.ffi`, `cajeta.synth`)
 
 | Annotation                | Target  | Effect                                                                              | Handler                | Spec                                  |
 |---------------------------|---------|-------------------------------------------------------------------------------------|------------------------|---------------------------------------|
-| `@Native(value="symbol")` | method  | Method body is a forwarding call to the named native symbol (typically a C runtime helper). Wrapper IR is trivially inlinable. | `Method.cpp:544`       | `Compilation.md` § FFI                |
-| `@AutoHash`               | class   | Synthesize a `hash()` method walking all primitive + class-ref fields. If a user `hash()` exists, it wins. | `CajetaClass.cpp:417`  | `StandardLibrary.md` § Hashing        |
+| `@Native(value="symbol")` | method  | Method body is a forwarding call to the named native symbol (typically a C runtime helper). Wrapper IR is trivially inlinable. | `Method.cpp:761`       | `Compilation.md` § FFI                |
+| `@AutoHash`               | class   | Synthesize a `hash()` method walking all primitive + class-ref fields. If a user `hash()` exists, it wins. Also implied by `@Data` / `@Value`. | `CajetaClass.cpp:1204` (`synthesizeAutoHash`) | `Hashing.md` § @AutoHash      |
 
 ### Diagnostics (`cajeta.lint`)
 
 | Annotation                              | Target          | Effect                                                                 | Handler                                       | Spec                                |
 |-----------------------------------------|-----------------|------------------------------------------------------------------------|-----------------------------------------------|-------------------------------------|
-| `@SuppressLint("rule-id", ...)`         | method, class   | Silences listed lint rule IDs within scope. No catch-all `"*"` allowed. | `MethodCallExpression.cpp:1267` (per-rule)    | `LintRules.md` § Suppression syntax |
+| `@SuppressLint("rule-id", ...)`         | method, class   | Silences listed lint rule IDs within scope. No catch-all `"*"` allowed. | `CajetaLlvmVisitor.h:949` (per-rule)          | `LintRules.md` § Suppression syntax |
 
 ---
 
-## Section 2 — Lombok-mirror additions
+## Section 2 — Lombok-mirror annotations (implemented)
 
-Borrowed wholesale from Lombok's surface. The boilerplate-elimination
-story Lombok pioneered for Java translates directly: Cajeta's
-classes have constructors, accessors, equality, toString, and
-builder patterns that the user writes by hand today. Each
-annotation below replaces a block of mechanical code.
+Borrowed wholesale from Lombok's surface and **implemented today** — the
+synthesizers live in `CajetaClass.cpp` (`synthesizeGetters` 1265,
+`synthesizeSetters` 1316, `synthesizeToString` 1379,
+`synthesizeNoArgsConstructor` 1543, `synthesizeAllArgsConstructor` 1553,
+`synthesizeRequiredArgsConstructor` 1574, `synthesizeWith` 1596,
+`@NonNull` checks 1587, `@Builder` 1810, and the `@Data` / `@Value`
+bundles). The boilerplate-elimination story Lombok pioneered for Java
+translates directly; each annotation below replaces a block of mechanical
+code.
+
+Two caveats vs. the Lombok surface:
+- **`@EqualsAndHashCode` is not a standalone annotation.** Hash synthesis is
+  driven by `@AutoHash` (and implied by `@Data` / `@Value`); there is no
+  separate `@EqualsAndHashCode` handler. Where the bundles below name it,
+  read "the `@AutoHash` synthesis path."
+- **`@Cleanup` is not implemented** (see § Resource cleanup below) — it is
+  documented here as planned, not shipped.
 
 All synthesized methods are emitted as ordinary methods on the
-class — visible via reflection (`CajetaReflect.md`), debuggable
+class — visible via reflection (`Reflection.md`), debuggable
 with line maps pointing at the annotation site, overridable by
 declaring the same method by hand (the hand-written version
 wins).
@@ -266,7 +282,11 @@ Cheap and idiomatic for `@Value`-style immutable types.
 
 ### Resource cleanup
 
-#### `@Cleanup` on local variable
+#### `@Cleanup` on local variable — planned, not implemented
+
+> **Status: not shipped.** No `@Cleanup` handler exists in the compiler today;
+> the design below is retained as the intended shape. Until it lands, rely on
+> the destructor / scope-exit drop chain or an explicit `try`/`finally`.
 
 ```cajeta
 public void copy(InputStream in, OutputStream out) {
@@ -338,7 +358,7 @@ For **JSON**, do NOT use `@Encoding` — call `Json.parse<T>(bytes)` /
 When the view is materialized from a byte buffer, the compiler
 emits a call to `MsgPackEncoder.decode(bytes)` returning a
 `UserMessage`. When the view is serialized, the compiler emits
-a call to `MsgPackEncoder.encode(view)` returning `byte[]`. The
+a call to `MsgPackEncoder.encode(view)` returning `int8[]`. The
 view's field layout in memory is the normal class layout; the
 *wire* layout is whatever the encoder produces.
 
@@ -348,8 +368,8 @@ view's field layout in memory is the normal class layout; the
 package cajeta.wire;
 
 public interface Encoder<T> {
-    byte[] encode(T value);
-    T decode(byte[] bytes);
+    int8[] encode(T value);
+    T decode(int8[] bytes);
 }
 ```
 
@@ -389,10 +409,10 @@ public class UserMessage { ... }
   not `Encoder<UserMessage>`. Either parameterize as
   `MsgPackEncoder<UserMessage>` or supply an encoder whose type
   parameter matches.").
-- The compiler synthesizes a view constructor `UserMessage(byte[]
+- The compiler synthesizes a view constructor `UserMessage(int8[]
   bytes)` whose body calls `MsgPackEncoder.decode(bytes)` and copies
   the returned object's fields into `this`.
-- For serialization, the compiler synthesizes `byte[]
+- For serialization, the compiler synthesizes `int8[]
   toBytes()` whose body calls `MsgPackEncoder.encode(this)`.
 - The encoder instance is stateless (the `Encoder<T>` interface
   has no state contract); the compiler emits static-method
@@ -421,8 +441,8 @@ materialized only at the encode/decode boundary.
 ```cajeta
 package cajeta.wire;
 public class MsgPackEncoder<T> implements Encoder<T> {
-    public byte[] encode(T value) { ... }
-    public T decode(byte[] bytes) { ... }
+    public int8[] encode(T value) { ... }
+    public T decode(int8[] bytes) { ... }
 }
 
 package com.example;
@@ -434,10 +454,10 @@ public class UserMessage {
 }
 
 public class Service {
-    public UserMessage parse(byte[] body) {
+    public UserMessage parse(int8[] body) {
         return heap UserMessage(body);   // calls MsgPackEncoder.decode
     }
-    public byte[] serialize(UserMessage m) {
+    public int8[] serialize(UserMessage m) {
         return m.toBytes();   // calls MsgPackEncoder.encode
     }
 }
@@ -447,10 +467,10 @@ For JSON, the same `Service` shape is:
 
 ```cajeta
 public class Service {
-    public UserMessage parse(byte[] body) {
+    public UserMessage parse(int8[] body) {
         return Json.parse<UserMessage>(body);
     }
-    public byte[] serialize(UserMessage m) {
+    public int8[] serialize(UserMessage m) {
         return Json.toBytes(m);
     }
 }
@@ -469,7 +489,7 @@ needed.
 - **What about views that are nested inside other views?** Outer
   view has `@BigEndian`; inner field is of a `@Encoding`-marked
   type. Lean: the inner view is opaque to the outer — outer
-  treats it as `byte[]` of inner's encoded length, and the inner
+  treats it as `int8[]` of inner's encoded length, and the inner
   encoder operates on that slice.
 - **Length framing for the encoded blob inside an outer view.**
   Likely follow the existing length-prefix convention for
@@ -486,13 +506,23 @@ needed.
 Mentioned in design docs without compiler support. Listed here so
 contributors don't reach for them expecting them to work.
 
-### Java compat
+> **`@Override` is implemented, not aspirational.** It is an accepted
+> verification annotation (there is **no `override` keyword** in the
+> language). On its own it is inert; with the optional `from = "Parent"`
+> element it checks that the named class is actually an ancestor and errors
+> otherwise. Handler: `CajetaClass.cpp:3385`. Absence of `@Override`, or of
+> `from=`, is fine and skips the check.
+>
+> **`@Sealed` is a recognized modifier**, not just a marker: it surfaces as
+> `Modifiers.isSealed()` in reflection and is the gate for reflective
+> private-member access (see `Reflection.md` § Access control). Full
+> "restrict subtyping to a declared set" enforcement is still future work.
+
+### Java compat (aspirational)
 
 | Annotation              | Intended target | Intended effect                                                                                  | Spec                                       |
 |-------------------------|-----------------|--------------------------------------------------------------------------------------------------|--------------------------------------------|
-| `@Override`             | method          | Verify the method actually overrides a super method; compile error if not.                       | (no doc yet)                               |
 | `@FunctionalInterface`  | interface       | Verify the interface has exactly one abstract method.                                            | `Lambdas.md`                               |
-| `@Sealed`               | class, interface | Restrict subtyping to a declared set.                                                            | `MemoryModel.md`-adjacent                  |
 
 ### Error model
 
@@ -522,12 +552,11 @@ contributors don't reach for them expecting them to work.
 | `@Immutable`            | class           | Verifies all fields are `final` and field types are themselves immutable.                        | (no doc yet)        |
 | `@JsonStrict`           | class           | Reject unknown keys during `Json.parse<T>`. Default policy silently skips them. Per-field `@JsonProperty` / `@JsonIgnore` / `@JsonRequired` / `@JsonAlias` / `@JsonInclude` / `@JsonNamingStrategy` are also part of the JSON annotation surface. | `docs/stdlib/codec/Json.md` § Tier 1 |
 | `@NoVTable`             | class           | Suppress vtable header for classes that don't need virtual dispatch. Smaller instances.          | (no doc yet)        |
-| `@Reflectable`          | class           | Opts in to full RTTI metadata (field list, annotations) for runtime reflection.                  | `CajetaReflect.md`  |
-| `@Retained`             | annotation type | Marks an annotation as runtime-readable (Java's `@Retention(RUNTIME)` equivalent).               | `CajetaReflect.md`  |
+| `@Retained`             | class           | Keeps a class in the reflection registry even when no static path reaches it (AOT-stripping opt-out). Recognized as `Modifiers.isRetained()` today; full `forName` registry retention is in progress. | `Reflection.md`  |
 | `@Trainable`            | field           | ML training-loop marker (parameter slot for gradient updates).                                   | `CajetaMath.md`       |
 | `@Transactional`        | method          | Aspect marker for transactional methods (user-defined, but reserved name).                       | `AspectModel.md`    |
 | `@DisplayAs("name")`    | method, field   | Override the display name in IDE / debugger views.                                               | `Debugging.md`      |
-| `@Parameter`            | parameter       | Reflection hint — retains the parameter name in the symbol table for introspection.              | `CajetaReflect.md`  |
+| `@Parameter`            | parameter       | Reflection hint — retains the parameter name in the symbol table for introspection.              | `Reflection.md`  |
 | `@Scope("singleton"|"prototype"|"request")` | component class | DI scope. Today implicit per-call-site; this would make it declarative. | `AspectModel.md`    |
 
 ### Rejected
@@ -542,7 +571,7 @@ contributors don't reach for them expecting them to work.
 ## Section 5 — User-defined marker annotations
 
 Users declare their own annotations via the standard `@interface`
-syntax (parser at `antlr4/CajetaParser.g4:452`):
+syntax (`annotationTypeDeclaration`, `antlr4/CajetaParser.g4:471`):
 
 ```cajeta
 package com.example;
@@ -577,7 +606,7 @@ convention) — `reason()` above. Aspect advice reads them via
 
 User annotations not consumed by an `@Aspect` are inert (no
 code generated, no runtime overhead). They become useful via
-either an aspect pointcut or via reflection (`CajetaReflect.md`).
+either an aspect pointcut or via reflection (`Reflection.md`).
 
 ---
 
@@ -595,16 +624,18 @@ which holds the name, the keyword-argument map, and the source
 position. `Annotatable::findAnnotation(shortName)` is the canonical
 lookup.
 
-### Today's argument-parsing limitations
+### Argument-value capture (implemented)
 
-`Annotatable` captures annotation **names** uniformly but only
-parses string arguments for `@SuppressLint` and value arguments
-for `@Native`. Per `AspectModel.md` § A1, extending the parameter-
-value capture to all annotations is the next infrastructure
-piece — required for `@Order(2)`, `@Component(name = "primary")`,
-`@Inject(name = "primary")`, the Lombok-mirror annotations'
-configuration, and `@Encoding(MsgPackEncoder.class)`'s class-
-literal argument.
+`AnnotationParser.cpp` captures argument values for **all** annotations
+uniformly into the `AnnotationInstance.args` list — string literals,
+integers, booleans, class literals (`Foo.class` → a `ClassRef`), arrays
+(`StringList` / `Int64List` / `BoolList`), and nested annotations. Typed
+lookups (`getString`, `getInt`, `getBool`, `getClassRef`) read them back.
+This is what powers `@Order(2)`, `@Component(name = "primary")`,
+`@Inject(name = "primary", allocate = ALLOCATE_OWNER_SCOPE)`, the
+Lombok-mirror configuration, and `@Encoding(MsgPackEncoder.class)`'s
+class-literal argument. (Earlier drafts of this doc claimed only
+`@SuppressLint` / `@Native` parsed their args — no longer true.)
 
 ### Annotation resolution order
 
@@ -627,8 +658,8 @@ Per the Lombok-mirror surface: every annotation-synthesized method
   rather than `<synthesized>`),
 - is overridable by the user declaring a matching signature (the
   user's wins; the synthesizer skips synthesis when a match
-  exists — same convention `@AutoHash` already follows at
-  `CajetaClass.cpp:419`),
+  exists — same convention `@AutoHash` already follows in
+  `synthesizeAutoHash`, `CajetaClass.cpp:1204`),
 - emits a soft-deprecation lint if the user's hand-written
   version exists with a different signature (signal of probable
   intent drift),
@@ -636,23 +667,17 @@ Per the Lombok-mirror surface: every annotation-synthesized method
   by passing source position to the chain-push helpers like any
   user-written method.
 
-### Phasing for the Lombok-mirror work
+### Lombok-mirror status
 
-Roughly in dependency order:
+All of the following are **implemented** (synthesizers in `CajetaClass.cpp`,
+see § Section 2): annotation argument capture, `@Getter` / `@Setter`,
+`@ToString`, `@NoArgsConstructor` / `@AllArgsConstructor` /
+`@RequiredArgsConstructor`, the `@Data` / `@Value` bundles, `@NonNull`,
+`@Builder`, `@With`, and `@Encoding`.
 
-1. **Annotation argument capture for all annotations** (currently
-   only `@SuppressLint` and `@Native` parse their args). Blocks
-   everything else.
-2. **`@Getter` / `@Setter`** — simplest field-walk synthesizers.
-3. **`@ToString`** — same pattern.
-5. **`@NoArgsConstructor` / `@AllArgsConstructor` / `@RequiredArgsConstructor`** —
-   constructor synthesis machinery.
-6. **`@Data` / `@Value`** — bundle annotations, expand into the
-   above.
-7. **`@NonNull`** — null-check synthesis; integrates with
-   `--null-checks` from `CompilerModes.md`.
-8. **`@Builder`** — builder class synthesis, larger piece.
-9. **`@With`** — copy-with synthesis.
-10. **`@Cleanup`** — `try/finally` synthesis.
-
-`@Encoding` is independent; can land in parallel after step 1.
+Still outstanding:
+- **`@Cleanup`** — `try`/`finally` synthesis (not started).
+- **`@EqualsAndHashCode` as a standalone annotation** — today hashing is
+  driven only by `@AutoHash` (and the `@Data` / `@Value` bundles).
+- **`@ToString(format = TO_STRING_JSON)`** — deferred until the
+  `cajeta.codec.json` writer ships (requesting it is a compile error today).

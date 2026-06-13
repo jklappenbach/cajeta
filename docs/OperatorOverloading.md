@@ -18,6 +18,20 @@ in-place mutation — the receiver IS the target. Honoring both with
 one shape forces a wrong default; honoring each with the right shape
 keeps both readings clean.
 
+> **Implementation status (verified against `test/parser/`).** Shipped:
+> static binary arithmetic/bitwise/comparison operators (`+ - * / %
+> & | ^ << >>  == != < > <= >=`), `==`/`!=` and the `< > <= >=`
+> derivations, and instance `[]` / `[]=`
+> (`OperatorOverloadTests.cpp`, `ValueTypeOperatorHostTests.cpp`,
+> `ValueTypeIndexOperatorTests.cpp`, `ObjectOperatorEqTests.cpp`).
+> Still deferred: unary `+` / `-`, mutating unary `++` / `--`, and
+> compound assignment `+= -= …` have grammar alternatives but are not
+> yet lowered; logical/bitwise-not `!` / `~` have **no** grammar
+> alternative at all (`OPERATOR BANG` / `OPERATOR TILDE` are absent from
+> `operatorOverloadDeclaration`, so `operator!` / `operator~` do not
+> parse yet). Sections that describe these forms are spec, not current
+> behavior.
+
 ## Table of contents
 
 1. [Operator categories](#1-operator-categories)
@@ -308,6 +322,18 @@ consistent — the type system can't fully enforce it, but a
 `@TotalOrder` annotation lets the user opt in to runtime checks
 under `--debug` (out of v1 scope).
 
+### Value-type (Vector / Matrix) comparisons yield masks, not booleans
+
+The rules above govern user-declared `operator==` / `operator<` etc.,
+which return a scalar `boolean` (a user `@ValueType` `Vec2` can declare
+`public static boolean operator== (Vec2 a, Vec2 b)` — see
+`test/parser/ValueTypeOperatorHostTests.cpp`). The built-in
+`@ValueType` SIMD types `Vector<T,N>` and `Matrix<…>` are different:
+`== != < <= > >=` on them produce a **per-lane mask** (`<N x i1>`), not
+a reduced boolean. Reduce a mask with `.all()` / `.any()`, and blend
+with `.select(a, b)`. Do not use a raw Vector/Matrix comparison
+directly as an `if` condition — reduce it first.
+
 ### Hash consistency
 
 A class that defines `operator==` for structural equality MUST also
@@ -580,9 +606,9 @@ The BinaryOpExpression fix you landed for the "load-through-vtable
 on the chained-op return" goes away as a problem class — the static
 call's return is the value directly, no instance-pointer load needed.
 
-Existing tests under `test/parser/OperatorOverloadTests.cpp` need to
-be updated to use the static form. The test file count is small;
-mechanical rename.
+The tests under `test/parser/OperatorOverloadTests.cpp` (and the
+value-type variants) already exercise the static form — this migration
+has landed.
 
 ---
 
@@ -626,8 +652,11 @@ public final class Vec2 {
         return a.x == b.x && a.y == b.y;
     }
     // != derived automatically; hash() must be overridden for
-    // structural-equality semantics under HashMap.
-    public int64 hash() override {
+    // structural-equality semantics under HashMap. Overriding is by
+    // signature match — there is no `override` keyword (postfix
+    // `override` is a parse error); `@Override` is an accepted,
+    // optional no-op annotation that documents intent.
+    @Override public int64 hash() {
         return Hash.combine(Hash.f32(this.x), Hash.f32(this.y));
     }
 

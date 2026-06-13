@@ -70,10 +70,11 @@ are always order-independent.
 `atomicMin`, `atomicMax` of `(index, value)`, returning the old value. They are
 **device-only** (inside an `@Kernel`) and require a *writable* buffer. On Vulkan
 they need `SPV_EXT_shader_atomic_float_add` / `_min_max` (RADV exposes both for
-f32). Runnable end to end in `samples/Tour/xpu` (the `float atomics` section).
-See `CajetaXPU.md` for the kernel surface. (Follow-ons: f16/f64 atomics, integer
-atomics — `atomicAdd/And/Or/Xor/Exchange/CompareExchange` — and shared-memory
-atomics, per `cajeta-xpu-plan.md` Stage 9.)
+f32). Runnable end to end in `samples/tour/xpu` (the `float atomics` section).
+See `CajetaXPU.md` for the kernel surface. Integer atomics
+(`atomicAdd/Sub/Min/Max/And/Or/Xor/Exchange/CompareExchange`) and shared-memory
+(LDS) atomics have since shipped — see [`IntegerAtomics.md`](IntegerAtomics.md);
+f16/f64 float atomics remain follow-ons (`cajeta-xpu-plan.md` Stage 9).
 
 **Memory order.** An optional compile-time `MemoryOrder` trailing arg applies to
 float atomics too (`out.atomicAdd(0, v, MemoryOrder.Relaxed)`) — see

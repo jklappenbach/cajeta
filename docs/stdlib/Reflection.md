@@ -1,13 +1,22 @@
 # Reflection — `cajeta.reflect`
 
-A design for `cajeta.reflect`, the stdlib package for runtime
-type introspection. Reads the per-class RTTI tables the compiler
-already emits (see `StructureMetadata` in the compiler:
-`#VTable` + `#RttiGlobal` globals exist for every class today)
-and surfaces them through a user-facing API modeled on Java's
-`java.lang.reflect` and C#'s `System.Reflection`, with cajeta-
-specific improvements (generic retention, annotation-controlled
-private access, fiber-aware invocation).
+`cajeta.reflect` is the stdlib package for runtime type introspection. It
+reads the per-class RTTI tables the compiler already emits (see
+`StructureMetadata` in the compiler: `#VTable`, `#RttiGlobal`, and a cached
+`#ClassObject` exist for every class today) and surfaces them through a
+user-facing API.
+
+> **Two layers, read this first.** A first slice — **REFL-1** — *ships today*,
+> but its shape differs from the Java-mirror design that fills most of this
+> document. The shipped surface is **index-based and minimal** (you walk
+> members by integer index; there are no `Field[]` / `Method[]` array returns,
+> no `Object`-boxed `get`/`set` by default, no `@Reflectable`, no
+> `UnsafeReflect`, no `MethodHandle`). The detailed `Class` / `Field` /
+> `Method` / `Constructor` / `Parameter` / `Annotation` sections further down
+> describe the **intended Java-style API** (`java.lang.reflect` /
+> `System.Reflection` flavored, with generic retention and fiber-aware
+> invocation) — treat those as the design target, not the current signatures.
+> The next section documents exactly what ships.
 
 Lives in stdlib because it's foundational — DI containers, JSON
 serializers, ORMs, mocking frameworks, debuggers, and most
@@ -16,10 +25,110 @@ cost is already paid (every cajeta binary carries `#RttiGlobal`
 entries today regardless). User code reaches for it via
 `import cajeta.reflect.*`.
 
+## Shipped surface (REFL-1)
+
+What actually exists today, in `runtime/src/cajeta/reflect/` — verify against
+those sources, not the design sections below. Members are addressed by
+**integer index**; accessors take that index directly.
+
+```cajeta
+public final class Class<T> {            // phantom T; layout is { vtable, rtti }
+    public static Class<?> of(Object o);                 // dynamic type; also T.class
+    public static Optional<Class<?>> forName(String name);   // Optional, not throw
+    public static #Class<?>[] allClasses();
+    public static #Class<?>[] classesInPackage(String packageName);
+    public static #Class<?>[] classesAnnotated(String annotationName);
+
+    public #String   getName();
+    public int64     getInstanceSize();
+    public int32     getModifierFlags();
+    public #Modifiers getModifiers();
+    public boolean   isPublic();  public boolean isFinal();
+
+    public int32     getFieldCount();
+    public #String   getFieldName(int32 index);
+    public int32     getFieldModifierFlags(int32 index);
+    public int32     getFieldOffset(int32 index);
+    public int64     getFieldTypeFlags(int32 index);
+    public #Field    getField(int32 index);
+
+    // Typed field read/write by index (no boxing). i8 has no variant —
+    // int32/int64/boolean/float32/float64 only.
+    public int32  getInt32(Object o, int32 index);
+    public void   setInt32(Object o, int32 index, int32 value);
+    public int64  getInt64(Object o, int32 index);
+    public void   setInt64(Object o, int32 index, int64 value);
+    public boolean getBoolean(Object o, int32 index);
+    public void    setBoolean(Object o, int32 index, boolean value);
+    public float32 getFloat32(Object o, int32 index);
+    public void    setFloat32(Object o, int32 index, float32 value);
+    public float64 getFloat64(Object o, int32 index);
+    public void    setFloat64(Object o, int32 index, float64 value);
+    public #Object getBoxed(Object o, int32 index);      // reference-typed fields
+
+    public int32     getMethodCount();
+    public #String   getMethodName(int32 index);
+    public int32     getMethodParamCount(int32 index);
+    public #Method   getMethod(int32 index);
+    public static int64 invokeScalar0(Object o, int32 index);
+
+    public int32        getConstructorCount();
+    public int32        getConstructorParamCount(int32 index);
+    public #Constructor getConstructor(int32 index);
+    public #Object      heapInstance(int32 ctorIndex);   // not `newInstance`
+
+    public int32       getParentCount();
+
+    public int32             getTemplateParameterCount();   // generic retention —
+    public #TemplateParameter getTemplateParameter(int32 i); // "Template", not "Type"
+    public int32             getTemplateArgumentCount();
+    public #TemplateArgument getTemplateArgument(int32 i);
+    public boolean           isTemplateInstantiation();
+
+    public int32       getAnnotationCount();
+    public #String     getAnnotationName(int32 index);
+    public #Annotation getAnnotation(int32 index);
+    public boolean     hasAnnotation(String name);
+}
+```
+
+`Field`, `Method`, `Constructor`, `Parameter`, and `Annotation` are likewise
+index-addressed wrappers over the raw `#Rtti` pointer:
+
+- `Field` — `getName`, `getModifiers`, `getTypeFlags`, typed `getInt32`/`setInt32`/… +
+  `getBoxed`, annotation queries. Reads/writes go through a `checkAccess()`
+  gate (see below).
+- `Method` — `getName`, `getParameterCount`, `getParameter(i)`, `getModifiers`,
+  and `invokeScalar` / `invokeInt32` / `invokeFloat32` / `invokeFloat64` /
+  `invokeObject` / `invokeBoxed`, each taking an `int64[] args` (small-arity
+  overloads exist) — **not** Java's `Object... args`.
+- `Constructor` — `getParameterCount`, `getParameter(i)`, `getModifiers`,
+  `heapInstance()` / `heapInstance(int64[] args)`.
+- `Parameter` — `getName`, `getTypeName`, annotation queries.
+- `Annotation` — args by index (`getArgKind`/`getArgInt`/`getArgBool`/`getArgString`,
+  list variants) **and** by key (`getInt(key)`, `getString(key)`, `getBool(key)`,
+  `getClassRef(key)`).
+- `Modifiers` — `isPublic` / `isPrivate` / `isProtected` / `isStatic` /
+  `isFinal` / `isSealed` / `isRetained` / `isPackagePrivate` over a raw flag
+  int. (No `isOverride` / `isTransient` / `isInternal` / `isEnum` yet.)
+
+**Access control as shipped:** there is no `@Reflectable` annotation and no
+`UnsafeReflect`. The `checkAccess()` gate blocks a member only when it is
+`private` **and** its declaring class is `@Sealed` (the native
+`__cajeta_reflect_field_blocked` / `_ctor_blocked` probes back this); otherwise
+access is allowed. Exceptions live in
+`IllegalAccessException.cajeta` / `UnsupportedReflectionException.cajeta`.
+
+**Not yet shipped from the design below:** `Object`-boxed `get`/`set` as the
+primary path, `Class<?>[] getFields()`/`getMethods()` array enumerations,
+`MethodHandle` / `bindCallSite`, `UnsafeReflect`, `@Reflectable`, `Class.forName`
+that throws, and the constant-folding fast paths.
+
 ## Why now
 
-The infrastructure exists; the API doesn't. The compiler emits
-RTTI for every class:
+The infrastructure exists, and the REFL-1 API above now reads it; the richer
+Java-mirror surface is still landing. The compiler emits RTTI for every
+class:
 - Canonical class name
 - Properties (name + type + annotations + modifiers per field)
 - Methods (name + parameter list + annotations + modifiers per method)
@@ -27,12 +136,12 @@ RTTI for every class:
 - Implemented interfaces
 - Vtable pointer
 
-`AspectModel.md` uses this for pointcut matching at compile time;
-no public runtime API reads it. Until this design lands, users
-who want a JSON serializer write one by hand per class, DI
-containers do compile-time code generation, and "instantiate a
-class by name" isn't a thing. All three are common-enough needs
-that a real reflection API is overdue.
+`AspectModel.md` uses this for pointcut matching at compile time. The REFL-1
+runtime surface above now reads it too (introspection, typed field access,
+`heapInstance`, annotation queries); the richer ergonomics the rest of this
+doc describes — array enumerations, boxed `get`/`set`, `MethodHandle`,
+`forName`-by-string with retention — are what remains to make a hand-written
+per-class JSON serializer or a runtime DI container unnecessary.
 
 ## Goals
 
@@ -297,7 +406,7 @@ public final class Constructor<T> {
 `newInstance` allocates + runs the constructor, returning the
 fresh instance. Implicit super-constructor chaining (already in
 the language; see commit `37525df`) fires the same way it does
-under static `new`. Constructor reflection respects access
+under a static `heap` allocation. Constructor reflection respects access
 control identically to fields and methods.
 
 ---
@@ -363,6 +472,12 @@ are `Annotation`.
 
 ## cajeta.reflect.TypeParameter / TypeArgument
 
+> **Shipped names are `TemplateParameter` / `TemplateArgument`** (and
+> `Class.getTemplateParameter(i)` / `getTemplateArgument(i)` /
+> `isTemplateInstantiation()`). The `Type*` spelling and the array-returning
+> `getTypeParameters()` / `getTypeArguments()` here are the design target; map
+> them onto the index-based `Template*` accessors when reading current code.
+
 Cajeta retains generic information at runtime (departure from
 Java's erasure). A `Box<int32>` instance reports `int32` as its
 type argument; the compile-time substitution lives in RTTI.
@@ -425,6 +540,12 @@ public final class Modifiers {
 ---
 
 ## Access control
+
+> **Design target — differs from what ships.** The `@Reflectable` opt-in and
+> `UnsafeReflect` escape hatch below are **not implemented**. The shipped
+> REFL-1 model (see *Shipped surface*) gates on `@Sealed`: a member is blocked
+> only when it is `private` *and* its declaring class is `@Sealed`. The
+> annotation-driven model here is the intended evolution.
 
 Defaults are restrictive; opt-in widens the surface.
 
@@ -762,6 +883,14 @@ public boolean deepEquals(Object a, Object b) {
 ---
 
 ## Implementation sequence
+
+> **Note on the shipped path.** REFL-1 took a **data-driven** route, not the
+> per-class synthesized adapters of Strategy 2 below: typed field access goes
+> through generic native helpers keyed on `(rtti, fieldIndex)` —
+> `__cajeta_field_get_i32` / `_set_i32` / … reading at the field's recorded
+> byte offset, with *no* per-class codegen. The `MethodHandle` fast path
+> (step 5 / Strategy 4) is not built. The ordering below remains the design
+> target for the richer surface.
 
 A reasonable order, given the existing RTTI infrastructure. The
 v1 scope includes the performance paths described above —

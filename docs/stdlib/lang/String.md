@@ -1,17 +1,45 @@
 # `cajeta.lang.String` — immutable UTF-8 text
 
 Single source of truth for the String surface in Cajeta. Captures
-the 2026-05-18 design pass with the user (15 questions + tidy-up).
-Implementation pending.
+the 2026-05-18 design pass with the user (15 questions + tidy-up),
+annotated against what has since shipped.
 
-Status: **designed, not implemented.** Tracked as task #157 → next
-phase becomes a separate impl task.
+Status: **partially implemented.** A core surface is live in
+[`runtime/src/cajeta/lang/String.cajeta`](../../../runtime/src/cajeta/lang/String.cajeta)
+and pinned by `test/expression/StringMethodsTests.cpp`; the larger
+design surface below (factories, `format`/`printf`, `StringBuilder`,
+encoding interchange, locale-aware case folding, graphemes) is still
+**planned**. Each subsection notes its status.
+
+> **What ships today** (verified against the source + tests):
+> - Storage layout `{ int8[] bytes; int32 byteLength; int32 mode;
+>   int32 cachedCpLength; }`; constructors `String()` and the
+>   view-mode `String(#int8[] bytes, int32 byteLength)`.
+> - `count()` (codepoints, cached), `size()` (bytes), `isEmpty()`,
+>   `hash()` (FNV-1a), `equals(String)`.
+> - `charAt(int32)`→`int8` (byte-indexed), `byteAt(int32)`,
+>   `codepointAt(int32)`→`char` (O(N) walk).
+> - `indexOf(String)`, `startsWith`, `endsWith`, `contains` (all
+>   byte-based).
+> - `substring(int32 begin, int32 end)` — **byte-indexed, copying**
+>   (not a view, not codepoint-indexed — see § Substring).
+> - `toUpperCase()`, `toLowerCase()`, `trim()`, `replace(String,
+>   String)` — ASCII-only, no `Locale` argument.
+> - `+` concatenation (lowered to `__cajeta_str_concat`).
+> - String literals materialize as **view-mode** (`mode = 1`) class
+>   `String` instances over `.rodata`.
+>
+> Names/semantics in the design below that DIFFER from what shipped
+> are flagged inline. Notably the shipped sizing methods are
+> `count()` / `size()`, not `length()` / `byteLength()`; and `String`
+> carries value-equality via its `hash()` override, **not** by
+> overriding `operator==`.
 
 ---
 
 ## Storage model
 
-- **UTF-8 internally, backed by `byte[]`.** Most files, network
+- **UTF-8 internally, backed by `int8[]`.** Most files, network
   protocols, JSON, source code, and config formats already speak
   UTF-8 — zero-copy at most I/O boundaries; ASCII fast path is
   bytewise. The "O(N) to index by character" cost is real but doesn't
@@ -56,11 +84,13 @@ class String {
 ## `char` is a 32-bit Unicode codepoint
 
 Cajeta redefines `char` (previously i8, the C definition) to mean
-**a Unicode codepoint**. `'c'` is `char` 99; `'é'` is 233; `'😀'` is
-0x1F600 — all 32-bit. Character arithmetic still works for ASCII;
-emoji and CJK work natively. The 8-bit byte already has a perfect
-name (`int8` / `byte`); there's no good reason for `char` to also
-mean "byte" in 2026.
+**a Unicode codepoint** — backed by `i32`
+(`src/cajeta/type/CajetaType.cpp:406`). `'c'` is `char` 99; `'é'` is
+233; `'😀'` is 0x1F600 — all 32-bit. Character arithmetic still works
+for ASCII; emoji and CJK work natively. The 8-bit byte already has a
+perfect name (`int8` — Cajeta has no `byte` type, byte buffers are
+`int8[]`); there's no good reason for `char` to also mean "byte" in
+2026.
 
 The Java 16-bit `char` is the cause of the entire surrogate-pair
 mess. We have the luxury of redefining; no Cajeta user code uses
@@ -70,10 +100,6 @@ the old `char` type, so there's no breakage.
 
 ## Equality — value, always
 
-```cajeta
-boolean operator==(Object obj);
-```
-
 `"abc" == "abc"` returns `true` regardless of allocation identity.
 **Value equality, not pointer equality.** Java's `==`-on-String is
 pointer equality (`s1 == s2` is false for two distinct String
@@ -82,12 +108,31 @@ objects containing the same characters); you have to remember
 Java bugs. Python / Rust / Go / Swift all use value equality on
 strings for `==`; Cajeta joins them.
 
+**How it works (shipped).** `String` does **not** declare its own
+`operator==`. It overrides only `hash()` (FNV-1a over the UTF-8
+bytes), and `Object`'s static `operator==` defaults to
+`a.hash() == b.hash()` — so two Strings with identical bytes compare
+equal through that path. The explicit byte-for-byte check is
+`equals(String other)`; prefer it when hash-collision-exact
+semantics matter (`==` compares 64-bit hashes, ~2⁻⁶⁴ collision
+probability). See [Object.md](./Object.md) § *operator== — equality flows through hash()*.
+
+```cajeta
+public int64   hash();             // FNV-1a; overrides Object.hash()
+public boolean equals(String other); // byte-for-byte
+```
+
 Pointer equality remains available via `Hash.identity(s1) ==
 Hash.identity(s2)` if anyone ever genuinely needs it.
 
 ---
 
 ## Comparable + ordering
+
+Status: **planned.** `String.cajeta` does not yet implement
+`compareTo` / `compareToIgnoreCase`, does not declare `implements
+Comparable<String>`, and `Locale` does not exist in the codebase
+(see [Locale.md](./Locale.md)). The design:
 
 ```cajeta
 public class String implements Comparable<String> {
@@ -110,27 +155,36 @@ for sorted-collection compatibility.
 
 ---
 
-## Hashing — polynomial + per-process seed
+## Hashing — FNV-1a (shipped)
 
 ```cajeta
 int64 hash();   // overrides Object.hash()
 ```
 
-Java-style polynomial mix (`h = 31 * h + c` over the UTF-8 bytes),
-folded with `Hash.processSeed()` at the end. The seed mix kills the
-offline-precompute attack class — an attacker can't generate
-colliding strings locally because they don't know your process's
-seed.
-
-This does NOT defend against an online adversary probing latency to
-discover collisions in your specific process. For that, opt into
-SipHash via `@Hash(SipHash.class)` on the containing value class.
-See [Object.md § hash()](./Object.md#hash--pluggable-algorithm) for
-the broader pluggable-algorithm model and the security tradeoffs.
+The shipped algorithm is **FNV-1a** (not the Java polynomial mix):
+offset basis `0xCBF29CE484222325`, then `h = (h XOR b) *
+0x100000001B3` per UTF-8 byte (`String.cajeta`). Deterministic and
+content-sensitive, with **no per-process seed mixing yet** — so it
+does not currently resist an offline-precompute or online-probe
+adversary. Seeded, DoS-resistant String hashing (XXH3-64 +
+`Hash.processSeed`) is the planned follow-up; the runtime symbol
+`__cajeta_hash_bytes` already exists. See
+[Object.md § hash()](./Object.md#hash--pluggable-algorithm) for the
+broader pluggable-algorithm model and the security tradeoffs.
 
 ---
 
 ## Encoding interchange
+
+Status: the **`Encoding` and `EncodingErrorPolicy` enums and the
+`EncodingException` class ship**
+([`Encoding.cajeta`](../../../runtime/src/cajeta/lang/Encoding.cajeta),
+[`EncodingErrorPolicy.cajeta`](../../../runtime/src/cajeta/lang/EncodingErrorPolicy.cajeta),
+[`EncodingException.cajeta`](../../../runtime/src/cajeta/lang/EncodingException.cajeta)),
+but the conversion methods that consume them (`fromBytes`,
+`getBytes`) are **not yet implemented** — see § Construction. The
+shipped `Encoding` enum carries 12 members (the design list below
+plus `LATIN_1`, and the four CJK encodings), matching the source.
 
 External byte data flows in and out through an `Encoding` enum + an
 `EncodingErrorPolicy` enum:
@@ -170,11 +224,16 @@ This is the stdlib-wide pattern for parsing-policy enums — see
 class EncodingException extends RecoverableException {
     int64    offset;            // position in source string
     int32    codepoint;         // offending codepoint (or 0 on byte-side)
-    Encoding sourceEncoding;
-    Encoding targetEncoding;
+    int32    sourceEncoding;    // Encoding ordinal (e.g. Encoding.UTF_8)
+    int32    targetEncoding;    // Encoding ordinal
     String   reason;            // "codepoint U+1F600 not representable in ASCII"
 }
 ```
+
+(In the shipped source the encoding fields are stored as `int32`
+ordinals, not as `Encoding` references; the constructor is
+`EncodingException(String message, int64 offset, int32 codepoint,
+int32 sourceEncoding, int32 targetEncoding, String reason)`.)
 
 Carries enough to fix the bug: source position, the offending
 codepoint, both encodings, and a short human-readable reason.
@@ -184,15 +243,24 @@ Python's `UnicodeEncodeError` is the model.
 
 ## Construction / factories
 
+Status: **planned.** None of the static factories below
+(`fromUtf8`, `fromBytes`, `repeat`, `join`, `fromCodepoint(s)`,
+`of(...)`) exist in `String.cajeta` today. What ships is two
+instance constructors: the no-arg `String()` (empty, owned) and the
+view-mode `String(#int8[] bytes, int32 byteLength)` (`mode = 1`,
+pinned by `test/parser/StringViewCtorTests.cpp`). String literals
+are lowered directly to view-mode instances by the compiler. The
+factory surface below is the design target:
+
 ```cajeta
 public class String {
     // UTF-8 fast paths
-    public static #String fromUtf8(byte[] bytes, int32 len);
-    public static #String fromUtf8Unchecked(byte[] bytes, int32 len);
+    public static #String fromUtf8(int8[] bytes, int32 len);
+    public static #String fromUtf8Unchecked(int8[] bytes, int32 len);
 
     // Generic encoding ingestion
-    public static #String fromBytes(byte[] bytes, int32 len, Encoding enc);
-    public static #String fromBytes(byte[] bytes, int32 len, Encoding enc,
+    public static #String fromBytes(int8[] bytes, int32 len, Encoding enc);
+    public static #String fromBytes(int8[] bytes, int32 len, Encoding enc,
                                     EncodingErrorPolicy policy);
 
     // Convenience builders
@@ -222,30 +290,39 @@ Computed-at-runtime values can't point at static storage.
 ### Encoding interchange — out
 
 ```cajeta
-public #byte[] getBytes(Encoding enc);
-public #byte[] getBytes(Encoding enc, EncodingErrorPolicy policy);
+public #int8[] getBytes(Encoding enc);
+public #int8[] getBytes(Encoding enc, EncodingErrorPolicy policy);
 ```
 
 Symmetric with `fromBytes`. Default policy `FAIL`. `getBytes(UTF_8)`
 is the no-conversion fast path (returns a fresh copy of the
-internal buffer, since the caller may mutate the returned `byte[]`).
+internal buffer, since the caller may mutate the returned `int8[]`).
 
 ---
 
 ## Iteration
 
-```cajeta
-public int32 length();              // codepoints
-public int32 byteLength();          // bytes
-public boolean isEmpty();
-public int8 byteAt(int32 byteIdx);          // O(1)
-public char codepointAt(int32 cpIdx);       // O(N) walk
+Shipped accessors (note the names — the sizing methods are
+`count()` / `size()`, **not** `length()` / `byteLength()`):
 
+```cajeta
+public int64 count();               // codepoints (cached after first walk)
+public int64 size();                // bytes (byteLength)
+public boolean isEmpty();
+public int8 byteAt(int32 byteIdx);          // O(1), no bounds check
+public int8 charAt(int32 byteIdx);          // O(1), byte-indexed, returns int8
+public char codepointAt(int32 cpIdx);       // O(N) walk, returns char
+```
+
+Planned (not yet implemented — no `Stream` integration on String
+yet):
+
+```cajeta
 public Stream<char> codepoints();           // O(1) per next()
 public Stream<int8> bytes();                // O(1) per next()
 ```
 
-**Enhanced-for over a String iterates codepoints:**
+**Enhanced-for over a String iterates codepoints (planned):**
 
 ```cajeta
 for (char c : "ciao") {
@@ -266,44 +343,63 @@ scanners that need to walk the raw UTF-8 representation.
 ## Substring + slicing
 
 ```cajeta
-public String substring(int32 startCp, int32 endCp);
+public #String substring(int32 begin, int32 end);   // shipped
 ```
 
-**Returns a view (slice), not a copy.** The returned String is a
-view-mode instance (`mode = 1`) whose `bytes` field points into the
-parent's UTF-8 payload. No bytes are copied; the substring is O(1)
-after the codepoint→byte-offset walk (or O(byteLength) when the
-parent isn't ASCII-fast-path-able).
+**Shipped behavior: byte-indexed and copying.** The live
+implementation in `String.cajeta` takes a half-open **byte** range
+`[begin, end)` (indices clamped to `[0, byteLength]`; an inverted
+range yields empty), allocates a fresh `int8[]`, copies the slice,
+and returns a heap-owned `#String`. It is **not** codepoint-indexed
+and **not** a zero-copy view — the doc comment in the source notes
+that view-mode slicing is a planned follow-up that needs pointer
+arithmetic on `int8[]` (`&this.bytes[begin]`), which the language
+has no surface syntax for yet. Pinned by `StringMethodsTests`
+(`substring(6, 11)` on `"hello world"` → `"world"`).
 
-Safety: **Strings are never dropped** in Cajeta. Once a String is
-allocated, its bytes persist for the process's lifetime — the drop
-chain doesn't register String allocations, and no per-string
-reclamation runs at scope exit. That makes view-mode substrings
-unconditionally safe: the parent's bytes are guaranteed live for as
-long as any program code can reach the substring.
+### Planned: codepoint-indexed view slicing
+
+The design target is a zero-copy, codepoint-indexed slice:
+
+> Return a view-mode instance (`mode = 1`) whose `bytes` field points
+> into the parent's UTF-8 payload — O(1) after the codepoint→byte
+> walk, no copy, return type plain `String` (no `#`) because no
+> ownership crosses.
+
+This depends on the owned/view drop distinction, which is **also not
+yet wired**: today's String-producing helpers (`concat`,
+`substring`, `toUpperCase`, …) `malloc` and currently leak at scope
+exit because the type system collapses owned and borrowed `String`
+into one type (see `test/parser/OwnedStringDropTests.cpp` for the
+fix outline). The "Strings are never dropped" framing below is a
+*design rationale* for why view sharing is safe, not a description of
+a committed permanent policy — the source's drop chain is designed
+to reclaim owned bytes (`mode == 0`) once the distinction lands.
 
 The trade-off vs Java 6's shared-char[] substring (which was
 abandoned in Java 7+): Java's char[] sharing leaked the *entire*
 backing array — a 10-char substring kept a 1 MB source file alive
-in the heap because the bytes were owned by the substring's char[]
-backing reference. Cajeta sidesteps this by making the policy
-explicit and global: Strings never die anyway, so view sharing
-doesn't change the heap-residency story. Workloads that produce
-hundreds of MB of unique String content during a long-running
-process should either materialize through byte[] for transient
-work or be redesigned to bound their String creation.
-
-Codepoint-indexed, not byte-indexed. If you need byte-range slicing,
-drop to the raw `byte[]` layer.
-
-Return type is plain `String` (no `#` ownership transfer marker)
-because no ownership crosses — the caller receives a view, not a
-moved heap allocation. Multiple call sites can hold substrings of
-the same parent concurrently without sharing-related contention.
+in the heap. Cajeta's planned view substring avoids re-rooting the
+whole parent buffer by carrying an explicit `(bytes, byteLength)`
+window. Workloads that produce hundreds of MB of unique String
+content should materialize through `int8[]` for transient work or
+bound their String creation.
 
 ---
 
 ## Standard methods
+
+Status: a subset ships today (verified in `String.cajeta` +
+`StringMethodsTests`): `indexOf(String)` (returns `int64`, byte
+index), `startsWith`, `endsWith`, `contains`, `toUpperCase()`,
+`toLowerCase()`, `trim()`, `replace(String find, String
+replacement)`. The case/trim methods are **ASCII-only** and take
+**no `Locale`** (the `Locale` overloads, the no-arg `Locale.ROOT`
+defaults, `split`, `lastIndexOf`, `indexOf(char)`,
+`indexOf(String, fromCp)`, `replaceFirst`, `replace(char, char)`,
+`trimStart`/`trimEnd`, `padStart`/`padEnd`, `equalsIgnoreCase*`,
+`isBlank` — everything else below) are **planned**. The full design
+set:
 
 ```cajeta
 // Search
@@ -359,34 +455,42 @@ name per concept), `hashCode()` alias for `hash()` (same).
 
 ---
 
-## `operator+` — JEP 280 concat primitive
+## `operator+` — concatenation (shipped, pairwise)
 
 ```cajeta
 String result = a + b + c + d;
 ```
 
-Compiler walks the `+`-chain in the expression, batches all pieces
-into a single runtime call (`__cajeta_string_concat(pieces, count)`)
-that:
+**Shipped today (pairwise).** A `+` on two `String` operands lowers
+to a single `__cajeta_str_concat` call: each operand's underlying
+C-string is extracted, concatenated into a fresh `malloc`'d buffer,
+and re-wrapped in a heap-owned class `String`
+(`BinaryOpExpression.cpp`, `BINARY_OP_ADD`). A chain `a + b + c + d`
+is therefore evaluated left-associatively as N−1 pairwise concats
+(with N−2 intermediates), **not** the batched single-allocation
+primitive originally designed.
 
-1. Walks the pieces once, computes the exact total byte length
-2. Allocates ONE buffer of that size (no intermediate growth)
-3. Copies each piece into the buffer
-4. Wraps as a heap-owned `#String`
+> **Planned: JEP 280-style single-call concat.** The design target
+> is for the compiler to walk the whole `+`-chain, compute the exact
+> total byte length once, allocate ONE buffer, and copy each piece
+> in — modeled on Java's JEP 280 (Java 9+), one allocation per chain.
+> Not yet implemented.
 
-Modeled on Java's JEP 280 (Java 9+). One allocation per chain, not
-N-1 intermediates. Faster than StringBuilder for the in-expression
-case because there's no buffer resize or defensive copy.
-
-**In a loop, each `+`-chain still allocates one new String per
-iteration** — that's the correct semantics for immutable strings.
-Use `StringBuilder` for incremental construction inside loops; the
-lint rule `string-concat-in-loop` (see
-[LintRules.md](../../LintRules.md)) catches the bad shape.
+**In a loop, each `+`-chain still allocates** — the right semantics
+for immutable strings, but a perf trap. The planned `StringBuilder`
+(see below — not yet implemented) is the intended fix; the lint rule
+`string-concat-in-loop` (see [LintRules.md](../../LintRules.md))
+catches the bad shape.
 
 ---
 
 ## `String.format` / `String.printf`
+
+Status: **planned.** Neither `String.format` nor `String.printf`
+exists in `String.cajeta`. (Runtime-side `{}`-substitution *does*
+ship, but only as part of the `System.stdout.println(fmt, ...)`
+intrinsic — see [System.md](./System.md), not as a `String` method.)
+The design:
 
 Two methods, two notations. Ship both.
 
@@ -431,6 +535,9 @@ if a non-literal template doesn't match its args.
 
 ## `StringBuilder` — full robust API
 
+Status: **planned.** There is no `StringBuilder` class in the
+codebase yet. The full design:
+
 Companion mutable builder. Single-threaded; concurrent use is
 explicit `Lock` at the transaction boundary (see [Memory model
 notes on concurrency](#memory-model) below).
@@ -451,8 +558,8 @@ public class StringBuilder {
     public StringBuilder append(float32 v);
     public StringBuilder append(float64 v);
     public StringBuilder append(boolean b);
-    public StringBuilder append(byte[] bytes, int32 len, Encoding enc);
-    public StringBuilder append(byte[] bytes, int32 offset, int32 len, Encoding enc);
+    public StringBuilder append(int8[] bytes, int32 len, Encoding enc);
+    public StringBuilder append(int8[] bytes, int32 offset, int32 len, Encoding enc);
     public StringBuilder appendLine();
     public StringBuilder appendLine(String s);
     public StringBuilder appendRepeated(char c, int32 count);
@@ -522,6 +629,17 @@ Grapheme-aware reverse needs Unicode tables; see v2 plan below.
 
 ## Memory model
 
+> **Implementation status.** The owned/view drop distinction this
+> section describes is **not yet wired**. Because the type system
+> currently collapses owned and borrowed `String` into one type, the
+> drop chain can't safely free String locals, so helper-produced
+> Strings (`concat`/`substring`/`toUpperCase`/…) presently leak at
+> scope exit (`test/parser/OwnedStringDropTests.cpp`). The
+> source's drop chain is *designed* to reclaim owned bytes once an
+> `OwnedString` marker lands; `String.empty()` (the empty-string
+> singleton) and the `transfer-on-view-string` lint are likewise
+> planned. Read the rules below as the design target.
+
 - **Strings are never dropped.** This is the global lifetime rule:
   Cajeta-allocated String instances and their UTF-8 payloads persist
   for the process's lifetime. The drop chain does NOT register
@@ -547,7 +665,7 @@ Grapheme-aware reverse needs Unicode tables; see v2 plan below.
   unbounded distinct String content will grow without bound under
   the never-drop policy. Workloads with that shape (high-churn
   text-rewriting pipelines, log accumulators) should hold transient
-  text as `byte[]` and only materialize to `String` at egress, or
+  text as `int8[]` and only materialize to `String` at egress, or
   be redesigned to bound their String creation. This is the same
   trade Strings make in Java's intern pool / .NET's interned
   string table; Cajeta extends it to ALL Strings, not just
@@ -660,15 +778,15 @@ the convention via `EncodingErrorPolicy`.
 
 | Question | Answer |
 |----------|--------|
-| Encoding storage | UTF-8 backed by `byte[]` |
+| Encoding storage | UTF-8 backed by `int8[]` |
 | Mutability | Immutable; separate StringBuilder |
-| `char` type | i32 Unicode codepoint (was i8) |
-| Equality | Value (`==` returns true for same content) |
-| Hashing | Polynomial + per-process seed |
+| `char` type | i32 Unicode codepoint (was i8) — **shipped** |
+| Equality | Value (`==` via `hash()` override, not `operator==`) — **shipped** |
+| Hashing | FNV-1a, no seed yet (design target: seeded XXH3) — **shipped** |
 | Encoding enum | UTF-8/16/32 + ASCII + Latin-1 + Windows-1252 + GB18030 + Shift_JIS + EUC-KR + Big5 |
 | Encoding error policy | `{ FAIL, REPAIR }`; FAIL default; no IGNORE |
-| Substring | Always copies; codepoint-indexed |
-| Iteration | Codepoint via `codepoints()` / for-loop / `char` |
+| Substring | **Shipped: byte-indexed, copying** (design target: codepoint-indexed view) |
+| Iteration | `count()` codepoints shipped; `codepoints()` stream / for-loop **planned** |
 | Graphemes | v2, explicit roadmap |
 | `operator+` | JEP 280 single-call concat primitive |
 | String literal mode | View-mode pointing at static storage |

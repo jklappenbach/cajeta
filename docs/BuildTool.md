@@ -208,7 +208,7 @@ because they manipulate manifest/lockfile/cache state directly
 rather than invoking tasks from the manifest:
 
 ```
-cajeta init <name>           Scaffold a heap project (writes a starter cajeta.json
+cajeta init <name>           Scaffold a project (writes a starter cajeta.json
                                 with a default "tasks" block — see "Default
                                 cajeta init manifest")
 cajeta tasks                 List task names from cajeta.json's "tasks" block
@@ -217,12 +217,23 @@ cajeta task <name> [--show]  Show the resolved action sequence for a task
 cajeta add <dep>             Add a dependency (manifest + lockfile mutation)
 cajeta remove <dep>          Remove a dependency
 cajeta upgrade [dep]         Re-resolve versions per manifest constraints
-cajeta vendor                Copy all transitive deps into ./vendor for offline builds
 cajeta install               Install an artifact from a repository into the local download cache
 cajeta info                  Print computed dependency tree, capability set, properties, profile
-cajeta trust                 Manage the launcher's signature-verification trust store
-cajeta workspace             Workspace-wide operations (multi-package projects)
+cajeta publish               Publish an artifact to a repository
+cajeta coverage <cmd>        Manage coverage-exclusion config (ignore/list/remove)
+cajeta trust <cmd>           Manage the launcher's signature-verification trust store
+cajeta toolchain <cmd>       Manage the toolchain store (list/install/pin/which/show/…)
+cajeta workspace <cmd>       Workspace-wide operations (multi-package projects)
+cajeta verify-reproducible   Re-run the build and check for byte-identical output
+cajeta sandbox-info          Print the resolved sandbox/capability policy
 ```
+
+This is the set `dispatchBuildTool` claims directly
+(`src/cajeta/buildtool/BuildToolCommands.cpp`). `cajeta vendor` (copy
+transitive deps into `./vendor` for offline builds) is **planned** —
+not yet a recognized built-in. Anything not in this list and not
+prefixed with `-` (`build`, `test`, `run`, …) is dispatched as a
+*task* from the manifest's `tasks` block.
 
 These aren't tasks because they're tool-state operations, not
 project behavior the user customizes. A project that genuinely
@@ -1854,22 +1865,29 @@ actually-used set. Mismatch is a build error.
 
 ### The canonical capability list (v1)
 
-| Capability         | What it gates                                                                          |
-|--------------------|---------------------------------------------------------------------------------------|
-| `network`          | TCP / UDP sockets, DNS, all of `cajeta.io.net` and `cajeta.io.net.http`.                        |
-| `filesystem`       | File I/O — read + write at any path the OS lets the process touch.                    |
-| `process`          | Spawning subprocesses, sending signals.                                                |
-| `env`              | Reading environment variables, command-line args.                                      |
-| `clock`            | Wall-clock time (`System.currentTimeMillis()`, `Instant.now()`).                       |
-| `random`           | OS entropy sources (`SecureRandom`, `/dev/urandom`).                                    |
-| `threading`        | Spawning OS threads (`Thread`). Fibers always permitted; this is for `cajeta.thread.Thread`. |
-| `native-code`      | `@Native` declarations, linking external C libraries.                                  |
-| `reflection`       | `cajeta.reflect.*` — introspection, reflective invocation.                            |
-| `unsafe-memory`    | Direct memory manipulation, pointer arithmetic, casts past type guards.               |
-| `compute`          | Long-running CPU-bound work (ML libraries declare this so embedding hosts can route appropriately). |
-| `accelerator`      | GPU / NPU / specialized hardware access.                                                |
-| `display`          | UI / windowing (future, when `cajeta.ui` lands).                                       |
-| `audio`            | Audio I/O (future).                                                                    |
+The full list below is the **specified** vocabulary. Only four
+capabilities are wired into the sandbox layer today — `Sandbox.cpp`'s
+`capByName()` recognizes `filesystem`, `process`, `network`, and
+`env`. The remaining ten are **planned**: they are reserved names
+in the spec, but the build tool does not yet parse or enforce them
+(an unknown capability name currently has no sandbox effect).
+
+| Capability         | Status (v1) | What it gates                                                                          |
+|--------------------|-------------|---------------------------------------------------------------------------------------|
+| `network`          | implemented | TCP / UDP sockets, DNS, all of `cajeta.io.net` and `cajeta.io.net.http`.                        |
+| `filesystem`       | implemented | File I/O — read + write at any path the OS lets the process touch.                    |
+| `process`          | implemented | Spawning subprocesses, sending signals.                                                |
+| `env`              | implemented | Reading environment variables, command-line args.                                      |
+| `clock`            | planned     | Wall-clock time (`System.currentTimeMillis()`, `Instant.now()`).                       |
+| `random`           | planned     | OS entropy sources (`SecureRandom`, `/dev/urandom`).                                    |
+| `threading`        | planned     | Spawning OS threads (`Thread`). Fibers always permitted; this is for `cajeta.thread.Thread`. |
+| `native-code`      | planned     | `@Native` declarations, linking external C libraries.                                  |
+| `reflection`       | planned     | `cajeta.reflect.*` — introspection, reflective invocation.                            |
+| `unsafe-memory`    | planned     | Direct memory manipulation, pointer arithmetic, casts past type guards.               |
+| `compute`          | planned     | Long-running CPU-bound work (ML libraries declare this so embedding hosts can route appropriately). |
+| `accelerator`      | planned     | GPU / NPU / specialized hardware access.                                                |
+| `display`          | planned     | UI / windowing (future, when `cajeta.ui` lands).                                       |
+| `audio`            | planned     | Audio I/O (future).                                                                    |
 
 Future capabilities get added via spec amendments. Each
 capability has a stable name; renaming requires a compatibility
@@ -1895,10 +1913,10 @@ public final class Socket {
     public static Socket connect(String host, int32 port) { ... }
 
     @capability("network")
-    public int64 read(byte[] dest) { ... }
+    public int64 read(int8[] dest) { ... }
 
     @capability("network")
-    public int64 write(byte[] data) { ... }
+    public int64 write(int8[] data) { ... }
 }
 ```
 
@@ -1977,7 +1995,7 @@ public interface Sink {
     /**
      * @capability network filesystem
      */
-    void write(byte[] data);
+    void write(int8[] data);
 }
 ```
 
@@ -2540,6 +2558,16 @@ This section is the catalog of native actions. Plugin-provided
 actions are documented by each plugin; see [Plugins](#plugins)
 for the discovery/sandboxing model.
 
+> **Shipped vs. planned.** The actions actually registered in the
+> `ActionRegistry` today (`Action.cpp`) are: `exec`, `copy`,
+> `delete`, `mkdir`, `sign`, `verify-sig`, `version`, `download`,
+> `build`, `clean`, `test`, `package`, `upload`, `publish`.
+> Everything else described in this catalog (`lint`, `doc`, `fmt`,
+> `set-profile`, `install`) is **planned / not-yet-implemented** —
+> it is part of the design but not registered, so invoking it from
+> a task today is an "unknown action" error. Planned rows are
+> flagged inline below.
+
 ### Native action catalog (v1)
 
 Action contracts use `required → optional → outputs` columns.
@@ -2553,12 +2581,12 @@ for downstream actions to consume via
 
 | Action     | Required                          | Optional                                                              | Outputs                                                |
 |------------|-----------------------------------|-----------------------------------------------------------------------|--------------------------------------------------------|
-| `build`    | —                                 | `flavor`, `target`, `modules`, `incremental` (default `true`), `profile`, `entry-method`, `binary`, `output-path`, `emit` (`exploded-ir` / `archived-ir` / `executable`) | `path`, `sha256`, `size`, `format`            |
+| `build`    | —                                 | `flavor`, `target`, `profile`, `entry-method`, `binary`, `output-path`, `emit` (`exploded-ir` / `archived-ir` / `executable`) | `path`, `sha256`, `size`, `format`, `flavor`, `profile` |
 | `clean`    | —                                 | `paths` (default: `build/` + `.cajeta/work/`), `deep` (also wipes cache) | —                                                    |
-| `test`     | —                                 | `filter`, `parallel`, `coverage`, `report`                              | `passed`, `failed`, `crashed`, `report-path`         |
-| `lint`     | —                                 | `plugins` (subset), `fail-on-severity`, `format`, `output`              | `findings`, `report-path`                            |
-| `doc`      | —                                 | `output` (default: `build/docs/`)                                       | `output-path`                                        |
-| `fmt`      | —                                 | `check-only`                                                            | `changed-count`                                      |
+| `test`     | `input` (path to the test binary) | `filter`, `parallel`, `args` (array), `coverage`, `report`              | `passed`, `failed`, `crashed`, `exit-code`, `report-path` |
+| `lint` *(planned)* | —                         | `plugins` (subset), `fail-on-severity`, `format`, `output`              | `findings`, `report-path`                            |
+| `doc` *(planned)*  | —                         | `output` (default: `build/docs/`)                                       | `output-path`                                        |
+| `fmt` *(planned)*  | —                         | `check-only`                                                            | `changed-count`                                      |
 
 ##### The `build` action in detail
 
@@ -2640,7 +2668,7 @@ launcher, `cajeta run`) read it from there.
 | Action     | Required                     | Optional                              | Outputs                       |
 |------------|------------------------------|---------------------------------------|-------------------------------|
 | `copy`     | `from`, `to`                 | `also` (additional file), `mkdir` (default `true`), `recursive` | `destinations` (string array) |
-| `delete`   | `paths` (string or array)    | `if-exists` (default `true`)           | —                             |
+| `delete`   | `paths` (string or array)    | `if-exists` (default `true`)           | `removed` (count of entries removed) |
 | `mkdir`    | `path`                       | `recursive` (default `true`)           | —                             |
 
 #### Artifact + crypto
@@ -2832,15 +2860,23 @@ is in `url`, the full set in `urls`).
 
 | Action        | Required             | Optional                | Outputs           |
 |---------------|----------------------|-------------------------|-------------------|
-| `set-profile` | `name`               | —                       | `previous`        |
+| `set-profile` *(planned)* | `name`   | —                       | `previous`        |
 
 #### Composition / control
 
-| Action       | Required                       | Optional             | Outputs           |
+`run-task` and `parallel` are **not registry actions** — they are
+task-control constructs the TaskRunner interprets directly
+(`Task.h` `ActionEntry::Kind::{RunTask,Parallel}`). They appear as
+distinct shapes inside a task's `actions[]` array (a `{ "run-task":
+... }` or `{ "parallel": [...] }` object), not as an `{ "action":
+... }` invocation, and so are not looked up in the `ActionRegistry`.
+`exec` *is* a real registered action.
+
+| Construct    | Required                       | Optional             | Outputs           |
 |--------------|--------------------------------|----------------------|-------------------|
-| `run-task`   | `name`                         | `params`             | (the called task's `outputs` block) |
-| `parallel`   | (the wrapped sub-array, see [Tasks](#manifest--cajetajson)) | — | —                 |
-| `exec`       | `command`, `args` (array)      | `working-dir`, `env`, `timeout` | `stdout`, `stderr`, `exit-code`   |
+| `run-task` *(control construct)* | `name`     | `params`             | (the called task's `outputs` block) |
+| `parallel` *(control construct)* | (the wrapped sub-array, see [Tasks](#manifest--cajetajson)) | — | —     |
+| `exec` *(action)* | `command`, `args` (array) | `working-dir`, `env`, `timeout` | `stdout`, `stderr`, `exit-code`   |
 
 ### Variable substitution in action params
 
@@ -3268,6 +3304,13 @@ match your project's environments (`staging`, `canary`, `e2e`,
     }
 }
 ```
+
+> **Note — planned actions in this template.** The `lint`, `doc`,
+> `fmt`, and `install` tasks above invoke native actions that are
+> **not yet registered** (`lint`, `doc`, `fmt`, `install`; see the
+> Action catalog's shipped-vs-planned note). They illustrate the
+> intended starter set, but running them against the current build
+> tool errors with "unknown action" until those actions land.
 
 ### What this template demonstrates
 

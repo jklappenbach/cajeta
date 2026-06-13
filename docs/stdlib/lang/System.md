@@ -10,7 +10,9 @@
 | `System.env`     | OS environment-variable access (libc `getenv` / `setenv`)             |
 | `System.property` | Process-scoped string properties (Java `-Dkey=value` style)          |
 
-Any other receiver — most commonly `System.out` from Java muscle memory — throws `CAJETA_ERROR_UNKNOWN_SYSTEM_STREAM` with a "did you mean `stdout`?" hint when `--diag-hints` is on.
+In addition to the namespaced receivers above, `System` recognizes two **direct** methods — `System.exit(int32)` and `System.currentTimeMillis()` (see *Process control & clock* below).
+
+Any other receiver — most commonly `System.out` from Java muscle memory — throws `CAJETA_ERROR_UNKNOWN_SYSTEM_STREAM` with a "did you mean `stdout`?" hint when `--diag-hints` is on. (`System.stderror` is accepted as a typo-friendly alias for `System.stderr`.)
 
 ---
 
@@ -121,9 +123,25 @@ if (level == null) {
 
 ---
 
+## `System.exit` / `System.currentTimeMillis` — process control & clock
+
+Two methods hang directly off `System` (no sub-namespace):
+
+```cajeta
+System.exit(0);                                   // terminate the process
+int64 nowMs = System.currentTimeMillis();         // wall-clock ms since epoch
+```
+
+- `System.exit(int32 code)` lowers to the `__cajeta_exit` runtime helper; the argument is cast to `i32` and used as the process exit status.
+- `System.currentTimeMillis()` lowers to `__cajeta_currentTimeMillis` and returns an `int64` millisecond timestamp (Java-shaped). Pinned by `test/expression/SystemUtilTests.cpp`.
+
+(Cooperative fiber sleep lives on a different namespace — `Cajeta.fiberSleepNanos(nanos)` — not `System`.)
+
+---
+
 ## Implementation notes
 
-- The compiler's `MethodCallExpression` intrinsic dispatcher (`src/cajeta/asn/expression/MethodCallExpression.cpp`) recognizes the `System.<namespace>` shape and lowers each method to a direct runtime call. No `System` class exists in the stdlib — the namespace is purely a syntactic affordance.
+- The compiler's `MethodCallExpression` intrinsic dispatcher (`src/cajeta/asn/expression/MethodCallExpression.cpp`) recognizes both the `System.<namespace>.<method>` shape and the direct `System.exit` / `System.currentTimeMillis` methods, lowering each to a direct runtime call. No `System` class exists in the stdlib — the namespace is purely a syntactic affordance.
 - Runtime helpers live in `runtime/native/cajeta_runtime.c`: `__cajeta_env_get` / `__cajeta_env_set` / `__cajeta_property_get` / `__cajeta_property_set` / `__cajeta_property_install` (the last splits `key=value` and installs).
 - The property map is a singly-linked list of (`key`, `value`) entries guarded by a `pthread_mutex_t`. Each `set` walks the list to find an existing entry and overwrites the value, or appends a new entry at the head. Sub-O(N) lookup is a future tuning step; today's expected property count is tens, not thousands.
 - For JIT-mode tests, the runtime is linked twice (the test binary's native object plus the JIT-loaded bitcode). Each copy has its own static property map, so cross-source visibility doesn't hold in the JIT path. Binary builds (the user-facing case) link the runtime once and see the property map as truly process-global. Tests in `test/expression/SystemEnvPropertyTests.cpp` cover both single-runtime-copy paths (runtime-direct C calls, and cajeta-side `set→get` roundtrips) explicitly.

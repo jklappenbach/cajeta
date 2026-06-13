@@ -97,7 +97,7 @@ already clear the three-column check — because they are the language-
 surface bits where retrofitting across already-shipped NVIDIA kernels
 would be most expensive.
 
-- **`@kernel` attribute + the `KernelArg` trait.** Must admit
+- **`@Kernel` attribute + the `KernelArg` trait.** Must admit
   Vulkan's push-constant / descriptor partitioning, not just "pass
   the args."
 - **Address-space qualifiers** (`Global` / `Shared` / `Constant` /

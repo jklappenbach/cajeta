@@ -8,6 +8,12 @@ Companion to [`FieldOwnership.md`](FieldOwnership.md) and
 [`MemoryModel.md`](MemoryModel.md). This doc records the decision and
 two non-obvious arguments before any code lands.
 
+> **Status: not yet implemented.** `CAJETA_ERROR_FIELD_BORROW_ESCAPE` is
+> proposed here; it is not among the error constants the compiler currently
+> emits. The existing return-edge checks it builds on
+> (`CAJETA_ERROR_BORROW_ESCAPE`, `CAJETA_ERROR_VIEW_ESCAPE`) are real and
+> shipped; the field-store edge described below is design-stage.
+
 ## Background — the gap left by the field-ownership relaxation
 
 `MemoryModel.md` originally forbade borrows in fields outright:
@@ -56,9 +62,9 @@ public class Holder {
 
 ## Relationship to the existing borrow-escape check
 
-This is the **dual** of a check the compiler already has. `Statement.cpp`
-(the `ReturnStatement` path, ~lines 1255–1360) rejects a borrow escaping
-via the **return edge**:
+This is the **dual** of a check the compiler already has.
+`ReturnStatement::generateCode` in `Statement.cpp` (the escape checks land
+in the ~1660–1760 range) rejects a borrow escaping via the **return edge**:
 
 ```
 CAJETA_ERROR_BORROW_ESCAPE     // return a closure/method-ref with borrow captures
@@ -226,8 +232,8 @@ outlives that local's scope.
 
 ## Proposed error message (house style)
 
-Model on the return-escape messages (`Statement.cpp:1280`): name the
-dangle, then offer the working valve(s).
+Model on the return-escape messages (`ReturnStatement::generateCode` in
+`Statement.cpp`): name the dangle, then offer the working valve(s).
 
 > cannot store stack local `local` into field `w` of `this` — `this`
 > outlives this call, so the field would dangle the moment this frame's

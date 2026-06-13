@@ -1,8 +1,12 @@
 # Ray query → core: the portable BVH noun + software traversal
 
-**Status: SPEC (design; not yet built).** This is the design for making *inline ray
-query* a genuine `cajeta.gpu.core` feature — one that runs on **every** backend, not
-just Vulkan. It is the headline open item of the GPU foundation
+**Status: software path (Inc 1–3) SHIPPED; Inc 4 plumbing the remaining open item.**
+This is the design for making *inline ray query* a genuine `cajeta.gpu.core` feature —
+one that runs on **every** backend, not just Vulkan. The portable software BVH +
+stackless traversal (AABBs, triangles, full candidate/committed getters + commit) is
+built and cross-checked against the Vulkan native path (§8); what remains is the
+selection-heuristic / plumbing hardening of Inc 4. It is the headline item of the GPU
+foundation
 ([`plans/gpu/cajeta-gpu-plan.md §3.3`](../../plans/gpu/cajeta-gpu-plan.md)) and the
 worked example of the model in [`CajetaGPU.md §1` / `§4`](CajetaGPU.md). Read those
 first for the *why*; this doc is the *what* and the *how*, including the BVH noun.
@@ -17,7 +21,12 @@ establishes here.
 
 ---
 
-## 1. Where it is today (honest baseline)
+## 1. Where it started (the pre-work baseline)
+
+> **Note:** this section is the *starting* baseline that motivated the work. Inc 1–3
+> (§8) have since closed it — software ray query now runs on every backend and XPU-N02
+> is no longer thrown for ray query (it survives only as the diagnostic for the *native*
+> `OpRayQuery` path on a non-Vulkan backend, which the software default pre-empts).
 
 - **Verb** — `RayQuery` (`runtime/.../core/RayQuery.cajeta`): a device-only kernel-local
   cursor. v1 ops = `initialize` / `proceed` / `committedType` / `candidateType` /
@@ -277,9 +286,14 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
       software path is reliable for candidate + committed.
 
 **Inc 4 — Plumbing hardening (shared with the rest of the model).**
-- [ ] `Device.supports(RayQueryNative)` + the selection heuristic with override (§6).
+- [~] `Device.supports(RayQueryNative)` + the selection heuristic with override (§6).
+      *Done: `Device.supports(Capability.RayQueryNative)` (`Capability.cajeta`,
+      `Device.cajeta`) + the manual `CAJETA_GPU_AS_IMPL` impl override (`AsImpl.cajeta`,
+      `resolveImplTier`). Open: the **automatic** density/extent selection heuristic.*
 - [ ] On-device cajeta LBVH build kernel (move build off the host; dogfood the seam).
-- [ ] Promote the noun seam to the first-class SPI the VendorExtensionSDK seed needs.
+- [x] Promote the noun seam to the first-class SPI the VendorExtensionSDK seed needs —
+      built as `CajetaNounProvider` (`runtime/native/cajeta_noun_impl.h`), dogfooded on
+      `AccelerationStructure` (the verb follows the noun's recorded impl tag).
 
 **Quality follow-up (not gating "core"):**
 - [ ] binned-SAH builder behind the same noun seam.

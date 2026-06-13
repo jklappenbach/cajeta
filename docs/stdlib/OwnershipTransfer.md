@@ -1,5 +1,13 @@
 # Ownership Transfer at Call Sites
 
+> **Status.** Phases 1–3a (caller-side `#x` syntax, the `(#T, x)` rejection,
+> and the body-side return/re-transfer escape check) are **shipped**:
+> `CAJETA_ERROR_TRANSFER_REQUIRED` and `CAJETA_ERROR_BORROW_PARAM_ESCAPES`
+> are thrown from `MethodCallExpression.cpp`, `CreatorRest.cpp`, and
+> `Statement.cpp`. The two remaining body-side shapes — **field-store of a
+> borrow** and **closure-capture of a borrow** — are deliberately deferred
+> (see the end of this doc and [`BorrowSoundness`](BorrowSoundness.md)).
+
 ## Motivation
 
 Cajeta's class-typed locals carry a drop entry tied to the declaring scope.
@@ -10,7 +18,7 @@ Without that, the original local AND the callee's retained reference both
 own the same allocation; both drop chains fire at scope exit and produce a
 double free.
 
-The codebase already had one half of the answer: `MethodCallExpression.cpp:4091+`
+The codebase already had one half of the answer: `MethodCallExpression.cpp` (the `#`-transfer block, ~5881+)
 deactivates the caller's drop entry when the callee's formal parameter is
 marked `#T`. The other half — what shape this takes at the **source** level
 when both ends want to participate — is what this document specifies.
@@ -122,7 +130,7 @@ The arg-expression rule extends to admit a leading `#`:
 
 ```
 arguments      : '(' (argument (',' argument)*)? ')'
-argument       : REFERENCE? expression       # new: REFERENCE allowed
+argument       : parameterLabel? REFERENCE? expression   # REFERENCE = '#'
 ```
 
 v1 restriction: the expression after `#` must be a bare identifier
@@ -142,7 +150,7 @@ own (each tightens the model without breaking valid prior code):
 - Grammar: add `REFERENCE? expression` to the argument rule.
 - Parser/AST: capture the REFERENCE flag on each `ParameterEntry` /
   argument node.
-- Codegen: in `MethodCallExpression.cpp:4091+` and the matching block
+- Codegen: in `MethodCallExpression.cpp` (the `#`-transfer block, ~5881+) and the matching block
   in `CreatorRest.cpp` (the #67 ctor-call-site transfer), trigger the
   drop-deactivation when EITHER the formal is `#T`-marked OR the
   argument carries the caller-side `#`. Either is sufficient.
@@ -307,5 +315,5 @@ keep a borrow). Both halves earn their place.
   drop chain model this extends.
 - [`FieldOwnership`](FieldOwnership.md) — how fields participate in
   the drop chain (relevant to the body-side escape check).
-- `MethodCallExpression.cpp:4091+` and `CreatorRest.cpp` — the
+- `MethodCallExpression.cpp` (the `#`-transfer block, ~5881+) and `CreatorRest.cpp` — the
   existing call-site transfer machinery this builds on.

@@ -86,15 +86,21 @@ software. Auto-widen keeps user code readable.
 
 ### 4. LLVM version
 
-**Chosen — then reversed:** Originally bumped `setup.sh` to LLVM 20. Reverted
-to LLVM 18 (Ubuntu 24.04 default) after the API discovery in Decision #5.
+**No LLVM upgrade is required for this feature.** The investigation below
+originally probed whether a newer LLVM would supply IR-level `Type*`
+factories for these formats; it would not, so the choice is orthogonal to
+the LLVM version. (`setup.sh` today defaults to LLVM 23 with a hard floor of
+22 — `LLVM_VER="${CAJETA_LLVM_VERSION:-23}"`, `setup.sh:33` — driven by
+unrelated needs, e.g. znver5 detection, not by fp8.)
 
-**Why bumped:** I had assumed LLVM 19/20 added IR-level `Type*` factories like
-`Type::getFloat8E4M3FNTy()` and `Float8E4M3FNTyID` enum entries. They do not.
+**The assumption that didn't hold:** that a recent LLVM added IR-level `Type*`
+factories like `Type::getFloat8E4M3FNTy()` and `Float8E4M3FNTyID` enum
+entries. It does not.
 
-**Why reverted:** The fp8/fp6/fp4 types do not exist as `llvm::Type*` in any
-released LLVM version. Verified directly against `release/20.x` and `main`
-branches of `llvm-project`:
+**What's actually true:** The fp8/fp6/fp4 types do not exist as `llvm::Type*`
+in any released LLVM version. Verified directly against the `llvm-project`
+source (the same holds on current release branches, which is why the iN
+representation in Decision #5 remains in the shipped code):
 
 - `enum TypeID` in `llvm/include/llvm/IR/Type.h` has the same 7 FP entries it
   had in LLVM 14 (Half, BFloat, Float, Double, X86_FP80, FP128, PPC_FP128).
@@ -104,7 +110,8 @@ branches of `llvm-project`:
   implementation (`llvm/lib/IR/Type.cpp:130`) is a hardcoded if/else covering
   only the classic 7 formats and asserts on anything else.
 
-What does exist in LLVM 18+ is `APFloat::Float8E5M2()` / `Float4E2M1FN()` etc.
+What does exist (LLVM 18 onward, including the 22/23 floor cajeta builds
+against) is `APFloat::Float8E5M2()` / `Float4E2M1FN()` etc.
 returning `const fltSemantics&` — but these are *software* arithmetic helpers
 for the APFloat constant-folding library, not anchors for an `llvm::Type*`.
 
@@ -276,4 +283,5 @@ These are *not* fp-specific but were exposed while wiring fp support:
 - `src/cajeta/asn/expression/BinaryOpExpression.cpp` — `isFloatTy` →
   `isFloatingPointTy` (×8), `emitFpBinOp` helper for sub-fp16 widening, six
   arithmetic sites switched to use it.
-- `setup.sh` — left at LLVM 18 default (bumped to 20 and reverted).
+- `setup.sh` — no change required for fp8; defaults to LLVM 23 (floor 22) for
+  unrelated reasons (`setup.sh:33`).

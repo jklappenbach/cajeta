@@ -2,42 +2,49 @@
 
 File I/O modeled on Python's `pathlib` + Rust's `Path` + Go's
 `os.ReadFile`. Common cases are one line; edge cases don't fight
-you. Capability-gated: every read/write/list/watch method carries
+you. Capability gating — every read/write/list/watch method carrying
 `@capability("filesystem")` so a program that doesn't declare the
-capability fails at compile time (see `BuildTool.md`).
+capability fails at compile time — is *planned*, not yet
+implemented (see `BuildTool.md` and [`Errors.md`](Errors.md)).
 
-Status: **design-phase complete; Phase A implementation tracked
-under docs Features.md / ToDo.md.** The class spec in
-adjacent files is what the implementation builds toward; signatures
-are stable, bodies land per phase.
+Status: **Phases A, B, and E implemented and tested; Phase C
+partial; Phase D and the Watcher / async / capability surface
+planned.** Concretely: the streaming `FileReader` / `FileWriter`,
+the one-shot `File.readAllBytes` / `writeAllBytes`, the
+random-access `File` handle, `OpenMode`, and pure-path `Path`
+queries plus the stat predicates and `mkdirs` / `delete` are live.
+The exception hierarchy classes exist but are not yet thrown from
+the I/O paths (sentinel returns today — see [`Errors.md`](Errors.md)).
 
 ## File layout
 
 | File                                                | Topic                                                      |
 |-----------------------------------------------------|------------------------------------------------------------|
-| [`Path.md`](Path.md)                                | Immutable path value type — construction, joining, decomposition, normalization, single-stat predicates. |
-| [`FileInfo.md`](FileInfo.md)                        | Batched stat result returned by `Path.info()`.             |
+| [`Path.md`](Path.md)                                | Immutable path type — construction, joining, decomposition, single-stat predicates, `mkdirs` / `delete`. |
+| [`FileInfo.md`](FileInfo.md)                        | Batched stat result (Phase C placeholder; no `Path` accessor wired yet). |
 | [`File.md`](File.md)                                | File class — one-shot statics + random-access handle.      |
 | [`OpenMode.md`](OpenMode.md)                        | Enum of file-open intents.                                 |
-| [`FileReader.md`](FileReader.md)                    | Streaming reader — 8 KiB internal buffer, byte-loop API.   |
-| [`FileWriter.md`](FileWriter.md)                    | Streaming writer — 8 KiB internal buffer, flush/close.     |
-| [`Directories.md`](Directories.md)                  | Directory walk / glob / mkdirs / copyTo / moveTo / delete. |
-| [`Watcher.md`](Watcher.md)                          | Filesystem notifications — Watcher + FileEvent + WatchKind. |
-| [`Errors.md`](Errors.md)                            | IoException hierarchy + capability gating + async forms.   |
+| [`FileReader.md`](FileReader.md)                    | Streaming reader — byte-loop / `readString` API.           |
+| [`FileWriter.md`](FileWriter.md)                    | Streaming writer — `write` / `writeString` / `close`.      |
+| [`Directories.md`](Directories.md)                  | Directory ops on `Path` — `mkdirs` / `delete` (live); walk / glob / copy / move (planned). |
+| [`Watcher.md`](Watcher.md)                          | Filesystem notifications — Watcher + FileEvent + WatchKind (deferred). |
+| [`Errors.md`](Errors.md)                            | IoException hierarchy + (planned) capability gating + async forms. |
 
 ## Design tenets
 
 1. **One namespace, two patterns.** Static one-shots
    (`File.readAllBytes`, `File.writeAllBytes`) cover the common
    case; streaming `FileReader` / `FileWriter` cover the rest.
-   `Path` is the value type that names a filesystem location.
-2. **Destructor-based close.** Cajeta's destructor chain (locked
-   2026-05-18 in `MemoryModel.md`) fires at scope exit
-   deterministically. No try-with-resources (removed from the
-   grammar 2026-05-20 as strictly redundant — see § "Resource
-   cleanup is the destructor's job" below), no `with`, no
-   `defer`. Callers can still `close()` explicitly for early
-   release.
+   `Path` is the immutable type that names a filesystem location.
+2. **Destructor-based close (planned for the I/O classes).**
+   Cajeta's destructor chain (locked 2026-05-18 in `MemoryModel.md`)
+   fires `~ClassName()` at scope exit deterministically. No
+   try-with-resources (removed from the grammar 2026-05-20 as
+   strictly redundant — see § "Resource cleanup is the destructor's
+   job" below), no `with`, no `defer`. **Note:** `File` /
+   `FileReader` / `FileWriter` do not yet declare a `~` destructor,
+   so today callers must `close()` explicitly; the auto-close-on-drop
+   wiring is planned. `close()` is idempotent.
 3. **Bytes-first.** The streaming surface talks `int8[]`. Text
    decoding lives in a separate layer (cajeta.lang.String);
    `FileReader` itself stays encoding-agnostic. Java's
@@ -46,13 +53,17 @@ are stable, bodies land per phase.
 4. **Enum mode, not strings.** `OpenMode.READ` / `WRITE` /
    `APPEND` / `READ_WRITE` / `CREATE_NEW`. No mode strings
    (`"rb+"`).
-5. **Internal buffering, always.** The 8 KiB chunk is hidden
-   inside the reader/writer — caller doesn't think about it.
-   No `BufReader::new(file)` ceremony.
-6. **All-or-error semantics.** Partial reads (OS `read()`
-   returning less than requested) are hidden inside the
-   reader's loop. The caller asks for N bytes, gets N or an
-   `EndOfFileException`.
+5. **No caller-visible buffering ceremony.** There is no
+   user-space buffer: the caller's `int8[]` is passed straight to
+   the syscall, and the runtime loops past partial OS reads/writes.
+   No `BufReader::new(file)` ceremony, and `flush()` is a no-op
+   (nothing to drain).
+6. **Partial-transfer hiding.** Partial OS reads/writes (a
+   `read()` / `write()` returning less than requested) are hidden
+   inside the runtime loop — a streaming `read` fills the request
+   fully or stops at EOF (signaled by a `0` return). The hard
+   "all-or-error" `EndOfFileException` form is a Tier-2 helper
+   (planned), not the default streaming behavior.
 
 ## Prior-art survey
 
@@ -108,18 +119,25 @@ up — the byte representation is the lingua franca.
 
 ## Implementation phases
 
-- **Phase A** — `File.readAllBytes` / `writeAllBytes`,
-  `OpenMode`, `FileReader`, `FileWriter`. JSON file I/O end-to-
-  end.
-- **Phase B** — `Path` (pure path manipulation; stat-touching
-  methods deferred to C).
-- **Phase C** — `FileInfo`, stat-touching `Path` methods,
-  `IoException` hierarchy.
-- **Phase D** — `Directories` (mkdirs, copyTo, moveTo, delete,
-  children, walk, glob).
-- **Phase E** — random-access `File` (seek / lock).
+- **Phase A (done)** — `File.readAllBytes` / `writeAllBytes`,
+  `OpenMode`, `FileReader`, `FileWriter`. JSON file I/O end-to-end.
+- **Phase B (done)** — `Path` pure path manipulation
+  (`of` / `name` / `stem` / `extension` / `parent` / `resolve` /
+  `isAbsolute` / `isRelative`).
+- **Phase C (partial)** — stat-touching `Path` predicates
+  (`exists` / `isFile` / `isDir` / `isSymlink`) and `canonical` are
+  live; the `IoException` hierarchy classes exist but are not yet
+  thrown from the I/O paths; `FileInfo` is a zero-init placeholder
+  with no `Path.info()` accessor wired.
+- **Phase D (partial)** — `Path.mkdirs` / `delete` are live;
+  `copyTo` / `moveTo` / `deleteRecursive` and the streaming
+  `children` / `walk` / `glob` (returning `Stream<Path>`) are
+  planned.
+- **Phase E (done)** — random-access `File` (seek / position /
+  size / truncate / sync / lock).
 - **Deferred** — `Watcher`, `*Async` forms, capability gating
-  enforcement.
+  enforcement, `Path`/`Buffer` arg overloads, `InputStream` /
+  `OutputStream` interfaces.
 
 ## Resource cleanup is the destructor's job
 
@@ -133,7 +151,12 @@ Java only because Java has GC and no destructors, so
 `close()` needed a separate guarantee-mechanism. Cajeta
 already has the better mechanism, so the syntax is gone.
 
-The replacement pattern is "just declare the resource":
+This is the language-level model. **The I/O classes are not yet
+wired into it** — `File` / `FileReader` / `FileWriter` do not
+currently declare a `~ClassName()` destructor, so the auto-close
+shown below is the planned end state; until those destructors land,
+call `close()` explicitly. The replacement pattern is "just declare
+the resource and close it":
 
 ```cajeta
 {
@@ -144,20 +167,21 @@ The replacement pattern is "just declare the resource":
         w.write(buf, n);
         n = r.read(buf, 4096);
     }
-    // w.~FileWriter() fires here (flush + close), then
-    // r.~FileReader() (close). LIFO order, guaranteed.
+    w.close();   // explicit today; planned: ~FileWriter() flush + close
+    r.close();   // explicit today; planned: ~FileReader() close
+    // Planned LIFO drop order: w then r, guaranteed even on unwind.
 }
 ```
 
-`r.close()` is still callable for early release — the destructor
-sees `this.fd == -1` after the explicit close and skips the
-syscall (idempotent close is the Phase-A contract for `FileReader`
-/ `FileWriter` / `File`). Exception unwind, return, throw — every
-exit path walks the drop chain back to the block's entry
-watermark.
+`close()` is idempotent — it sets `this.fd == -1` so a second call
+(or the planned destructor) skips the syscall. That idempotent-close
+contract holds today for `FileReader` / `FileWriter` / `File`; the
+drop-chain that would call it automatically on every exit path
+(exception unwind, return, throw) is the planned wiring.
 
-If you want narrower-than-method scope without an outer `{ }`
-wrapper, just open a fresh `{ … }` block — same effect:
+Once the destructors land, narrower-than-method scope comes for
+free — open a fresh `{ … }` block and the resource drops at its
+closing brace:
 
 ```cajeta
 public static void process() {
@@ -165,6 +189,7 @@ public static void process() {
     {
         FileReader r = File.openRead(in);
         consume(r);
+        r.close();   // explicit today; planned: drops at the `}` below
     }  // r drops here, BEFORE the rest of process().
     rest();
 }

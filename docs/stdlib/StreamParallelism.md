@@ -12,6 +12,18 @@ threaded streams keep working unchanged.
   - `StreamParallelism.ErrorHandling.md` — exception semantics
     (default fail-fast + user-side tolerance patterns).
 
+> **Implementation status.** The fork/join driver is wired and the
+> chain-aware terminals (`reduce`, `fold<R>` 3-arg, `collect<R>`,
+> `anyMatch`/`allMatch`/`noneMatch`, `forEach`, `findFirst`→`findAny`)
+> fan out via `scope { spawn worker<...> }` over a `Splittable` root.
+> The scheduler today is **single-carrier (cooperative)**, so workers
+> are fibers that interleave rather than run on separate cores — the
+> structured-concurrency shape is in place and yields wall-clock
+> parallelism unchanged once a multi-carrier scheduler lands. Splittable
+> roots: `ArrayStream`, `ArrayList.stream()`, and the three HashMap
+> stream views. The older `countParallel` entry still walks
+> sequentially. Driver: `runtime/src/cajeta/lang/stream/ParallelDriver.cajeta`.
+
 > Reactor-style reactive (push + async + backpressure + per-element
 > scheduler hand-off) is explicitly out of scope here — that would
 > parallel the pull protocol rather than reuse it, and the demand-signal
@@ -57,18 +69,21 @@ threaded streams keep working unchanged.
   "buffered-arbitrary-stream" splitter — fast splitting is the only
   splitting. A user wanting parallel on a non-splittable source first
   collects to an ArrayList (which is splittable), then parallels.
-- **Tunable split granularity.** v1 picks `ceil(sqrt(estimateSize()))`
-  splits per call, capped by the scheduler's core count. Manual
-  threshold (`parallel(minBatchSize)`) is a v2 tuning knob.
+- **Tunable split granularity.** v1 picks `isqrt(estimateSize())`
+  splits per call, capped at `MAX_SPLITS = 8` and floored to sequential
+  when the source has fewer than `MIN_PER_SPLIT * 2 = 64` elements (both
+  constants on `ParallelDriver`). Manual threshold
+  (`parallel(minBatchSize)`) is a v2 tuning knob.
 
 ## Surface API
 
-### `Stream<T>.parallel(): #Stream<T>`
+### `Stream<T>.parallel(): Stream<T>`
 
-Marks the stream as parallel-eligible. Returns the same stream
-shape (still pull-protocol) — the bit is read by the terminal, which
-decides whether to fork. Calling `.parallel()` on an already-parallel
-stream is a no-op; calling `.sequential()` flips it back.
+Marks the stream as parallel-eligible by setting an `isParallel` flag
+and returning `this` (no wrapper allocation, no `#` transfer). The bit
+is read by the terminal, which decides whether to fork. Calling
+`.parallel()` on an already-parallel stream is a no-op; `.sequential()`
+clears the flag.
 
 ```cajeta
 int32[] xs = …;
@@ -208,23 +223,27 @@ scope joins before the orchestrator can drop them.
 | `reduce(T seed, (T,T)→T fn)` | yes | `fn` | requires `fn` associative AND `seed` to be its identity. Programmer responsibility (Java's same contract). |
 | `fold<R>(R seed, (R,T)→R fn)` | **needs combiner** | n/a | v1 sequential-only when called on parallel stream; rejects with a remediation message pointing at the new `fold<R>(seed, fn, combiner)` overload below. |
 | `fold<R>(R seed, (R,T)→R fn, (R,R)→R combiner)` | yes | `combiner` | new overload; `combiner` merges partials. |
-| `collect<R>(Collector<T, R>)` | yes if collector has a combiner | `combiner` | `Collector<T, R>` gains a `(R, R) -> R combiner` field (currently has `seed` + `accumulator`). Collectors that can't combine (e.g. one accumulating into a non-mergeable structure) leave `combiner = null`, and `collect` under parallel rejects with the same shape error as no-combiner fold. |
-| `take(n) / skip(n)` (intermediate, not terminal) | **rejected** | n/a | stateful; would need ordered merge. Compile-time error from the parallel driver's `unwind`: `CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL` with a remediation suggesting `.sequential().take(n)`. |
+| `collect<R>(Collector<T, R>)` | yes | `combiner` | Each worker calls the collector's `supplier()` for its own partial `R`, accumulates, and the orchestrator merges partials with `combiner`. Both fields are required on `Collector`, so every collector is parallel-ready. |
+| `take(n) / skip(n)` (intermediate, not terminal) | **rejected** | n/a | stateful; would need ordered merge. The parallel driver's chain-walk throws `CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL` (runtime, not compile-time — the parallel flag is a runtime property) with a remediation suggesting `.sequential().take(n)`. |
 
-The `Collector<T, R>` extension:
+The shipped `Collector<T, R>` (`runtime/src/cajeta/collection/Collector.cajeta`):
 
 ```cajeta
 public class Collector<T, R> {
-    public final R seed;
-    public final (R, T) -> R accumulator;
-    public final (R, R) -> R combiner;   // NEW. null = sequential-only.
+    public () -> #R supplier;      // fresh accumulator instance, per worker
+    public (R, T) -> #R accumulator;
+    public (R, R) -> #R combiner;  // merge two partials
+
+    public Collector(() -> #R supplier,
+                     (R, T) -> #R accumulator,
+                     (R, R) -> #R combiner);   // all three required
 }
 ```
 
-Backwards-compat: existing two-arg `Collector` ctor calls continue to
-compile and produce a sequential-only collector. Stdlib's
-`Collectors.toList<T>()` gains a combiner that appends one ArrayList
-into another.
+A per-worker `supplier()` (rather than a single shared `seed`) is what
+makes a mutable `R` like `ArrayList` safe under parallel — each worker
+accumulates into its own instance with no aliasing. `Collectors.toList<T>()`
+supplies `() -> heap ArrayList<T>()` with an `appendAll`-based combiner.
 
 ## Ownership and the borrow checker
 
@@ -234,12 +253,12 @@ A parallel terminal opens a `scope { }` block. Each worker is a
 - **Captures from the orchestrator's frame** (the source array, the
   intermediate-op closures, the seed value) are valid borrows — the
   scope joins before they expire.
-- **The seed `R`** is captured by-value (primitive) or by-borrow
-  (class). For a class-typed seed used in a collector, each worker
-  needs ITS OWN copy of the seed to accumulate into. The driver
-  resolves this by calling `Collector.seedFactory: () -> R` per
-  worker rather than capturing the seed directly. `Collectors.toList`
-  passes `() -> heap ArrayList<T>()` — one fresh list per worker.
+- **The accumulator `R`** is captured by-value (primitive) or by-borrow
+  (class). For a class-typed accumulator used in a collector, each
+  worker needs ITS OWN instance. The driver resolves this by calling
+  `Collector.supplier: () -> #R` per worker rather than sharing one
+  instance. `Collectors.toList` passes `() -> heap ArrayList<T>()` —
+  one fresh list per worker.
 - **Partials returning to the orchestrator** travel via `#` transfer.
   The combiner takes ownership; the worker's partial is dropped from
   the worker's drop chain at hand-off.
@@ -342,9 +361,12 @@ shape construction):
   surface stays intact.
 - **OOM at spawn** always raises `SystemResourceException` — no
   silent fallback. Surfaces brittle workloads early.
-- **`Collector<T, R>` combiner is REQUIRED.** 3-arg ctor `(seed,
-  accumulator, combiner)`. Existing 2-arg call sites are swept in
-  the P1 prep commit (Collectors.toList + 4 CollectorTests sites).
+- **`Collector<T, R>` combiner is REQUIRED.** The shipped ctor is
+  3-arg `(supplier, accumulator, combiner)` — note `supplier: () -> #R`
+  replaced the originally-planned `seed` field so each parallel worker
+  gets its own accumulator instance (see Examples.md § 7.9 errata).
+  Existing 2-arg call sites were swept in the P1 prep commit
+  (Collectors.toList + CollectorTests sites).
 - **Worker stack-trace frames** named `<parallel worker N>` using
   the split index.
 

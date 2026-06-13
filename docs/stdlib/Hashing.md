@@ -12,7 +12,10 @@ ultimately route through.
 
 Status: `Hash` utility namespace + per-primitive intrinsics complete;
 `Hasher` interface + `MD5` + `SipHash` + `XXHash3` + `DefaultHasher`
-shipped (2026-05-20). `RapidHash` still designed-only.
+shipped (2026-05-20). `SHA-1` and `SHA-256` also ship in this package
+(`Sha1.cajeta`, `Sha256.cajeta`) — SHA-1 is the WebSocket-handshake digest,
+SHA-256 a general checksum; neither is a substitute for `cajeta.crypto`'s
+(future) authenticated primitives. `RapidHash` still designed-only.
 
 ## `Hash` utility namespace — shipped
 
@@ -53,21 +56,38 @@ Pinned by `test/expression/HashTests.cpp`.
 
 ## Per-primitive `hash()` — shipped
 
-Compiler intrinsics. `value.hash()` on a primitive returns a seeded
-mix:
+Compiler intrinsics. `value.hash()` on a **primitive** receiver lowers
+directly to the matching `__cajeta_hash_*` runtime helper (no boxing, no
+method dispatch — handled in `MethodCallExpression.cpp` ~3521, gated on the
+receiver's `PRIMITIVE_FLAG`):
 
-| Type | `hash()` returns |
-|------|------------------|
-| `int8` / `int16` / `int32` / `int64` | value mixed with the process seed |
-| `uint8` / `uint16` / `uint32` / `uint64` | same as the signed variant |
-| `float32` / `float64` | bitcast to integer, canonicalize ±0 → 0, mix |
-| `boolean` | 0 or 1 mixed with seed |
-| `pointer` | `Hash.identity(ptr)` |
-| `String` | XXH3-64 over UTF-8 bytes, process-seeded |
-| `byte[N]` | XXH3-64 over the N bytes, process-seeded |
-| class types | `obj.hash()` — recurses into synthesized / overridden hash |
+| Type | `hash()` lowering |
+|------|-------------------|
+| `int8` / `int16` / `int32` | sign-extend to i32 → `__cajeta_hash_int32` |
+| `uint8` / `uint16` / `uint32` | zero-extend to i32 → `__cajeta_hash_int32` |
+| `int64` / `uint64` | `__cajeta_hash_int64` |
+| `float32` / `float64` | `__cajeta_hash_float32` / `__cajeta_hash_float64` |
+| `boolean` | zero-extend i1→i8 → `__cajeta_hash_boolean` |
 
-Pinned by `test/expression/HashTests.cpp` and `test/parser/AutoHashTests.cpp`.
+Coercion rules match `SynthesizedHashMethod`, so a field hashed via `@AutoHash`
+and the same field hashed via `x.hash()` agree.
+
+Non-primitive receivers are **not** part of this intrinsic:
+
+- **Class types** dispatch `obj.hash()` virtually into the synthesized /
+  overridden `hash()`.
+- **`String`** overrides `hash()` directly. The v1 algorithm is **FNV-1a**
+  (64-bit, offset basis `0xCBF29CE484222325`, prime `0x100000001B3`),
+  content-sensitive but **not** process-seeded — the seeded XXH3-64 path
+  (matching the rest of `cajeta.hash`) is a documented follow-up that still
+  needs the `int8[]→uint8_t*` `@Native` bridge; the runtime symbol
+  (`__cajeta_hash_bytes`, XXH3-64) already exists. See `String.cajeta` § `hash`.
+- **Byte buffers** (`int8[]`) hash through `__cajeta_hash_bytes` (XXH3-64) at
+  the call sites that need it (e.g. inside `XXHash3.hash`); there is no
+  bare `someInt8Array.hash()` array intrinsic.
+
+Pinned by `test/expression/HashTests.cpp`, `test/parser/AutoHashTests.cpp`,
+and `test/parser/StringHashTests.cpp`.
 
 ## `@AutoHash` — shipped
 
@@ -75,7 +95,11 @@ Class annotation. The compiler synthesizes a structural `hash()`
 that walks every non-static field, calls `field.hash()` on each
 (using the per-primitive intrinsic above for primitives, the class's
 own `hash()` for class types), and threads the results through a
-seed-mixed combiner.
+seed-mixed combiner. The `@Data` and `@Value` bundles imply it, so any
+of `@AutoHash` / `@Data` / `@Value` triggers synthesis. A hand-written
+no-arg `hash()` always wins (the synthesizer skips). Driven by
+`CajetaClass::synthesizeAutoHash` (`CajetaClass.cpp:1204`); the body is
+emitted by `SynthesizedHashMethod`.
 
 ```cajeta
 @AutoHash
@@ -219,6 +243,9 @@ public final class DefaultHasher implements Hasher {
 | `MD5` (RFC 1321) | `test/parser/MD5Tests.cpp` | shipped |
 | `SipHash` (SipHash-2-4) | `test/parser/SipHashTests.cpp` | shipped |
 | `XXHash3` + `DefaultHasher` | `test/parser/XXHash3Tests.cpp` | shipped |
+| `String.hash()` (FNV-1a) | `test/parser/StringHashTests.cpp` | shipped |
+| `SHA-1` | `test/parser/Sha1Tests.cpp` | shipped |
+| `SHA-256` | `test/parser/Sha256Tests.cpp` | shipped |
 | `RapidHash` | — | designed |
 
 ## v1 implementation notes

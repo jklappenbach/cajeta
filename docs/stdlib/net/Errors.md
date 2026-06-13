@@ -84,10 +84,9 @@ public class MalformedAddressException       extends NetException;  // NET-1.2  
 public class UnknownHostException            extends NetException;  // NONAME/NODATA — name not found; carries `int32 resolveErrno`, kind = KIND_OTHER (99)
 public class ResolutionFailedException       extends NetException;  // getaddrinfo failed (non-NXDOMAIN); carries `int32 resolveErrno`, kind = KIND_OTHER (99)
 
-// ── Phase 5 — TLS (NET-5.6) ───────────────────────── planned
-public class TlsHandshakeFailedException     extends NetException;
-public class CertificateInvalidException     extends NetException;  // carries a `reason` (see below)
-public class TlsProtocolErrorException       extends NetException;
+// ── Phase 5 — TLS (NET-5.6) ───────────────────────── BUILT
+public class TlsException                    extends NetException;       // TLS family root; non-certificate handshake / protocol faults; kind = KIND_OTHER (99)
+public class CertificateInvalidException     extends TlsException;       // carries `int32 reason` (see below)
 
 // ── Phase 6 — URI (NET-6.5) ───────────────────────── BUILT (reparent pending)
 public class MalformedUriException           extends NetException;  // carries `int64 position`  ²
@@ -95,9 +94,10 @@ public class MalformedUriException           extends NetException;  // carries `
 // ── Phase 7 — HTTP message (NET-7.7) ──────────────── built
 public class HttpException                   extends NetException;  // HTTP family root, kind = KIND_INVALID (12)
 public class MalformedMessageException       extends HttpException;
-public class HeadersTooLargeException        extends HttpException;
+public class HeadersTooLargeException        extends HttpException;  // carries the limit that was exceeded
 public class InvalidChunkEncodingException   extends HttpException;
 public class UnexpectedEofException          extends HttpException;
+public class PayloadTooLargeException        extends HttpException;  // request/response body over the configured cap
 
 // ── Phase 10 — WebSocket (NET-10.8) ───────────────── BUILT
 public class WebSocketException              extends NetException;       // WS family root, kind = KIND_INVALID (12)
@@ -107,12 +107,15 @@ public class MessageTooLargeException        extends WebSocketException; // carr
 public class ConnectionClosedException       extends WebSocketException; // carries the RFC 6455 close code (+ reason); kind = KIND_OTHER (99)
 ```
 
-Two intermediate roots — `HttpException` (NET-7.7) and
-`WebSocketException` (NET-10.8) — group the HTTP and WS families so a
-handler can `catch (HttpException e)` for *any* protocol-layer fault
-without also swallowing a transport-layer `ConnectionResetException`.
-Both still descend from `NetException`, so the request-boundary
-`catch (NetException e)` remains the universal net-out.
+Three intermediate roots — `TlsException` (NET-5.6), `HttpException`
+(NET-7.7) and `WebSocketException` (NET-10.8) — group the TLS, HTTP and
+WS families so a handler can `catch (HttpException e)` for *any*
+protocol-layer fault without also swallowing a transport-layer
+`ConnectionResetException`. All three still descend from `NetException`,
+so the request-boundary `catch (NetException e)` remains the universal
+net-out. (`CertificateInvalidException` extends `TlsException`, not
+`NetException` directly, so `catch (TlsException e)` covers both the
+generic handshake/protocol fault and the certificate-rejection case.)
 
 Every instance carries an `int32 kind` — the `cajeta_net_err` ordinal
 it was classified to — so a single `catch (NetException e)` can branch
@@ -219,7 +222,7 @@ a `kind` ordinal they each carry the structured detail a caller needs:
 | `UnknownHostException` | NET-2.5 | `int32 resolveErrno` ∈ { NONAME 1, NODATA 2 } | distinguish "no such name" from "no record of that family" |
 | `ResolutionFailedException` | NET-2.5 | `int32 resolveErrno` ∈ { AGAIN 3, FAIL 4, FAMILY 5, MEMORY 6, SYSTEM 7, BADFLAGS 8, SERVICE 9, OTHER 99 } | a retry policy can single out the transient `AGAIN` (3) |
 | `MalformedUriException` | NET-6.5 | `int64 position` | point at the offending byte |
-| `CertificateInvalidException` | NET-5.6 | `reason` ∈ { expired, hostname-mismatch, untrusted-root, self-signed } | the verifier's specific rejection |
+| `CertificateInvalidException` | NET-5.6 | `int32 reason` — a `TlsConnection.CERT_*` ordinal ∈ { `CERT_EXPIRED` 1, `CERT_HOSTNAME` 2, `CERT_UNTRUSTED` 3, `CERT_OTHER` 4 } | the verifier's specific rejection |
 | `ConnectionClosedException` (WS) | NET-10.8 | RFC 6455 close code (+ reason) | distinguish a clean 1000 from a 1002 protocol close |
 | `HeadersTooLargeException` | NET-7.7 | the limit that was exceeded | actionable abuse diagnostic |
 
@@ -249,13 +252,14 @@ TLS, DNS, and protocol layers can raise.
 ## Using the map (socket layer, NET-1.3+)
 
 After an intrinsic returns its failure sentinel, the socket wrapper
-reads the normalized ordinal and raises the mapped subtype, citing the
-operation + address it composed:
+reads the normalized ordinal (each socket class exposes the native shim
+through a private `lastErrorNative()`) and raises the mapped subtype,
+citing the operation it was performing:
 
 ```cajeta
-int32 r = Net.connect(this.fd, packed, len);
-if (r < 0) {
-    throw NetErrors.fromErrno(Net.lastError(), "connect to " + peer);
+int64 n = TcpStream.recvNative(this.fd, buf, off, len);
+if (n < 0) {
+    throw NetErrors.fromErrno(TcpStream.lastErrorNative(), "readAsync");
 }
 ```
 
@@ -270,6 +274,7 @@ caller decides whether to `throw` it (the throwing path) or inspect it
 |---|---|
 | one specific transport failure (e.g. refused connect) | `ConnectionRefusedException` |
 | any transport failure, branch on cause | `NetException`, switch on `e.kind` |
+| any TLS handshake / certificate fault | `TlsException` |
 | any HTTP-protocol parse fault | `HttpException` |
 | any WebSocket-protocol fault | `WebSocketException` |
 | *anything* the networking stack can throw | `NetException` (the universal root) |

@@ -12,27 +12,36 @@ Tracks the R1–R5 rollout of the async runtime described in `docs/stdlib/Concur
 ## Current status
 
 **Phases R1 through R9 + error-model v1 complete.** Full structured-concurrency
-story functional end-to-end: stackful fibers on a multi-carrier work-stealing
-pool, scope joins, cancellation, exception escalation, atomics, timers, async
-I/O reactor. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`,
-with `cause` chaining), `throws` clause grammar + advisory lint with try/catch
-coverage awareness, runtime exception path on `void*`, Task<T> exception slot
-with await re-raise, and stack-trace capture at throw sites with auto-print on
-uncaught.
+story functional end-to-end: stackful fibers on a carrier pool with per-carrier
+work-stealing deques, scope joins, cancellation, exception escalation, atomics,
+timers, async I/O reactor. Error model has the stdlib Throwable hierarchy (in
+`package cajeta.error;`, with `cause` chaining), `throws` clause grammar +
+advisory lint with try/catch coverage awareness, runtime exception path on
+`void*`, Task<T> exception slot with await re-raise, and stack-trace capture at
+throw sites with auto-print on uncaught.
 
 > **Scheduler reality (authoritative — this doc is the source of truth).** The
-> executor is a **multi-carrier work-stealing pool** (Chase–Lev deques per
-> carrier). Default carrier count is `min(nproc, 4)`; `CAJETA_CARRIERS=N`
-> overrides for deterministic-order debug runs (set to 1 for the
-> single-carrier model the early releases shipped). Timer wheel ships
+> executor is a carrier pool with **Chase–Lev work-stealing deques per carrier**
+> (default count `min(nproc, 4)`; `CAJETA_CARRIERS=N` overrides, clamped to
+> `[1, 16]`, read once at first spawn). **The pool is multi-carrier by default,
+> so spawned tasks run with real wall-clock parallelism** — the multi-carrier
+> deadlocks of earlier releases no longer reproduce across the async/threading
+> suite at the default count. The one limit: a fiber is **pinned to the carrier
+> that first ran it** (cross-carrier resume of a suspended fiber is unsolved), so
+> parallelism comes from fanning out across distinct spawned fibers, not from
+> migrating one. Set `CAJETA_CARRIERS=1` for deterministic single-carrier runs.
+> A few sync-primitive fast paths and the stdlib `Mutex` docstring still describe
+> the old "single carrier" discipline. Timer wheel ships
 > (`__cajeta_task_wait_timeout` + a sorted-list timer thread), backing
-> `cajeta.time.Duration`, `Tasks.withTimeout<R>`, and `Tasks.withDeadline<R>`.
-> Async I/O reactor ships (Linux epoll), with `Cajeta.io*` intrinsics for
-> non-blocking fd registration / wait. Atomics ship as `cajeta.concurrent.AtomicInt32/64` (R8.1).
+> `cajeta.time.Duration`,
+> `Tasks.withTimeout<R>`, and `Tasks.withDeadline<R>`. Async I/O reactor ships
+> (Linux epoll), with `Cajeta.epoll*` / `Cajeta.eventfd*` intrinsics for
+> non-blocking fd registration / wait. Atomics ship as
+> `cajeta.concurrent.AtomicInt32/64` (R8.1).
 
 **R5-C / R5-D — shipped (named here precisely, since `Features.md` S-805 long read "designed"):**
-- [x] R5-C cooperative cancellation — `CancellationException extends RecoverableException`; scope sets each child fiber's `cancel_with`; `__cajeta_task_wait` re-raises it on the next park-resume (commit `fa7c7f8`).
-- [x] R5-D scope exception-escalation — `scope_exit`/`scope_exit_to` join children, cancel surviving siblings on the first non-null exception slot, then re-raise the first throw into the containing frame.
+- [x] R5-C cooperative cancellation — scope sets each surviving child fiber's `cancel_with` marker to the **trigger Throwable** (the first thrower); `__cajeta_task_wait` re-raises that trigger on the next park-resume (commit `fa7c7f8`). There is **no `CancellationException` type** — the trigger itself propagates.
+- [x] R5-D scope exception-escalation — `scope_exit`/`scope_exit_to` join children, cancel surviving siblings on the first non-null exception slot (with the trigger), then re-raise the first throw into the containing frame.
 
 **Post-v1 polish items — all shipped:**
 - [x] Recoverable/Unrecoverable distinction via vtable type-check (#210) — commit `ea5ca6e`.
@@ -139,7 +148,7 @@ Two alternatives considered and rejected:
 ### R3-B v1 — Stackful fiber executor
 - Decision: stackful (Java 21 virtual thread model) over stackless state machines. Removes function coloring; no async-fn codegen transformation.
 - `ucontext.h`-based fiber primitive with ~64 KB per-fiber stack.
-- Single carrier OS thread runs many fibers cooperatively.
+- Carrier OS threads (default `min(nproc, 4)`) each run many fibers cooperatively; fibers are pinned to their home carrier.
 - `await` from inside a fiber parks (swap to carrier); main-thread `await` OS-blocks on a condvar.
 - `__cajeta_task_complete` wakes all parked fibers (polling-wake; per-task wait queues are a future optimization).
 - docs/stdlib/Concurrency.md updated to reflect the stackful decision and document the global drop-chain-head as a known gap.
@@ -172,7 +181,7 @@ Two alternatives considered and rejected:
 - `throws` clause grammar + AST (#200), advisory `uncaught-throws` lint warning (#201), stack-trace capture at throw sites (#203).
 - Runtime exception path migrated to `Throwable*` on `void*` carrier; system default catch wraps main + each fiber trampoline. `CajetaTask` gained an exception slot; `await` re-raises into the awaiter.
 - Recoverable/Unrecoverable distinction at system catch (#210) — vtable type-check against the `__cajeta_unrecoverable_vtable_marker` global published by `Compiler::parse()` after stdlib load.
-- R5-C cancellation tokens (commit `fa7c7f8`) — `CancellationException extends RecoverableException`; scope-level cancel walks registered children and sets their atomic cancel flag.
+- R5-C cancellation (commit `fa7c7f8`) — scope-level cancel walks registered children and sets each surviving fiber's `cancel_with` marker to the trigger Throwable; the next await re-raises it. No `CancellationException` class — the trigger itself propagates.
 - R5-D exception escalation through scope — `scope_exit` joins children, cancels siblings on first throw, re-raises into the containing frame.
 - Comprehensive lint system: rule IDs + `@SuppressLint("id")` (commits `ded5897`, `e3d238e`); try/catch coverage awareness for `uncaught-throws` (#209, commit `996cf21`) — the lint walks an enclosing-try stack and suppresses warnings when any catch arm catches the throw (supertype-aware via `getSuperClasses()`).
 - Inherited-field write codegen fix (#208, commit `16434e5`) — subclass layout now prepends inherited fields, so GEPs for inherited fields share the parent's slot index. Follow-up (commit `0dda81b`) added the same walk to `BinaryOpExpression`'s ASSIGN slot-type lookup (mixed-width inherited fields were trampling neighbors with too-wide stores) and switched `CastExpression::generateCode` to `loadIfLValue` so `(T) obj.field` loads the value instead of ptrtoint'ing the GEP address.
@@ -186,15 +195,15 @@ Two alternatives considered and rejected:
 
 Beyond R4's Lock, the threading package ships:
 
-- `cajeta.concurrent.Mutex` — closure/scoped `withLock(() -> body)` API; no lvalue guard. R7-A..E.
-- `cajeta.concurrent.RwLock` — multi-reader / exclusive-writer; closure forms.
-- `cajeta.concurrent.Semaphore` — counting; `withPermit(() -> body)`.
-- `cajeta.concurrent.CondVar` — paired with Mutex.
+- `cajeta.concurrent.Mutex<T>` — closure/scoped API (`withLock((T) -> #T fn)`, `get()`); no lvalue value handle. R7-A..E.
+- `cajeta.concurrent.RwLock<T>` — multi-reader / exclusive-writer; `read() -> T` snapshot + `withWrite((T) -> #T fn)`.
+- `cajeta.concurrent.Semaphore` — counting; `acquire`/`release` + scoped `withPermit(() -> void fn)`, `availablePermits()`.
+- Wait-for-condition is folded into `Mutex.withLockWhen((T) -> boolean cond, (T) -> #T fn)` (backed by the runtime's `Cajeta.condvar*` intrinsics) — there is **no standalone `ConditionVariable`/`CondVar` class**.
 - `cajeta.concurrent.Channel<T>` — bounded MPMC ring buffer (capacity at construction). `send` blocks while full; `receive` returns a stack `Optional<T>` (present while items remain, empty once closed+drained). v1 targets primitive/value T; heap-class T items buffered-but-unreceived aren't dropped on Channel destroy (drain explicitly via `receive()` loop before drop). R7-F.
 
 ## R8 — Multi-carrier scheduler + atomics ✅ complete
 
-- **R8.1** — `cajeta.concurrent.AtomicInt32` / `AtomicInt64` value types with `get`, `set`, `add`, `sub`, `compareAndSet`, and fixed-ordering variants (acquire/release/relaxed).
+- **R8.1** — `cajeta.concurrent.AtomicInt32` / `AtomicInt64` value types with `load`, `store`, `fetchAdd`, `compareAndSet` (seq_cst), plus fixed-ordering variants (`loadRelaxed`/`loadAcquire`, `storeRelaxed`/`storeRelease`, `fetchAddRelaxed`, `compareAndSetAcquire`).
 - **R8.2** — Chase–Lev work-stealing deques per carrier replace the single shared ready queue. Local push/pop is wait-free for the owner; other carriers steal from the public end.
 - **R8.3** — Multi-carrier pool: `CAJETA_CARRIERS=N` (1 ≤ N ≤ 16) sets the pool size; default is `min(_SC_NPROCESSORS_ONLN, 4)`. Per-fiber drop and exception chain heads (TLS-promoted) keep the unwind walks per-carrier.
 

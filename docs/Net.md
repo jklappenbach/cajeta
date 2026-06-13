@@ -40,13 +40,16 @@ shape should be*.
 ## Design principles
 
 - **Fibers, not callbacks.** Every I/O operation has a blocking-
-  looking async form (`readAsync`, `acceptAsync`, …) that returns
-  a `Task`-shaped awaitable. Calling `await` on it **parks the
-  fiber**, not the OS thread — the carrier runs other fibers while
-  the I/O is in flight. There is no callback hell, no explicit
-  state machine; the linear code reads top-to-bottom. This reuses
-  the *exact* park/wake machinery `await`, `Channel`, and the
-  timer wheel already use.
+  looking async form (`readAsync`, `acceptAsync`, …). The call itself
+  **parks the calling fiber**, not the OS thread, and returns the
+  result directly once the reactor wakes it — the carrier runs other
+  fibers while the I/O is in flight. There is no callback hell, no
+  explicit state machine; the linear code reads top-to-bottom. (The
+  socket `*Async` methods are *not* `Task`-returning — you don't
+  `await` them. `await` unwraps a `Task<T>` produced by `spawn`; to put
+  a deadline on a socket read you `spawn` it into a `Task` and hand that
+  to `Tasks.withTimeout`, as below.) This reuses the *exact* park/wake
+  machinery `spawn`/`await`, `Channel`, and the timer wheel already use.
 - **One model across OSes.** Linux epoll, macOS/BSD kqueue, and
   Windows IOCP are hidden behind one native reactor engine. The
   Cajeta surface is identical on every platform; the
@@ -74,7 +77,7 @@ shape should be*.
 | `cajeta.net` | `TcpStream`, `TcpListener`, `UdpSocket`, `IpAddress`, `SocketAddress`, socket options, `NetException` + subtypes |
 | `cajeta.net.dns` | `Dns`, `AddressFamily`, DNS cache |
 | `cajeta.net.reactor` | internal — the async engine; no public surface beyond the park/wake hooks the socket types call |
-| `cajeta.net.tls` | `TlsClient`, `TlsListener`, cert validation, SNI/ALPN |
+| `cajeta.net.tls` | `TlsStream` (client/server factories), `TlsListener`, `TlsConnection`, cert validation, SNI/ALPN |
 | `cajeta.net.uri` | `Uri`, percent-encoding, query params |
 | `cajeta.net.http` | `HttpRequest`/`HttpResponse`, `Headers`, parser/serializer, `HttpClient`, `HttpServer`, router |
 | `cajeta.net.ws` | `WebSocket`, frame codec, handshake |
@@ -89,9 +92,12 @@ networking *blockers* but not networking *types*):
 | `Base64` | `cajeta.codec` (new) |
 | `Cache<K,V>` | `cajeta.collection` (exists — reused for the DNS + connection caches) |
 
-`cajeta.net` is a **new built-in stdlib root** alongside codec,
-collection, error, hash, io, lang, threading, time, wire, xpu —
-it compiles into the toolchain and is DCE-linked like the others.
+`cajeta.net` is a **built-in stdlib root** alongside codec,
+collection, concurrent, error, gpu, hash, io, lang, math, reflect,
+time, wire — it compiles into the toolchain and is DCE-linked like the
+others. (The concurrency primitives this stack builds on — `Task`,
+`spawn`/`await`, `Channel`, `Tasks.withTimeout` — live in
+**`cajeta.concurrent`**.)
 
 ---
 
@@ -108,13 +114,13 @@ Every socket type offers two surfaces:
   fiber on readiness/completion.
 
 ```cajeta
-// Async TCP echo handler — reads block the fiber, never the carrier.
-async void handle(TcpStream conn) {
-    byte[] buf = heap byte[4096];
+// Async TCP echo handler — reads park the fiber, never the carrier.
+void handle(TcpStream conn) {
+    int8[] buf = heap int8[4096];
     while (true) {
-        int32 n = await conn.readAsync(buf);
-        if (n == 0) { break; }            // peer closed
-        await conn.writeAllAsync(buf, n);
+        int64 n = conn.readAsync(buf, 0, 4096);   // parks the fiber; returns the count
+        if (n == 0) { break; }                     // peer closed (EOF)
+        conn.writeAllAsync(buf, 0, n);
     }
 }
 ```
@@ -123,8 +129,8 @@ Timeouts and cancellation compose through the existing `Tasks`
 API — no networking-specific timeout machinery:
 
 ```cajeta
-Optional<int32> r = Tasks.withTimeout(Duration.ofSeconds(5),
-                                      spawn conn.readAsync(buf));
+Optional<int64> r = Tasks.withTimeout(Duration.ofSeconds(5),
+                                      spawn conn.readAsync(buf, 0, 4096));
 if (r.isEmpty()) { /* read timed out; the reactor op was deregistered */ }
 ```
 
@@ -133,22 +139,23 @@ if (r.isEmpty()) { /* read timed out; the reactor op was deregistered */ }
 ## Sockets
 
 ```cajeta
-// TCP client
-TcpStream s = await TcpStream.connectAsync("example.test", 443);
+// TCP client — connectAsync takes a resolved SocketAddress and parks
+// the fiber until connected (the host:port convenience that resolves
+// first is layered above, e.g. in HttpClient).
+#TcpStream s = TcpStream.connectAsync(SocketAddress.parse("93.184.216.34:443"));
 s.setNoDelay(true);
-await s.writeAllAsync(bytes);
-int32 n = await s.readAsync(buf);
+s.writeAllAsync(bytes, 0, bytes.count());
+int64 n = s.readAsync(buf, 0, buf.count());
 s.close();
 
-// TCP server
-TcpListener l = TcpListener.bind(SocketAddress.parse("0.0.0.0:8080"));
-l.setReuseAddress(true);
-TcpStream conn = await l.acceptAsync();
+// TCP server — bind sets SO_REUSEADDR; acceptAsync parks until a peer connects.
+#TcpListener l = TcpListener.bind(SocketAddress.parse("0.0.0.0:8080"));
+#TcpStream conn = l.acceptAsync();
 
-// UDP
-UdpSocket u = UdpSocket.bind(SocketAddress.parse("0.0.0.0:0"));
-await u.sendToAsync(datagram, SocketAddress.parse("239.0.0.1:5000"));
-RecvResult rr = await u.recvFromAsync(buf);   // rr.bytes, rr.from
+// UDP (v1 datagram path is synchronous; async UDP is planned)
+#UdpSocket u = UdpSocket.bind(SocketAddress.parse("0.0.0.0:0"));
+u.sendTo(datagram, 0, datagram.count(), SocketAddress.parse("239.0.0.1:5000"));
+#RecvResult rr = u.recvFrom(buf, 0, buf.count());   // rr.count, rr.from
 ```
 
 **Socket options** are typed methods, not raw `setsockopt` ints:
@@ -171,10 +178,10 @@ file + socket types.
 ## Addresses
 
 ```cajeta
-IpAddress v4 = IpAddress.parse("127.0.0.1");
-IpAddress v6 = IpAddress.parse("::1");
-SocketAddress a = SocketAddress.parse("[::1]:8080");   // bracket form for v6
-a.ip(); a.port(); a.family();                          // V4 | V6
+#IpAddress v4 = IpAddress.parse("127.0.0.1");
+#IpAddress v6 = IpAddress.parse("::1");
+#SocketAddress a = SocketAddress.parse("[::1]:8080");  // bracket form for v6
+a.getIp(); a.getPort(); a.getFamily();                 // AddressFamily.V4 | V6
 a.toString();                                          // round-trips
 ```
 
@@ -187,11 +194,13 @@ byte-identically.
 ## Name resolution
 
 ```cajeta
-SocketAddress[] addrs = Dns.resolve("example.test", 443);
-Task<SocketAddress[]> t = Dns.resolveAsync("example.test");   // parks the fiber
+#SocketAddress[] addrs = Dns.resolve("example.test", 443);   // built (NET-2.2)
+Task<SocketAddress[]> t = Dns.resolveAsync("example.test");  // planned (NET-2.3)
 ```
 
-`getaddrinfo` is synchronous in libc, so `resolveAsync` runs it on
+`Dns.resolve(host)` / `resolve(host, port)` / `resolve(host, port,
+ResolveFamily)` are the built synchronous forms. `resolveAsync` is
+planned (NET-2.3): `getaddrinfo` is synchronous in libc, so it runs on
 a **carrier-pool worker** and parks the calling fiber on the
 resulting `Task` — no carrier is blocked. Results are cached in a
 bounded LRU keyed on `(host, family)` with a configurable default
@@ -322,13 +331,22 @@ ownership: the Cajeta layer pumps ciphertext between the socket
 and the TLS engine). An internal `TlsBackend` interface keeps an
 mbedTLS swap mechanical.
 
+The shipped client is **`cajeta.net.tls.TlsStream`** (implements
+`ByteChannel`), wrapping an already-connected `TcpStream`. There is no
+`TlsConfig` / `TlsClient` builder — configuration is the factory's
+arguments (`TlsStream.client(...)` pins an explicit trust anchor;
+`clientSystemTrust(...)` uses the OS store; `server(...)` terminates).
+ALPN is offered with `offerAlpn`, read back with `negotiatedAlpn`:
+
 ```cajeta
-TlsClient tls = await TlsClient.connectAsync("example.test", 443,
-    TlsConfig.builder().alpn(["http/1.1"]).build());
-// SNI is set from the host automatically; cert chain validated
-await tls.writeAsync(plaintext);
-int32 n = await tls.readAsync(buf);
-String proto = tls.negotiatedProtocol();   // "http/1.1"
+// `sock` is an owned, connected #TcpStream; `host` is the SNI/verify name.
+#TlsStream tls = TlsStream.clientSystemTrust(#sock, host.bytes, host.byteLength);
+tls.offerAlpn(alpn, alpnLen);     // e.g. "\x08http/1.1"
+tls.handshake();                  // parks the fiber; validates the cert chain
+tls.write(plaintext, len);
+int32 n = tls.read(buf, buf.count());
+int32 protoLen = tls.negotiatedAlpn(protoOut, protoMax);   // "http/1.1"
+tls.close();
 ```
 
 - **Cert validation:** hostname match (SAN + CN fallback, wildcard
@@ -338,9 +356,10 @@ String proto = tls.negotiatedProtocol();   // "http/1.1"
 - **SNI:** sent from the connect host.
 - **ALPN:** client offers a protocol list, reports the negotiated
   protocol (`http/1.1` for HTTPS; the surface is ready for `h2`).
-- **Server-side** (`TlsListener`): load cert + key (PEM),
-  terminate TLS on accepted connections, ALPN selection callback.
-  Ships after the client.
+- **Server-side** (`TlsListener` / `TlsStream.server(...)`): load cert
+  + key (PEM), terminate TLS on accepted connections, ALPN selection.
+  Built ([`tls/TlsListener.cajeta`](../runtime/src/cajeta/net/tls/TlsListener.cajeta),
+  [`tls/TlsStream.cajeta`](../runtime/src/cajeta/net/tls/TlsStream.cajeta)).
 
 The handshake parks on the reactor — a slow handshake never blocks
 a carrier.
@@ -352,16 +371,17 @@ a carrier.
 RFC 3986 parse + build:
 
 ```cajeta
-Uri u = Uri.parse("https://u:p@h.test:8443/a/b?x=1&y=2#frag");
-u.scheme();   // "https"
-u.host();     // "h.test"
-u.port();     // 8443  (or the scheme default)
-u.path();     // "/a/b"
-u.query();    // QueryParams multi-map, order-preserving
-u.fragment(); // "frag"
+#Uri u = Uri.parse("https://u:p@h.test:8443/a/b?x=1&y=2#frag");
+u.getScheme();    // "https"
+u.getHost();      // "h.test"
+u.getPort();      // 8443  (or -1 when no explicit port — scheme default applied by callers)
+u.getPath();      // "/a/b"
+u.getQuery();     // "x=1&y=2"  (raw query String)
+#QueryParams q = u.queryParams();   // parsed, order-preserving multi-map
+u.getFragment();  // "frag"
 
-String enc = Uri.percentEncode(raw, Component.Query);   // component-aware sets
-Uri abs = Uri.resolve(base, "../other");                // RFC 3986 §5 reference resolution
+#String enc = Uri.percentEncode(raw, UriComponent.QUERY);  // component-aware sets
+#Uri abs = Uri.resolve(base, "../other");                  // RFC 3986 §5 reference resolution
 ```
 
 Percent-encoding uses the correct reserved/unreserved set per
@@ -378,13 +398,11 @@ authorities (`http://[::1]:80/`) parse.
 Pure codec over byte buffers — no I/O, tests without sockets.
 
 ```cajeta
-HttpRequest req = HttpRequest.builder()
-    .method("GET").uri(u)
-    .header("Accept", "application/json")
-    .build();
+#HttpRequest req = HttpRequest.fromUri("GET", u)   // or .of(method, target) / .get(target)
+    .header("Accept", "application/json");          // chaining setters return `this`
 
-Headers h = resp.headers();
-h.get("content-type");      // case-insensitive
+Headers h = resp.getHeaders();
+h.get("content-type");      // first value, case-insensitive (lowercased keys)
 h.getAll("set-cookie");     // multi-value, order-preserving
 ```
 
@@ -412,52 +430,72 @@ h.getAll("set-cookie");     // multi-value, order-preserving
 
 The HTTPS-capable HTTP/1.1 client — **cvm's dependency**.
 
+**Shipped today (NET-8.1)** is the core single exchange: construct an
+`HttpClient`, optionally pin a trust anchor, and `get`/`send`. Each call
+parks the calling fiber and returns the buffered `HttpResponse` directly
+(no `await`). `https://` verifies against the OS trust store by default.
+
 ```cajeta
-HttpClient c = HttpClient.builder()
-    .connectTimeout(Duration.ofSeconds(10))
-    .maxRedirects(5)
-    .build();
+HttpClient client = heap HttpClient();
+// Optional: pin a private-CA / self-signed anchor (PEM bytes).
+// client.trustAnchor(pem, pemLen);
 
-// JSON convenience
-ReleaseManifest m = await c.getJson<ReleaseManifest>("https://api.github.test/releases/latest");
+#HttpResponse resp = client.get("https://example.test/path");
+int32 status = resp.statusCode();      // e.g. 200
+Headers h    = resp.getHeaders();
+int8[] body  = resp.body;              // buffered (Connection: close per exchange)
 
-// Streaming download with running checksum — cvm's exact need
-Sha256 sum = await c.downloadTo("https://.../cajeta-1.0.tar.zst", path);
-if (sum.hex() != expected) { /* checksum mismatch — abort install */ }
+// Or build the request explicitly:
+#HttpRequest req = HttpRequest.fromUri("GET", Uri.parse("https://example.test/path"));
+#HttpResponse r2 = client.send(Uri.parse("https://example.test/path"), req);
 ```
 
-- **Connection pool + keep-alive** keyed on `(scheme, host,
-  port)`; idle reaping; max-conns-per-host.
+The convenience + scale layers below are **planned**, each over this
+method:
+
+- **Connection pool + keep-alive** keyed on `(scheme, host, port)`;
+  idle reaping; max-conns-per-host. *(NET-8.2 — v1 stamps
+  `Connection: close`, one exchange per socket.)*
 - **Redirects** — 301/302/303/307/308 with a hop cap, correct
-  method/body rewrite (303 → GET; 307/308 preserve), relative-
-  `Location` resolution, and `Authorization` stripping on
-  cross-origin hops.
-- **Timeouts/cancellation** — per-request connect/read/total
-  deadlines via `Tasks.withTimeout`/`withDeadline`; cancellation
-  deregisters the in-flight reactor op.
-- **Streaming bodies** — upload from an `AsyncReader`, download as
-  a streaming `BodyReader`; `downloadTo(path)` streams to a
-  `cajeta.io.file.File` with an optional running SHA-256.
-- **Transparent decompression** — `gzip`/`deflate` response
-  bodies, advertised via `Accept-Encoding`, decoded streaming.
+  method/body rewrite, relative-`Location` resolution, `Authorization`
+  stripping on cross-origin hops. *(NET-8.3.)*
+- **Timeouts/cancellation** — per-request connect/read/total deadlines
+  via `Tasks.withTimeout`/`withDeadline`. *(NET-8.4.)*
+- **Streaming bodies** — upload from an `AsyncReader`, download as a
+  streaming `BodyReader`; `downloadTo(path)` to a `cajeta.io.file.File`
+  with an optional running SHA-256. *(NET-8.5/8.6.)*
+- **`getJson<T>` convenience** and **transparent `gzip`/`deflate`
+  decompression**. *(NET-8.6.)*
 
 ---
 
 ## HTTP server
 
+A `Router` maps method + path-pattern to handlers (lambdas of type
+`(HttpRequest) -> #HttpResponse`); `HttpServer` binds an address to a
+single handler (typically `router.dispatch`) and serves it:
+
 ```cajeta
-HttpServer.builder()
-    .bind("0.0.0.0:8080")
-    .model(SharedPool(16))                    // or FiberPerConnection
-    .route("GET", "/users/{id}", (req) -> {
-        String id = req.pathParam("id");
-        return HttpResponse.json(200, lookup(id));
-    })
-    .serve();
+#Router router = heap Router();
+router.route("GET", "/users/{id}", (HttpRequest req) -> {
+    #String id = req.pathParam("id");
+    return HttpResponse.of(200)
+        .setHeader("Content-Type", "application/json")
+        .body(lookup(id), bodyLen);
+});
+
+#HttpServer server = HttpServer.bind("0.0.0.0:8080",
+    (HttpRequest req) -> router.dispatch(req));
+server.serve();
+
+// The builder selects the accept model:
+//   HttpServer.builder().bind("0.0.0.0:8080")
+//       .model(ServerModel.sharedPool(16))      // or .fiberPerConnection()
+//       ... .serve();
 ```
 
 - Runs on **both** accept models (NET-4a/4b), selected via the
-  builder.
+  builder (`ServerModel.fiberPerConnection()` / `sharedPool(n)`).
 - **Minimal router** — method + path-pattern (`/users/{id}` path
   params), 404/405 defaults. Deliberately not a web framework.
 - **Streaming** — handlers write chunked bodies incrementally and
@@ -473,12 +511,20 @@ HttpServer.builder()
 
 RFC 6455 — client + server.
 
+The shipped `WebSocket` (`cajeta.net.ws.WebSocket`) wraps an
+`AsyncReader` / `AsyncWriter` pair over an already-upgraded transport —
+`forClient(reader, writer)` / `forServer(reader, writer)`. The handshake
+(`WsClientHandshake` / `WsServerHandshake` + `WsUpgrade`) runs first; a
+one-line `WebSocket.connect(url)` convenience that does connect +
+handshake + framing is planned. Calls park the fiber directly (no
+`await`); messages are `WsMessage` (`isText()` / `isBinary()`):
+
 ```cajeta
-WebSocket ws = await WebSocket.connect("wss://echo.test/socket");
-await ws.send("hello");                       // text
-Message m = await ws.receive();               // m.isText() / m.isBinary()
-await ws.send(payloadBytes);                  // binary
-await ws.close(1000, "bye");
+#WebSocket ws = WebSocket.forClient(reader, writer);
+ws.send("hello");                            // text frame
+#WsMessage m = ws.receive();                 // m.isText() / m.isBinary()
+ws.sendBinary(payloadBytes, payloadLen);     // binary frame
+ws.close(WsCloseCode.NORMAL, "bye");         // close code 1000
 ```
 
 - **Handshake** — client sends `Upgrade: websocket` + a random
@@ -509,15 +555,18 @@ extension-negotiation slot is parsed so it slots in later).
 
 These are networking blockers that live in their existing roots:
 
-- **`Sha256`** (`cajeta.hash`) — FIPS 180-4, one-shot +
-  incremental (so it runs over a streaming download). The current
-  `cajeta.hash` has MD5/SipHash/XXHash3/DefaultHasher but **no
-  SHA-256** — this is a new addition. Needed by TLS cert
-  validation + cvm's checksum.
+- **`Sha256`** (`cajeta.hash`) — FIPS 180-4, one-shot + incremental
+  (so it runs over a streaming download). **Built**
+  ([`Sha256.cajeta`](../runtime/src/cajeta/hash/Sha256.cajeta)),
+  joining the prior MD5/SipHash/XXHash3/DefaultHasher set. Needed by
+  TLS cert validation + cvm's checksum.
 - **`Sha1`** (`cajeta.hash`) — for the WebSocket
-  `Sec-WebSocket-Accept` only; flagged "not for security use."
+  `Sec-WebSocket-Accept` only; flagged "not for security use." **Built**
+  ([`Sha1.cajeta`](../runtime/src/cajeta/hash/Sha1.cajeta)).
 - **`Base64`** (`cajeta.codec`) — standard + URL-safe alphabets,
-  padding handling. Needed by the WS handshake + HTTP auth.
+  padding handling. **Built**
+  ([`Base64.cajeta`](../runtime/src/cajeta/codec/Base64.cajeta)).
+  Needed by the WS handshake + HTTP auth.
 - **Buffer pool** (`cajeta.net`, internal) — pooled byte buffers
   reused across connections, a ring/rope buffer for the
   incremental parsers, and high/low-watermark backpressure

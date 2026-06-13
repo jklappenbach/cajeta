@@ -127,11 +127,11 @@ Desugars to `(x) -> MathUtil.abs(x)`. No captures.
 
 ```
 class Stringifier {
-    public string toJson(Record r) { ... }
+    public String toJson(Record r) { ... }
 }
 
 Stringifier s = heap Stringifier();
-(Record) -> string fn = s::toJson;
+(Record) -> String fn = s::toJson;
 fn(someRecord);
 ```
 
@@ -141,11 +141,11 @@ Desugars to `(r) -> s.toJson(r)`. `s` is captured — see the capture rules belo
 
 ```
 class Person {
-    public string name() { ... }
+    public String name() { ... }
 }
 
-(Person) -> string getName = Person::name;
-string n = getName(somePerson);
+(Person) -> String getName = Person::name;
+String n = getName(somePerson);
 ```
 
 Desugars to `(self) -> self.name()`. No captures — `self` is the first parameter.
@@ -169,12 +169,12 @@ When a method has overloads, the LHS function type (or the parameter slot accept
 
 ```
 class Convert {
-    public string from(int32 x) { ... }
-    public string from(fp64 x) { ... }
+    public String from(int32 x) { ... }
+    public String from(float64 x) { ... }
 }
 
-(int32) -> string a = c::from;   // picks the int32 overload
-(fp64)  -> string b = c::from;   // picks the fp64 overload
+(int32) -> String a = c::from;   // picks the int32 overload
+(float64)  -> String b = c::from;   // picks the float64 overload
 ```
 
 If no context pins the type:
@@ -187,7 +187,7 @@ fn = c::from;         // ditto if fn's type isn't pinned
 The user writes an explicit lambda to resolve:
 
 ```
-(int32) -> string fn = x -> c.from(x);   // unambiguous — the int32 param picks the int32 overload
+(int32) -> String fn = x -> c.from(x);   // unambiguous — the int32 param picks the int32 overload
 ```
 
 ---
@@ -196,9 +196,17 @@ The user writes an explicit lambda to resolve:
 
 A capture is a name from outer scope referenced in the lambda body. Capture rules follow the existing memory model: primitives copy, heap values borrow by default, `#name` transfers.
 
+> **Enforcement status.** The borrow-lifetime violations shown below as
+> `ERROR` describe the *intended* semantics. Today closure-capture of a
+> borrow (like field-store of a borrow) is accepted by the type checker;
+> the safety net is an interim lint pass plus debug-runtime checks, not
+> strict compile-time type enforcement. Strict rejection lands with
+> reference types. The value-captured-primitive write error (Rule 5) and
+> the `#name` / `this` transfer rules are real today.
+
 ### Rule 1 — Primitives capture by value
 
-`int32`, `fp64`, `bool`, `char`, etc. are value types. They're copied into the closure at capture time. Mutating the original local later does not affect what the closure sees.
+`int32`, `float64`, `boolean`, `char`, etc. are value types. They're copied into the closure at capture time. Mutating the original local later does not affect what the closure sees.
 
 ```
 int32 multiplier = 10;
@@ -228,7 +236,7 @@ Class instances, arrays, strings, and any other heap-allocated owner — the clo
 
 ```
 StringBuilder sb = heap StringBuilder();
-() -> string fn = () -> sb.toString();   // closure borrows sb
+() -> String fn = () -> sb.toString();   // closure borrows sb
 
 sb.append("hello");
 fn();                                     // "hello" — closure sees live state via the borrow
@@ -322,7 +330,7 @@ appendDot();
 appendDot();
 
 // ERROR: cannot read `buf` while `appendDot` holds an exclusive borrow
-// string snapshot = buf.toString();
+// String snapshot = buf.toString();
 ```
 
 Drop `appendDot` (let it go out of scope) before reading `buf` again, and the conflict resolves.
@@ -373,7 +381,7 @@ class List<T> {
         return out;
     }
 
-    public T? find((T) -> bool pred) {
+    public T? find((T) -> boolean pred) {
         for (T t : items) if (pred(t)) return t;
         return null;
     }
@@ -424,7 +432,7 @@ list.sort((a, b) -> a.score - b.score);
 list.sort(MyClass::byScore);
 ```
 
-Where Java would define a `Predicate<T>` interface, Cajeta uses `(T) -> bool`. `Supplier<T>` → `() -> T`. `Consumer<T>` → `(T) -> void`. `Function<T, R>` → `(T) -> R`. `BiFunction<A, B, R>` → `(A, B) -> R`. The functional-interface zoo collapses into the type system.
+Where Java would define a `Predicate<T>` interface, Cajeta uses `(T) -> boolean`. `Supplier<T>` → `() -> T`. `Consumer<T>` → `(T) -> void`. `Function<T, R>` → `(T) -> R`. `BiFunction<A, B, R>` → `(A, B) -> R`. The functional-interface zoo collapses into the type system.
 
 ### Currying and partial application
 
@@ -524,7 +532,7 @@ The lifetime / aliasing rules from the memory model produce error messages tied 
 ```
 StringBuilder buf = heap StringBuilder();
 () -> void writer = () -> { buf.append("."); };
-string snap = buf.toString();    // ERROR
+String snap = buf.toString();    // ERROR
 //            ^ conflicting access
 //              `buf` is exclusively borrowed by `writer`; reading it here would alias
 //              hint: drop `writer` (let it go out of scope) before reading `buf`
@@ -552,7 +560,7 @@ detach () -> async void {
 ## Open design notes / deferred
 
 - **Anonymous function types in declarations.** Today the syntax `(int32) -> int32 fn = ...` reuses the function-type grammar in variable-declaration position. Possible future addition: `fn` keyword to introduce a function-typed local with type inference (`fn add = (a, b) -> a + b;`). Not in v1.
-- **Higher-rank function types.** Function types whose parameter or return is itself a function type (`((int32) -> int32) -> bool`) work today by composition; no special syntax. Naming them with a typealias is a separate language addition.
+- **Higher-rank function types.** Function types whose parameter or return is itself a function type (`((int32) -> int32) -> boolean`) work today by composition; no special syntax. Naming them with a typealias is a separate language addition.
 - **Comparison / equality.** Two lambdas are NOT comparable for equality — function values have identity-only semantics (two captures of the same source produce indistinguishable values). No `equals` method.
 - **Serialization.** A closure with captures can't be serialized — its captures aren't necessarily representable on the wire. This is a hard rule, not a deferred feature.
 - **Re-entrant lambdas / Y combinator.** A lambda referencing itself by name needs the name to be in scope first. Top-level function-typed bindings can self-reference; locally-bound lambdas need a forward declaration or the `Y`-combinator pattern. Possible future addition: `fn name = ... name(...) ...;` allowed by hoisting the name's binding before the initializer. Not in v1.

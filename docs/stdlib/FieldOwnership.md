@@ -171,8 +171,9 @@ compiles and crashes at run time. Mitigations:
   it with GC).
 - Lifetime tracker (Phase 6+) — proves container doesn't outlive borrow
   source.
-- Runtime poison-on-free (drop scribbles a sentinel into the freed body;
-  field access crashes hard instead of silently).
+- Runtime poison-on-free — shipped as an opt-in debug aid
+  (`__cajeta_set_poison_free`; drop scribbles `0xDB` over the freed body so
+  a dangling field read sees poison instead of plausible stale data).
 
 The pragmatic call: ship Solution B for double-free safety; accept
 use-after-free as a programmer responsibility at v1; tighten with
@@ -195,86 +196,111 @@ Problems:
 
 Kept here for documentation of why it isn't the choice.
 
-### Solution B: Drop chain self-discrimination (chosen)
+### Solution B: Live-set claim at the free dispatchers (chosen)
 
-Auto-drop calls a helper for each owned-shape field. The helper walks the
-per-fiber drop chain looking for an entry whose `obj` matches the field's
-address.
+> **As shipped.** An earlier draft of this doc proposed a per-field helper,
+> `__cajeta_field_drop_if_owned`, that walked the per-fiber drop chain to
+> tell owner from alias. That helper was never built. The implemented
+> mechanism moves the discrimination *into the free dispatchers* via a
+> global **live-set**, which is simpler and works across fibers and across
+> arbitrary aliasing (not just the in-scope chain).
 
-- **Entry found** → this address has an outstanding drop registration.
-  The container is the most-recently-pushed scope that can reach it, so
-  cancel the entry (so it doesn't fire again later) and drop the field
-  now.
-- **No entry** → either the address is owned by something that already
-  dropped (and cancelled its entry), or the address was never registered
-  (e.g. assigned from a now-dropped local). Either way, don't touch it.
+Every `heap` allocation is recorded in a single global live-set
+(`__cajeta_live_set_add`; an open-addressed hash table guarded by a mutex,
+in `cajeta_runtime.c`). Each free dispatcher begins with an atomic
+*claim* — remove-the-address-if-present:
+
+- **Claim succeeds** (address was in the set) → this caller owns the free.
+  Run the destructor / free the body, then poison if enabled.
+- **Claim fails** (address already removed) → some other path already
+  freed it. No-op.
+
+Auto-drop therefore emits a **direct, unconditional** drop call for each
+owned-shape field; the dispatcher's claim makes the call idempotent. When a
+field aliases another owner (e.g. `ArrayStream.data` aliasing
+`ArrayList.data`), both the field's auto-drop and the real owner's chain
+pop call the same dispatcher on the same address — the first wins the claim
+and frees, the second no-ops.
 
 ```c
-void __cajeta_field_drop_if_owned(void* obj) {
-    if (!obj) return;
-    struct cajeta_drop_entry** top = __cajeta_drop_top_ptr();
-    for (struct cajeta_drop_entry* e = *top; e; e = e->prev) {
-        if (e->active && e->obj == obj) {
-            e->active = 0;          // cancel; chain pop will skip
-            e->drop_fn(e->obj);     // run drop here
-            return;
-        }
-    }
-    // no entry — aliased and owned elsewhere (or already freed)
+// Class-ref fields → __cajeta_class_virtual_drop:
+void __cajeta_class_virtual_drop(void* instance) {
+    if (!instance) return;
+    if (!__cajeta_live_set_claim(instance)) return;   // idempotent claim
+    void* vptr = *(void**) instance;
+    if (!vptr) return;
+    void (*drop_fn)(void*) =
+        *(void (**)(void*)) ((char*) vptr + CAJETA_VTABLE_DROP_FN_OFFSET);
+    if (drop_fn) drop_fn(instance);                   // runs ~Class() chain
+}
+
+// Array fields → __cajeta_free_array (same claim-then-free shape):
+void __cajeta_free_array(void* ptr) {
+    if (!ptr) return;
+    if (!__cajeta_live_set_claim(ptr)) return;
+    __cajeta_poison_buffer(ptr);
+    free(ptr);
 }
 ```
 
-The helper does NOT bump `__cajeta_drop_count`. That counter is bumped by
-the original entry's pop path; here we're suppressing that pop, so no
-bump. The drop_fn body can itself allocate (e.g. `~Tracer()` allocates
-an int32[1]), which registers and fires its own chain entry, bumping the
-counter naturally.
+Neither dispatcher bumps `__cajeta_drop_count`. That counter is bumped only
+by `__cajeta_drop_pop_run` (the chain-pop path). A field auto-drop is a
+direct call, so it doesn't increment the counter — but a `drop_fn` body can
+itself allocate (e.g. `~Tracer()` allocates an `int32[1]`), which registers
+and fires its own chain entry, bumping the counter naturally. That is how
+the tests observe an auto-drop firing.
 
-**Code-gen change in `CajetaClass::getOrCreateDropFunction`**:
+**Code-gen in `CajetaClass::getOrCreateDropFunction` → `emitDropBodyInline`**:
 
-For each owned-shape field (class-ref, array — the two that double-freed):
-- Was: emit direct call to `__cajeta_class_virtual_drop(field)` or
-  `__cajeta_free_array(field)`.
-- New: emit call to `__cajeta_field_drop_if_owned(field)`.
+For each owned-shape field, in reverse declaration order, emit a direct call
+to the matching dispatcher:
+- array field → `__cajeta_free_array(field)`,
+- interface field → `__cajeta_iface_drop(field)` (kind-tagged),
+- class-ref field → `__cajeta_class_virtual_drop(field)` (only when the
+  field class `hasVtablePointerAtSlotZero()`; the vtable's `drop_fn` slot is
+  patched via `patchVirtualTableDropFn()`).
 
-For interface and struct fields, the existing code paths (`__cajeta_iface_drop`
-which is kind-tagged, and struct destructors which are inline)
-already handle owner-vs-borrow correctly. They don't need to change.
+Primitives, pointers, function-typed fields, and embedded views need no
+drop. Owner-vs-alias is resolved entirely by the live-set claim inside each
+dispatcher; the code-gen does no static discrimination.
 
 #### Walk-throughs
+
+In the walk-throughs below, "claim(addr)" is `__cajeta_live_set_claim` —
+it succeeds (and frees) the first time an address is seen, then fails.
 
 **Use case 4 (Holder owns Tracer):**
 
 ```
-heap Tracer() in ctor → E_Tracer registered
-heap Holder() → E_Holder registered
+heap Tracer() in ctor → Tracer in live-set; chain entry E_Tracer pushed
+heap Holder() → Holder in live-set; chain entry E_Holder pushed
 ```
 
 Drop:
 1. E_Holder pops → drop_count += 1 → calls Holder drop wrapper.
-2. Holder auto-drop walks `this.t` → helper finds E_Tracer → cancels →
-   calls Tracer drop_fn.
-3. Tracer drop runs `~Tracer()` → allocates int32[1] → E_junk registered.
-4. ~Tracer body exits → E_junk pops → drop_count += 1 → frees array.
-5. Returns out of Tracer drop, out of Holder auto-drop, out of Holder
-   wrapper.
-6. E_Tracer pops → inactive → no fire.
+2. Holder auto-drop calls `__cajeta_class_virtual_drop(this.t)` →
+   claim(Tracer) succeeds → runs `~Tracer()`.
+3. `~Tracer()` allocates int32[1] → its chain entry E_junk is pushed.
+4. `~Tracer` body exits → E_junk pops → drop_count += 1 → frees array.
+5. Returns out of Tracer drop, out of Holder auto-drop, then the Holder
+   wrapper frees the Holder body.
+6. E_Tracer pops → claim(Tracer) now **fails** (already removed) → no-op.
 
 Total drop_count = 2. ✓ (Matches `AutoFieldDropTests.heapClassAutoDropsOwnedClassRefField`.)
 
 **Use case 2 (Optional<Hello>):**
 
 ```
-heap Hello() → E_Hello registered
-heap Optional<Hello>(true, h) → E_Optional registered
-opt.value = h  (assignment from local, no new chain entry)
+heap Hello() → Hello in live-set; E_Hello pushed
+heap Optional<Hello>(true, h) → Optional in live-set; E_Optional pushed
+opt.value = h  (borrow stored in field; no new allocation)
 ```
 
 Drop (reverse order, Optional first):
 1. E_Optional pops → calls Optional drop wrapper.
-2. Auto-drop walks `this.value` → helper finds E_Hello → cancels →
-   calls Hello drop. Hello freed.
-3. E_Hello pops → inactive → no fire.
+2. Auto-drop calls `__cajeta_class_virtual_drop(this.value)` →
+   claim(Hello) succeeds → Hello freed.
+3. E_Hello pops → claim(Hello) **fails** → no-op.
 
 Total: one Hello free. ✓ No double free.
 
@@ -285,51 +311,50 @@ exit, that's use-after-free — accepted risk per the new doctrine.)
 
 ```
 heap ArrayList<int32>() → E_xs
-xs.add(...) → grows buffer → E_buf for the T[]
-heap ArrayStream<int32>(this.data, ...) → E_s; s.data = xs.data
+xs.add(...) → grows buffer → buffer in live-set; E_buf pushed for the T[]
+heap ArrayStream<int32>(this.data, ...) → E_s; s.data = xs.data (alias)
 ```
 
 Drop (reverse order, ArrayStream first):
-1. E_s pops → ArrayStream drop wrapper → auto-drop walks `this.data` →
-   helper finds E_buf → cancels → frees buffer.
-2. E_buf pops → inactive → no fire.
-3. E_xs pops → ArrayList drop wrapper → auto-drop walks `this.data` →
-   helper finds no entry → no-op.
+1. E_s pops → ArrayStream drop wrapper → auto-drop calls
+   `__cajeta_free_array(this.data)` → claim(buffer) succeeds → buffer freed.
+2. E_buf pops → claim(buffer) **fails** → no-op.
+3. E_xs pops → ArrayList drop wrapper → auto-drop calls
+   `__cajeta_free_array(this.data)` → claim(buffer) **fails** → no-op.
 4. ArrayList body freed.
 
 No double free. ✓
 
 **Use case 3 (Pair<Hello, Hello>):** same pattern as Optional, two
-fields, both helper-resolved.
+fields, both claim-resolved.
 
 #### Edge cases
 
-- **Null field**: helper short-circuits on null. Matches
+- **Null field**: dispatchers short-circuit on null. Matches
   `AutoFieldDropTests.heapClassAutoDropTolerateNullField`.
-- **Virtual dispatch (Animal/Dog)**: E_Dog was registered with Dog's drop
-  wrapper at the `heap Dog()` site. Helper calls `e->drop_fn` which IS
-  Dog's wrapper. Auto-drop dispatches to ~Dog correctly. Matches
+- **Virtual dispatch (Animal/Dog)**: `heap Dog()` patched Dog's vtable
+  `drop_fn` slot. `__cajeta_class_virtual_drop` loads `vptr →
+  drop_fn` from the instance and dispatches to `~Dog` correctly. Matches
   `AutoFieldDropTests.classRefFieldAutoDropDispatchesVirtually`.
-- **Array of class refs**: the array storage has its own E_arr; each
-  element pointer has its own E_class. Auto-drop of the array field
-  finds E_arr, cancels, calls `__cajeta_free_array`. Element entries
-  fire normally (their pops aren't suppressed) and free the elements.
-  Direction: ArrayList<Hello>.data is an array of Hello*; ArrayList's
-  auto-drop frees the array storage; the Hello entries fire next and
-  free each Hello.
-- **Explicit alias outliving source** (`h2.t = h1.t` where h1.t was a
-  ctor-allocated owner): when h2 drops, helper finds E_h1t (h1's
-  ctor-allocated Tracer's entry), cancels, frees. When h1 drops, no
-  entry, no-op. Net: no double free; h1.t dangles if user accesses it
-  between h2-drop and h1-drop. (Programmer responsibility.)
+- **Array of class refs**: the array storage and each element pointer are
+  separate live-set addresses. ArrayList's auto-drop frees the array
+  storage (claim succeeds once); the element chain entries fire next and
+  free each element. Direction: `ArrayList<Hello>.data` is an array of
+  `Hello*`; the array storage is freed, then the `Hello` entries free each
+  `Hello`.
+- **Explicit alias outliving source** (`h2.t = h1.t` where `h1.t` was a
+  ctor-allocated owner): when h2 drops, claim(h1.t) succeeds → frees. When
+  h1 drops, claim fails → no-op. Net: no double free; `h1.t` dangles if the
+  user accesses it between h2-drop and h1-drop. (Programmer responsibility.)
 
 #### Cost
 
-- O(chain length) chain walk per owned-shape field per parent drop.
-  Typical chain is short (per-scope). Long-lived scope with many heap
-  allocs degrades — mitigation if it matters: per-fiber hashmap
-  address → entry maintained alongside the chain.
-- No per-allocation overhead beyond the existing chain entry.
+- One mutex-guarded hash-set claim per owned-shape field per parent drop,
+  plus one claim per heap free generally. O(1) amortized; the live-set is a
+  fixed 64K-slot open-addressed table (`cajeta_runtime.c`), warning and
+  leaking the excess past 75% load rather than resizing.
+- One word of set occupancy per live heap allocation (no header change on
+  the object itself).
 
 ### Solution C: No auto-drop; require explicit destructors (rejected)
 
@@ -346,31 +371,29 @@ Require `#` on all class-typed constructor params. Breaks the iterator
 pattern (`xs.stream()` can't transfer xs's buffer or xs is dead). Not
 viable.
 
-## Spec updates required
+## Spec updates (applied)
 
-`MemoryModel.md`:
+`MemoryModel.md` has been updated to match the relaxed rule and the shipped
+mechanism:
 
-- Line ~41 / ~102 — change `heap T(...)` references to `heap T(...)` (the
-  `new` keyword was retired in Phase 7).
-- Line ~102 — remove "Plain `p.field = y` where `y` is a named borrow
-  is a static error." Replace with: "Borrows may be stored in fields.
-  Owner-vs-borrow is resolved at drop time by the drop-chain self-
-  discrimination check (see FieldOwnership.md). Use-after-free of an
-  aliased field whose source has dropped is the programmer's
-  responsibility at v1; Phase 6+ adds a lifetime tracker."
-- Line ~138 — replace "No automatic field drops." with the Solution B
-  description (chain-walk helper).
-- Line ~267 — replace "Fields are owners. Borrows in fields are a
-  static error." with: "Fields may be owners or borrows. Auto-drop
-  uses a runtime check on the per-fiber drop chain to free fields that
-  this scope owns and skip aliased fields."
+- The old "field assignment must transfer; plain `p.field = y` borrow is a
+  static error" rule is gone. The § Fields bullets now read: borrows may be
+  stored in fields, and owner-vs-alias is resolved at drop time by the
+  live-set claim. Use-after-free of an aliased field whose source dropped
+  first is the programmer's responsibility at v1; a lifetime tracker is the
+  planned tightening.
+- The "automatic field drops" gap is documented as ✅ Done via
+  `emitDropBodyInline` + the live-set claim dispatchers (not a chain-walk
+  helper).
 
-## Status
+## Status — shipped
 
-- Auto-drop scaffolding is in place in `CajetaClass::getOrCreateDropFunction`.
-- The current call sites use direct `__cajeta_class_virtual_drop` /
-  `__cajeta_free_array`, which double-frees stdlib classes. Solution B
-  swaps those for `__cajeta_field_drop_if_owned`.
-- `@Borrow` annotation experiment reverted.
-- Tests in `test/parser/AutoFieldDropTests.cpp` pass under Solution B;
-  stdlib regressions resolve.
+- Auto-drop is implemented in `CajetaClass::getOrCreateDropFunction` →
+  `emitDropBodyInline`: direct, reverse-declaration-order calls to
+  `__cajeta_free_array` / `__cajeta_iface_drop` / `__cajeta_class_virtual_drop`
+  per owned-shape field.
+- Double-free safety comes from the live-set claim inside those dispatchers
+  (`__cajeta_live_set_claim`), **not** from a `__cajeta_field_drop_if_owned`
+  chain-walk (that helper, from an earlier draft, was never built).
+- `@Borrow` annotation experiment reverted (Solution A).
+- Pinned by `test/parser/AutoFieldDropTests.cpp`; stdlib regressions resolved.

@@ -27,6 +27,23 @@ Both targets share infrastructure — the JIT compiler, the RTTI
 machinery, the fiber scheduler, the breakpoint engine. The IDE
 debugger is one frontend; the notebook is another.
 
+> **Status (shipped vs. design).** This document is largely a
+> forward-looking specification. What exists in the compiler today:
+> the `cajeta dap` subcommand (`src/main.cpp` dispatches it to
+> `cajeta::dap::DapServer`); the in-process breakpoint engine
+> (`src/cajeta/dbg/DebugController`); statement-boundary safepoints
+> emitted under `--debug-info` / `-g` (`src/cajeta/asn/Block.cpp`,
+> gated by the `CompilerMode::debugInfo` flag, off by default);
+> memory-facet local metadata (`dbg::MemoryFacets`,
+> `__cajeta_dbg_local`); and the destructor-breakpoint story below.
+> **Not yet implemented:** `cajeta lsp`, `cajeta kernel` (the Jupyter
+> kernel + hot-reload + rich-display sections), time-travel /
+> `cajeta record|replay`, and **DWARF emission** — the debug-info path
+> is the in-process safepoint system, *not* standard DWARF (the
+> compiler has no `DIBuilder` / `DICompileUnit` codegen today). Each
+> section below is shipped where it matches that list and design
+> otherwise.
+
 ## Table of contents
 
 1. [Goals](#goals)
@@ -70,10 +87,13 @@ debugger is one frontend; the notebook is another.
   fly. Replace method bodies in place. Existing instances keep
   working; layout-changing redefinitions are rejected with a
   clear error citing the conflict.
-- **DWARF debug info on AOT binaries.** Native debuggers (LLDB,
-  GDB, WinDbg) attach to `cajeta build --debug` binaries and
-  show source-level info because the compiler emits standard
-  DWARF.
+- **DWARF debug info on AOT binaries (planned).** The goal is for
+  native debuggers (LLDB, GDB, WinDbg) to attach to a `--debug`
+  binary and show source-level info from standard DWARF. **Not yet
+  implemented** — the compiler currently emits in-process
+  statement-boundary safepoints under `--debug-info`, not DWARF
+  (no `DIBuilder` codegen). The in-process `cajeta dap` path is how
+  source-level debugging works today.
 
 **v1.5:**
 
@@ -267,8 +287,8 @@ cajeta lsp --port=2087              # TCP mode
   `process(#data: <#owned>)` depending on the parameter's
   ownership semantics. Reduces ambient memory-model surprise.
 - **Type-argument inlay hints.** `Box<int32>` is shown at use
-  sites even when type inference picks it: `var x = new
-  Box(42)` becomes `var x: <Box<int32>> = heap Box(42)`.
+  sites even when type inference picks it: `var x = heap Box(42)`
+  becomes `var x: <Box<int32>> = heap Box(42)`.
 
 ---
 
@@ -337,7 +357,7 @@ what will fire when the function returns or scope exits.
 {
     "scope": "function:fetchUrl",
     "drops": [
-        { "value": "tempBuffer",  "type": "byte[]",       "dropFn": "__cajeta_free_array" },
+        { "value": "tempBuffer",  "type": "int8[]",       "dropFn": "__cajeta_free_array" },
         { "value": "conn",        "type": "TcpConnection","dropFn": "TcpConnection.drop"   }
     ]
 }
@@ -355,7 +375,9 @@ no protocol extension are involved:
 - A `~T()` body is a normal method body, so under `--debug-info` it carries the
   same per-statement safepoints as any other code. A breakpoint on a line in
   `~T()` therefore parks through the existing DebugController rendezvous when an
-  instance of `T` is dropped (at scope exit, or an explicit `delete`).
+  instance of `T` is dropped (at scope exit, when a binding is reassigned, or
+  when an owner is set to `null` — cajeta has no `delete`/`free`; reclamation is
+  the scope-exit drop chain).
 - It composes with conditional breakpoints (CP6f-1) and is toggled/removed live
   like any line breakpoint.
 
@@ -373,8 +395,8 @@ facets (CP7-1d; see `ide-plugins/idea/ide-plugin-debug-fr-1.md`):
 ```jsonc
 {
     "name":      "data",
-    "value":     "<byte[1024]>",
-    "type":      "byte[]",
+    "value":     "<int8[1024]>",
+    "type":      "int8[]",
     "variablesReference": 17,
     "cajeta": {
         // where the value lives

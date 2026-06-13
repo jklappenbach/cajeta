@@ -237,6 +237,13 @@ code).
 **Cost.** Memory — quarantine pool grows. Bounded by a high-water
 mark with eviction once full.
 
+> **Partly shipped.** The poison primitive already exists: the free path
+> can overwrite a reclaimed block with `0xDB` when `__cajeta_set_poison_free`
+> is on (`__cajeta_poison_buffer` in `cajeta_runtime.c`). What is not built
+> is the *quarantine* — today the block is poisoned and then immediately
+> returned to the allocator rather than held back, so a poisoned read only
+> traps until the address is recycled.
+
 ## Recommended phasing
 
 The two static checks at the cheap end pair with one runtime check at

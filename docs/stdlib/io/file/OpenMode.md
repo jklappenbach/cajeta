@@ -15,10 +15,11 @@ public enum OpenMode {
 - **No mode strings.** Python's `"rb+"` typos at runtime.
   Cajeta picks the discrete-enum path so a typo is a
   compile-time identifier-not-found error.
-- **`CREATE_NEW`** — POSIX `O_EXCL`. Fails with
-  `AlreadyExistsException` if the path exists; protects against
-  TOCTOU races where two writers race past `if (!exists())
-  write(...)`.
+- **`CREATE_NEW`** — POSIX `O_EXCL`. Fails (an `EEXIST` open,
+  surfaced as a `-1` fd today; `AlreadyExistsException` once the
+  exception hierarchy is wired) if the path exists; protects
+  against TOCTOU races where two writers race past
+  `if (!exists()) write(...)`. Pairs with `File.openExclusive`.
 - **`APPEND`** — atomic at the syscall level on POSIX; the
   kernel positions every write at end-of-file regardless of
   interleaving with other appenders.
@@ -30,8 +31,9 @@ public enum OpenMode {
 
 ## Where it's used
 
-- [`File.openRead`](File.md) / `File.openWrite(p, mode)` /
-  `File.open(p, mode)`.
+- [`File.openWrite`](File.md)`(path, mode)` /
+  `File.open(path, mode)`. (`File.openRead` is always read-only and
+  takes no `OpenMode`.)
 - [`File.writeAllBytes`](File.md) uses `WRITE` semantics
   internally (with atomic-rename); the caller doesn't pass
   `OpenMode`.

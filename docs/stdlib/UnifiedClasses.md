@@ -170,9 +170,9 @@ Cajeta's vtable lookup is hash-based by canonical method signature (`__cajeta_vt
 
 ```cajeta
 class A { public int32 m() { return 1; } }
-class B extends A { public int32 m() override { return 2; } }
-class C extends A { public int32 m() override { return 3; } }
-class D extends B, C { public int32 m() override { return 4; } }
+class B extends A { public int32 m() { return 2; } }   // overrides A.m by signature
+class C extends A { public int32 m() { return 3; } }
+class D extends B, C { public int32 m() { return 4; } }
 ```
 
 D's vtable contains D::m (its override); calls through any reference type land correctly. Common-ancestor state (A's fields) is shared, not duplicated.
@@ -199,7 +199,7 @@ Multi-inheritance lets a class extend multiple abstract bases for behavior from 
 
 ### `@Override` annotation
 
-Optional but recommended on methods that override a concrete inherited method (especially with covariant return types). Lint warning when overriding without it — catches typo'd signatures that silently create new methods instead of overriding.
+Optional, recommended on methods that override a concrete inherited method (especially with covariant return types) as documentation of intent. Overriding itself is by **signature match** — there is no `override` keyword; a re-declared method with the same signature overrides the inherited one whether or not `@Override` is present.
 
 ```cajeta
 public class Optional<T> extends AbstractStream<T> {

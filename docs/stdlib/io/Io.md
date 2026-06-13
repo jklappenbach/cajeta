@@ -13,7 +13,7 @@ Status: **designed, not implemented**. Tracked in Features.md.
 public class Buffer {
     public Buffer(int64 capacity);
     public int64 capacity();
-    public byte[] data();
+    public int8[] data();
     public Buffer next();
     public void linkNext(Buffer next);
 }
@@ -25,7 +25,7 @@ public class BufferChain {
 }
 ```
 
-`Buffer` wraps a single `byte[MAX_SIZE]`. `BufferChain` is the linked
+`Buffer` wraps a single `int8[MAX_SIZE]`. `BufferChain` is the linked
 list of buffers used by the harness (multiple-inherits `Stream<Buffer>`
 for chain traversal).
 
@@ -59,6 +59,13 @@ needs them.
 
 ## See also
 
-- `cajeta.io.file` — file handle + path manipulation (see IoFile.md)
-- `cajeta.io.net` — TCP / UDP / TLS / HTTP / WebSocket (see IoNet.md)
-- `cajeta.process` — subprocess management (see Process.md)
+- `cajeta.io.file` — file handle + path manipulation (the one
+  `cajeta.io` subpackage that is built today; see
+  [`io/file/File.md`](file/File.md), [`io/file/Path.md`](file/Path.md)).
+- The network stack is **`cajeta.net`**, a *peer* of `cajeta.io` (not a
+  child) — sockets, DNS, TLS, URI, HTTP/1.1, WebSocket. See
+  [`docs/Net.md`](../../Net.md); the forward-looking HTTP/2 + WS library
+  design is [`io/net/Networking.md`](net/Networking.md). There is no
+  `cajeta.io.net` package.
+- `cajeta.process` — subprocess management (see
+  [`Process.md`](../Process.md)).

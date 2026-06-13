@@ -11,7 +11,7 @@
 ## Non-goals (v1)
 
 - Preemptive cancellation. Cancellation is cooperative — a task observes a cancel signal at its next `await`.
-- Custom executors beyond the built-in scheduler. (The default is a multi-carrier work-stealing pool sized via `CAJETA_CARRIERS`; replacing it wholesale is not in scope.)
+- Custom executors beyond the built-in scheduler. (The executor is a carrier pool with per-carrier work-stealing deques, sized via `CAJETA_CARRIERS`, multi-carrier by default (`min(nproc, 4)`) — see the scheduler note under `async fn`; replacing it wholesale is not in scope.)
 - Distributed actors (RPC across machines).
 - Effect handlers / algebraic effects.
 - Async iteration / streaming (`AsyncIterator` style); covered separately if added.
@@ -35,7 +35,9 @@ Every `async` function has return type `Task<T>`. Awaiting a `Task<T>` either:
 
 `await` is only legal inside `async fn` / inside a `spawn` body. Calling an `async fn` without `await` produces an unstarted `Task<T>` — it does nothing until awaited or `spawn`ed.
 
-Under the hood: each task is a **stackful fiber** — its own heap-allocated stack (~64 KB initial) plus a saved `ucontext`. A pool of carrier OS threads (`CAJETA_CARRIERS=N`, default `min(nproc, 4)`) runs many fibers cooperatively across all carriers; `await` parks the running fiber and switches back to its carrier, which picks another ready fiber or steals one from a peer's deque. No `async fn` codegen transformation is required — fibers' suspension lives in the C runtime's context-switch primitive, and from the compiler's perspective an `async fn` is an ordinary function that happens to be invoked through a trampoline.
+Under the hood: each task is a **stackful fiber** — its own heap-allocated stack (~64 KB initial) plus a saved `ucontext`. `await` parks the running fiber and switches back to its carrier, which picks another ready fiber off its deque. No `async fn` codegen transformation is required — fibers' suspension lives in the C runtime's context-switch primitive, and from the compiler's perspective an `async fn` is an ordinary function that happens to be invoked through a trampoline.
+
+> **Scheduler reality today (multi-carrier by default).** The executor is a carrier pool with per-carrier Chase–Lev work-stealing deques. The carrier count is read once at first spawn from `CAJETA_CARRIERS`, defaulting to `min(nproc, 4)` (clamped to `[1, 16]`), so **spawned tasks run with real wall-clock parallelism by default** — the multi-carrier deadlocks of earlier releases no longer reproduce across the async/threading suite at the default count (`cajeta_runtime.c` carrier-pool block + the R8.3 executor notes). The one limit: a fiber is **pinned to the carrier that first ran it** (cross-carrier resume of a suspended fiber is unsolved), so parallelism comes from fanning out across *distinct* spawned fibers, not from migrating a single one. Set `CAJETA_CARRIERS=1` for deterministic single-carrier execution (debugging / reproducible ordering). A few sync-primitive fast paths and some stale runtime comments still describe the old "single carrier" discipline. The running status lives in `docs/stdlib/AsyncStatus.md`.
 
 This is Java 21's virtual-thread model rather than the stackless state-machine model used by Rust/Swift/C#. We took stackful for two reasons: it ships much faster (no async-fn rewrite pass) and it removes function coloring — any function can call `await`, not just one declared `async`. The per-fiber stack cost is real but matches Java 21's tradeoff; if measurements ever demand it, stackless rewrite remains possible later without changing the surface syntax.
 
@@ -46,7 +48,7 @@ This is Java 21's virtual-thread model rather than the stackless state-machine m
 ```
 async void processAll(List<Url> urls) {
     scope {
-        for (Url u in urls) {
+        for (Url u : urls) {
             spawn fetchScore(u);   // launches a child Task<int32>
         }
         // (control reaches here only after every spawn'd task completes)
@@ -108,153 +110,132 @@ No `Send` / `Sync` traits, no `Sendable` protocol — sendability is what the bo
 
 ## Cancellation
 
-Cancellation is cooperative and lattice-shaped:
+Cancellation is cooperative:
 
-- Every `Task<T>` has a cancellation token, threaded implicitly.
-- `await` checks the token on resume. If set, the await raises a `CancellationException`.
-- A scope's parent task cancelling causes the scope to cancel all children, which causes their next `await` to raise.
-- Cleanup happens via the standard `try` / `finally` machinery; the existing drop-chain machinery fires owners on the unwind.
+- Each fiber carries a `cancel_with` marker (a `void*` Throwable), NULL when not cancelled.
+- When one child in a scope throws, `scope_exit` records that throw as the **trigger** and calls `__cajeta_fiber_cancel(sibling, trigger)` on every still-running sibling, storing the trigger in their `cancel_with`.
+- `__cajeta_task_wait` checks `cancel_with` on each park-resume (and on entry, to catch an already-done await). If set, it **re-raises the trigger Throwable itself** — there is **no `CancellationException` type**.
+- Cleanup happens via the standard `try` / `finally` machinery; the drop chain fires owners on the unwind.
 
-The token is propagated automatically; user code rarely sees it explicitly. For explicit cancel-on-condition, `withTimeout(d) { ... }` and `withDeadline(t) { ... }` wrap a scope with a token that fires at the deadline.
+User code never threads a token explicitly. For cancel-on-deadline, `Tasks.withTimeout<R>(Duration, Task<R>)` and `Tasks.withDeadline<R>(int64 deadlineNanos, Task<R>)` run a task under a timer that cooperatively cancels the body on expiry and report present-or-timeout as an `Optional<R>`.
 
 ---
 
 ## Synchronization primitives
 
-All core sync primitives live in package **`cajeta.concurrent`** — `cajeta.concurrent.Mutex`, `cajeta.concurrent.Lock`, `cajeta.concurrent.RwLock`, `cajeta.concurrent.ConditionVariable`, and the guard types (`MutexGuard`, `LockGuard`, `ReadGuard`, `WriteGuard`). The future async runtime (`Task<T>`, scope/spawn/detach machinery) also lives there. Stdlib types built on these primitives (`Channel<T>`, `Semaphore`) are in the same package by convention. The code examples below omit the package qualifier for brevity, but the actual type names are fully qualified.
+All core sync primitives live in package **`cajeta.concurrent`** — `cajeta.concurrent.Mutex<T>`, `cajeta.concurrent.Lock`, `cajeta.concurrent.RwLock<T>`, `cajeta.concurrent.Semaphore`. The async runtime (`Task<T>`, scope/spawn/detach machinery) and the stdlib types built on the primitives (`Channel<T>`, atomics, `Tasks`) are in the same package. The code examples below omit the package qualifier for brevity.
 
-All core sync primitives use the **RAII guard pattern**: acquiring the lock returns a guard whose lifetime is the critical section. When the guard drops (scope exit, early return, exception unwind — all handled by the existing drop chain), the lock releases automatically. "Forgot to unlock" is structurally unrepresentable.
+The data-owning primitives (`Mutex<T>`, `RwLock<T>`, `Semaphore`) use the **closure / scoped form**, not an lvalue guard: you hand a function to `withLock` / `withWrite` / `withPermit`, the primitive runs it as the critical section, and the lock releases when the closure returns *or unwinds through an exception* (a method-scoped `LockGuard` whose drop fires on both edges). The protected value never escapes the closure, so "read/write the data without the lock" is structurally unrepresentable, and "forgot to unlock" can't happen. The lower-level `Lock` (no associated data) is the one primitive that hands out a `LockGuard` lvalue.
 
-The primitives are async-aware: `await m.lock()` parks the current task on the wait queue and lets the executor run something else — it does not block the OS thread. OS-blocking forms are not exposed; if you find yourself wanting one, you almost certainly want to push the OS interaction into a dedicated worker task that owns the resource and serves async requests against it.
+These methods are **ordinary (non-`async`) methods** — you call them directly, you do *not* `await` them. When a fiber calls one and the lock is held, the runtime parks the fiber and yields to the carrier (no OS-thread block); main-thread callers `cond_wait`. The fiber-park behaviour is built into the C runtime intrinsics (`Cajeta.lockAcquire` / `lockRelease` / `condvarWait` / `rwlock*`), not the surface API.
 
-Implementation today (R4): each lock holds a pthread mutex (protecting its own `held` flag and wait queue) plus a per-lock pthread condvar (for any main-thread acquirer). When a fiber calls `lockAcquire` and the lock is held, the fiber links itself into the lock's wait queue and swaps back to the carrier — no OS-thread block. When `lockRelease` runs, it dequeues one waiter from the lock's queue and re-enqueues it on the carrier's ready queue, then signals the condvar to wake any main-thread waiter. Main-thread `lockAcquire` is a plain cond_wait (main is outside the fiber executor; OS-blocking is fine there).
+Implementation today (R4/R7): each lock holds a pthread mutex (protecting its `held` flag and wait queue) plus a per-lock pthread condvar (for a main-thread acquirer). A fiber that finds the lock held links itself into the wait queue and swaps back to the carrier; release dequeues one waiter onto the ready queue and signals the condvar to wake any main-thread waiter.
 
 ### `Mutex<T>` — the fused-lock-and-data primitive
 
-`Mutex<T>` owns the protected value. The only way to read or write it is through a guard obtained from `lock()` or `tryLock()`:
+`Mutex<T>` owns the protected value `T`. The only way to touch it is to hand a closure to `withLock`, which receives the current value and stores back what it returns:
 
 ```
-Mutex<int32> counter = heap Mutex<int32>(0);
+Mutex<int32> counter = heap Mutex(0);
 
-scope {
-    spawn () -> async void {
-        MutexGuard<int32> g = await counter.lock();
-        g.value++;
-        // g drops at end of statement → unlock
-    };
-}
+counter.withLock((n) -> n + 1);   // critical section: read, +1, store back
+counter.withLock((n) -> n + 1);
+int32 now = counter.get();        // snapshot under the lock -> 2
 ```
 
 API:
 
-- `Mutex<T>(T initial)` — construct, owning `initial`.
-- `await lock() → MutexGuard<T>` — async; suspends the task (not the OS thread) until acquired.
-- `tryLock() → MutexGuard<T>?` — non-blocking; null when currently held by another task.
+- `Mutex(#T initial)` — construct, taking ownership of `initial`.
+- `withLock((T) -> #T fn) -> void` — acquire, pass the current value to `fn`, store `fn`'s result, wake `withLockWhen` waiters, release. Exception-safe.
+- `withLockWhen((T) -> boolean cond, (T) -> #T fn) -> void` — wait-for-condition: acquire, then block (each wait atomically releases + parks + reacquires) until `cond(value)` holds, then run `fn` and store. `cond` must be side-effect-free (re-evaluated on every wake). This is the primitive's built-in condition-variable; there is no separate `ConditionVariable` class.
+- `get() -> T` — snapshot the value under the lock. Intended for value/primitive `T`; for a heap-class `T` this hands out a reference that outlives the lock, so use `withLock` to operate on mutable `T`.
 
-The guard exposes the protected value via a single `value` field; reads and writes flow through it. Drop releases.
+> A non-blocking `tryLock` and a compute-only `(T) -> R` read variant are noted in the source as later sub-phases — not shipped yet.
 
-**When to use `Mutex<T>`:** shared mutable state with one logical piece of data, where the lock and the data have the same scope. The fused pairing means a teammate adding another method that touches the value can't forget to lock — there's no `value` outside the lock.
+**When to use `Mutex<T>`:** shared mutable state with one logical piece of data. The fused pairing means a teammate adding another method that touches the value can't forget to lock — there's no value handle outside `withLock`.
 
 ### `Lock` — the no-data variant
 
-When the section to gate is *not* tied to a single piece of data — sequencing two independent things, gating a side-effect-only block — `Lock` provides the same RAII shape without forcing a fake `Unit` wrapper:
+When the section to gate is *not* tied to a single piece of data — sequencing two independent things, gating a side-effect-only block — `Lock` provides the same exception-safe release via a `LockGuard` lvalue (the one guard-style primitive):
 
 ```
 Lock gate = heap Lock();
 
 public void doWork() {
-    LockGuard g = await gate.acquire();
+    #LockGuard g = gate.acquire();   // holds the lock; drop releases
     sharedThing.step1();
     log.write("step1 done");
     sharedThing.step2();
-    // g drops → release
+    // g drops at scope exit / on throw → release
 }
 ```
 
 API:
 
 - `Lock()` — construct.
-- `await acquire() → LockGuard` — async.
-- `tryAcquire() → LockGuard?` — non-blocking.
+- `acquire() -> #LockGuard` — acquire; the returned guard releases on drop.
+- `tryAcquire() -> int32` — non-blocking; non-zero on success.
+- `releaseLock() -> void` — explicit release (normally the guard drop handles this).
 
-**When to use `Lock`:** the critical section spans more than one logical value, or the gated thing is purely side-effects (e.g. an I/O sequence). Prefer `Mutex<T>` whenever there *is* a single `T` worth pairing — readers can tell the lock's intent from the type.
+**When to use `Lock`:** the critical section spans more than one logical value, or the gated thing is purely side-effects (e.g. an I/O sequence). Prefer `Mutex<T>` whenever there *is* a single `T` worth pairing.
 
 ### `RwLock<T>` — read-heavy state
 
-Many readers can hold a read guard concurrently; writers wait for outstanding reads to drain, then proceed exclusively:
+Many readers can hold the read lock concurrently; a writer waits for outstanding reads to drain, then proceeds exclusively:
 
 ```
-RwLock<Config> cfg = heap RwLock<Config>(loadInitial());
+RwLock<Config> cfg = heap RwLock(loadInitial());
 
-async Response handle(Request r) {
-    ReadGuard<Config> g = await cfg.read();
-    // Hundreds of concurrent requests can hold a read at once.
-    return await process(r, g.value);
+Response handle(Request r) {
+    Config snapshot = cfg.read();       // shared read, returns a snapshot
+    return process(r, snapshot);
 }
 
-async void hotReload() {
+void hotReload() {
     Config c = loadFresh();
-    WriteGuard<Config> g = await cfg.write();
-    g.value = c;
+    cfg.withWrite((old) -> c);          // exclusive write closure
 }
 ```
-
-`ReadGuard<T>` and `WriteGuard<T>` are distinct types — you can't accidentally write through a read guard. The compiler enforces the distinction.
 
 API:
 
-- `RwLock<T>(T initial)` — construct.
-- `await read() → ReadGuard<T>` — async; suspends until the writer (if any) releases.
-- `await write() → WriteGuard<T>` — async; suspends until all readers drain.
-- `tryRead() → ReadGuard<T>?` / `tryWrite() → WriteGuard<T>?` — non-blocking.
+- `RwLock(#T initial)` — construct.
+- `read() -> T` — acquire the read lock, snapshot the value, release, return the snapshot. (Same value/primitive-`T` caveat as `Mutex.get`.)
+- `withWrite((T) -> #T fn) -> void` — acquire the write lock exclusively, run `fn` on the current value, store its result, release.
+
+> A non-blocking `tryRead`/`tryWrite` is not exposed today.
 
 **When to use `RwLock<T>`:** read-very-heavy paths where serializing through a `Mutex<T>` would be a measurable bottleneck. Configs, caches with rare invalidation, read-mostly indexes. Reach for it only after measurement — for moderate contention `Mutex<T>` is simpler.
 
-### `ConditionVariable` — wait / notify
+### Wait-for-condition
 
-Pairs with a `Mutex<T>` (or `Lock`) for the classic wait-for-condition pattern. `wait()` atomically unlocks the guard and suspends the task; `notify()` / `notifyAll()` wakes waiters, which then re-acquire before resuming:
+There is no standalone `ConditionVariable` class. The classic consumer-waits-for-producer pattern is expressed with `Mutex<T>.withLockWhen` — the predicate parks the fiber and reacquires on wake, and any `withLock` store wakes the waiters:
 
 ```
-Mutex<Queue<Item>> q = heap Mutex<Queue<Item>>(heap Queue<Item>());
-ConditionVariable notEmpty = heap ConditionVariable();
+Mutex<int32> available = heap Mutex(0);
 
-// Producer:
-async void produce(Item item) {
-    {
-        MutexGuard<Queue<Item>> g = await q.lock();
-        g.value.push(item);
-    }
-    notEmpty.notify();
+// Producer: publish one item.
+void produce() {
+    available.withLock((n) -> n + 1);   // store wakes withLockWhen waiters
 }
 
-// Consumer:
-async Item consume() {
-    MutexGuard<Queue<Item>> g = await q.lock();
-    while (g.value.isEmpty()) {
-        await notEmpty.wait(g);   // unlock, suspend, relock on wake
-    }
-    return g.value.pop();
+// Consumer: park until count > 0, then consume one, atomically.
+void consume() {
+    available.withLockWhen((n) -> n > 0, (n) -> n - 1);
 }
 ```
 
-API:
-
-- `ConditionVariable()` — construct.
-- `await wait(MutexGuard<T> g) → void` — atomically unlocks `g`, suspends; reacquires on wake before returning. `g` remains live and usable after the call.
-- `notify()` — wake one waiter.
-- `notifyAll()` — wake all waiters.
-
-The `while` loop around `wait()` is the standard spurious-wakeup defense — `wait()` does not guarantee the condition is true on return.
+The predicate is the spurious-wakeup defense — it is re-checked on every wake and only proceeds once it holds.
 
 ### Decision tree
 
 When you need to coordinate access to shared state:
 
-1. **Is the state a single piece of data with one logical owner?** → `Mutex<T>`.
+1. **Is the state a single piece of data with one logical owner?** → `Mutex<T>` (`withLock`).
 2. **Is the section to gate purely about ordering side-effects (no single value to pair the lock with)?** → `Lock`.
 3. **Reads vastly dominate writes, and measurement shows `Mutex<T>` is the bottleneck?** → `RwLock<T>`.
-4. **Need wait-for-condition (consumer-waits-for-producer style)?** → `Mutex<T>` (or `Lock`) plus `ConditionVariable`.
-5. **Counted permit pool with overlapping lifetimes that no scope can bound?** → standard-library `Semaphore` (built on `Mutex<T>` + `ConditionVariable`).
+4. **Need wait-for-condition (consumer-waits-for-producer style)?** → `Mutex<T>.withLockWhen`.
+5. **Counted permit pool with overlapping lifetimes that no scope can bound?** → `Semaphore` (`withPermit`).
 
 Reach for the highest-numbered tool only when the lower-numbered ones don't fit. Each step down is a step toward subtler bugs and higher cognitive load.
 
@@ -262,44 +243,43 @@ Reach for the highest-numbered tool only when the lower-numbered ones don't fit.
 
 ## Standard library types (not language primitives)
 
-The threading core stops at the four sync primitives above. The standard library provides higher-level building blocks composed from them — they don't need special compiler knowledge.
+The threading core stops at the sync primitives above (`Mutex<T>`, `Lock`, `RwLock<T>`, and `Mutex.withLockWhen` for condition-waiting). The standard library provides higher-level building blocks composed from them — `Semaphore`, `Channel<T>`, the atomics, and `Tasks` — none of which need special compiler knowledge.
 
 ### `Channel<T>` — bounded MPMC queue
 
 ```
-Channel<int32> ch = heap Channel<int32>(capacity: 8);
+Channel<int32> ch = heap Channel<int32>(8);   // bounded ring buffer, capacity 8
 
 scope {
     spawn () -> async void {
-        for (int32 i = 0; i < 10; i++) {
-            await ch.send(i);
+        for (int32 i = 0; i < 10; i = i + 1) {
+            ch.send(i);          // parks the fiber while full
         }
         ch.close();
     };
     spawn () -> async void {
-        while (true) {
-            int32 v = await ch.receive();
-            // ...
+        Optional<int32> v = ch.receive();
+        while (v.isPresent()) {
+            // ... use v.get() ...
+            v = ch.receive();    // empty Optional once closed AND drained
         }
     };
 }
 ```
 
-A `Channel<T>` is internally a `Mutex<Queue<T>>` plus two `ConditionVariable`s (one for "not full", one for "not empty"). Bounded by default; `send` suspends when full, `receive` suspends when empty. `close` is one-way; subsequent sends raise, subsequent receives drain buffered items then raise on empty.
+A `Channel<T>` is a bounded ring buffer (capacity fixed at construction) guarded internally by the lock + condvar intrinsics. `send` and `receive` are plain (non-`async`) methods that park the calling fiber when the buffer is full / empty. API: `send(T)`, `receive() -> Optional<T>`, `tryReceive() -> Optional<T>` (non-blocking), `close()`, `isClosed() -> boolean`. `close` is one-way; `receive` drains buffered items, then returns an empty `Optional` once closed-and-drained. v1 targets value/primitive `T` — heap-class items still buffered at destruction time aren't dropped, so drain via a `receive()` loop before dropping the channel.
 
 ### `Semaphore` — counting permit pool
 
 ```
-Semaphore s = heap Semaphore(permits: 5);
+Semaphore s = heap Semaphore(5);
 
-async Result useResource() {
-    SemaphorePermit p = await s.acquire();
-    return await expensiveCall();
-    // p drops at scope exit → release
+Result useResource() {
+    return s.withPermit(() -> expensiveCall());   // acquire, run, release
 }
 ```
 
-Built on `Mutex<int32>` + `ConditionVariable`. Use case: bound the *number* of concurrent operations against an unbounded set of consumers (e.g. a server limiting global concurrency across all requests).
+API: `Semaphore(int32 initial)`, `acquire() -> void`, `release() -> void`, `withPermit(() -> void fn) -> void` (the scoped form — acquire, run `fn`, release), `availablePermits() -> int32`. Use case: bound the *number* of concurrent operations against an unbounded set of consumers (e.g. a server limiting global concurrency across all requests).
 
 **Often you don't need a semaphore.** If the workload is statically batchable into "K at a time," chunked `scope { spawn N times }` expresses the limit in the program's shape with no permit bookkeeping. Reach for `Semaphore` when the consumers are unbounded and no scope can serve as the batching boundary.
 
@@ -308,10 +288,10 @@ Built on `Mutex<int32>` + `ConditionVariable`. Use case: bound the *number* of c
 ```
 AtomicInt32 hits = heap AtomicInt32(0);
 
-// any carrier
+// any fiber
 hits.fetchAdd(1);
 
-// any carrier
+// any fiber
 int32 snapshot = hits.load();
 ```
 
@@ -362,12 +342,11 @@ An earlier draft of this spec had `actor` as a third core primitive — a type k
 
 ```
 class Counter {
-    private Mutex<int32> value = heap Mutex<int32>(0);
+    private Mutex<int32> value = heap Mutex(0);
 
-    public async int32 next() {
-        MutexGuard<int32> g = await value.lock();
-        g.value++;
-        return g.value;
+    public int32 next() {
+        value.withLock((n) -> n + 1);
+        return value.get();
     }
 }
 ```
@@ -398,18 +377,16 @@ async int32 main() {
 
 ```
 async int32 sumScores(List<Url> urls) {
-    Mutex<int32> total = heap Mutex<int32>(0);
+    Mutex<int32> total = heap Mutex(0);
     scope {
-        for (Url u in urls) {
+        for (Url u : urls) {
             spawn () -> async void {
                 int32 s = await fetchScore(u);
-                MutexGuard<int32> g = await total.lock();
-                g.value += s;
+                total.withLock((n) -> n + s);
             };
         }
     }
-    MutexGuard<int32> g = await total.lock();
-    return g.value;
+    return total.get();
 }
 ```
 
@@ -417,18 +394,21 @@ async int32 sumScores(List<Url> urls) {
 
 ```
 async void pipeline(Source src, Sink sink) {
-    Channel<Record> ch = heap Channel<Record>(capacity: 64);
+    Channel<Record> ch = heap Channel<Record>(64);
     scope {
         spawn () -> async void {
-            while (Record r = await src.next()) {
-                await ch.send(r);
+            Optional<Record> r = src.next();
+            while (r.isPresent()) {
+                ch.send(r.get());
+                r = src.next();
             }
             ch.close();
         };
         spawn () -> async void {
-            while (true) {
-                Record r = await ch.receive();
-                await sink.write(r);
+            Optional<Record> r = ch.receive();
+            while (r.isPresent()) {
+                await sink.write(r.get());
+                r = ch.receive();
             }
         };
     }
@@ -437,11 +417,11 @@ async void pipeline(Source src, Sink sink) {
 
 ### Timeout
 
+`Tasks.withTimeout` runs a `Task<R>` under a deadline and reports present-or-timeout as an `Optional<R>`:
+
 ```
-async Response getWithTimeout(Url u, Duration d) {
-    return await withTimeout(d) {
-        await http.get(u);
-    };
+async Optional<Response> getWithTimeout(Url u, Duration d) {
+    return Tasks.withTimeout(d, spawn http.get(u));
 }
 ```
 
@@ -455,9 +435,9 @@ A small C runtime ships in `runtime/native/`, paralleling the existing exception
 - **Condition variable primitive** — wrapper over `pthread_cond_t` with the same async-aware wait queue.
 - **Fiber primitive** — `__cajeta_task_run(ctx, trampoline)` allocates a stackful fiber (its own ~64 KB stack + `ucontext_t`) and queues it on the ready list. `__cajeta_task_wait(&task->done)` parks the current fiber if called from inside one (cooperative yield to the carrier), or `pthread_cond_wait`s on the global done-condvar if called from the main thread. `__cajeta_task_complete(&task->done)` flips the flag, broadcasts the done-condvar, and moves every parked fiber back to the ready queue so they can recheck their await conditions.
 - **Executor** — N OS-thread carriers, each owning a Chase-Lev work-stealing deque (`cajeta_carrier_deque`): atomic `top` / `bottom` sequence numbers over a fixed-size circular slot array, single-producer / multi-consumer. Owner-side (`push_bottom` / `pop_bottom`) drains LIFO — the cache-warm end. The `steal` operation (FIFO from the deque's perspective) is what peer carriers call when their own deque empties. R8.3 — N defaults to `min(_SC_NPROCESSORS_ONLN, 4)` and is overridden by `$CAJETA_CARRIERS` at the first `__cajeta_task_run`, clamped to `[1, CAJETA_MAX_CARRIERS=16]`. Owner-side pushes still take a per-carrier `deque_mutex` for the cross-thread case (main thread / lock-release / condvar-notify pushing into a foreign deque), preserving Chase-Lev's single-producer contract under the mutex. The pool condvar (`__cajeta_task_queue_cond`) wakes idle carriers when work appears anywhere in the pool. The earlier multi-carrier deadlock is no longer reproducible across the full async/threading battery under N=4.
-- **Token primitive** — atomic flag for cancellation; tasks check on resume. (Not yet implemented; lands with R5.)
+- **Cancellation marker** — each fiber carries a `cancel_with` `void*` (the trigger Throwable), set by `__cajeta_fiber_cancel`; `__cajeta_task_wait` checks it on resume and re-raises (R5-C, shipped). No separate atomic token type.
 
-The user-facing `cajeta.concurrent.*` classes wrap these C helpers — the runtime entry points are an implementation detail. Today's intrinsic-level path (`Cajeta.lockNew()` / `Cajeta.lockAcquire(p)` / etc.) is a transitional bootstrap that the future `cajeta.concurrent.Lock` class will subsume; user code should target the class API, not the intrinsics, once they exist.
+The user-facing `cajeta.concurrent.*` classes (`Mutex`, `Lock`, `RwLock`, `Semaphore`, `Channel`, `Tasks`, the atomics) wrap these C helpers — the runtime entry points (`Cajeta.lockNew()` / `Cajeta.lockAcquire(p)` / `Cajeta.condvarWait(...)` / `Cajeta.rwlock*` / etc.) are an implementation detail. User code should target the class API, not the intrinsics.
 
 Suspension is delivered by `ucontext.h` (`getcontext` / `makecontext` / `swapcontext`). The compiler doesn't transform `async fn` bodies at all — they compile like ordinary functions; the trampoline emitted at each spawn site wraps the call and runs inside the spawned fiber's stack.
 
@@ -469,8 +449,8 @@ Suspension is delivered by `ucontext.h` (`getcontext` / `makecontext` / `swapcon
 |--|--|
 | `#` transfer | The ownership-move marker doubles as the "send across threads" marker. Cross-thread transfer is what `#` already means at scope boundaries. |
 | Templates | `Mutex<T>`, `RwLock<T>`, `Task<T>` monomorphize identically to class templates — no erasure, primitives allowed. |
-| Drop chain | Guard drop releases the lock — same RAII pattern the rest of the memory model uses. Task frame drop fires the scope-end drops in the right order. |
-| Exceptions | Async exceptions raise on `await`; the existing setjmp/longjmp-based catch chain unwinds through the suspension stack. Lock guards drop on the unwind path, so unlocking-on-exception is automatic. |
+| Drop chain | `withLock`/`withWrite`/`withPermit` release on closure return or exception unwind (via an internal method-scoped `LockGuard`); `Lock.acquire` hands out a `LockGuard` whose drop releases. Task frame drop fires the scope-end drops in the right order. |
+| Exceptions | Async exceptions raise on `await`; the setjmp/longjmp-based catch chain unwinds through the suspension stack. The lock primitives' internal guards drop on the unwind path, so unlocking-on-exception is automatic. |
 | Method references | `obj::lockedMethod` works for methods that themselves use `Mutex<T>` — nothing thread-specific in the method reference itself. |
 
 ---
@@ -490,13 +470,16 @@ Suspension is delivered by `ucontext.h` (`getcontext` / `makecontext` / `swapcon
 
 Full runtime status lives in `docs/stdlib/AsyncStatus.md`. As of
 recent commits, R1 through R9 plus error-model v1 have shipped:
-stackful fibers on a **multi-carrier work-stealing pool**
-(`CAJETA_CARRIERS=N`, default `min(nproc, 4)`), explicit `scope { }` +
-implicit function-body scopes with join-on-exit, R5-C cooperative
-cancellation, R5-D scope exception-escalation, atomic ints (R8.1),
-Chase–Lev work-stealing deques (R8.2), the multi-carrier pool itself
-(R8.3), a fiber-aware timer (R9.1 — backing `Duration` / `withTimeout` /
-`withDeadline`), and an epoll-based async I/O reactor (R9.4).
+stackful fibers on a carrier pool with per-carrier Chase–Lev
+work-stealing deques (`CAJETA_CARRIERS=N`, default `min(nproc, 4)`) —
+**multi-carrier by default, so spawned tasks run in parallel** (fibers are
+pinned to their home carrier; `CAJETA_CARRIERS=1` forces single-carrier; see
+the scheduler note under `async fn`). Also: explicit `scope { }` + implicit function-body scopes
+with join-on-exit, R5-C cooperative cancellation, R5-D scope
+exception-escalation, atomic ints (R8.1), Chase–Lev deques (R8.2), the
+carrier pool plumbing (R8.3), a fiber-aware timer (R9.1 — backing
+`Duration` / `Tasks.withTimeout` / `Tasks.withDeadline`), and an
+epoll-based async I/O reactor (R9.4).
 
 The user-facing surface also gained spawn-of-lambda — `SpawnExpression`
 accepts a function-typed scope field as the inner call, letting

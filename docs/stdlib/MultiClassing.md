@@ -302,7 +302,9 @@ to the core language.
 
 ## Cajeta today (state-of-the-tree)
 
-Pinned by `test/parser/MultipleInheritanceGapTests.cpp` (14 tests, all green):
+Pinned by `test/parser/MultipleInheritanceGapTests.cpp` (15 active
+tests; the file's own header comment claiming they are still `DISABLED_`
+is itself stale — the `TEST(...)` names carry no `DISABLED_` prefix):
 
 - **Layout.** `class C extends A, B` lays out as `{ vtable_primary,
   A-sub-content-shares-primary, vtable_secondary_for_B, B-sub-content,
@@ -318,8 +320,11 @@ Pinned by `test/parser/MultipleInheritanceGapTests.cpp` (14 tests, all green):
   reached via synthesized offset thunks that restore the most-derived
   pointer before tail-calling the override.
 - **Super-call.** `super.method()` resolves to the **first declared
-  parent**'s method. `super<Base>.method()` (Gap 9, deferred) would let
-  the user pick a non-first parent.
+  parent**'s method. `super<Base>.method()` — picking a non-first
+  parent — is **now implemented** (angle-bracket selector; grammar
+  `primary: SUPER '<' typeType '>'`, lowered in
+  `src/cajeta/asn/expression/Expression.cpp` `SuperExpression`). The
+  sibling `this<Base>.field` selector is implemented the same way.
 - **Ctor.** Implicit super-ctor invocation runs for **every** parent in
   declared order (Gap 1). Explicit `super(args)` reaches the first
   parent only.
@@ -339,9 +344,16 @@ The four scenarios that are **not yet handled**:
 2. **Bare field-name collision** (C-3). Both A and B declare `int32
    total`. `getFieldLlvmIndex` returns whichever slot the DFS walker
    reaches first. **Same bug** — silent ambiguity.
-3. **Parent-selection syntax** (Gap 9). No way to say "call B's
-   version of `kind`, not A's." `super<B>.kind()` is the planned
-   syntax.
+3. **Receiver-expression parent view** (`expr[Base]` / the `c[A]`
+   form used in the worked examples below). The angle-bracket
+   selectors on `this` / `super` inside a method body
+   (`this<Base>.field`, `super<Base>.method()`) **have shipped** — see
+   `test/parser/OverrideFromTests.cpp`, which exercises
+   `super<B>.stride()`. What is **not** implemented is selecting a
+   parent view off an arbitrary receiver expression (`c[A].kind()`):
+   a square bracket on an expression still parses as indexing. The
+   `c[A]` / `d[B]` / `e[B]` spellings in the worked examples and error
+   messages below are therefore aspirational shorthand.
 4. **Diamond — shared vs replicated.** When `D extends B, C` and both
    B and C extend a non-`Object` A, A's sub-object appears twice in
    D's layout (replicated, C++-style default). Cajeta has no `virtual`
@@ -709,13 +721,21 @@ allow qualified access through P-2.
 walks; the error-message tooling already exists (see Gap 4 / Gap 7
 enforcement landings).
 
-### Phase 2 — `super<Base>.m()` and `this<Base>.field` (P-2)
+### Phase 2 — `super<Base>.m()` and `this<Base>.field` (P-2) — DONE
 
-Grammar change: extend the primary-expression rule to accept
-`super '[' typeName ']'` and `this '[' typeName ']'` as receivers.
-Wire `SuperExpression` to carry the chosen ancestor (it already exists;
-Gap 5 added it for the unbracketed form). Add a `ThisAtBaseExpression`
-or reuse `SuperExpression` with a flag.
+**Shipped.** The form landed as the **angle-bracket** selector, not the
+square-bracket sketch below: the `primary` rule accepts
+`THIS '<' typeType '>'` and `SUPER '<' typeType '>'`, and
+`SuperExpression` carries the chosen ancestor
+(`src/cajeta/asn/expression/Expression.cpp`). The historical sketch
+below (square brackets) is retained only to show the path; the angle
+form was chosen to reuse template-instantiation syntax.
+
+Grammar change (historical sketch): extend the primary-expression rule
+to accept `super '[' typeName ']'` and `this '[' typeName ']'` as
+receivers. Wire `SuperExpression` to carry the chosen ancestor (it
+already exists; Gap 5 added it for the unbracketed form). Add a
+`ThisAtBaseExpression` or reuse `SuperExpression` with a flag.
 
 Code-gen: both forms reduce to the existing `adjustForUpcast` +
 `forceDirectCall` machinery. `super<B>.kind()` calls `B`'s method
@@ -755,16 +775,20 @@ need a "this ancestor is shared with another path" check. Phase 1 and
 
 ## Resolved decisions
 
-### R-1. Parent-view selection — bracket only
+### R-1. Parent-view selection — angle-bracket on `this` / `super`
 
-`c[A].foo()` and `super<A>.foo()` are the only forms. Grammatically
-unique (brackets are unused in this position today). One way to write
-it; no parser-disambiguation work to support a dotted alias against
-static-member access.
+**As shipped**, the selector is the angle-bracket form on `this` and
+`super` inside a method body: `this<A>.field` and `super<A>.foo()`
+(grammar `primary: THIS '<' typeType '>' | SUPER '<' typeType '>'`).
+The angle form reuses template-instantiation syntax and stays
+grammatically distinct — ANTLR commits to it only when `<typeType>` is
+followed by a trailing `.member`, so plain `<` comparisons fall
+through. (The `c[A].foo()` square-bracket form on an arbitrary
+receiver — used in the worked examples below — is **not** implemented;
+a square bracket on an expression parses as indexing.)
 
 Considered but rejected: dotted alias (`c.A.foo()`) — Java-friendlier
-but forces parent-vs-static disambiguation in the parser, and the
-brackets are already unambiguous.
+but forces parent-vs-static disambiguation in the parser.
 
 ### R-2. Implicit-ctor-skip warning — narrow ambiguity only
 
@@ -790,7 +814,9 @@ skips).
 named parent actually declares a matching method (same suffix). Omitting
 is fine — the override body already carries the intent in
 `= super<B>.kind()` form. Adds zero ergonomic cost when omitted, adds a
-verified-by-compiler reader cue when present.
+verified-by-compiler reader cue when present. **Implemented** — see
+`test/parser/OverrideFromTests.cpp` (bare `@Override` is also accepted
+as a no-op; there is no `override` keyword).
 
 Considered but rejected: no annotation at all (loses the optional
 verification step); required when ambiguous (forces boilerplate on
@@ -911,7 +937,10 @@ to think about later.
   surface.
 - `docs/Features.md` L-03 — current implementation status of the
   multi-inheritance feature row.
-- `ToDo.md` Priority 2 § 5 — running gap list (Gap 9 = `super<Base>.method()`,
-  diamond / virtual base = Phase 3 above).
-- `test/parser/MultipleInheritanceGapTests.cpp` — 14 tests pinning the
+- `ToDo.md` Priority 2 § 5 — running gap list (Gap 9 =
+  `super<Base>.method()`, now shipped; diamond / virtual base = Phase 3
+  above, still open).
+- `test/parser/MultipleInheritanceGapTests.cpp` — 15 tests pinning the
   current behavior; the doc's "open" items here are the natural extensions.
+- `test/parser/OverrideFromTests.cpp` — `@Override(from=Parent)` and
+  `super<Base>.method()` behavior (R-3, P-2).

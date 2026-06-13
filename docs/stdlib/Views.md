@@ -12,21 +12,25 @@ A `view` declaration names a layout — a sequence of fields with declared byte 
 
 Views are **not** for self-describing formats — Ion, JSON, CBOR, MessagePack, BSON, Protobuf. Those have variable-length, tag-encoded structure where offsets depend on the data; they need streaming parsers (see `cajeta.codec.*` libraries), not overlay. The line: **if field offsets are determined by the type alone, view works. If they depend on the data, you need a parser.**
 
-Views are not for value aggregates with class references or behavior. That is the unified `class` keyword's job — see `docs/stdlib/UnifiedClasses.md`. (`struct` is a transitional alias for `class`; the legacy stand-alone struct design doc has been retired.)
+Views are not for value aggregates with class references or behavior. That is the unified `class` keyword's job — see `docs/stdlib/UnifiedClasses.md`. There is no separate `struct` keyword: Cajeta has one `class` type, and the stack-vs-heap storage class chosen at each construction site decides value-copy vs reference semantics. A POD value type (the basis for `Vector` / `Matrix`) is just a `class` marked `@ValueType`. (`structure` and `record` are reserved words but unimplemented.)
 
 ---
 
-## `view` vs `struct` vs `class`
+## `view` vs `class` (value vs reference) vs overlay
 
-| | `class` | `struct` | `view` |
+The first two columns are the same `class` type under different storage
+classes (`heap X(...)` = reference, `stack X(...)` = value); a `@ValueType`
+class is the POD value flavor. `view` is the byte overlay.
+
+| | `heap` class | `stack` class | `view` |
 |---|---|---|---|
 | Storage | heap | stack alloca | borrowed bytes |
 | Lifetime | ownership-tracked | enclosing scope | borrowed buffer |
 | Class refs in fields | yes | yes | **no** |
 | Layout | compiler-chosen | compiler-chosen | declared, byte-exact |
 | Endianness | host | host | declared; defaults to host |
-| Allocation on construction | yes (`new`) | no (stack) | no (borrows / takes buffer) |
-| Vtable | yes (header) | no | no |
+| Allocation on construction | yes (`heap`) | no (stack) | no (borrows / takes buffer) |
+| Vtable | yes (header) | yes (header) | no |
 | Implements interfaces | yes | yes | no |
 
 The defining constraint of `view`: every field's value is encoded *directly* in the buffer's bytes. Class references can't be in a view because a pointer in untrusted bytes is a wild pointer; reading through it would crash or return garbage.
@@ -48,7 +52,7 @@ view RpcHeader {
 
 Each field has a declared type. Primitive types lay out as their native LLVM width. `String` and array fields (`T[]`) are variable-size and lay out as inline length-prefix + data (see "Variable-size fields"). Nested view types lay out inline (see "Nested views").
 
-Methods can be declared on a view using the same syntax as a class or struct, with restrictions documented under "Methods" below.
+Methods can be declared on a view using the same syntax as a class, with restrictions documented under "Methods" below.
 
 Views **cannot**:
 
@@ -203,14 +207,14 @@ view Bad {
 A view is constructed by calling the view's name as if it were a function, passing the buffer:
 
 ```cajeta
-byte[] frame = network.read();
+int8[] frame = network.read();
 RpcHeader h = RpcHeader(frame);          // borrow form — `frame` keeps ownership
 ```
 
 The form is intentionally constructor-like; under the hood it lowers to compiler-synthesized code that:
 
-1. **Size check** — verifies `buf.length >= MinSize` where `MinSize` is the fixed-prefix size. If not, throws `ParseException`.
-2. **Length-prefix validation** — single sweep over the data confirming every variable-size length-prefix stays within `buf.length`. If any overruns, throws.
+1. **Size check** — verifies `buf.count() >= MinSize` where `MinSize` is the fixed-prefix size. If not, throws `ParseException`.
+2. **Length-prefix validation** — single sweep over the data confirming every variable-size length-prefix stays within `buf.count()`. If any overruns, throws.
 3. **Offset cache** — for views with variable-size fields, records the resolved offset of each post-variable field in a per-view metadata block.
 4. Returns the view value — a small handle carrying `{ buffer-ptr, offset-cache-or-null }`.
 
@@ -225,13 +229,13 @@ Cajeta has two construction forms for views, picked by whether the call site use
 
 ```cajeta
 // Borrowing — useful when the buffer outlives the view's scope
-byte[] frame = bufferPool.acquire();
+int8[] frame = bufferPool.acquire();
 RpcHeader h = RpcHeader(frame);
 process(h);
 bufferPool.release(frame);           // frame still owned by us
 
 // Owning — useful for parse-respond flows
-byte[] frame = bufferPool.acquire();
+int8[] frame = bufferPool.acquire();
 RpcHeader h = RpcHeader(#frame);     // frame is moved into h
 process(h);
 // When h drops at end of scope, the buffer drops too — back into the pool
@@ -323,7 +327,7 @@ view RpcHeader {
 
 - **No virtual methods.** Views have no vtable.
 - **No method-level templates on view methods.** Methods can use the view's own template type parameters (if any), not introduce new ones. (Class-level method-level templates work on `class` declarations per `docs/stdlib/MethodLevelTemplate.md`, but views are layout-pinned to a buffer and have no vtable / no per-instance specialization mechanism — adding method-level templates on views would conflate the wire format with the dispatch model.)
-- **Methods cannot return borrows into `this`.** A view is already a borrow of its buffer; nested borrow tracking ("this borrow is rooted in the borrow that is `this`") is the kind of complexity deferred to a later spec. If a method needs to expose a sub-region, return the underlying bytes (`byte[]`) or a separately-constructed view value, both of which the caller can use within the view's lifetime via the standard borrow rules.
+- **Methods cannot return borrows into `this`.** A view is already a borrow of its buffer; nested borrow tracking ("this borrow is rooted in the borrow that is `this`") is the kind of complexity deferred to a later spec. If a method needs to expose a sub-region, return the underlying bytes (`int8[]`) or a separately-constructed view value, both of which the caller can use within the view's lifetime via the standard borrow rules.
 
 ### What methods *can* do
 
@@ -365,7 +369,7 @@ Wire-format parsers are a category of code where bugs become CVEs. The view desi
 
 | Threat | Mitigation |
 |---|---|
-| Read past buffer end | Size check at construction: `buf.length >= MinSize`. For variable-size views, the length-prefix sweep validates total reachable size. Per-access reads then assume validity. |
+| Read past buffer end | Size check at construction: `buf.count() >= MinSize`. For variable-size views, the length-prefix sweep validates total reachable size. Per-access reads then assume validity. |
 | Length-prefix attack (`int32 len = 0xFFFFFFFF`) | Construction-time sweep validates every length-prefix against remaining buffer. Throws on overflow. |
 | Buffer mutated while view live | Borrow checker treats the buffer as exclusively borrowed by the view. No other writers; no two views over the same buffer. |
 | Two views with conflicting layout over same buffer | Same as above — exclusive borrow precludes this. |
@@ -379,14 +383,14 @@ Wire-format parsers are a category of code where bugs become CVEs. The view desi
 ### What the constructor validates
 
 ```cajeta
-byte[] frame = network.read();
+int8[] frame = network.read();
 RpcHeader h = RpcHeader(frame);
 ```
 
 At construction:
 
-1. `frame.length >= RpcHeader.MinSize` — throws if not.
-2. For each variable-size field in declaration order: read the length-prefix, verify `(currentOffset + prefix + length) <= frame.length`, throws if not. Recurses into nested variable-size views.
+1. `frame.count() >= RpcHeader.MinSize` — throws if not.
+2. For each variable-size field in declaration order: read the length-prefix, verify `(currentOffset + prefix + length) <= frame.count()`, throws if not. Recurses into nested variable-size views.
 3. Records the resolved offset of every post-variable-size field in the view's offset cache.
 4. Returns the view handle. Total work: one bounds check + one read per variable-size length-prefix. For fully-fixed views, just the bounds check.
 
@@ -395,7 +399,7 @@ After step 4, every field access is unchecked — the constructor's guarantees a
 ### What the constructor does *not* check
 
 - **Field value semantics.** The constructor doesn't know that `h.magic` is supposed to be `0xDEADBEEF`. That's the caller's responsibility (`if (!h.isValid()) throw ...`).
-- **Cross-field invariants.** The constructor doesn't know that `h.payloadLen` should match `frame.length - 24`. The caller validates protocol-specific invariants.
+- **Cross-field invariants.** The constructor doesn't know that `h.payloadLen` should match `frame.count() - 24`. The caller validates protocol-specific invariants.
 - **String encoding validity.** A `String` field's bytes are not verified to be valid UTF-8 at construction. Operations that decode the string (iteration, code-point access) will throw on invalid sequences.
 
 The principle: the constructor guarantees **no field access reads past the buffer end**. Everything else is application logic.
@@ -419,7 +423,7 @@ view ProtoVersion {
     int32 version;
 }
 
-byte[] frame = network.read();
+int8[] frame = network.read();
 ProtoVersion v = ProtoVersion(frame);
 
 match v.version {
@@ -451,7 +455,7 @@ Network protocols are typically big-endian. Use `@BigEndian` on the wire view. M
 
 - **Not for self-describing formats.** Wire views cover fixed-layout protocols. Ion, JSON, MessagePack, CBOR, BSON, Protobuf, Avro need streaming parsers — see `cajeta.codec.*` libraries.
 - **Not a replacement for `class`.** Use views only for layout-stable POD overlay; `class` for everything with behavior, identity, or class-reference fields.
-- **Not a replacement for `struct`.** Structs are stack-allocated value aggregates with full field-type freedom (including class refs). Views are buffer overlays with the byte-encodability restriction.
+- **Not a replacement for a stack value class.** A `stack`-allocated class (optionally `@ValueType`) is a value aggregate with full field-type freedom (including class refs). Views are buffer overlays with the byte-encodability restriction.
 - **Not safe across versions.** Field changes are silently breaking. Add explicit versioning.
 - **Not suitable for shared mutable state across threads.** Multi-threading isn't in v1; when added, shared-buffer access will need synchronization primitives.
 
@@ -463,7 +467,7 @@ Network protocols are typically big-endian. Use `@BigEndian` on the wire view. M
 
 A view is a borrow (or owner) of its buffer. A class field can be stored anywhere — heap, container, sent across method boundaries via the field's enclosing instance — and may outlive the buffer the view was constructed over. The borrow check would have to track every field's buffer-of-origin and prove the field can never be observed after its buffer drops; the analysis is intractable in the general case.
 
-Template instantiations are caught by the same rule. `HashMap<int32, MyView>` instantiates `V[] vals` as `MyView[]` — an array-of-view class field, rejected at instantiation time. `Optional<MyView>` has a `T value` field, also rejected. Users who want a map keyed or valued by view-shape data store the underlying `byte[]` in the class and reconstruct the view per access; the per-construction cost is one bounds check + one length-prefix sweep, both of which fall out of register pressure on the read path.
+Template instantiations are caught by the same rule. `HashMap<int32, MyView>` instantiates `V[] vals` as `MyView[]` — an array-of-view class field, rejected at instantiation time. `Optional<MyView>` has a `T value` field, also rejected. Users who want a map keyed or valued by view-shape data store the underlying `int8[]` in the class and reconstruct the view per access; the per-construction cost is one bounds check + one length-prefix sweep, both of which fall out of register pressure on the read path.
 
 Nested views (`view A { view B inner; }`) are NOT rejected — the inner lays out inline within the outer's buffer per the doctrine in § Nested views.
 
@@ -497,8 +501,8 @@ Nested views (`view A { view B inner; }`) are NOT rejected — the inner lays ou
 For the language implementer:
 
 1. **Parser:** recognize `view` keyword (new lexer token `VIEW`); parse `viewDeclaration` with field list and optional method list. Accept `@BigEndian`, `@LittleEndian`, `@HostEndian`, `@Align(...)` annotations; at most one endianness annotation per view, defaulting to `@HostEndian` when absent.
-2. **Type system:** add `CajetaView` (sibling of `CajetaClass` and `CajetaStruct`) with explicit layout computation. Compute fixed-prefix size; identify variable-size fields; pre-compute the constant-offset fast path when applicable. Recurse into nested view fields, inheriting endianness/alignment from the outer unless overridden. Detect layout cycles and reject. Reject class-reference field types.
-3. **Constructor synthesis:** for each view type, emit two construction functions — `View(byte[])` returning a borrow view, and `View(#byte[])` returning an owning view. Both emit the size check + length-prefix-validation sweep + offset-cache build. Resolve the bare-call construction syntax at the parser/AST level so `RpcHeader(buf)` lowers to the synthesized constructor.
+2. **Type system:** add `CajetaView` (sibling of `CajetaClass`; see `src/cajeta/type/CajetaView.{h,cpp}`) with explicit layout computation. Compute fixed-prefix size; identify variable-size fields; pre-compute the constant-offset fast path when applicable. Recurse into nested view fields, inheriting endianness/alignment from the outer unless overridden. Detect layout cycles and reject. Reject class-reference field types.
+3. **Constructor synthesis:** for each view type, emit two construction functions — `View(int8[])` returning a borrow view, and `View(#int8[])` returning an owning view. Both emit the size check + length-prefix-validation sweep + offset-cache build. Resolve the bare-call construction syntax at the parser/AST level so `RpcHeader(buf)` lowers to the synthesized constructor.
 4. **Field accessor codegen:** for each field, emit a read and write accessor that performs the offset computation, byte-swap if needed, and the load/store. For variable-size-following fields, the offset comes from the runtime offset cache; for fixed fields, it's compile-time-constant.
 5. **Variable-size offset cache:** at construction time, walk variable-size fields and cache resolved offsets in the view's metadata block. Recurse into nested variable-size views so every length-prefix at every nesting level is validated and offsets are resolved before construction returns.
 6. **Borrow checker integration:** treat borrow-form construction as a borrow of the byte array; treat owning-form construction as a move of the array into the view. Treat each field access as a path-based borrow. Reject views whose backing buffer goes out of scope before the view does. Reject sending a borrow-form view to another fiber.
@@ -511,6 +515,11 @@ For the language implementer:
 
 ## Examples
 
+> Note: the `subarray(start, end)` sub-range helper used in a couple of
+> examples below is illustrative — no such method is in the stdlib yet
+> (raw `int8[]` slicing is unconfirmed). Construct a view over the whole
+> buffer, or pass an offset, until a slice API lands.
+
 ### Simple fixed-size record
 
 ```cajeta
@@ -522,7 +531,7 @@ view PixelRGBA {
     uint8 a;
 }
 
-byte[] frame = readPixels();
+int8[] frame = readPixels();
 PixelRGBA p = PixelRGBA(frame.subarray(0, 4));
 println(p.r + ", " + p.g + ", " + p.b);
 ```
@@ -539,7 +548,7 @@ view RpcHeader {
     int32 payloadLen;
 }
 
-byte[] frame = network.read();
+int8[] frame = network.read();
 RpcHeader h = RpcHeader(frame);
 if (h.magic != 0xDEADBEEF) throw heap ProtocolException();
 dispatch(h.messageType, frame.subarray(20, 20 + h.payloadLen));
@@ -557,9 +566,9 @@ view UserRecord {
     int64    lastLoginUnix;     // offset resolved at construction
 }
 
-byte[] recordBytes = db.read(key);
+int8[] recordBytes = db.read(key);
 UserRecord u = UserRecord(recordBytes);
-println(u.username + " has " + u.permissions.length() + " permissions");
+println(u.username + " has " + u.permissions.count() + " permissions");
 println("last login: " + u.lastLoginUnix);
 ```
 
@@ -581,7 +590,7 @@ view BoundingBox {
     int32 zIndex;         // bytes 16..20
 }
 
-byte[] frame = readBox();
+int8[] frame = readBox();
 BoundingBox box = BoundingBox(frame);
 println(box.topLeft.x + ", " + box.bottomRight.y);
 ```
@@ -599,7 +608,7 @@ view ResponseHeader {
 }
 
 // Acquire a buffer from the pool, build the response in place.
-byte[] outBuf = bufferPool.acquire();
+int8[] outBuf = bufferPool.acquire();
 ResponseHeader resp = ResponseHeader(outBuf);
 resp.magic = 0xDEADBEEF;
 resp.version = 1;
@@ -614,7 +623,7 @@ bufferPool.release(outBuf);
 
 ```cajeta
 async void handleRequest() {
-    byte[] frame = await connection.readFrame();
+    int8[] frame = await connection.readFrame();
     RpcHeader h = RpcHeader(#frame);    // view takes ownership of the buffer
 
     // h is now an owner; can be transferred to another fiber, stored, etc.

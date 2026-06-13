@@ -91,7 +91,7 @@ ISA target** ships as a workstation card that is:
 ## 4. Practical workflow
 
 1. **Day-to-day:** Tier-0 only — codegen, assembly, PTX/ISA text assertions.
-   No GPU, runs in the normal build + `cajeta_tests` loop.
+   No GPU, runs in the normal build + `cajeta_test` (gtest, via `ctest`) loop.
 2. **Per artifact / per milestone:** when a backend emits a new arch's
    cubin/hsaco, burst-rent that arch, run the Tier-1 device suite, tear
    down. NVIDIA via a per-second cloud (RunPod / Salad / Novita); AMD RDNA 4

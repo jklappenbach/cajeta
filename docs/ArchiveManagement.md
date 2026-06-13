@@ -210,6 +210,14 @@ schema-compatible with the manifest written by the compiler. Adding
 fields to the manifest format is backward-compatible; consumers
 ignore unknown keys.
 
+> **Note (v1).** The compiler currently writes a *minimal* manifest —
+> `name`, `version`, `kind`, `format_version`, `entry_count`, and (for
+> uber) `deps`. `info` scans for the richer fields shown above
+> (`build_flavor`, `build_timestamp`, `target_triple`,
+> `cajeta_lang_version`, `total_size`) and prints them blank/derived
+> when the producing archive didn't carry them. They become populated
+> as the writer grows to emit them; the field set is additive.
+
 ### 3.5 `deps`
 
 ```
@@ -564,12 +572,13 @@ requires writer/reader support, not a format-version bump.
 
 ## 9. Open questions
 
-- **Index-checksum schema.** Today's `.cja` format reserves a per-
-  entry `checksum_xxh3` field in the trailing index but the v1
-  writer doesn't populate it. `verify` falls back to recomputing on
-  load. Filling the index field unlocks "fast verify without
-  decompression for files where we trust the producer." Decide
-  whether `repack` populates the index checksum field by default.
+- **Index-checksum schema.** The v1 trailing index is a compact
+  binary record per entry (name, offset, on-disk size) with **no**
+  checksum slot, so `verify` and `diff` recompute xxh3 from the
+  decompressed bytes on load. A richer v2 index could carry a per-
+  entry `checksum_xxh3`, unlocking "fast verify without decompression
+  for files where we trust the producer." Decide whether `repack`
+  would populate it by default.
 - **`cajeta archive cat` for stdlib entries inside uber archives.**
   An uber archive has both `tour/Tour.bc` (user) and
   `cajeta/lang/String.bc` (stdlib). Should `cat cajeta/lang/String.bc`

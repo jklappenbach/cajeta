@@ -32,6 +32,21 @@ Two structural fixes are on the table:
 
 This document analyzes Option B in depth.
 
+> **Outcome (resolved): Option B was chosen and shipped.** Cajeta now has
+> first-class `?`, `? extends Bound`, and `? super Bound` wildcards, PECS
+> write-soundness, capture types, and the wildcard-in-hot-loop lint this
+> document recommends. The `?` sentinel registers at
+> `src/cajeta/type/CajetaType.cpp:454`; wildcard kinds live in
+> `CajetaType::WildcardKind` (`Unbounded` / `Extends` / `Super`); capture
+> types are `CajetaCapture` (see `docs/CaptureConversion.md`). Coverage:
+> `test/parser/TemplateWildcardP{1,2,5,6,7}Tests.cpp` and
+> `WildcardLintTests.cpp`. The cost/benefit analysis below is retained as
+> the design record; treat its forward-looking framing ("if `<?>` is
+> chosen", the staging plan) as the plan that was executed, not pending
+> work. The one piece still in flight is the migration from the syntactic
+> receiver-identity heuristic to first-class `capture#N` identity
+> (Step 6's deeper form) — tracked in `docs/CaptureConversion.md`.
+
 ---
 
 ## Costs of `<?>`

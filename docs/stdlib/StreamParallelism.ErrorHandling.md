@@ -247,9 +247,9 @@ When the lambda-local try/catch is verbose enough to obscure intent,
 the stdlib supplies named operators that codify a recovery shape:
 
 ```cajeta
-public final #Stream<R> mapOrSkip<R>((T) -> R fn);
-public final #Stream<R> mapOrFallback<R>((T) -> R fn, R fallback);
-public final #Stream<R> mapOrLog<R>((T) -> R fn,
+public final #Stream<R> mapOrSkip<R>((T) -> #R fn);
+public final #Stream<R> mapOrFallback<R>((T) -> #R fn, R fallback);
+public final #Stream<R> mapOrLog<R>((T) -> #R fn,
                                     (T, Exception) -> void logger);
 ```
 

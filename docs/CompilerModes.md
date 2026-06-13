@@ -65,28 +65,35 @@ feature toggle combinations; individual toggles override.
 
 ## Mode selection
 
-Precedence (highest wins):
+The **compiler binary** (`src/main.cpp`) supports two layers, applied
+left-to-right so later args override earlier ones:
 
-1. Explicit per-feature flag on the command line:
-   `--source-tags=on`.
-2. Flavor flag on the command line: `--release`, `--debug`,
-   `--fast`, `--debug-release`, `--minimal`.
-3. `cajeta.toml` `[profile.<name>]` section selected via
-   `--profile=<name>` (default `dev` → `--debug`, `release` →
-   `--release`).
-4. Environment variable: `CAJETA_MODE=debug|release|fast|...`.
-5. Built-in default: `debug` (we don't want a new user to ship a
-   stripped binary by accident).
+1. Flavor selection: `--mode=debug|debug-release|release|fast|minimal`,
+   or its alias flags `--debug` / `--debug-release` / `--release` /
+   `--fast` / `--minimal`. This expands to a `CompilerFlags` struct via
+   `CompilerFlags::defaultsForMode` (`src/cajeta/compile/CompilerMode.h`).
+2. Per-feature overrides: `--source-tags=on`, `--bounds=off`, etc.,
+   each mutating one field of that struct after expansion.
 
-Example:
+Built-in default when no flavor flag is given: `debug` — we don't want
+a new user to ship a stripped binary by accident.
+
+> The compiler's own `--profile=<name>` flag is **not** a mode
+> selector — it sets the active `@Profile` for component gating.
+> Build-flavor *profiles* keyed in `cajeta.json` (a build-tool concept,
+> `[profile.<name>]`-style, and any `CAJETA_MODE`-style env selection)
+> are resolved by the build tool, which then passes the chosen
+> `--mode`/`--<feature>` flags down to the compiler. See
+> [`BuildTool.md`](BuildTool.md).
+
+Example (compiler binary):
 
 ```sh
-cajeta build                              # default: debug profile
-cajeta build --release                    # release profile
-cajeta build --release --source-tags=on   # release profile with
-                                          # one debug feature opted in
-cajeta build --debug --bounds=off         # debug profile with
-                                          # one debug feature opted out
+cajeta --release    demo.App.run src build/stdlib   # release flavor
+cajeta --release --source-tags=on  demo.App.run src build/stdlib
+                                                    # release + one debug feature opted in
+cajeta --debug   --bounds=off      demo.App.run src build/stdlib
+                                                    # debug + one feature opted out
 ```
 
 ---
@@ -112,10 +119,13 @@ Individual flags override.
 | `--diag-hints`          | on        | on                | off         | off       | off         |
 | `--profile-counters`    | off       | on                | off         | off       | off         |
 
-The optimization-level flags (`-O0` / `-O2` / etc.), debug-info
-emission (`--debug-info`), LTO, PGO, and frame-pointer
-preservation are defined in `Compilation.md`; they layer on top of
-the feature toggles here.
+The IR optimization level (`--opt=O0|O1|O2|O3`) is a separate axis;
+each mode picks a default (`O0` for debug, `O2` for release /
+debug-release, `O3` for fast — see `CompilerFlags::defaultsForMode`).
+Debug-info emission is a mode-driven internal toggle. LTO, PGO, and
+frame-pointer flags are planned (see
+[`Compilation.md`](Compilation.md#optimization)); they would layer on
+top of the feature toggles here.
 
 ---
 
@@ -145,10 +155,11 @@ elides the check.
   can elide the check when the index is provably in-range
   (constant, prior compare); both modes use this.
 
-### `--null-checks=on|off`
+### `--null-checks=on|off|trap`
 
-Null-receiver checks before virtual dispatch + field load.
-Raises `NullPointerException`.
+Null-receiver checks before virtual dispatch + field load. `on`
+raises `NullPointerException`; `trap` branches to `@llvm.trap`
+(SIGILL, no unwind) like `--bounds=trap`; `off` elides the check.
 
 - Debug default: `on`.
 - Release default: `on`. Same logic as `--bounds`.
@@ -509,9 +520,10 @@ the supported surface.
   release modules) or whole-program? Lean: whole-program — module
   granularity would mean the runtime needs both struct shapes
   coexisting, which is the complexity we're explicitly avoiding.
-- **`cajeta.toml` profile syntax.** Borrow Cargo's
-  `[profile.dev]` / `[profile.release]` shape? Lean: yes —
-  Rust users get it for free, and the syntax is fine.
+- **`cajeta.json` profile syntax.** The manifest is JSONC (not
+  TOML); a `settings.profiles` block mirroring Cargo's
+  `[profile.dev]` / `[profile.release]` shape is the lean. Resolved
+  by the build tool, which passes the chosen `--mode` to the compiler.
 - **Trap vs throw on `--bounds=on`.** Today the bounds check
   raises an exception. Should debug mode trap (faster, shows in
   a debugger as a clean SIGILL with a source map entry) while

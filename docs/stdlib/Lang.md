@@ -19,146 +19,134 @@ security-level enforcement).
 
 ## `String` — immutable, encoding-aware
 
-Internal storage: UTF-8 byte array plus a cached code-point count.
-A `String` carries a tagged mode internally — **owned** (heap-
-allocated; `heap String(...)`) or **view** (borrowed over bytes that
-live elsewhere; `String.viewOf(...)`).
+See **[`lang/String.md`](./lang/String.md)** for the full spec and
+roadmap. `String` is a **class** (`cajeta.lang.String`), not a
+primitive. Internal storage is a UTF-8 `int8[]` plus a byte count, a
+mode discriminator, and a cached code-point count:
 
 ```cajeta
-public final class String {
-    // Owned construction — always allocates.
-    public String();
-    public String(byte[] bytes, Encoding encoding);
-    public static String fromCodePoints(int32[] codePoints);
-    public static String repeat(String s, int64 n);
+public class String {
+    public int8[] bytes;        // UTF-8 payload
+    public int32  byteLength;
+    public int32  mode;         // 0 = owned, 1 = view (borrowed bytes)
+    public int32  cachedCpLength; // -1 until first count()
+    ...
+}
+```
 
-    // View construction — borrows from `source`. No alloc / memcpy.
-    public static String viewOf(byte[N]& source,
-                                 Encoding encoding = Encoding.UTF_8);
-    public static String viewOf(byte[]& source, int64 byteCount,
-                                 Encoding encoding = Encoding.UTF_8);
-    public static String cString(byte[N]& source,
-                                  Encoding encoding = Encoding.UTF_8);
+A `String` carries a tagged mode internally — **owned** (`mode = 0`)
+or **view** (`mode = 1`, borrowed over bytes that live elsewhere).
+String literals lower directly to view-mode instances over `.rodata`.
 
-    // Promote view → owned.
-    public String toOwned();
+### Shipped surface
 
-    // Inspection
-    public int64 size();                       // code-point count
-    public int64 byteCount();                  // raw byte count
+Verified in [`runtime/src/cajeta/lang/String.cajeta`](../../runtime/src/cajeta/lang/String.cajeta)
+and pinned by `test/expression/StringMethodsTests.cpp`:
+
+```cajeta
+public class String {
+    public String();                              // empty, owned
+    public String(#int8[] bytes, int32 byteLength); // view-mode
+
+    // Sizing — count() / size(), NOT length()/size-by-chars.
+    public int64 count();         // code-point count (cached)
+    public int64 size();          // raw byte count (byteLength)
     public boolean isEmpty();
-    public int32 codePointAt(int64 index);
-    public boolean equals(String other);
-    public int32 compare(String other);
-    public int64 hash();
 
-    // Search
-    public int64 indexOf(String needle);
-    public int64 indexOf(String needle, int64 fromIndex);
-    public int64 lastIndexOf(String needle);
+    // Equality / hash — value semantics via hash() (FNV-1a).
+    public boolean equals(String other);          // byte-for-byte
+    public int64   hash();
+
+    // Indexing (byte-based unless noted)
+    public int8 charAt(int32 idx);                // byte, returns int8
+    public int8 byteAt(int32 idx);
+    public char codepointAt(int32 cpIdx);         // O(N) walk, returns char
+
+    // Search (byte-based)
+    public int64   indexOf(String needle);
     public boolean contains(String needle);
     public boolean startsWith(String prefix);
     public boolean endsWith(String suffix);
 
-    // Transformation — always returns a fresh OWNED String.
-    public String substring(int64 start, int64 endExclusive);
-    public String concat(String other);
-    public String replace(String from, String to);
-    public String toUpperCase();
-    public String toLowerCase();
-    public String trim();
-    public String[] split(String separator);
-    public String[] lines();
-
-    // Encoding round-trip
-    public byte[] getBytes(Encoding encoding);
+    // Transformation — return a fresh OWNED #String.
+    public #String substring(int32 begin, int32 end); // BYTE-indexed, copying
+    public #String replace(String from, String repl);
+    public #String toUpperCase();                 // ASCII-only
+    public #String toLowerCase();                 // ASCII-only
+    public #String trim();                        // ASCII whitespace
 }
 ```
 
-`String` multiple-inherits `Stream<int32>` so `for (cp in
-someString) { ... }` works and so `size()` is consistent across the
-rest of the collection hierarchy. Iteration is over code points, not
-bytes — bytes are accessible via `getBytes(Encoding.UTF_8)` when
-needed.
+`+` concatenation is also shipped (lowered to `__cajeta_str_concat`,
+pairwise). There is no `Stream` integration on `String` yet, so
+enhanced-for over a String is not wired.
 
-### Owned vs. view
+### Owned vs. view (design — not yet wired)
 
-Both modes are the same type, so user code mostly doesn't notice.
-The differences:
-
-- **Allocation.** `heap String(...)` allocates and copies.
-  `String.viewOf(...)` doesn't.
-- **Lifetime.** A view's lifetime is tied to the source it borrows
-  from. The borrow checker rejects escapes; `.toOwned()` is the
-  documented escape hatch when persistence is needed.
-- **Mutating operations.** `concat` / `replace` / `toUpperCase` /
-  etc. always return a fresh owned String — they can't mutate
-  underlying bytes (the source might not be writable). A view's
-  `substring(start, end)` can return a sub-view when the result
-  stays within the source (cheap, no alloc); pass through
-  `.toOwned()` if the substring needs to escape.
+Both modes are the same type. A view borrows bytes it doesn't own; an
+owned String holds heap bytes. The owned/view **drop distinction is
+not yet implemented** — the type system collapses the two, so
+helper-produced Strings currently leak at scope exit
+(`test/parser/OwnedStringDropTests.cpp`). The named view API
+(`viewOf` / `toOwned` / `cString`) from earlier drafts does **not**
+exist; the only view entry point today is the `String(#int8[],
+int32)` constructor. See [`lang/String.md` § Memory model](./lang/String.md#memory-model).
 
 ### Examples
 
 ```cajeta
-// Owned construction
-String s = heap String("Hello, world", Encoding.UTF_8);
-int64 len = s.size();                     // 12 code points
-String upper = s.toUpperCase();
-
-// View — borrows bytes, no allocation
-byte[100] buf;
-// ... fill buf ...
-String view = String.viewOf(buf, Encoding.UTF_8);
-boolean ok = view.startsWith("HTTP/");
-
-// Promote view → owned when persistence needed
-String pinned = view.toOwned();
-
 // Method intrinsics — routed through __cajeta_str_* runtime helpers.
-String trimmed = "  hello  ".trim();
-boolean hasFoo = "foobar".contains("foo");
-int64 idx = "hello world".indexOf("world");
-String[] parts = "a,b,c".split(",");
+String trimmed = "  hello  ".trim();             // "hello"
+boolean hasFoo = "foobar".contains("foo");       // true
+int64  idx     = "hello world".indexOf("world"); // 6
+String sub     = "hello world".substring(6, 11); // "world" (byte range)
+int64  cps     = "héllo".count();                // code points
 ```
 
 ### Status
 
-The intrinsic surface (`+`, `.contains`, `.indexOf`, `.substring`,
-`.toUpperCase`, `.toLowerCase`, `.trim`, `.replace`, `.equals`,
-`.size`, `.isEmpty`, `.split`) is shipped — pinned by
-`test/expression/StringMethodsTests.cpp`.
+Shipped (pinned by `StringMethodsTests`): `+`, `.contains`,
+`.indexOf`, `.substring`, `.toUpperCase`, `.toLowerCase`, `.trim`,
+`.replace`, `.equals`, `.size`, `.count`, `.isEmpty`, `.charAt`,
+`.startsWith`, `.endsWith`, `.codepointAt`, `.hash`.
 
-Owned vs view distinction (`viewOf`, `toOwned`, lifetime tying) is
-designed; the runtime carries owned-string-drop tracking
-(pinned by `test/parser/OwnedStringDropTests.cpp`) but the explicit
-view-mode API isn't yet exposed. Tracked in Features.md.
-
-`String.fromCodePoints`, `String.repeat`, `.lines`, `getBytes`,
-`codePointAt`, `compare`, `lastIndexOf` — designed, not implemented.
+**Not implemented** (planned — see `String.md`): static factories
+(`fromUtf8`/`fromBytes`/`of`/`repeat`/`join`/`fromCodePoints`),
+`getBytes`, `split`/`lines`, `lastIndexOf`, `compareTo`/`Comparable`,
+`Locale`-aware case folding, `format`/`printf`, `StringBuilder`,
+codepoint/byte iteration streams, and the codepoint-indexed view
+`substring`.
 
 ## `Encoding` enum
 
-Designed. Not yet shipped as an explicit enum — runtime intrinsics
-hardcode UTF-8 for the String path.
+The enum **ships** as
+[`cajeta.lang.Encoding`](../../runtime/src/cajeta/lang/Encoding.cajeta)
+with 12 members. The byte ↔ text conversion methods that *consume* it
+(`String.fromBytes` / `String.getBytes`) are not yet implemented, so
+today an `Encoding` value is just selected by name; the runtime
+String path is UTF-8 throughout.
 
 ```cajeta
 public enum Encoding {
     UTF_8,
-    UTF_16_LE,
-    UTF_16_BE,
-    UTF_32_LE,
-    UTF_32_BE,
+    UTF_16_LE, UTF_16_BE,
+    UTF_32_LE, UTF_32_BE,
     ASCII,
-    ISO_8859_1,
+    LATIN_1,            // ISO-8859-1
     WINDOWS_1252,
+    GB18030,            // CJK simplified
+    SHIFT_JIS,          // CJK Japanese
+    EUC_KR,             // CJK Korean
+    BIG_5               // CJK traditional
 }
 ```
 
-Operations that can't represent a code point in the target encoding
-throw `EncodingException` (a `RecoverableException` subtype). Lossy
-modes ("replace with `?`", "skip") arrive later via an optional
-`Encoder` strategy class.
+Conversion error behavior is governed by the companion
+[`EncodingErrorPolicy`](../../runtime/src/cajeta/lang/EncodingErrorPolicy.cajeta)
+enum (`{ FAIL, REPAIR }`, FAIL default — both shipped). Operations
+that can't represent a code point under `FAIL` throw
+[`EncodingException`](../../runtime/src/cajeta/lang/EncodingException.cajeta)
+(a `RecoverableException` subtype, shipped).
 
 ## `Optional<T>` — value-typed sum
 

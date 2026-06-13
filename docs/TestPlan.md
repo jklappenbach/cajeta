@@ -1,4 +1,11 @@
 # Test Plan
+
+> Early feature checklist — an aspirational coverage outline kept for
+> historical intent, not a live mirror of the suite. The authoritative,
+> running tests are the gtest cases under `test/` (binary `cajeta_test`,
+> run via `ctest`). Items here are aspirational unless backed by a test
+> there.
+
 ## Compile
 - Can compile empty class
 ## Class 
@@ -24,7 +31,7 @@
 ### Class Loader
 - Can load a class locally
 - Can load a class from a URL
-- Can load a class from a signed jarvcx
+- Can load a class from a signed `.car` archive
 ### Aspects
 - Can set a property's value
 - Can add a property
@@ -133,7 +140,7 @@
   - Can deallocate an array
 - ArrayList
 - Trees
-  - RedBlueTree
+  - RedBlackTree
   - B+Tree
 - Map
   - DenseHashMap
@@ -165,7 +172,6 @@
     - Can allow simultaneous reads
     - Can allow writes over multiple queues
       - Assure that reads have completed prior to write
-- ### Networking
+### Networking
 - Socket
 - ePoll vs IOCP vs AIO Common
-- 

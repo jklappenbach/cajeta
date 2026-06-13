@@ -56,6 +56,8 @@ identity.
 **Rules.** `Bits.{reverse,count,rotateLeft,rotateRight}` are device-only (inside
 an `@Kernel`), `uint32 -> uint32`, one hardware op each, identical on
 CPU/Vulkan/AMD/NVIDIA. No extension, no fork — core SPIR-V. Bit-exact verified on
-RADV + gfx1151 + CPU (`XpuBitsDeviceTests`). Runnable in `samples/Tour/xpu`
-(the `bit ops` section). See `CajetaXPU.md` for the kernel surface and `Wave`
-(`docs/`) for the wave-cooperative companion.
+RADV + gfx1151 + CPU (`XpuBitsDeviceTests`). Runnable in `samples/tour/xpu`
+(the `bitOps` kernel). The surface lives in
+`runtime/src/cajeta/gpu/core/Bits.cajeta`; the lowering in
+`src/cajeta/xpu/lowering/KernelLowering.cpp`. See `xpu/CajetaXPU.md` for the
+kernel surface and `xpu/WaveReductions.md` for the wave-cooperative companion.
