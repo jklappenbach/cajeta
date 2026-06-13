@@ -1813,6 +1813,23 @@ void __cajeta_task_complete(int32_t* done_addr) {
     // Phase 1 — flip the done flag, wake any main-thread awaiters, and
     // detach the parked list (under pool_mutex only).
     pthread_mutex_lock(&__cajeta_task_mutex);
+    // Null the Task's fiber slot BEFORE publishing done. The moment
+    // *done_addr = 1 becomes visible, the awaiter can return from
+    // __cajeta_task_wait and the Task can be dropped + freed — so the
+    // runtime must never touch Task memory after this point. The carrier's
+    // post-swap cleanup used to perform this null AFTER the done signal,
+    // and under CPU oversubscription (carrier preempted between the signal
+    // and the cleanup) that write landed in freed/recycled heap: the
+    // corrupted-size/SIGSEGV crashes the parallel suites hit under load.
+    // Doing it here, under the same mutex scope-cancel takes, preserves
+    // C2's invariant: a concurrent cancel sees the live fiber or NULL,
+    // never a dangling pointer. slot_ptr is also cleared on the fiber so
+    // the carrier's (now redundant) backstop null is a no-op.
+    struct cajeta_fiber* self = __cajeta_current_fiber;
+    if (self && self->slot_ptr) {
+        *self->slot_ptr = NULL;
+        self->slot_ptr = NULL;
+    }
     *done_addr = 1;
     pthread_cond_broadcast(&__cajeta_task_done_cond);
     struct cajeta_fiber* woken = __cajeta_drain_parked_locked();
