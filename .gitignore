@@ -19,6 +19,10 @@ __pycache__/
 # Cajeta compiler output (per-source artifacts from cajetac)
 *.cja
 *.ll
+# Vendored, hand-maintained fp128 soft-float builtin IR (NOT compiler output):
+# linked into the embedded runtime bitcode so Apple arm64 (no __float128 /
+# compiler-rt tf family) can resolve fp128 conversions. Must stay tracked.
+!runtime/native/cajeta_fp128_builtins.ll
 *.bc
 *.o
 *.obj

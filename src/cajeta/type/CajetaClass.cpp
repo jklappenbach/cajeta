@@ -2108,15 +2108,20 @@ namespace cajeta {
             llvm::Value* val = expr->generateCode(module);
             if (!val) continue;
 
-            // Load-through if the expression returned an l-value
-            // (DotExpression on a class-static returns the global, an
-            // alloca, or a field GEP). For the supported v1 shapes
-            // (arithmetic on int/float literals + static field refs),
-            // we expect rvalues; only the static-field-ref case
-            // returns a global directly that hasn't been loaded yet.
-            if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(val)) {
-                val = builder->CreateLoad(gv->getValueType(), gv);
-            }
+            // Load-through if the expression returned an l-value (a static
+            // field reference yields the field's global slot; a local an
+            // alloca; a struct field a GEP). Use the canonical
+            // loadIfLValue, which carries the l-value/r-value rules
+            // INCLUDING the carve-outs for reference-type *r-value*
+            // literals: a String literal (and `T.class`) returns its own
+            // private instance global whose ADDRESS is the value. The old
+            // naive `dyn_cast<GlobalVariable>` load fired on those too,
+            // read the instance struct instead of using the pointer,
+            // mismatched the ptr-typed field, and skipped the store —
+            // leaving the static field null and crashing on use under
+            // --emit=exe (static int fields folded, so only String/object
+            // fields hit this path).
+            val = loadIfLValue(module, val, expr);
 
             // Coerce to the stored type so the verifier accepts the store.
             llvm::Type* storedType = g->getValueType();
@@ -4922,12 +4927,32 @@ namespace cajeta {
             }
         }
 
-        llvm::Value* callInst = builder->CreateCall(method->getLlvmFunctionType(),
+        llvm::CallInst* callInst = builder->CreateCall(method->getLlvmFunctionType(),
             callee, llvm::ArrayRef<llvm::Value*>(methodArgs));
         // For a value-return (sret) call the LLVM result is void; hand back a
         // pointer to the constructed value so the caller treats it like any
         // class-instance pointer.
         if (usesSret && sretSlot) {
+            // The callee's hidden return-slot arg is declared `sret` (Method
+            // generatePrototype, see Method.cpp). The call site MUST carry the
+            // matching StructRet attribute on arg 0 or the ABI diverges across
+            // targets: x86-64 SysV passes both the sret pointer AND a plain
+            // first integer arg in RDI, so an unattributed call happens to put
+            // the slot where the callee expects it — but aarch64 routes sret
+            // through the dedicated indirect-result register x8 while a plain
+            // ptr arg goes in x0. Without the attribute the callee then reads
+            // `this` from x0 (which holds the return slot) and dereferences the
+            // uninitialized Optional<T> alloca as the receiver → SIGSEGV in
+            // e.g. ArrayStream::next on ARM (the parallel-stream crashes). The
+            // direct/lambda call paths in MethodCallExpression already do this;
+            // the vtable + spawn-trampoline dispatch path here did not.
+            if (auto* rt = method->getReturnType().get()) {
+                if (llvm::Type* sretStructTy = rt->getLlvmType()) {
+                    callInst->addParamAttr(0, llvm::Attribute::get(
+                        *emitMod->getLlvmContext(), llvm::Attribute::StructRet,
+                        sretStructTy));
+                }
+            }
             return sretSlot;
         }
         return callInst;

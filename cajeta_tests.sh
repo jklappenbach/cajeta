@@ -32,6 +32,14 @@
 #   TEST_TIMEOUT=N  per-test wall-clock timeout in seconds (default 120). A test
 #                that runs longer is killed and reported as a timeout; the rest
 #                of its worker's tests continue.
+#   KEEP_LOGS=dir  (parallel mode only) persist each shard's raw output —
+#                the full per-test gtest text including assertion detail and
+#                the synthetic >>> CRASH / >>> TIMEOUT markers — into `dir`
+#                before the shard tmpdir is deleted. Relative paths resolve
+#                against the repo root (this script cd's there); CI uses
+#                KEEP_LOGS=run-logs (gitignored) and uploads it as an
+#                artifact so a failing platform leg can be diagnosed from
+#                the run page without reproducing on that platform.
 
 set -e
 
@@ -200,6 +208,23 @@ fi
 # per-shard cap — a worker runs until its whole bucket is exhausted.
 TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 
+# Portable per-test timeout wrapper. GNU coreutils `timeout` is standard on
+# Linux and MSYS2 but ABSENT on macOS (where coreutils, if brew-installed,
+# ships it as `gtimeout`). Without this detection every test invocation on
+# macOS failed with exit 127 ("timeout: command not found") and was recorded
+# as a crash — silently, because the macOS release-test step is non-fatal.
+# Prefer `timeout`, fall back to `gtimeout`, and as a last resort run the test
+# directly (no timeout — a hung test could stall its worker, but coverage is
+# far more valuable than losing it entirely to a missing wrapper).
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="gtimeout"
+else
+    TIMEOUT_CMD=""
+    echo ">> WARNING: no 'timeout'/'gtimeout' found — running tests without a per-test timeout." >&2
+fi
+
 # Enumerate tests. gtest emits one line per suite ending in `.`, then indented
 # test names. Format example:
 #     BinaryOpTests.
@@ -304,11 +329,18 @@ for ((s=0; s<shards; s++)); do
         tf="$tmpdir/t_${s}.out"
         while IFS= read -r t; do
             [ -z "$t" ] && continue
-            timeout --kill-after=10 "$TEST_TIMEOUT" \
+            if [ -n "$TIMEOUT_CMD" ]; then
+                "$TIMEOUT_CMD" --kill-after=10 "$TEST_TIMEOUT" \
+                    env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+                    "--gtest_filter=$t" \
+                    "$shard_brief" \
+                    > "$tf" 2>&1
+            else
                 env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-                "--gtest_filter=$t" \
-                "$shard_brief" \
-                > "$tf" 2>&1
+                    "--gtest_filter=$t" \
+                    "$shard_brief" \
+                    > "$tf" 2>&1
+            fi
             trc=$?
             cat "$tf" >> "$out_file"
             if [ "$trc" -ne 0 ]; then
@@ -525,6 +557,19 @@ if [ "${VERBOSE:-}" = "1" ]; then
         echo "----- shard ${s} -----"
         cat "$tmpdir/shard_${s}.out"
     done
+fi
+
+# KEEP_LOGS: persist the raw shard outputs (full per-test gtest text +
+# crash/timeout markers) before the EXIT trap deletes the shard tmpdir.
+# Best-effort — a log-copy failure must never change the run's verdict.
+if [ -n "${KEEP_LOGS:-}" ]; then
+    if mkdir -p "$KEEP_LOGS" 2>/dev/null \
+        && cp "$tmpdir"/shard_*.out "$KEEP_LOGS"/ 2>/dev/null; then
+        echo
+        echo ">> Shard logs kept in: $KEEP_LOGS"
+    else
+        echo ">> WARNING: KEEP_LOGS=$KEEP_LOGS — could not persist shard logs" >&2
+    fi
 fi
 
 if [ "$total_failed" -gt 0 ] || [ "$num_timeouts" -gt 0 ] || [ "$num_crashes" -gt 0 ]; then

@@ -323,6 +323,12 @@ BuiltJit buildJit(const JitRunOptions& opts) {
                 mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
         }
     }
+    // NOTE: the fp128 soft-float helpers (__trunctfdf2, __fixtfdi, ...) that the
+    // stdlib's Float128 emits are NOT installed here. Apple arm64 has no
+    // __float128 type and ships no compiler-rt tf family, so there is nothing to
+    // take the address of. Instead they are compiled (as target-neutral integer
+    // IR) into the embedded runtime bitcode and linked into every JIT module —
+    // see runtime/native/cajeta_fp128_builtins.ll and src/CMakeLists.txt.
 
     if (auto err = out.jit->initialize(mainDylib)) {
         std::cerr << "cajeta jit: LLJIT initialize failed: "

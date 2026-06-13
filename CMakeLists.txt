@@ -6,7 +6,19 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.25 FATAL_ERROR)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" CAJETA_VERSION)
 string(STRIP "${CAJETA_VERSION}" CAJETA_VERSION)
 
-project(cajeta VERSION ${CAJETA_VERSION})
+# CAJETA_VERSION is the full, human-facing version string and may carry a
+# semver pre-release suffix (e.g. "0.7.0-rc1") — that's what gets baked into
+# `cajeta --version` and used for asset/package naming. CMake's project(VERSION)
+# however only accepts a numeric dotted form (<major>[.<minor>[.<patch>]]); a
+# "-rc1" suffix makes configure fail outright. Strip the suffix for project()
+# only, so pre-release tags (a documented release path) configure cleanly while
+# the binary still reports the true pre-release version.
+string(REGEX MATCH "^[0-9]+(\\.[0-9]+)*" CAJETA_VERSION_NUMERIC "${CAJETA_VERSION}")
+if(NOT CAJETA_VERSION_NUMERIC)
+    message(FATAL_ERROR "VERSION file '${CAJETA_VERSION}' has no numeric version prefix")
+endif()
+
+project(cajeta VERSION ${CAJETA_VERSION_NUMERIC})
 
 cmake_policy(SET CMP0135 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
@@ -99,6 +111,15 @@ if(CAJETA_BUILD_CAJETADOC)
 endif()
 
 add_subdirectory(src)
+
+# cajetadoc_core (configured above, before src/) #includes the ANTLR-generated
+# CajetaParser.h but doesn't compile the generated sources, so it has no
+# build-order edge to the generation. Add it here, now that both targets exist,
+# so a parallel build can't race Ingest.cpp ahead of the generated header.
+if(TARGET cajetadoc_core AND TARGET cajeta_antlr_generated)
+    add_dependencies(cajetadoc_core cajeta_antlr_generated)
+endif()
+
 add_subdirectory(test)
 
 # Debugger / in-process JIT host sub-project test target. Separate executable
