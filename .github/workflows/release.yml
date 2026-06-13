@@ -50,6 +50,11 @@ on:
         options:
           - dry-run
           - production
+      targets:
+        description: 'Targets to build (comma-separated triples, or "all"). Dry-run only — production always builds every target.'
+        required: false
+        type: string
+        default: 'all'
 
 permissions:
   contents: write   # needed for softprops/action-gh-release to create / update the Release
@@ -62,6 +67,48 @@ env:
   GIT_LFS_SKIP_SMUDGE: 1
 
 jobs:
+  # Resolve the build matrix. The canonical full target list lives here as
+  # JSON; on a tag push or a production dispatch it is used whole, so a real
+  # release always builds every target. On a DRY-RUN dispatch the `targets`
+  # input filters it (comma-separated triples, or "all") so platform-specific
+  # debugging triggers only the legs it needs — e.g. targets=aarch64-apple-darwin
+  # builds just the macOS leg, no wasted compute on the other three. This
+  # replaces the old "comment out matrix entries" hack (error-prone + had to be
+  # reverted before release). Each entry carries its own `shell` (consumed by
+  # defaults.run.shell below).
+  setup:
+    name: resolve matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.f.outputs.matrix }}
+    steps:
+      - name: Filter targets
+        id: f
+        run: |
+          set -euo pipefail
+          FULL='[
+            {"os":"ubuntu-latest","target":"x86_64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
+            {"os":"ubuntu-24.04-arm","target":"aarch64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
+            {"os":"macos-14","target":"aarch64-apple-darwin","archive_ext":"tar.gz","shell":"bash"},
+            {"os":"windows-latest","target":"x86_64-w64-mingw32","archive_ext":"zip","shell":"msys2 {0}"}
+          ]'
+          MODE='${{ github.event.inputs.mode }}'
+          SEL='${{ github.event.inputs.targets }}'
+          # Full matrix unless this is a dry-run dispatch with an explicit,
+          # non-"all" target list. (Production / tag push always builds all.)
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] \
+             || [ "$MODE" = "production" ] || [ -z "$SEL" ] || [ "$SEL" = "all" ]; then
+            M=$(echo "$FULL" | jq -c '{include:.}')
+          else
+            M=$(echo "$FULL" | jq -c --arg sel "$SEL" \
+                '($sel|split(",")|map(gsub("^ +| +$";""))) as $t | {include:[ .[] | select(.target as $x | $t|index($x)) ]}')
+            if [ "$(echo "$M" | jq '.include|length')" -eq 0 ]; then
+              echo "::error::targets='$SEL' matched no known target triples"; exit 1
+            fi
+          fi
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+          echo "::notice::building targets = $(echo "$M" | jq -c '[.include[].target]')"
+
   # Build the IntelliJ IDEA plugin once (plan §7). Its distribution zip is
   # downloaded by every compiler build job and embedded into the binary
   # (xxd -i in src/CMakeLists.txt) so `cajeta ide install` works from any
@@ -142,50 +189,21 @@ jobs:
 
   build:
     name: build (${{ matrix.target }})
-    needs: plugin
+    needs: [setup, plugin]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # =====================================================================
-          # TEMPORARY — ARM-ONLY MATRIX while debugging the aarch64-linux
-          # parallel-stream SIGSEGV (plans/fabel-state.md, Problem 1). The other
-          # three targets are commented out to avoid burning ~3 legs of compute
-          # per debug-dispatch. REVERT THIS BLOCK (uncomment all four) before
-          # cutting any release tag — see git history for the original.
-          # =====================================================================
-          # - os: ubuntu-latest
-          #   target: x86_64-linux-gnu
-          #   archive_ext: tar.gz
-          #   shell: bash
-          - os: ubuntu-24.04-arm
-            target: aarch64-linux-gnu
-            archive_ext: tar.gz
-            shell: bash
-          # x86_64-apple-darwin removed from the matrix: GitHub-hosted
-          # macos-13 (Intel) runners are scarce + slow to dispatch
-          # (Apple stopped selling Intel Macs in 2022; runner pool is
-          # being wound down). Intel Mac users build from source —
-          # documented in RELEASING.md.
-          # - os: macos-14
-          #   target: aarch64-apple-darwin
-          #   archive_ext: tar.gz
-          #   shell: bash
-          # Windows build uses MSYS2 / MinGW-w64 rather than MSVC.
-          # MSYS2's pacman repo ships pre-built mingw-w64 packages for
-          # LLVM, antlr4-runtime, etc. — no LLVM tarball download, no
-          # vcpkg-from-source builds, no MSVC env setup, no diaguids
-          # patching. The POSIX-ish surface (pthread via winpthreads,
-          # ucontext via libucontext) means cajeta_runtime.c compiles
-          # with minimal conditionals vs the heavy MSVC shim that would
-          # otherwise be needed. Resulting binary is native PE (no
-          # cygwin1.dll runtime dependency); target triple is
-          # x86_64-w64-mingw32.
-          # - os: windows-latest
-          #   target: x86_64-w64-mingw32
-          #   archive_ext: zip
-          #   shell: 'msys2 {0}'
+      # Matrix resolved by the `setup` job. Full 4-target list on a release
+      # (tag push / production dispatch); filtered by the `targets` dispatch
+      # input on a dry-run. Target notes:
+      #   - x86_64-apple-darwin is intentionally absent (Intel Mac runners are
+      #     scarce/slow + being wound down; Intel users build from source, see
+      #     RELEASING.md).
+      #   - windows uses MSYS2/MinGW-w64 (its entry's shell is 'msys2 {0}'),
+      #     not MSVC — pacman ships prebuilt mingw-w64 LLVM/antlr4, the
+      #     POSIX-ish surface keeps cajeta_runtime.c's conditionals minimal,
+      #     and the result is a native PE (no cygwin1.dll dependency).
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
     defaults:
       run:
