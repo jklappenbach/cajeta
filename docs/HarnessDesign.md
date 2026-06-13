@@ -4,6 +4,14 @@ A stress-test harness for measuring cajeta's threading model and
 buffer-pipeline performance, plus the methodology for comparing those
 numbers against other languages' concurrency primitives.
 
+> **Status: design / planning.** The `cajeta_harness` binary, the
+> `BufferChain` type, and the comparison harnesses under `harness/`
+> are not built yet — this is the plan for them. The pieces they lean
+> on are at different stages: the multi-carrier work-stealing scheduler
+> is shipped (see below); `Fiber.sleep` lowers to a runtime call but the
+> full fiber-side timer wheel is still landing (R9.x). Treat the dials,
+> CLI shape, and methodology here as the target, not current behavior.
+
 ## What we're measuring
 
 **Goal:** characterize cajeta's fiber scheduler + buffer pipeline under
@@ -52,18 +60,18 @@ serializes and throughput collapses to `1 / work_time`. The contrast is
 meaningful.
 
 The buffer step exercises the design you sketched: pre-allocated
-`byte[MAX_SIZE]` chunks in a per-direction linked list.
+`int8[MAX_SIZE]` chunks in a per-direction linked list.
 
 ## Carrier configuration
 
-Cajeta's scheduler today is single-threaded — one OS thread popping ready
-fibers. The harness initially runs that way. For comparison runs we plan
-to add a fixed-size worker pool (N OS carriers sharing a work-stealing
-ready queue) so we have a vs-Java-virtual-threads / vs-Go-goroutines story
-that isn't crippled by a single core. That work is downstream of the
-docs/stdlib/Concurrency.md plumbing; the harness should be written so the carrier
-count is a CLI flag from day one even if the implementation initially
-clamps it to 1.
+Cajeta's scheduler is a multi-carrier pool — N OS carrier threads, each
+with its own Chase–Lev work-stealing deque (`cajeta_carrier_deque` in
+`runtime/native/cajeta_runtime.c`, R8.2). The carrier count is read once at
+first spawn from `CAJETA_CARRIERS`, defaulting to `min(nproc, 4)`. The
+harness should still expose carrier count as a CLI flag (mapping to
+`CAJETA_CARRIERS`) so vs-Java-virtual-threads / vs-Go-goroutines runs can
+pin matching core counts — and so a single-carrier baseline (`--carriers 1`)
+is reproducible for the simplest comparison.
 
 CLI shape:
 

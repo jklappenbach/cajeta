@@ -1,22 +1,28 @@
 # Primitives — boxed wrappers and the unboxed types they wrap
 
-Cajeta has a fixed set of primitive types with explicit width:
+Cajeta has a fixed set of **explicit-width** primitive types (there is no
+`int`/`long`/`float`/`double`). The authoritative list is the native-type
+bootstrap in `src/cajeta/type/CajetaType.cpp`:
 
-| Family | Types |
-|--------|-------|
-| Signed integer | `int8`, `int16`, `int32`, `int64` |
-| Unsigned integer | `uint8`, `uint16`, `uint32`, `uint64` |
-| Floating-point | `float32`, `float64` |
-| Boolean | `boolean` |
-| Pointer | `pointer` |
+| Family | Types | Backing |
+|--------|-------|---------|
+| Boolean | `boolean` | i1 |
+| Character | `char` | a **32-bit Unicode codepoint** (i32) |
+| Signed integer | `int8` `int16` `int32` `int64` `int128` | iN |
+| Unsigned integer | `uint8` `uint16` `uint32` `uint64` `uint128` | iN |
+| Floating-point (IEEE) | `float16` `float32` `float64` `float128` | half / float / double / fp128 |
+| Brain float | `bfloat16` | LLVM `bfloat` (ML training dtype) |
+| Low-precision floats | `float4e2m1` `float6e2m3` `float6e3m2` `float8e4m3` `float8e5m2` `float8e4m3fnuz` `float8e5m2fnuz` | OCP Microscaling — storage-only today (opaque iN; conversion/arith helpers are future work) |
+| Raw pointer | `pointer` | opaque address; low-level/interop |
 
-There is no implicit numeric widening — every cross-width conversion
-goes through an explicit cast. Bytes are `int8` (or `uint8` depending
-on signedness intent); there's no separate `byte` type.
+There is no implicit numeric widening — every cross-width conversion goes
+through an explicit cast. **There is no `byte` type**: the canonical byte buffer
+is `int8[]` (or `uint8[]`). `uchar` is a deprecated alias for `uint8`. `char` is
+a codepoint, not a byte.
 
-This doc covers the boxed wrapper types (`Integer`, `Long`, `Double`,
-`Boolean`) and the static parse/format intrinsics that operate on
-primitives.
+This doc covers the boxed wrapper types and the static parse/format intrinsics
+that operate on primitives. For the broader language tour, see
+[`../LanguageGuide.md`](../LanguageGuide.md).
 
 ## Status
 
@@ -27,14 +33,19 @@ primitives.
 | `intLiteral.hash()`, `floatLiteral.hash()`, etc. | shipped (HashTests) |
 | `Integer.parseInt(String)` etc. intrinsic | shipped (intrinsic dispatcher) |
 | `String.valueOf(int32 v)` etc. intrinsic | shipped |
-| Boxed `Integer` / `Long` / `Double` / `Boolean` classes | designed, not implemented |
-| `Math` namespace (`abs`, `min`, `max`, `sqrt`, …) | partial (MathIntrinsicTests) |
+| Boxed wrapper classes (`Int32` / `Int64` / `Float32` / `Float64` / `Boolean` / `UInt8`…`UInt64`) | shipped (`runtime/src/cajeta/lang/`) |
+| `Math` namespace — `abs`/`min`/`max`/`sqrt`/`pow` + transcendentals (`sin`/`cos`/`tan`/`exp`/`log`…) | shipped (`runtime/src/cajeta/lang/Math.cajeta`) |
 
-## Boxed wrappers — designed
+## Boxed wrappers — shipped
 
 Thin wrappers that exist so primitives can be stored in `Collection<T>`
 and related templated types when the element-type slot is class-typed.
 Boxing happens at the boundary; the unboxed types stay separate.
+
+The shipped classes are named after the primitive they wrap — `Int32`,
+`Int64`, `Float32`, `Float64`, `Boolean`, and `UInt8`/`UInt16`/`UInt32`/`UInt64`
+(in `runtime/src/cajeta/lang/`) — **not** Java's `Integer`/`Long`/`Double`. The
+sketch below shows the shape; consult the source for the exact surface.
 
 ```cajeta
 public final class Integer {
@@ -60,9 +71,10 @@ public final class Double { ... }              // float64 equivalent
 public final class Boolean { ... }
 ```
 
-The static parse/format methods are already intrinsic in
-`MethodCallExpression`'s namespace dispatcher; the boxed wrapper
-classes themselves haven't been declared in cajeta source yet.
+The static parse/format methods are intrinsic in `MethodCallExpression`'s
+namespace dispatcher; the boxed wrapper classes are declared in
+`runtime/src/cajeta/lang/` (`Int32.cajeta`, `Int64.cajeta`, `Float32.cajeta`,
+`Float64.cajeta`, `Boolean.cajeta`, `UInt8.cajeta` … `UInt64.cajeta`).
 
 ## `String.valueOf` and `<primitive>.toString`
 
@@ -81,22 +93,18 @@ the appropriate stringifier (`__cajeta_i64_to_str`,
 `__cajeta_f64_to_str`, `__cajeta_bool_to_str`). Pinned by
 `test/expression/StringMethodsTests.cpp`.
 
-## `Math` namespace — partial
+## `Math` namespace
 
-Intrinsics in the runtime, dispatched by name. Currently shipped:
+`Math` (`runtime/src/cajeta/lang/Math.cajeta`) is a mix of monomorphized generic
+methods and compiler intrinsics dispatched by name. Shipped:
 
-| Method | Notes |
-|--------|-------|
-| `Math.abs(int32)` / `Math.abs(int64)` / `Math.abs(float32)` / `Math.abs(float64)` | unsigned wrapping behavior for INT_MIN |
-| `Math.min(a, b)` / `Math.max(a, b)` | all numeric widths |
-| `Math.sqrt(float64)` | |
-| `Math.pow(float64, float64)` | |
-| `Math.floor`, `Math.ceil`, `Math.round` | float64 only |
+| Group | Methods |
+|-------|---------|
+| Basic | `abs`, `min`, `max`, `sqrt`, `pow`, `floor`, `ceil`, `round` |
+| Transcendentals | `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y,x)`, `exp`, `exp2`, `log`, `log2`, `log10` |
 
-Pinned by `test/expression/MathIntrinsicTests.cpp`.
-
-Full `Math` design — trig (sin/cos/tan/atan2), logs (log, log2,
-log10, ln, exp), constants (PI, E), random — tracked in Features.md.
+Pinned by `test/expression/MathIntrinsicTests.cpp`. Consult `Math.cajeta` for the
+exact per-width signatures and any constants.
 
 ## Primitive `.hash()`
 
@@ -120,8 +128,9 @@ Pinned by `test/expression/ConversionIntrinsicTests.cpp`,
 
 Tracked in Features.md:
 
-- Boxed `Integer` / `Long` / `Double` / `Boolean` cajeta-source classes
-- Full `Math` namespace (trig, logs, random)
+- Arithmetic/conversion helpers for the low-precision float formats
+  (`float4*`/`float6*`/`float8*` are storage-only today)
+- `Math` constants (`PI`, `E`) and `random`
 - `String.valueOf` / `toString` for class types (delegate to
   `obj.toString()`)
 - `Encoding` enum as a real cajeta type (Lang.md)

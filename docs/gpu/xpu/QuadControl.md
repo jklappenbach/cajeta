@@ -81,5 +81,5 @@ quad-cooperative over the four lanes `laneId & ~3 .. +3`. Native
 (`llvm.spv.quad.*` — fork-carried, not upstreamed); the portable shuffle/ballot
 form elsewhere. Device-verified bit-identical on RADV (native) and gfx1151
 (portable) (`XpuQuadDeviceTests.{amdgpu,vulkan}QuadOpsRunOnDevice`). Runnable in
-`samples/Tour/xpu` (the `quad` section). See `Wave`
+`samples/tour/xpu` (the `quad` section). See `Wave`
 (`runtime/.../core/Wave.cajeta`) for the subgroup-wide surface.

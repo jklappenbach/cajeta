@@ -3,11 +3,16 @@
 > **Status: design-stage reference.** This catalogs the operator-overloaded value
 > types cajeta intends to ship and their canonical operator-overload signatures, so
 > that when it is time to write definitions the surface is already specified. It is a
-> companion to [`OperatorOverloading.md`](../OperatorOverloading.md) and depends on the
-> value-type operator-overloading **mechanism change** (see
-> `plans/value-type-overloading-plan.md`): today only non-primitive classes dispatch
-> operators; value types are `@ValueType` POD classes that dispatch via a relaxed gate
-> with their operators force-inlined to flat IR (preserving by-value GPU marshalling).
+> companion to [`OperatorOverloading.md`](../OperatorOverloading.md).
+>
+> The `@ValueType` operator-overloading **mechanism it relies on has since landed**
+> (`plans/value-type-overloading-plan.md`, shipped 2026-06-05): `@ValueType` POD classes
+> carry `VALUE_TYPE_FLAG` and dispatch operators via a relaxed gate, with their operators
+> force-inlined to flat IR (preserving by-value GPU marshalling). What is still
+> design-stage is the **type definitions themselves** — of everything below, only
+> `Vector` / `Matrix` / `Quaternion` (compiler intrinsics carrying their own type flags,
+> *not* declared `@ValueType` classes) and the device-only `CooperativeMatrix` exist in
+> code today; the rest is specified here but unwritten.
 
 Priority: **now** = needed for current ML/GPU work · **soon** = next · **later** = justified-but-speculative.
 
@@ -333,8 +338,8 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 - **Element types:** N/A (scalar). Can be element type of Vector<bfloat16, N> and Matrix<bfloat16, R, C>.
 - **Purpose:** Google's bfloat16 (16-bit brain float) format: 1 sign + 8 exponent + 7 mantissa bits, matching the range of float32 but with coarser mantissa precision. Used in TPU training, some NVIDIA tensor-core workflows, and quantized LLM inference. Distinct from IEEE float16 (which has 5 exp + 10 mantissa).
 - **Representation:** LLVM `bfloat` type (Type::getBFloatTy). Lowered as a scalar. By-value marshalling. Device: native on recent NVIDIA (NVIDIA compute ≥8.0, sm_90), AMD, and TPUs; emulated on older/other targets via float32 → truncate.
-- **GPU notes:** LLVM support: Type::getBFloatTy exists; arithmetic intrinsics map to bf16 fcmp/fadd/etc. Device math (xpu-plan C2, Tier-2) — port OpenCL-flavor bfloat16 atomics/ops to Vulkan Shader flavor (SPV_KHR_bfloat16 capability). Deferred: bfloat16 arithmetic is Tier-2 (in LLVM but not Shader-flavor-exposed); needs SPIR-V backend port. Cooperative matrix CM5c only exposes f16/f16→f32 config on current hardware; bfloat16 configs may surface on newer hardware and will need device support. For now, treat as 'language keyword planned, type system pending'.
-- **Depends on:** none; primitive (deferred in type system until keyword lands)
+- **GPU notes:** LLVM support: Type::getBFloatTy exists; arithmetic intrinsics map to bf16 fcmp/fadd/etc. Device math (xpu-plan C2, Tier-2) — port OpenCL-flavor bfloat16 atomics/ops to Vulkan Shader flavor (SPV_KHR_bfloat16 capability). Deferred: bfloat16 arithmetic is Tier-2 (in LLVM but not Shader-flavor-exposed); needs SPIR-V backend port. Cooperative matrix CM5c only exposes f16/f16→f32 config on current hardware; bfloat16 configs may surface on newer hardware and will need device support. The scalar primitive itself is **already registered** (`BFLOAT16_TYPE_ID`, `llvm::Type::getBFloatTy`); what is deferred is the Shader-flavor **device arithmetic** lowering, so for now treat as 'primitive present, device math pending'.
+- **Depends on:** none; primitive (registered; device-arithmetic lowering deferred)
 
 | Operator | Form | Signature | Notes |
 |---|---|---|---|

@@ -230,6 +230,8 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 
 ## Language reference
 
+This section is a feature tour. For a ground-up introduction that starts with the primitives, operators, and keywords and builds upward, see the [Cajeta Language Guide](docs/LanguageGuide.md).
+
 ### Allocation: `stack` and `heap`
 
 Every class instance is created with one of two explicit allocation prefixes:
@@ -296,7 +298,7 @@ Shape s1 = stack Square(5);   // 25 via vtable
 Shape s2 = heap  Square(7);   // 49 via vtable
 ```
 
-Diamond inheritance resolves via hash-based vtable lookup (`__cajeta_vtable_lookup`); `override` is required on overriding methods.
+Diamond inheritance resolves via hash-based vtable lookup (`__cajeta_vtable_lookup`); a subclass overrides a method by re-declaring it with the same signature (there is no `override` keyword).
 
 ### Templates and wildcards
 
@@ -447,13 +449,13 @@ public class TimingAspect {
 
 ### Concurrency (`async`, `scope`, `spawn`)
 
-Structured concurrency in the style of Rust's `tokio::scope` / Kotlin's `coroutineScope`. `async fn` declares a suspendable function; `scope { ... }` is a join-on-exit block; `spawn` launches a child fiber inside a scope. Today's runtime is a cooperative single-carrier scheduler — the topology is fork-ready; once a multi-carrier scheduler lands, the same code yields wall-clock parallelism without source changes. See [`Concurrency.md`](docs/stdlib/Concurrency.md).
+Structured concurrency in the style of Rust's `tokio::scope` / Kotlin's `coroutineScope`. `async fn` declares a suspendable function; `scope { ... }` is a join-on-exit block; `spawn` launches a child fiber inside a scope. The runtime schedules fibers over a work-stealing carrier pool — `min(cpus, 4)` OS-thread carriers by default, so spawned tasks run with real wall-clock parallelism (`CAJETA_CARRIERS=1` forces deterministic single-carrier execution for debugging). A fiber is pinned to the carrier that first ran it (cross-carrier resume isn't solved yet), so parallelism comes from fan-out across spawned tasks rather than migrating a single task. See [`Concurrency.md`](docs/stdlib/Concurrency.md).
 
 ```cajeta
 public static async int32 fetchAll(String[] urls) {
-    int32[] sizes = heap int32[urls.length];
+    int32[] sizes = heap int32[urls.count()];
     scope {
-        for (int32 i = 0; i < urls.length; i = i + 1) {
+        for (int32 i = 0; i < urls.count(); i = i + 1) {
             spawn fetchOne(urls[i], sizes, i);   // scope joins all spawned before continuing
         }
     }
@@ -526,24 +528,32 @@ See [`CompilerModes.md`](docs/CompilerModes.md) for the full table and per-mode 
 
 ## Primitive types
 
+All numeric primitives are **explicit-width** — there is no `int`/`long`/`float`/`double`.
+
 ```
 int8   int16   int32   int64   int128
 uint8  uint16  uint32  uint64  uint128
-float16  float32  float64  float128
-float4 / float6 / float8                  (storage-only, for ML kernels)
-boolean   char   byte (alias int8)
+float16  bfloat16  float32  float64  float128
+float4e2m1  float6e2m3  float6e3m2
+float8e4m3  float8e5m2  float8e4m3fnuz  float8e5m2fnuz   (storage-only, for ML kernels)
+boolean   char (a 32-bit Unicode codepoint)
 ```
 
-Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See [`Primitives.md`](docs/stdlib/Primitives.md) and [`FloatingPointModel.md`](docs/stdlib/FloatingPointModel.md).
+There is no `byte` type — the canonical byte buffer is `int8[]` (or `uint8[]`). `pointer` is a low-level raw address; `uchar` is a deprecated alias for `uint8`.
+
+Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/LanguageGuide.md), [`Primitives.md`](docs/stdlib/Primitives.md), and [`FloatingPointModel.md`](docs/stdlib/FloatingPointModel.md).
 
 ---
 
 ## Documentation map
 
-The deep-dive specs live in `docs/`. Start here:
+**New to the language? Start with the [Cajeta Language Guide](docs/LanguageGuide.md)** — a ground-up tour from primitives, operators, and keywords through the larger features, linking out to each deep-dive spec.
+
+The deep-dive specs live in `docs/`:
 
 | Topic                       | Doc |
 |-----------------------------|-----|
+| **Language guide (start here)** | [`LanguageGuide.md`](docs/LanguageGuide.md) |
 | Class model + allocation    | [`UnifiedClasses.md`](docs/stdlib/UnifiedClasses.md) |
 | System I/O + env + properties | [`lang/System.md`](docs/stdlib/lang/System.md) |
 | Memory + ownership          | [`MemoryModel.md`](docs/stdlib/MemoryModel.md) |

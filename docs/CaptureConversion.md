@@ -58,8 +58,8 @@ Staged so each session leaves the tree green and lands a self-contained slice.
 
 ### Phase 1 — Type machinery (no behavior change)
 
-- [ ] **1.1** Add `CajetaCapture` class extending `CajetaClass`. Carries `captureId`, `upperBound`, optional `lowerBound`. `isCapture()` predicate. Static factory with monotonic ID counter.
-- [ ] **1.2** Unit tests on the type itself: two captures with the same bound have distinct IDs; capture's bound is what was passed; `captureProject(capture#N)` returns the upper bound.
+- [x] **1.1** Add `CajetaCapture` class extending `CajetaClass`. Carries `captureId`, `upperBound`, optional `lowerBound`. `isCapture()` predicate. Static factory with monotonic ID counter. Shipped — `src/cajeta/type/CajetaCapture.{h,cpp}` with `forExtendsBound` / `forSuperBound` / `forUnbounded` factories and `nextCaptureId`.
+- [x] **1.2** Unit tests on the type itself: two captures with the same bound have distinct IDs; capture's bound is what was passed; `captureProject(capture#N)` returns the upper bound. Shipped (`71efe6d`) — pinned by `test/parser/CajetaCaptureTests.cpp`; `CajetaType::captureProject` is live and consumed by `DotExpression` / `MethodCallExpression`.
 
 ### Phase 2 — Local-variable capture creation
 
@@ -101,4 +101,18 @@ Staged so each session leaves the tree green and lands a self-contained slice.
 
 ## Status
 
-Phase 1 in progress.
+Phase 1 complete (type machinery + unit tests). Phase 2.0
+(g_wildcardInfo registration + `captureProject`) shipped. Phase 2.1
+(per-binding-site capture creation for locals) attempted and reverted —
+the straightforward instantiation-per-binding approach explodes in the
+stdlib chain walker (see the 2.1 note above); a lighter direction
+(side-table / lazy / pooled captures) is the open item. Phases 2.2–5
+remain blocked on a viable 2.1.
+
+Note: the user-facing wildcard feature itself (`?`, `? extends`,
+`? super`, PECS write-soundness, the wildcard lint) ships today on the
+older syntactic receiver-identity heuristic — pinned by
+`test/parser/TemplateWildcardP{1,2,5,6,7}Tests.cpp`,
+`WildcardLintTests.cpp`, and the PECS check from `aee10d4`. This
+document tracks only the migration of that heuristic to first-class
+capture types.

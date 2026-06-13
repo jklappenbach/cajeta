@@ -23,7 +23,7 @@ Single token. Appears in three positions:
 | Position | Meaning |
 |----------|---------|
 | `#expr` (value position) | Transfer ownership *from* expr. After this, expr is moved; static error to use it again. |
-| `#T` (parameter type) | Parameter accepts ownership. Caller must pass `#x` (or auto-promoted fresh `new`). |
+| `#T` (parameter type) | Parameter accepts ownership. Caller must pass `#x` (or an auto-promoted fresh `heap T(...)`). |
 | `#T` (return type) | Function transfers ownership to caller. |
 
 **Redundant `#` is a static error.** If a function's return type is `#T`, the callsite assignment `x = f()` already transfers; writing `x = #f()` is rejected. One transfer point per expression.
@@ -98,8 +98,8 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 
 ## Fields
 
-- **Fields may be owners or borrows.** A field's ownership status is resolved at drop time, not at declaration. The per-fiber drop chain is the registry: at parent drop, the synthesized auto-drop helper walks the chain — if the field's address has an outstanding chain entry, this scope owns it (cancel the entry, drop now); if not, the address is aliased elsewhere (no-op). See `docs/stdlib/FieldOwnership.md`.
-- **Field assignment.** `p.field = #x` and `p.field = heap T(...)` register the field as an owner (the heap-call's chain entry is the registration). `p.field = y` where `y` is a borrow stores the borrow; the field aliases `y`'s source and the chain-walk at drop sees it's owned elsewhere.
+- **Fields may be owners or borrows.** A field's ownership status is resolved at drop time, not at declaration. The **global live-set** is the registry: every `heap` allocation is recorded in it. At parent drop, the synthesized auto-drop wrapper calls each owned-shape field's drop dispatcher directly; the dispatcher does an atomic *claim* (remove-if-present) on the field's address. The first caller to claim an address frees it (and runs `~Class()`); a later caller for the same address — the owning local's own chain pop, or another field aliasing it — finds it already gone and no-ops. See `docs/stdlib/FieldOwnership.md`.
+- **Field assignment.** `p.field = #x` and `p.field = heap T(...)` make the field an owner — the fresh `heap` allocation is the live-set registration. `p.field = y` where `y` is a borrow stores the borrow; the field aliases `y`'s source, and the live-set claim at drop ensures whichever path reaches the shared address first frees it while the rest no-op.
 - **Field reads borrow.** `String n = p.field` makes `n` a borrow rooted at `p`.
 - **Use-after-free of an aliased field whose source has already dropped is the programmer's responsibility at v1.** A lifetime tracker (Phase 6+) will catch this statically.
 
@@ -136,7 +136,7 @@ The runtime mechanism — "drop chain" — is the same machinery the borrow chec
 Limitations (v1 / known gaps):
 
 - **Virtual dispatch on drop.** ✅ Done. The vtable header carries a dedicated `drop_fn` slot (index 3, byte offset 16; see `StructureMetadata::createVirtualTableType`). Heap class locals register the runtime helper `__cajeta_class_virtual_drop`, which loads the instance's vtable pointer and dispatches through `vtable.drop_fn` — so `Base b = heap Derived()` fires `~Derived()`, not `~Base()`. Pinned by `test/parser/VirtualDropDispatchTests.cpp`. Stack allocations stay on static dispatch (alloca size fixes the dynamic type); Task<T>-style custom layouts opt out via `CajetaClass::hasVtablePointerAtSlotZero()`.
-- **Automatic field drops via chain self-discrimination.** ✅ Done. `CajetaClass::getOrCreateDropFunction` synthesizes an auto-drop loop that calls `__cajeta_field_drop_if_owned(field_ptr)` for each owned-shape field. The helper walks the per-fiber drop chain; if an active entry matches the field's address, the helper cancels the entry and runs the drop function directly (so the chain doesn't double-fire). If no entry matches, the field is aliased elsewhere and the helper no-ops. Doctrine and walk-throughs in `docs/stdlib/FieldOwnership.md`. Pinned by `test/parser/AutoFieldDropTests.cpp`.
+- **Automatic field drops via live-set claim.** ✅ Done. `CajetaClass::getOrCreateDropFunction` → `emitDropBodyInline` synthesizes an auto-drop body that, in reverse declaration order, calls each owned-shape field's drop dispatcher directly: `__cajeta_free_array` (arrays), `__cajeta_iface_drop` (interface fields), `__cajeta_class_virtual_drop` (class-ref fields). Each dispatcher does an atomic claim against the global live-set (`__cajeta_live_set_claim`): the first caller to claim a field's address frees it and runs its destructor; any later caller for the same address (the owning local's chain pop, or another field aliasing it) no-ops. That claim is what keeps aliased stdlib fields — `ArrayStream.data` aliasing `ArrayList.data`, `Optional.value`, `Pair.first/second` — from double-freeing. Doctrine and walk-throughs in `docs/stdlib/FieldOwnership.md`. Pinned by `test/parser/AutoFieldDropTests.cpp`.
 - **Implicit destructor chaining — shipped 2026-05-21.** ✅ Done. C++ semantics. The compiler-emitted heap-drop wrapper runs: (1) this class's `~Class()` body and its own field auto-drops (in reverse declaration order), (2) every transitive ancestor's same body+own-field contribution in reverse-DFS deduped order, (3) `__cajeta_free(instance)`. Each ancestor runs exactly once — diamond-shared ancestors via the vbase ABI's single canonical sub-object are visited only on whichever branch sees them first. Chaining is automatic and non-suppressible. `super<Base>.~Base()` may be written explicitly for documentation, but it does not change codegen. The stack-drop wrapper has the same shape minus the free. Implementation: `CajetaClass::emitDropBodyInline` + `CajetaClass::collectDestructorChain`, both called from `getOrCreateDropFunction` and `getOrCreateStackDropFunction`. Pinned by `test/parser/DestructorChainTests.cpp` (9 tests, including multi-inheritance reverse-decl order and the diamond runs-once case).
 - **Block-scoped firing.** ✅ Done. Drop entries fire at the closing `}` of the declaring lexical block, not method exit. RAII patterns like back-to-back `LockGuard`s in inline blocks now work. Pinned by `test/parser/BlockScopedDropTests.cpp`.
 
@@ -183,8 +183,8 @@ try {
 All stdlib containers follow:
 
 - `void add(#T element)` — transfer in.
-- `T get(int i)` — returns borrow, lifetime tied to receiver.
-- `#T remove(int i)` — transfer out.
+- `T get(int32 i)` — returns borrow, lifetime tied to receiver.
+- `#T remove(int32 i)` — transfer out.
 - `for (T x : container)` — `x` is a borrow per iteration, bounded by the loop body.
 
 A borrowing-container type may exist separately, but the default `List<T>` etc. own their contents.
@@ -208,7 +208,7 @@ The borrow checker treats structs uniformly with primitive locals — the only d
 
 ## Views
 
-A `view` is a typed overlay onto a borrowed byte buffer (full spec: `Views.md`). Two construction forms:
+A `view` is a typed overlay onto a borrowed byte buffer — an `int8[]` (full spec: `Views.md`). Two construction forms:
 
 - **Borrow form** — `RpcHeader h = RpcHeader(buf);` borrows `buf`. `h` is a path-borrow rooted at `buf`; the borrow checker enforces `h` cannot outlive `buf`, the buffer cannot be mutated through any other alias while `h` is live, and `h` cannot be sent to another fiber.
 - **Owning form** — `RpcHeader h = RpcHeader(#buf);` transfers `buf`'s ownership into `h`. The view is now an owner; standard transfer rules apply (`#h`, drop-on-scope-exit drops the contained buffer).
@@ -226,43 +226,47 @@ Construction-time bounds and length-prefix validation are documented in `Views.m
 Linked list of cleanup entries. The chain head is **TLS + per-fiber**: `__cajeta_main_drop_top` (declared `__thread` in `cajeta_runtime.c`) is the main thread's head, and `__cajeta_drop_top_ptr()` returns the running fiber's `cajeta_fiber.drop_top` slot when one is active, falling back to the TLS main slot otherwise. Each `DropEntry` is alloca'd in the declaring function's frame, so a fiber's entries sit on the fiber's own stack and the per-fiber head pointer keeps the chains independent — safe under multi-carrier execution as long as each fiber's chain is touched by at most one carrier at a time.
 
 ```c
-struct DropEntry {
+struct cajeta_drop_entry {
     void* obj;
     void (*drop_fn)(void*);
-    struct DropEntry* prev;
-    bool active;
+    struct cajeta_drop_entry* prev;
+    char active;
 };
 
-static struct DropEntry* __cajeta_drop_top = NULL;
+// Main-thread head (per-fiber heads live in `cajeta_fiber.drop_top`):
+static __thread struct cajeta_drop_entry* __cajeta_main_drop_top = NULL;
+// __cajeta_drop_top_ptr() returns the running fiber's slot, or this one.
 ```
 
-Each `DropEntry` is stack-allocated (alloca) in its declaring frame.
+Each `cajeta_drop_entry` is stack-allocated (alloca) in its declaring frame.
 
 ### Codegen patterns
 
+Conceptual shape (the real push/pop go through runtime helpers
+`__cajeta_drop_push` and `__cajeta_drop_pop_run`, which read the active
+head via `__cajeta_drop_top_ptr()`):
+
 ```
-// Owner declared
-DropEntry e = { &obj, &drop_T, __cajeta_drop_top, true };
-__cajeta_drop_top = &e;
+// Owner declared — entry alloca'd in the frame, pushed onto the active head
+cajeta_drop_entry e = { &obj, &drop_T, *top, /*active=*/1 };
+*top = &e;                                  // __cajeta_drop_push
 
 // Move-out via `#`
-e.active = false;
+e.active = 0;
 
-// Normal scope exit (per-scope, LIFO over entries)
+// Normal scope exit (per-scope, LIFO over entries) — __cajeta_drop_pop_run
 for each entry e in this scope, in reverse declaration order:
-    if (e.active) drop_fn(e.obj);
-    __cajeta_drop_top = e.prev;
+    if (e.active && e.drop_fn) { drop_count++; e.drop_fn(e.obj); }
+    *top = e.prev;
 
 // try block entry
-exc_frame.drop_watermark = __cajeta_drop_top;
+exc_frame.drop_watermark = *top;
 setjmp(exc_frame.buf);
 
 // throw (runtime helper, before longjmp)
-while (__cajeta_drop_top != exc_top->drop_watermark) {
-    if (__cajeta_drop_top->active) {
-        __cajeta_drop_top->drop_fn(__cajeta_drop_top->obj);
-    }
-    __cajeta_drop_top = __cajeta_drop_top->prev;
+while (*top != exc_top->drop_watermark) {
+    if ((*top)->active) (*top)->drop_fn((*top)->obj);
+    *top = (*top)->prev;
 }
 longjmp(exc_top->buf, 1);
 ```
@@ -277,16 +281,29 @@ longjmp(exc_top->buf, 1);
 
 ---
 
-## Debug-mode runtime checks (build flag: `--debug-borrows`)
+## Runtime checks (debug aids)
 
-A separate build path verifies the static checker by adding generation tracking.
+The runtime ships two opt-in debug aids that harden the drop machinery and
+help catch use-after-free during testing. Both are off by default and toggled
+at runtime, so they do **not** change object layout or ABI:
 
-- Every heap object gains an 8-byte `generation` field.
-- Every borrow snapshots the source's generation at creation.
-- Every borrow access compares snapshot to current; mismatch aborts with diagnostic.
-- Owner drop bumps the generation before freeing.
+- **Poison-on-free** (`__cajeta_set_poison_free(1)`). On every free, the
+  reclaimed block is overwritten with `0xDB` up to its allocator-tracked
+  chunk size before `free()`. A subsequent read through a dangling field
+  sees the poison pattern instead of stale-but-plausible data. Implemented
+  in `__cajeta_poison_buffer`.
+- **Drop-chain validation** (`__cajeta_set_drop_chain_validate(1)`).
+  `__cajeta_drop_pop_run` asserts the popped entry is the chain head and has
+  a sane `active` flag, catching out-of-order pops, double-pops, and bit-rot
+  (`CAJETA_ERROR_DROP_CHAIN_*` corruption traps).
 
-Cost: +8 bytes per heap object, ~one load + compare per borrow access. **Debug builds are not ABI-compatible with release builds** — accepted trade for tool simplicity.
+Double-free across aliased fields is prevented unconditionally (not just in
+debug) by the global live-set claim described under § Runtime.
+
+> **Planned (not yet built):** a generation-counter borrow checker — every
+> heap object carries a generation word, borrows snapshot it at creation, and
+> each borrow access compares snapshot to current. This is the `R1` proposal
+> in `docs/stdlib/BorrowSoundness.md`, not shipped today.
 
 ---
 
@@ -301,7 +318,7 @@ Cost: +8 bytes per heap object, ~one load + compare per borrow access. **Debug b
 | Drop-order error | LIFO scope analysis |
 | Borrow-of-frame-local returned | Signature conformance check |
 | Anonymous-owner chained borrow | Expression-level lifetime check |
-| Double-free of aliased field | Runtime chain self-discrimination (see `FieldOwnership.md`) |
+| Double-free of aliased field | Runtime live-set claim (see `FieldOwnership.md`) |
 | Use-after-free of aliased field whose source dropped first | Programmer responsibility at v1 (Phase 6+ lifetime tracker) |
 
 ---

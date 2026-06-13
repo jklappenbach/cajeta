@@ -1,5 +1,17 @@
 # CajetaRender — Graphics Pipelines
 
+> **Status: forward design spec — not yet implemented.** This is the detailed
+> design for `cajeta.render`; none of the `cajeta.render.*` packages, the
+> `@vertex`/`@fragment`/`@mesh`/`@ray_*` stage attributes, or the pipeline/scene/
+> material APIs below exist in the codebase yet. The graphics layer is at bring-up:
+> the gating proof (the in-tree LLVM SPIR-V backend can emit valid Vertex/Fragment
+> modules) is done — see [`CajetaGFX.md`](CajetaGFX.md) for the current status and
+> the [`cajeta-gfx-plan.md`](../../../plans/gpu/gfx/cajeta-gfx-plan.md) roadmap (G1–G6,
+> all forward work). The code blocks here use illustrative pseudo-syntax (`fn`, `let`,
+> `var`, lowercase `@vertex`) and are design intent, not the shipped surface; the
+> implemented compute surface it builds on is described in
+> [`CajetaXPU.md`](../xpu/CajetaXPU.md) and [`CajetaXPU-Matrix.md`](../xpu/CajetaXPU-Matrix.md).
+
 This document specifies `cajeta.render`, Cajeta's graphics layer:
 rasterization, ray tracing, mesh shading, and the scene-graph + asset
 shape that feeds them. The library sits on top of

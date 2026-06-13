@@ -14,6 +14,22 @@ abuse, no nested-table escape sequences). The output is a static
 HTML site themed for readability, with client-side search and
 cross-reference linking.
 
+> **Status (shipped vs. design).** A working generator ships: the
+> `cajeta doc` subcommand (`src/cajeta/cli/DocCommand.cpp`, gated on
+> the `-DCAJETA_BUILD_CAJETADOC=ON` build option) delegates to the
+> `cajetadoc` tool under `tools/cajetadoc/`, which parses `/** */`
+> doc comments, renders Markdown bodies, resolves cross-references,
+> and writes a static HTML site. What's **real today:** the `/** */`
+> comment form and the `//` / `/* */` distinction; CommonMark bodies;
+> the core JavaDoc tags (`@Param`, `@Return`, `@Throws`/`@Exception`,
+> `@See`, `@Since`, `@Author`, `@Version`, `@SerialField`); and the
+> CLI flags listed in [`cajeta doc` processor → CLI](#cajeta-doc-processor).
+> Everything else here — the full structured cajeta-specific tag
+> treatments (`@FiberSafe`/`@Complexity`/`@Owns`/…), `.car`-archive
+> input, themes, client-side search, `--serve`/`--watch`,
+> `--check-docs`, versioned output — is the **design target**, not yet
+> all wired up. Sections below are spec unless noted.
+
 ## Table of contents
 
 1. [Comment syntax](#comment-syntax)
@@ -131,8 +147,8 @@ declaration:
 
 ```
 [String]                  → cajeta.lang.String
-[String.length]           → cajeta.lang.String.length (static or single overload)
-[String#length]           → same; the # form is JavaDoc-familiar
+[String.count]            → cajeta.lang.String.count (static or single overload)
+[String#count]            → same; the # form is JavaDoc-familiar
 [cajeta.hash.Hash]        → fully qualified
 [Hash.identity(pointer)]  → specific overload by parameter type list
 ```
@@ -192,7 +208,7 @@ all `@` tags in a contiguous trailing block:
  * @Since 1.0
  * @See decode
  */
-public static String encodeHex(byte[] data, HexCase case = HexCase.LOWER);
+public static String encodeHex(int8[] data, HexCase case = HexCase.LOWER);
 ```
 
 ---
@@ -275,7 +291,7 @@ runtime/src/cajeta/hash/
  * Hash bytes with the XXH3-64 algorithm (matches upstream xxhash):
  *
  * ```cajeta
- * byte[] data = ...;
+ * int8[] data = ...;
  * int64 h = XXHash3.hash(data);
  * ```
  *
@@ -397,36 +413,34 @@ Each class page contains:
 
 ### CLI
 
+**Shipped today** (`tools/cajetadoc/src/Cli.cpp`). The source root is a
+positional argument; `cajeta doc <source-root> …` forwards verbatim to the
+`cajetadoc <source-root> …` form:
+
 ```
-cajeta doc [options]
+cajeta doc <source-root> [options]
 
 Options:
-  --source-root=<path>     Default: src/main/cajeta
-  --resource-root=<path>   Default: src/main/resources
-  --archive=<path>         Generate from a .car archive instead of source
-  --output=<path>          Default: build/docs
-  --project-name=<name>    Default: from cajeta.toml [package].name
-  --project-version=<ver>  Default: from cajeta.toml [package].version
-  --theme=<name>           Default: cajeta-default. Built-in: cajeta-default,
-                           cajeta-dark, javadoc-classic, rustdoc-like.
-  --custom-css=<file>      Extra CSS to merge into the theme.
-  --custom-logo=<file>     Project logo (rendered top-left).
-  --base-url=<url>         For absolute links in generated HTML.
+  -o, --output <dir>       Output directory (default: build/docs).
+  --emit-model-json        Print the declaration model as JSON and exit.
   --include-private        Include private declarations (default: off).
-  --include-internal       Include internal declarations (default: off).
-  --include-deprecated     Include @Deprecated declarations (default: on, with badge).
-  --include-tests          Include src/test docs (default: off).
-  --member-order=alpha|source  Method order within a class. Default: alpha.
-  --source-link=<url>      Each declaration links to this URL with
-                           {file} and {line} placeholders (e.g. GitHub blob URL).
-                           Default: in-tree source viewer.
-  --no-search              Skip search-index generation.
-  --no-source              Skip the source viewer.
-  --serve                  After build, start a local HTTP server at the
-                           generated docs (default port 8080).
-  --watch                  Rebuild on source change. Implies --serve.
-  -v, --verbose            Verbose progress.
+  --include-internal       Include package-private/internal declarations (default: off).
+  --exclude-dir <name>     Skip a directory by name (repeatable).
+  --project-title <s>      Header title (default: Cajeta).
+  --project-version <s>    Header version, shown as v<s>.
+  --date-published <s>     Header publish date.
+  --project-license <s>    Header license type.
+  --project-icon <url>     Header icon (default: built-in placeholder).
+  --render-md              Debug helper: render Markdown from stdin to HTML.
 ```
+
+**Planned (design target, not yet implemented):** the remaining flags below
+are the intended fuller CLI — `--archive` (.car input), `--theme` /
+`--custom-css` / `--custom-logo` / `--base-url`, `--include-deprecated`,
+`--include-tests`, `--member-order=alpha|source`, `--source-link`,
+`--no-search`, `--no-source`, `--serve`, `--watch`, and `-v/--verbose`.
+Source-root / project-name / version are read from CLI args today; reading
+them from `cajeta.toml` defaults is also planned.
 
 ### Search
 

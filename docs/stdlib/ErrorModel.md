@@ -21,20 +21,30 @@
 All four roots live in `package cajeta.error;` (the implicitly-loaded stdlib prelude registers them there). User-defined exceptions should extend one of these types; the package convention keeps exception hierarchies discoverable and encourages reuse over re-rolling.
 
 ```
-Throwable                           (abstract root, carries `message`)
+Throwable                           (root, carries `message`)
 └── Exception                       (adds `cause` for chain-of-causality)
     ├── UnrecoverableException      (the alarm — terminates the process)
-    │   ├── AssertionError
-    │   ├── OutOfMemoryError
-    │   ├── StackOverflowError
+    │   ├── AssertionError          (illustrative — not yet declared)
+    │   ├── OutOfMemoryError        (illustrative — not yet declared)
     │   └── ...
     └── RecoverableException        (caller may handle)
-        ├── IOException
+        ├── IOException             (illustrative — not yet declared)
         │   ├── FileNotFoundException
         │   └── TimeoutException
         ├── ParseException
         └── ...
 ```
+
+> **What actually ships today.** Only the four roots — `Throwable`,
+> `Exception`, `RecoverableException`, `UnrecoverableException` — are declared
+> in `cajeta.error`. The leaf types above (`AssertionError`, `IOException`,
+> `FileNotFoundException`, `TimeoutException`, `ParseException`, …) are
+> *illustrative* of how user and stdlib code extends the hierarchy; they are
+> not yet in the prelude (tracked in *Known gaps* below). Domain exceptions
+> that **do** exist live in their owning packages — e.g. `cajeta.io.file.IoException`,
+> `cajeta.net.*` (`ConnectionRefusedException`, `TimedOutException`, …),
+> `cajeta.codec.Base64Exception`, `cajeta.time.DateTimeException` — and each
+> extends one of the four roots.
 
 The split between `Throwable` and `Exception` is deliberate: `Throwable` is the root identity for "anything throwable" (catch-all type), while `Exception` is where the cause chain lives. Any `Exception` (and therefore any Recoverable or Unrecoverable) can record what caused it; bare `Throwable`s without a cause field are theoretically possible but in practice every thrown thing goes through `Exception` or a subclass.
 
@@ -79,10 +89,10 @@ public Response getOrLog(Url u) {
 }
 ```
 
-The warning is suppressible with an annotation:
+The warning is suppressible with the lint annotation, using the rule ID `uncaught-throws`:
 
 ```cajeta
-@SuppressUncaughtThrow
+@SuppressLint("uncaught-throws")
 public Response getOrLog(Url u) {
     return fetch(u);  // silent: caller accepts that these propagate
 }
@@ -110,7 +120,17 @@ public int32 robustRead() {
 }
 ```
 
-No `finally` keyword — the drop chain already handles "run this cleanup on any exit path." If you need explicit cleanup, declare the resource as an owned local; its drop fires on every exit (return, throw, fall-through).
+`finally` is supported. The grammar accepts `try block (catchClause+ finallyBlock? | finallyBlock)` — i.e. a `try` with catch arms, an optional trailing `finally`, or a bare `try`/`finally` with no catch. The `finally` block runs on **every** exit edge from the `try`/`catch` region: normal fall-through, an explicit `return`/`break`/`continue` escaping the body, and exception unwind — including a throw out of a `catch` arm, which runs the `finally` before propagating.
+
+```cajeta
+try {
+    return readPort(8080);
+} finally {
+    log.info("readPort attempt finished");   // runs on return AND on throw
+}
+```
+
+That said, prefer owned locals for resource cleanup where you can: an owned local's drop fires on every exit path (return, throw, fall-through) via the drop chain, with no explicit `finally` needed. Reach for `finally` when the cleanup isn't tied to a single owned value (logging, flag reset, releasing a non-owning handle).
 
 A bare `catch` (no type) catches everything:
 
@@ -141,21 +161,24 @@ Unrecoverable exceptions are the alarm. The runtime wraps `main()` (and each spa
 - If a fiber's body throws `UnrecoverableException`: log + `abort()` the entire process. Per-fiber recovery from unrecoverables isn't safe — the runtime invariant has been violated, and propagating it through `await` would let the corruption hide.
 - If a fiber's body throws `RecoverableException`: store the exception on the `Task<T>`'s exception slot, signal done. The awaiter re-raises into its own frame when it does `await task`.
 
-Implementation: every class vtable carries a `parent_vtable` pointer (NULL at the root). A compiler-emitted global `__cajeta_unrecoverable_vtable_marker` points at `UnrecoverableException`'s vtable. The runtime helper `__cajeta_is_unrecoverable(Throwable*)` walks the chain from the thrown instance's vtable upward, matching against the marker — returns 1 for any descendant of `UnrecoverableException`, 0 otherwise.
+Implementation: every class vtable carries a `parent_vtable` pointer at a fixed offset (`CAJETA_VTABLE_PARENT_OFFSET`, NULL at the root). Codegen (`Compiler::emitUnrecoverableMarker`) emits a module global constructor that calls the runtime setter `__cajeta_set_unrecoverable_vtable(UnrecoverableException's vtable)` once at startup, stashing it in the runtime's `g_unrecoverable_vtable` static. The runtime helper `__cajeta_is_unrecoverable(void* throwable)` reads the instance's vtable (slot 0) and walks the `parent_vtable` chain upward, matching against `g_unrecoverable_vtable` — returns 1 for any descendant of `UnrecoverableException`, 0 otherwise (and 0 defensively for legacy bare-integer throws, whose "pointer" falls below the zero-page boundary). The global-ctor + plain-call scheme resolves identically across ELF/MachO/COFF and in both JIT and AOT.
 
 User code can absolutely `catch (UnrecoverableException e)` if it really wants to — the language doesn't forbid it. The convention is "don't, unless you have an extremely good reason" (a top-level supervisor in a long-running daemon may legitimately want to log-and-keep-going for some kinds of unrecoverable). The system catch is the safety net for everyone who doesn't.
 
 ## Stack traces
 
-Stack-trace capture is **opt-out for `UnrecoverableException`** (default: captured at construction) and **opt-in for `RecoverableException`** (default: not captured).
+Stack-trace capture is a **single compiler-wide flag**, `--stack-trace-capture=on|off`, **default `on`**. When enabled, every throw site walks the native call stack via `backtrace(3)` (glibc/macOS) and records the frames on the thrown instance, regardless of whether it's recoverable or unrecoverable. There is no per-exception or per-construction opt-in/opt-out; the flag is read once and applies to all throws (the runtime mirrors it through `__cajeta_set_stack_trace_capture` / `__cajeta_get_stack_trace_capture`).
 
-Rationale: unrecoverables are rare and worth debugging — paying the stack-walk cost is fine. Recoverables can be thrown in hot loops (parser fast-fail, retry idioms) where the per-throw cost matters. Devs who want the trace on a specific recoverable can request it at construction:
-
-```cajeta
-throw heap IOException("disk full", captureTrace: true);
+```
+cajeta --stack-trace-capture=off  program.cajeta   # disable capture (hot-loop throws)
 ```
 
-If no trace was captured, the printed exception just shows type + message + cause chain.
+Two practical caveats from the implementation:
+
+- **Capture is skipped inside a fiber.** `backtrace(3)` walks the OS-thread stack; a parked/resumed fiber runs on a swapped `ucontext` stack where the native walk isn't meaningful, so throws raised on a fiber don't carry a native trace today.
+- The debug build presets turn capture **off** by default (it's `true` only in the default flag set), since an attached debugger supplies the stack itself.
+
+If no trace was captured (flag off, or thrown on a fiber), the printed exception shows type + message + cause chain only.
 
 ## Async / fiber integration
 
@@ -186,17 +209,17 @@ The `throws` clause on the async method documents what the awaiter might see; th
 
 When a scope joins child tasks:
 
-1. Walk every registered child; await each.
-2. If any child's task carried an exception in its slot, record the first one found as the **trigger**.
-3. Cancel every remaining still-running child (R5-C). They will surface `CancellationException` at their next await.
-4. Wait for all to finish unwinding.
-5. Re-raise the **trigger's** original exception to the scope's containing frame — unwrapped, unwrapped, no `CancellationException` wrapper.
+1. Walk every registered child; await each (`__cajeta_scope_exit` / `__cajeta_scope_exit_to`).
+2. The moment a child's exception slot is non-null, record it as the **trigger**.
+3. Cancel every remaining still-running sibling: `__cajeta_fiber_cancel(fiber, trigger)` stores the **trigger itself** in each sibling's `cancel_with` marker. At the sibling's next `await` park-resume, `__cajeta_task_wait` re-raises that marker.
+4. Keep waiting on the rest so the scope still joins everything before unwinding.
+5. Re-raise the **trigger's** original exception to the scope's containing frame — unwrapped, no wrapper.
 
-The fiber model removes the thread-boundary that justified wrapping in older designs (Java's `ExecutionException`, etc.) — the trigger flows through await/scope the same way a thrown exception flows through any function call. Callers handle `catch (IOException e)` directly. Cancellation in siblings still uses `CancellationException`, but it's a local concern of the sibling's own handlers (which can use `e.getCause()` to see what triggered the cancel); it doesn't escape the scope.
+There is **no `CancellationException` type**. The fiber model removes the thread-boundary that justified wrapping in older designs (Java's `ExecutionException`, etc.) — the trigger flows through await/scope the same way a thrown exception flows through any function call, and a cancelled sibling re-raises *that same trigger Throwable*, not a synthetic cancellation marker. Callers handle `catch (IOException e)` directly. (If a sibling needs to know what triggered its cancel, the thrown trigger *is* that information; the `cause` field on `Exception` is available for chaining if a handler rewraps.)
 
 **No `AggregateException`.** Multiple-children-failing-simultaneously is rare and the caller usually wants one error to handle. If a use case ever demands collecting every child's outcome, a stdlib `scope.collectAll() -> List<Result<T>>` helper can be added without changing core semantics — it would build on top of the per-task exception slot the trampoline already populates.
 
-**TLS hardening (deferred).** The setjmp/longjmp exception chain (`__cajeta_exc_top`) is a single global, same as the drop-chain head — a known gap under the fiber model. Correct under today's single-carrier model (only one fiber executes at a time), but multi-carrier parallelism requires both to be promoted to TLS. Cheap fix when we go multi-carrier.
+**TLS hardening (shipped).** The setjmp/longjmp exception chain head (`__cajeta_exc_top`) and the drop-chain head were promoted off their single global slots: `cajeta_fiber` now carries per-fiber `exc_top` / `drop_top` fields, with `__thread`-qualified `__cajeta_main_exc_top` / `__cajeta_main_drop_top` for the main OS thread, selected through `__cajeta_exc_top_ptr()` / `__cajeta_drop_top_ptr()` (the same pattern `scope_top` uses). This was necessary even under today's single-carrier cooperative model, because the carrier runs on a separate OS thread from `main`, so the two could race on a shared global. See `AsyncStatus.md`.
 
 ### Drop chain on the throw path
 
@@ -280,7 +303,7 @@ public Response fetchOrAuth(Url u) throws IOException, AuthException {
     }
     return r;
     // TimeoutException is uncaught but undeclared — compiler warning.
-    // Suppress with @SuppressUncaughtThrow, or add it to the throws clause,
+    // Suppress with @SuppressLint("uncaught-throws"), or add it to the throws clause,
     // or wrap with try/catch.
 }
 ```
@@ -310,7 +333,7 @@ public int32 vtableLookup(VTable v, int64 hash) {
 public async int32 aggregateScores(List<Url> urls) throws IOException {
     int32 total = 0;
     scope {
-        for (Url u in urls) {
+        for (Url u : urls) {
             total = total + await spawn fetchScore(u);   // fetchScore throws IOException
         }
     }
@@ -323,7 +346,7 @@ If any spawned `fetchScore` throws, the `await` re-raises into the surrounding f
 ### Example 5: suppressing the warning
 
 ```cajeta
-@SuppressUncaughtThrow
+@SuppressLint("uncaught-throws")
 public void crashOnPurpose() {
     riskyOp();   // declared throws WeirdException; we want it to propagate
 }
@@ -364,19 +387,18 @@ public void daemonLoop() {
 - **`Result<T, E>` stdlib pattern.** Optional value-typed error returns for hot paths where exception unwind cost matters. Just a sealed sum + helpers, no compiler magic. Add when measurements demand.
 - **`@Throws(infer)`** — compiler-inferred throws lists. Possible future ergonomic; today the dev writes the list.
 - **`when` guards in catch arms** (`catch (IOException e) when (e.code == EBUSY)`). Add if patterns demand it.
-- **Conditional `@SuppressUncaughtThrow(IOException, TimeoutException)`** — suppress only specific types. Today the annotation is all-or-nothing.
+- **Type-scoped suppression** — suppress the `uncaught-throws` warning for only specific exception types, rather than the whole method. Today `@SuppressLint("uncaught-throws")` is all-or-nothing for the annotated declaration.
 
 ## Known gaps (v1 spec → implementation)
 
-This document is the spec. Implementation lands incrementally:
+This document is the spec. The v1 surface has shipped; status against the original punch list:
 
-- [ ] Stdlib: declare `Throwable`, `UnrecoverableException`, `RecoverableException` + a small set of built-in subtypes (`AssertionError`, `OutOfMemoryError`, `IOException`, `TimeoutException`, `CancellationException`).
-- [ ] Parser: `throws` clause on method declarations (`methodDecl : ... THROWS qualifiedNameList`).
-- [ ] Type-checker: parse and store the throws list on `Method`.
-- [ ] Lint pass: for each call site, walk the called method's throws clause; emit warning if the type isn't caught by an enclosing try, declared on the enclosing method's throws clause, or suppressed via `@SuppressUncaughtThrow`.
-- [ ] Runtime: extend the existing setjmp/longjmp infrastructure to carry a `Throwable*` rather than a bare `int64`. (Already mostly there.)
-- [ ] Codegen: stack-trace capture path for `UnrecoverableException` (default) and opt-in for `RecoverableException`.
-- [ ] System default catch: wrap `main()` and each fiber trampoline in a try that distinguishes recoverable from unrecoverable.
-- [ ] Async integration: extend `CajetaTask` layout with an exception slot; trampoline stores recoverable in the slot, propagates unrecoverable; `await` re-raises.
-- [ ] R5-C (cancellation): `CancellationException` subtype + per-task cancel flag; await checks on resume.
-- [ ] R5-D (scope exception escalation): scope_exit on join inspects each child's exception slot; first thrower wins; cancel siblings; re-raise.
+- [x] Stdlib: declare the four roots `Throwable` / `Exception` / `RecoverableException` / `UnrecoverableException` in `cajeta.error`. **Built-in leaf subtypes** (`AssertionError`, `OutOfMemoryError`, a unified `IOException`/`TimeoutException`/`CancellationException` set) are **not yet declared** — domain exceptions live in their owning packages instead (`cajeta.io.file.IoException`, `cajeta.net.*`, …). A common prelude set remains open.
+- [x] Parser: `throws` clause on method declarations; stored on `Method` (`throwsList`, advisory only).
+- [x] Type-checker / lint: the `uncaught-throws` lint walks the called method's throws clause and an enclosing-try stack, suppressing the warning when a catch arm covers the type (supertype-aware) or it's declared/suppressed. Suppression is `@SuppressLint("id")` (generalized from `@SuppressUncaughtThrow`).
+- [x] Runtime: exception path carries a `Throwable*` over a `void*` carrier (migrated off the bare `int64`).
+- [x] Codegen: stack-trace capture via the global `--stack-trace-capture` flag (default on, all throws) — *not* the per-kind opt-in/opt-out originally sketched here.
+- [x] System default catch: wraps `main()` and each fiber trampoline; recoverable vs unrecoverable distinguished by the `__cajeta_is_unrecoverable` vtable walk.
+- [x] Async integration: `CajetaTask` carries an exception slot; the trampoline stores a recoverable throw in it and `await` re-raises into the awaiter; an unrecoverable aborts.
+- [x] R5-C (cancellation): per-fiber `cancel_with` marker (the trigger Throwable), checked on await resume. **No** `CancellationException` type — the trigger itself is re-raised.
+- [x] R5-D (scope exception escalation): `scope_exit` inspects each child's exception slot; first thrower wins; siblings are cancelled with the trigger; the trigger re-raises into the containing frame.

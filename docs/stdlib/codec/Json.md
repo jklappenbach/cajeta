@@ -3,14 +3,21 @@
 JSON value model, parser, and writer for the cajeta stdlib. Single
 source of truth for what "JSON support" means in Cajeta — consumed by
 `@ToString(format=TO_STRING_JSON)` (Annotations.md § @ToString) and
-direct `Json.parse<T>(bytes)` / `Json.toBytes(value)` calls in user
-code. Mapping between JSON keys and class fields is driven by per-
+direct `Json.parse<T>(bytes, len)` / `Json.toBytes<T>(value)` calls in
+user code. Mapping between JSON keys and class fields is driven by per-
 field annotations (`@JsonProperty`, `@JsonIgnore`, `@JsonRequired`,
 `@JsonNamingStrategy` at class level); no class-level annotation is
 required to make a type JSON-compatible.
 
-Status: **designed, implementation pending** (Features.md S-1101 ✅,
-S-1102 ⏳).
+Status: **shipped (v1 scalar baseline)**. The pull tokenizer
+(`JsonReader`), pull writer (`JsonWriter`), value tree (`JsonValue` /
+`JsonObject` / `JsonArray`), the `Json` entry points, and the Tier-1
+compile-time synthesizer all exist under
+[`runtime/src/cajeta/codec/json/`](../../../runtime/src/cajeta/codec/json/)
+and are covered by tests (`test/parser/Json*Tests.cpp`). The forward
+items called out below (SIMD scan, options structs, a `JsonNumber`
+wrapper, escape *decoding*, relaxed mode) are **planned**, not built —
+each is flagged inline. Features.md S-1101 / S-1102.
 
 ## Goals, in priority order
 
@@ -57,7 +64,7 @@ S-1102 ⏳).
          │ compile-time codegen per T            │ compile-time codegen per T
          │                                       ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Tier 1 — Json.parse<T>(bytes) / Json.toBytes(value)        │  fastest, zero-config
+│  Tier 1 — Json.parse<T>(bytes, len) / Json.toBytes<T>(value)│  fastest, zero-config
 │  Method-level templates; the compiler walks T's declared    │
 │  fields and emits per-field reader / writer code that talks │
 │  directly to JsonReader / JsonWriter. No JsonValue tree.    │
@@ -66,7 +73,7 @@ S-1102 ⏳).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-A user writing a server hot-path calls `Json.parse<T>(bytes)` —
+A user writing a server hot-path calls `Json.parse<T>(bytes, len)` —
 nothing else required; the compiler does the work. A user writing a
 SAX-style streaming consumer drops to Tier 2. A user writing ad-hoc
 config inspection picks Tier 3 and pays for the convenience.
@@ -75,97 +82,116 @@ config inspection picks Tier 3 and pays for the convenience.
 
 ## Value model — `JsonValue`
 
+`JsonValue` is a flat tagged union: an `int32 kind` discriminator plus
+one payload field per kind. The kind tags are `static final int32`
+constants on `JsonValue` (there is no separate `JsonKind` enum — keeping
+the discriminator a plain `int32` avoids a per-check enum allocation).
+
 ```cajeta
 package cajeta.codec.json;
 
-public enum JsonKind {
-    NULL, BOOLEAN, NUMBER, STRING, ARRAY, OBJECT
-}
-
 public class JsonValue {
-    public JsonKind kind();
+    // Kind discriminator constants (compare against `v.kind()`).
+    public static final int32 NULL    = 0;
+    public static final int32 BOOLEAN = 1;
+    public static final int32 NUMBER  = 2;   // int64 payload (v1 — no float in the tree)
+    public static final int32 STRING  = 3;   // borrowed int8[] slice + length
+    public static final int32 ARRAY   = 4;
+    public static final int32 OBJECT  = 5;
 
-    // Type-narrowed accessors. Each throws JsonTypeException if kind
-    // doesn't match — the catch-or-let-it-fly choice belongs to the
-    // user, not the library. No silent coercion.
-    public boolean asBoolean();      // BOOLEAN
-    public JsonNumber asNumber();    // NUMBER
-    public String asString();        // STRING
-    public JsonArray asArray();      // ARRAY
-    public JsonObject asObject();    // OBJECT
-    public boolean isNull();         // NULL test (no exception)
+    public JsonValue();                  // empty, kind == NULL
+    public int32 kind();
+    public boolean isNull();             // kind == NULL (no exception)
 
-    // Convenience builders. Each is the same as `heap JsonValue(...)`.
-    public static #JsonValue ofNull();
-    public static #JsonValue ofBoolean(boolean v);
-    public static #JsonValue ofNumber(int64 v);
-    public static #JsonValue ofNumber(float64 v);
-    public static #JsonValue ofString(#String v);
-    public static #JsonValue ofArray(#JsonArray v);
-    public static #JsonValue ofObject(#JsonObject v);
+    // Payload accessors. These do NOT validate the kind — gate on
+    // kind() first (or use JsonObject's typed Optional getters). A
+    // mismatched read returns the zero/null of that payload field.
+    public boolean   asBoolean();        // BOOLEAN
+    public int64     asInt64();          // NUMBER
+    public int32     asInt32();          // NUMBER, narrowed
+    public int8[]    asBytes();          // STRING — borrowed slice (escapes verbatim)
+    public int32     asBytesLength();    // STRING — slice length
+    public #String   asString();         // STRING → materialized String, or null
+    public JsonArray  asArray();         // ARRAY
+    public JsonObject asObject();         // OBJECT
+
+    // Builders mutate `this` and return it for chaining. The #-typed
+    // overloads (setArray/setObject/setStringOwned) take ownership.
+    public JsonValue setNull();
+    public JsonValue setBoolean(boolean v);
+    public JsonValue setNumber(int64 v);
+    public JsonValue setString(int8[] bytes, int32 len);   // borrow
+    public JsonValue setString(String s);                  // borrow
+    public JsonValue setStringOwned(#int8[] bytes, int32 len);
+    public JsonValue setArray(#JsonArray a);
+    public JsonValue setObject(#JsonObject o);
 }
 ```
 
-### Why an enum-tagged ADT and not class inheritance
+### Why a flat int32-tagged union and not class inheritance
 
 Class inheritance (`JsonNull extends JsonValue`, `JsonString extends
 JsonValue`, etc.) would require a vtable dispatch on every kind-check
-and a per-value heap allocation. The tagged-enum form lets the
-compiler emit a `switch(kind)` for the hot paths and keeps the value
-layout flat — `JsonValue` is the same fixed-size class regardless of
-contents (with a `union`-style payload field).
+and a per-value heap allocation. The flat-tag form lets the compiler
+emit an `if (v.kind() == ...)` ladder for the hot paths and keeps the
+layout fixed-size (~48 bytes) regardless of contents. That waste is the
+price of the convenience tier; Tiers 1 and 2 bypass `JsonValue`
+entirely.
 
-### `JsonNumber` — lazy parse
+### Numbers in the tree
 
-```cajeta
-public class JsonNumber {
-    // The unparsed token bytes (borrowed into the input buffer for
-    // reader-produced values; owned String for builder-produced).
-    public boolean isInteger();          // no '.' / 'e' / 'E' in bytes
-    public boolean fitsInt32();          // checks magnitude after parse
-    public boolean fitsInt64();
-    public int32 asInt32();              // parses, throws on overflow
-    public int64 asInt64();
-    public float64 asFloat64();
-    public String raw();                 // the original byte slice as text
-}
-```
-
-Numbers are kept as raw byte slices until the caller asks for a
-concrete numeric type. A reader that only walks the structure of a
-document (e.g., to extract one specific field) pays *zero* number-
-parsing cost for the values it doesn't touch.
+There is **no `JsonNumber` wrapper class** in v1. A `NUMBER` `JsonValue`
+stores an `int64` (`asInt64()` / `asInt32()`); the tree does not yet
+carry floats. When you need lazy / float / overflow-checked number
+handling, drop to the Tier-2 reader, whose `currentNumberAsInt64()`,
+`currentNumberAsInt32()`, and `currentNumberAsFloat64()` parse the token
+span on demand (a span the reader records without parsing until asked).
+A lazy `JsonNumber` value-tree wrapper is a planned addition.
 
 ### `JsonObject` and `JsonArray`
 
 ```cajeta
-public class JsonArray extends Stream<JsonValue> {
-    public int64 size();
-    public JsonValue get(int64 i);             // throws on out-of-bounds
-    public Optional<JsonValue> getOpt(int64 i);// null-tolerant
-    public void add(#JsonValue v);             // mutating builder
-    public #Optional<JsonValue> next();        // Stream protocol
+public class JsonArray {
+    public JsonArray();
+    public int32 count();                  // element count
+    public JsonValue get(int32 i);         // no bounds-Optional yet
+    public void add(#JsonValue v);         // takes ownership
 }
 
-public class JsonObject extends Stream<JsonEntry> {
-    public int64 size();
-    public JsonValue get(String key);          // throws if absent
-    public Optional<JsonValue> getOpt(String key);
+public class JsonObject {
+    public JsonObject();
+    public int32 count();
     public boolean containsKey(String key);
-    public void put(String key, #JsonValue v); // mutating builder
-    public #Optional<JsonEntry> next();        // Stream<JsonEntry>
-}
+    public JsonValue get(String key);                // null if absent
+    public JsonValue get(int8[] key, int32 keyLen);  // hot-path byte form
+    public void put(#int8[] key, int32 keyLen, #JsonValue v);  // takes ownership; no dedup
+    public #ArrayList<String> keys();                // insertion order
 
-public class JsonEntry {
-    public String key();
-    public JsonValue value();
+    // Positional accessors (insertion order) — used by the writer.
+    public int8[]    keyAt(int32 i);
+    public int32     keyLenAt(int32 i);
+    public JsonValue valueAt(int32 i);
+
+    // Typed convenience getters: Optional.empty() when the key is
+    // absent OR the value's kind doesn't match (no silent coercion).
+    public Optional<String>     getString(String key);
+    public Optional<int32>      getInt(String key);
+    public Optional<int64>      getLong(String key);
+    public Optional<boolean>    getBoolean(String key);
+    public Optional<JsonArray>  getArray(String key);
+    public Optional<JsonObject> getObject(String key);
+    public #ArrayList<String>   getStringArray(String key);   // string elems only
 }
 ```
 
-`JsonArray` is a contiguous `ArrayList<JsonValue>`. `JsonObject` is
-order-preserving by default (insertion order). Both extend
-`Stream<...>` so the standard combinators (`filter`, `map`, `forEach`)
-apply uniformly.
+`JsonArray` is a geometric-growth `JsonValue[]`. `JsonObject` is
+insertion-order-preserving and looks keys up by **linear scan** (v1 does
+no hashing — the convenience tier isn't the hot path; Tier 1 handles
+perf-sensitive shapes field-by-field). `put` does not deduplicate:
+re-putting a key appends a second entry `get` will never reach.
+`Stream<...>` inheritance (so `filter` / `map` / `forEach` apply) is a
+planned addition, not built — there is no `JsonEntry` type and no
+`getOpt` yet.
 
 ---
 
@@ -186,63 +212,65 @@ public enum JsonToken {
 }
 
 public class JsonReader {
-    public JsonReader(byte[] input);
-    public JsonReader(byte[] input, JsonReaderOptions opts);
+    // byteCount is the valid length of `input` (passed explicitly until
+    // primitive arrays expose .count() as a property accessor).
+    public JsonReader(int8[] input, int64 byteCount);
 
-    public JsonToken next();              // advance to next token
+    public JsonToken next();              // advance to and return next token
+    public JsonToken peek();              // one-token lookahead (cached)
     public JsonToken current();           // last token returned
 
-    // Borrowed accessors — valid only until the next next() call,
-    // since the underlying byte slice can be re-read or invalidated.
-    // The borrow checker enforces this via the standard borrow-from-
-    // receiver rule (Stream.findFirst etc. already do the same).
-    public byte[] currentBytes();         // raw byte slice of current token
-    public String currentString();        // STRING: decoded + unescaped
-    public String currentKey();           // KEY: decoded + unescaped
-    public JsonNumber currentNumber();    // NUMBER: lazy wrapper
+    // Current-token materializers. STRING/KEY both surface through the
+    // same byte/string accessors after their token; a KEY is just a
+    // STRING in key position, so read it with currentBytes/currentString.
+    public boolean   currentBoolean();    // BOOLEAN: true / false
+    public #int8[]   currentBytes();      // fresh copy of the token span
+    public #int8[]   currentRawBytes();   // span incl. surrounding quotes (for @JsonRaw)
+    public #String   currentString();     // token span as a String
+    public int64     currentNumberAsInt64();    // NUMBER → int64 (throws on overflow / non-integer)
+    public int32     currentNumberAsInt32();     // NUMBER → int64 then narrow
+    public float64   currentNumberAsFloat64();   // NUMBER → float64 (naive accumulation)
 
-    // Convenience skip — walks past matched braces/brackets without
-    // materializing anything. Cost = pure scan.
-    public void skipValue();
-
-    // Materialize the subtree under the cursor into a JsonValue tree.
-    // Returns transferred ownership; the reader advances past it.
+    // Materialize the value at the cursor into a JsonValue tree.
+    // Ownership transfers to the caller; the reader advances past it.
     public #JsonValue readValue();
+    public #JsonValue readValueAfter(JsonToken t);   // build from an already-pulled token
 
-    // Position info for error reporting.
+    // Position info for error reporting (byte offset; line/column not yet derived).
     public int64 position();
-    public int32 line();
-    public int32 column();
-}
-
-public class JsonReaderOptions {
-    public boolean relaxed;               // // and /* */ comments, trailing commas
-    public boolean validateUtf8;          // default true; off for trusted input
-    public int32 maxDepth;                // default 1024; OOM defense
-    public int32 maxStringBytes;          // default 16 MiB
+    public int64 tokenStart();
+    public int64 tokenEnd();
 }
 ```
+
+There is **no `JsonReaderOptions` struct** in v1: parsing is strict
+RFC 8259 only (relaxed mode, UTF-8 validation toggles, and a tunable
+`maxStringBytes` are planned). `maxDepth` is fixed at 1024 internally.
 
 ### Reader doctrine
 
 - **No allocation in the steady state.** `next()` advances a cursor
-  and updates an internal state machine; it does not allocate.
-  `currentString()` only allocates when the underlying span contains
-  escape sequences requiring decoding — pure ASCII strings return a
-  borrowed slice of the input buffer wrapped as a `String` view (zero
-  copy).
-- **The cursor model is one-shot.** The reader walks the input once
-  forward. There is no back-up, no two-token lookahead exposed. Users
-  who need that build it on top with their own buffering layer.
-- **Errors are recoverable.** Malformed input throws
-  `JsonParseException` (a `RecoverableException` — see ErrorModel.md);
-  the reader's state after the throw is undefined and the caller
-  should discard it. No partial-result API.
+  and updates an internal state machine; it does not allocate. String
+  and number tokens are recorded as `(tokenStart, tokenEnd)` byte spans
+  — the caller pays the copy/parse cost only on `currentBytes()` /
+  `currentString()` / `currentNumberAs*()`. Note v1 `currentBytes()` /
+  `currentString()` **copy** the span and keep escape sequences verbatim
+  (`\n` stays the two bytes `\` `n`); zero-copy String views and escape
+  *decoding* are planned.
+- **The cursor model is forward-only, with one-token lookahead.**
+  `peek()` caches the next token so the Tier-1 synthesizer can dispatch
+  array elements; otherwise the reader walks the input once forward with
+  no back-up.
+- **Errors are recoverable.** Malformed input — and integer overflow or
+  exceeding the depth limit — throws `JsonParseException` (a
+  `RecoverableException`, see ErrorModel.md); the reader's state after
+  the throw is undefined and the caller should discard it. No
+  partial-result API.
 
 ### Sample — count top-level keys without allocating
 
 ```cajeta
-JsonReader r = heap JsonReader(input);
+JsonReader r = heap JsonReader(input, (int64) input.count());
 int32 count = 0;
 if (r.next() != JsonToken.START_OBJECT) {
     throw heap JsonParseException("expected object", r.position());
@@ -254,14 +282,16 @@ while (true) {
         throw heap JsonParseException("expected key", r.position());
     }
     count = count + 1;
-    r.next();         // advance to the value
-    r.skipValue();    // discard it
+    r.next();           // advance to the value
+    // v1 has no recursive skipValue(); for a scalar value the next()
+    // above already consumed it. (Recursive skip lands with peek-based
+    // subtree skipping.)
 }
 return count;
 ```
 
-Zero heap allocations beyond the reader itself. The whole input is
-walked once.
+The reader itself is the only allocation; the whole input is walked
+once.
 
 ---
 
@@ -269,65 +299,66 @@ walked once.
 
 ```cajeta
 public class JsonWriter {
-    public JsonWriter();                  // builds into an internal buffer
-    public JsonWriter(JsonWriterOptions opts);
+    public JsonWriter();                  // builds into a growable internal buffer
 
     public JsonWriter beginObject();      // {
     public JsonWriter endObject();        // }
     public JsonWriter beginArray();       // [
     public JsonWriter endArray();         // ]
-    public JsonWriter key(String k);      // "k":  (writes the colon too)
+    public JsonWriter key(String name);   // "name":  (writes the colon too)
+    public JsonWriter key(int8[] name, int32 n);   // byte-buffer form (synthesizer hot path)
 
     public JsonWriter writeNull();
     public JsonWriter writeBoolean(boolean v);
-    public JsonWriter writeNumber(int32 v);
     public JsonWriter writeNumber(int64 v);
-    public JsonWriter writeNumber(float64 v);
+    public JsonWriter writeNumber(float64 v);       // always with a '.' so it round-trips as float
     public JsonWriter writeString(String v);
-    public JsonWriter writeRaw(byte[] preformatted);   // user-vouched-for JSON
+    public JsonWriter writeString(int8[] s, int32 n);
+    public JsonWriter writeRaw(int8[] bytes, int32 n);   // user-vouched-for JSON, copied verbatim
+    public JsonWriter writeValue(JsonValue v);           // re-emit a parsed tree
 
-    // Materialize. Transfers the built buffer to the caller; the
-    // writer is reset to empty.
-    public #byte[] toBytes();
-    public #String toString();
-}
+    public int32 size();                  // bytes written so far
 
-public class JsonWriterOptions {
-    public boolean pretty;                // default false
-    public int32 indentSpaces;            // default 2 when pretty
-    public boolean asciiSafe;             // escape U+0080+; default false
+    // Materialize: copies the built document out as a fresh #int8[] and
+    // resets the writer (size/depth/key state) for reuse.
+    public #int8[] toBytes();
 }
 ```
 
+There is **no `JsonWriterOptions` struct** and **no `toString()`** in
+v1: output is always compact. Pretty-printing (`pretty` / `indentSpaces`)
+and ASCII-safe escaping (`asciiSafe`) are planned. `writeNumber(int32)`
+is not a separate overload — widen to `int64`.
+
 ### Writer doctrine
 
-- **Builder-pattern fluent chain.** Every method returns `this` so
-  call sites read top-to-bottom. The borrow checker accepts this
-  because the receiver pointer is unchanged across the chain.
+- **Builder-pattern fluent chain.** Every `begin*`/`end*`/`write*`/`key`
+  method returns `this`, so call sites read top-to-bottom and the writer
+  threads commas/colons itself.
 - **No intermediate strings.** Number formatting writes ASCII digits
-  directly to the output buffer (`grisu` for floats, lookup-table-
-  driven for ints). The writer never constructs a `String` for a
-  primitive's textual form.
-- **Single growable buffer.** Backed by an internally-owned `#byte[]`
+  directly to the output buffer. v1's `writeNumber(float64)` is a naive
+  fixed-precision serializer (integer part + up to 6 fractional digits,
+  no scientific notation yet); a strtod-class formatter is planned.
+- **Single growable buffer.** Backed by an internally-owned `#int8[]`
   with geometric growth (×2). The buffer is transferred out on
-  `toBytes()`; the writer keeps no reference. Re-use a writer for
-  many documents by calling `toBytes()` (which both transfers and
-  resets) at the boundary.
-- **Pretty-print is opt-in and slower.** v1 emits compact output by
-  default. The `pretty` flag inserts newlines and indentation; v1
-  doesn't promise the same throughput as compact mode.
+  `toBytes()`, which also resets the writer — reuse one writer across
+  many documents by calling `toBytes()` at each boundary. (Calling it
+  twice with no intervening writes yields an empty buffer the second
+  time.)
+- **String escaping is minimal in v1.** `writeString` escapes `"` and
+  `\`; it does not yet escape control characters or emit `\u` sequences.
 
 ### Sample — write `{"id":42,"tags":["a","b"]}` with no temporaries
 
 ```cajeta
 JsonWriter w = heap JsonWriter();
 w.beginObject()
- .key("id").writeNumber(42)
+ .key("id").writeNumber((int64) 42)
  .key("tags").beginArray()
    .writeString("a").writeString("b")
  .endArray()
  .endObject();
-#byte[] out = w.toBytes();
+#int8[] out = w.toBytes();
 ```
 
 ---
@@ -338,27 +369,33 @@ w.beginObject()
 package cajeta.codec.json;
 
 public final class Json {
+    // Tier 3 — value-tree. Parse a byte buffer (with explicit length)
+    // or a String; emit a tree back to bytes.
+    public static #JsonValue parse(int8[] bytes, int64 length);
+    public static #JsonValue parse(String s);
+    public static #int8[]    toBytes(JsonValue value);
+
     // Tier 1 — codegen path. Method-level templates; each call site
     // monomorphizes the per-field reader / writer code for T at
-    // compile time.
-    public static final <T> #T parse(byte[] bytes);
-    public static final <T> #T parse(byte[] bytes, JsonReaderOptions opts);
-    public static final <T> #byte[] toBytes(T value);
-    public static final <T> #byte[] toBytes(T value, JsonWriterOptions opts);
+    // compile time. The captured bodies throw JsonParseException as a
+    // failsafe if the synthesizer fails to engage.
+    public static T        parse<T>(int8[] bytes, int64 length);
+    public static T        parse<T>(String s);
+    public static int8[]   toBytes<T>(T value);
 
-    // Tier 3 sugar — same as `heap JsonReader(bytes).readValue()`.
-    public static #JsonValue parse(byte[] bytes);
+    // Synthesizer recursion helpers (public so emitted cross-class
+    // code can reach them; not called directly by users).
+    public static T    parseObjectFromReader<T>(JsonReader r);
+    public static void toBytesObjectInto<T>(JsonWriter w, T value);
 }
 ```
 
-For Tier 1 (`<T>` form), `T` must be a class type. Primitives can't
-appear at the top level because JSON requires a root value; if a
-user wants `Json.parse<int32>("42")`-style top-level primitives,
-they go through Tier 2 (`JsonReader.next()` + `r.currentNumber()
-.asInt32()`).
-
-For Tier 3 (no template arg), the call returns the generic
-`#JsonValue` tree.
+The resolver distinguishes Tier 1 from Tier 3 by the call site's
+explicit type argument: `Json.parse(buf, n)` routes to Tier 3 (returns
+`#JsonValue`); `Json.parse<T>(buf, n)` routes to the synthesizer
+(returns `T`). For Tier 1, `T` must be a class type — JSON requires a
+root value, so top-level primitives go through Tier 2
+(`JsonReader.next()` + `r.currentNumberAsInt32()`).
 
 ---
 
@@ -369,18 +406,21 @@ document into a tree, walk it with `.asObject().get("k").asArray()...`
 chains, mutate, then serialize:
 
 ```cajeta
-#JsonValue v = JsonValue.parse(input);
+#JsonValue v = Json.parse(input, (int64) input.count());
 JsonObject root = v.asObject();
-int32 id = root.get("id").asNumber().asInt32();
-root.put("seen", JsonValue.ofBoolean(true));
-#byte[] out = v.toBytes();
+int32 id = root.get("id").asInt32();
+root.put(#keyBytes, keyLen, heap JsonValue().setBoolean(true));
+#int8[] out = Json.toBytes(v);
 ```
 
-`JsonValue.parse(byte[])` is sugar for `heap
-JsonReader(input).readValue()`. `JsonValue.toBytes()` is sugar for
-`heap JsonWriter().writeValue(this).toBytes()`. Both pay the full
-allocation cost — every primitive becomes its own `JsonValue` shell.
-For documents over a few hundred KB, prefer Tier 2.
+`Json.parse(bytes, len)` is sugar for `heap JsonReader(bytes,
+len).readValue()`; `Json.parse(String)` forwards to it against the
+String's UTF-8 payload. `Json.toBytes(v)` is sugar for `heap
+JsonWriter().writeValue(v).toBytes()`. Both pay the full allocation cost
+— every primitive becomes its own `JsonValue` shell. For documents over
+a few hundred KB, prefer Tier 2. (`JsonObject.put` takes raw key bytes +
+length; the typed `getString`/`getInt`/… getters above are the ergonomic
+read side.)
 
 ---
 
@@ -397,8 +437,8 @@ public class UserMessage {
     String email;
 }
 
-UserMessage u = Json.parse<UserMessage>(jsonBytes);
-#byte[] out  = Json.toBytes(u);
+UserMessage u = Json.parse<UserMessage>(jsonBytes, (int64) jsonBytes.count());
+#int8[] out  = Json.toBytes<UserMessage>(u);
 ```
 
 `Json.parse<T>` and `Json.toBytes` are method-level templates in the
@@ -411,28 +451,28 @@ What the compiler synthesizes for the call above:
 
 ```cajeta
 // Conceptual equivalent of the synthesized Json.parse<UserMessage> body:
-public static #UserMessage parse_UserMessage(byte[] bytes) {
-    JsonReader r = heap JsonReader(bytes);
+public static #UserMessage parse_UserMessage(int8[] bytes, int64 length) {
+    JsonReader r = heap JsonReader(bytes, length);
     #UserMessage out = heap UserMessage();
     if (r.next() != JsonToken.START_OBJECT) { throw heap JsonParseException(...); }
     while (true) {
         JsonToken t = r.next();
         if (t == JsonToken.END_OBJECT) { break; }
         if (t != JsonToken.KEY) { throw heap JsonParseException(...); }
-        String k = r.currentKey();
-        if (k == "id")         { r.next(); out.id    = r.currentNumber().asInt32(); }
+        String k = r.currentString();              // KEY token bytes
+        if (k == "id")         { r.next(); out.id    = r.currentNumberAsInt32(); }
         else if (k == "name")  { r.next(); out.name  = r.currentString(); }
         else if (k == "email") { r.next(); out.email = r.currentString(); }
-        else                   { r.next(); r.skipValue(); }
+        else                   { r.next(); }       // unknown key — value consumed, discarded
     }
     return out;
 }
 
 // Conceptual equivalent of the synthesized Json.toBytes(UserMessage):
-public static #byte[] toBytes_UserMessage(UserMessage value) {
+public static #int8[] toBytes_UserMessage(UserMessage value) {
     JsonWriter w = heap JsonWriter();
     w.beginObject()
-     .key("id").writeNumber(value.id)
+     .key("id").writeNumber((int64) value.id)
      .key("name").writeString(value.name)
      .key("email").writeString(value.email)
      .endObject();
@@ -461,7 +501,7 @@ public class UserMessage {
     @JsonRequired
     String email;                        // throws if missing during parse
 
-    @JsonInclude(NON_NULL)
+    @JsonInclude("NON_NULL")
     String optionalNote;                 // omitted from output when null
 }
 ```
@@ -478,14 +518,16 @@ Annotation surface (all in package `cajeta.codec.json`):
   external input but never echoed back. The flipped pair (read-only-
   output, write-ignored-from-input) is the common audit / computed-
   field pattern.
-- **`@JsonRequired`** — synthesizer emits a `if (!sawKey) throw
-  heap JsonRequiredFieldException("email")` check at end-of-object.
-  Without this, missing keys leave the field at its default.
-- **`@JsonInclude(NEVER | ALWAYS | NON_NULL | NON_DEFAULT)`** —
-  controls when the writer emits this field. `ALWAYS` (default)
-  always writes; `NON_NULL` omits null class values; `NON_DEFAULT`
-  omits primitive zeros / boolean false / empty collections;
-  `NEVER` mirrors `@JsonIgnore(onWrite=true)`.
+- **`@JsonRequired`** — the synthesizer tracks a per-field `sawKey`
+  flag and throws `JsonParseException` at end-of-object if a required
+  key never appeared. Without it, missing keys leave the field at its
+  default. (`@JsonIgnore` overrides `@JsonRequired` — an un-read field
+  can't be required.)
+- **`@JsonInclude("NEVER" | "ALWAYS" | "NON_NULL" | "NON_DEFAULT")`** —
+  controls when the writer emits this field (string-valued argument).
+  `ALWAYS` (default) always writes; `NON_NULL` omits null class values;
+  `NON_DEFAULT` omits a field equal to its type default; `NEVER` makes
+  the field read-only (parsed but never written).
 - **`@JsonAlias({"alt1", "alt2"})`** — accepts these keys *in
   addition* to the primary name during parse. Writes always emit the
   primary name. Useful for backward compatibility with renamed
@@ -498,12 +540,13 @@ Annotation surface (all in package `cajeta.codec.json`):
 
 ### Class-level naming strategy
 
-`@JsonNamingStrategy(SNAKE_CASE | CAMEL_CASE | KEBAB_CASE |
-PASCAL_CASE | IDENTITY)` on the class applies a transform to every
-field name that doesn't carry an explicit `@JsonProperty`:
+`@JsonNamingStrategy("SNAKE_CASE" | "CAMEL_CASE" | "KEBAB_CASE" |
+"PASCAL_CASE" | "IDENTITY")` on the class applies a transform to every
+field name that doesn't carry an explicit `@JsonProperty` (string-valued
+argument):
 
 ```cajeta
-@JsonNamingStrategy(SNAKE_CASE)
+@JsonNamingStrategy("SNAKE_CASE")
 public class UserMessage {
     int32 userId;        // wire key: "user_id"
     String firstName;    // wire key: "first_name"
@@ -518,13 +561,13 @@ synthesis time, so there's no per-call runtime cost.
 
 ### Unknown-key policy
 
-The synthesizer accepts unknown keys silently by default
-(`r.skipValue()` branch above) — JSON parsers in the wild encounter
-many incoming-field-but-not-modeled cases, and crashing the parse on
-each is hostile. The class-level annotation `@JsonStrict` flips the
-policy: unknown keys throw `JsonUnknownFieldException` carrying the
-offending key. Use this for closed-schema interchange where extra
-fields indicate a producer/consumer mismatch.
+The synthesizer accepts unknown keys silently by default (the `else {
+r.next(); }` arm above) — JSON parsers in the wild encounter many
+incoming-field-but-not-modeled cases, and crashing the parse on each is
+hostile. The class-level annotation `@JsonStrict` flips the policy:
+unknown keys throw `JsonParseException` (message names the unknown key).
+Use this for closed-schema interchange where extra fields indicate a
+producer/consumer mismatch.
 
 ### Optional / nullable fields
 
@@ -563,23 +606,28 @@ superseded — JSON uses the codec-direct path. Binary formats keep
 ## Number representation
 
 JSON numbers are arbitrary-precision in the spec, but real users want
-`int32` / `int64` / `float64`. The library splits the difference:
+`int32` / `int64` / `float64`. The library splits the difference at the
+reader:
 
-- **Storage.** The raw byte slice of the number's text is kept in
-  `JsonNumber`. No parse cost is paid until the caller asks for a
-  concrete type.
-- **Integer fast path.** If `isInteger()` (no `.`, `e`, or `E` in the
-  slice), `asInt64()` does a single-pass digit accumulation with
-  overflow check; throws on overflow.
-- **Float path.** `asFloat64()` uses the same algorithm a competent
-  C standard library does (`strtod`-class). Round-trip for
-  doubles is required: parsing then writing the same value yields
-  byte-identical output for the canonical short form.
-- **No bigints in v1.** A document containing `99999999999999999999`
-  parses as a `JsonNumber` whose `asInt64()` throws
-  `JsonOverflowException` and whose `asFloat64()` returns the nearest
-  double. A `JsonBigInteger` type can land later if a real use case
-  emerges.
+- **Span, not value.** The tokenizer records a number's `(tokenStart,
+  tokenEnd)` byte span without parsing it. The parse cost is paid only
+  when the caller calls a `currentNumberAs*()` accessor.
+- **Integer path.** `currentNumberAsInt64()` does a single-pass digit
+  accumulation (in `uint64`, to dodge the signed-overflow trap) with a
+  range check against `INT64_MAX` / `abs(INT64_MIN)`; it throws
+  `JsonParseException` on overflow or on a fractional/exponent token.
+  `currentNumberAsInt32()` delegates and narrows.
+- **Float path.** `currentNumberAsFloat64()` is a naive accumulation
+  (integer part, optional fraction, optional exponent) — **not**
+  strtod-class accuracy. It round-trips cleanly for typical small-
+  magnitude JSON numbers against the writer's fixed-precision output;
+  exact round-tripping awaits a strtod-equivalent runtime helper.
+- **The value tree stores `int64` only.** `readValueAfter` materializes
+  every `NUMBER` node via `currentNumberAsInt64()`, so a fractional
+  literal in a Tier-3 parse throws. Float support in the tree, a lazy
+  `JsonNumber` wrapper, a dedicated `JsonOverflowException`, and bigints
+  are all planned, not built — v1 surfaces overflow as
+  `JsonParseException`.
 
 ---
 
@@ -587,35 +635,43 @@ JSON numbers are arbitrary-precision in the spec, but real users want
 
 - **UTF-8 is the wire encoding.** The reader accepts UTF-8 bytes; the
   writer emits UTF-8 bytes. No UTF-16 or UTF-32 interchange.
-- **Escape decoding is lazy.** The reader records the *bounds* of a
-  string token without scanning for escapes. `currentString()` scans
-  once: if no escapes, returns a borrowed slice of the input (zero
-  copy); if escapes, allocates a new `String` and resolves them.
-- **Validation.** `validateUtf8=true` (default) checks well-formedness
-  during string-token consumption. `validateUtf8=false` skips —
-  appropriate when the input comes from a trusted source (an internal
-  RPC, a file written by Cajeta) and the cost matters.
-- **Surrogate handling.** `\uD800` through `\uDFFF` lone surrogates
-  are rejected per RFC 8259 § 8.2 (well-formed). Surrogate pairs
-  (`😀`) decode to the corresponding codepoint
-  (U+1F600 here).
+- **Escapes are NOT decoded in v1.** The reader records the *bounds* of
+  a string token, skipping over `\`-escapes without resolving them.
+  `currentBytes()` / `currentString()` copy the span **verbatim** — a
+  `\n` in the source stays the two bytes `\` `n`. Lazy escape *decoding*
+  (and a zero-copy borrowed-slice fast path for escape-free strings) is
+  planned.
+- **No UTF-8 validation toggle.** There is no `validateUtf8` option yet;
+  the reader does not validate string well-formedness.
+- **Surrogate handling is planned.** Lone-surrogate rejection and
+  surrogate-pair decoding land with the escape-decoder above.
 
 ---
 
 ## Error model
 
-All parse / type-coercion failures throw subtypes of
-`JsonException extends RecoverableException` (per ErrorModel.md):
+v1 funnels **all** failures through a single
+`JsonParseException extends RecoverableException` (per ErrorModel.md):
 
-- `JsonParseException` — malformed input. Carries byte offset,
-  line, column, and a brief message ("unexpected character `}`",
-  "unterminated string", "invalid escape `\\q`", etc.).
-- `JsonTypeException` — `asNumber()` called on a STRING, etc.
-  Carries the offending kind and the requested kind.
-- `JsonOverflowException` — `asInt32()` on a number that doesn't
-  fit. Carries the offending text and the target type.
-- `JsonDepthException` — input nests deeper than `maxDepth`. Carries
-  the depth at which the limit was hit.
+```cajeta
+public class JsonParseException extends RecoverableException {
+    public int64 position;          // 0-based byte offset of the fault
+    public JsonParseException(String message, int64 position);
+}
+```
+
+It carries a brief message ("unexpected character", "unterminated
+string", "number out of int64 range", "nesting depth limit exceeded",
+"unknown key (class is @JsonStrict)", a missing-`@JsonRequired`-field
+message, …) plus the byte offset (`position`). Line/column derivation is
+deferred — `position` is the offset only.
+
+The finer-grained subtypes a Jackson-style API would expose —
+`JsonTypeException` (wrong-kind access), `JsonOverflowException`
+(`asInt32` on an out-of-range number), `JsonDepthException`,
+`JsonRequiredFieldException`, `JsonUnknownFieldException` — are
+**planned**, not built; today every one of those conditions raises
+`JsonParseException`.
 
 Errors are thrown, never returned in an out-parameter. The reader's
 state after a throw is undefined; discard the reader.
@@ -624,40 +680,41 @@ state after a throw is undefined; discard the reader.
 
 ## RFC 8259 conformance
 
-- **Strict mode** (default): accepts exactly the grammar in RFC 8259
-  § 2. Trailing commas are rejected. Unquoted keys are rejected.
-  Comments are rejected. Numbers must match the spec's number
-  production.
-- **Relaxed mode** (`JsonReaderOptions.relaxed = true`): adds
-  trailing-comma tolerance in objects and arrays, and accepts `//
-  line` and `/* block */` comments at any whitespace position. Used
-  for hand-edited configuration; explicitly NOT a wire-format mode.
-- **Duplicate keys.** RFC 8259 says the behavior is implementation-
-  defined. Cajeta keeps the last value seen (matches JavaScript and
-  most Java parsers). `JsonReaderOptions.rejectDuplicateKeys = true`
-  promotes duplicates to `JsonParseException` for callers that
-  treat duplicates as a structural error.
+- **Strict mode** (the only v1 mode): accepts exactly the grammar in
+  RFC 8259 § 2. Trailing commas are rejected. Unquoted keys are
+  rejected. Comments are rejected. Numbers must match the spec's number
+  production. (String *content* validation — escape and UTF-8
+  well-formedness — is not yet enforced; see § String handling.)
+- **Relaxed mode** — trailing-comma tolerance and `//` / `/* */`
+  comment support — is **planned**, gated on the `JsonReaderOptions`
+  struct that doesn't exist yet. Intended for hand-edited
+  configuration; explicitly not a wire-format mode.
+- **Duplicate keys.** RFC 8259 leaves this implementation-defined. The
+  Tier-3 `JsonObject` does not deduplicate — it appends every entry in
+  insertion order, and `get` returns the **first** match. A
+  reject-duplicates option is planned.
 
 ---
 
 ## Memory model interactions
 
-- `JsonValue.parse(byte[])` returns `#JsonValue` (ownership
-  transferred to caller). Drop reclaims the entire tree via the
-  standard auto-field-drop chain.
-- `JsonReader.currentString()` returns a `String` that may be a
-  borrowed view into the input buffer (zero-copy fast path) or an
-  owned heap String (escapes present). The user can't distinguish at
-  call sites that just need to read; for cross-call-boundary use the
-  receiver doctrine of `String` already covers the borrow rules.
-- `JsonWriter.toBytes()` returns `#byte[]` — ownership transferred,
-  writer's buffer reset. Calling `toBytes()` twice on one writer
-  without another `beginObject` between them yields an empty buffer
-  the second time (no error — the writer is now in the initial
-  empty state).
-- `JsonObject` / `JsonArray` are stream-shaped owners; iterating
-  via the `Stream<...>` protocol borrows each entry for the
-  iteration body (the standard Stream lifetime rule).
+- `Json.parse(bytes, len)` returns `#JsonValue` (ownership transferred
+  to the caller). Drop reclaims the entire tree via the standard
+  auto-field-drop chain. `readValueAfter` builds string nodes with
+  `setStringOwned`, so the tree owns its string bytes.
+- `JsonReader.currentString()` / `currentBytes()` return owned `#`
+  copies of the token span in v1 (no borrowed-view fast path yet — see
+  § String handling). `JsonValue.asString()` materializes a fresh
+  `#String` over the value's stored byte slice.
+- `JsonWriter.toBytes()` returns `#int8[]` — ownership transferred,
+  writer's buffer reset. Calling `toBytes()` twice without intervening
+  writes yields an empty buffer the second time (no error — the writer
+  is back in its initial empty state).
+- `JsonObject` / `JsonArray` own their entries (`put` / `add` take
+  `#`-transferred values) and reclaim them on drop. Iterate `JsonArray`
+  by index (`get(i)` over `count()`) and `JsonObject` positionally
+  (`keyAt` / `valueAt` over `count()`) or by key (`get` / the typed
+  getters); `Stream<...>`-protocol iteration is planned.
 
 ---
 
@@ -715,8 +772,9 @@ scalar baseline first and layer SIMD on later without API breakage.
   `@Encoding`; see § "Why not `@Encoding(JsonEncoder<T>)`" above.
 - `docs/stdlib/ErrorModel.md` — `JsonException`'s place in
   the Recoverable hierarchy.
-- `docs/stdlib/Streams.md` — `JsonArray` / `JsonObject`
-  multiple-inherit `Stream<...>`.
+- `docs/stdlib/Streams.md` — `JsonArray` / `JsonObject` are planned to
+  multiple-inherit `Stream<...>` (not built; iterate by index/position
+  today).
 - `docs/stdlib/MethodLevelTemplate.md` — `Json.parse<T>` /
   `Json.toBytes` follow the standard final-method-template contract.
 - `Features.md` S-1101 (this spec), S-1102 (the implementation).

@@ -157,8 +157,9 @@ error: method 'fold' introduces method-level type parameter 'R'
 Constructors and operator-overload declarations cannot carry method-
 level type parameters — the construct/operator entry shapes don't
 compose with per-call monomorphization. Construct an instance of a
-templated class by writing the class-level args explicitly (`new
-Box<int32>(42)`) and rely on diamond inference where supported.
+templated class by writing the class-level args explicitly (`heap
+Box<int32>(42)`, or `stack Box<int32>(42)`) and rely on diamond
+inference where supported.
 
 ### No shadowing case to worry about
 
@@ -468,7 +469,7 @@ Same as class-level templates: lazy monomorphization at the call site.
 5. The compiler maintains a per-method instantiation cache. On first
    sight of a new key, it specializes the method body — substituting
    the type variables in parameter types, return type, local variable
-   types, and `new`/`heap` expressions — and emits a fresh LLVM
+   types, and `stack`/`heap` expressions — and emits a fresh LLVM
    function with a mangled name encoding both class-level and method-
    level args.
 6. The call site emits a direct `call` to the mangled symbol. No
@@ -566,7 +567,7 @@ mangling story.
 - Wire ANTLR rule output through `Method`/`MethodDeclaration`
   construction; store the method-level type parameter names.
 - Bind the method-level T-vars in the method body's scope so they
-  appear in parameter types, return type, locals, and `new`/`heap`
+  appear in parameter types, return type, locals, and `stack`/`heap`
   expressions during parse / first-pass type checking.
 - Skip vtable-slot assignment for any method whose declaration
   introduces method-level type parameters.

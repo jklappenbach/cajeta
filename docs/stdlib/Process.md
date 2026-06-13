@@ -38,7 +38,7 @@ public final class Process {
     public void         signal(Signal sig);
 }
 
-public final value class ExitStatus {
+public final class ExitStatus {        // a small value-carrier (plain class, like Duration)
     public int32 code();
     public boolean success();
     public Signal terminatedBy();           // null if exited normally
@@ -63,7 +63,7 @@ for (String line : p.stdout().reader().lines()) {
 
 ExitStatus st = p.waitFor();
 if (!st.success()) {
-    panic("ls failed with code " + st.code());
+    throw heap UnrecoverableException("ls failed with code " + st.code());
 }
 ```
 

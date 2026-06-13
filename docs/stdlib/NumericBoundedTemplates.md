@@ -13,9 +13,19 @@ boxing, no `Number`-style abstract method dispatch).
 
 | Bound | Admits | Excludes |
 |-------|--------|----------|
-| `Numeric`  | `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`, `float32`, `float64` | `boolean`, classes, interfaces |
-| `Integral` | `int8`..`int64`, `uint8`..`uint64` | `boolean`, floats, classes, interfaces |
-| `Floating` | `float32`, `float64` | ints, classes, interfaces |
+| `Numeric`  | every primitive carrying `NUMBER_FLAG` except `boolean`: `int8`..`int128`, `uint8`..`uint128`, `float16`, `bfloat16`, `float32`, `float64`, `float128` | `boolean`, classes, interfaces |
+| `Integral` | every primitive carrying `INT_FLAG` except `boolean`: `int8`..`int128`, `uint8`..`uint128` | `boolean`, floats, classes, interfaces |
+| `Floating` | every primitive carrying `FLOAT_FLAG`: `float16`, `bfloat16`, `float32`, `float64`, `float128` | ints, classes, interfaces |
+
+The check is purely a flag test (`TemplateInstantiator.cpp`), so it
+admits the *full* primitive width — `int128`, `uint128`, `float128`, and
+the half-precision `float16` / `bfloat16` all satisfy their category. The
+low-precision storage floats (`float8…`, `float6…`, `float4e2m1`) also
+carry `FLOAT_FLAG | NUMBER_FLAG`, so they technically pass `Floating` /
+`Numeric` too, even though arithmetic on them normalizes up to a wider
+float. (The compiler's *diagnostic text* on rejection still names only
+`int8..int64` / `float32`/`float64`; the accepted set is whatever the
+flags admit, which is wider — see Implementation below.)
 
 `Integral` ⊂ `Numeric` and `Floating` ⊂ `Numeric`, but they're not
 arranged as a class hierarchy — the parameter declares which category it
@@ -23,9 +33,9 @@ needs, and the bound check at instantiation walks the substituted type's
 flag bits, not its parent chain.
 
 `boolean` is explicitly excluded from `Numeric` / `Integral` even though
-it carries the `INT_FLAG | NUMBER_FLAG` bits in `CajetaType.h` — those
-flags reflect the zero/one storage representation, not arithmetic
-semantics.
+it carries the `INT_FLAG | NUMBER_FLAG` bits in `CajetaType.h` (see
+`BOOLEAN_TYPE_ID`) — those flags reflect the zero/one storage
+representation, not arithmetic semantics.
 
 ## Why this and not `T extends Number`?
 
@@ -103,12 +113,16 @@ emitted, so a rejected combination never produces a runtime artifact.
 
 `CajetaType.h` already partitions the primitives with `NUMBER_FLAG`,
 `INT_FLAG`, `FLOAT_FLAG`. The bound check in
-`TemplateInstantiator.cpp` intercepts the three category names before
-the standard class-resolve path:
+`TemplateInstantiator.cpp` intercepts the three category names by string
+(`bname == "Numeric" | "Integral" | "Floating"`) before the standard
+class-resolve path, then tests the substituted type's flags:
 
-- `Numeric`  → `(NUMBER_FLAG && !boolean)`
-- `Integral` → `(INT_FLAG && !boolean)`
-- `Floating` → `FLOAT_FLAG`
+- `Numeric`  → `PRIMITIVE_FLAG && NUMBER_FLAG && !boolean`
+- `Integral` → `PRIMITIVE_FLAG && INT_FLAG && !boolean`
+- `Floating` → `PRIMITIVE_FLAG && FLOAT_FLAG`
+
+(`boolean` is detected by name, not by a flag, since it carries
+`INT_FLAG | NUMBER_FLAG`.)
 
 `Numeric`, `Integral`, and `Floating` aren't first-class types — you
 can't declare a field of type `Numeric` or pass one around as a value.

@@ -11,6 +11,16 @@ docs in `docs/` (stdlib/* and stdlib/Reflection.md, etc.)
 describe what the *content* of those artifacts is — this one
 describes the *machinery*.
 
+> **Implemented vs. planned.** Parts of this spec describe the design
+> target, not the current binary. Where the two diverge this doc says
+> so inline ("planned" / "not yet wired"). The authoritative surface is
+> what `cajeta --help` prints (parsed in `src/main.cpp`); the archive
+> container is `src/cajeta/compile/CajetaArchive.{h,cpp}`. As of this
+> writing the **compiler binary takes three positional arguments** —
+> `cajeta [options] <entry-method> <source-root> <archive-root>` — not
+> the per-root flags some older drafts of the flag index implied. See
+> [Compiler flag index](#compiler-flag-index) for the verified set.
+
 ## Table of contents
 
 1. [Source tree structure](#source-tree-structure)
@@ -32,7 +42,7 @@ Project layout, Maven-style with cajeta naming:
 
 ```
 <project>/
-├── cajeta.toml                 # project manifest (name, version,
+├── cajeta.json                 # project manifest (JSONC: name, version,
 │                                #   dependencies, target triple
 │                                #   defaults, build flavors)
 ├── src/
@@ -74,12 +84,12 @@ embedded blobs for `--emit=exe`). Test resources are accessible
 only to test code; production resources are accessible to both.
 See [Resources](#resources) for the runtime API.
 
-**`cajeta.toml`** — project manifest. Names the project, declares
-version + cajeta language version, lists archive dependencies
+**`cajeta.json`** — project manifest (JSONC). Names the project,
+declares version + cajeta language version, lists archive dependencies
 (local paths or registry references), pins default target triples,
 and configures build flavors (release, debug, fast). Driven by the
 `cajeta` build tool (`cajeta build`, `cajeta test`, etc.) which
-wraps the compiler. See "Build tool integration" below.
+wraps the compiler. Full schema in [`BuildTool.md`](BuildTool.md#manifest--cajetajson).
 
 **`lib/`** — local archive dependencies. The cajeta compiler's
 `--classpath` flag points at this directory (or specific archives
@@ -264,15 +274,20 @@ hierarchy).
 │ Index length (8 bytes): uint64 → byte count     │
 ├─────────────────────────────────────────────────┤
 │ Manifest (zstd-compressed JSON)                 │
+│   what the compiler writes today (v1, minimal): │
 │   {                                             │
 │     "name": "cajeta-stdlib",                    │
 │     "version": "1.0.0",                         │
-│     "cajeta_lang_version": "1.0",               │
-│     "target_triple": null,                      │
-│     "dependencies": [],                         │
-│     "build_timestamp": "...",                   │
-│     "build_flavor": "release"                   │
+│     "kind": "cja",                              │
+│     "format_version": 1,                        │
+│     "entry_count": 87                           │
 │   }                                             │
+│   (uber archives add a "deps" array; the richer │
+│    cajeta_lang_version / target_triple /        │
+│    build_timestamp / build_flavor fields are    │
+│    the design target, NOT yet emitted — readers │
+│    like `cajeta archive info` already scan for   │
+│    them and print blanks when absent.)          │
 ├─────────────────────────────────────────────────┤
 │ Entry 1 (zstd-compressed)                       │
 │   cajeta/error/Throwable.bc                     │
@@ -393,17 +408,24 @@ repeated lookups are O(1) hash table reads.
 
 ### CLI tools
 
+Archive inspection / repackaging is reached through the `cajeta
+archive` subcommand (there is no separate `cja`/`car` binary, and no
+`create` subcommand — archives are produced by the compiler's
+`--emit=cja|uber`):
+
 ```
-cja create <archive> --manifest <file> --root <dir>
-cja ls     <archive>
-cja cat    <archive> <entry-path>
-cja extract <archive> --out <dir>
-cja verify <archive>          # check checksums + format
-cja info   <archive>          # print manifest, entry count, sizes
+cajeta archive list    <archive>
+cajeta archive cat     <archive> <entry-path>
+cajeta archive extract <archive> [-C <dir>]
+cajeta archive verify  <archive>          # structural integrity + checksums
+cajeta archive info    <archive>          # print manifest fields
+cajeta archive deps    <archive>          # uber dep list
+cajeta archive diff | repack | strip | merge | sign | verify-sig
 ```
 
-The cajeta compiler embeds the writer; standalone `cja` ships as
-part of the cajeta toolchain for inspection and repackaging.
+The cajeta compiler embeds the archive writer; the read/transform
+subcommands live in `src/cajeta/cli/ArchiveCommands.cpp`. Full
+reference: [`ArchiveManagement.md`](ArchiveManagement.md).
 
 ---
 
@@ -604,7 +626,7 @@ public final class Resources {
     // Returns null if the resource doesn't exist in any loaded
     // archive (production resources searched first, then test if
     // running under test).
-    public static byte[] loadBytes(String path);
+    public static int8[] loadBytes(String path);
 
     // Read a resource as a String, decoding bytes per the given
     // encoding (defaults to UTF-8).
@@ -627,7 +649,7 @@ Usage:
 import cajeta.lang.Resources;
 
 String html = Resources.loadText("templates/greeting.html");
-byte[] modelWeights = Resources.loadBytes("ml/resnet50.safetensors");
+int8[] modelWeights = Resources.loadBytes("ml/resnet50.safetensors");
 for (path in Resources.list("config/")) {
     Config c = parseConfig(Resources.loadText(path));
     ...
@@ -681,15 +703,17 @@ starting context.
 ### Resource compression
 
 Resources bundled into the archive get the same per-entry zstd
-compression as bitcode entries. Configuration knob: `cajeta.toml`'s
-`[resources]` section can disable compression on a path pattern
-for resources that are already compressed (PNG, MP4, model
-weights, etc.) — compressing already-compressed data wastes time
-and slightly bloats the output.
+compression as bitcode entries. A planned `cajeta.json` `settings`
+knob disables compression on a path pattern for resources that are
+already compressed (PNG, MP4, model weights, etc.) — compressing
+already-compressed data wastes time and slightly bloats the output.
 
-```toml
-[resources]
-no-compress = ["*.png", "*.jpg", "*.mp4", "*.safetensors", "*.gz", "*.zst"]
+```jsonc
+"settings": {
+    "resources": {
+        "no-compress": ["*.png", "*.jpg", "*.mp4", "*.safetensors", "*.gz", "*.zst"]
+    }
+}
 ```
 
 ---
@@ -747,8 +771,8 @@ For `--emit=exe`:
 - **lld in-process** (default when available). The compiler links
   to `lld` as a library and drives the link step in-process. No
   external linker invocation, no temp file shuffling, fast.
-  Requires `lld-18-dev` at compile-build time; auto-detected by
-  CMake (`CAJETA_HAS_LLD` flag).
+  Requires `lld-<LLVM-major>-dev` at compile-build time (e.g.
+  `lld-23-dev`); auto-detected by CMake (`CAJETA_HAS_LLD` flag).
 - **System linker fallback.** When lld isn't available, the
   compiler writes the per-module object files to a temp directory
   and invokes the system linker (`ld` on Linux, `link.exe` on
@@ -780,7 +804,15 @@ compiler — not a compiler feature itself.)
 
 ## Optimization
 
-### `-O` levels
+> **Status.** The current binary exposes exactly one optimization
+> knob — `--opt=O0|O1|O2|O3` (default `O0`; the `--release`/`--fast`
+> modes raise it to `O2`/`O3`). The `-Os`/`-Oz`/`-Ofast` levels, LTO,
+> PGO, the cajeta-specific IR passes, and the IR-level efficiency
+> knobs described below are the **design target, not yet wired**. The
+> `O2`/`O3` paths run LLVM's standard per-module pipeline (including
+> LoopVectorize + SLP); see `src/cajeta/compile/Optimizer.{h,cpp}`.
+
+### `-O` levels (planned beyond O0–O3)
 
 Standard LLVM levels, plus cajeta-specific extensions:
 
@@ -888,33 +920,45 @@ These are always on at `-O1` and above; disable individually via
 
 ## Compiler flag index
 
-Alphabetical reference. Flags work for both the `cajeta` compiler
-binary (low-level) and `cajeta build` / `cajeta test` (high-level
-build-tool wrapper); the build tool's flavor flags (`--release`,
-`--debug`) expand to combinations of compiler flags listed here.
+Verified against `src/main.cpp` (the `cajeta` compiler binary's
+argument parser) and `cajeta --help`. The build tool (`cajeta build`
+/ `cajeta test`) is a separate wrapper described in
+[`BuildTool.md`](BuildTool.md); the flavor presets below are
+compiler-side flags. Flags marked **(planned)** appear in earlier
+drafts of this spec but are **not** parsed by the current binary.
+
+### Invocation
+
+The compiler takes three **positional** arguments after the options:
+
+```
+cajeta [options] <entry-method> <source-root> <archive-root>
+```
+
+`<entry-method>` is the dotted `package.Class.method` form (e.g.
+`demo.App.run`) — not a `::`-separated form. `<source-root>` is the
+directory walked for `.cajeta` sources; `<archive-root>` is the
+stdlib/archive root. There are no `--source-root` / `--entry-method`
+flags — those positions are mandatory.
 
 ### Source / output
 
 | Flag                          | Description                                    |
 |-------------------------------|------------------------------------------------|
-| `--source-root=<path>`        | Root of the source tree. Defaults to `src/main/cajeta`. |
-| `--test-source-root=<path>`   | Test source tree root. Defaults to `src/test/cajeta`. |
-| `--resource-root=<path>`      | Resources tree. Defaults to `src/main/resources`. |
-| `--test-resource-root=<path>` | Test resources tree. Defaults to `src/test/resources`. |
-| `--entry-method=<name>`       | Entry point (for `--emit=exe`). e.g. `com.example.Main::main`. |
-| `--output=<path>`, `-o <path>`| Output path. Defaults vary by `--emit`.        |
+| `-o <path>`                   | Output path for the final artifact (`.cja` for `--emit=cja`/`uber`, executable for `--emit=exe`). When unset, the compiler derives a default. |
 | `--classpath=<paths>`         | Comma-separated list of `.cja` archive paths to ingest at compile-start. Each archive's `ClassSource` entries are re-parsed into the consumer's compile so user code can `import` their classes; the archive's bitcode is also bundled into `--emit=uber` output under `deps/<name>-<version>/`. Flag is repeatable; commas split within each occurrence. See [Classpath ingestion](#classpath-ingestion). |
-| `-o <path>`                   | Single-file output path override (used by `--emit=cja` and `--emit=uber` for the `.cja` filename, and by `--emit=exe` for the executable). When unset, the compiler derives the filename from the entry method's class. |
+| `--profile=<name>`            | Active `@Profile` for component gating (dev/test/release/…; default none). Selects which `@Profile`-annotated components compile in. **Not** a build-flavor selector — that is `--mode`/`--release`/etc. |
 
 ### Emit mode
 
 | Flag                | Description                                                                  |
 |---------------------|------------------------------------------------------------------------------|
-| `--emit=ir`         | Exploded text LLVM IR (`.ll`) per module. Default for development.           |
+| `--emit=ir`         | Exploded text LLVM IR (`.ll`) per module. **Default.**                       |
 | `--emit=obj`        | Exploded native object files (`.o` / `.obj`) per module.                     |
 | `--emit=cja`        | Cajeta archive (`.cja`) — project-only library form. No stdlib, no deps.     |
 | `--emit=uber`       | Cajeta archive (`.cja`) — project + stdlib + transitively-referenced deps under `deps/<name>-<ver>/`. Self-contained / runnable. |
-| `--emit=exe`        | Linked native executable. Requires entry method.                             |
+| `--emit=exe`        | Linked native executable.                                                    |
+| `--prune-uber=on|off` | When `--emit=uber`, bundle only classpath entries transitively referenced by user/stdlib bitcode. Default `on`; `off` bundles everything. |
 
 ### Target
 
@@ -924,64 +968,77 @@ build-tool wrapper); the build tool's flavor flags (`--release`,
 | `--cpu=<name>`                | CPU model within target (e.g. `skylake`). Default: `generic`. |
 | `--features=<list>`           | Comma-separated CPU features (`+avx2,+bmi2`).  |
 
-### Optimization
+### Mode + optimization
+
+Build-flavor selection is a single `--mode=<name>` (or its alias
+flags); it sets both the safety/diagnostic toggle defaults and the IR
+optimization level. See [`CompilerModes.md`](CompilerModes.md) for the
+full per-feature breakdown.
 
 | Flag                          | Description                                    |
 |-------------------------------|------------------------------------------------|
-| `-O0`                         | No optimization.                               |
-| `-O1`                         | Basic optimization.                            |
-| `-O2`                         | Standard release optimization. Default for release builds. |
-| `-O3`                         | Aggressive optimization.                       |
-| `-Os`                         | Size-optimize.                                  |
-| `-Oz`                         | Minimal size.                                  |
-| `-Ofast`                      | -O3 + relaxed floating-point.                  |
-| `--lto=off|thin|full`         | Link-time optimization. Default `off`.         |
-| `--pgo=instrument|use=<dir>`  | Profile-guided optimization.                   |
-| `--inline-threshold=<n>`      | LLVM inline cost threshold. Default per -O.    |
-| `--vectorize=on|off|loop|slp` | Auto-vectorization control. Default per -O.    |
-| `--unroll=on|off`             | Loop unrolling. Default per -O.                |
-| `--pass-disable=<name>`       | Disable a specific cajeta or LLVM pass.        |
+| `--mode=debug|debug-release|release|fast|minimal` | Build flavor. Also available as alias flags `--debug` / `--debug-release` / `--release` / `--fast` / `--minimal`. Default `debug`. |
+| `--opt=O0|O1|O2|O3`           | IR optimization level for `--emit=obj`/`exe`. Default `O0`; `--release`/`--debug-release` imply `O2`, `--fast` implies `O3`. The only optimization-level knob — there is no `-O0`/`-Os`/`-Ofast`, and no `--lto` / `--pgo` / `--inline-threshold` / `--vectorize` / `--unroll` / `--pass-disable` **(all planned)**. |
 
-### Code generation
+### Code generation / safety (per-feature overrides)
+
+These override the mode default after it expands. Full semantics in
+[`CompilerModes.md`](CompilerModes.md).
 
 | Flag                          | Description                                    |
 |-------------------------------|------------------------------------------------|
-| `--bounds=on|off`             | Array bounds-check generation. Default `on`.   |
-| `--debug-info=full|line|off`  | DWARF debug info. Default `line`.              |
-| `--frame-pointer=all|non-leaf|none` | Frame-pointer emission. Default `non-leaf`. |
-| `--strip-symbols`             | Strip symbol table from output. Combine with `-O2`+ for release. |
+| `--bounds=on|off|trap`        | Array bounds-check generation. Default `on` (off in fast/minimal). |
+| `--null-checks=on|off|trap`   | Null-receiver checks. Default `on` (off in minimal). |
+| `--overflow-checks=on|off|wrapping` | Integer overflow behavior. Default `on` in debug, `wrapping` in release/fast/minimal. |
+| `--source-tags=on|off`        | Carry alloc/drop source positions on chain entries. |
+| `--poison-free=on|off`        | Sentinel-fill freed bytes.                     |
+| `--live-set=strict|bounded|off` | Live-allocation set discipline.              |
+| `--drop-chain-validate=on|off` | Per-push/pop integrity checks.                |
+| `--ub-traps=on|off`           | Trap before would-be UB.                       |
+| `--use-after-move-rt=on|off`  | Runtime backup for the static use-after-move check. |
+| `--stack-trace-capture=on|off` | `backtrace(3)` at throw site.                 |
+| `--profile-counters=on|off`   | Per-method PGO-collection instrumentation.     |
+
+DWARF debug-info emission is mode-driven (an internal `debugInfo`
+toggle, opt-in under a debugger); there is no `--debug-info` /
+`--frame-pointer` / `--strip-symbols` flag **(planned)**.
 
 ### Diagnostics
 
 | Flag                          | Description                                    |
 |-------------------------------|------------------------------------------------|
-| `--warn=<list>`               | Comma-separated warnings to enable.            |
-| `--warn-error=<list>`         | Promote listed warnings to errors.             |
-| `--Werror`                    | Promote all warnings to errors.                |
-| `--diagnostic-format=plain|json` | Diagnostic output format. Default `plain`.  |
-| `-v`, `--verbose`             | Verbose output. Print phase timings.           |
-| `--time-passes`               | Per-pass timing breakdown.                     |
+| `--diag-verbosity=terse|normal|verbose` | Compile-time diagnostic detail. Default `verbose` in debug, `normal` in release, `terse` in minimal. |
+| `--diag-hints=on|off`         | "Did you mean…" suggestions.                   |
 
-### Build tool flavors (`cajeta build` / `cajeta test`)
+(`--warn` / `--warn-error` / `--Werror` / `--diagnostic-format` /
+`--time-passes` are **planned**; warnings-as-errors is configured in
+the build tool's manifest `settings.lint` block instead.)
 
-| Flag             | Expands to                                                    |
-|------------------|---------------------------------------------------------------|
-| `--release`      | `-O2 --lto=thin --strip-symbols --debug-info=line`           |
-| `--debug`        | `-O0 --debug-info=full --bounds=on`                          |
-| `--debug-release`| `-O2 --debug-info=full --bounds=on` (release perf, debug info) |
-| `--fast`         | `-O3 --lto=thin --debug-info=off` (max perf, no debug info)  |
-| `--minimal`      | `-Oz --lto=full --strip-symbols --debug-info=off` (min size) |
+### Reproducible builds
 
-### Archive operations (cajeta toolchain `car` command)
+| Flag                          | Description                                    |
+|-------------------------------|------------------------------------------------|
+| `--source-date-epoch=<ts>`    | Fixed build timestamp (SOURCE_DATE_EPOCH).     |
+| `--debug-prefix-map=<from>=<to>` | Remap source paths in embedded names / debug info. |
+| `--seed=<hex>`                | Deterministic salt for any build RNG.          |
 
-| Subcommand              | Description                                    |
-|-------------------------|------------------------------------------------|
-| `cja create <path>`     | Create a new archive from a directory.         |
-| `cja ls <archive>`      | List archive contents.                          |
-| `cja cat <archive> <path>` | Read one entry to stdout.                    |
-| `cja extract <archive> --out=<dir>` | Extract entries to a directory.    |
-| `cja verify <archive>`  | Verify checksums + format integrity.            |
-| `cja info <archive>`    | Print archive manifest + summary stats.         |
+### XPU (GPU compute)
+
+| Flag                          | Description                                    |
+|-------------------------------|------------------------------------------------|
+| `--xpu-backend=<list>`        | Device backend(s) for `@Kernel` methods: `none|nvptx|amdgpu|vulkan|cpu`, comma-separated. Default `none`. |
+| `--xpu-arch=<arch>`           | Device arch (nvptx SM, amdgpu GFX, or vulkan SPIR-V env). |
+| `--xpu-emit=none|ptx|cubin|isa|hsaco|spirv|spvasm|obj` | Also drop a per-kernel device artifact for inspection. Default `none`. |
+
+See [`gpu/CajetaGPU.md`](gpu/CajetaGPU.md).
+
+### Archive operations
+
+Reached through `cajeta archive <subcommand>` (not a `cja`/`car`
+binary). All twelve subcommands — `list`, `cat`, `extract`, `info`,
+`deps`, `verify`, `diff`, `repack`, `strip`, `merge`, `sign`,
+`verify-sig` — are implemented in `src/cajeta/cli/ArchiveCommands.cpp`.
+Full reference: [`ArchiveManagement.md`](ArchiveManagement.md).
 
 ---
 

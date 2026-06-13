@@ -1,22 +1,35 @@
 # Directory operations on `Path`
 
-Phase D — directory walk + mutation. All capability-gated under
-`@capability("filesystem")`. The streaming traversal methods
-return `Stream<Path>` so callers can compose with the rest of
-the streams library (filter, take, count, …).
+Directory create + mutation live as methods on `Path`. Two are
+implemented today (`mkdirs`, `delete`); the streaming traversal and
+copy/move surface is **planned** (Phase D) and documented here as
+direction.
 
-## Surface
+## Surface (implemented)
 
 ```cajeta
 public class Path {
-    // Mutation
     public Path mkdirs();                          // recursive; idempotent
+    public void delete();                          // file or empty dir
+}
+```
+
+```cajeta
+Path.of("a/b/c").mkdirs();        // creates every missing level
+Path.of("a.txt").delete();        // unlink a file / rmdir an empty dir
+```
+
+## Surface (planned)
+
+Not yet in the class — direction, not API:
+
+```cajeta
+public class Path {
     public Path copyTo(Path target);
     public Path moveTo(Path target);
-    public void delete();                          // file or empty dir
     public void deleteRecursive();                 // dir tree
 
-    // Traversal (streaming — Stream<Path>)
+    // Streaming traversal — Stream<Path>
     public Stream<Path> children();                // one level
     public Stream<Path> walk();                    // DFS by default
     public Stream<Path> bfs();                     // walk variant
@@ -24,52 +37,36 @@ public class Path {
 }
 ```
 
-## Examples
-
-```cajeta
-// One level
-for (Path child : Path.of(".").children()) { ... }
-
-// Recursive
-for (Path p : Path.of("src").walk()) { ... }       // DFS
-for (Path p : Path.of("src").bfs()) { ... }        // BFS
-
-// Glob
-for (Path p : Path.of("src").glob("**/*.cajeta")) { ... }
-
-// Create / mutate
-Path.of("a/b/c").mkdirs();
-Path.of("a.txt").copyTo(Path.of("b.txt"));
-Path.of("a.txt").moveTo(Path.of("b.txt"));
-Path.of("a.txt").delete();
-```
+The planned traversal methods return `Stream<Path>`
+(`cajeta.lang.stream.Stream`) so iteration composes with the
+streams library (filter, take, count, …) without materializing the
+whole tree.
 
 ## Notes
 
-- **Streaming** — `children()` / `walk()` / `glob()` return
-  `Stream<Path>`, so iteration doesn't materialize the whole
-  tree up-front. Pair with `take(N)` for paginated walks.
-- **DFS vs BFS** — `walk()` is depth-first (most common shape
-  for "find this file"); `bfs()` is breadth-first (most common
-  for "shallowest match"). `walk().bfs()` is NOT supported —
-  pick the entry point.
-- **Glob syntax** — `*` matches one segment, `**` matches any
-  number of segments. `?` matches one byte; `[abc]` and `[!a-z]`
-  match character classes within a segment. Backslash escapes a
-  metacharacter.
-- **`mkdirs()`** — recursive; idempotent. Throws
-  `IsFileException` if any intermediate component exists as a
-  file.
-- **`copyTo` / `moveTo`** — copy is byte-wise on the source's
-  filesystem; move is `rename()` on the same device, else
-  copy+delete (atomicity not guaranteed across devices —
-  `CrossDeviceException` thrown unless the caller opts in via
-  `moveToOrCopy(target)`).
-- **`delete()`** — fails with `IsDirectoryException` on a non-
-  empty dir. Use `deleteRecursive()` for the tree-delete.
+- **`mkdirs()`** — recursive (`mkdir -p`); idempotent (succeeds
+  silently if the path already exists as a directory). Returns
+  this `Path` for chaining. Intrinsic-lowered to
+  `__cajeta_path_mkdirs`. A component that exists as a non-
+  directory yields an error sentinel today; the throwing variant
+  (`NotDirectoryException`, ENOTDIR) lands once the `IoException`
+  hierarchy is wired.
+- **`delete()`** — a single `unlink` / `rmdir`. Non-empty
+  directories trip an error sentinel today; the recursive variant
+  (`deleteRecursive`) arrives with the planned `Stream<Path>` walk
+  primitives. Intrinsic-lowered to `__cajeta_path_delete`.
+- **Planned — DFS vs BFS** — `walk()` would be depth-first;
+  `bfs()` breadth-first. Pick the entry point (not chained).
+- **Planned — glob syntax** — `*` matches within one segment,
+  `**` spans segments; `?` one byte; `[abc]` / `[!a-z]` character
+  classes; backslash escapes a metacharacter.
+- **Planned — `copyTo` / `moveTo`** — copy byte-wise; move via
+  `rename()` on the same device, else copy+delete. Cross-device
+  renames surface `CrossDeviceException` (see
+  [`Errors.md`](Errors.md)).
 
 ## See also
 
 - [`Path.md`](Path.md) — base path methods.
-- [`Watcher.md`](Watcher.md) — observe directory changes.
+- [`Watcher.md`](Watcher.md) — observe directory changes (planned).
 - [`Errors.md`](Errors.md) — the exception hierarchy.

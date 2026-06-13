@@ -2,23 +2,41 @@
 
 Every class implicitly extends `Object` via the auto-extend pass in
 `CajetaLlvmVisitor::visitClassDeclaration` — there is no syntax to
-opt out, and there is no parallel root hierarchy. The four methods
+opt out, and there is no parallel root hierarchy. The members
 declared on `Object` are inherited by every user class, overridable
 per the rules below.
 
 ```cajeta
 public class Object {
-    public boolean operator==(Object obj);    // default: identity
-    public int64   hash();                     // default: identity
-    public String  toString();                 // default: null
-    public Object  clone();                    // default: null
+    @Native("__cajeta_object_hash")      public int64  hash();   // default: identity
+    @Native("__cajeta_object_to_string") public String toString(); // default: null
+    @Native("__cajeta_object_clone")     public Object clone();    // default: null
+
+    // Equality is a STATIC operator on Object, defaulting to hash() equality.
+    public static boolean operator== (Object a, Object b);   // default: a.hash() == b.hash()
+
+    ~Object();                            // virtual destructor; empty default
 }
 ```
 
-Status: implemented for implicit extension, identity `hash()`, and
-the operator==/hash() override-pair check. `toString` / `clone`
-defaults and the structural synthesis surface tracked in
+Verified against [`runtime/src/cajeta/lang/Object.cajeta`](../../../runtime/src/cajeta/lang/Object.cajeta).
+
+Status: implemented for implicit extension and the identity
+`hash()` / `operator==` defaults (the three `@Native` methods are
+declared with native stubs — `__cajeta_object_to_string` and
+`__cajeta_object_clone` currently return `null`; see
+`runtime/native/cajeta_runtime.c`). Structural synthesis ships via
+the `@AutoHash` and `@ToString` annotations (v1, primitive fields
+only — see below). `clone` synthesis is tracked in
 [Features.md](../../../Features.md).
+
+> **Note on `operator==`.** It is declared as a **static** two-arg
+> operator (`operator==(Object a, Object b)`), not an instance
+> method, and its default body is `a.hash() == b.hash()` (null-safe:
+> two nulls are equal, one null is not). Because `hash()` is virtual,
+> a class shifts its equality semantics by overriding `hash()`
+> alone — `String` does exactly this (it does **not** override
+> `operator==`). `!=` is auto-derived as the negation.
 
 ---
 
@@ -57,6 +75,13 @@ If two values compare equal under `operator==`, they MUST also hash
 equally under `hash()`. HashMap / HashSet rely on this invariant —
 violating it means an inserted key becomes un-findable.
 
+> **In Cajeta's default model the contract is self-enforcing.**
+> Because the inherited static `operator==` *is* `hash()` equality,
+> overriding `hash()` alone (or applying `@AutoHash`) keeps `==` and
+> `hash()` in lockstep automatically — this is why `String` overrides
+> only `hash()`. The foot-gun below only arises if a class declares
+> its *own* `operator==` that diverges from its `hash()`.
+
 **The lint pass surfaces unpaired overrides.** A class that
 declares one of `operator==` / `hash()` but inherits the other from
 `Object` triggers the `equals-hash-pair` lint warning (see
@@ -87,123 +112,134 @@ The default `Object.hash()` returns a pointer-identity hash mixed
 with the per-process seed (see
 [`cajeta.hash.Hash.identity`](../../../runtime/src/cajeta/hash/Hash.cajeta)).
 Subclasses override `hash()` directly when they want different
-semantics — or apply the `@Hash` annotation to pick a standard
-algorithm without writing the body.
+semantics — or apply the `@AutoHash` annotation to synthesize a
+structural hash over the class's fields without writing the body.
 
 ### Algorithm-class registry
 
 The standard algorithms live in `cajeta.hash` as concrete classes
-implementing a uniform `Hasher` contract. Users can add their own —
-nothing in the design is closed.
+implementing the uniform [`Hasher`](../../../runtime/src/cajeta/hash/Hasher.cajeta)
+streaming contract. The classes that ship today
+(`runtime/src/cajeta/hash/`):
 
-| Class          | Algorithm                | Use case                                      |
-|----------------|--------------------------|-----------------------------------------------|
-| `Murmur3`      | MurmurHash3-x64-128      | fast general-purpose; trusted-key scenarios   |
-| `SipHash`      | SipHash-1-3 (keyed)      | HashDoS-resistant default for user-input keys |
-| `FNV1a`        | FNV-1a 64-bit            | tiny / embedded use, well-known               |
+| Class           | Algorithm                | Use case                                      |
+|-----------------|--------------------------|-----------------------------------------------|
+| `XXHash3`       | XXH3-64                  | fast general-purpose; the default backing     |
+| `SipHash`       | SipHash (keyed)          | HashDoS-resistant for user-input keys         |
+| `MD5`           | MD5                      | legacy interop / checksums (not secure)       |
+| `Sha1`          | SHA-1                    | legacy interop (not secure)                   |
+| `Sha256`        | SHA-256                  | cryptographic digest                          |
+| `DefaultHasher` | XXH3-64 + process seed   | the compiler-default hasher (facade)          |
+| `Hash`          | static facade            | `identity` / `combine` / `processSeed` helpers |
 
-(Earlier drafts named `XXHash3`, `RapidHash`, `MD5`, `DefaultHasher`
-— retired 2026-05-18 in favor of the three open well-known
-algorithms. The cryptographic family — SHA-2, SHA-3, BLAKE2/3 — is
-out of scope for `cajeta.hash` and lives in the future
-`cajeta.crypto` peer library.)
+`DefaultHasher` wraps `XXHash3` constructed with the per-process
+seed; the synthesizer and collections couple to `DefaultHasher`, not
+to `XXHash3` directly, so the backing algorithm can swap. (There is
+no `Murmur3` or `FNV1a` class — earlier drafts of this doc named
+them, but the shipped registry is the list above. The SHA / MD5
+classes live in `cajeta.hash` today rather than in a separate
+`cajeta.crypto` package.)
 
-### `@Hash` annotation
+### `@AutoHash` annotation
 
 ```cajeta
-@Hash(Murmur3.class)
+@AutoHash
 public class Point {
     int32 x;
     int32 y;
 }
 
-@Hash                                            // bare — default algorithm
+@AutoHash
 public class Session {
     String userId;
     String token;
-    @Hash.Exclude Instant lastSeenAt;            // skip transient field
+    @Exclude Instant lastSeenAt;                 // skip transient field
 }
 ```
 
-Two forms:
+`@AutoHash` synthesizes a structural `hash()` override on the
+annotated class (`src/cajeta/method/SynthesizedHashMethod.cpp`). The
+synthesized body seeds the accumulator from the per-process seed
+(`__cajeta_hash_seed`), walks the class's declared fields in order,
+hashes each via the field's own `hash()` (primitive fast-paths use
+FNV-1a; class fields dispatch virtually), and folds them together
+with `__cajeta_hash_combine`.
 
-- **`@Hash(AlgorithmClass.class)`** — explicit algorithm pick.
-  `@Hash(Murmur3.class)`, `@Hash(SipHash.class)`, `@Hash(FNV1a.class)`.
-- **`@Hash` (bare)** — synthesize structural hashing with the
-  *default* algorithm.
+**v1 limitations:** only primitive and class-reference fields are
+supported — **struct-field and array-field hashing are not yet
+implemented** and raise a diagnostic naming the `@AutoHash`'d class
+and the offending field. `@AutoHash` is a bare annotation in v1
+(no per-class algorithm-selection parameter); to pick a specific
+algorithm, declare `hash()` manually and drive the chosen `Hasher`.
 
-Both forms synthesize a `hash()` override on the annotated class.
-The synthesized body walks the class's fields in declaration order,
-hashes each via the chosen algorithm's primitive fast-paths, and
-combines them via `Hash.combine`.
+**Field-level `@Exclude`** (i.e. `@AutoHash.Exclude`) skips a field
+from the synthesized walk — useful for cached timestamps, transient
+connection handles, anything that's runtime state but not value
+identity. The parallel `@ToString` annotation
+(`SynthesizedToStringMethod.cpp`) synthesizes a debug `toString()`
+the same way, honoring the same `@Exclude`.
 
-The earlier `@AutoHash` annotation is retired (2026-05-18) — the
-single `@Hash` annotation covers both the explicit and shorthand
-cases.
+### `String.hash()` — FNV-1a over the UTF-8 bytes
 
-**Field-level `@Hash.Exclude`** skips a field from the synthesized
-walk — matches Java's `@EqualsAndHashCode.Exclude`. Useful for
-cached timestamps, transient connection handles, anything that's
-part of the runtime state but not the value identity.
+`String` overrides `hash()` with **FNV-1a** (Fowler–Noll–Vo, 1a
+variant): start from the 64-bit offset basis `0xCBF29CE484222325`,
+then for each payload byte `b`, `h = (h XOR b) * 0x100000001B3`
+(see `runtime/src/cajeta/lang/String.cajeta`). It is deterministic
+and content-sensitive but carries **no per-process seed mixing yet**
+— seeded, DoS-resistant String hashing (XXH3-64 + `processSeed`,
+matching the rest of `cajeta.hash`) is a follow-up that needs the
+`int8[]`→`uint8_t*` `@Native` bridge; the runtime symbol
+(`__cajeta_hash_bytes`) already exists. The empty-bytes case hashes
+to the offset basis itself.
 
-**Default algorithm** for bare `@Hash` is **SipHash-1-3**
-(2026-05-18 lock). Rationale: HashDoS exposure of a fast-but-
-attackable default surfaces as a security bug the first time user-
-controlled input lands as a HashMap key — a guaranteed eventuality
-(HTTP headers, JSON field names, query params). The fix-after-the-
-fact path is painful; 2× throughput on the non-critical hashing
-path is a cheap price for safe-by-default. Users explicitly opt into
-Murmur3 (or FNV1a) when they own all the keys and need the cycles
-back.
-
-### `String.hash()` — polynomial mixed with the process seed
-
-`String` overrides `hash()` with the Java-style polynomial mix
-(`h = 31*h + c` over the UTF-8 bytes; cheap, well-distributed for
-non-adversarial use), folded with `Hash.processSeed()` at the end.
-The seed mix kills the offline-precompute attack class (attacker
-generates a million colliding strings on their machine, sends them
-as input to yours) because the attacker doesn't know your
-process's seed.
-
-The seed mix doesn't defend against an online adversary who can
-issue thousands of probes and observe latency — those need the full
-SipHash treatment via `@Hash(SipHash.class)` on the containing
-value class, or via the HashMap constructor. The
-security-level-enforcement story (how do we *require* SipHash for
-attacker-facing collections) is the remaining open piece, deferred
-to its own session.
+Because there is no seed mix today, String hashing does not yet
+defend against an offline-precompute or online-probe adversary. The
+security-level-enforcement story (how to *require* a DoS-resistant
+hash for attacker-facing collections) is the remaining open piece,
+deferred to its own session.
 
 ---
 
-## `operator==` — value semantics, except where overridden
+## `operator==` — equality flows through `hash()`
 
-`Object.operator==` returns identity (pointer equality) by default.
-Subclasses override it for value semantics; the override-pair check
-ensures `hash()` is overridden in lockstep.
+`Object`'s `operator==` is a **static** operator whose default body
+is `a.hash() == b.hash()` (null-safe). For the default identity
+`hash()` this behaves as pointer equality (SplitMix64 is bijective
+on `pointer ⊕ seed`); for a class that overrides `hash()` with value
+semantics it becomes value equality — *without* the class touching
+`operator==` at all. That is exactly how `String` works: it
+overrides only `hash()` and inherits the static `operator==`.
+
+So the idiom for value-equal classes is to override `hash()` (or
+apply `@AutoHash`); equality follows automatically:
 
 ```cajeta
+@AutoHash                       // synthesizes hash() over cents + currency
+public class Money {
+    public int64 cents;
+    public String currency;
+}
+
+// or, equivalently, by hand:
 public class Money {
     public int64 cents;
     public String currency;
 
-    public boolean operator==(Object obj) {
-        if (!(obj instanceof Money)) { return false; }
-        Money other = (Money) obj;
-        return this.cents == other.cents
-            && this.currency == other.currency;
-    }
-
     public int64 hash() {
-        int64 h = this.cents.hash();
-        h = Hash.combine(h, this.currency.hash());
-        return h;
+        int64 h = Hash.combine(__cajeta_hash_seed(), this.cents.hash());
+        return Hash.combine(h, this.currency.hash());
     }
 }
 ```
 
-`String`'s override is **value equality** — locked, not identity.
-See [String.md](./String.md) § Equality.
+> **Hash-collision caveat.** Since `==` compares 64-bit hashes, two
+> distinct values collide with probability ~2⁻⁶⁴. For
+> collision-sensitive semantics (exact legal-text comparison,
+> cryptographic equality) use an explicit byte-by-byte method —
+> `String.equals(String)` is the byte-for-byte entry point.
+
+`String`'s value equality is locked. See
+[String.md](./String.md) § Equality.
 
 ---
 
@@ -245,33 +281,44 @@ Tracked in Features.md.
 
 ## Locked in the 2026-05-18 hashing pass
 
-- **`Hasher` interface** — one-shot only, three methods:
+- **`Hasher` interface** — **streaming**, not one-shot. The shipped
+  contract ([`cajeta.hash.Hasher`](../../../runtime/src/cajeta/hash/Hasher.cajeta))
+  exposes width-named `write*` feeders plus a terminal `finish()`:
   ```cajeta
   public interface Hasher {
-      int64 hash(byte[] bytes, int32 len);     // primary entry
-      int64 hashInt32(int32 v);                 // primitive fast paths
-      int64 hashInt64(int64 v);
+      void  writeInt8(int8 v);   void writeInt16(int16 v);
+      void  writeInt32(int32 v); void writeInt64(int64 v);
+      void  writeUInt8(uint8 v); /* …uint16/32/64… */
+      void  writeFloat32(float32 v); void writeFloat64(float64 v);
+      void  writeBoolean(boolean v);
+      void  writeBytes(int8[] data);
+      void  writeBytesRange(int8[] data, int64 offset, int64 length);
+      void  writeString(String s);
+      void  writeObject(Object obj);
+      int64 finish();            // terminal — digest of bytes written so far
   }
   ```
-  No streaming `update()` / `finish()` — object APIs hand over data
-  all at once.
+  Per-type entry points are explicit width-named (`writeInt16` vs
+  `writeInt32`) so widening can't silently change the digest. `write*`
+  returns `void` in v1 (fluent chaining deferred); chain with
+  separate statements.
 
-- **Algorithm classes** — static-method utilities (not instantiable).
-  `SipHash.hashBytes(buf, len, Hash.processSeed())` rather than
-  `heap SipHash(key).hash(...)`. The per-process key is threaded
-  from the runtime via `Hash.processSeed()`.
+- **Algorithm classes are instantiable Hashers.** `heap XXHash3()`,
+  `heap SipHash()`, etc., then `write*` + `finish()`. `DefaultHasher`
+  is the compiler-default facade (XXH3-64 seeded from the process
+  seed). The static `Hash` facade exposes `identity` / `combine` /
+  `processSeed`.
 
 - **`Hash.processSeed()`** — sourced from the OS cryptographic-
-  entropy syscall (`getrandom` / `getentropy` / `BCryptGenRandom`)
-  at process startup. On entropy failure: log + abort with
-  `CAJETA_ERROR_ENTROPY_UNAVAILABLE`. No clock+pid weak fallback —
-  silent degradation would defeat HashDoS protection.
+  entropy syscall at process startup; stable within a process, not
+  across restarts. (Exposed to the synthesizer as the runtime symbol
+  `__cajeta_hash_seed`, folded with `__cajeta_hash_combine`.)
 
-- **`@Hash` annotation** — single annotation, two forms (bare for
-  default algorithm, parameterized for explicit). `@AutoHash`
-  retired. Field-level `@Hash.Exclude` skips transient fields.
-  Default algorithm: **SipHash-1-3** (safe-by-default for the
-  attacker-controlled-input case).
+- **`@AutoHash` annotation** — bare structural-hash synthesis (no
+  per-class algorithm parameter in v1). Field-level `@Exclude` skips
+  transient fields. The parallel `@ToString` synthesizes a debug
+  `toString()`. Both are primitive/class-field only in v1
+  (struct/array fields raise a diagnostic).
 
 - **equal/hash override pair check** — lint warning, not compile
   error. Rule ID `equals-hash-pair` in
@@ -295,11 +342,12 @@ Only one genuinely open follow-up:
 - [Lang.md](../Lang.md) — the broader `cajeta.lang` overview
   (Object historically lived inline there; this doc is the
   authoritative spec going forward, Lang.md trimmed to a pointer).
-- [String.md](./String.md) (pending — task #157) — String's
-  overrides of `hash()` / `operator==` / `toString`.
+- [String.md](./String.md) — String's `hash()` override (FNV-1a)
+  and its value-equality via `hash()` (it does not override
+  `operator==`).
 - [Hashing.md](../Hashing.md) — the broader hashing doctrine,
-  `cajeta.hash.Hash` namespace, `@AutoHash` / `@Hash` synthesizer
-  design, per-process seed lifecycle.
+  `cajeta.hash.Hash` namespace, `@AutoHash` synthesizer design,
+  per-process seed lifecycle.
 - [MultiClassing.md](../MultiClassing.md) — how multi-parent
   hierarchies resolve the implicit `extends Object` (every class
   extends Object; multiple-inheritance shares the single Object

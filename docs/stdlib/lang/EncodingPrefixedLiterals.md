@@ -1,6 +1,18 @@
 # Encoding-prefixed byte-array literals
 
-Status: **designed, not implemented.** Tracked as task #164.
+Status: **designed, not implemented.** Tracked as task #164. None of
+the proposed keywords (`utf8`, `utf16le`, `utf16be`, `utf32`,
+`ascii`, `latin1`) are reserved in `antlr4/CajetaLexer.g4` yet, and
+there is no `EncodingPrefixedLiteralExpression` AST node — this is a
+pure design sketch.
+
+> Grounding note: the "post-Phase 2b-β class String literal" lowering
+> this doc references **has** since landed — a plain `"Hello"` now
+> materializes as a view-mode `cajeta.lang.String` over a private
+> `{ i64 count, [N+1 x i8] data }` `.rodata` global
+> (`src/cajeta/asn/expression/LiteralExpression.cpp`), so the
+> "mirror the String literal codegen" plan below is against a real
+> target.
 
 A compile-time syntax that materializes a string literal as a
 typed byte array in a named encoding — no `String` allocation, no

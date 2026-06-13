@@ -19,7 +19,22 @@ today and is named to admit more tomorrow without renaming the prefix.
 > for compiled programs. This realizes Goal 1.1.2's "change a target flag" promise
 > and extends it to a *runtime* choice. Design, decisions, and the staged bring-up
 > log: **[`CajetaCPU.md`](CajetaCPU.md)**. Runnable demo:
-> **`samples/Tour/xpu/`**.
+> **`samples/tour/xpu/`**.
+
+> **Reading note — design spec vs. shipped surface.** This document is the
+> original *design/vision* spec; it predates the implementation and uses an
+> illustrative `xpu.*` lowercase pseudo-syntax (`@kernel`, `xpu.thread.global_id_x()`,
+> `let`, `xpu.Global<T>`). The **shipped** surface differs in concrete spelling, and
+> the code-accurate companions are **[`CajetaXPU-Matrix.md`](CajetaXPU-Matrix.md)**
+> (per-feature capability matrix, verified against `src/cajeta/xpu/` + `test/xpu/`)
+> and **[`CajetaCPU.md`](CajetaCPU.md)** (CPU backend bring-up log). As built:
+> attributes are **PascalCase** (`@Kernel`, `@Device`, `@Host`, `@Backend`, `@Wave`,
+> `@PushConstant`); thread/wave intrinsics are class statics
+> (`Thread.globalIdX()`, `Thread.x()`, `Workgroup.dimX()`, `Wave.width()`,
+> `Wave.laneId()`); the portable types (`Buffer<T>`, `Stream`, `Thread`, `Wave`,
+> `Barrier`, `Texture2D`, `Sampler`) live in package **`cajeta.gpu.core`**; and there
+> are **four** backends (NVIDIA/NVPTX, AMD/AMDGPU, Vulkan/SPIR-V, CPU). Treat the
+> code blocks below as design intent, not copy-pasteable surface syntax.
 
 ---
 
@@ -235,19 +250,19 @@ new divergences.
 #### 3.1.1 Function attributes
 
 ```cajeta
-@kernel                          // entry point, launched from host
-@device                          // callable from kernel/device code
-@host                            // host-only (default)
-@host @device                    // emitted twice, callable from both
+@Kernel                          // entry point, launched from host
+@Device                          // callable from kernel/device code
+@Host                            // host-only (default)
+@Host @Device                    // emitted twice, callable from both
 ```
 
-`@kernel` functions:
+`@Kernel` functions:
 
 - Return `void`.
-- Take only parameters of types that satisfy the trait
-  `xpu.core.KernelArg` — primitives, POD structs, `Buffer<T>`,
-  `Texture<...>`, `Sampler`, and `@push_constant` structs (Vulkan
-  only).
+- Take only parameters of types that satisfy the `KernelArg` trait
+  (`cajeta.gpu.core`; v1 simulates it via the `@KernelArg` marker) —
+  primitives, POD structs, `Buffer<T>`, `Texture2D`/`Sampler`, and
+  `@PushConstant` structs (Vulkan only).
 - Cannot throw. Errors are reported through a per-launch status
   buffer; see §3.7.
 - Are not virtual and cannot be overridden.
@@ -316,7 +331,7 @@ Thread     : the unit of program execution
 Kernels that need a fixed wave width declare it:
 
 ```cajeta
-@kernel @wave(width: 32)
+@Kernel @Wave(width = 32)
 void my_reduction(...) { ... }
 ```
 
@@ -345,7 +360,7 @@ trait xpu.cap.AtomicFloatAdd  { ... }   // SM 6.0+ / gfx9+, Vulkan VK_EXT_shader
 A kernel that needs a capability bounds it:
 
 ```cajeta
-@kernel
+@Kernel
 void gemm_mma<Target: xpu.cap.TensorCoreF16>(...) {
     xpu.tensor.mma_f16_f32::<16, 16, 16>(...);
 }
@@ -935,13 +950,19 @@ API.
 ### 10.1 Compiler flags
 
 ```
---xpu-backend=nvidia|amd|vulkan|all   # one, several, or all
---xpu-arch=<list>                     # sm_80,sm_90,gfx90a,gfx1100,...
---xpu-vulkan=1.2|1.3
---xpu-extensions=<list>
---xpu-debug                           # bounds checks, spirv-val, ptxas -lineinfo
---xpu-emit=ir|asm|bin                 # stop early for inspection
+--xpu-backend=<list>                  # comma-separated: nvptx,amdgpu,vulkan,cpu
+                                      #   (e.g. --xpu-backend=vulkan,cpu); `none` disables
+--xpu-arch=<list>                     # sm_80,sm_90,gfx90a,gfx1100,... (native backends)
+--xpu-emit=none|ptx|cubin|isa|hsaco|spirv|spvasm|obj   # also drop a per-kernel artifact
 ```
+
+> The shipped flag names are the lowered backend identifiers (`nvptx`, `amdgpu`,
+> `vulkan`, `cpu`) parsed in `src/main.cpp`, not the vendor short names (`nvidia`,
+> `amd`) used by the `@Backend("…")` *annotation*. There is no `all` token — list the
+> backends explicitly. Only `--xpu-backend`, `--xpu-arch`, and `--xpu-emit` exist in
+> the current CLI (`src/main.cpp`); the `--xpu-vulkan`, `--xpu-extensions`,
+> `--xpu-debug`, and `--xpu-emit-sidecar` flags mentioned elsewhere in this doc are
+> design surface, not yet implemented.
 
 ### 10.2 Build artifacts
 

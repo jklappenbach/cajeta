@@ -9,7 +9,7 @@ smoothly between orientations.
 ```
 // w is the scalar part; (x,y,z) the axis. A rotation by angle θ about a unit
 // axis (ax,ay,az) is (cos(θ/2), ax·sin(θ/2), ay·sin(θ/2), az·sin(θ/2)).
-Quaternion<float32> q = new Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f); // 90° about z
+Quaternion<float32> q = heap Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f); // 90° about z
 ```
 
 ## Rotate a vector — `q * v`

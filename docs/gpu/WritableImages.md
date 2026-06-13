@@ -10,7 +10,7 @@ coordinates, and a kernel may store any texel.
 Image2D img = heap Image2D(w, h);
 fill.launch(s, ...)(img);          // a kernel writes img.store(x, y, value)
 s.sync();
-float32[] out = new float32[w * h];
+float32[] out = heap float32[w * h];
 img.download(out);                 // read the produced texels back to the host
 ```
 

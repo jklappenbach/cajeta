@@ -71,8 +71,8 @@ stdlib-adjacent tree.
 
 The sub-packages (tensor / linalg / stats / signal / nn) live as
 separate libraries with independent versioning, optional dependencies
-on accelerator backends ([`cajeta.xpu`](CajetaXPU.md) — see §"Backend
-strategy"), and room for the APIs to evolve.
+on the accelerator foundation ([`cajeta.gpu.core`](gpu/CajetaGPU.md) —
+see §"Backend strategy"), and room for the APIs to evolve.
 
 ## Goals
 
@@ -99,9 +99,9 @@ strategy"), and room for the APIs to evolve.
   Casting between them is explicit and uses the boxed-primitive
   casting API.
 - **GPU acceleration on day one — optional.** Kernels dispatch
-  through [`cajeta.xpu`](CajetaXPU.md) when a device is present, fall
-  back to CPU + LLVM SIMD intrinsics otherwise. Same `Tensor` API; the
-  backend is a build-time choice.
+  through [`cajeta.gpu.core`](gpu/CajetaGPU.md) when a device is
+  present, fall back to CPU + LLVM SIMD intrinsics otherwise. Same
+  `Tensor` API; the active backend resolves at runtime.
 
 ## Non-goals (v1)
 
@@ -196,9 +196,9 @@ public final class Float8E4M3 implements Comparable<Float8E4M3> {
 
     // ----- bit-level access (interop with non-cajeta libraries) -----
     public int8    rawBits();                         // bit pattern as int8
-    public byte[1] rawBytes();                        // bit pattern as bytes
+    public int8[1] rawBytes();                        // bit pattern as bytes
     public static Float8E4M3 fromRawBits(int8 bits);  // round-trip
-    public static Float8E4M3 fromRawBytes(byte[1] b);
+    public static Float8E4M3 fromRawBytes(int8[1] b);
 
     // ----- formatting / parsing -----
     public String toString();
@@ -289,9 +289,11 @@ familiar API.
 
 ```
 cajeta.math.Math       — sin, cos, exp, log, pow, sqrt, etc.
-                         (already partly intrinsic; Math is the
-                         documented surface, intrinsics are the
-                         implementation strategy)
+                         (ships today as cajeta.lang.Math; the
+                         transcendentals and abs/min/max/sqrt/floor/
+                         ceil/round are compiler intrinsics, so Math is
+                         the documented surface over them — re-exported
+                         here once cajeta.math lands)
 cajeta.math.bit        — popcount, leading-zeros, byte-swap helpers
                          (currently scattered across Integer / Long;
                          consolidate)
@@ -340,14 +342,14 @@ public final class Random {
     public float64 nextExponential(float64 lambda);
 
     // Bytes (filling a buffer in one shot is faster than per-byte).
-    public void nextBytes(byte[] buffer);
+    public void nextBytes(int8[] buffer);
 
     // In-place shuffle (Fisher-Yates).
     public <T> void shuffle(Array<T> arr);
 
     // State save / restore — for reproducible test failures.
-    public byte[] saveState();
-    public void   restoreState(byte[] state);
+    public int8[] saveState();
+    public void   restoreState(int8[] state);
 
     // Process-global default. Per-fiber instance, lazily seeded
     // from the OS entropy source on first access, so concurrent
@@ -369,7 +371,7 @@ public final class SecureRandom {
     // Same primitive surface as Random, minus the bounded
     // convenience helpers (callers needing crypto-grade ints
     // typically want raw bytes, not range-bounded scalars).
-    public void    nextBytes(byte[] buffer);
+    public void    nextBytes(int8[] buffer);
     public int64   nextInt64();
     public float64 nextFloat64();
 }
@@ -408,10 +410,10 @@ public final class Guid32 implements Comparable<Guid32> {
     public static Guid32 timeOrdered();           // 22-bit seconds + 10-bit counter
 
     public static Guid32 of(int32 bits);
-    public static Guid32 of(byte[4] bytes);
+    public static Guid32 of(int8[4] bytes);
 
     public int32   bits();
-    public byte[4] bytes();
+    public int8[4] bytes();
 
     public String toString();                     // 8 lowercase hex digits
     public static Guid32 parse(String hex);
@@ -438,10 +440,10 @@ public final class Guid64 implements Comparable<Guid64> {
     public static Guid64 snowflake(int16 nodeId);
 
     public static Guid64 of(int64 bits);
-    public static Guid64 of(byte[8] bytes);
+    public static Guid64 of(int8[8] bytes);
 
     public int64   bits();
-    public byte[8] bytes();
+    public int8[8] bytes();
 
     public String toString();                     // 16 lowercase hex digits
     public static Guid64 parse(String hex);
@@ -472,11 +474,11 @@ public final class Guid128 implements Comparable<Guid128> {
     public static Guid128 max();
 
     public static Guid128 of(int64 high, int64 low);
-    public static Guid128 of(byte[16] bytes);
+    public static Guid128 of(int8[16] bytes);
 
     public int64    high();
     public int64    low();
-    public byte[16] bytes();
+    public int8[16] bytes();
 
     public String toString();                     // "550e8400-e29b-41d4-a716-446655440000"
     public static Guid128 parse(String text);
@@ -639,7 +641,7 @@ public final class DType {
 }
 ```
 
-Implementation strategy: storage is a single heap buffer (`byte[]`)
+Implementation strategy: storage is a single heap buffer (`int8[]`)
 sized to `dtype.bytesPerElement() * shape.totalSize()`, plus a small
 header for shape / strides / offset. Views (slice / reshape /
 transpose) share the underlying buffer; only `astype` and explicit
@@ -1087,34 +1089,41 @@ import / export operates on `Module` graphs, not raw tensors.
 
 ## Backend strategy
 
-The same `Tensor` / `Module` API targets:
+The same `Tensor` / `Module` API targets one portable accelerator
+surface — `cajeta.gpu.core` — which the compiler lowers to four
+backends from one source:
 
 - **CPU + LLVM SIMD intrinsics** — the default and the only one with
-  no external dependencies. Lowering uses the LLVM 23 vector
-  intrinsics; loop kernels are aggressively autovectorized. AVX-512,
-  NEON, SVE are all in scope.
-- **`cajeta.xpu.nvidia`** — when a CUDA device is present and the
-  build links the NVIDIA-side of `libcajeta-xpu.so`. Linalg →
-  cuBLAS / cuDNN / cuFFT / NCCL. Custom ops → user-written CUDA
-  kernels through `cajeta.xpu.nvidia.*`.
-- **`cajeta.xpu.amd`** — when a HIP device is present and the build
-  links the AMD-side of `libcajeta-xpu.so`. Linalg → rocBLAS /
-  MIOpen / rocFFT / RCCL.
-- **`cajeta.xpu.vulkan`** — for portable cross-vendor compute (Intel
-  Arc, Apple, mobile, web). Linalg uses cooperative-matrix kernels.
+  no external dependencies, and the floor `cajeta.gpu.core` always
+  lowers to when no GPU is present. Loop kernels are aggressively
+  autovectorized; AVX-512, NEON, SVE are all in scope.
+- **Vulkan (SPIR-V)** — portable cross-vendor compute (Intel Arc,
+  Apple via MoltenVK, mobile, lavapipe). Linalg uses cooperative-matrix
+  kernels.
+- **AMD (ROCm / AMDGPU)** — when a HIP device is present.
+- **NVIDIA (NVPTX)** — when a CUDA device is present.
 
-The choice is build-time per project. The active backend resolves
-at compile time; the API doesn't change. A program written against
-`cajeta.math.linalg.matmul(a, b)` runs on whichever backend the build
-selected, with no source-level branching.
+`cajeta.gpu.core` is the *only* GPU package in the stdlib: there are no
+per-vendor `cajeta.gpu.nvidia` / `.amd` / `.vulkan` stdlib packages.
+Vendor-peak library bindings (cuBLAS / cuDNN / cuFFT, rocBLAS / MIOpen /
+rocFFT) and vendor-exclusive silicon paths live in **external vendor
+libraries** layered under the same `cajeta.gpu.core.{blas,dnn,fft}`
+seams — added to a project explicitly, never bundled in stdlib. See
+[`CajetaGPU.md`](gpu/CajetaGPU.md) for the foundation model.
 
-When no XPU backend is active, the math sub-packages still build and
-run — they just stay on CPU. The XPU dependency is genuinely optional;
-removing `cajeta.xpu` from `Cajeta.toml` strips the GPU dispatch path
-out of the compiled library entirely.
+The active backend is selected at runtime on the first device touch
+(`CUDA → HIP → Vulkan → CPU`); the API doesn't change. A program written
+against `cajeta.math.linalg.matmul(a, b)` runs on whichever backend is
+present, with no source-level branching.
 
-For the substrate that makes accelerator dispatch possible — address
-spaces, kernels, launch syntax, capability traits — see
+When no GPU is present the math sub-packages still build and run — they
+just stay on CPU. The GPU dependency is genuinely optional; dropping
+`cajeta.gpu.core` from `Cajeta.toml` strips the device-dispatch path out
+of the compiled library entirely.
+
+For the substrate that makes accelerator dispatch possible — the device
+foundation, value types, buffers, kernels, and per-backend lowering —
+see [`CajetaGPU.md`](gpu/CajetaGPU.md) and the compute layer
 [`CajetaXPU.md`](CajetaXPU.md).
 
 ---

@@ -1,5 +1,13 @@
 # CajetaTorch.md
 
+> **Status: design specification — not implemented.** No `cajeta.torch` code
+> exists in the workspace: there is no `torch.*` / `cajeta.torch.*` package, no
+> source tree, and no backing `cajeta.math.tensor.Tensor` (the `cajeta.math`
+> package currently ships only `Matrix`, at
+> `runtime/src/cajeta/math/Matrix.cajeta`). Everything below is a planned API
+> surface, not a shipped one. Type names, signatures, and the package layout
+> describe an intended port; none of it compiles today.
+
 A faithful port of the PyTorch surface to cajeta, packaged as
 `cajeta.torch` (separate from stdlib, separate from `cajeta.math`). The
 target user is someone with a working PyTorch script who wants to run
@@ -9,9 +17,10 @@ would be pure Python noise; cajeta type and naming conventions assert
 themselves only where PyTorch's choices are pythonic accidents
 (generics, ownership, encoding).
 
-Implementation lands incrementally as `.cajeta` files under
-`./libraries/cajeta.torch/src/`. Ships as its own package with its
-own version cadence.
+Implementation will land incrementally as `.cajeta` files in its own package
+(package `cajeta.torch.*`), with its own version cadence. No source tree exists
+yet — the `./libraries/cajeta.torch/src/` path referenced in earlier drafts is
+not present in the workspace.
 
 ## Why a separate library from cajeta.math
 
@@ -177,7 +186,7 @@ public final class Tensor {
     public static Tensor randn(Shape shape, DType dtype = DType.FLOAT32, Device device = Device.CPU);
     public static Tensor rand(Shape shape, DType dtype = DType.FLOAT32, Device device = Device.CPU);
     public static Tensor randint(int64 low, int64 high, Shape shape, DType dtype = DType.INT64);
-    public static Tensor fromArray(Array<float32> data, Shape shape);
+    public static Tensor fromArray(float32[] data, Shape shape);
 
     // Inspection
     public Shape  shape();
@@ -258,8 +267,8 @@ public final class Tensor {
     public Tensor int();               // -> int32
 
     // Numpy bridge
-    public Array<float32> numpy();
-    public static Tensor fromNumpy(Array<float32> data, Shape shape);
+    public float32[] numpy();
+    public static Tensor fromNumpy(float32[] data, Shape shape);
 }
 
 public final class Device {

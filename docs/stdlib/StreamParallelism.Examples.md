@@ -29,7 +29,7 @@ What happens:
 - Terminal `count()` checks the flag, dispatches to
   `ParallelDriver.count(this)`.
 - Driver calls `estimateSize() = 10_000`, picks `splits =
-  ceil(sqrt(10_000)) = 100`, capped by core count (typical: 8–16).
+  isqrt(10_000) = 100`, capped at `MAX_SPLITS = 8`.
 - N workers `spawn`'d; each pulls its split to exhaustion, returns
   its local count via `#int32` transfer.
 - Orchestrator sums partials → `n`.
@@ -183,7 +183,8 @@ int32 n = tiny.stream().parallel().count();
 ```
 
 `estimateSize() = 3` falls below the driver's split-count threshold
-(v1: 16 elements minimum per split, so anything under 32 stays
+(`pickSplitCount` returns 1 when the source has fewer than
+`MIN_PER_SPLIT * 2 = 64` elements, so anything under 64 stays
 sequential). No error.
 
 ---
@@ -484,6 +485,14 @@ cajeta.error.ArithmeticException: zero
 scope's child list in registration order at exit time and pick the
 first non-null exception slot. Documented as such; users wanting
 exception priority semantics get `.sequential()`.
+
+> **Note — supersedes the `suppressed` description above.** The locked
+> error-semantics decision (`StreamParallelism.ErrorHandling.md` § 2.2,
+> § 5) is **first-throw-wins, other workers' exceptions are LOST** — no
+> `AggregateException`, no `suppressed` attachment at the stream layer.
+> The `Suppressed:` trace shown here is aspirational; treat
+> ErrorHandling.md as authoritative. A per-task outcome list, if it ever
+> lands, lives at the `scope` layer, not the stream terminal.
 
 ### 3.3 — Combiner throws
 
@@ -1191,12 +1200,12 @@ not the runtime; not pursued in this session.
 
 ### Stream parallelism — collect parallel path
 
-`collect<R>(Collector<T, R>)` currently calls `fold(c.seed,
-c.accumulator)` — 2-arg fold, sequential-only under parallel. The
-v1 design adds a `combiner` field to `Collector<T, R>` (3-arg ctor)
-and routes `collect` under `.parallel()` to a parallel fold using
-that combiner. Stdlib `Collectors.toList<T>` gains an
-`appendAll`-based combiner. Same gating as fold above.
+**RESOLVED** (see "collect needs supplier" below for the final shape).
+`collect<R>(Collector<T, R>)` now routes through
+`collectParallelChain` under `.parallel()` using the collector's
+`supplier` + `combiner`; the sequential path calls
+`fold(c.supplier(), c.accumulator)`. The originally-planned `seed`
+field became a per-worker `supplier`.
 
 ### Stream parallelism — `findFirst` under parallel becomes findAny
 
@@ -1246,9 +1255,13 @@ Touches:
     parallel driver; sequential path stays on the seed-or-first
     call.
 
-For now, `.parallel().collect(...)` throws
-`CAJETA_ERROR_STREAM_PARALLEL_COLLECT_NO_SUPPLIER` and the
-escape-hatch is `.sequential().collect(...)`.
+**RESOLVED.** The `supplier: () -> #R` field landed on `Collector<T, R>`
+(3-arg ctor `(supplier, accumulator, combiner)`), `Collectors.toList<T>`
+supplies `() -> heap ArrayList<T>()`, and `Stream<T>.collect<R>` now
+dispatches to `ParallelDriver.collectParallelChain<T, R>(this,
+c.supplier, c.accumulator, c.combiner)` under `.parallel()`. The
+`COLLECT_NO_SUPPLIER` reject is gone — parallel collect works
+end-to-end; `.sequential().collect(...)` is no longer required.
 
 ### Stream parallelism — heap-class-array writes from spawned workers
 
@@ -1418,22 +1431,20 @@ Two runtime rejects mirroring the take/skip pattern:
     head — no combiner means no way to merge partials. Users opt
     into parallel reduction via the 3-arg `fold<R>(seed, fn,
     combiner)` overload (§ 7.10) or escape via `.sequential()`.
-  - `Stream<T>.collect<R>(Collector<T, R>)` throws
-    `CAJETA_ERROR_STREAM_PARALLEL_COLLECT_NO_SUPPLIER` on a
-    parallel head — see § 7.9 errata "Stream parallelism — collect
-    needs supplier" for the architectural gap. Escape via
-    `.sequential()` before `.collect(...)`.
+  - `Stream<T>.collect<R>(Collector<T, R>)` — **no longer rejects.**
+    The `COLLECT_NO_SUPPLIER` gap (§ 7.9 errata) is closed: `Collector`
+    now carries a per-worker `supplier`, so parallel collect runs
+    end-to-end. Only the 2-arg `fold` reject above remains.
 
-Both rejects are runtime throws (`cajeta.error.Exception` with the
-documented error IDs), not compile-time lints — the parallel flag is
-a runtime property. The closest static lint would be syntactic
+The 2-arg-fold reject is a runtime throw (`cajeta.error.Exception` with
+the documented error ID), not a compile-time lint — the parallel flag
+is a runtime property. The closest static lint would be syntactic
 ("does the chain contain `.parallel()` literally?") which Cajeta's
-semantic phase doesn't surface yet; ergo runtime throw aligns with
-the existing take/skip pattern.
+semantic phase doesn't surface yet; ergo runtime throw aligns with the
+existing take/skip pattern.
 
-Tests pin the throws + a `.sequential()` escape on collect:
-`twoArgFoldOnParallelStreamRejects`, `parallelCollectRejectsToday`,
-`sequentialBeforeCollectClearsParallelFlag`.
+Tests pin the 2-arg-fold throw and the collect path:
+`twoArgFoldOnParallelStreamRejects` and the parallel-collect suite.
 
 ## §8 Migration sweep (Collector R3)
 

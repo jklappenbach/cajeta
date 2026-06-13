@@ -1,5 +1,38 @@
 # Cajeta Aspect-Oriented Programming + Dependency Injection — Specification v1
 
+## Implementation status (verified against code)
+
+Most of this spec is **implemented**, not aspirational. Cross-referencing the
+compiler:
+
+- **DI graph** — `@Component` / `@Repository` / `@TestComponent` registration
+  (`CajetaLlvmVisitor.h:352`), `@Inject` field + constructor resolution
+  (`CajetaModule.cpp:718`), graph build with missing/cyclic/ambiguous
+  diagnostics, and the synthesized `__cajeta_inject` / per-component init
+  (`ComponentInjectMethod.cpp`). **Implemented.**
+- **All four allocation modes** — `ALLOCATE_SINGLETON` / `ALLOCATE_OWNER_SCOPE`
+  / `ALLOCATE_CALL_SCOPE` / `ALLOCATE_TRANSIENT` are recognized and stored
+  (`CajetaModule.cpp:747`). **Implemented** (this supersedes the stale
+  "singleton-only" claims in the *Rejected* / *Deferred* sections at the end
+  of this doc).
+- **Profiles + test overrides** — `@Profile` filtering against `--profile=`
+  (`CajetaModule.cpp:571`; CLI flag in `BuildAction.cpp`) and `@TestComponent`.
+  **Implemented.**
+- **Aspect weaving** — `@Aspect` registration (`CajetaLlvmVisitor.h:334`),
+  pointcut matching (`CajetaModule.cpp:372`), `@Before` / `@After` /
+  `@AfterReturning` / `@AfterThrowing`, `@Around` + `@Original` with the
+  extracted-body machinery and `@Order` chaining (`Method.cpp:1185`).
+  **Implemented.**
+- **Lifecycle** — `@PostConstruct` (`ComponentInjectMethod.cpp:294`) /
+  `@PreDestroy` (`:320`). **Implemented.**
+
+**Not yet implemented:** the typed **`JoinPoint<R, A...>`** parameter and the
+"declare the matched annotation as a parameter" capture shape shown in the
+examples below — the codegen carries a `// shape we don't support yet —
+JoinPoint / annotation` note at `Method.cpp:445`. Treat every `JoinPoint jp` /
+`Audited annot` advice parameter in this document as **design, not yet
+compilable**; advice today runs but cannot yet receive that typed context.
+
 ## Goals
 
 - **AoT compilation, period.** Aspects and dependency injection are resolved at compile time by the Cajeta compiler itself. No runtime proxies, no IR weaving at deploy time, no annotation processors as a separate tool. The compiler reads the annotations and emits the wired/woven code directly into the binary.
@@ -13,7 +46,7 @@
 - **Runtime proxies / load-time weaving.** Architectural rejection. Aspects are a compile-time concern.
 - **Aspect-on-aspect.** Advising the advice. Spring forbids it; we follow.
 - **`@DeclareParents`-style introductions** (adding new interfaces to existing classes via aspects). Use ordinary inheritance.
-- **Prototype / request / session scopes.** Singleton is the default and only scope in v1. Other scopes add later if needed.
+- **Identity-keyed request / session scopes.** Singleton is the *default*, but the four lifetime modes in *Injection lifespan* below (singleton / owner-scope / call-scope / transient) are all implemented. What stays rejected is request/session scopes keyed by something other than identity (e.g. an HTTP request id) — those wait on request-context infrastructure.
 - **Setter injection.** A separate `setFoo(@Inject Foo f)` method per dependency is a Spring legacy from the era when bytecode rewriting wanted public mutators it could find by name. Both shapes Cajeta does support — field injection and constructor injection — express the dependency at its declaration site. Setter methods would add a third, implicitly-mutable, surface for no gain. Field and constructor `@Inject` cover the cases setter injection traditionally exists to solve.
 - **Reflection / runtime registry.** The DI "container" is generated code with direct calls.
 
@@ -60,7 +93,7 @@ A class annotated `@Aspect`. Holds one or more advice methods plus any state. Re
 ```cajeta
 // User-defined marker — applied to methods to opt them into advice.
 public @interface Audited {
-    String reason = "";   // optional annotation parameter
+    String reason() default "";   // optional annotation element
 }
 
 // User-defined aspect.
@@ -80,8 +113,8 @@ public @interface Audited {
     }
 
     @Around(Audited.class)
-    int timedCall(@Original Function<int> proceed, JoinPoint jp) {
-        long start = nanos();
+    int32 timedCall(@Original Function<int32> proceed, JoinPoint jp) {
+        int64 start = nanos();
         try {
             return proceed();
         } finally {
@@ -93,7 +126,7 @@ public @interface Audited {
 // Method opts in by tagging itself with the marker.
 class UserService {
     @Audited(reason = "data deletion")
-    public void deleteUser(int id) { ... }
+    public void deleteUser(int32 id) { ... }
 }
 ```
 
@@ -130,7 +163,7 @@ The compiler enforces that the advice's declared JoinPoint type-parameters match
 
 ```cajeta
 @Before(Audited.class)
-void log(JoinPoint<void, int, String> jp) {   // matches void m(int, String)
+void log(JoinPoint<void, int32, String> jp) {   // matches void m(int32, String)
     log.write("called " + jp.methodName + " with " + jp.arg0 + ", " + jp.arg1);
 }
 ```
@@ -158,13 +191,13 @@ The compiler synthesizes the annotation-instance construction at the call site �
 
 ```cajeta
 @Around(Audited.class)
-int around(@Original Function<int, int> proceed, JoinPoint jp, int x) {
+int32 around(@Original Function<int32, int32> proceed, JoinPoint jp, int32 x) {
     if (!authorized()) throw heap AuthException("denied");
     return proceed(x);   // typed call to the original
 }
 ```
 
-`Function<int, int>` is the signature of the original method (returns int, takes int). The compiler binds `proceed` to a synthesized wrapper that invokes the original method's extracted body.
+`Function<int32, int32>` is the signature of the original method (returns int32, takes int32). The compiler binds `proceed` to a synthesized wrapper that invokes the original method's extracted body.
 
 ### Codegen for @Around
 
@@ -173,12 +206,12 @@ The compiler:
 2. Generates a replacement public method (`compute`) whose body calls the @Around advice, passing `compute__original` as the proceed function.
 3. The advice's body is inlined (or called) inside the replacement.
 
-Result IR for `int compute(int x)` advised by `@Around timed`:
+Result IR for `int32 compute(int32 x)` advised by `@Around timed`:
 
 ```
-int compute__original(int x) { <original body> }
+int32 compute__original(int32 x) { <original body> }
 
-int compute(int x) {
+int32 compute(int32 x) {
     return AuditAspect_instance.timedCall(compute__original, joinPoint, x);
 }
 ```
@@ -331,7 +364,7 @@ static UserService get_UserService() {
 }
 ```
 
-`@Inject` field reads route to `get_X()` or `make_X()` based on the site's `allocate` mode. Field assignments run inside the receiver's compiler-synthesized `__postConstruct`, after allocation, before any user-defined `@PostConstruct` method. Constructor-parameter `@Inject` resolves at the construction site of the receiver: the calling code (whether user-written `new` or the generated `get_X` / `make_X` body for an upstream component) passes the resolved instance directly through the constructor call — no intermediate field, no post-construct write needed. Setter methods are not valid injection sites — see the Rejected list above.
+`@Inject` field reads route to `get_X()` or `make_X()` based on the site's `allocate` mode. Field assignments run inside the receiver's compiler-synthesized `__postConstruct`, after allocation, before any user-defined `@PostConstruct` method. Constructor-parameter `@Inject` resolves at the construction site of the receiver: the calling code (whether a user-written `heap` allocation or the generated `get_X` / `make_X` body for an upstream component) passes the resolved instance directly through the constructor call — no intermediate field, no post-construct write needed. Setter methods are not valid injection sites — see the Rejected list above.
 
 ### Qualifying an injection
 
@@ -429,7 +462,7 @@ Opt-out with `@NoAdvice` on the subclass override if needed (rare).
 ### Example 1: logging via marker annotation
 
 ```cajeta
-public @interface Logged { String level = "info"; }
+public @interface Logged { String level() default "info"; }
 
 @Aspect public class LoggingAspect {
     @Inject Logger log;
@@ -442,7 +475,7 @@ public @interface Logged { String level = "info"; }
 
 class PaymentProcessor {
     @Logged(level = "warn")
-    public void chargeCard(Card card, int cents) { ... }
+    public void chargeCard(Card card, int32 cents) { ... }
 }
 ```
 
@@ -455,10 +488,10 @@ public @interface Transactional {}
     @Inject TransactionManager txm;
 
     @Around(Transactional.class)
-    int execute(@Original Function<int> proceed, JoinPoint jp) {
+    int32 execute(@Original Function<int32> proceed, JoinPoint jp) {
         Transaction tx = txm.begin();
         try {
-            int result = proceed();
+            int32 result = proceed();
             tx.commit();
             return result;
         } catch (Throwable t) {
@@ -534,7 +567,11 @@ The Cajeta-native wins:
 
 ## Implementation phases
 
-This is a substantial feature surface. A reasonable rollout:
+This is a substantial feature surface. The rollout below is **largely
+complete** (see *Implementation status* at the top): A1-A11 are implemented;
+the outstanding work is the typed `JoinPoint` / matched-annotation parameter
+capture noted in A3-A6 and A12's composition tests. Kept here for the
+dependency ordering it records.
 
 - **A1.** Annotation parsing: extend the existing `Annotatable` infrastructure to capture annotation parameter values (`@Order(2)`, `@Component(name = "disk")`, `@Inject(name = "primary")`). Today we capture annotation names plus the `@SuppressLint` string-arg special case (see `LintRules.md`).
 - **A2.** `@Aspect` class registration during compile. Compiler builds a list of aspect classes.
@@ -544,7 +581,7 @@ This is a substantial feature surface. A reasonable rollout:
 - **A6.** `@AfterReturning` + `@AfterThrowing`. Both compose with the existing try/catch codegen.
 - **A7.** Multiple-aspect chaining via `@Order`.
 - **A8.** `@Component` registration + DI graph build.
-- **A9.** `@Inject` codegen. Field form: assignments emit in the receiver's compiler-synthesized `__postConstruct` body, with each read resolving to `get_X()` (singleton) or `make_X()` (transient). Constructor form: the constructor's caller (user-written `new`, or the generated `get_X` / `make_X` for an upstream component) threads `get_X()` / `make_X()` calls in at the corresponding parameter position. Reject `@Inject` on a regular setter method (a public-mutator pattern that adds an unneeded third injection surface — see Rejected).
+- **A9.** `@Inject` codegen. Field form: assignments emit in the receiver's compiler-synthesized `__postConstruct` body, with each read resolving to `get_X()` (singleton) or `make_X()` (transient). Constructor form: the constructor's caller (a user-written `heap` allocation, or the generated `get_X` / `make_X` for an upstream component) threads `get_X()` / `make_X()` calls in at the corresponding parameter position. Reject `@Inject` on a regular setter method (a public-mutator pattern that adds an unneeded third injection surface — see Rejected).
 - **A10.** Name qualifier support: `@Component(name = "...")` registration + `@Inject(name = "...")` consumer-side selection.
 - **A11.** `@PostConstruct` / `@PreDestroy` lifecycle hooks.
 - **A12.** Composition tests: aspect-on-aspect-class, DI'd aspects, inheritance + advice, fiber-spanning advice.
@@ -555,10 +592,15 @@ Each phase is roughly session-sized. A1-A2 are foundation; A3-A4 deliver minimal
 
 ## Deferred / known gaps
 
+- **Typed `JoinPoint<R, A...>` + matched-annotation capture.** The parameter
+  shapes in the examples (`JoinPoint jp`, `Audited annot`) are not yet
+  lowered (`Method.cpp:445`). The single largest open piece.
 - **Expression-pattern pointcuts.** String-DSL `execution(...)` etc. Hold off until a use case really demands it.
 - **Aspect-on-aspect / advising the advice.** Spring forbids; we follow.
-- **Allocation modes beyond Singleton and Transient.** Request / session scopes that key the cache by something other than identity (e.g., HTTP request id) — add if the runtime ever grows request-context infrastructure that justifies it.
-- **Optional injection.** `@Inject(optional=true)` to silently null-out unsatisfiable dependencies. Today: every `@Inject` must resolve or compile error.
+- **Identity-independent scopes.** The four identity-based lifetimes
+  (singleton / owner / call / transient) ship; request/session scopes keyed by
+  an external id (e.g. an HTTP request id) wait on request-context
+  infrastructure.
+- **Optional injection.** `@Inject(optional=true)` to silently null-out unsatisfiable dependencies. (The `optional` argument is parsed, but the silent-null path is not the default contract — every `@Inject` must resolve or it is a compile error.)
 - **Lazy injection.** `Lazy<T>` to defer instantiation. Possible after singleton bootstrap stabilizes.
 - **Cross-module DI.** When Cajeta gains a package/module system, the DI graph spans modules. v1 assumes single-compilation-unit DI.
-- **Dynamic registration / overriding for tests.** Test code may want to swap a real DB with a mock. Today: define the mock as `@Component(name = "test")` and use a test-only build flag to control which name resolves. A first-class test-overrides mechanism is post-v1.

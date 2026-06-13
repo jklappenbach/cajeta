@@ -5,10 +5,20 @@ varies by language: case folding, collation, eventually number /
 date / currency formatting (those layers are separate; Locale is
 the IDENTITY they key off).
 
-Status: **designed, not implemented.** Tracked as task #159 → next
-phase becomes a separate impl task. Ships in tandem with the
-String implementation so case-folding methods that take a `Locale`
-are coherent on day one.
+Status: **designed, not implemented — nothing in this doc exists in
+the codebase yet.** There is no `Locale.cajeta` (or any `Locale`
+type) anywhere in `runtime/`, `src/`, or the grammar, and `String`'s
+shipped case methods (`toUpperCase()` / `toLowerCase()`) are
+**ASCII-only and take no `Locale` argument** — so the "ships in
+tandem with String, coherent on day one" intent has not been
+realized: a core of `String` shipped *without* Locale.
+
+> **Package note.** The inline comment in `String.cajeta` refers to a
+> future `cajeta.text.Locale`, whereas this doc places it in
+> `cajeta.lang.Locale`. The package is unsettled; treat the final
+> location as open until the type actually lands.
+
+Tracked as task #159 → next phase becomes a separate impl task.
 
 ---
 

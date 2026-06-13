@@ -41,12 +41,12 @@ geometry consumer plan at [`../../plans/gpu/gfx/canela-plan.md`](../../plans/gpu
 One splat is a 3D anisotropic Gaussian `G(x) = exp(−½ (x−μ)ᵀ Σ⁻¹ (x−μ))` weighted by an
 opacity α and carrying an **appearance** payload:
 
-- **mean** `μ` — center, `Vector<f32,3>`.
+- **mean** `μ` — center, `Vector<float32,3>`.
 - **covariance** `Σ` — stored *factored* as `Σ = R S Sᵀ Rᵀ` to stay positive-semidefinite
-  and compact: a per-axis **scale** `Vector<f32,3>` (log-scale on disk) and a unit
-  **rotation** `Quaternion<f32>`. Never store the 6 raw covariance entries — the
+  and compact: a per-axis **scale** `Vector<float32,3>` (log-scale on disk) and a unit
+  **rotation** `Quaternion<float32>`. Never store the 6 raw covariance entries — the
   factored form is what stays valid under optimization and interpolation.
-- **opacity** `α` — `f32` (logit on disk, sigmoid-activated).
+- **opacity** `α` — `float32` (logit on disk, sigmoid-activated).
 - **appearance** — pluggable (§2.2): view-dependent radiance (spherical harmonics),
   relightable material (PBR), flat color, or an arbitrary scientific payload.
 
@@ -96,14 +96,14 @@ Stored **Structure-of-Arrays** (one `Buffer<T>` per attribute) — required for 
 
 | Attribute | Live type | Disk encoding (§3.2) | Notes |
 |-----------|-----------|----------------------|-------|
-| position μ | `Vector<f32,3>` | 16-bit per-axis, octree-cell-relative | quantization range from the cloud/node AABB |
-| scale | `Vector<f32,3>` | 8–16-bit log-scale | log domain keeps it positive |
-| rotation | `Quaternion<f32>` | "smallest-three" (drop largest, 3×10-bit + 2-bit index) | always re-normalized on load |
-| opacity α | `f32` | 8-bit logit | sigmoid on use |
+| position μ | `Vector<float32,3>` | 16-bit per-axis, octree-cell-relative | quantization range from the cloud/node AABB |
+| scale | `Vector<float32,3>` | 8–16-bit log-scale | log domain keeps it positive |
+| rotation | `Quaternion<float32>` | "smallest-three" (drop largest, 3×10-bit + 2-bit index) | always re-normalized on load |
+| opacity α | `float32` | 8-bit logit | sigmoid on use |
 | appearance | §2.2 | per-model | the bulk of the bytes (SH degree-3 = 48 floats) |
 
-Element types follow core: f32 / f16 / **bf16** (fp8 deferred — no LLVM type, per
-`CajetaGPU.md` §3.3).
+Element types follow core: float32 / float16 / **bfloat16** (fp8 deferred — storage-only,
+no device arithmetic yet, per `CajetaGPU.md` §3.3).
 
 ### 2.2 Appearance models (the pluggable payload)
 
@@ -112,9 +112,9 @@ carries exactly one appearance model, recorded in its header:
 
 | Model | Payload | Use | Research |
 |-------|---------|-----|----------|
-| `Radiance(shDegree 0..3)` | SH coeffs (DC `Vector<f32,3>` + bands) | view-dependent capture / novel-view | [`kerbl-2023`] |
-| `Material` (PBR) | albedo `Vector<f32,3>`, normal `Vector<f32,3>`, roughness `f32`, metalness `f32` | **relightable** splats; the canela mid/far tier (capture *material*, not lit color) | [`liang-2023-gs-ir`], [`gao-2023-relightable`], [`jiang-2023-gaussianshader`] |
-| `Flat` | `Vector<f32,4>` RGBA | data-viz, debug, scientific scalar fields | — |
+| `Radiance(shDegree 0..3)` | SH coeffs (DC `Vector<float32,3>` + bands) | view-dependent capture / novel-view | [`kerbl-2023`] |
+| `Material` (PBR) | albedo `Vector<float32,3>`, normal `Vector<float32,3>`, roughness `float32`, metalness `float32` | **relightable** splats; the canela mid/far tier (capture *material*, not lit color) | [`liang-2023-gs-ir`], [`gao-2023-relightable`], [`jiang-2023-gaussianshader`] |
+| `Flat` | `Vector<float32,4>` RGBA | data-viz, debug, scientific scalar fields | — |
 | `Payload<T>` | arbitrary `T` (scalar/vector) | the **xpu scatter** path — carries the quantity to deposit (SPH density, MPM momentum, CT attenuation) | §7 |
 
 `Material` is the model `canela` requires — it is what makes a splat tier relightable
@@ -124,12 +124,12 @@ under dynamic lighting rather than baking the capture's lighting in.
 
 ```cajeta
 // cajeta.gpu.splat
-class SplatCloud<A: SplatAppearance> {
+class SplatCloud<A extends SplatAppearance> {
     // --- build-description: SoA attribute buffers (heap = ref) ---
-    Buffer<Vector<f32,3>>  positions
-    Buffer<Vector<f32,3>>  scales        // log-scale
-    Buffer<Quaternion<f32>> rotations
-    Buffer<f32>            opacities     // logit
+    Buffer<Vector<float32,3>>  positions
+    Buffer<Vector<float32,3>>  scales        // log-scale
+    Buffer<Quaternion<float32>> rotations
+    Buffer<float32>        opacities     // logit
     A.Storage              appearance    // SH bands / material channels / payload
 
     AABB                   bounds
@@ -170,7 +170,7 @@ SplatView v = cloud.lod().select(camera, screen, budget)   // active splat set f
 > **Scope: `splat` defines the *format* and a *codec*, not file I/O.** The byte layout is
 > intrinsic to the data structure, so it belongs here; but the splat package only
 > encodes/decodes a `SplatCloud` **to and from an abstract byte stream** (`Stream` /
-> `Buffer<u8>`) — it never opens files, mmaps, walks paths, or manages residency. The
+> `Buffer<uint8>`) — it never opens files, mmaps, walks paths, or manages residency. The
 > **actual file/stream/mmap I/O and streaming residency live in the asset / `cajeta.io`
 > layer** (canela's residency manager), which *composes* this codec with real I/O. Same
 > split as any other stdlib codec: the codec knows bytes, the io layer knows files.

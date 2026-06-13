@@ -73,5 +73,5 @@ device-only, wave-cooperative, every lane receiving the same result; `Max`/`Min`
 unsigned. Native on Vulkan/AMD/NVIDIA/CPU (GroupNonUniformArithmetic /
 wave.reduce / redux.sync / VFABI) — no fork, no extension. Device-verified
 bit-exact on RADV + gfx1151 (`XpuWaveDeviceTests.*ReduceFamily*`); CPU exercised
-in `samples/Tour/xpu` (`waveReduceOps`). `reduceProduct` is a documented
+in `samples/tour/xpu` (`waveReduceOps`). `reduceProduct` is a documented
 follow-on (no AMD/NVIDIA hardware multiply-reduce).

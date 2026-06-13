@@ -60,9 +60,11 @@ Argument forms:
 - `@SuppressLint("id")` — single rule
 - `@SuppressLint({"id-a", "id-b"})` — multiple rules via array initializer
 
-Scope:
-- **Method-level** (v1): the annotation on a method silences the listed rules for that method's body.
-- **Class-level** (future): annotation on a class silences for every method in the class. Useful for generated code or DSL classes where the noise vs. signal ratio is upside-down.
+Scope (both implemented):
+- **Method-level:** the annotation on a method silences the listed rules for that method's body. The rule IDs are cached on the method as `suppressedLints` at parse time (`CajetaLlvmVisitor.h`).
+- **Class-level:** the annotation on a class silences for every method in the class. The IDs are cached on the class structure the same way (`CajetaLlvmVisitor.h`). Useful for generated code or DSL classes where the noise vs. signal ratio is upside-down.
+
+**Exception — `heap-optional-return`** is the one rule *not* governed by `@SuppressLint`. Its escape hatch is a dedicated `@HeapReturn` annotation on the method (see its catalog entry below).
 
 ## Rule catalog
 
@@ -190,6 +192,32 @@ warning: [discarded-wildcard-next] call to 'next' on wildcard-typed
 **When NOT to suppress:** The result is genuinely discarded; remove the call or restructure.
 
 **Known limitation.** Same method-template false-negative as the loop-site rules.
+
+---
+
+### `heap-optional-return`
+
+**What it checks:** A method whose declared return type is `#Optional<...>` (heap ownership transfer of an Optional) where **every** `return` in the body is a scope-bounded `return heap Optional<...>(...)` — the heap allocation immediately becomes the return value. Trigger walks all return statements via `methodVisitReturns` and fires only if all of them match the heap-Optional-construction pattern (`Method::lintHeapOptionalReturn`, `Method.cpp`).
+
+**Why it exists:** The heap allocation is wasted — the value lands in the caller's slot anyway, so the same method could `return stack Optional<...>(...)` and let the value be copied into the caller's return slot (sret), avoiding one heap allocation per call.
+
+**Example warning output:**
+```
+warning: [heap-optional-return] cajeta.lang.stream.Stream.next returns
+  #Optional<...> but every return is a scope-bounded `heap Optional<...>(...)`.
+  Consider dropping `#` from the return type and switching to
+  `return stack Optional<...>(...)` — the value lands in the caller's slot
+  by copy (sret), avoiding a heap allocation per call. Suppress with
+  @HeapReturn when the caller really needs heap ownership.
+```
+
+**Suppression:** **`@HeapReturn`** on the method — *not* `@SuppressLint`. This rule predates / sits outside the `@SuppressLint` machinery; the `@HeapReturn` annotation is the explicit "I really want the heap allocation" escape hatch. (The annotation lookup is a no-op until the annotation type ships, so the rule simply doesn't fire on methods that already declare it.)
+
+**When to suppress:** The caller genuinely needs heap ownership of the returned Optional (it stores it in a field, transfers it onward, etc.).
+
+**When NOT to suppress:** The Optional is consumed at the call site — let it be a by-value (sret) return.
+
+**Dedup.** Keyed on parent-class canonical + method name with template args trimmed, so a method-level template that instantiates many times warns once per source declaration.
 
 ---
 
