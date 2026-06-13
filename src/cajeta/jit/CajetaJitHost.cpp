@@ -15,7 +15,6 @@
 
 #include "cajeta/jit/CajetaJitErrorShim.h"
 #include "cajeta/jit/CajetaJitWinSymbols.h"
-#include "cajeta/jit/CajetaJitFloatSymbols.h"
 
 #include <atomic>
 #include <cstddef>
@@ -324,30 +323,12 @@ BuiltJit buildJit(const JitRunOptions& opts) {
                 mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
         }
     }
-
-    // macOS: the fp128 soft-float compiler-rt helpers the stdlib emits
-    // (__trunctfdf2, __fixtfdi, ...) aren't in the host's dynamic export
-    // table (they're in the statically-linked builtins archive), so the
-    // process-symbol generator can't resolve them and every fp128-touching
-    // JIT module fails to materialize. Install them by address, same as the
-    // Windows CRT bridge above. Empty (no-op) on Linux/Windows, where libgcc
-    // exports them. See CajetaJitFloatSymbols.h.
-    {
-        size_t floatSymCount = 0;
-        const JitFloatSym* floatSyms = floatJitSymbols(&floatSymCount);
-        if (floatSymCount) {
-            auto& execSession = out.jit->getExecutionSession();
-            llvm::orc::SymbolMap floatSymMap;
-            for (size_t i = 0; i < floatSymCount; ++i) {
-                floatSymMap[execSession.intern(floatSyms[i].name)] =
-                    llvm::orc::ExecutorSymbolDef(
-                        llvm::orc::ExecutorAddr::fromPtr(floatSyms[i].addr),
-                        llvm::JITSymbolFlags::Exported);
-            }
-            cajeta::jit::cantFail(
-                mainDylib.define(llvm::orc::absoluteSymbols(std::move(floatSymMap))));
-        }
-    }
+    // NOTE: the fp128 soft-float helpers (__trunctfdf2, __fixtfdi, ...) that the
+    // stdlib's Float128 emits are NOT installed here. Apple arm64 has no
+    // __float128 type and ships no compiler-rt tf family, so there is nothing to
+    // take the address of. Instead they are compiled (as target-neutral integer
+    // IR) into the embedded runtime bitcode and linked into every JIT module —
+    // see runtime/native/cajeta_fp128_builtins.ll and src/CMakeLists.txt.
 
     if (auto err = out.jit->initialize(mainDylib)) {
         std::cerr << "cajeta jit: LLJIT initialize failed: "
