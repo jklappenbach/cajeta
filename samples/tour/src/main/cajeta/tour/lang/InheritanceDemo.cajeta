@@ -2,9 +2,10 @@ package tour.lang;
 
 import tour.DemoClass;
 
-// Single inheritance for state, multiple inheritance for behavior.
-// Override via hash-based vtable dispatch — diamond inheritance resolves
-// uniformly. Override modifier is required on overriding methods.
+// Single inheritance + polymorphic dispatch: a Shape ref to a Square/Circle
+// calls the subclass override through the vtable. Overriding is by signature
+// (re-declare the method — there is no `override` keyword). Multiple inheritance
+// is its own demo — see MultiInheritanceDemo.
 public class InheritanceDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
