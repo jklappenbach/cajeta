@@ -283,21 +283,29 @@ BATCH="${BATCH:-1}"
 # worker for the full n*TEST_TIMEOUT.
 BATCH_CAP="${BATCH_CAP:-1800}"
 
-# Group discovered tests by suite, preserving first-seen order and exact
-# membership (so a partially-selected suite batches only its selected tests,
-# never the whole `Suite.*`).
+# Group discovered tests by suite using INDEXED arrays only — macOS ships bash
+# 3.2, which has no `declare -A` associative arrays. gtest --gtest_list_tests
+# emits a suite's tests contiguously and discovery preserves that order, so a
+# single pass that opens a new group whenever the suite prefix changes captures
+# exact membership (a partially-selected suite batches only its selected tests,
+# never the whole `Suite.*`). suite_tests_idx[i] / suite_count_idx[i] parallel
+# suites[i].
 declare -a suites
-declare -A suite_tests    # suite -> newline-separated "Suite.test" list
-declare -A suite_count
+declare -a suite_tests_idx   # i -> newline-separated "Suite.test" list
+declare -a suite_count_idx
+_cur_suite=""
+_ci=-1
 for t in "${tests[@]}"; do
     sname="${t%%.*}"
-    if [ -z "${suite_tests[$sname]+x}" ]; then
-        suites+=("$sname")
-        suite_tests[$sname]=""
-        suite_count[$sname]=0
+    if [ "$sname" != "$_cur_suite" ]; then
+        _cur_suite="$sname"
+        _ci=$(( _ci + 1 ))
+        suites[$_ci]="$sname"
+        suite_tests_idx[$_ci]=""
+        suite_count_idx[$_ci]=0
     fi
-    suite_tests[$sname]+="${t}"$'\n'
-    suite_count[$sname]=$(( suite_count[$sname] + 1 ))
+    suite_tests_idx[$_ci]+="${t}"$'\n'
+    suite_count_idx[$_ci]=$(( suite_count_idx[$_ci] + 1 ))
 done
 num_suites=${#suites[@]}
 
@@ -314,17 +322,18 @@ for ((s=0; s<shards; s++)); do shard_list[$s]=""; shard_total[$s]=0; done
 if [ "$BATCH" = "1" ]; then
     # Longest-processing-time first: assign each suite (largest test-count first)
     # to the currently least-loaded shard, so workers get balanced test totals
-    # even though suites vary widely in size.
+    # even though suites vary widely in size. Buckets carry the suite INDEX so
+    # the worker looks up its exact test list without an associative array.
     sorted_suites=$(for ((i=0; i<num_suites; i++)); do
-        printf '%s\t%s\n' "${suite_count[${suites[$i]}]}" "${suites[$i]}"
+        printf '%s\t%s\n' "${suite_count_idx[$i]}" "$i"
     done | sort -rn -k1,1)
-    while IFS=$'\t' read -r cnt sname; do
-        [ -z "$sname" ] && continue
+    while IFS=$'\t' read -r cnt idx; do
+        [ -z "$idx" ] && continue
         min_s=0; min_v=${shard_total[0]}
         for ((s=1; s<shards; s++)); do
             if [ "${shard_total[$s]}" -lt "$min_v" ]; then min_v=${shard_total[$s]}; min_s=$s; fi
         done
-        shard_list[$min_s]+="${sname}"$'\n'
+        shard_list[$min_s]+="${idx}"$'\n'
         shard_total[$min_s]=$(( shard_total[$min_s] + cnt ))
     done <<< "$sorted_suites"
 else
@@ -391,12 +400,13 @@ run_one_test() {
 # (exit 124/137), discard the partial output and re-run every test in the suite
 # individually via run_one_test — restoring exact crash/timeout attribution.
 run_suite_batch() {
-    local out_file="$1" sname="$2" tf brc deadline n filter list
-    n="${suite_count[$sname]}"
+    local out_file="$1" idx="$2" sname tf brc deadline n filter list
+    sname="${suites[$idx]}"
+    n="${suite_count_idx[$idx]}"
+    list="${suite_tests_idx[$idx]}"
     deadline=$(( n * TEST_TIMEOUT ))
     [ "$deadline" -gt "$BATCH_CAP" ] && deadline=$BATCH_CAP
     [ "$deadline" -lt "$TEST_TIMEOUT" ] && deadline=$TEST_TIMEOUT
-    list="${suite_tests[$sname]}"
     filter="${list//$'\n'/:}"; filter="${filter%:}"
     tf="${out_file}.b"
     if [ -n "$TIMEOUT_CMD" ]; then
