@@ -58,6 +58,31 @@ extern void ___chkstk_ms(void);
 extern void sincos(double, double*, double*);
 extern void sincosf(float, float*, float*);
 
+// libm math functions the stdlib's Math intrinsics + float ops lower to. They
+// are statically linked from libm/libmingwex but absent from the host PE export
+// table, so the JIT's process-symbol generator can't see them — every
+// math-using JIT module then fails to materialize ("Symbols not found: [fabsf]"
+// was the first miss, which cascaded into a whole-module materialization
+// failure and failed every Windows release test). Declared extern (not via
+// <math.h>) to dodge mingw header macro/inline expansion, same as sincos.
+extern float  fabsf(float);       extern double fabs(double);
+extern float  sqrtf(float);       extern double sqrt(double);
+extern float  powf(float, float); extern double pow(double, double);
+extern float  expf(float);        extern double exp(double);
+extern float  logf(float);        extern double log(double);
+extern float  log10f(float);      extern double log10(double);
+extern float  log2f(float);       extern double log2(double);
+extern float  sinf(float);        extern double sin(double);
+extern float  cosf(float);        extern double cos(double);
+extern float  tanf(float);        extern double tan(double);
+extern float  ceilf(float);       extern double ceil(double);
+extern float  floorf(float);      extern double floor(double);
+extern float  roundf(float);      extern double round(double);
+extern float  truncf(float);      extern double trunc(double);
+extern float  fmodf(float, float); extern double fmod(double, double);
+extern float  fminf(float, float); extern double fmin(double, double);
+extern float  fmaxf(float, float); extern double fmax(double, double);
+
 // Function-pointer -> void* is not strictly portable C, but is well-defined on
 // every Windows/MinGW target; the cast silences -Wpedantic noise.
 #define CJ_SYM(jitname, fn) { jitname, (void*) (fn) }
@@ -82,6 +107,24 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
+    // libm — see the extern block above for why these need binding.
+    CJ_SYM("fabsf",  &fabsf),   CJ_SYM("fabs",   &fabs),
+    CJ_SYM("sqrtf",  &sqrtf),   CJ_SYM("sqrt",   &sqrt),
+    CJ_SYM("powf",   &powf),    CJ_SYM("pow",    &pow),
+    CJ_SYM("expf",   &expf),    CJ_SYM("exp",    &exp),
+    CJ_SYM("logf",   &logf),    CJ_SYM("log",    &log),
+    CJ_SYM("log10f", &log10f),  CJ_SYM("log10",  &log10),
+    CJ_SYM("log2f",  &log2f),   CJ_SYM("log2",   &log2),
+    CJ_SYM("sinf",   &sinf),    CJ_SYM("sin",    &sin),
+    CJ_SYM("cosf",   &cosf),    CJ_SYM("cos",    &cos),
+    CJ_SYM("tanf",   &tanf),    CJ_SYM("tan",    &tan),
+    CJ_SYM("ceilf",  &ceilf),   CJ_SYM("ceil",   &ceil),
+    CJ_SYM("floorf", &floorf),  CJ_SYM("floor",  &floor),
+    CJ_SYM("roundf", &roundf),  CJ_SYM("round",  &round),
+    CJ_SYM("truncf", &truncf),  CJ_SYM("trunc",  &trunc),
+    CJ_SYM("fmodf",  &fmodf),   CJ_SYM("fmod",   &fmod),
+    CJ_SYM("fminf",  &fminf),   CJ_SYM("fmin",   &fmin),
+    CJ_SYM("fmaxf",  &fmaxf),   CJ_SYM("fmax",   &fmax),
     // Stateful CRT functions that maintain process-global tables. These MUST
     // resolve to the same CRT instance as the host test binary (and as the
     // open/read/write above) — otherwise the JIT'd code operates on a
