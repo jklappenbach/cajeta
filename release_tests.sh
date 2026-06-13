@@ -137,7 +137,12 @@ fi
 
 # Pull the offending test ids from the `Crashed:` / `Timed out` report sections
 # (each entry is `  Suite.test (...)`); skip the instructional `Re-run ...` line.
-mapfile -t retry < <(awk '
+# Indexed-array read loop rather than `mapfile -t` — macOS ships bash 3.2,
+# which has no mapfile/readarray. Process substitution is fine in 3.2.
+retry=()
+while IFS= read -r _rt; do
+    [ -n "$_rt" ] && retry+=("$_rt")
+done < <(awk '
     /^Crashed:/        { mode="x"; next }
     /^Timed out/       { mode="x"; next }
     /^Failed tests:/   { mode="";  next }
