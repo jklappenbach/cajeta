@@ -359,16 +359,33 @@ find_program(CAJETA_CLANG NAMES "clang-${LLVM_VERSION_MAJOR}" clang
 find_program(CAJETA_XXD NAMES xxd
         HINTS ${CAJETA_MSYS_BIN_HINTS}
         PATHS /usr/bin /usr/local/bin)
+# llvm-link merges the fp128 builtin bitcode into the runtime bitcode (below).
+# Lives next to clang in the fork toolchain, so hint with clang's directory.
+get_filename_component(CAJETA_CLANG_BIN_DIR "${CAJETA_CLANG}" DIRECTORY)
+find_program(CAJETA_LLVM_LINK NAMES "llvm-link-${LLVM_VERSION_MAJOR}" llvm-link
+        HINTS ${CAJETA_CLANG_BIN_DIR} ${CAJETA_MSYS_BIN_HINTS}
+        PATHS /usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin /usr/bin /usr/local/bin)
 if(NOT CAJETA_CLANG)
     message(FATAL_ERROR "clang not found; needed to compile cajeta runtime to bitcode.")
 endif()
 if(NOT CAJETA_XXD)
     message(FATAL_ERROR "xxd not found; install vim-common (Debian/Ubuntu) or equivalent.")
 endif()
+if(NOT CAJETA_LLVM_LINK)
+    message(FATAL_ERROR "llvm-link not found; needed to merge the fp128 builtin bitcode into the runtime bitcode.")
+endif()
 
 set(CAJETA_RT_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_runtime.c)
 set(CAJETA_RT_BC  ${CMAKE_CURRENT_BINARY_DIR}/cajeta_runtime.bc)
 set(CAJETA_RT_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_runtime_embedded.cpp)
+# Target-neutral fp128 soft-float conversion builtins (see the .ll header). The
+# core runtime compiles to cajeta_runtime_core.bc; we assemble the builtins and
+# llvm-link both into the final cajeta_runtime.bc that gets embedded — so every
+# JIT module resolves __trunctfdf2 / __fixtfdi / ... internally (Apple arm64 has
+# no fp128/__float128 and no compiler-rt tf family to fall back on).
+set(CAJETA_FP128_LL  ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_fp128_builtins.ll)
+set(CAJETA_RT_CORE_BC ${CMAKE_CURRENT_BINARY_DIR}/cajeta_runtime_core.bc)
+set(CAJETA_FP128_BC  ${CMAKE_CURRENT_BINARY_DIR}/cajeta_fp128_builtins.bc)
 
 # xxhash header location for the runtime compile. Debian/Ubuntu install
 # at /usr/include (default path, no flag needed); macOS Homebrew puts it
@@ -434,15 +451,25 @@ endif()
 # missing from the embedded runtime, so getRuntimeFunction can't find it).
 add_custom_command(
         OUTPUT ${CAJETA_RT_BC}
+        # 1) Core runtime C -> bitcode (was the whole step; now an intermediate).
         COMMAND ${CAJETA_CLANG} -c -emit-llvm -O2 -fno-builtin
                 -ffunction-sections -fdata-sections
-                -MD -MF ${CAJETA_RT_BC}.d
+                -MD -MF ${CAJETA_RT_CORE_BC}.d
                 -I${CAJETA_XXHASH_INCLUDE_DIR}
                 ${CAJETA_RT_FLAGS}
-                -o ${CAJETA_RT_BC} ${CAJETA_RT_SRC}
-        DEPENDS ${CAJETA_RT_SRC}
-        DEPFILE ${CAJETA_RT_BC}.d
-        COMMENT "Compiling Cajeta runtime to LLVM bitcode")
+                -o ${CAJETA_RT_CORE_BC} ${CAJETA_RT_SRC}
+        # 2) Assemble the vendored target-neutral fp128 builtins (.ll -> .bc).
+        COMMAND ${CAJETA_CLANG} -c -emit-llvm -x ir
+                -o ${CAJETA_FP128_BC} ${CAJETA_FP128_LL}
+        # 3) Merge into the final embedded bitcode. The builtins are
+        #    linkonce_odr, so on hosts whose libgcc also defines them there is
+        #    no conflict.
+        COMMAND ${CAJETA_LLVM_LINK}
+                ${CAJETA_RT_CORE_BC} ${CAJETA_FP128_BC}
+                -o ${CAJETA_RT_BC}
+        DEPENDS ${CAJETA_RT_SRC} ${CAJETA_FP128_LL}
+        DEPFILE ${CAJETA_RT_CORE_BC}.d
+        COMMENT "Compiling Cajeta runtime + fp128 builtins to LLVM bitcode")
 
 # xxd -i derives the C variable name from the input filename, so we run it in
 # the binary directory with a relative input path to get clean symbol names.
