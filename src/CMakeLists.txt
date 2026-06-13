@@ -353,17 +353,25 @@ if(WIN32)
         endif()
     endforeach()
 endif()
+# The runtime bitcode (cajeta_runtime.bc + the fp128 builtins) MUST be produced
+# by the SAME LLVM the cajeta compiler links and JITs against. Bitcode emitted by
+# a different LLVM major silently mismatches the JIT that loads it — e.g. ROCm's
+# AMD clang (LLVM 22) sitting on PATH ahead of the fork (LLVM 23). So pin the
+# search to LLVM_TOOLS_BINARY_DIR (the fork's own bin dir, exported by the same
+# LLVMConfig found above) FIRST, before any PATH clang, and verify the major
+# below. Without the leading hint, find_program falls back to a bare `clang` on
+# PATH and caches a foreign-LLVM toolchain.
 find_program(CAJETA_CLANG NAMES "clang-${LLVM_VERSION_MAJOR}" clang
-        HINTS ${CAJETA_MSYS_BIN_HINTS}
+        HINTS ${LLVM_TOOLS_BINARY_DIR} ${CAJETA_MSYS_BIN_HINTS}
         PATHS /usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin /usr/bin /usr/local/bin)
 find_program(CAJETA_XXD NAMES xxd
         HINTS ${CAJETA_MSYS_BIN_HINTS}
         PATHS /usr/bin /usr/local/bin)
 # llvm-link merges the fp128 builtin bitcode into the runtime bitcode (below).
-# Lives next to clang in the fork toolchain, so hint with clang's directory.
+# Same pin: prefer the fork's bin dir (and clang's own dir) over PATH.
 get_filename_component(CAJETA_CLANG_BIN_DIR "${CAJETA_CLANG}" DIRECTORY)
 find_program(CAJETA_LLVM_LINK NAMES "llvm-link-${LLVM_VERSION_MAJOR}" llvm-link
-        HINTS ${CAJETA_CLANG_BIN_DIR} ${CAJETA_MSYS_BIN_HINTS}
+        HINTS ${LLVM_TOOLS_BINARY_DIR} ${CAJETA_CLANG_BIN_DIR} ${CAJETA_MSYS_BIN_HINTS}
         PATHS /usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin /usr/bin /usr/local/bin)
 if(NOT CAJETA_CLANG)
     message(FATAL_ERROR "clang not found; needed to compile cajeta runtime to bitcode.")
@@ -374,6 +382,29 @@ endif()
 if(NOT CAJETA_LLVM_LINK)
     message(FATAL_ERROR "llvm-link not found; needed to merge the fp128 builtin bitcode into the runtime bitcode.")
 endif()
+
+# Hard-fail on a runtime-bitcode toolchain that is a different LLVM major than
+# the compiler's LLVM. A loud configure error is vastly preferable to silently
+# emitting the runtime bitcode with a foreign LLVM and crashing at JIT link time.
+execute_process(COMMAND "${CAJETA_CLANG}" --version
+        OUTPUT_VARIABLE CAJETA_CLANG_VERSION_OUT ERROR_QUIET)
+if(CAJETA_CLANG_VERSION_OUT MATCHES "clang version ([0-9]+)")
+    set(CAJETA_CLANG_MAJOR "${CMAKE_MATCH_1}")
+else()
+    message(FATAL_ERROR
+        "Could not determine the LLVM major of CAJETA_CLANG=${CAJETA_CLANG}; "
+        "refusing to build the runtime bitcode with an unverifiable toolchain.")
+endif()
+if(NOT CAJETA_CLANG_MAJOR STREQUAL "${LLVM_VERSION_MAJOR}")
+    message(FATAL_ERROR
+        "Runtime-bitcode toolchain mismatch: CAJETA_CLANG=${CAJETA_CLANG} is LLVM "
+        "${CAJETA_CLANG_MAJOR}, but the cajeta compiler links LLVM ${LLVM_VERSION_MAJOR} "
+        "(LLVM_DIR=${LLVM_DIR}). The runtime bitcode would be compiled by a different "
+        "LLVM than the JIT loads it into. Put clang-${LLVM_VERSION_MAJOR} from the same "
+        "build ahead of any other clang (e.g. ROCm's) on PATH, or configure with "
+        "-DCAJETA_CLANG=<llvm-tools-bin>/clang-${LLVM_VERSION_MAJOR}.")
+endif()
+message(STATUS "Runtime-bitcode toolchain: ${CAJETA_CLANG} (LLVM ${CAJETA_CLANG_MAJOR}, matches compiler)")
 
 set(CAJETA_RT_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_runtime.c)
 set(CAJETA_RT_BC  ${CMAKE_CURRENT_BINARY_DIR}/cajeta_runtime.bc)
