@@ -2407,10 +2407,9 @@ namespace cajeta::buildtool {
             std::cout << "\nNative action capabilities:\n";
             // Hand-listed so the output's stable; pulled from
             // nativeActionCapabilities() above.
-            for (const char* name : {"echo", "copy", "mkdir",
-                                      "checksum", "sign", "verify",
-                                      "download", "exec", "build",
-                                      "clean", "test", "lint",
+            for (const char* name : {"exec", "copy", "delete", "mkdir",
+                                      "sign", "verify-sig", "version",
+                                      "download", "build", "clean", "test",
                                       "package", "upload", "publish"}) {
                 auto caps = nativeActionCapabilities(name);
                 std::cout << "  " << name << ": ";

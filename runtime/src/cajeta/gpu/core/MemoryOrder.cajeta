@@ -24,9 +24,10 @@ package cajeta.gpu.core;
  *     and most expensive.
  *
  * BACKENDS. CPU / AMD / NVPTX honour all five. Vulkan's memory model constrains
- * what `OpAtomic*`/`OpMemoryBarrier` accept: float atomics require storage-class
- * acquire/release semantics, so a `Relaxed` (or `SeqCst`) float atomic is raised
- * to `AcqRel` to stay `spirv-val`-clean (integer atomics honour `Relaxed`).
+ * what `OpAtomic*`/`OpMemoryBarrier` accept: a device-scope atomic must carry
+ * storage-class acquire/release semantics, so a `Relaxed` (or `SeqCst`) atomic is
+ * raised to `AcqRel` to stay `spirv-val`-clean. This clamp applies to BOTH integer
+ * and float atomics on Vulkan (see `vkClamp` in SpirvKernelLowering).
  */
 public enum MemoryOrder {
     Relaxed,   // 0 — atomicity only, no ordering (monotonic)

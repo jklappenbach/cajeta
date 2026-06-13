@@ -113,13 +113,13 @@ TEST(Phase11, firstDisallowedCapabilityCitesOffender) {
 }
 
 TEST(Phase11, nativeActionCatalogCoversFirstPartyActions) {
-    // Acceptance: every native action documented in the v1 catalog
-    // has a capability declaration. Catches future additions that
-    // forget to register their capability footprint.
-    for (const char* name : {"echo", "copy", "mkdir", "checksum",
-                              "sign", "verify", "download", "exec",
-                              "build", "clean", "test", "lint",
-                              "package", "upload", "publish"}) {
+    // Acceptance: every native action registered in ActionRegistry has a
+    // capability declaration. Catches future additions that forget to
+    // register their capability footprint.
+    for (const char* name : {"exec", "copy", "delete", "mkdir", "sign",
+                              "verify-sig", "version", "download", "build",
+                              "clean", "test", "package", "upload",
+                              "publish"}) {
         auto caps = nativeActionCapabilities(name);
         EXPECT_TRUE(caps.has_value()) << "missing caps for action: " << name;
     }

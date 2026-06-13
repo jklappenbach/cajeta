@@ -14,9 +14,12 @@ package cajeta.concurrent;
  * unwinds — see below). The protected value is handed to the closure and
  * the closure's result is stored back.
  *
- * Async behaviour (docs/stdlib/AsyncStatus.md): on the single-carrier
- * cooperative scheduler, acquiring a held lock from a fiber parks the
- * fiber and yields to the carrier rather than blocking the OS thread.
+ * Async behaviour (docs/stdlib/AsyncStatus.md): acquiring a held lock from
+ * a fiber parks the fiber and yields to its carrier rather than blocking the
+ * OS thread. The scheduler is a multi-carrier work-stealing pool by default
+ * (`CAJETA_CARRIERS`, default min(nproc, 4)); a fiber is pinned to its home
+ * carrier, and the lock wait queue is guarded by a pthread mutex so it is
+ * correct across carriers.
  *
  * v1 surface: `withLock` (mutate-and-store) + `get` (snapshot). A
  * compute-only `(T) -> R` read variant and a non-blocking `tryLock`

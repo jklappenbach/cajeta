@@ -89,8 +89,9 @@ classDeclaration
 
 // Zero-copy memory overlay onto a byte buffer (Views.md). Fields restricted to
 // types directly encodable in bytes (primitives, fixed/variable arrays, nested
-// views). Endianness annotation required at the declaration. Body reuses
-// classBody.
+// views). An endianness annotation (@BigEndian/@LittleEndian/@HostEndian) is
+// optional at the declaration; CajetaView defaults to host endianness when
+// absent. Body reuses classBody.
 viewDeclaration
     : VIEW identifier typeParameters?
       classBody

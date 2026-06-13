@@ -15,7 +15,7 @@ import cajeta.lang.String;
  * ```cajeta
  * try {
  *     file.read(buffer);
- * } catch (e: IoException) {
+ * } catch (IoException e) {
  *     log.warn(e.message);
  * }
  * ```

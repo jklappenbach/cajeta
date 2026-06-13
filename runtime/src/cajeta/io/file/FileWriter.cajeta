@@ -7,12 +7,13 @@ import cajeta.lang.String;
  * `docs/stdlib/io/file/FileWriter.md`.
  *
  * Returned by `File``.openWrite(p, mode)`. The caller hands in
- * `(data, len)` per call; internal buffering hides OS-level
- * short writes and batches small writes. Write `String` payloads
- * directly with `writeString`, raw bytes with `write`.
+ * `(data, len)` per call; the native write loops past OS-level short
+ * writes so every byte lands, but there is no user-space buffer —
+ * bytes go straight to the syscall. Write `String` payloads directly
+ * with `writeString`, raw bytes with `write`.
  *
- * The destructor flushes and closes the fd if `close()` wasn't
- * called.
+ * Call `close()` when done — there is no auto-close-on-drop destructor
+ * yet (planned; see `docs/stdlib/io/file/FileWriter.md`).
  *
  * ```cajeta
  * stack w = File.openWrite(path, mode);
@@ -30,9 +31,7 @@ public class FileWriter {
     public int32 fd;
 
     /**
-     * Bytes accepted from the caller since open (post-buffer-
-     * memcpy; not necessarily post-flush). Updated after each
-     * `write`.
+     * Bytes written to the fd since open. Updated after each `write`.
      */
     public int64 pos;
 
@@ -81,12 +80,12 @@ public class FileWriter {
     }
 
     /**
-     * Drain the user-space buffer into the OS via `write()`. Does
-     * NOT `fsync` — durability flushing is `File.sync()` (Phase
-     * E, the random-access surface).
+     * Flush hook. Writes are already unbuffered (they go straight to the
+     * `write()` syscall), so this is currently a no-op — kept for API
+     * symmetry and forward compatibility. It does NOT `fsync`; durability
+     * flushing is `File.sync()` (Phase E, the random-access surface).
      *
-     * Phase A: intrinsic-lowered to
-     * `__cajeta_file_flush(this.fd)`.
+     * Phase A: intrinsic-lowered to `__cajeta_file_flush(this.fd)` (no-op).
      */
     public void flush() {
         return;
