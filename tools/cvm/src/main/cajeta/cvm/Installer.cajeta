@@ -1,0 +1,140 @@
+package cvm;
+
+import cajeta.lang.System;
+import cajeta.lang.Optional;
+import cajeta.net.http.HttpClient;
+import cajeta.net.http.HttpResponse;
+import cajeta.codec.json.JsonReader;
+import cajeta.codec.json.JsonValue;
+import cajeta.codec.json.JsonObject;
+import cajeta.hash.Sha256;
+import cajeta.io.file.File;
+import cajeta.io.file.Path;
+
+// The network half of cvm install (D12 Phase 1): resolve a selector against
+// the release manifest, download the host-triple binary, verify its
+// SHA-256, install it under ~/.cajeta/versions/<version>/cajeta, and make it
+// the active toolchain. The manifest source is GitHub Releases (see
+// Catalog); the host triple comes from the `cajeta.host.triple` system
+// property the runtime publishes at startup (uname-derived).
+//
+// Manifest schema (per-release, self-describing):
+//   { "schemaVersion": 1,
+//     "version": "1.0.0",
+//     "assets": {
+//       "x86_64-linux-gnu": { "url": "https://.../cajeta-1.0.0-x86_64-linux-gnu",
+//                             "sha256": "<lowercase hex>" }, ... } }
+public final class Installer {
+
+    // Highest manifest schemaVersion this cvm understands. A manifest
+    // declaring a higher version is rejected (forward-incompatible) rather
+    // than mis-parsed — the version-independence contract (D12).
+    private static int32 SCHEMA_MAX = 1;
+
+    // Resolve + download + verify + install + activate. Returns 0 on
+    // success, 1 on any failure (diagnostics already printed).
+    public static int32 install(String home, String selector) {
+        String triple = System.property.get("cajeta.host.triple");
+        if (triple == null || triple.isEmpty()) {
+            System.stderr.println("cvm: cannot determine the host triple "
+                + "(cajeta.host.triple is unset).");
+            return 1;
+        }
+
+        HttpClient client = heap HttpClient();
+
+        // ── 1. fetch the manifest ───────────────────────────────────
+        String manifestUrl = Catalog.manifestUrl(selector);
+        HttpResponse mresp = client.get(manifestUrl);
+        if (mresp.status != 200) {
+            System.stderr.println("cvm: could not fetch the release manifest "
+                + "(HTTP " + mresp.status + ") " + manifestUrl);
+            return 1;
+        }
+
+        // ── 2. parse + resolve the asset for this host ──────────────
+        int8[] mbody = mresp.body;
+        JsonReader reader = heap JsonReader(mbody, mbody.count());
+        JsonValue root = reader.readValue();
+        JsonObject obj = root.asObject();
+
+        Optional<int32> schema = obj.getInt("schemaVersion");
+        if (schema.isEmpty() || schema.get() > SCHEMA_MAX) {
+            System.stderr.println("cvm: this manifest needs a newer cvm "
+                + "(schemaVersion beyond " + SCHEMA_MAX + "). Update cvm.");
+            return 1;
+        }
+
+        Optional<String> versionOpt = obj.getString("version");
+        if (versionOpt.isEmpty()) {
+            System.stderr.println("cvm: manifest is missing 'version'.");
+            return 1;
+        }
+        String version = versionOpt.get();
+
+        Optional<JsonObject> assetsOpt = obj.getObject("assets");
+        if (assetsOpt.isEmpty()) {
+            System.stderr.println("cvm: manifest is missing 'assets'.");
+            return 1;
+        }
+        JsonObject assets = assetsOpt.get();
+
+        Optional<JsonObject> assetOpt = assets.getObject(triple);
+        if (assetOpt.isEmpty()) {
+            System.stderr.println("cvm: no cajeta " + version
+                + " build for this host (" + triple + ").");
+            return 1;
+        }
+        JsonObject asset = assetOpt.get();
+
+        Optional<String> urlOpt = asset.getString("url");
+        Optional<String> shaOpt = asset.getString("sha256");
+        if (urlOpt.isEmpty() || shaOpt.isEmpty()) {
+            System.stderr.println("cvm: asset entry for " + triple
+                + " is missing 'url' or 'sha256'.");
+            return 1;
+        }
+        String url = urlOpt.get();
+        String expectedSha = shaOpt.get();
+
+        // ── 3. download the binary ──────────────────────────────────
+        System.stdout.println("cvm: downloading cajeta " + version
+            + " (" + triple + ")...");
+        HttpResponse aresp = client.get(url);
+        if (aresp.status != 200) {
+            System.stderr.println("cvm: download failed (HTTP "
+                + aresp.status + ") " + url);
+            return 1;
+        }
+        int8[] binary = aresp.body;
+        int64 binaryLen = binary.count();
+
+        // ── 4. verify the checksum ──────────────────────────────────
+        String actualSha = Sha256.hashHex(binary, binaryLen);
+        if (!actualSha.equals(expectedSha)) {
+            System.stderr.println("cvm: checksum mismatch for " + version
+                + " — refusing to install.");
+            System.stderr.println("  expected " + expectedSha);
+            System.stderr.println("  got      " + actualSha);
+            return 1;
+        }
+
+        // ── 5. install the bytes ────────────────────────────────────
+        Path.of(Home.versionDir(home, version)).mkdirs();
+        String binPath = Home.versionBin(home, version);
+        File.writeAllBytes(binPath, binary, (int32) binaryLen);
+        if (!Path.of(binPath).setExecutable()) {
+            System.stderr.println("cvm: warning: could not set the executable "
+                + "bit on " + binPath + ".");
+        }
+
+        // ── 6. make it the active toolchain ─────────────────────────
+        Toolchains.repointShim(home, version);
+        Toolchains.writeDefault(home, version);
+
+        System.stdout.println("cvm: installed cajeta " + version
+            + " and set it as the default.");
+        System.stdout.println("  " + Home.shimFile(home) + " -> " + binPath);
+        return 0;
+    }
+}

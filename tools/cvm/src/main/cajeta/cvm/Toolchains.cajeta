@@ -1,0 +1,81 @@
+package cvm;
+
+import cajeta.io.file.Path;
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+
+// Local toolchain management for cvm — the half of D12 Phase 1 that needs
+// no network: tracking which installed toolchain is active and repointing
+// the shim. The installed toolchains live at
+// `<home>/versions/<version>/cajeta` (the network `install` verb writes
+// them there + setExecutable); this class makes one of them the active
+// `<home>/bin/cajeta` shim and records the choice in `<home>/settings`.
+//
+// `settings` is a minimal line-based `key = value` file; Phase 1 uses a
+// single `default = <version>` key. A real TOML reader replaces the
+// hand parse here when settings grow more keys.
+public final class Toolchains {
+
+    // True if a toolchain binary is present at versions/<version>/cajeta.
+    public static boolean isInstalled(String home, String version) {
+        return Path.of(Home.versionBin(home, version)).exists();
+    }
+
+    // The active (default) toolchain version recorded in settings, or null
+    // if none has been set (or the settings file doesn't exist yet).
+    public static String activeVersion(String home) {
+        String path = Home.settingsFile(home);
+        if (!Path.of(path).exists()) {
+            return null;
+        }
+        FileReader reader = File.openRead(path);
+        String contents = reader.readString(4096);
+        reader.close();
+        return parseDefault(contents);
+    }
+
+    // Record `version` as the default toolchain in settings (truncating
+    // write). The home directory is created if missing. Returns true.
+    public static boolean writeDefault(String home, String version) {
+        Path.of(home).mkdirs();
+        FileWriter writer = File.openWrite(Home.settingsFile(home), OpenMode.WRITE);
+        writer.writeString("default = " + version + "\n");
+        writer.close();
+        return true;
+    }
+
+    // Repoint the active-toolchain shim (bin/cajeta) at
+    // versions/<version>/cajeta. Creates bin/ if missing and replaces any
+    // existing shim. Returns true on success (false if the symlink call
+    // failed — e.g. Windows v0.1, which has no elevation-free symlink).
+    public static boolean repointShim(String home, String version) {
+        Path.of(Home.binDir(home)).mkdirs();
+        Path shim   = Path.of(Home.shimFile(home));
+        Path target = Path.of(Home.versionBin(home, version));
+        return shim.symlinkTo(target);
+    }
+
+    // ── helpers ─────────────────────────────────────────────────────
+
+    // Pull the value out of a `default = <version>` settings line. Reads
+    // the first `=`, then up to the first newline (or end of file), and
+    // trims surrounding whitespace. Returns null when no `=` is present.
+    private static String parseDefault(String contents) {
+        int64 eq = contents.indexOf("=");
+        if (eq < 0L) {
+            return null;
+        }
+        int64 nl = contents.indexOf("\n");
+        int32 begin = (int32) (eq + 1L);
+        int32 end;
+        if (nl > eq) {
+            end = (int32) nl;
+        } else {
+            end = (int32) contents.size();
+        }
+        String value = contents.substring(begin, end);
+        return value.trim();
+    }
+}

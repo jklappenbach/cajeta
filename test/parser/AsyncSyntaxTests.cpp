@@ -177,13 +177,27 @@ TEST(AsyncSyntaxTests, mainThreadWaitsOnFiberHolder) {
 }
 
 // R5-A': implicit function-body scope. Even without an explicit
-// `scope { ... }`, the function body itself is a scope — every spawn
-// at the top level gets registered and waited at function exit. Same
-// probative shape as scopeWaitsForUnawaitedSpawns: hold the lock,
-// release inside the function body, the implicit function-body scope
-// waits for the worker fiber to finish lockRelease before main runs
-// lockDestroy. Without the implicit scope, lockDestroy would race the
-// worker's lock ops.
+// `scope { ... }`, the function body itself is a scope — every unawaited
+// spawn at the top level gets registered and joined at the function's
+// closing brace.
+//
+// That join point is the LAST thing run() does, which is the crucial
+// difference from scopeWaitsForUnawaitedSpawns: there, the explicit
+// `scope }` join lands mid-function, so main can safely lockDestroy(h)
+// AFTER it. Here there is no in-function statement past the implicit
+// join, so main has nowhere safe to destroy a lock the worker still
+// uses. So the worker owns the lock's entire lifetime — it acquires,
+// releases, and destroys h as its final act — and the implicit
+// function-body join makes run() wait for all of that before returning.
+// If the implicit scope did NOT join, the worker would be orphaned and
+// torn down mid-flight at JIT teardown (crash/hang), so a clean return
+// of 42 proves the join fired.
+//
+// (Earlier this destroyed h in main BEFORE the implicit join — a
+// use-after-free, since the cooperatively-scheduled worker only runs at
+// the join and then dereferenced the freed lock. Benign on glibc but a
+// hard segfault on mingw winpthreads; valgrind flagged the freed-lock
+// pthread_mutex_lock read.)
 TEST(AsyncSyntaxTests, implicitFunctionBodyScopeJoinsSpawn) {
     auto src =
         "package test;\n"
@@ -193,6 +207,7 @@ TEST(AsyncSyntaxTests, implicitFunctionBodyScopeJoinsSpawn) {
         "        Cajeta.lockAcquire(h);\n"
         "        int32 dummy = await spawn yielder();\n"
         "        Cajeta.lockRelease(h);\n"
+        "        Cajeta.lockDestroy(h);\n"
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
@@ -200,7 +215,6 @@ TEST(AsyncSyntaxTests, implicitFunctionBodyScopeJoinsSpawn) {
         "        Cajeta.lockAcquire(h);\n"
         "        spawn worker(h);\n"
         "        Cajeta.lockRelease(h);\n"
-        "        Cajeta.lockDestroy(h);\n"
         "        return 42;\n"
         "    }\n"
         "}\n";

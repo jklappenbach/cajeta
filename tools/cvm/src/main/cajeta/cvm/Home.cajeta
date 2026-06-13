@@ -1,0 +1,59 @@
+package cvm;
+
+import cajeta.lang.System;
+
+// Resolves cvm's state directory — where it installs and switches cajeta
+// toolchains. Per installer-plan.md (D12 / §2) cvm manages cajeta under
+// ~/.cajeta, honoring $CAJETA_HOME / $XDG_DATA_HOME. Resolution order:
+//
+//   1. $CAJETA_HOME              — explicit override, used verbatim.
+//   2. $XDG_DATA_HOME/cajeta     — XDG base-dir spec, when set.
+//   3. $HOME/.cajeta             — the default.
+//
+// The layout under the resolved home (created lazily by Phase 1):
+//   bin/cvm                  — the manager (only on PATH when shim-installed)
+//   bin/cajeta               — shim → the active toolchain (on PATH)
+//   versions/<version>/cajeta — each installed toolchain's binary
+//   settings                 — default toolchain + config (key = value)
+public final class Home {
+
+    // The resolved ~/.cajeta directory, or null if even $HOME is unset
+    // (a broken environment cvm can't recover from on its own).
+    public static String dir() {
+        String explicit = System.env.get("CAJETA_HOME");
+        if (explicit != null && !explicit.isEmpty()) {
+            return explicit;
+        }
+
+        String xdg = System.env.get("XDG_DATA_HOME");
+        if (xdg != null && !xdg.isEmpty()) {
+            return xdg + "/cajeta";
+        }
+
+        String home = System.env.get("HOME");
+        if (home != null && !home.isEmpty()) {
+            return home + "/.cajeta";
+        }
+
+        return null;
+    }
+
+    // Convenience sub-paths under the resolved home.
+    public static String binDir(String home)      { return home + "/bin"; }
+    public static String versionsDir(String home) { return home + "/versions"; }
+    public static String settingsFile(String home){ return home + "/settings"; }
+
+    // The active-toolchain shim — bin/cajeta, the `cajeta` that lands on PATH.
+    public static String shimFile(String home)    { return home + "/bin/cajeta"; }
+
+    // A specific installed toolchain's directory and its binary. These
+    // take two reference parameters and return a freshly built string, so
+    // they must return ownership (`#String`): the borrow checker can't
+    // attribute the result to a single parameter.
+    public static #String versionDir(String home, String version) {
+        return home + "/versions/" + version;
+    }
+    public static #String versionBin(String home, String version) {
+        return home + "/versions/" + version + "/cajeta";
+    }
+}

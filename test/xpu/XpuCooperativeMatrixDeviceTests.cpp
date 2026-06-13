@@ -23,6 +23,7 @@
 //
 
 #include "gtest/gtest.h"
+#include "../PortableEnv.h"   // portable setenv/unsetenv on MinGW
 
 #include "cajeta/xpu/vulkan/SpirvBackend.h"
 #include "cajeta/xpu/vulkan/SpirvKernelLowering.h"

@@ -51,6 +51,18 @@ target_link_libraries(${BINARY} PRIVATE
         GTest::gtest
         GTest::gtest_main)
 
+# Export dynamic symbols so the runtime's SIGSEGV/SIGABRT backtrace handler
+# (__cajeta_segv_handler -> backtrace_symbols_fd) can resolve NATIVE runtime
+# frames to names at crash time. Without this, a crash on a CI runner we can't
+# attach to (e.g. the aarch64 leg's parallel-stream SIGSEGVs) prints only
+# `binary(+0xoffset)` — useless without the exact binary to addr2line. JIT'd
+# frames still won't symbolize (not in the binary's symbol table), but the
+# native scheduler/runtime frames — the suspects — will. POSIX only.
+if(NOT WIN32)
+    set_target_properties(${BINARY} PROPERTIES ENABLE_EXPORTS ON)
+    target_link_options(${BINARY} PRIVATE -rdynamic)
+endif()
+
 # The build-tool HTTP test server (test/buildtool/TestHttpServer.h) speaks
 # Winsock2 on Windows; link the sockets library.
 if(WIN32)

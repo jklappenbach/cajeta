@@ -50,6 +50,11 @@ on:
         options:
           - dry-run
           - production
+      targets:
+        description: 'Targets to build (comma-separated triples, or "all"). Dry-run only — production always builds every target.'
+        required: false
+        type: string
+        default: 'all'
 
 permissions:
   contents: write   # needed for softprops/action-gh-release to create / update the Release
@@ -62,6 +67,48 @@ env:
   GIT_LFS_SKIP_SMUDGE: 1
 
 jobs:
+  # Resolve the build matrix. The canonical full target list lives here as
+  # JSON; on a tag push or a production dispatch it is used whole, so a real
+  # release always builds every target. On a DRY-RUN dispatch the `targets`
+  # input filters it (comma-separated triples, or "all") so platform-specific
+  # debugging triggers only the legs it needs — e.g. targets=aarch64-apple-darwin
+  # builds just the macOS leg, no wasted compute on the other three. This
+  # replaces the old "comment out matrix entries" hack (error-prone + had to be
+  # reverted before release). Each entry carries its own `shell` (consumed by
+  # defaults.run.shell below).
+  setup:
+    name: resolve matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.f.outputs.matrix }}
+    steps:
+      - name: Filter targets
+        id: f
+        run: |
+          set -euo pipefail
+          FULL='[
+            {"os":"ubuntu-latest","target":"x86_64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
+            {"os":"ubuntu-24.04-arm","target":"aarch64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
+            {"os":"macos-14","target":"aarch64-apple-darwin","archive_ext":"tar.gz","shell":"bash"},
+            {"os":"windows-latest","target":"x86_64-w64-mingw32","archive_ext":"zip","shell":"msys2 {0}"}
+          ]'
+          MODE='${{ github.event.inputs.mode }}'
+          SEL='${{ github.event.inputs.targets }}'
+          # Full matrix unless this is a dry-run dispatch with an explicit,
+          # non-"all" target list. (Production / tag push always builds all.)
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] \
+             || [ "$MODE" = "production" ] || [ -z "$SEL" ] || [ "$SEL" = "all" ]; then
+            M=$(echo "$FULL" | jq -c '{include:.}')
+          else
+            M=$(echo "$FULL" | jq -c --arg sel "$SEL" \
+                '($sel|split(",")|map(gsub("^ +| +$";""))) as $t | {include:[ .[] | select(.target as $x | $t|index($x)) ]}')
+            if [ "$(echo "$M" | jq '.include|length')" -eq 0 ]; then
+              echo "::error::targets='$SEL' matched no known target triples"; exit 1
+            fi
+          fi
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+          echo "::notice::building targets = $(echo "$M" | jq -c '[.include[].target]')"
+
   # Build the IntelliJ IDEA plugin once (plan §7). Its distribution zip is
   # downloaded by every compiler build job and embedded into the binary
   # (xxd -i in src/CMakeLists.txt) so `cajeta ide install` works from any
@@ -95,14 +142,14 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon -PpluginVersion="${PLUGIN_VERSION}" buildPlugin
 
-      # Structural / compatibility verification (242 … 261.*). Non-fatal: the
-      # JetBrains plugin verifier downloads IDE distributions and can be flaky /
-      # slow; a verifier hiccup shouldn't red the whole release. Tighten to a
-      # gate once it's proven stable in CI.
-      - name: Verify plugin (non-fatal)
-        working-directory: ide-plugins/idea
-        continue-on-error: true
-        run: ./gradlew --no-daemon -PpluginVersion="${PLUGIN_VERSION}" verifyPlugin
+      # NOTE: `verifyPlugin` was removed from the release path. The JetBrains
+      # plugin verifier spins up a full headless IDEA and downloads multiple
+      # IDE distributions; in CI it hung/exhausted the runner, and a lost
+      # runner fails the job even with continue-on-error — which then skips the
+      # whole compiler matrix (needs: plugin) and reds the release. It's a
+      # non-gating compatibility check with no release-blocking value, so it
+      # belongs in a dedicated PR/CI workflow, not here. (Installer plan §7:
+      # "tighten into a hard gate once proven stable" — it proved unstable.)
 
       - name: Upload plugin artifact
         uses: actions/upload-artifact@v4
@@ -142,43 +189,21 @@ jobs:
 
   build:
     name: build (${{ matrix.target }})
-    needs: plugin
+    needs: [setup, plugin]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-linux-gnu
-            archive_ext: tar.gz
-            shell: bash
-          - os: ubuntu-24.04-arm
-            target: aarch64-linux-gnu
-            archive_ext: tar.gz
-            shell: bash
-          # x86_64-apple-darwin removed from the matrix: GitHub-hosted
-          # macos-13 (Intel) runners are scarce + slow to dispatch
-          # (Apple stopped selling Intel Macs in 2022; runner pool is
-          # being wound down). Intel Mac users build from source —
-          # documented in RELEASING.md.
-          - os: macos-14
-            target: aarch64-apple-darwin
-            archive_ext: tar.gz
-            shell: bash
-          # Windows build uses MSYS2 / MinGW-w64 rather than MSVC.
-          # MSYS2's pacman repo ships pre-built mingw-w64 packages for
-          # LLVM, antlr4-runtime, etc. — no LLVM tarball download, no
-          # vcpkg-from-source builds, no MSVC env setup, no diaguids
-          # patching. The POSIX-ish surface (pthread via winpthreads,
-          # ucontext via libucontext) means cajeta_runtime.c compiles
-          # with minimal conditionals vs the heavy MSVC shim that would
-          # otherwise be needed. Resulting binary is native PE (no
-          # cygwin1.dll runtime dependency); target triple is
-          # x86_64-w64-mingw32.
-          - os: windows-latest
-            target: x86_64-w64-mingw32
-            archive_ext: zip
-            shell: 'msys2 {0}'
+      # Matrix resolved by the `setup` job. Full 4-target list on a release
+      # (tag push / production dispatch); filtered by the `targets` dispatch
+      # input on a dry-run. Target notes:
+      #   - x86_64-apple-darwin is intentionally absent (Intel Mac runners are
+      #     scarce/slow + being wound down; Intel users build from source, see
+      #     RELEASING.md).
+      #   - windows uses MSYS2/MinGW-w64 (its entry's shell is 'msys2 {0}'),
+      #     not MSVC — pacman ships prebuilt mingw-w64 LLVM/antlr4, the
+      #     POSIX-ish surface keeps cajeta_runtime.c's conditionals minimal,
+      #     and the result is a native PE (no cygwin1.dll dependency).
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
     defaults:
       run:
@@ -244,9 +269,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # Mirror setup.sh's install_linux_apt list, MINUS LLVM (provisioned
-          # separately below: the fork toolchain on x86_64-linux-gnu, distro
-          # LLVM 22 on the other legs).
+          # Mirror setup.sh's install_linux_apt list, MINUS LLVM — every leg
+          # fetches the cajeta-llvm fork toolchain below (no distro LLVM).
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             cmake \
             ninja-build \
@@ -258,111 +282,28 @@ jobs:
             vim-common \
             libxxhash-dev \
             libssl-dev \
+            libcurl4-openssl-dev \
             rpm \
             file
 
-      # x86_64-linux-gnu consumes the prebuilt fork toolchain (LLVM 23 + clang +
-      # lld) carrying the SPV_KHR_ray_query patches — see plans/c0/. This is the
-      # ONLY toolchain that can lower ray query; distro LLVM 22 cannot (and cajeta
-      # now references fork-only intrinsic enums, so it wouldn't even build against
-      # 22). Other Linux legs fall through to distro LLVM until their fork artifact
-      # is built (expand the gate as fork-build-llvm.yml adds host legs).
-      - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
-        # Legs that link the fork toolchain (carrying the SPIR-V ray-query +
-        # Tier-1 intrinsic patches). Windows is here because cajeta's Tier-1 SPIR-V
-        # codegen now references fork-only intrinsic enums that stock MSYS2 LLVM 22
-        # lacks — so the Windows release MUST link the fork (no distro fallback).
-        if: >-
-          (runner.os == 'Linux' && matrix.target == 'x86_64-linux-gnu') ||
-          (runner.os == 'Windows' && matrix.target == 'x86_64-w64-mingw32')
-        env:
-          # Bump when re-cutting the toolchain (new pinned base or new SPIR-V
-          # patches). r3 is the first release containing the ray-query lowering;
-          # the windows-x64 asset must be published under whatever tag this names
-          # (re-run fork-build-llvm.yml's build-windows job for this tag, or bump).
-          LLVM_RELEASE_TAG: cajeta-llvm-23-r3
-        run: |
-          set -euo pipefail
-          # The fork names assets by host (asset_os), NOT by cajeta's target triple:
-          # x86_64-linux-gnu -> linux-x64, aarch64-linux-gnu -> linux-arm64,
-          # x86_64-w64-mingw32 -> windows-x64 (see fork-build-llvm.yml). Map first.
-          case "${{ matrix.target }}" in
-            x86_64-linux-gnu)   ASSET_OS=linux-x64 ;;
-            aarch64-linux-gnu)  ASSET_OS=linux-arm64 ;;
-            x86_64-w64-mingw32) ASSET_OS=windows-x64 ;;
-            *) echo "::error::no fork asset_os mapping for ${{ matrix.target }}"; exit 1 ;;
-          esac
-          ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
-          URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
-          mkdir -p "$HOME/cajeta-llvm"
-          curl -fsSL "$URL" -o /tmp/llvm.tar.zst
-          tar --zstd -xf /tmp/llvm.tar.zst -C "$HOME/cajeta-llvm" --strip-components=1
-          echo "LLVM_DIR=$HOME/cajeta-llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
-          echo "$HOME/cajeta-llvm/bin" >> "$GITHUB_PATH"
-
-      # Legs without a fork artifact yet: distro LLVM 22 from apt.llvm.org. (These
-      # legs cannot lower ray query — release-only until their fork artifact lands.)
-      - name: Install distro LLVM 22 (Linux legs without a fork artifact)
-        if: runner.os == 'Linux' && matrix.target != 'x86_64-linux-gnu'
-        run: |
-          set -euo pipefail
-          # LLVM 22 isn't in Ubuntu's stock repos yet, so add the official
-          # apt.llvm.org source for this release's codename (serves amd64+arm64).
-          . /etc/os-release
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
-          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-22 main" \
-            | sudo tee /etc/apt/sources.list.d/llvm-22.list >/dev/null
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            clang-22 \
-            llvm-22-dev \
-            libllvm22
-          sudo apt-get install -y lld-22-dev || \
-            echo "::warning::lld-22-dev unavailable on this runner; --emit=exe will fall back to system linker"
-
-      # ---- macOS dependency install (brew) ------------------------------
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          # Homebrew on macOS-13 (Intel) is at /usr/local; on macos-14
-          # (Apple Silicon) it's at /opt/homebrew. `brew --prefix`
-          # abstracts that for us.
-          brew update
-          # Homebrew has no versioned llvm@22 formula; the unversioned `llvm`
-          # is currently 22.x. The compiler only needs the LLVM >= 21 API
-          # (the Triple-based lookupTarget / createTargetMachine), so tracking
-          # `llvm` is fine -- LLVM_DIR below pins CMake to whatever it resolves.
-          brew install \
-            cmake \
-            ninja \
-            llvm \
-            antlr4-cpp-runtime \
-            openjdk@21 \
-            googletest \
-            glog \
-            zstd \
-            xxhash
-          echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm" >> "$GITHUB_ENV"
-          # Apple's system clang doesn't know about the brew llvm headers/libs
-          # unless we point CMake at the brew prefix explicitly.
-          echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"
-
-      # ---- Windows: MSYS2 / MinGW-w64 ----------------------------------
+      # ---- Windows: MSYS2 / MinGW-w64 (set up BEFORE the fetch) ----------
       #
       # MSYS2's mingw-w64 environment provides a near-POSIX surface on
       # Windows (winpthreads, libucontext, etc.) so the Unix-style cajeta
-      # runtime compiles with minimal conditionals. All deps land via
-      # pacman — no LLVM tarball, no vcpkg-from-source, no MSVC env, no
-      # diaguids hack. Produces a native PE binary (no cygwin1.dll
-      # runtime dependency); the toolchain triple is x86_64-w64-mingw32.
+      # runtime compiles with minimal conditionals. Produces a native PE
+      # binary (no cygwin1.dll dependency); the toolchain triple is
+      # x86_64-w64-mingw32.
       #
-      # Java is installed via actions/setup-java rather than pacman —
-      # MSYS2's Java packaging is inconsistent (both mingw-w64-x86_64-jre
-      # and mingw-w64-x86_64-jdk-openjdk don't exist). setup-java works
-      # reliably across all platforms and adds java to PATH so MSYS2's
-      # bash inherits it.
+      # This leg's default shell is `msys2 {0}` (defaults.run.shell ->
+      # matrix.shell), so MSYS2 MUST be installed before any `run:` step that
+      # uses it — including the toolchain fetch below, which needs curl/zstd/
+      # tar from the MSYS2 environment. (On Linux/macOS these setup steps are
+      # skipped and the fetch runs in plain bash.)
+      #
+      # Java is installed via actions/setup-java rather than pacman — MSYS2's
+      # Java packaging is inconsistent (mingw-w64-x86_64-jre / -jdk-openjdk
+      # don't exist). setup-java works across all platforms and adds java to
+      # PATH so MSYS2's bash inherits it.
       - name: Setup Java (Windows)
         if: runner.os == 'Windows'
         uses: actions/setup-java@v4
@@ -375,7 +316,13 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: false
+          # update: true to MATCH the cajeta-llvm fork build (build-cajeta-llvm.yml
+          # also uses update: true). The fork's clang.exe/lld are mingw DYNAMIC
+          # exes linked against the mingw runtime DLLs (libstdc++, libzstd, …); a
+          # base-image (update: false) MSYS2 ships older DLLs missing exports they
+          # need, so clang.exe fails to load with 0xC0000139 (ENTRYPOINT_NOT_FOUND)
+          # at the runtime-bitcode compile. Matching update keeps the DLLs in sync.
+          update: true
           path-type: inherit  # inherit Windows PATH so `java` from setup-java is visible
           # NO mingw llvm/lld/clang here: this leg links the cajeta-llvm FORK
           # (fetched below), and a second stock LLVM 22 on PATH/in the lib search
@@ -386,6 +333,7 @@ jobs:
           # `clang` and in-process `lld` both come from the fork tree on PATH.
           # vulkan-headers: <vulkan/vulkan.h> for the runtime's Vulkan compute
           # path (the loader vulkan-1.dll is dlopen'd at run time, no link dep).
+          # tar: used (with zstd) to unpack the fork toolchain in the fetch step.
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
@@ -396,8 +344,87 @@ jobs:
             mingw-w64-x86_64-glog
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-curl
             mingw-w64-x86_64-vulkan-headers
+            tar
             vim
+
+      # EVERY target links the cajeta-llvm FORK toolchain (LLVM 23 + clang +
+      # lld) carrying the SPIR-V / SPV_KHR_ray_query patches — see plans/c0/.
+      # Stock distro/brew/mingw LLVM can't build a correct cajeta (it now
+      # references fork-only intrinsic enums), so there is NO fallback: the
+      # fork publishes one toolchain per target (build-cajeta-llvm.yml) and
+      # each leg fetches the asset matching its host.
+      - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
+        env:
+          # Bump when re-cutting the toolchain (new pinned base or new SPIR-V
+          # patches). r4 is the first release that publishes ALL four targets
+          # (linux-x64/arm64, macos-arm64, windows-x64).
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r4
+        run: |
+          set -euo pipefail
+          # The fork names assets by host (asset_os), NOT by cajeta's target triple:
+          # x86_64-linux-gnu -> linux-x64, aarch64-linux-gnu -> linux-arm64,
+          # aarch64-apple-darwin -> macos-arm64, x86_64-w64-mingw32 -> windows-x64
+          # (see build-cajeta-llvm.yml). Map first.
+          case "${{ matrix.target }}" in
+            x86_64-linux-gnu)     ASSET_OS=linux-x64 ;;
+            aarch64-linux-gnu)    ASSET_OS=linux-arm64 ;;
+            aarch64-apple-darwin) ASSET_OS=macos-arm64 ;;
+            x86_64-w64-mingw32)   ASSET_OS=windows-x64 ;;
+            *) echo "::error::no fork asset_os mapping for ${{ matrix.target }}"; exit 1 ;;
+          esac
+          ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
+          URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
+          DEST="$HOME/cajeta-llvm"
+          mkdir -p "$DEST"
+          # Bare relative filename: resolves in $CWD (the workspace) for BOTH
+          # msys2's tools and the native mingw curl/zstd — avoids the MSYS
+          # '/tmp' -> 'C:\tmp' translation trap when a native binary gets the path.
+          curl -fsSL "$URL" -o llvm.tar.zst
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # mingw GNU tar's --zstd plugin lookup is unreliable; pipe zstd
+            # explicitly (msys tar just reads the plain tarstream from stdin).
+            # A native (mingw) CMake later can't resolve an MSYS '/home/...'
+            # mount path, so emit LLVM_DIR / PATH in Windows (C:/ and C:\) form.
+            zstd -dc llvm.tar.zst | tar -x -C "$DEST" --strip-components=1
+            echo "LLVM_DIR=$(cygpath -m "$DEST")/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "$(cygpath -w "$DEST")\\bin" >> "$GITHUB_PATH"
+          else
+            tar --zstd -xf llvm.tar.zst -C "$DEST" --strip-components=1
+            echo "LLVM_DIR=$DEST/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "$DEST/bin" >> "$GITHUB_PATH"
+          fi
+
+      # ---- macOS dependency install (brew) ------------------------------
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          # Homebrew on macOS-13 (Intel) is at /usr/local; on macos-14
+          # (Apple Silicon) it's at /opt/homebrew. `brew --prefix`
+          # abstracts that for us.
+          brew update
+          # No brew `llvm` here: macOS links the cajeta-spirv FORK toolchain
+          # (fetched above, which sets LLVM_DIR), same as every other target —
+          # stock LLVM lacks the fork-only SPIR-V intrinsics cajeta needs.
+          # coreutils provides `gtimeout`: macOS has no GNU `timeout`, which
+          # the test harness needs for its per-test wall-clock cap. Without it
+          # the harness falls back to running tests untimed (a hang could stall
+          # a worker), so install it to keep the timeout protection on macOS.
+          brew install \
+            cmake \
+            ninja \
+            antlr4-cpp-runtime \
+            openjdk@21 \
+            googletest \
+            glog \
+            zstd \
+            xxhash \
+            coreutils
+          # Apple's system clang doesn't know about the brew llvm headers/libs
+          # unless we point CMake at the brew prefix explicitly.
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"
 
       # ---- Fetch the prebuilt IDE plugin for embedding ------------------
       # The `plugin` job built Cajeta's IDEA plugin once; drop its zip where
@@ -453,17 +480,41 @@ jobs:
       # codegen/dispatch smoke. NO_BUILD=1 — the Build step above already
       # built the tree; the script just runs against it (sharded).
       #
-      # HARD GATE on the primary platform (x86_64-linux-gnu) only. On every
-      # other target it runs but failures are non-fatal
-      # (`continue-on-error: true`) — the binary shipped by --emit=obj works
-      # fine, but JIT-driven tests can hit platform-specific lowering issues
-      # (e.g. __aarch64_outline_atomics_* helpers on ARM Linux LLJIT,
-      # __emutls_get_address on macOS arm64) that don't affect AOT releases.
-      # Known issues are tracked separately; gating the release on them would
-      # be too tight a contract for v0.x.
+      # HARD GATE on ALL FOUR targets. A failing release-test run fails the
+      # leg (and the run) — no exceptions. The earlier per-target masking
+      # (continue-on-error on the non-x86 legs) hid genuine JIT lowering bugs:
+      # the aarch64 sret call-site ABI crash, the macOS missing-fp128-builtins
+      # materialization failure, and the Windows fabsf / hash_float128 ABI
+      # failures all shipped "green" under it. Those are now fixed at the
+      # source (not masked), so every leg gates honestly. NOTE: `continue-on-
+      # error` does NOT just skip the failure — it also rewrites the step's
+      # `conclusion` to `success` (only `outcome` stays `failure`), so a masked
+      # leg looks green in the API too. Keep this a hard gate.
       - name: Run release tests
-        continue-on-error: ${{ matrix.target != 'x86_64-linux-gnu' }}
-        run: NO_BUILD=1 ./release_tests.sh
+        env:
+          # Windows JIT compiles are ~40-60s each (vs ~15s on macOS, ~5s on
+          # Linux); tests that JIT multiple programs (the uber-archive dedup,
+          # the double-compile stderr-routing test) legitimately exceed the
+          # 120s per-test default and were killed mid-progress. Give the
+          # Windows leg headroom; the fast legs keep the default.
+          TEST_TIMEOUT: ${{ matrix.target == 'x86_64-w64-mingw32' && '300' || '120' }}
+        run: NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
+
+      # Persist the raw per-shard test output (full gtest failure text +
+      # crash markers, kept by KEEP_LOGS above) as an artifact. if: always()
+      # — the logs matter MOST when the test step failed, and on non-primary
+      # targets that failure is masked by continue-on-error, leaving the
+      # step's compact summary (test names only) as the sole trace. With the
+      # artifact, a red/masked leg can be diagnosed from the run page without
+      # reproducing on that platform.
+      - name: Upload test run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.target }}
+          path: run-logs/
+          if-no-files-found: ignore
+          retention-days: 14
 
       # ---- Provision the installer toolchain ----------------------------
       # WiX Toolset for the Windows MSI. Pinned to v5: v6/v7 require accepting
@@ -538,6 +589,35 @@ jobs:
           [ -f LICENSE ] && cp LICENSE "$STAGE/" || true
           echo "STAGE_DIR=$STAGE" >> "$GITHUB_ENV"
 
+      # ---- cvm download asset (D12) ------------------------------------
+      # cvm installs the BARE binary — it writes the downloaded bytes
+      # straight to ~/.cajeta/versions/<ver>/cajeta and chmod +x, with no
+      # tar/zip extractor. So publish the raw executable per target (named
+      # by triple) plus its SHA-256 in a small `<triple>.cvmmeta` metadata
+      # file that the release job folds into index.json (the cvm manifest).
+      - name: Stage cvm download asset + checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.ref_version }}"
+          T="${{ matrix.target }}"
+          mkdir -p cvm-dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN=build/src/cajeta.exe
+            ASSET="cajeta-v${V}-${T}.exe"
+          else
+            BIN=build/src/cajeta
+            ASSET="cajeta-v${V}-${T}"
+          fi
+          cp "$BIN" "cvm-dist/${ASSET}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            SHA=$(sha256sum "cvm-dist/${ASSET}" | cut -d' ' -f1)
+          else
+            SHA=$(shasum -a 256 "cvm-dist/${ASSET}" | cut -d' ' -f1)
+          fi
+          printf '%s\t%s\t%s\n' "$T" "$ASSET" "$SHA" > "cvm-dist/${T}.cvmmeta"
+          echo "cvm asset: ${ASSET}  sha256=${SHA}"
+
       - name: Archive (tar.gz)
         if: matrix.archive_ext == 'tar.gz'
         run: tar -czf "${STAGE_DIR}.tar.gz" "$STAGE_DIR"
@@ -558,6 +638,7 @@ jobs:
           path: |
             cajeta-v${{ steps.version.outputs.ref_version }}-${{ matrix.target }}.tar.gz
             cajeta-v${{ steps.version.outputs.ref_version }}-${{ matrix.target }}.zip
+            cvm-dist/*
             build/*.deb
             build/*.rpm
             build/*.msi
@@ -569,10 +650,13 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    # `if: always()` so partial-matrix successes still publish what was
-    # built. Use `needs.build.result != 'cancelled'` to suppress publish
-    # on a user-initiated cancel.
-    if: always() && needs.build.result != 'cancelled'
+    # Publish ONLY when every build leg succeeded. A release is an all-or-
+    # nothing set — shipping a tag with a missing target (or, worse, marking
+    # it "latest" with only the IDE plugin because the compiler legs failed)
+    # is actively harmful: cvm would resolve a manifest with no/partial
+    # binaries. `needs.build.result == 'success'` is true only if all matrix
+    # legs passed; `always()` keeps this evaluable rather than auto-skipped.
+    if: always() && needs.build.result == 'success'
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -605,9 +689,26 @@ jobs:
             TAG=""
             REL_NAME=""
           fi
+          # ref_version mirrors the build job: the version without a leading
+          # 'v', used in the cvm asset filenames + the manifest `version`.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            REF="${GITHUB_REF_NAME#v}"
+          else
+            REF="$V"
+          fi
+          # Pre-release detection: a semver pre-release suffix (the `-` in
+          # `v0.7.0-rc1`, `-beta1`, etc.) means this must NOT be marked the
+          # "latest" release. Computed explicitly rather than relying on the
+          # release action's auto-detection, which has proven unreliable.
+          case "$TAG" in
+            *-*) PRERELEASE="true" ;;
+            *)   PRERELEASE="false" ;;
+          esac
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref_version=$REF" >> "$GITHUB_OUTPUT"
           echo "release_name=$REL_NAME" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -617,21 +718,60 @@ jobs:
       - name: Show staged artifacts
         run: ls -laR artifacts
 
+      # ---- cvm manifest (index.json) -----------------------------------
+      # Fold every build job's `<triple>.cvmmeta` (triple, asset filename,
+      # sha256) into one self-describing per-release manifest cvm fetches
+      # via the stable `releases/{latest,download/<tag>}/download/index.json`
+      # URL. Also collects the raw per-triple binaries cvm downloads. The
+      # manifest + binaries upload only on production (the release step is
+      # gated on mode), but assembling always lets dry-run inspect it.
+      - name: Assemble cvm manifest (index.json)
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.params.outputs.ref_version }}"
+          TAG="${{ steps.params.outputs.tag }}"
+          # Dry-run has no tag; use the would-be tag so URLs are well-formed.
+          [ -n "$TAG" ] || TAG="v${V}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          mkdir -p release-assets
+          ASSETS=""
+          while IFS=$'\t' read -r T ASSET SHA; do
+            [ -n "$T" ] || continue
+            ENTRY="\"${T}\": { \"url\": \"${BASE}/${ASSET}\", \"sha256\": \"${SHA}\" }"
+            if [ -z "$ASSETS" ]; then ASSETS="$ENTRY"; else ASSETS="${ASSETS}, ${ENTRY}"; fi
+          done < <(find artifacts -type f -name '*.cvmmeta' -exec cat {} + 2>/dev/null | sort)
+          if [ -z "$ASSETS" ]; then
+            echo "::warning::no .cvmmeta files found — skipping cvm manifest"
+            exit 0
+          fi
+          printf '{ "schemaVersion": 1, "version": "%s", "assets": { %s } }\n' \
+            "$V" "$ASSETS" > release-assets/index.json
+          echo "=== index.json ==="; cat release-assets/index.json
+          # The bare binaries cvm downloads (raw exe per triple — not the
+          # tarballs/zips, which cvm can't extract).
+          find artifacts -type f -name 'cajeta-v*' \
+            ! -name '*.tar.gz' ! -name '*.zip' -exec cp {} release-assets/ \;
+          echo "=== release-assets ==="; ls -la release-assets
+
       - name: Create / update GitHub Release
         # Skip on dry-run: artifacts uploaded by the build job stay
         # available as Actions artifacts (downloadable from the workflow
         # run page, 90-day default expiry), but no public Release or
         # git tag is created. That's the whole point of dry-run mode.
         #
-        # Pre-releases: softprops/action-gh-release auto-detects from
-        # the tag's semver — `v0.2.0-rc1` and similar suffixed tags
-        # land as pre-releases automatically, regular `v0.2.0` tags
-        # land as "latest". No explicit prerelease flag needed.
+        # Pre-releases: a `-`-suffixed semver tag (`v0.7.0-rc1`) is marked
+        # prerelease and explicitly kept off "latest" via make_latest. We set
+        # both flags explicitly (steps.params.outputs.prerelease) rather than
+        # trusting the action's auto-detection, which published a `-rc1` tag
+        # as "latest" in practice.
         if: steps.params.outputs.mode != 'dry-run'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.params.outputs.tag }}
           name: ${{ steps.params.outputs.release_name }}
+          prerelease: ${{ steps.params.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.params.outputs.prerelease != 'true' }}
           body: |
             Automated release of cajeta `${{ steps.params.outputs.tag }}`.
 
@@ -648,6 +788,8 @@ jobs:
             artifacts/**/*.msi
             artifacts/**/*.pkg
             artifacts/**/*.sha256
+            release-assets/index.json
+            release-assets/cajeta-v*
 
       - name: Dry-run summary
         if: steps.params.outputs.mode == 'dry-run'

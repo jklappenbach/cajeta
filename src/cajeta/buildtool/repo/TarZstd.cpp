@@ -1,6 +1,13 @@
 #include "cajeta/buildtool/repo/TarZstd.h"
 
+// ZSTD_getErrorCode is an "experimental" API gated behind
+// ZSTD_STATIC_LINKING_ONLY in newer zstd headers (older ones exposed it
+// from <zstd.h> directly). Define it before the include so the decl is
+// visible; the symbol itself is exported by the shared libzstd. The
+// ZSTD_error_* enum lives in <zstd_errors.h>.
+#define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
+#include <zstd_errors.h>
 
 #include <array>
 #include <cstring>

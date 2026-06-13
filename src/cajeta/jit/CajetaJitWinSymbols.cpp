@@ -37,6 +37,34 @@ extern "C" void ___chkstk_ms(void);
 extern "C" void sincos(double, double*, double*);
 extern "C" void sincosf(float, float*, float*);
 
+// libm math functions the stdlib's Math intrinsics + float ops lower to. These
+// are statically linked from libm/libmingwex but absent from the host PE export
+// table, so the JIT's process-symbol generator can't see them — every
+// math-using JIT module then fails to materialize ("Symbols not found: [fabsf]"
+// was the first miss, which cascaded to a whole-module materialization failure
+// and failed every Windows release test). Declared extern "C" (not via <math.h>)
+// to dodge mingw header macro/inline expansion, same as sincos above. Bind by
+// address below. POSIX hosts export these from libm, so this is Windows-only.
+extern "C" {
+    float  fabsf(float);     double fabs(double);
+    float  sqrtf(float);     double sqrt(double);
+    float  powf(float, float); double pow(double, double);
+    float  expf(float);      double exp(double);
+    float  logf(float);      double log(double);
+    float  log10f(float);    double log10(double);
+    float  log2f(float);     double log2(double);
+    float  sinf(float);      double sin(double);
+    float  cosf(float);      double cos(double);
+    float  tanf(float);      double tan(double);
+    float  ceilf(float);     double ceil(double);
+    float  floorf(float);    double floor(double);
+    float  roundf(float);    double round(double);
+    float  truncf(float);    double trunc(double);
+    float  fmodf(float, float); double fmod(double, double);
+    float  fminf(float, float); double fmin(double, double);
+    float  fmaxf(float, float); double fmax(double, double);
+}
+
 namespace cajeta::jit {
 
 #define CJ_SYM(jitname, fn) { jitname, reinterpret_cast<void*>(fn) }
@@ -61,6 +89,24 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
+    // libm — see the extern "C" block above for why these need binding.
+    CJ_SYM("fabsf",  &fabsf),   CJ_SYM("fabs",   &fabs),
+    CJ_SYM("sqrtf",  &sqrtf),   CJ_SYM("sqrt",   &sqrt),
+    CJ_SYM("powf",   &powf),    CJ_SYM("pow",    &pow),
+    CJ_SYM("expf",   &expf),    CJ_SYM("exp",    &exp),
+    CJ_SYM("logf",   &logf),    CJ_SYM("log",    &log),
+    CJ_SYM("log10f", &log10f),  CJ_SYM("log10",  &log10),
+    CJ_SYM("log2f",  &log2f),   CJ_SYM("log2",   &log2),
+    CJ_SYM("sinf",   &sinf),    CJ_SYM("sin",    &sin),
+    CJ_SYM("cosf",   &cosf),    CJ_SYM("cos",    &cos),
+    CJ_SYM("tanf",   &tanf),    CJ_SYM("tan",    &tan),
+    CJ_SYM("ceilf",  &ceilf),   CJ_SYM("ceil",   &ceil),
+    CJ_SYM("floorf", &floorf),  CJ_SYM("floor",  &floor),
+    CJ_SYM("roundf", &roundf),  CJ_SYM("round",  &round),
+    CJ_SYM("truncf", &truncf),  CJ_SYM("trunc",  &trunc),
+    CJ_SYM("fmodf",  &fmodf),   CJ_SYM("fmod",   &fmod),
+    CJ_SYM("fminf",  &fminf),   CJ_SYM("fmin",   &fmin),
+    CJ_SYM("fmaxf",  &fmaxf),   CJ_SYM("fmax",   &fmax),
     // Stateful CRT functions that maintain process-global tables — must resolve
     // to the same CRT instance as the host binary (see JitWinSymbols.c).
     CJ_SYM("_commit",          &::_commit),
