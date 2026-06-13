@@ -3502,6 +3502,13 @@ static void __cajeta_segv_handler(int signo, siginfo_t* info, void* uctx) {
     void* frames[64];
     int n = backtrace(frames, 64);
     backtrace_symbols_fd(frames, n, 2 /*stderr*/);
+    // Dump the running thread's drop chain — its entries carry cajeta source
+    // tags (file:line of the owner being dropped). If the fault is mid-drop
+    // (a double-drop / freed-then-freed-again pointer, which the libc free
+    // frames in the aarch64 backtraces suggest), this names the cajeta-level
+    // objects in flight — the one piece of source-level context a JIT'd
+    // backtrace can't give.
+    __cajeta_dump_drop_chain();
     // Chain to the previous handler, else restore default and re-raise so the
     // process dies with the correct signal (and CI records exit 139/138).
     struct sigaction* prev =
