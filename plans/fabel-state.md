@@ -10,7 +10,7 @@ Three independent problems, NOT one. They have been getting conflated under
 | Leg | rc3 result | Root cause | Status |
 |-----|-----------|-----------|--------|
 | **x86_64-linux** (hard gate) | **474/474 PASS, 0 crash** | — | ✅ GREEN |
-| **aarch64-linux** | 58 crashes, exit 139 (SIGSEGV) | parallel-**stream dispatch** race (distinct from the fixed UAF) | ❌ open |
+| **aarch64-linux** | ~~58 crashes~~ → **0** | sret call-site ABI bug (x8 vs x0); see [[sret-callsite-abi-arm]] | ✅ FIXED (run 27457698391: 0 crashes, carrier probe 10/10 exit 0) |
 | **aarch64-apple-darwin** | 424 fail, 0 crash, ~14s each | JIT can't resolve `__trunctfdf2`, `__fixtfdi` | ❌ open |
 | **x86_64-w64-mingw32** | (rc2: 425 fail) | almost certainly same JIT-symbol class as macOS | ❌ open (rc3 pending) |
 
