@@ -313,10 +313,13 @@ namespace cajeta {
                                 + bname + " on parameter '" + param.name
                                 + "' — " + bname + " admits only primitive "
                                 + (bname == "Floating"
-                                    ? "float32/float64"
+                                    ? "floating-point (float16, bfloat16, "
+                                      "float32, float64, float128, and the "
+                                      "low-precision float8/float6/float4 formats)"
                                     : (bname == "Integral"
-                                        ? "signed/unsigned int8..int64"
-                                        : "numeric (int8..int64, uint8..uint64, float32, float64)"))
+                                        ? "integer (int8..int128, uint8..uint128)"
+                                        : "numeric (any integer or floating-point "
+                                          "primitive)"))
                                 + " arguments",
                             "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
                     }

@@ -14,7 +14,7 @@ import cajeta.lang.String;
  * try {
  *     Path.of("/etc/passwd/child").mkdirs();
  * } catch (NotDirectoryException e) {
- *     log.warn(e.getMessage());
+ *     log.warn(e.message);
  * }
  * ```
  */

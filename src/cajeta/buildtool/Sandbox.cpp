@@ -56,25 +56,25 @@ namespace cajeta::buildtool {
     std::optional<std::set<Capability>>
     nativeActionCapabilities(const std::string& actionName) {
         using C = Capability;
-        // Hand-tabulated catalog. Keep in sync with
-        // docs/BuildTool.md "Native action catalog".
+        // Hand-tabulated catalog — one entry per action registered in
+        // ActionRegistry (Action.cpp). Keep in sync with that registry and
+        // docs/BuildTool.md "Native action catalog". (Planned actions such as
+        // lint/doc/fmt are intentionally absent until they register.)
         static const std::map<std::string, std::set<C>> table = {
-            {"echo",     {}},
-            {"copy",     {C::Filesystem}},
-            {"mkdir",    {C::Filesystem}},
-            {"checksum", {C::Filesystem}},
-            {"sign",     {C::Filesystem}},
-            {"verify",   {C::Filesystem}},
-            {"download", {C::Filesystem, C::Network, C::Process}},
-            {"exec",     {C::Filesystem, C::Process, C::Env}},
-            {"build",    {C::Filesystem, C::Process}},
-            {"clean",    {C::Filesystem}},
-            {"test",     {C::Filesystem, C::Process}},
-            {"lint",     {C::Filesystem, C::Process}},
-            {"package",  {C::Filesystem, C::Process}},
-            {"upload",   {C::Filesystem, C::Network, C::Process}},
-            {"publish",  {C::Filesystem, C::Network, C::Process}},
-            {"trust-verify", {C::Filesystem}},
+            {"exec",       {C::Filesystem, C::Process, C::Env}},
+            {"copy",       {C::Filesystem}},
+            {"delete",     {C::Filesystem}},
+            {"mkdir",      {C::Filesystem}},
+            {"sign",       {C::Filesystem}},
+            {"verify-sig", {C::Filesystem}},
+            {"version",    {C::Filesystem}},
+            {"download",   {C::Filesystem, C::Network, C::Process}},
+            {"build",      {C::Filesystem, C::Process}},
+            {"clean",      {C::Filesystem}},
+            {"test",       {C::Filesystem, C::Process}},
+            {"package",    {C::Filesystem, C::Process}},
+            {"upload",     {C::Filesystem, C::Network, C::Process}},
+            {"publish",    {C::Filesystem, C::Network, C::Process}},
         };
         auto it = table.find(actionName);
         if (it == table.end()) return std::nullopt;

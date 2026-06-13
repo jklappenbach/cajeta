@@ -8,14 +8,15 @@ import cajeta.lang.String;
  *
  * Returned by `File.openRead(p)` (see `File`). The caller drives
  * the byte loop: call `read(buf, max)` repeatedly until it returns
- * 0 (EOF). A short return (less than `max` but non-zero) is NOT EOF
- * — keep reading.
+ * 0 (EOF). The native read drains OS-level short reads in a loop, so
+ * it returns `max` only while more data remains; a short return (less
+ * than `max`, including 0) means EOF was reached on this call. There
+ * is no user-space buffer — bytes go straight into the caller's array
+ * via the syscall. The `fd` field holds the OS file descriptor;
+ * zero-or-positive means the underlying fd is live.
  *
- * Internal 8 KiB buffer hides OS-level short reads. The `fd` field
- * holds the OS file descriptor; closing zero-or-positive means
- * the underlying fd is live.
- *
- * The destructor closes the fd if `close()` wasn't called.
+ * Call `close()` when done — there is no auto-close-on-drop destructor
+ * yet (planned; see `docs/stdlib/io/file/FileReader.md`).
  *
  * ## Usage
  *
@@ -119,8 +120,8 @@ public class FileReader {
     }
 
     /**
-     * Close the underlying fd. Idempotent; the destructor also
-     * calls this for callers that don't explicitly close.
+     * Close the underlying fd. Idempotent. Required — there is no
+     * auto-close-on-drop destructor yet.
      *
      * Phase A: intrinsic-lowered to
      * `__cajeta_file_close(this.fd)` and `this.fd = -1`.
