@@ -467,6 +467,40 @@ jobs:
           ./build/src/cajeta --version
           ./build/src/cajeta --version --verbose
 
+      # ---- TEMP DEBUG: symbolized ARM crash backtrace (remove before GA) -
+      # The aarch64-linux parallel-stream SIGSEGVs fault inside JIT'd code
+      # (unsymbolized bare addresses in the runtime SIGSEGV handler's
+      # backtrace_symbols_fd dump). gdb + CAJETA_JIT_GDB=1 enables LLVM ORC's
+      # GDB-JIT registration so gdb resolves the JIT frames to cajeta function
+      # names — naming the exact drop/free site. Also probes carrier-count
+      # dependence (does CAJETA_CARRIERS=1 dodge it?). Non-fatal (`|| true`).
+      - name: TEMP DEBUG ARM crash backtrace
+        if: matrix.target == 'aarch64-linux-gnu'
+        run: |
+          set +e
+          sudo apt-get install -y --no-install-recommends gdb
+          T=ParallelStreamP1Tests.parallelReduceSumsCorrectly
+          echo "================ gdb symbolized backtrace ($T) ================"
+          CAJETA_JIT_GDB=1 CAJETA_SOURCE_ROOT="$PWD" \
+            gdb -batch \
+              -ex 'set pagination off' \
+              -ex 'set confirm off' \
+              -ex run \
+              -ex 'echo \n==== bt (crashing thread) ====\n' \
+              -ex 'bt' \
+              -ex 'echo \n==== thread apply all bt ====\n' \
+              -ex 'thread apply all bt' \
+              --args ./build/test/cajeta_test --gtest_filter="$T" 2>&1 | head -300
+          echo "================ carrier-dependence probe ================"
+          for c in 1 4; do
+            for i in 1 2 3 4 5; do
+              CAJETA_CARRIERS=$c CAJETA_SOURCE_ROOT="$PWD" \
+                ./build/test/cajeta_test --gtest_filter="$T" >/dev/null 2>&1
+              echo "CAJETA_CARRIERS=$c run=$i exit=$?"
+            done
+          done
+          true
+
       # ---- Run the release regression subset ----------------------------
       #
       # NOT the full ~1725-test battery — running that on all four matrix
