@@ -869,6 +869,7 @@ static inline int __cajeta_w32_swapcontext(ucontext_t* from, ucontext_t* to) {
 
 #else
 #include <ucontext.h>
+#include <sys/mman.h>   // mmap/mprotect for guard-paged fiber stacks
 #endif
 #include <string.h>
 
@@ -900,15 +901,18 @@ static inline int __cajeta_swapcontext(ucontext_t* from, ucontext_t* to) {
 // Per-fiber stack size. A fiber runs arbitrary Cajeta code, which routinely
 // calls down into native C libraries (OpenSSL during a TLS handshake parses an
 // X.509 chain, runs ECDSA P-256, decodes ASN.1 — a call tree that alone wants
-// well over 64 KB of stack). The fiber stack is a plain `malloc` with NO guard
-// page, so an overflow does not fault cleanly — it silently scribbles over
-// adjacent heap and surfaces later as a SIGSEGV (full speed) or a wedged
-// scheduler (under a debugger, where the heap layout differs). 64 KB was enough
-// for the shallow channel/fan-out fibers the early tests exercised but far too
-// little for a fiber that drives a real native library; size it like a
-// conventional OS thread stack (1 MB) so any reasonable native call depth fits.
-// Overridable via $CAJETA_FIBER_STACK_KB for pathological depths or tight
-// memory budgets.
+// well over 64 KB of stack). 64 KB was enough for the shallow channel/fan-out
+// fibers the early tests exercised but far too little for a fiber that drives
+// a real native library; size it like a conventional OS thread stack (1 MB) so
+// any reasonable native call depth fits. Overridable via $CAJETA_FIBER_STACK_KB
+// for pathological depths or tight memory budgets.
+//
+// On POSIX the stack is an mmap'd region with a PROT_NONE guard page below it
+// (stacks grow down), so an overflow faults cleanly AT the overflow site
+// instead of silently scribbling over adjacent heap and surfacing later as
+// heap corruption far from the bug (see __cajeta_fiber_stack_alloc). On
+// Windows the Win32 fiber shim ignores this buffer entirely — CreateFiber
+// allocates its own stack with the OS's standard guard pages.
 #define CAJETA_FIBER_STACK_SIZE (1024 * 1024)
 
 // Resolve the per-fiber stack size once, honoring $CAJETA_FIBER_STACK_KB (a
@@ -928,6 +932,74 @@ static size_t __cajeta_fiber_stack_size(void) {
         cached = sz;
     }
     return cached;
+}
+
+// Allocate / free one fiber stack of __cajeta_fiber_stack_size() bytes.
+//
+// POSIX: an anonymous mmap of guard-page + stack, with the LOWEST page made
+// PROT_NONE — stacks grow down on every supported target, so an overflow hits
+// the guard and faults cleanly at the overflowing frame instead of corrupting
+// whatever the heap happened to place below the buffer. The returned pointer
+// is the USABLE base (just above the guard); ss_sp/ss_size wiring at the
+// call site is unchanged. The stack size is rounded up to a page multiple so
+// free can reconstruct the exact mapping from the cached size alone.
+//
+// Windows: plain malloc, as before — the Win32 fiber shim never uses this
+// buffer (CreateFiber allocates its own guarded stack); it exists only so the
+// fiber init/teardown paths stay uniform across platforms.
+//
+// Allocation failure aborts with a message (matches the prior malloc-fail
+// behavior): a program that cannot allocate a fiber stack cannot run its task.
+static size_t __cajeta_fiber_stack_alloc_size(void) {
+#if defined(_WIN32)
+    return __cajeta_fiber_stack_size();
+#else
+    static size_t cached = 0;
+    if (cached == 0) {
+        size_t page = (size_t) sysconf(_SC_PAGESIZE);
+        size_t sz = __cajeta_fiber_stack_size();
+        cached = (sz + page - 1) & ~(page - 1);   // round up to page multiple
+    }
+    return cached;
+#endif
+}
+
+static void* __cajeta_fiber_stack_alloc(void) {
+#if defined(_WIN32)
+    void* p = malloc(__cajeta_fiber_stack_alloc_size());
+    if (!p) {
+        fprintf(stderr, "cajeta: fiber stack malloc failed\n");
+        abort();
+    }
+    return p;
+#else
+    size_t page = (size_t) sysconf(_SC_PAGESIZE);
+    size_t size = __cajeta_fiber_stack_alloc_size();
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if defined(MAP_STACK)
+    flags |= MAP_STACK;   // advisory on Linux; tells the kernel it's a stack
+#endif
+    void* base = mmap(NULL, page + size, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (base == MAP_FAILED) {
+        fprintf(stderr, "cajeta: fiber stack mmap failed\n");
+        abort();
+    }
+    if (mprotect(base, page, PROT_NONE) != 0) {
+        fprintf(stderr, "cajeta: fiber stack guard mprotect failed\n");
+        abort();
+    }
+    return (char*) base + page;
+#endif
+}
+
+static void __cajeta_fiber_stack_free(void* stack) {
+    if (!stack) return;
+#if defined(_WIN32)
+    free(stack);
+#else
+    size_t page = (size_t) sysconf(_SC_PAGESIZE);
+    munmap((char*) stack - page, page + __cajeta_fiber_stack_alloc_size());
+#endif
 }
 
 typedef void (*cajeta_task_trampoline_fn)(void* arg);
@@ -1520,12 +1592,8 @@ static void* __cajeta_carrier_loop(void* arg) {
             // arch-dependently into the synthesized frame). v1 punts:
             // stealing is disabled below until the cross-carrier
             // uc_link handoff is solved at a deeper layer.
-            size_t stack_size = __cajeta_fiber_stack_size();
-            f->stack = malloc(stack_size);
-            if (!f->stack) {
-                fprintf(stderr, "cajeta: fiber stack malloc failed\n");
-                abort();
-            }
+            size_t stack_size = __cajeta_fiber_stack_alloc_size();
+            f->stack = __cajeta_fiber_stack_alloc();   // guard-paged on POSIX
             // First dispatch: this carrier becomes the fiber's home. From here
             // on the fiber's saved ucontext is bound to this carrier, so only
             // this carrier may resume it (steal/publish honor home_carrier).
@@ -1555,7 +1623,7 @@ static void* __cajeta_carrier_loop(void* arg) {
             // to avoid leaking one OS fiber + its stack per completed task.
             if (f->ctx.fiber) DeleteFiber(f->ctx.fiber);
 #endif
-            free(f->stack);
+            __cajeta_fiber_stack_free(f->stack);
             free(f);
         }
         // Parked fibers stay on __cajeta_parked_head awaiting a wake.
@@ -1622,7 +1690,7 @@ void __cajeta_task_shutdown(void) {
     for (struct cajeta_fiber* f = __cajeta_parked_head; f; ) {
         struct cajeta_fiber* nx = f->next;
         if (f->slot_ptr) *f->slot_ptr = NULL;
-        free(f->stack); free(f); f = nx;
+        __cajeta_fiber_stack_free(f->stack); free(f); f = nx;
     }
     __cajeta_parked_head = NULL;
     __cajeta_task_shutdown_requested = 0;
