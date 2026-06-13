@@ -12,7 +12,7 @@ Three independent problems, NOT one. They have been getting conflated under
 | **x86_64-linux** (hard gate) | **474/474 PASS, 0 crash** | — | ✅ GREEN |
 | **aarch64-linux** | ~~58 crashes~~ → **0** | sret call-site ABI bug (x8 vs x0); see [[sret-callsite-abi-arm]] | ✅ FIXED (run 27457698391: 0 crashes, carrier probe 10/10 exit 0) |
 | **aarch64-apple-darwin** | ~~424 fail~~ → **474/0/0/0** | fp128 builtins absent on Apple arm64 (no `__float128`, no compiler-rt tf family) | ✅ FIXED (run 27459672781: Passed 474, Failed 0) — target-neutral fp128 builtin IR embedded in runtime bc |
-| **x86_64-w64-mingw32** | 425 fail (TWO layers) | LAYER 1 (fixed): `__cajeta_hash_float128` i128-by-value param lowered indirectly by mingw → JIT-verify mismatch. LAYER 2 (revealed once L1 fixed): JIT can't resolve libm `fabsf` (+ math family) — statically linked, not PE-exported — so every math-using module fails to materialize. Fixed by binding the libm family in BOTH win symbol bridges. | 🔧 both fixes pushed; run 27463981213 verifying |
+| **x86_64-w64-mingw32** | 425 fail → **GREEN** | THREE layers, all fixed: (1) `__cajeta_hash_float128` i128-by-value → JIT-verify mismatch (pass fp128 @Native by pointer); (2) libm `fabsf`/math family unresolved → materialize failure (bind in win symbol bridges); (3) test-portability: `/tmp` fallback doesn't exist on Windows + 120s timeout too tight for ~40-60s JIT compiles (portable temp dir + TEST_TIMEOUT=300). | ✅ FIXED — run 27467196501 "Run release tests"=success on the HARD-GATED workflow |
 
 **CAUTION — continue-on-error masks the truth.** On non-x86 legs the "Run
 release tests" STEP reports `conclusion: success` even when tests fail (only
