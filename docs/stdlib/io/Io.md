@@ -2,10 +2,20 @@
 
 Umbrella for everything that crosses the program / outside-world
 boundary. Direct members are the shared abstractions; concrete I/O
-kinds (file, network, subprocess) live in nested subpackages so a
+kinds (file, pipe, network, subprocess) live in nested subpackages so a
 program that only needs files doesn't drag in a TLS stack.
 
 Status: **designed, not implemented**. Tracked in Features.md.
+
+## Subpackages
+
+- [`io/file`](file/File.md) — files, paths, directories, watchers.
+- [`io/pipe`](Pipes.md) — anonymous pipes (subprocess stdio, fd-passing) and
+  named pipes / FIFOs. The byte-level, process-crossing transport; for
+  in-process streaming use [`Channel<T>`](../Concurrency.md), for structured
+  cross-process IPC a Unix-domain socket.
+- network — see the `cajeta.net` stack (`docs/Net.md`).
+- subprocess — see [`cajeta.process`](../Process.md).
 
 ## `Buffer` + `BufferChain` — the byte substrate
 

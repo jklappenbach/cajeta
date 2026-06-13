@@ -70,6 +70,16 @@ if (!st.success()) {
 `@capability("process")` gates `start()` — running subprocesses is a
 distinct capability from filesystem or network access.
 
+## Stdio plumbing
+
+`Stdio.PIPE` is backed by the anonymous-pipe primitive in
+[`cajeta.io.pipe`](io/Pipes.md): the builder creates a `Pipe`, hands the child
+the far end at fork/exec, and exposes the parent end as `stdin()` (an
+`OutputStream`) / `stdout()` / `stderr()` (`InputStream`s). `Stdio.FILE`
+redirects to a file fd; `Stdio.INHERIT` shares the parent's; `Stdio.NULL` uses
+`/dev/null`. See `Pipes.md` for the pipe ends, EOF/backpressure, and the
+`SIGPIPE`→`IoException` behavior.
+
 ## Open items
 
 All of `cajeta.process` is unimplemented. Tracked in Features.md.

@@ -173,6 +173,49 @@ The `fd` field is pinned at the same field index `File` uses, so
 the intrinsic codegen addresses the descriptor identically across
 file + socket types.
 
+### UDP multicast
+
+`UdpSocket` joins and leaves multicast groups and controls the
+multicast transmit path — a thin extension of the datagram socket, not
+a separate type. IPv4 any-source multicast (ASM, `224.0.0.0/4`) and
+IPv6 (`ff00::/8`) use the same methods; source-specific multicast (SSM)
+is a v1.x add-on.
+
+```cajeta
+#UdpSocket u = UdpSocket.bind(SocketAddress.parse("0.0.0.0:5000"));
+u.joinGroup(IpAddress.parse("239.0.0.1"));        // join on the default interface
+u.setMulticastTtl(1);                             // hop limit; default 1 (link-local)
+u.setMulticastLoopback(false);                    // don't receive our own sends
+u.sendTo(msg, 0, msg.count(), SocketAddress.parse("239.0.0.1:5000"));
+#RecvResult rr = u.recvFrom(buf, 0, buf.count()); // rr.from is the sender
+u.leaveGroup(IpAddress.parse("239.0.0.1"));
+```
+
+Surface (each setter has a getter):
+
+| Method | Effect |
+|--------|--------|
+| `joinGroup(IpAddress group)` / `joinGroup(group, IpAddress iface)` | `IP_ADD_MEMBERSHIP` / `IPV6_JOIN_GROUP` on the default or named interface |
+| `leaveGroup(IpAddress group)` / `leaveGroup(group, iface)` | `IP_DROP_MEMBERSHIP` / `IPV6_LEAVE_GROUP` |
+| `setMulticastTtl(int32)` | `IP_MULTICAST_TTL` / `IPV6_MULTICAST_HOPS` (TX hop limit) |
+| `setMulticastLoopback(boolean)` | `IP_MULTICAST_LOOP` / `IPV6_MULTICAST_LOOP` |
+| `setMulticastInterface(IpAddress iface)` | `IP_MULTICAST_IF` / `IPV6_MULTICAST_IF` (TX interface) |
+| `joinSource(group, source)` / `leaveSource(group, source)` | SSM (`IP_ADD_SOURCE_MEMBERSHIP` / `MCAST_JOIN_SOURCE_GROUP`) — v1.x |
+
+To **receive**, bind to the group's port (typically on the wildcard
+address) and `joinGroup`. The address family of the group selects v4
+vs v6 membership. Multicast is gated by the `network` capability; on
+both POSIX and Windows the options are `setsockopt` at level
+`IPPROTO_IP` / `IPPROTO_IPV6`. See `plans/net/cajeta-net-plan.md`
+Phase 14 (NET-14) for the build plan.
+
+> **Cluster membership (gossip) is a separate library.** SWIM-style
+> cluster membership / failure detection built on UDP + multicast is an
+> **external sibling library**, not part of `cajeta.net` — see
+> [`cajeta-gossip`](https://github.com/jklappenbach/cajeta-gossip) (spec
+> and plan live in that repo). Stdlib owns the transport primitives;
+> opinionated higher-level protocols like gossip ride on top as libraries.
+
 ---
 
 ## Addresses
