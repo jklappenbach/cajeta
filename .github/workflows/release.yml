@@ -148,10 +148,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-linux-gnu
-            archive_ext: tar.gz
-            shell: bash
+          # =====================================================================
+          # TEMPORARY — ARM-ONLY MATRIX while debugging the aarch64-linux
+          # parallel-stream SIGSEGV (plans/fabel-state.md, Problem 1). The other
+          # three targets are commented out to avoid burning ~3 legs of compute
+          # per debug-dispatch. REVERT THIS BLOCK (uncomment all four) before
+          # cutting any release tag — see git history for the original.
+          # =====================================================================
+          # - os: ubuntu-latest
+          #   target: x86_64-linux-gnu
+          #   archive_ext: tar.gz
+          #   shell: bash
           - os: ubuntu-24.04-arm
             target: aarch64-linux-gnu
             archive_ext: tar.gz
@@ -161,10 +168,10 @@ jobs:
           # (Apple stopped selling Intel Macs in 2022; runner pool is
           # being wound down). Intel Mac users build from source —
           # documented in RELEASING.md.
-          - os: macos-14
-            target: aarch64-apple-darwin
-            archive_ext: tar.gz
-            shell: bash
+          # - os: macos-14
+          #   target: aarch64-apple-darwin
+          #   archive_ext: tar.gz
+          #   shell: bash
           # Windows build uses MSYS2 / MinGW-w64 rather than MSVC.
           # MSYS2's pacman repo ships pre-built mingw-w64 packages for
           # LLVM, antlr4-runtime, etc. — no LLVM tarball download, no
@@ -175,10 +182,10 @@ jobs:
           # otherwise be needed. Resulting binary is native PE (no
           # cygwin1.dll runtime dependency); target triple is
           # x86_64-w64-mingw32.
-          - os: windows-latest
-            target: x86_64-w64-mingw32
-            archive_ext: zip
-            shell: 'msys2 {0}'
+          # - os: windows-latest
+          #   target: x86_64-w64-mingw32
+          #   archive_ext: zip
+          #   shell: 'msys2 {0}'
 
     defaults:
       run:
