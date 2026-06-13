@@ -3468,12 +3468,94 @@ void __cajeta_install_sigabrt_handler(void) {
 
 #endif
 
+// SIGSEGV / SIGBUS backtrace handler (POSIX). SIGABRT above catches glibc
+// heap-corruption aborts; a SIGSEGV/SIGBUS is the OTHER way a memory bug
+// surfaces — a wild pointer, a use-after-free deref, or a fiber-stack
+// overflow hitting the guard page (__cajeta_fiber_stack_alloc). Without a
+// handler those die silently with just "exit 139", which is exactly what the
+// parallel-stream crashes on aarch64 do — no location, no context. This
+// prints the faulting address, the running carrier/fiber, and a native
+// backtrace to stderr (captured per-test by KEEP_LOGS in CI), then re-raises
+// the default action so the process still dies with the right signal.
+//
+// Signal-safety: backtrace()/backtrace_symbols_fd() are async-signal-safe
+// (no malloc, write directly to the fd); the fprintf lines match the SIGABRT
+// handler's existing (accepted) practice. The handler runs on an alternate
+// stack (sigaltstack + SA_ONSTACK) so a stack-overflow fault — where the
+// normal stack is unusable — can still report.
+#if !defined(_WIN32)
+
+static struct sigaction __cajeta_prev_sigsegv;
+static struct sigaction __cajeta_prev_sigbus;
+
+static void __cajeta_segv_handler(int signo, siginfo_t* info, void* uctx) {
+    (void) uctx;
+    const char* name = (signo == SIGBUS) ? "SIGBUS" : "SIGSEGV";
+    fprintf(stderr, "\ncajeta: %s caught — fault addr %p\n",
+            name, info ? info->si_addr : NULL);
+    // Running context, if any. __cajeta_current_fiber / __cajeta_my_carrier
+    // are this TU's TLS; reading them here is best-effort diagnostic.
+    struct cajeta_carrier* c = __cajeta_my_carrier;
+    struct cajeta_fiber* f = __cajeta_current_fiber;
+    fprintf(stderr, "cajeta: carrier=%d fiber=%d\n",
+            c ? c->carrier_id : -1, f ? f->dbg_id : 0);
+    void* frames[64];
+    int n = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, n, 2 /*stderr*/);
+    // Chain to the previous handler, else restore default and re-raise so the
+    // process dies with the correct signal (and CI records exit 139/138).
+    struct sigaction* prev =
+        (signo == SIGBUS) ? &__cajeta_prev_sigbus : &__cajeta_prev_sigsegv;
+    if (prev->sa_flags & SA_SIGINFO) {
+        if (prev->sa_sigaction) { prev->sa_sigaction(signo, info, uctx); return; }
+    } else if (prev->sa_handler != SIG_DFL && prev->sa_handler != SIG_IGN
+               && prev->sa_handler != NULL) {
+        prev->sa_handler(signo); return;
+    }
+    signal(signo, SIG_DFL);
+    raise(signo);
+}
+
+void __cajeta_install_segv_handler(void) {
+    // Same "already installed?" guard as the SIGABRT path: each JIT module's
+    // runtime copy runs its own constructor, and chaining a handler whose code
+    // later unmaps would crash. The host's lifetime-stable static copy wins.
+    struct sigaction cur;
+    if (sigaction(SIGSEGV, NULL, &cur) == 0) {
+        bool already = (cur.sa_flags & SA_SIGINFO)
+            ? (cur.sa_sigaction != NULL)
+            : (cur.sa_handler != SIG_DFL && cur.sa_handler != SIG_IGN
+               && cur.sa_handler != NULL);
+        if (already) return;
+    }
+    // Alternate signal stack so a stack-overflow fault can still be reported.
+    // Fixed 64 KiB — SIGSTKSZ is no longer a compile-time constant on modern
+    // glibc, and 64 KiB comfortably covers backtrace()'s frame needs.
+    static char altstack[65536];
+    stack_t ss;
+    ss.ss_sp = altstack;
+    ss.ss_size = sizeof(altstack);
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);
+    struct sigaction sa;
+    sa.sa_sigaction = __cajeta_segv_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &__cajeta_prev_sigsegv);
+    sigaction(SIGBUS, &sa, &__cajeta_prev_sigbus);
+}
+
+#else
+void __cajeta_install_segv_handler(void) {}
+#endif
+
 // Auto-install at runtime load. Constructor runs before main(); the handler
 // is then armed for the program lifetime, including before any Cajeta code
 // has executed (so a stdlib-load-time abort is also caught).
 __attribute__((constructor))
 static void __cajeta_runtime_init(void) {
     __cajeta_install_sigabrt_handler();
+    __cajeta_install_segv_handler();
 }
 
 // Pop the topmost entry and run its drop function if still active. Caller
