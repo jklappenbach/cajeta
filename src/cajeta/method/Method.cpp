@@ -369,19 +369,21 @@ namespace cajeta {
         llvm::Module* lmod = getEmitModule()->getLlvmModule();
         llvm::LLVMContext& ctx = *module->getLlvmContext();
 
-        // Runtime-ABI coercion for 128-bit floats: the C runtime takes the raw
-        // bits of an fp128 as `__uint128_t` (LLVM i128), NOT as a C float128
-        // type — `__float128` isn't a portable spelling across our clang
-        // targets (it doesn't exist on aarch64, Linux or Apple), whereas i128
-        // is universal. So a fp128 @Native parameter forwards as a bitcast to
-        // i128 (e.g. Float128.hashBits -> __cajeta_hash_float128, whose C
-        // signature is `int64_t(__uint128_t)`). The bitcast preserves the bit
-        // pattern and the i128 calling convention matches the C definition;
-        // without it the JIT/AOT verifier rejects the call ("Call parameter
-        // type does not match function signature: fp128 vs i128").
-        auto* i128Ty = llvm::Type::getInt128Ty(ctx);
+        // Runtime-ABI coercion for 128-bit floats: a fp128 @Native parameter is
+        // forwarded BY POINTER — the wrapper stores the fp128 to a stack slot
+        // and passes its address; the C runtime reads 16 bytes from it (e.g.
+        // Float128.hashBits -> __cajeta_hash_float128(const void*)). Earlier
+        // this passed the bits as i128 by value (bitcast fp128 -> i128), which
+        // matched the C `__uint128_t` param on x86-64/AArch64 — but NOT on
+        // Win64 (mingw), where clang lowers a 128-bit integer param INDIRECTLY
+        // (`i64(ptr dead_on_return)`). The i128-by-value call then mismatched
+        // the embedded definition and JIT-verify rejected the whole module on
+        // Windows ("Call parameter type does not match function signature"),
+        // failing every test. Passing by pointer is `i64(ptr)` uniformly. (We
+        // never spell the C float128 type — it doesn't exist on aarch64.)
+        auto* ptrTy = llvm::PointerType::get(ctx, 0);
         auto coerceTy = [&](llvm::Type* t) -> llvm::Type* {
-            return t->isFP128Ty() ? i128Ty : t;
+            return t->isFP128Ty() ? ptrTy : t;
         };
 
         // Build the runtime symbol's type from the wrapper's, mapping fp128
@@ -415,10 +417,15 @@ namespace cajeta {
         // as its HEADER pointer ({ i64 count, [N x i8] data }); the C bridge
         // skips the 8-byte length header itself (`hdr + 8`), as e.g.
         // __cajeta_sha256_update does. So the forwarder passes args verbatim,
-        // except fp128 -> i128 bitcast per the runtime-ABI note above.
+        // except fp128 -> spill-to-stack-slot + pass pointer per the runtime-ABI
+        // note above.
         for (auto& arg : llvmFunction->args()) {
             if (arg.getType()->isFP128Ty()) {
-                args.push_back(b.CreateBitCast(&arg, i128Ty));
+                // Spill the fp128 to a stack slot and pass its address. The
+                // store is a plain 16-byte move (no soft-float helper).
+                llvm::Value* slot = b.CreateAlloca(arg.getType());
+                b.CreateStore(&arg, slot);
+                args.push_back(slot);
             } else {
                 args.push_back(&arg);
             }

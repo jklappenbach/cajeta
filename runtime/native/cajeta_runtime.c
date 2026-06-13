@@ -5778,13 +5778,18 @@ int64_t __cajeta_hash_float32(float value) {
 }
 
 // Bitwise hash of an IEEE-754 binary128 (LLVM fp128), plan W3. Takes the raw
-// 128 bits as `__uint128_t` rather than `__float128`: clang has no `__float128`
-// type on aarch64 (Linux or Apple), which broke the runtime-bitcode compile on
-// every ARM target, whereas `__uint128_t` is supported everywhere. A caller
-// emits `bitcast fp128 -> i128` before the call; the hash is over the bits, so
-// it's identical. The bitcast is injected by Method::emitNativeForwardingBody
-// (fp128 @Native params forward as i128), so e.g. Float128.hashBits lowers to
-// a matching `call i64 @__cajeta_hash_float128(i128 ...)`.
+// 128 bits BY POINTER (16 bytes at `value_ptr`), not by value. An earlier
+// version took `__uint128_t` by value, but that param's ABI is NOT uniform
+// across our targets: x86-64 SysV / AArch64 pass i128 in register pairs, but
+// the Win64 (mingw) ABI passes a 128-bit integer INDIRECTLY — clang lowers the
+// param to `i64(ptr dead_on_return)`. The compiler emitted the call as
+// `i64(i128)` (matching Linux/macOS), so on mingw the JIT-verify rejected the
+// embedded module ("Call parameter type does not match function signature") and
+// EVERY test failed. Passing by pointer makes the ABI `i64(ptr)` on all three
+// targets. Method::emitNativeForwardingBody stores the fp128 to a stack slot
+// and passes its address (a bitcast/store, no soft-float), so Float128.hashBits
+// lowers to a matching `call i64 @__cajeta_hash_float128(ptr ...)`. (`__float128`
+// isn't spellable on aarch64 anyway; we never name the C float type here.)
 // float16/bfloat16 hash by widening to float64 (lossless, injective) and
 // reusing __cajeta_hash_float64, but float128 → float64 is *lossy*, so distinct
 // float128 values could collide and wrongly compare equal (Object.operator== is
@@ -5792,9 +5797,9 @@ int64_t __cajeta_hash_float32(float value) {
 // (IEEE says +0 == -0) and mix both 64-bit halves through the shared SplitMix
 // finalizer. x86-64 is little-endian, so the sign bit is the MSB of the high
 // half (bits[15] & 0x80); -0.0 is sign-only with an all-zero significand/exp.
-int64_t __cajeta_hash_float128(__uint128_t value) {
+int64_t __cajeta_hash_float128(const void* value_ptr) {
     unsigned char bits[16];
-    memcpy(bits, &value, sizeof(bits));
+    memcpy(bits, value_ptr, sizeof(bits));
     int signOnly = (bits[15] == 0x80);
     for (int i = 0; i < 15 && signOnly; i++) if (bits[i]) signOnly = 0;
     if (signOnly) bits[15] = 0;            // -0.0 -> +0.0
