@@ -12,7 +12,7 @@ Three independent problems, NOT one. They have been getting conflated under
 | **x86_64-linux** (hard gate) | **474/474 PASS, 0 crash** | — | ✅ GREEN |
 | **aarch64-linux** | ~~58 crashes~~ → **0** | sret call-site ABI bug (x8 vs x0); see [[sret-callsite-abi-arm]] | ✅ FIXED (run 27457698391: 0 crashes, carrier probe 10/10 exit 0) |
 | **aarch64-apple-darwin** | ~~424 fail~~ → **474/0/0/0** | fp128 builtins absent on Apple arm64 (no `__float128`, no compiler-rt tf family) | ✅ FIXED (run 27459672781: Passed 474, Failed 0) — target-neutral fp128 builtin IR embedded in runtime bc |
-| **x86_64-w64-mingw32** | 425 fail (NOT crashes) | CONFIRMED: mingw lowers the `__uint128_t` param of `__cajeta_hash_float128` BY POINTER (`i64(ptr dead_on_return)`) vs `i64(i128)` on Linux/macOS; compiler emits the call as i128 → JIT-verify mismatch fails the embedded module → every test fails. Fix: pass fp128 @Native bits by pointer uniformly (runtime `const __uint128_t*`; emitNativeForwardingBody alloca+store+pass ptr). NOT the macOS symbol class. | ❌ open (fix designed) |
+| **x86_64-w64-mingw32** | ~~425 fail~~ → green | mingw lowers the `__uint128_t` param of `__cajeta_hash_float128` BY POINTER (`i64(ptr dead_on_return)`) vs `i64(i128)` on Linux/macOS; compiler emitted the call as i128 → JIT-verify mismatch failed the embedded module → every test failed. Fixed by passing fp128 @Native bits by pointer uniformly (runtime `const void*`; emitNativeForwardingBody spill+pass ptr). | ✅ FIXED (run 27460956434: Run release tests step = success, 0 FAILED) |
 
 `continue-on-error` masks every leg except x86_64-linux, so the run shows
 mostly green even though 3/4 legs fail. See [[release-ci-fake-green-masking]].
