@@ -98,7 +98,7 @@ if [ "${1:-}" = "stop" ]; then
     exit 0
 fi
 
-TEST_BIN="build/test/cajeta_test"
+TEST_BIN="${TEST_BIN:-build/test/cajeta_test}"
 
 if [ ! -f "build/build.ninja" ]; then
     echo ">> No build/ found, running ./setup.sh"
@@ -267,21 +267,73 @@ if [ "$num_tests" -eq 0 ]; then
     exit 1
 fi
 
-# Cap shards at the test count — extra shards just sit empty.
-if [ "$shards" -gt "$num_tests" ]; then shards=$num_tests; fi
+# BATCH mode (default on): shard by SUITE and run each suite as ONE process so
+# the in-process stdlib cache (test/jit/JitTestHelper.cpp StdlibCache) primes
+# the stdlib once and reuses it across the suite's tests. That prime — re-parse
+# + IR + codegen of the whole cajeta stdlib — is the dominant per-process cost
+# (~5s Linux / ~15s macOS / ~40-60s Windows), paid once per process. One
+# process per test (BATCH=0) pays it 474×; one per suite pays it ~(#suites)×.
+# A suite whose batched process crashes or hangs is automatically re-run
+# test-by-test (see run_suite_batch) so crash isolation and per-test attribution
+# are preserved. BATCH=0 restores strict one-process-per-test.
+BATCH="${BATCH:-1}"
+# Upper bound on a single suite's batched wall-clock before it's treated as hung
+# and dropped to the per-test fallback. The deadline scales with suite size
+# (n * TEST_TIMEOUT) but never exceeds this, so one stuck test can't strand a
+# worker for the full n*TEST_TIMEOUT.
+BATCH_CAP="${BATCH_CAP:-1800}"
 
-# Round-robin distribute test names into per-shard buckets. Each bucket is a
-# newline-separated list of test names (one per line) that its worker iterates,
-# running every test in its own process. shard_total tracks how many tests each
-# shard owns, so the live display can show per-shard completion.
+# Group discovered tests by suite, preserving first-seen order and exact
+# membership (so a partially-selected suite batches only its selected tests,
+# never the whole `Suite.*`).
+declare -a suites
+declare -A suite_tests    # suite -> newline-separated "Suite.test" list
+declare -A suite_count
+for t in "${tests[@]}"; do
+    sname="${t%%.*}"
+    if [ -z "${suite_tests[$sname]+x}" ]; then
+        suites+=("$sname")
+        suite_tests[$sname]=""
+        suite_count[$sname]=0
+    fi
+    suite_tests[$sname]+="${t}"$'\n'
+    suite_count[$sname]=$(( suite_count[$sname] + 1 ))
+done
+num_suites=${#suites[@]}
+
+# Cap shards at the number of schedulable units (suites in BATCH mode, else
+# tests) — extra shards just sit empty.
+if [ "$BATCH" = "1" ]; then unit_count=$num_suites; else unit_count=$num_tests; fi
+if [ "$shards" -gt "$unit_count" ]; then shards=$unit_count; fi
+
+# Distribute work into per-shard buckets. shard_total tracks how many TESTS each
+# shard owns (the live display denominator), regardless of unit granularity.
 declare -a shard_list
 declare -a shard_total
 for ((s=0; s<shards; s++)); do shard_list[$s]=""; shard_total[$s]=0; done
-for ((i=0; i<num_tests; i++)); do
-    s=$((i % shards))
-    shard_list[$s]+="${tests[$i]}"$'\n'
-    shard_total[$s]=$(( shard_total[$s] + 1 ))
-done
+if [ "$BATCH" = "1" ]; then
+    # Longest-processing-time first: assign each suite (largest test-count first)
+    # to the currently least-loaded shard, so workers get balanced test totals
+    # even though suites vary widely in size.
+    sorted_suites=$(for ((i=0; i<num_suites; i++)); do
+        printf '%s\t%s\n' "${suite_count[${suites[$i]}]}" "${suites[$i]}"
+    done | sort -rn -k1,1)
+    while IFS=$'\t' read -r cnt sname; do
+        [ -z "$sname" ] && continue
+        min_s=0; min_v=${shard_total[0]}
+        for ((s=1; s<shards; s++)); do
+            if [ "${shard_total[$s]}" -lt "$min_v" ]; then min_v=${shard_total[$s]}; min_s=$s; fi
+        done
+        shard_list[$min_s]+="${sname}"$'\n'
+        shard_total[$min_s]=$(( shard_total[$min_s] + cnt ))
+    done <<< "$sorted_suites"
+else
+    for ((i=0; i<num_tests; i++)); do
+        s=$((i % shards))
+        shard_list[$s]+="${tests[$i]}"$'\n'
+        shard_total[$s]=$(( shard_total[$s] + 1 ))
+    done
+fi
 
 tmpdir=$(mktemp -d -t cajeta_test_shards.XXXXXX)
 trap 'rm -rf "$tmpdir"' EXIT
@@ -299,7 +351,82 @@ if [ -t 1 ] && [ "${TUI:-1}" != "0" ] && [ "${VERBOSE:-}" != "1" ]; then
 fi
 if [ "$live" = "1" ]; then shard_brief="--gtest_brief=0"; else shard_brief="--gtest_brief=1"; fi
 
-echo ">> Running $num_tests tests across $shards shards..."
+# Run ONE test in its own process, appending its output + a synthetic
+# >>> CRASH / >>> TIMEOUT marker (counted by the aggregator) to $1. This is the
+# strict-isolation path: BATCH=0 uses it directly, and the batch fallback uses
+# it to recover attribution for a suite whose batched process died.
+run_one_test() {
+    local out_file="$1" t="$2" tf trc
+    tf="${out_file}.t"
+    if [ -n "$TIMEOUT_CMD" ]; then
+        "$TIMEOUT_CMD" --kill-after=10 "$TEST_TIMEOUT" \
+            env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+            "--gtest_filter=$t" "$shard_brief" > "$tf" 2>&1
+    else
+        env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+            "--gtest_filter=$t" "$shard_brief" > "$tf" 2>&1
+    fi
+    trc=$?
+    cat "$tf" >> "$out_file"
+    if [ "$trc" -ne 0 ]; then
+        case "$trc" in
+            124|137) printf '>>> TIMEOUT %s (killed after %ss)\n' "$t" "$TEST_TIMEOUT" >> "$out_file" ;;
+            *) if ! grep -qE '^\[  FAILED  \]' "$tf"; then
+                   printf '>>> CRASH %s (exit %s)\n' "$t" "$trc" >> "$out_file"
+               fi ;;
+        esac
+    fi
+    rm -f "$tf"
+}
+
+# Run a whole suite as ONE process so the stdlib cache primes once and is reused
+# across its tests. The filter is the exact list of the suite's selected tests
+# (not `Suite.*`), so a partially-selected suite runs only what was selected.
+# Deadline scales with suite size, capped at BATCH_CAP.
+#
+# Trust the batched output IFF gtest ran to completion — its terminal
+# "[==========] N ... ran." line is present (true for a clean pass AND for a run
+# with ordinary [ FAILED ] assertions, which the aggregator already counts). If
+# that line is absent (segfault/abort mid-suite) or the process hit its deadline
+# (exit 124/137), discard the partial output and re-run every test in the suite
+# individually via run_one_test — restoring exact crash/timeout attribution.
+run_suite_batch() {
+    local out_file="$1" sname="$2" tf brc deadline n filter list
+    n="${suite_count[$sname]}"
+    deadline=$(( n * TEST_TIMEOUT ))
+    [ "$deadline" -gt "$BATCH_CAP" ] && deadline=$BATCH_CAP
+    [ "$deadline" -lt "$TEST_TIMEOUT" ] && deadline=$TEST_TIMEOUT
+    list="${suite_tests[$sname]}"
+    filter="${list//$'\n'/:}"; filter="${filter%:}"
+    tf="${out_file}.b"
+    if [ -n "$TIMEOUT_CMD" ]; then
+        "$TIMEOUT_CMD" --kill-after=10 "$deadline" \
+            env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+            "--gtest_filter=$filter" "$shard_brief" > "$tf" 2>&1
+    else
+        env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+            "--gtest_filter=$filter" "$shard_brief" > "$tf" 2>&1
+    fi
+    brc=$?
+    if [ "$brc" -eq 0 ] || grep -qE '^\[==========\] .* ran\.' "$tf"; then
+        cat "$tf" >> "$out_file"
+    else
+        printf '>>> BATCH-FALLBACK %s (suite process exit %s; re-running %s test(s) individually)\n' \
+            "$sname" "$brc" "$n" >> "$out_file"
+        local t
+        while IFS= read -r t; do
+            [ -z "$t" ] && continue
+            run_one_test "$out_file" "$t"
+        done <<< "$list"
+    fi
+    rm -f "$tf"
+}
+
+if [ "$BATCH" = "1" ]; then
+    echo ">> Running $num_tests tests across $shards shards (BATCH: $num_suites suites, one process each + per-test crash fallback)..."
+else
+    echo ">> Running $num_tests tests across $shards shards (one process per test)..."
+fi
 start_time=$SECONDS
 
 pids=()
@@ -316,48 +443,20 @@ for ((s=0; s<shards; s++)); do
     # lands on /dev/null. The set +m a few lines above is necessary but not
     # sufficient on bash 5.x; this redirect is the actual suppression.
     {
-        # Disable set -e so a crashing/failing/timed-out test still falls
-        # through to the next test (set -e would terminate the worker
-        # mid-bucket). Each test runs in ITS OWN process under
-        # `timeout --kill-after=10 $TEST_TIMEOUT`: SIGTERM at the deadline
-        # (exit 124), SIGKILL 10s later if it ignores the term (exit 137).
-        # A hung test therefore costs at most TEST_TIMEOUT and the worker
-        # keeps going — no per-shard wall-clock cap, no whole-shard stall.
-        # On a non-zero exit with no gtest [ FAILED ] line for the test
-        # (crash / timeout), append a synthetic marker the aggregator counts.
+        # Disable set -e so a crashing/failing/timed-out unit still falls
+        # through to the next one (set -e would terminate the worker mid-bucket).
+        # In BATCH mode each unit is a SUITE run as one process (stdlib primed
+        # once, reused across its tests) with an automatic per-test fallback on
+        # crash/hang; in BATCH=0 each unit is a single test in its own process.
+        # Either way a crash/timeout is bounded and recorded with a synthetic
+        # marker the aggregator counts — no whole-shard stall.
         set +e
-        tf="$tmpdir/t_${s}.out"
-        while IFS= read -r t; do
-            [ -z "$t" ] && continue
-            if [ -n "$TIMEOUT_CMD" ]; then
-                "$TIMEOUT_CMD" --kill-after=10 "$TEST_TIMEOUT" \
-                    env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-                    "--gtest_filter=$t" \
-                    "$shard_brief" \
-                    > "$tf" 2>&1
+        while IFS= read -r unit; do
+            [ -z "$unit" ] && continue
+            if [ "$BATCH" = "1" ]; then
+                run_suite_batch "$out_file" "$unit"
             else
-                env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-                    "--gtest_filter=$t" \
-                    "$shard_brief" \
-                    > "$tf" 2>&1
-            fi
-            trc=$?
-            cat "$tf" >> "$out_file"
-            if [ "$trc" -ne 0 ]; then
-                case "$trc" in
-                    124|137) printf '>>> TIMEOUT %s (killed after %ss)\n' \
-                                "$t" "$TEST_TIMEOUT" >> "$out_file" ;;
-                    *)
-                        # Only a true crash if gtest produced NO [ FAILED ]
-                        # report for this test. A normal assertion failure
-                        # also exits non-zero (1) but prints [ FAILED ] — that
-                        # is already counted as a failure, not a crash.
-                        if ! grep -qE '^\[  FAILED  \]' "$tf"; then
-                            printf '>>> CRASH %s (exit %s)\n' \
-                                "$t" "$trc" >> "$out_file"
-                        fi
-                        ;;
-                esac
+                run_one_test "$out_file" "$unit"
             fi
         done <<< "${shard_list[$s]}"
         echo 0 > "$exit_file"
