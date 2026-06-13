@@ -276,13 +276,21 @@ The drop chain is a per-thread linked list of stack-allocated entries; entries f
 Single inheritance for state, **multiple inheritance** for behavior (verified across grammar, vtable construction, and tests):
 
 ```cajeta
-public abstract class AbstractStream<T> { ... }
-public abstract class AbstractHashable<T> { ... }
+// Two behavior bases — each contributes concrete methods (and state).
+public class Timestamped { int64 created; public int64 age(int64 now) { return now - this.created; } }
+public class Labeled     { String label;  public String describe()    { return "<" + this.label + ">"; } }
 
-public class Optional<T> extends AbstractStream<T>, AbstractHashable<T> {
-    // Inherits from both bases.
-}
+// One class inherits BOTH — no re-implementation (interfaces have no default
+// methods, so they'd force you to rewrite age() and describe() in every class).
+public class Event extends Timestamped, Labeled { public Event() { return; } }
 ```
+
+When two parents declare the same method (same signature), the child resolves
+the collision by overriding it and selecting a parent with `super<Base>.method()`
+(`@Override(from=Base)` names the choice). See [`MultiClassing.md`](docs/stdlib/MultiClassing.md)
+and the multiple-inheritance tour demo. Templates and multiple inheritance
+compose: a generic type can inherit reusable behavior mixins via MI, so the
+mixins are written once and shared across every instantiation.
 
 Dispatch is uniform across storage modes — every class instance carries a vtable pointer at byte offset 0:
 
@@ -320,7 +328,7 @@ public class Algo {
 }
 ```
 
-**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](docs/TemplateWildcard.md) and [`CaptureConversion.md`](docs/CaptureConversion.md), and a runnable PECS + capture-read-back walk in [`samples/Tour/src/tour/WildcardsDemo.cajeta`](samples/Tour/src/tour/WildcardsDemo.cajeta).
+**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](docs/TemplateWildcard.md) and [`CaptureConversion.md`](docs/CaptureConversion.md), and a runnable PECS + capture-read-back walk in [`samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta).
 
 ```cajeta
 public void inspect(Box<? extends Animal> b) {
@@ -354,7 +362,7 @@ public void parse(byte[] buf) {
 }
 ```
 
-Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views, fixed-size and variable-size trailing fields, and ownership-transferred (`stack View(#buf)`) and borrow (`stack View(buf)`) construction forms. Views participate in interface dispatch via fat-pointer kind tags. See [`Views.md`](docs/stdlib/Views.md) and a runnable end-to-end walk through all three endianness flavors plus nested views in [`samples/Tour/src/tour/ViewsDemo.cajeta`](samples/Tour/src/tour/ViewsDemo.cajeta).
+Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views, fixed-size and variable-size trailing fields, and ownership-transferred (`stack View(#buf)`) and borrow (`stack View(buf)`) construction forms. Views participate in interface dispatch via fat-pointer kind tags. See [`Views.md`](docs/stdlib/Views.md) and a runnable end-to-end walk through all three endianness flavors plus nested views in [`samples/tour/src/main/cajeta/tour/wire/ViewsDemo.cajeta`](samples/tour/src/main/cajeta/tour/wire/ViewsDemo.cajeta).
 
 ### Lambdas and method references
 
@@ -392,7 +400,7 @@ int64 sum = xs.stream().parallel()
         (a, b)   -> a + b);
 ```
 
-See [`Streams.md`](docs/stdlib/Streams.md) and [`StreamParallelism.md`](docs/stdlib/StreamParallelism.md). A runnable walk through `reduce`, fold-with-combiner, the predicate terminals, `findFirst`→`findAny`, and `forEach` accumulation under `.parallel()` lives in [`samples/Tour/src/tour/ParallelStreamsDemo.cajeta`](samples/Tour/src/tour/ParallelStreamsDemo.cajeta).
+See [`Streams.md`](docs/stdlib/Streams.md) and [`StreamParallelism.md`](docs/stdlib/StreamParallelism.md). A runnable walk through `reduce`, fold-with-combiner, the predicate terminals, `findFirst`→`findAny`, and `forEach` accumulation under `.parallel()` lives in [`samples/tour/src/main/cajeta/tour/concurrent/ParallelStreamsDemo.cajeta`](samples/tour/src/main/cajeta/tour/concurrent/ParallelStreamsDemo.cajeta).
 
 ### Annotations
 
@@ -432,7 +440,7 @@ Connection c = Connection.builder()
 
 ### Aspects, DI, advice
 
-Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](docs/stdlib/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/Tour/src/tour/AspectsDiDemo.cajeta`](samples/Tour/src/tour/AspectsDiDemo.cajeta).
+Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](docs/stdlib/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta).
 
 ```cajeta
 @Aspect
@@ -467,7 +475,7 @@ public static async int32 fetchAll(String[] urls) {
 
 Stream `.parallel()` rides this same machinery — `ParallelDriver.reduceParallelChain` opens a `scope` and `spawn`s one worker per split share.
 
-A runnable walk through `async` / `await` / `spawn` / `scope` / `detach` — including primitive-arg propagation, nested awaits, fork-join with a shared `Counter`, the implicit function-body scope, and fire-and-forget detach — lives in [`samples/Tour/src/tour/AsyncDemo.cajeta`](samples/Tour/src/tour/AsyncDemo.cajeta).
+A runnable walk through `async` / `await` / `spawn` / `scope` / `detach` — including primitive-arg propagation, nested awaits, fork-join with a shared `Counter`, the implicit function-body scope, and fire-and-forget detach — lives in [`samples/tour/src/main/cajeta/tour/concurrent/AsyncDemo.cajeta`](samples/tour/src/main/cajeta/tour/concurrent/AsyncDemo.cajeta).
 
 ### Errors and stack traces
 
@@ -499,7 +507,7 @@ User u = Json.parse<User>(bytes, bytes.length);   // {7, "alice", true}
 byte[] out = Json.toBytes<User>(u);               // round-trip
 ```
 
-Tier-3 `Json.toBytes(JsonValue)` for ad-hoc tree manipulation. See [`Json.md`](docs/stdlib/codec/Json.md) and the runnable parse + round-trip + nested-class walk in [`samples/Tour/src/tour/JsonDemo.cajeta`](samples/Tour/src/tour/JsonDemo.cajeta).
+Tier-3 `Json.toBytes(JsonValue)` for ad-hoc tree manipulation. See [`Json.md`](docs/stdlib/codec/Json.md) and the runnable parse + round-trip + nested-class walk in [`samples/tour/src/main/cajeta/tour/codec/JsonDemo.cajeta`](samples/tour/src/main/cajeta/tour/codec/JsonDemo.cajeta).
 
 ---
 

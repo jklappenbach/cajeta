@@ -944,3 +944,42 @@ to think about later.
   current behavior; the doc's "open" items here are the natural extensions.
 - `test/parser/OverrideFromTests.cpp` — `@Override(from=Parent)` and
   `super<Base>.method()` behavior (R-3, P-2).
+
+---
+
+## Templates × multiple inheritance — composable generic mixins
+
+The two features compose into something neither has alone. Generics give you one
+implementation reused across types; multiple inheritance lets a class assemble
+concrete behavior from several bases. Together they give **reusable, generic
+behavior mixins**: a type inherits a mixin's *implementation* once and shares it
+across every instantiation — without the per-type boilerplate that interfaces
+(which have no default methods in Cajeta) would force.
+
+```cajeta
+// Reusable behavior mixins — concrete, written once.
+public class Identified { public int64 id;  public Identified() { this.id = 0; }  public String idTag()  { return "#" + this.id; } }
+public class Versioned  { public int32 ver; public Versioned()  { this.ver = 1; } public int32  version() { return this.ver; } }
+
+// A generic container that inherits BOTH mixins.
+public class Crate<T> extends Identified, Versioned {
+    public T value;
+    public Box() { return; }
+    public T get() { return this.value; }
+}
+
+Crate<int32>  bi = stack Crate<int32>();   // idTag()/version() for free
+Crate<String> bs = stack Crate<String>();  // ...and so for every other T
+```
+
+Without templated MI you'd either re-implement `idTag()`/`version()` in every
+`Box`-like type (an interface gives you the contract, not the body), or collapse
+the mixins into one base and lose the freedom to combine them. With it,
+`Identified` and `Versioned` are authored once and mix into any generic type —
+the same way one generic type can be "streamable AND hashable AND comparable" by
+extending three small bases instead of carrying N copies of the same code.
+
+Collisions follow the same rule as non-generic MI (P-1): if two mixins declare
+the same method, the deriving type overrides it and selects a parent with
+`super<Base>.method()`. Verified compiling via `Crate<int32> extends Identified,
+Versioned`; runnable in the multiple-inheritance tour demo.

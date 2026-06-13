@@ -1,0 +1,111 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// Multiple inheritance, built from simple cases:
+//   1. Inherit concrete behavior from TWO bases (no re-implementation).
+//   2. Resolve a method collision when both parents declare the same method.
+//   3. Combine templates + MI — reusable generic behavior mixins.
+//
+// State is single-inheritance; behavior is multiple-inheritance. Overriding is
+// by signature (there is no `override` keyword). See docs/stdlib/MultiClassing.md.
+
+// ---- 1. Two behavior bases, each contributing concrete methods + state ------
+
+public class Timestamped {
+    public int64 created;
+    public Timestamped() { this.created = 100; }
+    public int64 age(int64 now) { return now - this.created; }
+}
+
+public class Labeled {
+    public String label;
+    public Labeled() { this.label = "launch"; }
+    public String describe() { return "<" + this.label + ">"; }
+}
+
+// Inherits BOTH age() and describe() — no boilerplate. With interfaces (which
+// have no default methods in Cajeta) Event would have to re-implement both.
+public class Event extends Timestamped, Labeled {
+    public Event() { return; }
+}
+
+// ---- 2. Collision: both parents declare the same method --------------------
+
+public class HtmlView {
+    public HtmlView() { return; }
+    public String emit() { return "html"; }
+}
+
+public class TextView {
+    public TextView() { return; }
+    public String emit() { return "text"; }
+}
+
+// HtmlView and TextView both declare `String emit()` — a collision. The child
+// resolves it by overriding and explicitly selecting a parent with
+// `super<Base>.emit()` (`@Override(from=Base)` names the primary choice; either
+// parent's version is reachable). Note: today, an UNqualified inherited
+// colliding call silently picks one — the language's intended rule (P-1 in
+// MultiClassing.md) makes that a compile error, forcing this explicit selection.
+public class DualView extends HtmlView, TextView {
+    public DualView() { return; }
+    @Override(from=HtmlView)
+    public String emit() {
+        return super<HtmlView>.emit() + "+" + super<TextView>.emit();
+    }
+}
+
+// ---- 3. Templates x MI: reusable generic behavior mixins -------------------
+
+public class Identified {
+    public int64 id;
+    public Identified() { this.id = 100; }
+    public String idTag() { return "#" + this.id; }
+}
+
+public class Versioned {
+    public int32 ver;
+    public Versioned() { this.ver = 2; }
+    public int32 version() { return this.ver; }
+}
+
+// One generic container inherits both mixins — written once, shared across every
+// instantiation (Crate<int32>, Crate<String>, ...). Neither generics alone nor
+// interfaces alone give you this: the mixin bodies are inherited, not re-typed.
+public class Crate<T> extends Identified, Versioned {
+    public T value;
+    public Crate() { return; }
+    public T get() { return this.value; }
+}
+
+// ---- The demo --------------------------------------------------------------
+
+public class MultiInheritanceDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Multiple inheritance --");
+
+        // 1. Behavior from two bases, no re-implementation.
+        Event ev = stack Event();
+        System.stdout.println("  Two behavior bases (no boilerplate):");
+        System.stdout.println("    Event.describe() = " + ev.describe()
+            + "   Event.age(150) = " + ev.age(150));
+
+        // 2. Collision resolved by override + super<Base>.
+        DualView dv = stack DualView();
+        System.stdout.println("  Collision (both parents declare emit()); child picks via super<Base>:");
+        System.stdout.println("    DualView.emit() = " + dv.emit());
+
+        // 3. Templates x MI — one generic type, mixins for free across all T.
+        Crate<int32> ci = stack Crate<int32>();
+        ci.value = 42;
+        Crate<String> cs = stack Crate<String>();
+        cs.value = "hi";
+        System.stdout.println("  Templates x MI (one Crate<T> inherits id + version for every T):");
+        System.stdout.println("    Crate<int32>:  value=" + ci.get()
+            + "  " + ci.idTag() + "  v" + ci.version());
+        System.stdout.println("    Crate<String>: value=" + cs.get()
+            + "  " + cs.idTag() + "  v" + cs.version());
+    }
+}
