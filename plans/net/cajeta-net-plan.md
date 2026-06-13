@@ -97,6 +97,15 @@ get it right.
 - [ ] **NET-10.x** WebSocket library (RFC 6455) — client + server.
 - [ ] **NET-11.x** Cross-cutting — SHA-256 / SHA-1 / base64,
       timeouts/cancellation, backpressure, error hierarchy.
+- [ ] **NET-14.x** UDP multicast — group membership (join/leave),
+      multicast TTL / loopback / interface, IPv4 + IPv6 (ASM; SSM
+      optional). A thin extension of `UdpSocket` (NET-1.5). Scoped after
+      the original authoring (Phase 13 is the testing strategy, so
+      multicast is **Phase 14**).
+- [ ] **NET-15.x** Move `cajeta.net` under `cajeta.io.net` (a child of
+      `cajeta.io`) + restructure the io docs into `io/{net,file,pipe,channel}`.
+      A rename/restructure phase, no new behavior. Channel is documented under
+      io but keeps its `cajeta.concurrent` implementation (**Phase 15**).
 
 ### Explicitly deferred (post-v1)
 
@@ -1096,6 +1105,125 @@ checkbox above relies on.
 
 ---
 
+## Phase 14 — UDP multicast
+
+Scoped after the original plan. Extends the `UdpSocket` foundation
+(NET-1.5) with IGMP/MLD group membership and the multicast transmit
+options. v4 any-source multicast (ASM) + IPv6; source-specific (SSM)
+is an optional sub-item. A primitive, not a protocol — it stays in
+stdlib alongside the rest of `cajeta.net`.
+
+### Design decisions (stated, not punted)
+
+- **Family-dispatched at the surface.** One `joinGroup(IpAddress)` —
+  the group's address family selects `ip_mreq` + `IP_ADD_MEMBERSHIP`
+  (v4) vs `ipv6_mreq` + `IPV6_JOIN_GROUP` (v6) natively. Same for the
+  TTL/loop/interface options (`IP_MULTICAST_*` vs `IPV6_MULTICAST_*`).
+- **Receive needs bind-to-group-port + join.** Multiple receivers on a
+  host bind the same port via the existing NET-1.6 `SO_REUSEADDR` /
+  `SO_REUSEPORT` options — no new option surface.
+- **Defaults match the OS:** multicast TTL 1 (link-local), loopback on.
+- **Windows parity:** identical `setsockopt` calls at `IPPROTO_IP` /
+  `IPPROTO_IPV6` (Winsock constants), folded into the NET-1.x native
+  option file.
+
+### Deliverables
+
+- [ ] **NET-14.1** Native multicast option intrinsics — `IP_ADD_MEMBERSHIP`/
+      `IP_DROP_MEMBERSHIP`, `IPV6_JOIN_GROUP`/`IPV6_LEAVE_GROUP`,
+      `IP_MULTICAST_TTL`/`IPV6_MULTICAST_HOPS`, `*_LOOP`, `*_IF`, for
+      POSIX + Winsock. `depends-on:` NET-1.1, NET-1.5.
+- [ ] **NET-14.2** `UdpSocket` multicast surface — `joinGroup`/`leaveGroup`
+      (default + named interface), `setMulticastTtl`/`setMulticastLoopback`/
+      `setMulticastInterface` + getters; family-dispatched v4/v6.
+      `depends-on:` NET-14.1.
+- [ ] **NET-14.3** Multicast receive path — bind-to-group-port + join;
+      `recvFrom` reports the sender; v4 + v6. Cajeta-surface round-trip
+      rides the shared UDP receiver lowering. `depends-on:` NET-14.2,
+      NET-1.5, NET-1.3.
+- [ ] **NET-14.4** Async multicast RX — confirm `recvFromAsync`
+      (NET-3.3) parks/wakes on group traffic. `depends-on:` NET-14.3,
+      NET-3.3.
+- [~] **NET-14.5** Source-specific multicast (SSM) — `joinSource`/
+      `leaveSource` (`IP_ADD_SOURCE_MEMBERSHIP` / `MCAST_JOIN_SOURCE_GROUP`).
+      *DEFERRED → v1.x; ASM ships first.* `depends-on:` NET-14.2.
+
+### Acceptance
+
+- [ ] Two sockets join `239.x` on loopback; a send from one is
+      received by the other; `setMulticastLoopback(false)` suppresses
+      self-delivery. → `NetMulticastTests.ipv4AsmLoopbackJoinReceive`.
+- [ ] IPv6 (`ff0x::`) join + receive over loopback. →
+      `NetMulticastTests.ipv6JoinReceive`.
+- [ ] `setMulticastTtl` / `setMulticastLoopback` / `setMulticastInterface`
+      set→get round-trip; bad family/arg errors. →
+      `NetMulticastOptionsTests.roundTripAndErrors`.
+- [ ] `leaveGroup` stops delivery. →
+      `NetMulticastTests.leaveStopsDelivery`.
+- [ ] (When NET-14.4 lands) `recvFromAsync` parks and wakes on group
+      traffic without busy-spinning. →
+      `NetMulticastAsyncTests.recvFromAsyncWakesOnGroupTraffic`.
+
+---
+
+## Phase 15 — Move `cajeta.net` under `cajeta.io.net` + io restructure
+
+Reframes networking as a **child of `cajeta.io`** — `cajeta.net.*` becomes
+`cajeta.io.net.*`, beside `cajeta.io.file` and `cajeta.io.pipe`. A
+rename/restructure phase: no new protocol behavior, but it touches every net
+source file, the docs tree, and the doc-site nav. Pure mechanical risk, so it
+lands as one coordinated phase rather than dribbling through other work.
+
+### Design decisions (stated, not punted)
+
+- **`cajeta.io` is the communication + storage family.** After the move, io
+  spans the data-movement scope spectrum — **channel** (in-process, fiber↔fiber),
+  **pipe** (process-local + cross-process by fd/path), **net** (cross-host) —
+  plus **file** (storage). That is the `io/{net,file,pipe,channel}` shape.
+- **Hard move, pre-1.0.** Source tree `runtime/src/cajeta/net/` →
+  `runtime/src/cajeta/io/net/`; every `package`/`import` updated. Native
+  intrinsic symbols (`__cajeta_net_*`) stay as-is (internal, not user-visible).
+  Keep a deprecated `cajeta.net` re-export alias for one release only if cheap;
+  otherwise hard-break (no external consumers yet).
+- **Channel: documented under io, implemented in `cajeta.concurrent`.** Channel
+  is a communication API, so it gets an `io/channel` doc as the in-process
+  member of the family — but its *implementation* is a concurrency primitive
+  sharing the fiber park/wake machinery with `Mutex`/`Semaphore`/`Tasks`; moving
+  the code orphans it from those. So: doc under `docs/stdlib/io/channel/`, code
+  stays `cajeta.concurrent.Channel`, cross-referenced from `Concurrency.md`. An
+  optional `cajeta.io.channel` type-alias re-export gives the io namespace too.
+  *(Open: confirm code-home — alias vs leave-in-`concurrent`-with-a-pointer.)*
+
+### Deliverables
+
+- [ ] **NET-15.1** Package + source move `cajeta.net.*` → `cajeta.io.net.*`
+      (`runtime/src/cajeta/net/` → `…/io/net/`); update every `package` decl +
+      `import` across runtime and `test/`. Optional deprecated `cajeta.net`
+      alias. `depends-on:` —.
+- [ ] **NET-15.2** Doc restructure → `docs/stdlib/io/{net,file,pipe,channel}/`:
+      move `docs/Net.md` into `io/net/` (split into the per-protocol pages the
+      site plan already calls for — sockets · tcp-udp · tls · http · dns · ws ·
+      multicast); fold in the existing `io/net/Networking.md`; normalize
+      `io/Pipes.md` → `io/pipe/`; add `io/channel/`. Rewrite `io/Io.md` to
+      present the channel/pipe/net/file family. `depends-on:` NET-15.1.
+- [ ] **NET-15.3** Channel cross-referencing — `io/channel/` doc + a reference
+      from `stdlib/Concurrency.md`; (optional) `cajeta.io.channel` alias.
+- [ ] **NET-15.4** Repo-wide reference sweep — `README.md`, `LanguageGuide.md`,
+      and every doc/plan/sample mention of `cajeta.net` → `cajeta.io.net`;
+      doc-site `navigation.ts` reflects `io/{net,file,pipe,channel}`.
+
+### Acceptance
+
+- [ ] All networking code compiles and its tests pass under `cajeta.io.net`;
+      no stray `cajeta.net` references (except an intentional deprecation alias).
+      → the existing net suites, re-pathed.
+- [ ] `docs/` builds on the site green; the nav + io index show
+      `io/{net,file,pipe,channel}`; no broken cross-links.
+- [ ] `Channel` is documented from io and still from concurrency; its
+      implementation remains in `cajeta.concurrent`.
+
+---
+
 ## Implementation ordering — quick view
 
 ```
@@ -1212,6 +1340,15 @@ below the table.
 | NET-13.4 | Reactor/concurrency harness | NET-3.1 | done |
 | NET-13.5 | Conformance gates (Autobahn/TLS interop) | NET-10.6 NET-5.2 | deferred |
 | NET-13.6 | Cross-platform CI (epoll/kqueue/IOCP) | NET-1.1 NET-3.1 NET-5.1 | deferred |
+| NET-14.1 | Native multicast option intrinsics (v4/v6, POSIX/Winsock) | NET-1.1 NET-1.5 | todo |
+| NET-14.2 | UdpSocket multicast surface (join/leave/ttl/loop/iface) | NET-14.1 | todo |
+| NET-14.3 | Multicast receive path (bind-to-group + join) | NET-14.2 NET-1.5 NET-1.3 | todo |
+| NET-14.4 | Async multicast RX (recvFromAsync over groups) | NET-14.3 NET-3.3 | todo |
+| NET-14.5 | Source-specific multicast (SSM) | NET-14.2 | deferred |
+| NET-15.1 | Move cajeta.net → cajeta.io.net (code) | — | todo |
+| NET-15.2 | Doc restructure io/{net,file,pipe,channel} | NET-15.1 | todo |
+| NET-15.3 | Channel cross-ref (io/channel + concurrency) | NET-15.2 | todo |
+| NET-15.4 | Repo-wide cajeta.net → cajeta.io.net sweep | NET-15.1 | todo |
 | NET-12.1 | HTTP/2 (h2) | NET-5.4 | deferred |
 | NET-12.2 | HTTP/3 + QUIC | — | deferred |
 | NET-12.3 | io_uring reactor backend | NET-3.1 | deferred |
