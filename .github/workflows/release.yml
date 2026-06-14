@@ -478,6 +478,13 @@ jobs:
             # escape hatch in the error message itself).
             FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
             CMAKE_EXTRA+=("-DCAJETA_CLANG=${FORK_ROOT}/bin/clang.exe")
+            # llvm-link merges the runtime bitcode and MUST be the same LLVM
+            # major as the clang that emitted it (LLVM 23). Pin it to the fork's
+            # too: this self-hosted runner reuses its workspace, so a prior
+            # configure can leave CAJETA_LLVM_LINK cached as MSYS2's llvm-link
+            # (LLVM 22) in build/CMakeCache.txt, which then can't read the
+            # LLVM-23 bitcode ("Not an int attribute ... Reader: 'LLVM 22'").
+            CMAKE_EXTRA+=("-DCAJETA_LLVM_LINK=${FORK_ROOT}/bin/llvm-link.exe")
           fi
           ./setup.sh "${CMAKE_EXTRA[@]+"${CMAKE_EXTRA[@]}"}"
 
