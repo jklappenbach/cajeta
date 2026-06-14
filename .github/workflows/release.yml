@@ -348,6 +348,7 @@ jobs:
             mingw-w64-x86_64-vulkan-headers
             tar
             vim
+            zip
 
       # EVERY target links the cajeta-llvm FORK toolchain (LLVM 23 + clang +
       # lld) carrying the SPIR-V / SPV_KHR_ray_query patches — see plans/c0/.
@@ -535,7 +536,15 @@ jobs:
       - name: Provision WiX (Windows)
         if: runner.os == 'Windows'
         continue-on-error: true
-        shell: pwsh
+        # Windows PowerShell ('powershell'), not PowerShell Core ('pwsh') — pwsh
+        # is preinstalled on GitHub-hosted runners but NOT guaranteed on a
+        # self-hosted box, where `shell: pwsh` fails with "pwsh: command not
+        # found". 'powershell' is always present on Windows; the dotnet/wix
+        # commands are identical. Still best-effort (continue-on-error): the MSI
+        # also needs the .NET SDK present; without it this no-ops and CPack WIX
+        # is skipped, which is fine — the .zip + cvm bare-binary are the primary
+        # Windows artifacts.
+        shell: powershell
         run: |
           dotnet tool install --global wix --version 5.0.2
           wix extension add -g WixToolset.UI.wixext/5.0.2
@@ -634,11 +643,22 @@ jobs:
       - name: Archive (zip)
         if: matrix.archive_ext == 'zip'
         run: |
-          # MSYS2 ships `zip` via the zip package — but it's not in
-          # the install list above. Use a more universal alternative:
-          # python -c '...' to make a deterministic zip. python is
-          # available in MSYS2's MINGW64 by default.
-          python -c "import shutil; shutil.make_archive(r'${STAGE_DIR}', 'zip', '.', r'${STAGE_DIR}')"
+          set -euo pipefail
+          # `zip` is now in the msys2 install list. Prefer it; fall back to
+          # python only if a runner somehow lacks it (e.g. a self-hosted box
+          # where neither was guaranteed — the old python-only path assumed
+          # python is in MINGW64 by default, which is NOT true everywhere and
+          # hard-failed the run with exit 127).
+          if command -v zip >/dev/null 2>&1; then
+            ( cd . && zip -r -X -q "${STAGE_DIR}.zip" "$STAGE_DIR" )
+          elif command -v python3 >/dev/null 2>&1; then
+            python3 -c "import shutil; shutil.make_archive(r'${STAGE_DIR}', 'zip', '.', r'${STAGE_DIR}')"
+          elif command -v python >/dev/null 2>&1; then
+            python -c "import shutil; shutil.make_archive(r'${STAGE_DIR}', 'zip', '.', r'${STAGE_DIR}')"
+          else
+            echo "::error::no 'zip' or 'python' available to build ${STAGE_DIR}.zip" >&2
+            exit 1
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
