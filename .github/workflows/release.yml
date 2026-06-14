@@ -587,13 +587,23 @@ jobs:
           # success if already at 5.0.2. SDK 9.0.x + .NET 6 runtime are present
           # on the runner, which is what WiX v5 (net6.0) needs.
           dotnet tool update --global wix --version 5.0.2
+          # The global-tools dir is NOT on this session's PATH yet — on the
+          # first dotnet run the SDK even prints "you will need to reopen the
+          # Command Prompt window before running the tool you installed", and
+          # $GITHUB_PATH only takes effect in LATER steps, not this shell. So
+          # `wix extension add` on the next line failed with "'wix' is not
+          # recognized". Prepend the tools dir to the CURRENT $env:PATH so `wix`
+          # is callable within this same step.
+          $toolsDir = "$env:USERPROFILE\.dotnet\tools"
+          $env:PATH = "$toolsDir;$env:PATH"
           # Re-adding an already-present extension is a no-op success.
           wix extension add -g WixToolset.UI.wixext/5.0.2
-          # Add-Content (not Out-File -Encoding utf8): Windows PowerShell 5.1's
-          # utf8 writer prepends a BOM, which corrupts the first GITHUB_PATH
-          # entry so `wix` wouldn't be found by the next step. Add-Content
-          # defaults to BOM-free ASCII, and the path is pure ASCII anyway.
-          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.dotnet\tools"
+          # Persist the tools dir for the later cpack step. Add-Content (not
+          # Out-File -Encoding utf8): Windows PowerShell 5.1's utf8 writer
+          # prepends a BOM, which corrupts the first GITHUB_PATH entry so `wix`
+          # wouldn't be found by the next step. Add-Content defaults to BOM-free
+          # ASCII, and the path is pure ASCII anyway.
+          Add-Content -Path $env:GITHUB_PATH -Value $toolsDir
 
       # ---- Build native installers (CPack) ------------------------------
       # Wraps the CMake install() tree (top-level CMakeLists.txt §3) into the
