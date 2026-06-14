@@ -70,8 +70,8 @@ Keep a genuine warning visible by suppressing system-header noise.
   always present). Windows-only step (`if: matrix.archive_ext == 'zip'`).
 
 ### Acceptance Criteria
-- [ ] The `build (x86_64-w64-mingw32)` job conclusion is `success`
-  (everything through Archive + Upload artifact).
+- [x] The `build (x86_64-w64-mingw32)` job conclusion is `success`
+  (everything through Archive + Upload artifact). Run 27492479355 — GREEN.
 
 ## 4 Cross-OS verification mandate (CARRY-OVER)
 
