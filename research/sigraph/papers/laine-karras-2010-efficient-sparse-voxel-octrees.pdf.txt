@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://research.nvidia.com/publication/2010-02_efficient-sparse-voxel-octrees
+sha256: 47231e47ea1d17fa35aa849f13a40e52c94a73f0d41be2ed37405492f44aa33c

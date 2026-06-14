@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://ieeexplore.ieee.org/document/920624
+sha256: 2f7a7e38a7b092ba3cb5085f2ab06f4c9a622161105424bf9e91b40b769a42d9

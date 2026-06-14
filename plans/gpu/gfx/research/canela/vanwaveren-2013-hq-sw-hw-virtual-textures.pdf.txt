@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://mrelusive.com/publications/presentations/2013_siggraph/hq_sw_hw_vts_12.pdf
+sha256: 559248b6c66a3be9091b1ef86355af3ae0b4448dd5098947a32fe37b68bf1a4d

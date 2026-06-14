@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://www.ea.com/frostbite/news/physically-based-sky-atmosphere-and-cloud-rendering
+sha256: a494bacba53bec42839e2664588f2a9b1e024031d5c0ec1dc503458966c698b9

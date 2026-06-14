@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://hhoppe.com/proj/gpugcm/
+sha256: c9dc3eb32aa69e91b341f28b486b7d1f27c6bf0446a675c6fc075a86bb32af74

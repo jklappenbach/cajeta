@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: http://graphics.ucsd.edu/~henrik/papers/smoke/
+sha256: 2547c95584842d4e3c61d3e442bc52913f751ee26ba472e80224f76d18adb875

@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://www.bitsavers.org/pdf/dec/tech_reports/WRL-99-1.pdf
+sha256: 56521706551da99620aa1b4fa2887065b9a605572eb8cc1de9ceaa5326031153

@@ -1,0 +1,5 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+# NOTE: source URL is UNVERIFIED -- confirm before relying on it.
+source: http://s09.idav.ucdavis.edu/talks/05-JP_id_Tech_5_Challenges.pdf
+sha256: 167a69f61971df56c643526ee0eda9522e9b84f8005f2341a108a705af4f4fd7

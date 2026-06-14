@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://www.cl.cam.ac.uk/~rkm38/pdfs/pettett2024_multiresolution_mesh_rendering.pdf
+sha256: 7ce5b1990c85bf777a399aa4494d856953c81aa5cc1a2f2f3ccf42f9151f4ce2

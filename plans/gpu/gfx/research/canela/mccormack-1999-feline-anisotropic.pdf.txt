@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://history.siggraph.org/learning/feline-fast-elliptical-lines-for-anisotropic-texture-mapping-by-mccormack-perry-farkas-and-jouppi/
+sha256: 32726d48a9dc47bc6d35abeca80a68d8c3431e93b894732c820b5e17ef780293

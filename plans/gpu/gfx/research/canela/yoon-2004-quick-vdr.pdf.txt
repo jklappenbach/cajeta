@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://doi.org/10.1109/VISUAL.2004.86
+sha256: 462dc2735d3255067d6347e5ad4d81fde3347f6eed8c68d3a8abc6669a3529db

@@ -1,0 +1,4 @@
+# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
+# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
+source: https://gdcvault.com/play/1021761/Adaptive-Virtual-Texture-Rendering-in
+sha256: 8d7d6d471347dfc915ee3c997f7b82171addd59cd9c6da876012d6ad2f757858
