@@ -577,7 +577,16 @@ jobs:
         # below is 5.1-compatible.
         shell: powershell
         run: |
-          dotnet tool install --global wix --version 5.0.2
+          $ErrorActionPreference = "Stop"
+          # `dotnet tool update` (NOT install): the runner service profile
+          # (NT AUTHORITY\NETWORK SERVICE) persists between runs, so `install`
+          # would exit non-zero with "already installed" on every re-dispatch
+          # after the first and — now that this step hard-gates — red the run.
+          # `update --version 5.0.2` is idempotent: installs if absent, no-op
+          # success if already at 5.0.2. SDK 9.0.x + .NET 6 runtime are present
+          # on the runner, which is what WiX v5 (net6.0) needs.
+          dotnet tool update --global wix --version 5.0.2
+          # Re-adding an already-present extension is a no-op success.
           wix extension add -g WixToolset.UI.wixext/5.0.2
           # Add-Content (not Out-File -Encoding utf8): Windows PowerShell 5.1's
           # utf8 writer prepends a BOM, which corrupts the first GITHUB_PATH
