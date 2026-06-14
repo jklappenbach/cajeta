@@ -348,6 +348,7 @@ jobs:
             mingw-w64-x86_64-vulkan-headers
             tar
             vim
+            zip
 
       # EVERY target links the cajeta-llvm FORK toolchain (LLVM 23 + clang +
       # lld) carrying the SPIR-V / SPV_KHR_ray_query patches — see plans/c0/.
@@ -708,11 +709,12 @@ jobs:
       - name: Archive (zip)
         if: matrix.archive_ext == 'zip'
         run: |
-          # MSYS2 MINGW64 ships neither `zip` (not in the install list) nor
-          # `python` on this runner, so use cmake's bundled libarchive: cmake
-          # is guaranteed present (it just built the project) and `-E tar
-          # --format=zip` writes a portable .zip. Same layout the old python
-          # make_archive produced: a top-level ${STAGE_DIR}/ folder.
+          # MSYS2 MINGW64 ships neither `zip` (not guaranteed in the install
+          # list across runners) nor `python` on this runner, so use cmake's
+          # bundled libarchive: cmake is guaranteed present (it just built the
+          # project) and `-E tar --format=zip` writes a portable .zip. Same
+          # layout the old python make_archive produced: a top-level
+          # ${STAGE_DIR}/ folder.
           cmake -E tar cf "${STAGE_DIR}.zip" --format=zip "${STAGE_DIR}"
 
       - name: Upload artifact
