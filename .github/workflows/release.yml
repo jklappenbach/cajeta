@@ -376,7 +376,18 @@ jobs:
           esac
           ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
           URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
-          DEST="$HOME/cajeta-llvm"
+          # On the self-hosted Windows runner the MSYS2 shell's $HOME is '/'
+          # (a read-only mount), so "$HOME/cajeta-llvm" -> '//cajeta-llvm' and
+          # mkdir fails with "Read-only file system". Anchor the toolchain in
+          # the (always-writable) workspace on Windows; $PWD is already in MSYS
+          # '/c/...' form that cygpath -m/-w convert cleanly for the native
+          # mingw CMake/PATH below. Linux/macOS hosted runners have a real
+          # writable $HOME, so keep using it there.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            DEST="$PWD/cajeta-llvm"
+          else
+            DEST="$HOME/cajeta-llvm"
+          fi
           mkdir -p "$DEST"
           # Bare relative filename: resolves in $CWD (the workspace) for BOTH
           # msys2's tools and the native mingw curl/zstd — avoids the MSYS
