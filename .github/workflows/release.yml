@@ -498,6 +498,15 @@ jobs:
           # 120s per-test default and were killed mid-progress. Give the
           # Windows leg headroom; the fast legs keep the default.
           TEST_TIMEOUT: ${{ matrix.target == 'x86_64-w64-mingw32' && '300' || '120' }}
+          # The release GATE runs the proven one-process-per-test path
+          # (BATCH=0), not the per-suite batch optimization. Batching only
+          # meaningfully helps where the stdlib prime dominates (Windows), but
+          # running a whole suite in one process can destabilize the Windows JIT
+          # and trip the per-test fallback, erasing the savings — not a risk
+          # worth taking on the publish gate. BATCH=1 remains the default for
+          # local dev (cajeta_tests.sh) where speed matters more than gate
+          # determinism.
+          BATCH: "0"
         run: NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
 
       # Persist the raw per-shard test output (full gtest failure text +
