@@ -464,10 +464,22 @@ jobs:
           # so CMake would auto-pick clang++, which on mingw doesn't auto-link
           # winpthreads and fails the LLVM/libstdc++ pthread_* symbols at link. The
           # fork still supplies the LLVM libs/headers + clang for the bitcode step.
+          CMAKE_EXTRA=()
           if [ "${{ runner.os }}" = "Windows" ]; then
             export CC=gcc CXX=g++
+            # Pin the runtime-bitcode clang to the cajeta-llvm FORK (LLVM 23).
+            # The fork's relocated LLVMConfig.cmake exports a stale
+            # LLVM_TOOLS_BINARY_DIR (a build-machine path that doesn't exist
+            # here), so src/CMakeLists.txt's find_program falls through to
+            # MSYS2's clang (LLVM 22) and hard-fails the toolchain-major check.
+            # LLVM_DIR (set by the fetch step) is <fork>/lib/cmake/llvm, so the
+            # fork's clang is its sibling <fork>/bin/clang.exe. Pre-seeding the
+            # CAJETA_CLANG cache var makes find_program a no-op (documented
+            # escape hatch in the error message itself).
+            FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
+            CMAKE_EXTRA+=("-DCAJETA_CLANG=${FORK_ROOT}/bin/clang.exe")
           fi
-          ./setup.sh
+          ./setup.sh "${CMAKE_EXTRA[@]+"${CMAKE_EXTRA[@]}"}"
 
       - name: Build
         run: cmake --build build --config Release -- -j 4
