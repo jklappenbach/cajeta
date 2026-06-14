@@ -52,6 +52,34 @@ if [ ! -x "$TEST_BIN" ]; then
     exit 1
 fi
 
+# The release gate certifies a *shippable toolchain*, not merely a green test
+# binary. cajeta_test embeds its own JIT and is INDEPENDENT of the `cajeta`
+# compiler CLI — so a tree where cajeta_test built but the `cajeta` compiler did
+# NOT (failed to link, or a stale/partial build) still runs every test green,
+# falsely certifying a release whose compiler is missing or broken. That hole is
+# invisible under NO_BUILD=1, which skips build.sh and only checked cajeta_test.
+# CI catches it via separate Build + Smoke steps, but a standalone
+# `NO_BUILD=1 ./release_tests.sh` (exactly how this is run by hand) does not.
+# Require the compiler binary AND smoke `--version`, so the gate fails if cajeta
+# can't be made — in every invocation path.
+CAJETA_BIN="build/src/cajeta"
+if [ ! -x "$CAJETA_BIN" ]; then
+    if [ -x "${CAJETA_BIN}.exe" ]; then          # mingw/Windows produces cajeta.exe
+        CAJETA_BIN="${CAJETA_BIN}.exe"
+    else
+        echo "error: cajeta compiler not built at $CAJETA_BIN" >&2
+        echo "       the release gate requires a working compiler, not just $TEST_BIN" >&2
+        echo "       build it with ./build.sh (or drop NO_BUILD=1 to build here)" >&2
+        exit 1
+    fi
+fi
+if ! "$CAJETA_BIN" --version >/dev/null 2>&1; then
+    echo "error: '$CAJETA_BIN --version' failed — the cajeta compiler is present but not runnable" >&2
+    "$CAJETA_BIN" --version || true             # surface the actual error/exit
+    exit 1
+fi
+echo ">> Compiler smoke: $("$CAJETA_BIN" --version 2>/dev/null | head -1)"
+
 # Parse the filter file: drop `#` comments and blank lines, trim whitespace,
 # collect one pattern per remaining line.
 patterns=()
