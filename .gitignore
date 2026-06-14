@@ -1,3 +1,7 @@
+# Research-paper PDFs are not tracked in git or LFS — each has a sibling
+# <name>.pdf.txt (name/description/source url). Binaries stay on disk only.
+*.pdf
+
 .idea
 .cmake
 .ninja_deps
