@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Randomized Dynamic Program Analysis Technique for Detecting Real Deadlocks
+description: Combines an imprecise dynamic lock-cycle analysis with a randomized thread scheduler that actively forces predicted deadlock cycles to occur, confirming real deadlocks while avoiding false positives.
+url: https://people.eecs.berkeley.edu/~ksen/papers/deadlock.pdf

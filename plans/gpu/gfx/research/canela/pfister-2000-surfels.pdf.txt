@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Surfels: Surface Elements as Rendering Primitives
+description: Introduces surfels, point-based zero-dimensional surface elements that represent complex geometry without connectivity for efficient high-quality rendering.
+url: https://doi.org/10.1145/344779.344936

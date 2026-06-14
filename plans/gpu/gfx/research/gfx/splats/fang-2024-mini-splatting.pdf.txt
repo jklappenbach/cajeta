@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Mini-Splatting: Representing Scenes with a Constrained Number of Gaussians
+description: A method that reorganizes Gaussian spatial distribution through densification and simplification to represent scenes with far fewer Gaussians while preserving quality.
+url: https://arxiv.org/abs/2403.14166

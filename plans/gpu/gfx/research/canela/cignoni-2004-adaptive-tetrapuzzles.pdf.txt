@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Adaptive TetraPuzzles: Efficient Out-of-Core Construction and Visualization of Gigantic Multiresolution Polygonal Models
+description: A SIGGRAPH 2004 paper using a tetrahedral hierarchy of mesh patches to build and stream view-dependent multiresolution representations of out-of-core gigantic models.
+url: https://doi.org/10.1145/1186562.1015802

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Vectorized and performance-portable Quicksort
+description: Presents vqsort, a multi-platform vectorized quicksort built on the Highway library that runs across seven instruction sets and is up to 20x faster than standard-library sorts.
+url: https://arxiv.org/abs/2205.05982

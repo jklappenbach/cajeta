@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Simulating Ocean Water
+description: Course notes describing the statistical, FFT-based oceanographic spectrum model (the Tessendorf/Phillips spectrum) for synthesizing realistic ocean surface waves.
+url: https://jtessen.people.clemson.edu/reports/papers_files/coursenotes2004.pdf

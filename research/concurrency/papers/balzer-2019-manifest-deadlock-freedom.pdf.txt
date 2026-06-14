@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Manifest Deadlock-Freedom for Shared Session Types
+description: Extends linear-logic session types with shared channels governed by an acquire-release locking discipline and adjoint modalities, recovering deadlock freedom in the presence of mutable shared resources.
+url: https://link.springer.com/chapter/10.1007/978-3-030-17184-1_22

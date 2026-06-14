@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Extending the Disney BRDF to a BSDF with Integrated Subsurface Scattering
+description: The SIGGRAPH 2015 course notes extending the Disney principled BRDF into a full BSDF with integrated subsurface scattering, transmission, and thin-surface support.
+url: https://blog.selfshadow.com/publications/s2015-shading-course/burley/s2015_pbs_disney_bsdf_notes.pdf

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Pulsar: Efficient Sphere-based Neural Rendering
+description: An efficient sphere-based differentiable renderer that rasterizes millions of spheres in real time as a backbone for neural rendering.
+url: https://arxiv.org/abs/2004.07484

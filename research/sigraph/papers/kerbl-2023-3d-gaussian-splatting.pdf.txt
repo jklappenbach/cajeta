@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 3D Gaussian Splatting for Real-Time Radiance Field Rendering
+description: Represents scenes as optimizable 3D Gaussians with a fast differentiable tile-based rasterizer, achieving state-of-the-art real-time novel-view synthesis.
+url: https://arxiv.org/abs/2308.04079

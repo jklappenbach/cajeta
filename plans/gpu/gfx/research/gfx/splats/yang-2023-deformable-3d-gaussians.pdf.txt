@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Deformable 3D Gaussians for High-Fidelity Monocular Dynamic Scene Reconstruction
+description: Extends 3D Gaussian Splatting to dynamic scenes by learning a deformation field in canonical space, enabling high-fidelity reconstruction and real-time rendering from monocular video.
+url: https://arxiv.org/abs/2309.13101

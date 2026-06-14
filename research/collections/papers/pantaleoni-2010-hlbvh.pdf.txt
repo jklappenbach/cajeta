@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: HLBVH: Hierarchical LBVH Construction for Real-Time Ray Tracing of Dynamic Geometry
+description: Introduces a hierarchical reformulation of LBVH and an SAH-optimized variant that exploit coarse spatial coherence to build high-quality BVHs with minimal work and bandwidth for dynamic scenes.
+url: https://research.nvidia.com/publication/2010-06_hlbvh-hierarchical-lbvh-construction-real-time-ray-tracing

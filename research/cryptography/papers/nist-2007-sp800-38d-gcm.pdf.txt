@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: NIST SP 800-38D: Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC
+description: The NIST standard specifying the GCM authenticated-encryption mode and its GMAC authentication-only variant for block ciphers.
+url: https://csrc.nist.gov/pubs/sp/800/38/d/final

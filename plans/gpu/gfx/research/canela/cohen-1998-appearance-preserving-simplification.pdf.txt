@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Appearance-Preserving Simplification
+description: A SIGGRAPH 1998 paper that simplifies mesh geometry while bounding screen-space error in surface position, normals, and color by storing attributes in texture and normal maps.
+url: https://doi.org/10.1145/280814.280832

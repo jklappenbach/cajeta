@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Simple, Fast, and Practical Non-Blocking and Blocking Concurrent Queue Algorithms
+description: Presents the Michael-Scott queue, a practical lock-free FIFO queue using compare-and-swap with a two-lock blocking variant, long the standard concurrent-queue algorithm.
+url: https://dl.acm.org/doi/10.1145/248052.248106

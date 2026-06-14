@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees
+description: Gives an in-place fully parallel algorithm for building binary radix trees that removes the sequential level-by-level bottleneck in GPU construction of BVHs, octrees, and k-d trees.
+url: https://diglib.eg.org/items/71edb707-2be1-4d84-8e25-9162cd9a59e9

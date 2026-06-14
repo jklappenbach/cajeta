@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Seamless Texture Atlases
+description: Presents a method for building texture atlases whose charts join without seam artifacts, enabling continuous mip-mapped filtering across chart boundaries.
+url: https://doi.org/10.1145/1057432.1057441

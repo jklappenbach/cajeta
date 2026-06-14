@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Progressive Raising in Multi-level IR
+description: Introduces progressive raising, a transformation that lifts low-level IR to higher-level abstractions in multi-level IRs (e.g. MLIR) to enable domain-specific optimizations.
+url: https://inria.hal.science/hal-03139764

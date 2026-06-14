@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: HyperLogLog: the analysis of a near-optimal cardinality estimation algorithm
+description: Presents HyperLogLog, a near-optimal probabilistic algorithm that estimates the cardinality of very large multisets using tiny memory.
+url: https://algo.inria.fr/flajolet/Publications/FlFuGaMe07.pdf

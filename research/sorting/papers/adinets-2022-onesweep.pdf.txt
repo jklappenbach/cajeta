@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Onesweep: A Faster Least Significant Digit Radix Sort for GPUs
+description: Presents a single-pass, decoupled-look-back prefix-sum LSD radix sort for GPUs that needs only ~2n global memory operations per digit pass, roughly 1.5x faster than CUB.
+url: https://arxiv.org/abs/2206.01784

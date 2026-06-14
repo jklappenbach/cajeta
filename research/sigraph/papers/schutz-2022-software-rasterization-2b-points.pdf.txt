@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Software Rasterization of 2 Billion Points in Real Time
+description: Demonstrates a compute-shader point-cloud rasterizer using atomic min operations that renders over two billion points per frame faster than the hardware GL_POINTS pipeline.
+url: https://arxiv.org/abs/2204.01287

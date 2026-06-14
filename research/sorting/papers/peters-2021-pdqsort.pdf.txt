@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Pattern-defeating Quicksort
+description: Presents pdqsort, a hybrid introsort variant that achieves O(nk) worst case on k distinct keys and detects input patterns to run far faster on many distributions while never being much slower than quicksort.
+url: https://arxiv.org/abs/2106.05123

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GS-IR: 3D Gaussian Splatting for Inverse Rendering
+description: An inverse-rendering pipeline built on 3D Gaussian splatting that recovers geometry, materials, and illumination for relighting and editing.
+url: https://arxiv.org/abs/2311.16473

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: MobileNeRF: Exploiting the Polygon Rasterization Pipeline for Efficient Neural Field Rendering on Mobile Architectures
+description: A paper that represents a NeRF as a textured polygon mesh so radiance fields can be rendered in real time on mobile GPUs using the standard rasterization pipeline and fragment shaders.
+url: https://arxiv.org/abs/2208.00277

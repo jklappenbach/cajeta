@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Case for Learned Index Structures
+description: Argues that traditional indexes (B-trees, hash maps, Bloom filters) are models that can be replaced by learned models predicting key positions, outperforming cache-optimized B-trees in speed and space.
+url: https://arxiv.org/abs/1712.01208

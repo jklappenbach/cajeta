@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: SuGaR: Surface-Aligned Gaussian Splatting for Efficient 3D Mesh Reconstruction and High-Quality Mesh Rendering
+description: A method that aligns 3D Gaussians to scene surfaces to enable fast, accurate triangle-mesh extraction and editable mesh-bound Gaussian rendering.
+url: https://arxiv.org/abs/2311.12775

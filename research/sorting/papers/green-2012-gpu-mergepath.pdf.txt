@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GPU Merge Path: A GPU Merging Algorithm
+description: Adapts the Merge Path partitioning idea to GPUs, splitting two sorted arrays into independent non-overlapping pieces for load-balanced parallel merging with 20-50x speedups over serial merge.
+url: https://dl.acm.org/doi/10.1145/2304576.2304621

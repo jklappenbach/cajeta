@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Visualizing Data using t-SNE
+description: Introduces t-SNE, a nonlinear dimensionality-reduction technique that maps high-dimensional data to 2D/3D by matching Student-t and Gaussian similarity distributions for visualization.
+url: https://www.jmlr.org/papers/v9/vandermaaten08a.html

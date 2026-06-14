@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Dynamic Circular Work-Stealing Deque
+description: Introduces a lock-free work-stealing deque backed by a growable circular array, giving a simple and efficient resizable structure for the owner's push/pop and thieves' steal operations.
+url: https://dl.acm.org/doi/10.1145/1073970.1073974

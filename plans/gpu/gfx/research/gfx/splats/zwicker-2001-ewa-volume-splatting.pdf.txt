@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: EWA Volume Splatting
+description: Derives an elliptical weighted average (EWA) resampling filter for splatting that provides high-quality antialiased volume rendering by combining a reconstruction kernel with a band-limiting screen-space filter.
+url: https://dl.acm.org/doi/10.5555/601671.601674

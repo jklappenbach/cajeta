@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Layer Normalization
+description: Introduces layer normalization, which normalizes activations across features within each example, stabilizing training of recurrent and other networks independent of batch size.
+url: https://arxiv.org/abs/1607.06450

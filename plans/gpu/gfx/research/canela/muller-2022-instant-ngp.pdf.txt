@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Instant Neural Graphics Primitives with a Multiresolution Hash Encoding
+description: Introduces a multiresolution hash-grid input encoding that lets small neural networks for NeRF, SDF, and image fitting train and render orders of magnitude faster.
+url: https://arxiv.org/abs/2201.05989

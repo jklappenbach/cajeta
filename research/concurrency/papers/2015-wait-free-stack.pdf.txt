@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Wait-Free Stack
+description: Describes a concurrent stack algorithm whose push and pop operations are wait-free, guaranteeing every thread completes its operation in a bounded number of its own steps regardless of contention.
+url: https://arxiv.org/abs/1510.00116

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Pyramidal Parametrics
+description: Introduces mip-mapping, a pyramidal prefiltered texture representation enabling efficient anti-aliased texture lookups at arbitrary scales.
+url: https://doi.org/10.1145/964967.801126

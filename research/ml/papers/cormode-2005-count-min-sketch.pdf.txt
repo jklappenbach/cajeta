@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: An Improved Data Stream Summary: The Count-Min Sketch and its Applications
+description: Introduces the Count-Min sketch, a compact sublinear-space probabilistic data structure for approximate frequency and heavy-hitter queries over data streams.
+url: https://doi.org/10.1016/j.jalgor.2003.12.001

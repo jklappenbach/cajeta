@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 3D Gaussian Splatting for Real-Time Radiance Field Rendering
+description: The foundational work introducing 3D Gaussian splatting, an explicit point-based radiance-field representation enabling real-time, high-quality novel-view synthesis.
+url: https://arxiv.org/abs/2308.04079

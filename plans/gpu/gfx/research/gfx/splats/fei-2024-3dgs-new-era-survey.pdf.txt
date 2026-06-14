@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 3D Gaussian Splatting as New Era: A Survey
+description: A survey reviewing 3D Gaussian splatting as an emerging explicit radiance-field paradigm across reconstruction, dynamic scenes, editing, and downstream tasks.
+url: https://arxiv.org/abs/2402.07181

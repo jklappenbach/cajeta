@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Marching Cubes: A High Resolution 3D Surface Construction Algorithm
+description: Lorensen and Cline's 1987 SIGGRAPH paper introduces Marching Cubes, which extracts a polygonal isosurface from a 3D scalar field by independently triangulating each voxel via a precomputed table of edge-intersection cases.
+url: https://dl.acm.org/doi/10.1145/37402.37422

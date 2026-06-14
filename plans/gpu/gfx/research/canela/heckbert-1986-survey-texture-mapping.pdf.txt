@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Survey of Texture Mapping
+description: A 1986 IEEE Computer Graphics and Applications survey reviewing texture mapping fundamentals including parameterization, filtering, and antialiasing techniques.
+url: https://doi.org/10.1109/MCG.1986.276672

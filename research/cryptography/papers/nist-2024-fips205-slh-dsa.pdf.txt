@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FIPS 205: Stateless Hash-Based Digital Signature Standard
+description: The NIST post-quantum standard specifying SLH-DSA (derived from SPHINCS+) for stateless hash-based digital signatures.
+url: https://csrc.nist.gov/pubs/fips/205/final

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Position Based Fluids
+description: Reformulates SPH incompressibility as a position-based dynamics density constraint, enabling stable, large-timestep real-time fluid simulation.
+url: https://doi.org/10.1145/2461912.2461984

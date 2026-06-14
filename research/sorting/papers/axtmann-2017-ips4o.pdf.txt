@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: In-place Parallel Super Scalar Samplesort (IPS4o)
+description: Introduces an in-place, parallel, cache- and branch-efficient samplesort using block-based permutations and stack-free recursion that outperforms prior in-place and out-of-place sorters.
+url: https://arxiv.org/abs/1705.02257

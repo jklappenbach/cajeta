@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Crash Course in BRDF Implementation
+description: A practical tutorial walking through the implementation of physically based BRDFs (diffuse and microfacet specular) and their importance sampling for real-time rendering.
+url: https://boksajak.github.io/blog/BRDF

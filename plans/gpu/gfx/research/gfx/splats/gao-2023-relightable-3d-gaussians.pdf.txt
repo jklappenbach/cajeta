@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Relightable 3D Gaussian: Real-time Point Cloud Relighting with BRDF Decomposition and Ray Tracing
+description: A relightable point-cloud representation that augments 3D Gaussians with BRDF and incident-light decomposition plus point-based ray tracing for real-time relighting.
+url: https://arxiv.org/abs/2311.16043

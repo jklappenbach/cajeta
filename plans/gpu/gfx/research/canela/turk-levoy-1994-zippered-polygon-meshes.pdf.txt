@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Zippered Polygon Meshes from Range Images
+description: Presents a method to merge overlapping range-scan meshes by zippering their boundaries and refining vertex positions into a single consistent surface.
+url: https://doi.org/10.1145/192161.192241

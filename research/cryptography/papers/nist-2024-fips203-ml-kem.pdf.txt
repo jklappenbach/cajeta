@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FIPS 203: Module-Lattice-Based Key-Encapsulation Mechanism Standard
+description: The NIST post-quantum standard specifying ML-KEM (derived from CRYSTALS-Kyber) for lattice-based key encapsulation.
+url: https://csrc.nist.gov/pubs/fips/203/final

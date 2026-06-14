@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Persistence for the Masses: RRB-Vectors in a Systems Language
+description: Describes the design of the immer C++ library, bringing efficient RRB-tree-based immutable vectors with structural sharing, transients, and customizable memory policies to a systems language.
+url: https://dl.acm.org/doi/10.1145/3110260

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FIPS 202: SHA-3 Standard: Permutation-Based Hash and Extendable-Output Functions
+description: The NIST standard defining the SHA-3 family of Keccak-based hash functions and the SHAKE extendable-output functions.
+url: https://csrc.nist.gov/pubs/fips/202/final

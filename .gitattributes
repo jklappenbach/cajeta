@@ -1,9 +1,7 @@
-# All PDFs (research papers, etc. — many bundle embedded video / high-res
-# supplements and run to hundreds of MB) are tracked with Git LFS and stored on
-# GitHub's LFS, regardless of where they live in the tree. CI skips the smudge
-# filter (GIT_LFS_SKIP_SMUDGE=1 in .github/workflows) so build/test jobs don't
-# download them.
-*.pdf filter=lfs diff=lfs merge=lfs -text
+# PDFs (research papers) are NOT tracked in git and NOT in Git LFS — they're
+# gitignored (see .gitignore) and live on disk only, each described by a sibling
+# <name>.pdf.txt (name / description / source url) so the original can be
+# re-fetched. See plans/lfs-local-migration.md.
 
 # Shell scripts must stay LF even on Windows checkouts (a CRLF shebang/`read`
 # breaks bash); Windows batch files want CRLF (labels/goto misbehave on LF).

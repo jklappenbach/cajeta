@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Scaling Probe-Based Real-Time Dynamic Global Illumination for Production
+description: Extends DDGI with sampling, resampling, and probe-management improvements to make probe-based dynamic global illumination practical for production game scenes.
+url: https://arxiv.org/abs/2108.05263

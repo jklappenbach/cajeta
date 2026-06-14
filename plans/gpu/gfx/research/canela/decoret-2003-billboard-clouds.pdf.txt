@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Billboard Clouds for Extreme Model Simplification
+description: A SIGGRAPH 2003 paper that approximates a complex model by a small set of textured, partially transparent planes (a billboard cloud) for extreme yet faithful simplification.
+url: https://doi.org/10.1145/882262.882326

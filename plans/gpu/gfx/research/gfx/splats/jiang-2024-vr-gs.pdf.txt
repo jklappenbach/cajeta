@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: VR-GS: A Physical Dynamics-Aware Interactive Gaussian Splatting System in Virtual Reality
+description: An interactive VR system combining position-based dynamics with Gaussian splatting for real-time, physically plausible manipulation of reconstructed scenes.
+url: https://arxiv.org/abs/2401.16663

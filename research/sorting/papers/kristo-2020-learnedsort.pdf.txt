@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Case for a Learned Sorting Algorithm
+description: Introduces Learned Sort, a distribution sort that uses a learned model of the data's empirical CDF to place keys near their final positions, outperforming radix sort on large datasets.
+url: https://dl.acm.org/doi/10.1145/3318464.3389752

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: An Updated Set of Basic Linear Algebra Subprograms (BLAS)
+description: Defines the updated BLAS standard, extending the Level 1/2/3 dense linear algebra kernel interface with mixed-precision, sparse, and extended-precision routines.
+url: https://doi.org/10.1145/567806.567807

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Minimizing Ray Tracing Memory Traffic through Quantized Structures and Ray Stream Tracing
+description: Combines 8-bit quantized acceleration structures with ray stream tracing to cut ray-tracing memory traffic to about 18% of conventional approaches while preserving geometric precision via fixed-point arithmetic.
+url: https://arxiv.org/abs/2505.24653

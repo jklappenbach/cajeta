@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: CT-LLVM: Automatic Large-Scale Constant-Time Analysis
+description: An LLVM-plugin constant-time analysis tool built on def-use and alias analysis, designed for usability and automatic large-scale verification of cryptographic libraries.
+url: https://eprint.iacr.org/2025/338

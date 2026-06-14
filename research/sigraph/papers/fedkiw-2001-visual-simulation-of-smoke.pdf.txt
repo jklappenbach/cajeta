@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Visual Simulation of Smoke
+description: Presents a stable, efficient fluid-solver method for animating smoke that uses vorticity confinement and a semi-Lagrangian scheme to retain small-scale turbulent detail.
+url: http://graphics.ucsd.edu/~henrik/papers/smoke/

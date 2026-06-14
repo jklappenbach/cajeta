@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Attention Is All You Need
+description: Introduces the Transformer, a sequence model based solely on self-attention that dispenses with recurrence and convolution, becoming the foundation of modern deep learning.
+url: https://arxiv.org/abs/1706.03762

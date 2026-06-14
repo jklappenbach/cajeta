@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: BakedSDF: Meshing Neural SDFs for Real-Time View Synthesis
+description: Optimizes a hybrid neural surface-volume SDF and bakes it into a high-quality mesh with view-dependent appearance for real-time view synthesis.
+url: https://arxiv.org/abs/2302.14859

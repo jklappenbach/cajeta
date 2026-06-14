@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Compact 3D Gaussian Representation for Radiance Field
+description: A method that reduces the number and storage of Gaussians via learnable masking and codebook-based vector quantization of attributes for compact radiance fields.
+url: https://arxiv.org/abs/2311.13681

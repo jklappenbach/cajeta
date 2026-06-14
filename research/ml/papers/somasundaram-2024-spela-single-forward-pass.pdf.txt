@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Representation Learning Using a Single Forward Pass
+description: Introduces SPELA, a local Hebbian learning algorithm using embedded neural priors that trains networks in a single forward pass with no weight transport, backprop, or stored activations.
+url: https://arxiv.org/abs/2402.09769

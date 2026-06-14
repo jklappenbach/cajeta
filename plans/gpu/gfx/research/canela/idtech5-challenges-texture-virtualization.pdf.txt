@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: id Tech 5 Challenges: From Texture Virtualization to Massive Parallelization
+description: J.M.P. van Waveren's 2009 SIGGRAPH talk describes id Software's id Tech 5 engine, covering its virtual ("MegaTexture") texturing system that streams a unique sparse texture across entire worlds and the engine's move toward massive multi-core parallelization.
+url: http://s09.idav.ucdavis.edu/talks/05-JP_id_Tech_5_Challenges.pdf

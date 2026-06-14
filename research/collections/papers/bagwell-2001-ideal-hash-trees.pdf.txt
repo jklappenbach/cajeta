@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Ideal Hash Trees
+description: Introduces Hash Array Mapped Tries (HAMT), a trie over hashed keys with population-count bitmap compression that gives near-ideal constant-time search, insert, and delete with no root table.
+url: https://infoscience.epfl.ch/record/64398

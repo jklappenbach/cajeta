@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: SC-GS: Sparse-Controlled Gaussian Splatting for Editable Dynamic Scenes
+description: A dynamic-scene representation that uses sparse control points with learned deformation MLPs to drive and edit motion of 3D Gaussians.
+url: https://arxiv.org/abs/2312.14937

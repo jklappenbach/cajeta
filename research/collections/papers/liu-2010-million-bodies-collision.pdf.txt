@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Real-time Collision Culling of a Million Bodies on Graphics Processing Units
+description: Presents a GPU-based massively parallel sweep-and-prune broad-phase that uses PCA-chosen sweep directions and spatial subdivision to cull collisions among a million moving bodies in real time.
+url: https://dl.acm.org/doi/10.1145/1882261.1866180

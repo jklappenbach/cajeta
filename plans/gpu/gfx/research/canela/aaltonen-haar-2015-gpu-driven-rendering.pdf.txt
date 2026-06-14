@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GPU-Driven Rendering Pipelines
+description: A SIGGRAPH 2015 Advances in Real-Time Rendering talk describing Ubisoft's GPU-driven pipeline that moves culling and draw submission onto the GPU via virtual texturing and multi-draw indirect for massive scene throughput.
+url: https://www.advances.realtimerendering.com/s2015/aaltonenhaar_siggraph2015_combined_final_footer_220dpi.pdf

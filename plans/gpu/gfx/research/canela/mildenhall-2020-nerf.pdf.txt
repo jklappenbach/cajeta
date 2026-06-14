@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: NeRF: Representing Scenes as Neural Radiance Fields for View Synthesis
+description: Mildenhall et al.'s 2020 ECCV paper introduces NeRF, which encodes a scene as an MLP mapping 5D position-and-direction coordinates to color and density and renders novel views via differentiable volume ray-marching.
+url: https://arxiv.org/abs/2003.08934

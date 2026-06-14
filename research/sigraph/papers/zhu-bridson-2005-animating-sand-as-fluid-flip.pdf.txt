@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Animating Sand as a Fluid
+description: Models granular sand as an incompressible fluid with frictional yield conditions and introduces the FLIP (Fluid-Implicit-Particle) method to computer graphics for low-dissipation simulation.
+url: https://doi.org/10.1145/1073204.1073298

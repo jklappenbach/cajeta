@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Advances in Neural Rendering
+description: A state-of-the-art survey reviewing neural rendering methods that combine learned components with physical models for synthesis and reconstruction.
+url: https://arxiv.org/abs/2111.05849

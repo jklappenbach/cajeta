@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: SplaTAM: Splat, Track & Map 3D Gaussians for Dense RGB-D SLAM
+description: A dense RGB-D SLAM system that represents the map as 3D Gaussians, jointly optimizing camera tracking and mapping via differentiable splatting.
+url: https://arxiv.org/abs/2312.02126

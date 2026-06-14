@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Lumen: Real-time Global Illumination in Unreal Engine 5
+description: SIGGRAPH course detailing Lumen's hybrid software/hardware ray tracing, surface cache, and radiance-caching architecture for dynamic real-time global illumination and reflections.
+url: https://advances.realtimerendering.com/s2022/

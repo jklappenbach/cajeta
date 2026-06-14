@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GaussianEditor: Swift and Controllable 3D Editing with Gaussian Splatting
+description: A 3D editing framework that enables fast, controllable text-driven editing of Gaussian-splatting scenes via semantic tracing and hierarchical Gaussian densification.
+url: https://arxiv.org/abs/2311.14521

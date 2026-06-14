@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: RRB Vector: A Practical General Purpose Immutable Sequence
+description: Builds a practical immutable sequence on RRB-trees with a spatio-temporal locality optimization that offsets tree-traversal cost, delivering good performance across sequential and parallel operations.
+url: https://dl.acm.org/doi/10.1145/2784731.2784739

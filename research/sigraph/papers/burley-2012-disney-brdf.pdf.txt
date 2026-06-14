@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Physically-Based Shading at Disney
+description: The SIGGRAPH 2012 course notes presenting the artist-friendly Disney "principled" BRDF, a single parameterized reflectance model fit to measured material data.
+url: https://disneyanimation.com/publications/physically-based-shading-at-disney/

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction for Path-Traced Global Illumination
+description: Presents SVGF, a temporally accumulated, variance-driven edge-aware filter that reconstructs path-traced global illumination from as little as one sample per pixel at real-time rates.
+url: https://research.nvidia.com/publication/2017-07_spatiotemporal-variance-guided-filtering-real-time-reconstruction-path-traced

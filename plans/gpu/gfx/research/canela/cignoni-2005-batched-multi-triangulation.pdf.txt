@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Batched Multi-Triangulation
+description: An IEEE Visualization 2005 paper that generalizes the multi-triangulation into coarse-grained patches of triangles, enabling GPU-friendly batched view-dependent level-of-detail rendering.
+url: https://doi.org/10.1109/VISUAL.2005.1532797

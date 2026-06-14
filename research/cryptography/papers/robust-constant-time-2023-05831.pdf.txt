@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Robust Constant-Time Cryptography
+description: Argues that the classical constant-time property rests on implicit assumptions that break under real compilers and hardware, and develops a robust notion of constant-time that holds across program contexts.
+url: https://arxiv.org/abs/2311.05831

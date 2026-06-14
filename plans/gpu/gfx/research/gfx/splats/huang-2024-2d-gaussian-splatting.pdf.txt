@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 2D Gaussian Splatting for Geometrically Accurate Radiance Fields
+description: A representation that collapses 3D Gaussians into oriented 2D planar disks for view-consistent, geometrically accurate surface reconstruction.
+url: https://arxiv.org/abs/2403.17888

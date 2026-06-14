@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Terrain Rendering Using GPU-Based Geometry Clipmaps
+description: A GPU Gems 2 chapter that caches terrain as a set of nested regular grids (clipmaps) updated and rendered entirely on the GPU for continuous level-of-detail over very large terrains.
+url: https://hhoppe.com/proj/gpugcm/

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Light Field Rendering
+description: Levoy and Hanrahan's 1996 SIGGRAPH paper introduces the light field, a two-plane parameterization of all light rays in a region that enables generating new views of a scene by resampling captured imagery without any geometric model.
+url: https://dl.acm.org/doi/10.1145/237170.237199

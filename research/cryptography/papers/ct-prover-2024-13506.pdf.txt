@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Towards Efficient Verification of Constant-Time Cryptographic Implementations
+description: Presents CT-Prover, a tool that combines IFDS-based taint analysis with taint-directed self-composition and safety verification to efficiently prove (or refute) constant-timeness of real-world crypto code.
+url: https://arxiv.org/abs/2402.13506

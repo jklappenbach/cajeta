@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Poisson Surface Reconstruction
+description: Kazhdan, Bolitho, and Hoppe's 2006 paper casts watertight surface reconstruction from oriented point samples as a spatial Poisson problem, yielding a globally consistent, noise-resilient implicit surface extracted via an adaptive octree.
+url: https://dl.acm.org/doi/10.5555/1281957.1281965

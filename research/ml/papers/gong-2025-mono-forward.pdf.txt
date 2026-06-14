@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Mono-Forward: Backpropagation-Free Algorithm for Efficient Neural Network Training Harnessing Local Errors
+description: Introduces Mono-Forward, a backpropagation-free layerwise training method that uses per-layer learnable projection matrices and local cross-entropy losses to match backprop accuracy with lower memory.
+url: https://arxiv.org/abs/2501.09238

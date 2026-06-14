@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Particle-Based Fluid Simulation for Interactive Applications
+description: The foundational SPH-for-graphics paper introducing smoothing kernels and surface-tension forces for interactive-rate particle fluid simulation.
+url: https://doi.org/10.2312/SCA03/154-159

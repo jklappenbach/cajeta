@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: BLAKE3: one function, fast everywhere
+description: The official specification of the BLAKE3 cryptographic hash function, a Merkle-tree-based design derived from BLAKE2/ChaCha offering high parallelism and SIMD performance.
+url: https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf

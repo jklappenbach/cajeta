@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Large Steps in Inverse Rendering of Geometry
+description: Proposes a Sobolev/Laplacian preconditioned gradient scheme that enables large, stable optimization steps when recovering geometry through differentiable rendering.
+url: https://dl.acm.org/doi/10.1145/3478513.3480501

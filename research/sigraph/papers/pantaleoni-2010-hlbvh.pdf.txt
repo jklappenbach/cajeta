@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: HLBVH: Hierarchical LBVH Construction for Real-Time Ray Tracing of Dynamic Geometry
+description: Presents a hierarchical linear BVH builder using Morton codes and partial sorting to construct high-quality acceleration structures very quickly on the GPU.
+url: https://dl.acm.org/doi/10.5555/1921479.1921493

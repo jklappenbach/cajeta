@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Efficiently Computing Static Single Assignment Form and the Control Dependence Graph
+description: The foundational algorithm using dominance frontiers to efficiently place phi-functions and construct static single assignment form and the control dependence graph.
+url: https://doi.org/10.1145/115372.115320
