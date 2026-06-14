@@ -454,6 +454,18 @@ set(CAJETA_RT_FLAGS "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND CAJETA_RT_FLAGS "-mno-outline-atomics")
 endif()
+if(WIN32)
+    # The runtime TU includes <windows.h>, and clang (unlike the gcc that
+    # builds the rest of cajeta on mingw) emits a flood of warnings from the
+    # MSYS2 Windows SDK headers themselves -- ~28 -Wpragma-pack from winnt.h/
+    # wingdi.h/winuser.h push/pop'ing #pragma pack across includes, and
+    # -Wmissing-declarations from mstcpip.h's INET_PORT_RESERVATION typedefs.
+    # These are system-header noise, not cajeta defects (the other OSes don't
+    # pull in these headers, so they never saw them). Silence them so a genuine
+    # runtime-compile warning isn't buried. Windows-only, output-only: this does
+    # not change the emitted bitcode.
+    list(APPEND CAJETA_RT_FLAGS "-Wno-pragma-pack" "-Wno-missing-declarations")
+endif()
 if(APPLE)
     list(APPEND CAJETA_RT_FLAGS "-fno-emulated-tls")
     # The fork's clang-23 is a vanilla LLVM build with no embedded macOS SDK,
