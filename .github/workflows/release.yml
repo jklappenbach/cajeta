@@ -90,7 +90,7 @@ jobs:
             {"os":"ubuntu-latest","target":"x86_64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
             {"os":"ubuntu-24.04-arm","target":"aarch64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
             {"os":"macos-14","target":"aarch64-apple-darwin","archive_ext":"tar.gz","shell":"bash"},
-            {"os":"windows-latest","target":"x86_64-w64-mingw32","archive_ext":"zip","shell":"msys2 {0}"}
+            {"os":["self-hosted","Windows","X64","gpu"],"target":"x86_64-w64-mingw32","archive_ext":"zip","shell":"msys2 {0}"}
           ]'
           MODE='${{ github.event.inputs.mode }}'
           SEL='${{ github.event.inputs.targets }}'
