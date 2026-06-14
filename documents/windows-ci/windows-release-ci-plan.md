@@ -72,6 +72,32 @@ Keep a genuine warning visible by suppressing system-header noise.
 ### Acceptance Criteria
 - [x] The `build (x86_64-w64-mingw32)` job conclusion is `success`
   (everything through Archive + Upload artifact). Run 27492479355 — GREEN.
+  **BUT this was a FALSE green — see §5.**
+
+## 5 Kill the false-green: honest Windows installer gating
+
+Run 27492479355 reported `success` while two installer steps had **masked
+`[failure]` annotations** (`pwsh: command not found`, then `exit code 1`). The
+"Run release tests" hard gate genuinely passed, but the Windows MSI was never
+produced and the failure was swallowed by `continue-on-error`.
+
+### Deliverables
+- `5a` [x] `Provision WiX (Windows)`: `shell: pwsh` → `shell: powershell`. The
+  self-hosted runner has only Windows PowerShell 5.1, not PowerShell Core
+  (`pwsh`); the shell failed to launch so the whole step body never ran.
+  BOM-free `$GITHUB_PATH` append via `Add-Content` (5.1's `Out-File -Encoding
+  utf8` prepends a BOM that corrupts the PATH entry). Windows-only step.
+- `5b` [x] Remove `continue-on-error` from `Provision WiX (Windows)` — a WiX
+  failure must red the run. (Windows-only step; no effect on other legs.)
+- `5c` [x] Add `Verify Windows installer (MSI)` (`if: runner.os == 'Windows'`):
+  hard-fail if `cpack -G WIX` produced no `.msi`. `Build native installers`
+  keeps `continue-on-error` because the Linux `.deb`/`.rpm` and macOS `.pkg`
+  formats are intentionally unvalidated and must not red those green legs; the
+  Windows MSI is gated explicitly instead.
+
+### Acceptance Criteria
+- [ ] A dispatch produces a `.msi` and the run is green with **zero masked
+  `[failure]` annotations** on the Windows job.
 
 ## 4 Cross-OS verification mandate (CARRY-OVER)
 
