@@ -27,7 +27,7 @@ Get the fork toolchain onto the runner and make CMake select the LLVM-23 tools.
 ### Acceptance Criteria
 - [x] Fetch LLVM step passes on Windows.
 - [x] Configure step passes (toolchain-major check satisfied).
-- [ ] Build step passes (runtime bitcode links; full C++ build completes).
+- [x] Build step passes (runtime bitcode links; full C++ build completes).
 
 ## 2 Quiet Windows-only build-warning noise
 
@@ -60,12 +60,18 @@ Keep a genuine warning visible by suppressing system-header noise.
 - Full dry-run dispatch reaching the "Run release tests" step.
 
 ### Deliverables
-- `3a` [ ] Build step green.
-- `3b` [ ] Smoke test (`cajeta --version`) green.
-- `3c` [ ] Run release tests green.
+- `3a` [x] Build step green.
+- `3b` [x] Smoke test (`cajeta --version`) green.
+- `3c` [x] Run release tests green (run 27490512587).
+- `3d` [x] WiX provision + native installers + staging green (run 27490512587).
+- `3e` [x] Archive (zip): MSYS2 MINGW64 has neither `zip` nor `python` on this
+  runner, so the step failed with `python: command not found`. Replace with
+  `cmake -E tar cf "${STAGE_DIR}.zip" --format=zip "${STAGE_DIR}"` (cmake is
+  always present). Windows-only step (`if: matrix.archive_ext == 'zip'`).
 
 ### Acceptance Criteria
-- [ ] The `build (x86_64-w64-mingw32)` job conclusion is `success`.
+- [ ] The `build (x86_64-w64-mingw32)` job conclusion is `success`
+  (everything through Archive + Upload artifact).
 
 ## 4 Cross-OS verification mandate (CARRY-OVER)
 
