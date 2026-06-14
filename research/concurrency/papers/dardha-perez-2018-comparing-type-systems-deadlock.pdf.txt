@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Comparing Type Systems for Deadlock Freedom
+description: Presents the first formal comparison of deadlock-free typed process classes, relating linear-logic-based session types to processes typable via Kobayashi-style usage types and showing the latter is strictly larger.
+url: https://arxiv.org/abs/1810.00635

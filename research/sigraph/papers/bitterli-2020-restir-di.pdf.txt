@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://dl.acm.org/doi/10.1145/3386569.3392481
-sha256: a1ae1233eecd4f82cc9502900de08012e9a0c233fb8014f53f20c2e9814f243d
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Spatiotemporal Reservoir Resampling for Real-Time Ray Tracing with Dynamic Direct Lighting
+description: Introduces ReSTIR, a spatiotemporal reservoir resampling algorithm that efficiently samples direct lighting from millions of dynamic lights in real-time path tracing.
+url: https://dl.acm.org/doi/10.1145/3386569.3392481

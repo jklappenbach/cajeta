@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Least Angle Regression
+description: Introduces Least Angle Regression (LARS), an efficient model-selection algorithm that unifies and computes full forward-stagewise and lasso regularization paths.
+url: https://doi.org/10.1214/009053604000000067

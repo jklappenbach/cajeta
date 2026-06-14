@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Efficient d-ary Cuckoo Hashing at High Load Factors by Bubbling Up
+description: Presents a bubble-up insertion strategy for d-ary cuckoo hashing that achieves expected O(1/delta) insertion and O(1) query time at load factors arbitrarily close to one.
+url: https://arxiv.org/abs/2501.02312

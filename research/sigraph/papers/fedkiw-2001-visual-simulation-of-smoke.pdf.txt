@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: http://graphics.ucsd.edu/~henrik/papers/smoke/
-sha256: 2547c95584842d4e3c61d3e442bc52913f751ee26ba472e80224f76d18adb875
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Visual Simulation of Smoke
+description: Presents a stable, efficient fluid-solver method for animating smoke that uses vorticity confinement and a semi-Lagrangian scheme to retain small-scale turbulent detail.
+url: http://graphics.ucsd.edu/~henrik/papers/smoke/

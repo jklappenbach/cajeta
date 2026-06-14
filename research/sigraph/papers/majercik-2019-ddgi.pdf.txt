@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://jcgt.org/published/0008/02/01/
-sha256: d5e27ff2eb43ab197127f2911f1fac49e475274e1effed9d9a28a4ed8eab411d
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields
+description: Introduces DDGI, a grid of ray-traced irradiance probes with depth-based visibility weighting that provides robust, leak-free real-time diffuse global illumination.
+url: https://jcgt.org/published/0008/02/01/

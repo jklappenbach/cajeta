@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2311.14521
-sha256: 2fa64013ccd05e4357360e4057d98b5d1ab2b69c62dd7c4e72b309d4f9663f11
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GaussianEditor: Swift and Controllable 3D Editing with Gaussian Splatting
+description: A 3D editing framework that enables fast, controllable text-driven editing of Gaussian-splatting scenes via semantic tracing and hierarchical Gaussian densification.
+url: https://arxiv.org/abs/2311.14521

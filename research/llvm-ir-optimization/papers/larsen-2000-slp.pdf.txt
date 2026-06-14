@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Exploiting Superword Level Parallelism with Multimedia Instruction Sets
+description: Introduces superword level parallelism (SLP), a method for automatically vectorizing isomorphic scalar operations into SIMD multimedia instructions.
+url: https://doi.org/10.1145/349299.349320

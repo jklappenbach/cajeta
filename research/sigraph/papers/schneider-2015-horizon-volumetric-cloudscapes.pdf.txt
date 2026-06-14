@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://advances.realtimerendering.com/s2015/
-sha256: c3e26ceeaed9df84eb836fc92a6d2e720038b0d32a2414a2fdd1f831103aac32
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Real-time Volumetric Cloudscapes of Horizon: Zero Dawn
+description: A production technique for authoring and rendering fully volumetric, physically inspired animated cloudscapes in real time using layered Perlin-Worley noise and energy-conserving lighting.
+url: https://advances.realtimerendering.com/s2015/

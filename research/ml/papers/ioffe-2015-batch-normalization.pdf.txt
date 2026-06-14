@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift
+description: Proposes normalizing layer inputs per mini-batch to reduce internal covariate shift, enabling much higher learning rates, faster convergence, and acting as a regularizer.
+url: https://arxiv.org/abs/1502.03167

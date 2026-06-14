@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2302.14859
-sha256: 87f62c58a40809b07c794856fb9e15794ebd3ffe88ac7c6106a0f473e1b3ac71
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: BakedSDF: Meshing Neural SDFs for Real-Time View Synthesis
+description: Optimizes a hybrid neural surface-volume SDF and bakes it into a high-quality mesh with view-dependent appearance for real-time view synthesis.
+url: https://arxiv.org/abs/2302.14859

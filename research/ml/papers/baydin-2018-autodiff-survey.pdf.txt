@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Automatic Differentiation in Machine Learning: a Survey
+description: A comprehensive survey clarifying the principles, modes, and implementations of automatic differentiation and distinguishing it from numerical and symbolic differentiation in machine learning.
+url: https://arxiv.org/abs/1502.05767

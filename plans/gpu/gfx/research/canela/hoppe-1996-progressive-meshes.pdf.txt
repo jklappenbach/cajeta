@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/237170.237216
-sha256: 10e534ce078bc926990ca95b135b27f1b423f587253b97829bbaade33e0974ce
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Progressive Meshes
+description: A SIGGRAPH 1996 paper introducing the progressive mesh, a continuous level-of-detail representation built from edge collapses that supports lossless compression, streaming, and selective refinement.
+url: https://doi.org/10.1145/237170.237216

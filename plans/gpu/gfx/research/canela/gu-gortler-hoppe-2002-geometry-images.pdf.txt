@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/566570.566589
-sha256: 62b2709e7276d9acbf402fdbff8fe82bbde1113f1cd36931f7061c72b89d4c4d
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Geometry Images
+description: A SIGGRAPH 2002 paper that remeshes an arbitrary surface onto a regular 2D grid, encoding geometry as an image so meshes can be processed with standard image and GPU pipelines.
+url: https://doi.org/10.1145/566570.566589

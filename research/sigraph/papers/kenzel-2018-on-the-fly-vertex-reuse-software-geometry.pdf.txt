@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/3197517.3201374
-sha256: 0f19524951b6bf06017a81d730964c275406a22ba014e6d4d7f5d386a52610cf
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: On-the-fly Vertex Reuse for Massively-Parallel Software Geometry Processing
+description: Presents a software geometry pipeline that achieves efficient on-the-fly vertex reuse and load balancing for massively parallel GPU rasterization.
+url: https://doi.org/10.1145/3197517.3201374

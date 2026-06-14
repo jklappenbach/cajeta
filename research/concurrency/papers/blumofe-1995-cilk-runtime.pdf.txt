@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Cilk: An Efficient Multithreaded Runtime System
+description: Presents the Cilk runtime, a provably efficient work-stealing scheduler and language for multithreaded parallel programming with guaranteed bounds on time, space, and communication.
+url: https://dl.acm.org/doi/10.1145/209936.209958

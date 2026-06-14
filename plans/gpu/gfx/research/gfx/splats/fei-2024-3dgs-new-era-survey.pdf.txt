@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2402.07181
-sha256: 58062c58163db89807da8ffe0721380ae5cf408a839539b4077d41e3f3d3fa5b
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 3D Gaussian Splatting as New Era: A Survey
+description: A survey reviewing 3D Gaussian splatting as an emerging explicit radiance-field paradigm across reconstruction, dynamic scenes, editing, and downstream tasks.
+url: https://arxiv.org/abs/2402.07181

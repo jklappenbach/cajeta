@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2312.14937
-sha256: 8beb861080d3b0082a32ea82f3778e3ecb63d962052f3598064b047c8fb150b0
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: SC-GS: Sparse-Controlled Gaussian Splatting for Editable Dynamic Scenes
+description: A dynamic-scene representation that uses sparse control points with learned deformation MLPs to drive and edit motion of 3D Gaussians.
+url: https://arxiv.org/abs/2312.14937

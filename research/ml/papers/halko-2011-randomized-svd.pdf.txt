@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Finding Structure with Randomness: Probabilistic Algorithms for Constructing Approximate Matrix Decompositions
+description: A modular framework using random sampling to build randomized algorithms for low-rank matrix approximation and partial decompositions (SVD/QR) of massive matrices.
+url: https://arxiv.org/abs/0909.4061

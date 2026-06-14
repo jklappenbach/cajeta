@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects
+description: Introduces hazard pointers, a lock-free memory-reclamation method in which threads publish pointers they are about to access so memory is freed only when no hazard pointer references it, preventing the ABA and use-after-free problems.
+url: https://doi.org/10.1109/TPDS.2004.8

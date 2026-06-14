@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Decoupled Weight Decay Regularization
+description: Shows that decoupling weight decay from the gradient-based update (AdamW) restores proper L2 regularization and substantially improves Adam's generalization.
+url: https://arxiv.org/abs/1711.05101

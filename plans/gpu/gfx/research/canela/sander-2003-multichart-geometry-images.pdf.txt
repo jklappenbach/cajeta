@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.2312/SGP/SGP03/146-155
-sha256: 10ab8bf09490cae53919450a57ae73a15bfa7fe976b5f7ff93d95439c4e911b6
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Multi-Chart Geometry Images
+description: Extends geometry images by remeshing a surface into multiple charts packed in a single image, reducing distortion while preserving regular sampling.
+url: https://doi.org/10.2312/SGP/SGP03/146-155

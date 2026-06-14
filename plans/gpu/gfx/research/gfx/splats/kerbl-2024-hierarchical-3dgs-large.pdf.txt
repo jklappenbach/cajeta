@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2406.12080
-sha256: 18f954135469834f3a9c52366cdc82f209e90a615804548e81ed7447dadd35fd
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Hierarchical 3D Gaussian Representation for Real-Time Rendering of Very Large Datasets
+description: A hierarchical level-of-detail structure over 3D Gaussians enabling real-time rendering of city-scale scenes from thousands of images.
+url: https://arxiv.org/abs/2406.12080

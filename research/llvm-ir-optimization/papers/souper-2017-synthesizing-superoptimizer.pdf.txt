@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Souper: A Synthesizing Superoptimizer
+description: Describes Souper, an SMT-based superoptimizer that synthesizes optimal LLVM IR peephole replacements and mines missed optimizations from real code.
+url: https://arxiv.org/abs/1711.04422

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: LightGBM: A Highly Efficient Gradient Boosting Decision Tree
+description: A gradient boosting framework introducing Gradient-based One-Side Sampling and Exclusive Feature Bundling to train GBDTs up to 20x faster with comparable accuracy.
+url: https://proceedings.neurips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html

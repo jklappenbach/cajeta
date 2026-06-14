@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/3197517.3201336
-sha256: 40c4e9e1cda6817373b02332b10ec5ca8189b34798fc0f90a71a4dd11b9e4cb2
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Water Surface Wavelets
+description: Introduces a wavelet-based representation of water surface waves that efficiently captures spatially and directionally varying wave dynamics for real-time animation.
+url: https://doi.org/10.1145/3197517.3201336

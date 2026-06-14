@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: ThinLTO: Scalable and Incremental LTO
+description: Presents ThinLTO, a link-time optimization design using thin summaries and parallel, incremental cross-module optimization to scale LTO to very large programs.
+url: https://doi.org/10.1109/CGO.2017.7863733

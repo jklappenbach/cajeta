@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2401.03890
-sha256: c459485396f1922756dd7f3c5d9bf22c4b800265e905d3377045d0e347e1ca9d
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Survey on 3D Gaussian Splatting
+description: A comprehensive survey of 3D Gaussian Splatting, the explicit radiance-field representation enabling real-time, high-quality novel-view synthesis, covering methods, applications, and challenges.
+url: https://arxiv.org/abs/2401.03890

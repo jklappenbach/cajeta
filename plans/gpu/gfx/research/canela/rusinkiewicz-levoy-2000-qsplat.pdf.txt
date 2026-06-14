@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/344779.344940
-sha256: ad9d4a53abb9621962cc4995b0ff090a960d5850a31f287bb51b1b98f8576aea
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: QSplat: A Multiresolution Point Rendering System for Large Meshes
+description: Introduces a bounding-sphere hierarchy and point-splatting system that progressively renders very large meshes within interactive frame and memory budgets.
+url: https://doi.org/10.1145/344779.344940

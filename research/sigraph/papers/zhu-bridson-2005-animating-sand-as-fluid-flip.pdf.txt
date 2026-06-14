@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/1073204.1073298
-sha256: e7c035661399d7f9b6ba3639c219c522ec7941c16011abfd003dc69069b124fa
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Animating Sand as a Fluid
+description: Models granular sand as an incompressible fluid with frictional yield conditions and introduces the FLIP (Fluid-Implicit-Particle) method to computer graphics for low-dissipation simulation.
+url: https://doi.org/10.1145/1073204.1073298

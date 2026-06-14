@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://dl.acm.org/doi/10.1145/353981.353995
-sha256: 07c83e89e9320816504fa4957a3e999ccd3c34f6d611f47c38d61b0abe6db474
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Image-Driven Simplification
+description: Lindstrom and Turk's 2000 paper drives mesh simplification by rendered appearance, choosing edge collapses that minimize image-space differences across multiple viewpoints rather than purely geometric error.
+url: https://dl.acm.org/doi/10.1145/353981.353995

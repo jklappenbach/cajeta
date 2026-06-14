@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/280814.280882
-sha256: d27502359e23646eb9deffbd3e779011363e2cef1af1107e7c81d4d97e5f6a61
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Layered Depth Images
+description: Introduces the layered depth image, an image-based representation storing multiple depth samples per pixel to render disocclusions during view changes.
+url: https://doi.org/10.1145/280814.280882

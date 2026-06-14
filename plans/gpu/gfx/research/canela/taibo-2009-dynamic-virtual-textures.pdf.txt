@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://videalab.udc.es/sites/default/files/publicaciones/WSCG_Dynamic_virtual_textures.pdf
-sha256: 367c74c5936840f5859c0e6e673d93829eb756cd6de342aeb5371931200c6cd0
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Dynamic Virtual Textures
+description: Describes a virtual texturing system supporting runtime-updatable textures for very large terrains, streaming tiles on demand into a GPU texture cache.
+url: https://videalab.udc.es/sites/default/files/publicaciones/WSCG_Dynamic_virtual_textures.pdf

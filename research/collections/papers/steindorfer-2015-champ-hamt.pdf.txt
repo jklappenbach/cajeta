@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Optimizing Hash-Array Mapped Tries for Fast and Lean Immutable JVM Collections
+description: Introduces CHAMP (Compressed Hash-Array Mapped Prefix-tree), a redesigned HAMT with separated data/node arrays and a canonical layout that improves cache locality, memory footprint, and iteration speed.
+url: https://dl.acm.org/doi/10.1145/2814270.2814312

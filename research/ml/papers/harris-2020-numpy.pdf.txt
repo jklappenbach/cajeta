@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Array Programming with NumPy
+description: The reference Nature paper describing NumPy, the foundational n-dimensional array library that underpins scientific and numerical computing in Python.
+url: https://www.nature.com/articles/s41586-020-2649-2

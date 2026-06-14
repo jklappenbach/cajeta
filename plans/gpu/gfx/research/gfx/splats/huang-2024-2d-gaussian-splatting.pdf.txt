@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2403.17888
-sha256: f3091d687bef0e79ac774743e31678c3deed91c35df7d2b75ae392de5ff8f0c7
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 2D Gaussian Splatting for Geometrically Accurate Radiance Fields
+description: A representation that collapses 3D Gaussians into oriented 2D planar disks for view-consistent, geometrically accurate surface reconstruction.
+url: https://arxiv.org/abs/2403.17888

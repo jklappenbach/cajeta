@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://blog.selfshadow.com/publications/s2015-shading-course/burley/s2015_pbs_disney_bsdf_notes.pdf
-sha256: 48587811ba1ea913a3df859ed9aa18faf79970714be80d1cc3234a5860cf5ee2
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Extending the Disney BRDF to a BSDF with Integrated Subsurface Scattering
+description: The SIGGRAPH 2015 course notes extending the Disney principled BRDF into a full BSDF with integrated subsurface scattering, transmission, and thin-surface support.
+url: https://blog.selfshadow.com/publications/s2015-shading-course/burley/s2015_pbs_disney_bsdf_notes.pdf

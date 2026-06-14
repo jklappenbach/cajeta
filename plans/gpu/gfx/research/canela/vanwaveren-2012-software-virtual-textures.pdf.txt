@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://mrelusive.com/publications/papers/Software-Virtual-Textures.pdf
-sha256: 22ba684c4071d72ab3278a5d72268d93c22f8799eecf5b2cbfb13ba8e55ed78e
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Software Virtual Textures
+description: A technical report detailing a software implementation of virtual texturing that maps a single huge virtual texture to physical pages via indirection and feedback.
+url: https://mrelusive.com/publications/papers/Software-Virtual-Textures.pdf

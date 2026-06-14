@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2505.24653
-sha256: 112a4c70b72cd825e6d66ed14a6ae6b36792e5f6fb502374979f096fc7f4021c
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Minimizing Ray Tracing Memory Traffic through Quantized Structures and Ray Stream Tracing
+description: Combines 8-bit quantized acceleration structures with ray stream tracing to cut ray-tracing memory traffic to about 18% of conventional approaches while preserving geometric precision via fixed-point arithmetic.
+url: https://arxiv.org/abs/2505.24653

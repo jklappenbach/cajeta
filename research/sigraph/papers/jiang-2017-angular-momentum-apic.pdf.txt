@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/1603.06188
-sha256: ededf99f4749f74d83aeec85ddeeeef384cb347b79be076e1b6574f802ec582f
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Affine Particle-in-Cell Method
+description: Develops the APIC transfer scheme that conserves linear and angular momentum between particles and grid, eliminating PIC dissipation and FLIP instability in hybrid fluid simulation.
+url: https://arxiv.org/abs/1603.06188

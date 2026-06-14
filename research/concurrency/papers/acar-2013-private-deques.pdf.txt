@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Scheduling Parallel Programs by Work Stealing with Private Deques
+description: Introduces a work-stealing scheduler in which each worker keeps a private deque accessed only by its owner, using explicit communication for steals to reduce synchronization overhead while staying provably efficient.
+url: https://dl.acm.org/doi/10.1145/2442516.2442538

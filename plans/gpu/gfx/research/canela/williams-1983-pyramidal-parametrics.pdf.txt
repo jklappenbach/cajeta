@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/964967.801126
-sha256: 7b672276388a51993e60fcbd8f40a09c299769198b59399e14e9442fd1a6bbd6
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Pyramidal Parametrics
+description: Introduces mip-mapping, a pyramidal prefiltered texture representation enabling efficient anti-aliased texture lookups at arbitrary scales.
+url: https://doi.org/10.1145/964967.801126

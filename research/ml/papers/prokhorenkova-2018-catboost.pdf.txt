@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: CatBoost: unbiased boosting with categorical features
+description: Presents CatBoost, a gradient boosting library using ordered boosting and an ordered target-statistics scheme to handle categorical features while avoiding prediction-shift target leakage.
+url: https://arxiv.org/abs/1706.09516

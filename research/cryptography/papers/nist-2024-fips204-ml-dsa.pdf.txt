@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FIPS 204: Module-Lattice-Based Digital Signature Standard
+description: The NIST post-quantum standard specifying ML-DSA (derived from CRYSTALS-Dilithium) for lattice-based digital signatures.
+url: https://csrc.nist.gov/pubs/fips/204/final

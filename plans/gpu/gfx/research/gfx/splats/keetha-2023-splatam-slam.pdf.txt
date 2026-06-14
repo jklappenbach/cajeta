@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2312.02126
-sha256: c8067647cb2ba3b446017c730dfd39a453570f34e41c5b2b27d2d8a1861830fb
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: SplaTAM: Splat, Track & Map 3D Gaussians for Dense RGB-D SLAM
+description: A dense RGB-D SLAM system that represents the map as 3D Gaussians, jointly optimizing camera tracking and mapping via differentiable splatting.
+url: https://arxiv.org/abs/2312.02126

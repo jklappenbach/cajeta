@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://history.siggraph.org/learning/feline-fast-elliptical-lines-for-anisotropic-texture-mapping-by-mccormack-perry-farkas-and-jouppi/
-sha256: 32726d48a9dc47bc6d35abeca80a68d8c3431e93b894732c820b5e17ef780293
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Feline: Fast Elliptical Lines for Anisotropic Texture Mapping
+description: McCormack, Perry, Farkas, and Jouppi's 1999 SIGGRAPH paper presents Feline, a hardware-efficient anisotropic texture filtering method that approximates the ideal elliptical footprint with a line of probes into a standard mipmap.
+url: https://history.siggraph.org/learning/feline-fast-elliptical-lines-for-anisotropic-texture-mapping-by-mccormack-perry-farkas-and-jouppi/

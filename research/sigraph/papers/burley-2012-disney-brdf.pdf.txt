@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://disneyanimation.com/publications/physically-based-shading-at-disney/
-sha256: 4c703059f6563d57b7b3ed7be055973b434b917c47d5de816bba63fc271e38a3
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Physically-Based Shading at Disney
+description: The SIGGRAPH 2012 course notes presenting the artist-friendly Disney "principled" BRDF, a single parameterized reflectance model fit to measured material data.
+url: https://disneyanimation.com/publications/physically-based-shading-at-disney/

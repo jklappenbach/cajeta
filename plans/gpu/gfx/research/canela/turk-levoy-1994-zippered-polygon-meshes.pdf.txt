@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/192161.192241
-sha256: ebcb03717213c4970419617d2279bb7cf723873ecad153189f1a316e5e8bedf0
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Zippered Polygon Meshes from Range Images
+description: Presents a method to merge overlapping range-scan meshes by zippering their boundaries and refining vertex positions into a single consistent surface.
+url: https://doi.org/10.1145/192161.192241

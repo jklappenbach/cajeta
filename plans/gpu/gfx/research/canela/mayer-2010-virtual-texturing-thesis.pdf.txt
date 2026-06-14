@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://www.cg.tuwien.ac.at/research/publications/2010/Mayer-2010-VT/
-sha256: 053fce4c7e1eae37e7b080b8934f10c1f151afc9ee3f32ca7841066b49f054ef
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Virtual Texturing
+description: Mayer's 2010 TU Wien master's thesis presents a complete virtual texturing system that streams and caches tiles of an enormous virtual texture on demand, enabling unique high-resolution texturing of large scenes within a fixed GPU memory budget.
+url: https://www.cg.tuwien.ac.at/research/publications/2010/Mayer-2010-VT/

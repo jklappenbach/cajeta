@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2101.10994
-sha256: 567f7b56b764d32dc91e3e91c4390e1cf352900f23004309049e05eb4a9797c8
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Neural Geometric Level of Detail: Real-time Rendering with Implicit 3D Shapes
+description: Stores neural SDF features in a sparse octree to provide continuous level of detail and real-time rendering of implicit 3D shapes.
+url: https://arxiv.org/abs/2101.10994

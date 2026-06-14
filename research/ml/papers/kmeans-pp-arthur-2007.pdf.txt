@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: k-means++: The Advantages of Careful Seeding
+description: Presents a randomized D^2-weighted seeding scheme for k-means that yields an O(log k)-competitive initialization, dramatically improving clustering quality and convergence.
+url: https://dl.acm.org/doi/10.5555/1283383.1283494

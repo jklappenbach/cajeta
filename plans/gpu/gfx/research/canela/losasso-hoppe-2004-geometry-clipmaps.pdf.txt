@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://dl.acm.org/doi/10.1145/1015706.1015799
-sha256: a650c5ebaf5bce579bbe1f2e998f3e570444a07145513a6c51e7b603824ccb29
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Geometry Clipmaps: Terrain Rendering Using Nested Regular Grids
+description: Losasso and Hoppe's 2004 SIGGRAPH paper caches a terrain's geometry in a pyramid of nested regular grids centered on the viewer, enabling continuous view-dependent LOD and incremental streaming/decompression of large heightfields.
+url: https://dl.acm.org/doi/10.1145/1015706.1015799

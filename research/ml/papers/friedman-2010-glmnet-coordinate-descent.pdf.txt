@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Regularization Paths for Generalized Linear Models via Coordinate Descent
+description: Presents fast cyclic coordinate-descent algorithms (implemented in glmnet) for computing lasso and elastic-net regularization paths for generalized linear models.
+url: https://doi.org/10.18637/jss.v033.i01

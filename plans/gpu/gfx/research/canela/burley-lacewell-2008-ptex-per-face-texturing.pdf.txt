@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1111/j.1467-8659.2008.01253.x
-sha256: 837c740c5c487c335d06e5acea7d85b9d96b832e026ba758a5866cacb0560c2c
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Ptex: Per-Face Texture Mapping for Production Rendering
+description: An EGSR 2008 paper introducing Ptex, a per-face texturing system that stores a separate texture per mesh face with implicit adjacency, eliminating the need for explicit UV unwrapping and seams.
+url: https://doi.org/10.1111/j.1467-8659.2008.01253.x

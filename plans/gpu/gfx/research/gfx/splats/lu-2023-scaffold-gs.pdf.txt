@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2312.00109
-sha256: 10be967d56b17a216c37f2d9b9566b73a22fc1c13a278094b679397747a1b96c
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Scaffold-GS: Structured 3D Gaussians for View-Adaptive Rendering
+description: A structured representation that anchors Gaussians to a sparse voxel scaffold and predicts their attributes on the fly for view-adaptive, robust rendering.
+url: https://arxiv.org/abs/2312.00109

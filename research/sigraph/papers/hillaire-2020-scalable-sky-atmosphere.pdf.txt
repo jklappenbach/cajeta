@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1111/cgf.14050
-sha256: 83ed5ad77722785950aeeeaf27033e9f184ac4736faf1f500b212066d5adfc6d
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Scalable and Production Ready Sky and Atmosphere Rendering Technique
+description: Presents an efficient, physically-based real-time model for rendering sky and atmospheric scattering that scales from ground to space using precomputed look-up tables.
+url: https://doi.org/10.1111/cgf.14050

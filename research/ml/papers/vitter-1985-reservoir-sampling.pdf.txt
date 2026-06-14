@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Random Sampling with a Reservoir
+description: Presents reservoir-sampling algorithms (notably Algorithm Z) for drawing a uniform random sample of fixed size from a stream of unknown length in one pass and constant space.
+url: https://dl.acm.org/doi/10.1145/3147.3165

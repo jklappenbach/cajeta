@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2106.12372
-sha256: 6284263491d9c093f205f7a5048bb38c121a41dd8bf23f024247644dbe0c15ed
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Real-time Neural Radiance Caching for Path Tracing
+description: Trains a small neural network online to cache and query radiance during path tracing, denoising indirect illumination in real time without precomputation.
+url: https://arxiv.org/abs/2106.12372

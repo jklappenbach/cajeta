@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Polly - Performing Polyhedral Optimizations on a Low-Level Intermediate Representation
+description: Describes Polly, an LLVM framework that detects and applies polyhedral loop optimizations (tiling, parallelization, vectorization) on low-level IR.
+url: https://doi.org/10.1142/S0129626412500107

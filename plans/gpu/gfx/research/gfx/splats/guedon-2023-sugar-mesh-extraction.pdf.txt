@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2311.12775
-sha256: 30fa6ac173a80ed2aef79f3b8af96556ff3101e38463ed6b5464e5cbb59fff56
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: SuGaR: Surface-Aligned Gaussian Splatting for Efficient 3D Mesh Reconstruction and High-Quality Mesh Rendering
+description: A method that aligns 3D Gaussians to scene surfaces to enable fast, accurate triangle-mesh extraction and editable mesh-bound Gaussian rendering.
+url: https://arxiv.org/abs/2311.12775

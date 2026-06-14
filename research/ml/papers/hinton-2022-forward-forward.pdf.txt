@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Forward-Forward Algorithm: Some Preliminary Investigations
+description: Introduces a backpropagation-free learning procedure that replaces the forward and backward passes with two forward passes (positive and negative data) using per-layer local goodness objectives.
+url: https://arxiv.org/abs/2212.13345

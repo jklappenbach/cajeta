@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://dl.acm.org/doi/10.5555/601671.601674
-sha256: e28cfac5e2fba6673061d08e3c41ffdf971c4072c2d1271fa4bc00f43e1b750c
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: EWA Volume Splatting
+description: Derives an elliptical weighted average (EWA) resampling filter for splatting that provides high-quality antialiased volume rendering by combining a reconstruction kernel with a band-limiting screen-space filter.
+url: https://dl.acm.org/doi/10.5555/601671.601674

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Contrasting Deadlock-Free Session Processes (Extended Version)
+description: Compares deadlock-free process classes induced by hypersequent classical processes (HCP) and Padovani's priority-based type system, showing how they relate under both synchronous and asynchronous communication.
+url: https://arxiv.org/abs/2504.15845

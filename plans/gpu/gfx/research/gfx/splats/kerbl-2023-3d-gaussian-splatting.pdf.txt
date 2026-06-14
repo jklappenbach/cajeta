@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2308.04079
-sha256: f4c0c9f27e2d02b0265017f66049d471eb66cb50203bc918f51ba07d20cbbe11
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 3D Gaussian Splatting for Real-Time Radiance Field Rendering
+description: The foundational work introducing 3D Gaussian splatting, an explicit point-based radiance-field representation enabling real-time, high-quality novel-view synthesis.
+url: https://arxiv.org/abs/2308.04079

@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/1276377.1276501
-sha256: f619575e4d8f0a3a697afaa3f09d6960b63579838bef862d9cbe813a99738dab
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Wave Particles
+description: Introduces wave particles, a lightweight particle-based representation of surface water waves and their interactions with floating objects for real-time interactive simulation.
+url: https://doi.org/10.1145/1276377.1276501

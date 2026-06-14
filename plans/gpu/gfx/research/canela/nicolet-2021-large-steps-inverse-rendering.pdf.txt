@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://dl.acm.org/doi/10.1145/3478513.3480501
-sha256: bef0791c3eaeab8223f108a425bd8e2071d0897694af1f7bd2c248ff834e6162
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Large Steps in Inverse Rendering of Geometry
+description: Proposes a Sobolev/Laplacian preconditioned gradient scheme that enables large, stable optimization steps when recovering geometry through differentiable rendering.
+url: https://dl.acm.org/doi/10.1145/3478513.3480501

@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://github.com/Raikiri/RadianceCascadesPaper
-sha256: 03010731d5795fd4f122189f56fef35b6199872e6d35507fd99fa3bcdee1ce31
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Radiance Cascades: A Novel Approach to Calculating Global Illumination
+description: Introduces a hierarchy of radiance probe "cascades" that trade angular resolution against spatial resolution with distance to compute noise-free real-time diffuse global illumination.
+url: https://github.com/Raikiri/RadianceCascadesPaper

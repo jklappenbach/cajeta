@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/3592440
-sha256: 58a83757192d99debc8f84ca9c9e3650faa5fd754e9a146d4a61d54bf420f152
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Micro-Mesh Construction
+description: Presents algorithms to convert high-resolution meshes into compact base meshes with displaced micro-triangles for the hardware-accelerated micro-mesh primitive.
+url: https://doi.org/10.1145/3592440

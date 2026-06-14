@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Merge Path - A Visually Intuitive Approach to Parallel Merging
+description: Presents Merge Path, a geometric partitioning of two sorted arrays that enables synchronization-free, load-balanced, cache-efficient parallel merging and sorting on multicore and GPU.
+url: https://arxiv.org/abs/1406.2628

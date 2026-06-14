@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://www.semanticscholar.org/paper/Interactive-Order-Independent-Transparency-Everitt/99b8940b5a6dab8527198e966c0eb7e2a02ee28c
-sha256: 752023eee985ba5caa770bdd9b294ef4d89fde9931ee222df24a9816645e2867
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Interactive Order-Independent Transparency
+description: An NVIDIA technical report presenting depth peeling, a multi-pass hardware technique that renders correctly ordered transparency by peeling away successive depth layers.
+url: https://www.semanticscholar.org/paper/Interactive-Order-Independent-Transparency-Everitt/99b8940b5a6dab8527198e966c0eb7e2a02ee28c

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: XGBoost: A Scalable Tree Boosting System
+description: Presents XGBoost, a scalable end-to-end gradient tree boosting system with a sparsity-aware split algorithm and weighted quantile sketch for fast, accurate learning.
+url: https://arxiv.org/abs/1603.02754

@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/3528223.3530158
-sha256: 38b86bffc20f61d6984b868be3f5a630b9d3d93a92c106896133799188a33f00
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Generalized Resampled Importance Sampling: Foundations of ReSTIR
+description: Builds a rigorous statistical framework (GRIS) generalizing resampled importance sampling that proves correctness and extends the ReSTIR family of real-time sampling algorithms.
+url: https://doi.org/10.1145/3528223.3530158

@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.2312/SCA03/154-159
-sha256: 1409929fd448fc133e5e17b6e351d6a609c3cc8c49ff886277e3600269acf525
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Particle-Based Fluid Simulation for Interactive Applications
+description: The foundational SPH-for-graphics paper introducing smoothing kernels and surface-tension forces for interactive-rate particle fluid simulation.
+url: https://doi.org/10.2312/SCA03/154-159

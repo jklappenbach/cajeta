@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Anatomy of High-Performance Matrix Multiplication
+description: Analyzes how to structure cache- and TLB-aware blocking and packing of matrix multiplication (the GotoBLAS approach) to achieve near-peak performance.
+url: https://doi.org/10.1145/1356052.1356053

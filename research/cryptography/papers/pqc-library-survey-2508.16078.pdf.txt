@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Survey of Post-Quantum Cryptography Libraries
+description: A systematic survey of software libraries implementing post-quantum cryptographic algorithms, comparing their coverage, design, and maturity.
+url: https://arxiv.org/abs/2508.16078

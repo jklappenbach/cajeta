@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: BlockQuicksort: How Branch Mispredictions don't affect Quicksort
+description: Reorganizes quicksort partitioning into block-buffered comparison and rearrangement passes to eliminate conditional branches, drastically cutting branch mispredictions and beating std::sort.
+url: https://arxiv.org/abs/1604.06697

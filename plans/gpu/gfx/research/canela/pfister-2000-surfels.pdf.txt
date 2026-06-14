@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/344779.344936
-sha256: b8882d39099eac3815df5e5f593786991d5838e825d27c155129cd8bc2b22f2a
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Surfels: Surface Elements as Rendering Primitives
+description: Introduces surfels, point-based zero-dimensional surface elements that represent complex geometry without connectivity for efficient high-quality rendering.
+url: https://doi.org/10.1145/344779.344936

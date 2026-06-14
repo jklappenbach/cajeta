@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf
-sha256: 9fbef10fd0adc3a02f8697b7d9d64fcedafa0ef75f390605b697701560846b60
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Nanite: A Deep Dive
+description: SIGGRAPH 2021 Advances talk detailing Unreal Engine 5's Nanite virtualized geometry system for rendering film-quality, cluster-based LOD meshes at real-time rates.
+url: https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf

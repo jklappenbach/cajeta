@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2311.12198
-sha256: 95b0b94d80e3161396235dbc67d0e0b0877f62b41a90c9921652dca05671eb47
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: PhysGaussian: Physics-Integrated 3D Gaussians for Generative Dynamics
+description: Embeds continuum-mechanics simulation directly into 3D Gaussian Splatting so the same Gaussian kernels serve as both rendering and physics discretization for unified physics-based dynamics.
+url: https://arxiv.org/abs/2311.12198

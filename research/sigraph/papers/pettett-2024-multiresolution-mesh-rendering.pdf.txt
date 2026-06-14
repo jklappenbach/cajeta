@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://www.cl.cam.ac.uk/~rkm38/pdfs/pettett2024_multiresolution_mesh_rendering.pdf
-sha256: 7ce5b1990c85bf777a399aa4494d856953c81aa5cc1a2f2f3ccf42f9151f4ce2
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Multiresolution Mesh Rendering Engine - Practicalities and Performance
+description: A CESCG 2024 paper analyzing the practical implementation and performance of a Nanite/meshlet-style multiresolution mesh rendering engine in Rust and Vulkan.
+url: https://www.cl.cam.ac.uk/~rkm38/pdfs/pettett2024_multiresolution_mesh_rendering.pdf

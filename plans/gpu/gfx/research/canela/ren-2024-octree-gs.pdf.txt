@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://arxiv.org/abs/2403.17898
-sha256: 6d07bd7b289032072f28bb08df40507c076da362b7f7a007e68e322062f7e1c3
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Octree-GS: Towards Consistent Real-time Rendering with LOD-Structured 3D Gaussians
+description: Organizes 3D Gaussian splatting into an octree-based level-of-detail hierarchy for consistent, adaptive real-time rendering of large scenes.
+url: https://arxiv.org/abs/2403.17898

@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://boksajak.github.io/blog/BRDF
-sha256: 35db9a8e7da54f305c53eeaff46c714cf03c3a3273160489378801ae376213cc
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Crash Course in BRDF Implementation
+description: A practical tutorial walking through the implementation of physically based BRDFs (diffuse and microfacet specular) and their importance sampling for real-time rendering.
+url: https://boksajak.github.io/blog/BRDF

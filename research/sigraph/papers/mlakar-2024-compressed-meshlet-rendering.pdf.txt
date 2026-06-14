@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1111/cgf.15002
-sha256: 8827937aca292a0a80da37806739370ab3bab58fbc55029a92205d39de54a2a4
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: End-to-End Compressed Meshlet Rendering
+description: Keeps triangle meshes compressed in GPU memory and decompresses meshlets just-in-time within mesh shaders, cutting memory use and streaming latency.
+url: https://doi.org/10.1111/cgf.15002

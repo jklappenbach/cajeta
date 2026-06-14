@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://www.advances.realtimerendering.com/s2015/aaltonenhaar_siggraph2015_combined_final_footer_220dpi.pdf
-sha256: 6ec37407f9f702423aff79cb920d4b9228d672d4f86d1161cf4c43554c62ed3e
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GPU-Driven Rendering Pipelines
+description: A SIGGRAPH 2015 Advances in Real-Time Rendering talk describing Ubisoft's GPU-driven pipeline that moves culling and draw submission onto the GPU via virtual texturing and multi-draw indirect for massive scene throughput.
+url: https://www.advances.realtimerendering.com/s2015/aaltonenhaar_siggraph2015_combined_final_footer_220dpi.pdf

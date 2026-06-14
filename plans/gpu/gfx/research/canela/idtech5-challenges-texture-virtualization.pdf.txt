@@ -1,5 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-# NOTE: source URL is UNVERIFIED -- confirm before relying on it.
-source: http://s09.idav.ucdavis.edu/talks/05-JP_id_Tech_5_Challenges.pdf
-sha256: 167a69f61971df56c643526ee0eda9522e9b84f8005f2341a108a705af4f4fd7
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: id Tech 5 Challenges: From Texture Virtualization to Massive Parallelization
+description: J.M.P. van Waveren's 2009 SIGGRAPH talk describes id Software's id Tech 5 engine, covering its virtual ("MegaTexture") texturing system that streams a unique sparse texture across entire worlds and the engine's move toward massive multi-core parallelization.
+url: http://s09.idav.ucdavis.edu/talks/05-JP_id_Tech_5_Challenges.pdf

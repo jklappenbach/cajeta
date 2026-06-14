@@ -1,4 +1,4 @@
-# Original PDF relocated out of Git LFS to a local store (see plans/lfs-local-migration.md).
-# Not in the repo to keep it off GitHub LFS; fetch the original from the source URL below.
-source: https://doi.org/10.1145/1186562.1015802
-sha256: 12d2a6023bdb342b3373e992583c15bf905ccadf707b2484f769b303e725b2f6
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Adaptive TetraPuzzles: Efficient Out-of-Core Construction and Visualization of Gigantic Multiresolution Polygonal Models
+description: A SIGGRAPH 2004 paper using a tetrahedral hierarchy of mesh patches to build and stream view-dependent multiresolution representations of out-of-core gigantic models.
+url: https://doi.org/10.1145/1186562.1015802
