@@ -364,9 +364,19 @@ if [ "$live" = "1" ]; then shard_brief="--gtest_brief=0"; else shard_brief="--gt
 # >>> CRASH / >>> TIMEOUT marker (counted by the aggregator) to $1. This is the
 # strict-isolation path: BATCH=0 uses it directly, and the batch fallback uses
 # it to recover attribution for a suite whose batched process died.
+#
+# Each test writes a one-line `>> Suite.test ... ` breadcrumb (the name FIRST,
+# with NO trailing newline) BEFORE it runs, then completes the line with its
+# result + newline AFTER. So a clean log reads one greppable line per test
+# (`grep '^>> '` → the whole pass/fail list), and if the process is killed
+# mid-test the dangling result-less `>> Suite.test ... ` line pinpoints exactly
+# which test was executing when it died. The result words are distinct from the
+# gtest [ PASSED ]/[ FAILED ] lines and the >>> markers, so counting is
+# unaffected; full gtest output still follows for forensics.
 run_one_test() {
     local out_file="$1" t="$2" tf trc
     tf="${out_file}.t"
+    printf '>> %s ... ' "$t" >> "$out_file"
     if [ -n "$TIMEOUT_CMD" ]; then
         "$TIMEOUT_CMD" --kill-after=10 "$TEST_TIMEOUT" \
             env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
@@ -376,6 +386,15 @@ run_one_test() {
             "--gtest_filter=$t" "$shard_brief" > "$tf" 2>&1
     fi
     trc=$?
+    case "$trc" in
+        0)       printf 'PASS\n'              >> "$out_file" ;;
+        124|137) printf 'TIMEOUT (%ss)\n' "$TEST_TIMEOUT" >> "$out_file" ;;
+        *) if grep -qE '^\[  FAILED  \]' "$tf"; then
+               printf 'FAIL\n'               >> "$out_file"
+           else
+               printf 'CRASH (exit %s)\n' "$trc" >> "$out_file"
+           fi ;;
+    esac
     cat "$tf" >> "$out_file"
     if [ "$trc" -ne 0 ]; then
         case "$trc" in
