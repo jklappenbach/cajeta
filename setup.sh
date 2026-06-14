@@ -219,7 +219,10 @@ install_deps
 
 mkdir -p build
 pushd build > /dev/null
-cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Debug -DLLVM_DIR="${LLVM_DIR}"
+# Forward any extra args to cmake (e.g. CI passes -DCAJETA_CLANG=... on
+# Windows to pin the runtime-bitcode clang to the fork toolchain). With no
+# extra args "$@" expands to nothing, so every other caller is unaffected.
+cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Debug -DLLVM_DIR="${LLVM_DIR}" "$@"
 popd > /dev/null
 
 echo

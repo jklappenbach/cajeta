@@ -90,7 +90,7 @@ jobs:
             {"os":"ubuntu-latest","target":"x86_64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
             {"os":"ubuntu-24.04-arm","target":"aarch64-linux-gnu","archive_ext":"tar.gz","shell":"bash"},
             {"os":"macos-14","target":"aarch64-apple-darwin","archive_ext":"tar.gz","shell":"bash"},
-            {"os":"windows-latest","target":"x86_64-w64-mingw32","archive_ext":"zip","shell":"msys2 {0}"}
+            {"os":["self-hosted","Windows","X64","gpu"],"target":"x86_64-w64-mingw32","archive_ext":"zip","shell":"msys2 {0}"}
           ]'
           MODE='${{ github.event.inputs.mode }}'
           SEL='${{ github.event.inputs.targets }}'
@@ -348,6 +348,7 @@ jobs:
             mingw-w64-x86_64-vulkan-headers
             tar
             vim
+            zip
 
       # EVERY target links the cajeta-llvm FORK toolchain (LLVM 23 + clang +
       # lld) carrying the SPIR-V / SPV_KHR_ray_query patches — see plans/c0/.
@@ -376,7 +377,18 @@ jobs:
           esac
           ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
           URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
-          DEST="$HOME/cajeta-llvm"
+          # On the self-hosted Windows runner the MSYS2 shell's $HOME is '/'
+          # (a read-only mount), so "$HOME/cajeta-llvm" -> '//cajeta-llvm' and
+          # mkdir fails with "Read-only file system". Anchor the toolchain in
+          # the (always-writable) workspace on Windows; $PWD is already in MSYS
+          # '/c/...' form that cygpath -m/-w convert cleanly for the native
+          # mingw CMake/PATH below. Linux/macOS hosted runners have a real
+          # writable $HOME, so keep using it there.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            DEST="$PWD/cajeta-llvm"
+          else
+            DEST="$HOME/cajeta-llvm"
+          fi
           mkdir -p "$DEST"
           # Bare relative filename: resolves in $CWD (the workspace) for BOTH
           # msys2's tools and the native mingw curl/zstd — avoids the MSYS
@@ -453,10 +465,29 @@ jobs:
           # so CMake would auto-pick clang++, which on mingw doesn't auto-link
           # winpthreads and fails the LLVM/libstdc++ pthread_* symbols at link. The
           # fork still supplies the LLVM libs/headers + clang for the bitcode step.
+          CMAKE_EXTRA=()
           if [ "${{ runner.os }}" = "Windows" ]; then
             export CC=gcc CXX=g++
+            # Pin the runtime-bitcode clang to the cajeta-llvm FORK (LLVM 23).
+            # The fork's relocated LLVMConfig.cmake exports a stale
+            # LLVM_TOOLS_BINARY_DIR (a build-machine path that doesn't exist
+            # here), so src/CMakeLists.txt's find_program falls through to
+            # MSYS2's clang (LLVM 22) and hard-fails the toolchain-major check.
+            # LLVM_DIR (set by the fetch step) is <fork>/lib/cmake/llvm, so the
+            # fork's clang is its sibling <fork>/bin/clang.exe. Pre-seeding the
+            # CAJETA_CLANG cache var makes find_program a no-op (documented
+            # escape hatch in the error message itself).
+            FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
+            CMAKE_EXTRA+=("-DCAJETA_CLANG=${FORK_ROOT}/bin/clang.exe")
+            # llvm-link merges the runtime bitcode and MUST be the same LLVM
+            # major as the clang that emitted it (LLVM 23). Pin it to the fork's
+            # too: this self-hosted runner reuses its workspace, so a prior
+            # configure can leave CAJETA_LLVM_LINK cached as MSYS2's llvm-link
+            # (LLVM 22) in build/CMakeCache.txt, which then can't read the
+            # LLVM-23 bitcode ("Not an int attribute ... Reader: 'LLVM 22'").
+            CMAKE_EXTRA+=("-DCAJETA_LLVM_LINK=${FORK_ROOT}/bin/llvm-link.exe")
           fi
-          ./setup.sh
+          ./setup.sh "${CMAKE_EXTRA[@]+"${CMAKE_EXTRA[@]}"}"
 
       - name: Build
         run: cmake --build build --config Release -- -j 4
@@ -498,6 +529,15 @@ jobs:
           # 120s per-test default and were killed mid-progress. Give the
           # Windows leg headroom; the fast legs keep the default.
           TEST_TIMEOUT: ${{ matrix.target == 'x86_64-w64-mingw32' && '300' || '120' }}
+          # The release GATE runs the proven one-process-per-test path
+          # (BATCH=0), not the per-suite batch optimization. Batching only
+          # meaningfully helps where the stdlib prime dominates (Windows), but
+          # running a whole suite in one process can destabilize the Windows JIT
+          # and trip the per-test fallback, erasing the savings — not a risk
+          # worth taking on the publish gate. BATCH=1 remains the default for
+          # local dev (cajeta_tests.sh) where speed matters more than gate
+          # determinism.
+          BATCH: "0"
         run: NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
 
       # Persist the raw per-shard test output (full gtest failure text +
@@ -525,12 +565,45 @@ jobs:
       # steps (msys2 inherits the Windows PATH, so the bash cpack step sees wix).
       - name: Provision WiX (Windows)
         if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
+        # NOT continue-on-error: a WiX provisioning failure must red the run.
+        # This step was previously masked, which is exactly how "pwsh: command
+        # not found" shipped as a false-green (no MSI ever produced).
+        # Windows PowerShell (powershell.exe, 5.1) — NOT pwsh. The GitHub-hosted
+        # windows-latest image ships PowerShell Core (`pwsh`), but the
+        # self-hosted PHOENIX runner only has the OS-bundled Windows PowerShell.
+        # With `shell: pwsh` the shell itself fails to launch ("pwsh: command
+        # not found"), so the whole step body never runs, WiX is never
+        # installed, and the later `cpack -G WIX` fails too — both masked by
+        # continue-on-error, producing a false-green run with no MSI. The script
+        # below is 5.1-compatible.
+        shell: powershell
         run: |
-          dotnet tool install --global wix --version 5.0.2
+          $ErrorActionPreference = "Stop"
+          # `dotnet tool update` (NOT install): the runner service profile
+          # (NT AUTHORITY\NETWORK SERVICE) persists between runs, so `install`
+          # would exit non-zero with "already installed" on every re-dispatch
+          # after the first and — now that this step hard-gates — red the run.
+          # `update --version 5.0.2` is idempotent: installs if absent, no-op
+          # success if already at 5.0.2. SDK 9.0.x + .NET 6 runtime are present
+          # on the runner, which is what WiX v5 (net6.0) needs.
+          dotnet tool update --global wix --version 5.0.2
+          # The global-tools dir is NOT on this session's PATH yet — on the
+          # first dotnet run the SDK even prints "you will need to reopen the
+          # Command Prompt window before running the tool you installed", and
+          # $GITHUB_PATH only takes effect in LATER steps, not this shell. So
+          # `wix extension add` on the next line failed with "'wix' is not
+          # recognized". Prepend the tools dir to the CURRENT $env:PATH so `wix`
+          # is callable within this same step.
+          $toolsDir = "$env:USERPROFILE\.dotnet\tools"
+          $env:PATH = "$toolsDir;$env:PATH"
+          # Re-adding an already-present extension is a no-op success.
           wix extension add -g WixToolset.UI.wixext/5.0.2
-          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # Persist the tools dir for the later cpack step. Add-Content (not
+          # Out-File -Encoding utf8): Windows PowerShell 5.1's utf8 writer
+          # prepends a BOM, which corrupts the first GITHUB_PATH entry so `wix`
+          # wouldn't be found by the next step. Add-Content defaults to BOM-free
+          # ASCII, and the path is pure ASCII anyway.
+          Add-Content -Path $env:GITHUB_PATH -Value $toolsDir
 
       # ---- Build native installers (CPack) ------------------------------
       # Wraps the CMake install() tree (top-level CMakeLists.txt §3) into the
@@ -567,6 +640,27 @@ jobs:
           esac
           echo "Produced installers:"
           ls -la *.deb *.rpm *.msi *.pkg 2>/dev/null || true
+
+      # ---- Verify the Windows installer actually built -------------------
+      # "Build native installers" stays continue-on-error because the Linux
+      # (.deb/.rpm) and macOS (.pkg) formats aren't validated end-to-end yet and
+      # must not red those (green) legs. But the Windows MSI path IS expected to
+      # work now, so gate it explicitly: if cpack -G WIX produced no .msi (e.g.
+      # WiX missing, or the cpack step silently failed under continue-on-error),
+      # fail the run instead of shipping a false green. Windows-only — does not
+      # touch the Linux/macOS legs' tolerance.
+      - name: Verify Windows installer (MSI)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          msis=(build/*.msi)
+          if [ ${#msis[@]} -eq 0 ]; then
+            echo "::error::cpack -G WIX produced no .msi — the Windows installer build failed (previously masked by continue-on-error)."
+            exit 1
+          fi
+          echo "Windows MSI(s) produced:"
+          ls -la "${msis[@]}"
 
       # ---- Package ------------------------------------------------------
       # MSYS2 ships bash + tar + zip, so the staging and archive logic
@@ -625,11 +719,13 @@ jobs:
       - name: Archive (zip)
         if: matrix.archive_ext == 'zip'
         run: |
-          # MSYS2 ships `zip` via the zip package — but it's not in
-          # the install list above. Use a more universal alternative:
-          # python -c '...' to make a deterministic zip. python is
-          # available in MSYS2's MINGW64 by default.
-          python -c "import shutil; shutil.make_archive(r'${STAGE_DIR}', 'zip', '.', r'${STAGE_DIR}')"
+          # MSYS2 MINGW64 ships neither `zip` (not guaranteed in the install
+          # list across runners) nor `python` on this runner, so use cmake's
+          # bundled libarchive: cmake is guaranteed present (it just built the
+          # project) and `-E tar --format=zip` writes a portable .zip. Same
+          # layout the old python make_archive produced: a top-level
+          # ${STAGE_DIR}/ folder.
+          cmake -E tar cf "${STAGE_DIR}.zip" --format=zip "${STAGE_DIR}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
