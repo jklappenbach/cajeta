@@ -564,12 +564,26 @@ jobs:
       # steps (msys2 inherits the Windows PATH, so the bash cpack step sees wix).
       - name: Provision WiX (Windows)
         if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
+        # NOT continue-on-error: a WiX provisioning failure must red the run.
+        # This step was previously masked, which is exactly how "pwsh: command
+        # not found" shipped as a false-green (no MSI ever produced).
+        # Windows PowerShell (powershell.exe, 5.1) — NOT pwsh. The GitHub-hosted
+        # windows-latest image ships PowerShell Core (`pwsh`), but the
+        # self-hosted PHOENIX runner only has the OS-bundled Windows PowerShell.
+        # With `shell: pwsh` the shell itself fails to launch ("pwsh: command
+        # not found"), so the whole step body never runs, WiX is never
+        # installed, and the later `cpack -G WIX` fails too — both masked by
+        # continue-on-error, producing a false-green run with no MSI. The script
+        # below is 5.1-compatible.
+        shell: powershell
         run: |
           dotnet tool install --global wix --version 5.0.2
           wix extension add -g WixToolset.UI.wixext/5.0.2
-          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # Add-Content (not Out-File -Encoding utf8): Windows PowerShell 5.1's
+          # utf8 writer prepends a BOM, which corrupts the first GITHUB_PATH
+          # entry so `wix` wouldn't be found by the next step. Add-Content
+          # defaults to BOM-free ASCII, and the path is pure ASCII anyway.
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.dotnet\tools"
 
       # ---- Build native installers (CPack) ------------------------------
       # Wraps the CMake install() tree (top-level CMakeLists.txt §3) into the
@@ -606,6 +620,27 @@ jobs:
           esac
           echo "Produced installers:"
           ls -la *.deb *.rpm *.msi *.pkg 2>/dev/null || true
+
+      # ---- Verify the Windows installer actually built -------------------
+      # "Build native installers" stays continue-on-error because the Linux
+      # (.deb/.rpm) and macOS (.pkg) formats aren't validated end-to-end yet and
+      # must not red those (green) legs. But the Windows MSI path IS expected to
+      # work now, so gate it explicitly: if cpack -G WIX produced no .msi (e.g.
+      # WiX missing, or the cpack step silently failed under continue-on-error),
+      # fail the run instead of shipping a false green. Windows-only — does not
+      # touch the Linux/macOS legs' tolerance.
+      - name: Verify Windows installer (MSI)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          msis=(build/*.msi)
+          if [ ${#msis[@]} -eq 0 ]; then
+            echo "::error::cpack -G WIX produced no .msi — the Windows installer build failed (previously masked by continue-on-error)."
+            exit 1
+          fi
+          echo "Windows MSI(s) produced:"
+          ls -la "${msis[@]}"
 
       # ---- Package ------------------------------------------------------
       # MSYS2 ships bash + tar + zip, so the staging and archive logic
