@@ -664,11 +664,12 @@ jobs:
       - name: Archive (zip)
         if: matrix.archive_ext == 'zip'
         run: |
-          # MSYS2 ships `zip` via the zip package — but it's not in
-          # the install list above. Use a more universal alternative:
-          # python -c '...' to make a deterministic zip. python is
-          # available in MSYS2's MINGW64 by default.
-          python -c "import shutil; shutil.make_archive(r'${STAGE_DIR}', 'zip', '.', r'${STAGE_DIR}')"
+          # MSYS2 MINGW64 ships neither `zip` (not in the install list) nor
+          # `python` on this runner, so use cmake's bundled libarchive: cmake
+          # is guaranteed present (it just built the project) and `-E tar
+          # --format=zip` writes a portable .zip. Same layout the old python
+          # make_archive produced: a top-level ${STAGE_DIR}/ folder.
+          cmake -E tar cf "${STAGE_DIR}.zip" --format=zip "${STAGE_DIR}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
