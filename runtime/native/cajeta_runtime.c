@@ -11179,11 +11179,11 @@ static int64_t cajeta_xpu_hip_texcube_alloc(uint32_t size, int32_t format) {
     struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
     struct caj_hip_extent ext; ext.w = size; ext.h = size; ext.d = 6;
     void* array = NULL;
-    // NB: on gfx1151 / ROCm 7.2.2 this returns hipErrorInvalidValue — cubemap
-    // arrays are unimplemented on this APU (as with mipmapped arrays), so cube
-    // TextureCube on AMD degrades to "no device texture" (handle 0 → the kernel
-    // doesn't launch). The path is correct for ROCm/hardware that supports cubemap
-    // arrays.
+    // NB: on gfx1151 this returns hipErrorInvalidValue — cubemap arrays are
+    // unimplemented in the HIP runtime on this APU (confirmed ROCm 7.2.2 + 7.11.0;
+    // as with mipmapped arrays), so TextureCube on AMD degrades to "no device
+    // texture" (handle 0 → the kernel doesn't launch). The path is correct and the
+    // SAME GPU does cubemaps via Vulkan/RADV — use the Vulkan backend on AMD.
     if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, CAJ_HIP_ARRAY_CUBEMAP) != 0 ||
         !array)
         return 0;
@@ -11265,10 +11265,11 @@ static int64_t cajeta_xpu_hip_tex_alloc_mip(uint32_t w, uint32_t h, int32_t form
     struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
     struct caj_hip_extent ext; ext.w = w; ext.h = h; ext.d = 0;  // 2-D mip array
     void* mipmap = NULL;
-    // NB: on gfx1151 / ROCm 7.2 this returns hipErrorNotSupported (801) — AMD
-    // mipmapped arrays are unimplemented on that APU, so mip Texture2D degrades to
-    // "no device texture" (handle 0 → the kernel doesn't launch). The path is
-    // correct for ROCm/hardware that does support mipmapped arrays.
+    // NB: on gfx1151 this returns hipErrorNotSupported(801) — mipmapped arrays are
+    // unimplemented in the HIP runtime on this APU (confirmed ROCm 7.2.2 + 7.11.0),
+    // so mip Texture2D degrades to "no device texture" (handle 0 → the kernel
+    // doesn't launch). The path is correct and the SAME GPU does mip+LOD via
+    // Vulkan/RADV — use the Vulkan backend on AMD.
     if (g_xpu_hip.hipMallocMipmappedArray(&mipmap, &cd, ext, levels, 0) != 0 ||
         !mipmap)
         return 0;

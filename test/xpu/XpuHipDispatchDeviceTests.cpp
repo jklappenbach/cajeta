@@ -1093,13 +1093,18 @@ TEST(XpuHipDispatchDeviceTests, mipmapFetchAndSampleLodRoutesToHipOnDevice) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     int r = fn();
-    // AMD mipmapped arrays are unsupported on gfx1151 / ROCm 7.2 (hipMallocMipmapped
-    // Array → hipErrorNotSupported). The runtime + ockl _lod seam are correct and
-    // will work on ROCm/hardware that supports mipmapped arrays; skip where it's
-    // not implemented rather than fail.
+    // AMD mipmapped arrays are unsupported by the HIP runtime on gfx1151 —
+    // hipMallocMipmappedArray → hipErrorNotSupported(801). CONFIRMED a durable
+    // ROCm gap, NOT a cajeta bug: a standalone HIP probe reproduces 801 on BOTH
+    // ROCm 7.2.2 and 7.11.0, while layered/2D/3D arrays allocate fine. The
+    // hardware is capable — the SAME GPU does mipmap+LOD via the Vulkan/RADV path
+    // (XpuVulkanDispatchDeviceTests.mipmapFetchAndSampleLodOnDevice). cajeta's
+    // runtime + ockl _lod seam are correct and light up if ROCm implements it.
+    // Use the Vulkan backend for mip/LOD on AMD today. See project memory.
     if (r == 555) {
-        GTEST_SKIP() << "AMD mipmapped arrays unsupported on this device "
-                        "(hipMallocMipmappedArray → hipErrorNotSupported)";
+        GTEST_SKIP() << "AMD mipmapped arrays unsupported by HIP/ROCm on gfx1151 "
+                        "(hipMallocMipmappedArray → 801; ROCm 7.2.2 + 7.11.0); "
+                        "use the Vulkan backend";
     }
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100: L0 fetch; 200: L1 fetch; 300: L1 sampleLod)";
@@ -1291,13 +1296,17 @@ TEST(XpuHipDispatchDeviceTests, textureCubeSampleRoutesToHipOnDevice) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     int r = fn();
-    // AMD cubemap arrays are unsupported on gfx1151 / ROCm 7.2.2 (hipMalloc3DArray
-    // with hipArrayCubemap → hipErrorInvalidValue). The runtime + ockl
-    // __ockl_image_sample_CM seam are correct and will work on ROCm/hardware that
-    // supports cubemap arrays; skip where it's not implemented rather than fail.
+    // AMD cubemap arrays are unsupported by the HIP runtime on gfx1151 —
+    // hipMalloc3DArray[hipArrayCubemap] → hipErrorInvalidValue. CONFIRMED a
+    // durable ROCm gap (standalone HIP probe reproduces it on ROCm 7.2.2 + 7.11.0;
+    // layered arrays alloc fine), NOT a cajeta bug. The SAME GPU does cubemap
+    // sampling via the Vulkan/RADV path (textureCubeSampleOnDevice). cajeta's
+    // runtime + ockl __ockl_image_sample_CM seam are correct. Use the Vulkan
+    // backend for cubemaps on AMD today. See project memory.
     if (r == 555) {
-        GTEST_SKIP() << "AMD cubemap arrays unsupported on this device "
-                        "(hipMalloc3DArray[cubemap] → hipErrorInvalidValue)";
+        GTEST_SKIP() << "AMD cubemap arrays unsupported by HIP/ROCm on gfx1151 "
+                        "(hipMalloc3DArray[cubemap] → invalid arg; ROCm 7.2.2 + "
+                        "7.11.0); use the Vulkan backend";
     }
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: cube face selection mismatch at dir i)";
 }
