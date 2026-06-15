@@ -1,0 +1,20 @@
+package bench;
+import cajeta.codec.json.JsonReader;
+// Subclass overriding the events — proves virtual dispatch reaches overrides.
+public class SaxCounter extends SaxBase {
+    public int64 so; public int64 eo; public int64 sa; public int64 ea;
+    public int64 key; public int64 str; public int64 num; public int64 bool; public int64 nul;
+    public SaxCounter() {
+        this.so=0; this.eo=0; this.sa=0; this.ea=0;
+        this.key=0; this.str=0; this.num=0; this.bool=0; this.nul=0;
+    }
+    public void onStartObject() { this.so = this.so + 1; }
+    public void onEndObject() { this.eo = this.eo + 1; }
+    public void onStartArray() { this.sa = this.sa + 1; }
+    public void onEndArray() { this.ea = this.ea + 1; }
+    public void onKey(JsonReader r) { this.key = this.key + 1; }
+    public void onString(JsonReader r) { this.str = this.str + 1; }
+    public void onNumber(JsonReader r) { this.num = this.num + 1; }
+    public void onBoolean(boolean v) { this.bool = this.bool + 1; }
+    public void onNull() { this.nul = this.nul + 1; }
+}

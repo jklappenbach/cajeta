@@ -1,0 +1,24 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+import cajeta.codec.json.JsonWriter;
+public final class JwTest {
+    static void w2(FileWriter s, int8[] d, int32 n) { s.write(d, n); }  // param-receiver test
+    public static int32 run() {
+        // A) FileWriter as a method parameter receiver
+        FileWriter fa = File.openWrite("/tmp/jsonbench/jw_a.txt", OpenMode.WRITE);
+        int8[] d = heap int8[3]; d[0]=(int8)88; d[1]=(int8)89; d[2]=(int8)10; // "XY\n"
+        w2(fa, d, 3); fa.close();
+        int8[] ra = File.readAllBytes("/tmp/jsonbench/jw_a.txt"); System.stdout.println("A param-receiver bytes=" + ra.count());
+
+        // B) JsonWriter.writeLineTo
+        JsonWriter w = heap JsonWriter();
+        w.beginObject().key("a").writeNumber((int64) 1).endObject();
+        System.stdout.println("B writer size before=" + w.size());
+        FileWriter fb = File.openWrite("/tmp/jsonbench/jw_b.txt", OpenMode.WRITE);
+        w.writeLineTo(fb); fb.close();
+        int8[] rbb = File.readAllBytes("/tmp/jsonbench/jw_b.txt"); System.stdout.println("B writeLineTo bytes=" + rbb.count());
+        return 0;
+    }
+}

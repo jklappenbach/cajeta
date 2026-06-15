@@ -1,0 +1,17 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+public final class FwTest {
+    public static int32 run() {
+        FileWriter fw = File.openWrite("/tmp/jsonbench/fw.txt", OpenMode.WRITE);
+        int8[] data = heap int8[5];
+        data[0]=(int8)104; data[1]=(int8)105; data[2]=(int8)10; data[3]=(int8)33; data[4]=(int8)10; // "hi\n!\n"
+        fw.write(data, 5);
+        fw.writeString("world\n");
+        fw.close();
+        int8[] rb = File.readAllBytes("/tmp/jsonbench/fw.txt");
+        System.stdout.println("read back bytes=" + rb.count());
+        return 0;
+    }
+}
