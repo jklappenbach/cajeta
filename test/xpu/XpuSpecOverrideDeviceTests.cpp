@@ -105,6 +105,40 @@ const char* kPartialSpecFill =
     "    }\n"
     "}\n";
 
+// f32 override: out[i] = Spec.getf(0, 2.5). With spec:[7.5] every element == 7.5
+// (the float bit-pattern rides the i32 transport word, reinterpreted by the
+// consumer). All values are small integers-over-2 → float-exact, so == is safe.
+const char* kFloatSpecFill =
+    "package test;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class SF {\n"
+    "    @Kernel\n"
+    "    public static void fill(Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { out[i] = Spec.getf(0, 2.5f); }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 64;\n"
+    "        float32[] hout = heap float32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+    "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+    "        out.allocate();\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        fill.launch(s, grid: [1], block: [64], spec: [7.5f])(out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        out.free();\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            float32 d = hout[i] - 7.5f;\n"
+    "            if (d < -0.001f || d > 0.001f) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // Phase A: a host spec override rides the launch FFI to a genuine OpSpecConstant
@@ -159,6 +193,31 @@ TEST(XpuSpecOverrideTests, specOverridePartialReadsDefaultForUnsetSlotsOnCpu) {
     EXPECT_EQ(r, 777)
         << "fail code " << r
         << " (100+i: slot0 != overridden 555; 200+i: slot1 != default 22)";
+}
+
+// f32 override on Vulkan — Spec.getf(0, 2.5) overridden to 7.5 via a float
+// OpSpecConstant; proves the raw-word transport reinterprets correctly on device.
+TEST(XpuSpecOverrideDeviceTests, floatSpecOverrideRoutesToVulkanOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    auto jit = CajetaJit::compile(kFloatSpecFill, "test.SF", vulkanOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != overridden 7.5)";
+}
+
+// f32 override on CPU — the oracle reproduces it (the runtime helper reinterprets
+// the transport word as float). Matches the Vulkan result (uniform semantics).
+TEST(XpuSpecOverrideTests, floatSpecOverrideMatchesDeviceOnCpu) {
+    auto jit = CajetaJit::compile(kFloatSpecFill, "test.SF", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != overridden 7.5)";
 }
 
 // Phase B: no `spec:` → CPU reads the compile-time default (unchanged behavior;

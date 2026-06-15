@@ -69,8 +69,10 @@ void __cajeta_xpu_launch_v3(const char* kernelName,
 `Spec.geti(slot, default)` / `Spec.getf(slot, default)` reads user spec slot `slot`;
 the launch overrides it by supplying `specValues[i]` for slot `i` (`specCount` =
 how many leading slots are given; trailing/unset slots keep their compile-time
-default). Each value is a **raw 4-byte word** (i32 today; f32 reinterpreted, no ABI
-change). `specCount == 0` / `NULL` = no override (every slot reads its default —
+default). Each value is a **raw 4-byte word** — `Spec.geti` reads it as i32,
+`Spec.getf` reinterprets it as f32 (the Cajeta frontend packs a float `spec:`
+element as its bit pattern; mixed `spec:[3, 1.5f]` packs each slot by its own
+type). `specCount == 0` / `NULL` = no override (every slot reads its default —
 identical to `_v2`). Honored as a genuine pipeline-time `OpSpecConstant` on Vulkan
 and a runtime read on CPU (identical observed results); CUDA/HIP device-baking is a
 follow-up (they read the default + emit a one-time notice meanwhile). The Cajeta

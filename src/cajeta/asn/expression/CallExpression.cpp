@@ -412,8 +412,23 @@ namespace cajeta {
             for (auto& e : elems) {
                 llvm::Value* v = e->generateCode(module);
                 v = loadIfLValue(module, v, e);
-                if (v->getType() != i32Ty)
+                llvm::Type* vt = v->getType();
+                if (vt->isFloatingPointTy()) {
+                    // f32 spec override (Spec.getf): transport the raw 32-bit
+                    // pattern, NOT a numeric conversion (else 1.5f → 1). Narrow
+                    // an f64 literal to f32 first (spec constants are 32-bit),
+                    // then bitcast to the i32 transport word; the consumer
+                    // (CPU __cajeta_xpu_cpu_spec_f32 / a Vulkan float
+                    // OpSpecConstant) reinterprets it back to float.
+                    if (!vt->isFloatTy())
+                        v = builder->CreateFPCast(
+                            v, llvm::Type::getFloatTy(ctx), "spec.f2f32");
+                    v = builder->CreateBitCast(v, i32Ty, "spec.fbits");
+                } else if (vt != i32Ty) {
                     v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/false);
+                }
+                // Per-element type-directed: a mixed `spec:[3, 1.5f]` packs each
+                // slot by its own type (int → value word, float → bit pattern).
                 specVals.push_back(v);
             }
         }
