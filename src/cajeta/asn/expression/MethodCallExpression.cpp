@@ -2300,6 +2300,17 @@ namespace cajeta {
                     ld->setAlignment(llvm::Align(1));
                     return ld;
                 }
+                // popcount64(int64 x) -> int32: set-bit count via @llvm.ctpop.i64.
+                // Counts bits in a SIMD mask (e.g. structural/quote/scalar masks).
+                if (ns == "Cajeta" && methodCallName == "popcount64" && parameters.size() == 1) {
+                    auto* lmod = module->getLlvmModule();
+                    auto* i64Ty = builder->getInt64Ty();
+                    llvm::Value* x = loadValue(0);
+                    llvm::Function* ctpop = llvm::Intrinsic::getOrInsertDeclaration(
+                        lmod, llvm::Intrinsic::ctpop, {i64Ty});
+                    llvm::Value* r = builder->CreateCall(ctpop, {x}, "popcnt");
+                    return builder->CreateTrunc(r, builder->getInt32Ty(), "popcnt32");
+                }
                 // Condition-variable intrinsics (R7-B). Fiber-aware, paired
                 // with a lock handle; `Mutex<T>.withLockWhen` builds on them.
                 // condvarWait(cv, lock) atomically releases `lock`, parks the

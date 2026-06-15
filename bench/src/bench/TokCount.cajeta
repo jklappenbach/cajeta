@@ -1,0 +1,114 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+
+// SIMD JSON token COUNT (stage 1 + the counting half of stage 2): the reader's
+// token count == #brackets + #strings + #scalars, and all three are popcounts of
+// stage-1 masks. Validates the full SIMD scanner's correctness + speed; the typed
+// emitter (KEY/STRING/NUMBER/...) is the API-integration follow-on.
+// Cross-block scanner state, shared by the scalar path (backslash blocks + tail)
+// and updated by the SIMD fast path.
+class TokState {
+    public int64 brackets; public int64 strings; public int64 scalars;
+    public boolean inStr; public boolean prevVal; public boolean pend;
+    public TokState() {
+        this.brackets = 0; this.strings = 0; this.scalars = 0;
+        this.inStr = false; this.prevVal = false; this.pend = false;
+    }
+}
+
+public final class TokCount {
+
+    // Scalar count over [from, to) with correct \-escape handling, updating st.
+    static void scalarRange(int8[] b, int64 from, int64 to, TokState st) {
+        int64 i = from;
+        if (st.pend) { i = i + 1; st.pend = false; }
+        while (i < to) {
+            int8 c = b[i];
+            if (st.inStr) {
+                if (c == (int8)92) {
+                    if (i + 1 >= to) { st.pend = true; i = to; } else { i = i + 2; }
+                    continue;
+                }
+                if (c == (int8)34) { st.inStr = false; }
+            } else {
+                boolean isWs = c==(int8)32||c==(int8)9||c==(int8)10||c==(int8)13;
+                boolean isBr = c==(int8)123||c==(int8)125||c==(int8)91||c==(int8)93;
+                boolean isSep = c==(int8)58||c==(int8)44;
+                if (c == (int8)34) { st.strings = st.strings + 1; st.inStr = true; st.prevVal = false; }
+                else if (isBr) { st.brackets = st.brackets + 1; st.prevVal = false; }
+                else if (isSep) { st.prevVal = false; }
+                else if (isWs) { st.prevVal = false; }
+                else { if (!st.prevVal) { st.scalars = st.scalars + 1; } st.prevVal = true; }
+            }
+            i = i + 1;
+        }
+    }
+
+    static int64 simdTokens(int8[] b, int64 n) {
+        TokState st = heap TokState();
+        int64 p = 0;
+        while (p + 16 <= n) {
+            Vector<int8,16> v = Cajeta.vload16(b, p);
+            int32 bsM = v.eqMask((int8)92);
+            if (bsM != 0 || st.pend) {
+                scalarRange(b, p, p + 16, st);
+            } else {
+                int32 lb = v.eqMask((int8)123); int32 rb = v.eqMask((int8)125);
+                int32 ls = v.eqMask((int8)91);  int32 rs = v.eqMask((int8)93);
+                int32 col = v.eqMask((int8)58);  int32 com = v.eqMask((int8)44);
+                int32 qm = v.eqMask((int8)34);
+                int32 ws = v.eqMask((int8)32)|v.eqMask((int8)9)|v.eqMask((int8)10)|v.eqMask((int8)13);
+                int32 structM = lb|rb|ls|rs|col|com;
+                int32 bracketM = lb|rb|ls|rs;
+                int32 carry = 0; if (st.inStr) { carry = 65535; }
+                int32 vb0 = 0; if (st.prevVal) { vb0 = 1; }
+                int32 pf = qm; pf=pf^(pf<<1); pf=pf^(pf<<2); pf=pf^(pf<<4); pf=pf^(pf<<8); pf=pf&65535;
+                int32 inStr = (carry ^ (pf << 1)) & 65535;
+                int32 openQ = qm & (~inStr) & 65535;
+                int32 valueB = (~ws & ~structM & ~qm & ~inStr) & 65535;
+                int32 vbPrev = ((valueB << 1) | vb0) & 65535;
+                int32 scalarStart = valueB & (~vbPrev) & 65535;
+                int32 brk = bracketM & (~inStr) & 65535;
+                st.brackets = st.brackets + (int64) Cajeta.popcount64((int64) brk);
+                st.strings  = st.strings  + (int64) Cajeta.popcount64((int64) openQ);
+                st.scalars  = st.scalars  + (int64) Cajeta.popcount64((int64) scalarStart);
+                int32 par = (pf >> 15) & 1;
+                st.inStr = ((((carry & 1) ^ par) & 1) != 0);
+                st.prevVal = (((valueB >> 15) & 1) != 0);
+            }
+            p = p + 16;
+        }
+        scalarRange(b, p, n, st);
+        return st.brackets + st.strings + st.scalars;
+    }
+
+    static int64 scalarTokens(int8[] b, int64 n) {
+        TokState st = heap TokState();
+        scalarRange(b, 0, n, st);
+        return st.brackets + st.strings + st.scalars;
+    }
+
+    static void check(String path, String name, int64 expect) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        int64 sc = scalarTokens(b, n);
+        int64 sm = simdTokens(b, n);
+        int32 w = 0; int64 sink = 0;
+        while (w < 20) { sink = sink + simdTokens(b, n); w = w + 1; }
+        int64 t0 = Clock.nanoTime(); int32 i = 0;
+        while (i < 200) { sink = sink + simdTokens(b, n); i = i + 1; }
+        int64 ns = Clock.nanoTime() - t0;
+        float64 mb = ((float64)(n * 200)) / 1000000.0 / (((float64) ns)/1000000000.0);
+        System.stdout.println(name + ": scalar=" + sc + " simd=" + sm + " reader=" + expect
+            + ((sc == expect && sm == expect) ? "  OK" : "  MISMATCH")
+            + "   " + mb + " MB/s");
+    }
+
+    public static int32 run() {
+        check("/tmp/jsonbench/twitter.json", "twitter", 29573);
+        check("/tmp/jsonbench/citm_catalog.json", "citm", 85035);
+        check("/tmp/jsonbench/canada.json", "canada", 223236);
+        return 0;
+    }
+}
