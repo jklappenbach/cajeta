@@ -18,9 +18,11 @@
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include "cajeta/xpu/vulkan/VulkanDriver.h"
+#include "cajeta/xpu/amd/HipDriver.h"
 
 using cajeta_test::CajetaJit;
 using cajeta::xpu::vulkan::VulkanDriver;
+using cajeta::xpu::amd::HipDriver;
 
 namespace {
 
@@ -33,6 +35,12 @@ CajetaJit::Options vulkanOptions() {
 CajetaJit::Options cpuOptions() {
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    return o;
+}
+
+CajetaJit::Options amdOptions() {
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
     return o;
 }
 
@@ -193,6 +201,81 @@ TEST(XpuSpecOverrideTests, specOverridePartialReadsDefaultForUnsetSlotsOnCpu) {
     EXPECT_EQ(r, 777)
         << "fail code " << r
         << " (100+i: slot0 != overridden 555; 200+i: slot1 != default 22)";
+}
+
+// Phase C on-device (AMD/gfx1151): the constant-memory override path runs on a
+// real HIP device — the runtime sets __cajeta_xpu_spec_count/_values per launch
+// and the kernel reads the override (1234, not the default 7). This validates
+// the cu/hipModuleGetGlobal + copy path the emit gate could only prove was wired.
+// (Unblocked by the --exclude-libs comgr-interposition fix; skips without HIP.)
+TEST(XpuSpecOverrideDeviceTests, specOverrideRoutesToAmdOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no AMD HIP device available";
+    }
+    auto jit = CajetaJit::compile(kOneSpecFill, "test.SO", amdOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != overridden 1234)";
+}
+
+// Phase C on-device (AMD): slot-indexed + sparse — slot 0 overridden, slot 1 default.
+TEST(XpuSpecOverrideDeviceTests, specOverridePartialReadsDefaultForUnsetSlotsOnAmd) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no AMD HIP device available";
+    }
+    auto jit = CajetaJit::compile(kPartialSpecFill, "test.SOP", amdOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777)
+        << "fail code " << r
+        << " (100+i: slot0 != overridden 555; 200+i: slot1 != default 22)";
+}
+
+// Phase C on-device (AMD): no `spec:` → reads the compile-time default (the
+// zero-init safe-default path; runtime writes count 0).
+TEST(XpuSpecOverrideDeviceTests, noOverrideReadsDefaultOnAmd) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no AMD HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class SDA {\n"
+        "    @Kernel\n"
+        "    public static void fill(Buffer<int32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { out[i] = Spec.geti(0, 99); }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        int32[] hout = heap int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+        "        Buffer<int32> out = heap Buffer<int32>(0, n);\n"
+        "        out.allocate();\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [1], block: [64])(out, n);\n"   // no spec:
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != 99) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.SDA", amdOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != default 99)";
 }
 
 // f32 override on Vulkan — Spec.getf(0, 2.5) overridden to 7.5 via a float

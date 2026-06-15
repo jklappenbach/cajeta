@@ -829,6 +829,25 @@ set_source_files_properties(${CAJETA_INIT_EMBED} PROPERTIES GENERATED TRUE)
 list(APPEND GENERATED_SOURCES ${CAJETA_INIT_EMBED})
 # ------------------------------------------------------------------------------
 
+# --- AMD in-process device-JIT fix: hide the static LLVM symbols from the -----
+# executables' dynamic symbol table (comgr collision). HIP lazily dlopen's
+# libamd_comgr.so, which bundles its OWN, ABI-incompatible LLVM. Our binaries
+# statically link the fork LLVM and (via -rdynamic, for the JIT's dlsym of the
+# __cajeta_* runtime symbols + the crash-handler backtrace) export EVERYTHING —
+# so the loader interposes comgr's llvm::opt::* onto our LLVM → SIGSEGV. Giving
+# JUST the LLVM archives hidden visibility (`--exclude-libs`) stops the leak
+# without un-exporting the runtime symbols the JIT needs: cajeta keeps using its
+# fork LLVM internally (static linkage, not via .dynsym); comgr uses its own.
+# Linux/ELF + static-component LLVM only (the Windows dylib path doesn't apply).
+if(NOT WIN32 AND NOT CAJETA_USE_LLVM_DYLIB)
+    set(_caj_llvm_excl "")
+    foreach(_caj_l IN LISTS LLVM_LIBS)
+        string(APPEND _caj_llvm_excl "lib${_caj_l}.a:")
+    endforeach()
+    set(CAJETA_LLVM_EXCLUDE_LIBS "${_caj_llvm_excl}" CACHE INTERNAL
+        "LLVM static archives to hide from dynamic export (comgr interposition fix)")
+endif()
+
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})
 target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         PUBLIC

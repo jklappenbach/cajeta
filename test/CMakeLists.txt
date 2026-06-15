@@ -61,6 +61,15 @@ target_link_libraries(${BINARY} PRIVATE
 if(NOT WIN32)
     set_target_properties(${BINARY} PROPERTIES ENABLE_EXPORTS ON)
     target_link_options(${BINARY} PRIVATE -rdynamic)
+    # ...but DON'T export the static LLVM symbols: HIP's libamd_comgr bundles its
+    # own LLVM, and exporting ours interposes onto comgr's → SIGSEGV the moment
+    # HIP initializes in-process. Hide just the LLVM archives (the __cajeta_*
+    # runtime symbols the JIT dlsym's stay exported). Unblocks in-process AMD
+    # device tests. See src/CMakeLists.txt (CAJETA_LLVM_EXCLUDE_LIBS).
+    if(CAJETA_LLVM_EXCLUDE_LIBS)
+        target_link_options(${BINARY} PRIVATE
+                "-Wl,--exclude-libs,${CAJETA_LLVM_EXCLUDE_LIBS}")
+    endif()
 endif()
 
 # The build-tool HTTP test server (test/buildtool/TestHttpServer.h) speaks
