@@ -2283,6 +2283,23 @@ namespace cajeta {
                         cttz, {x, builder->getFalse()}, "ctz");
                     return builder->CreateTrunc(r, builder->getInt32Ty(), "ctz32");
                 }
+                // vload16(int8[] buf, int64 off) -> Vector<int8,16>: load a
+                // 16-byte block (unaligned) from the array data at byte offset
+                // `off`. Bind to a Vector<int8,16> local. The SIMD scanner's
+                // block source; pairs with v.eqMask / tableLookup.
+                if (ns == "Cajeta" && methodCallName == "vload16" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* v16  = llvm::FixedVectorType::get(i8Ty, 16);
+                    llvm::Value* hdr = loadValue(0);
+                    llvm::Value* off = loadValue(1);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "buf_data");
+                    llvm::Value* ptr = builder->CreateGEP(
+                        i8Ty, data, off, "buf_blk_ptr");
+                    llvm::LoadInst* ld = builder->CreateLoad(v16, ptr, "vload16");
+                    ld->setAlignment(llvm::Align(1));
+                    return ld;
+                }
                 // Condition-variable intrinsics (R7-B). Fiber-aware, paired
                 // with a lock handle; `Mutex<T>.withLockWhen` builds on them.
                 // condvarWait(cv, lock) atomically releases `lock`, parks the
