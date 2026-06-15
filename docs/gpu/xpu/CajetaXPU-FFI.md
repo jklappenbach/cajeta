@@ -73,10 +73,13 @@ default). Each value is a **raw 4-byte word** — `Spec.geti` reads it as i32,
 `Spec.getf` reinterprets it as f32 (the Cajeta frontend packs a float `spec:`
 element as its bit pattern; mixed `spec:[3, 1.5f]` packs each slot by its own
 type). `specCount == 0` / `NULL` = no override (every slot reads its default —
-identical to `_v2`). Honored as a genuine pipeline-time `OpSpecConstant` on Vulkan
-and a runtime read on CPU (identical observed results); CUDA/HIP device-baking is a
-follow-up (they read the default + emit a one-time notice meanwhile). The Cajeta
-launch surface is `kernel.launch(s, grid:[…], block:[…], spec:[v0,v1,…])(args)`.
+identical to `_v2`). Honored as a genuine pipeline-time `OpSpecConstant` on Vulkan,
+a runtime read on CPU (identical observed results), and a read from per-launch
+constant-memory globals on CUDA/HIP/NVPTX/AMDGPU (set via `cu/hipModuleGetGlobal` +
+a host copy; safe-by-default — zero-init reads the compile-time default). The
+device-backend path is **emit-verified**; on-device execution is pending hardware
+(AMD comgr / NVIDIA HW). The Cajeta launch surface is
+`kernel.launch(s, grid:[…], block:[…], spec:[v0,v1,…])(args)`.
 
 `_v2` is a shim = `_v3(…, specCount=0, specValues=NULL)`:
 

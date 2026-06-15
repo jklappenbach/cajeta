@@ -7432,6 +7432,7 @@ struct cajeta_cuda_api {
     int (*cuCtxSetCurrent)(void*);   // H9: bind the ctx to the launching thread
     int (*cuModuleLoadData)(void**, const void*);
     int (*cuModuleGetFunction)(void**, void*, const char*);
+    int (*cuModuleGetGlobal)(cajeta_cudeviceptr*, size_t*, void*, const char*);
     int (*cuMemAlloc)(cajeta_cudeviceptr*, size_t);
     int (*cuMemcpyHtoD)(cajeta_cudeviceptr, const void*, size_t);
     int (*cuMemcpyDtoH)(void*, cajeta_cudeviceptr, size_t);
@@ -7530,6 +7531,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamSynchronize");
     *(void**) (&g_xpu_cuda.cuStreamDestroy) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamDestroy_v2");
+    *(void**) (&g_xpu_cuda.cuModuleGetGlobal) =        // spec-override constant set
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuModuleGetGlobal_v2");
     *(void**) (&g_xpu_cuda.cuMemcpyHtoDAsync) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyHtoDAsync_v2");
     *(void**) (&g_xpu_cuda.cuMemcpyDtoHAsync) =
@@ -7648,6 +7651,7 @@ struct cajeta_hip_api {
     int (*hipSetDevice)(int);
     int (*hipModuleLoadData)(void**, const void*);
     int (*hipModuleGetFunction)(void**, void*, const char*);
+    int (*hipModuleGetGlobal)(void**, size_t*, void*, const char*);
     int (*hipMalloc)(void**, size_t);
     int (*hipMemcpyHtoD)(void*, const void*, size_t);
     int (*hipMemcpyDtoH)(void*, void*, size_t);
@@ -7921,6 +7925,7 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipStreamSynchronize, "hipStreamSynchronize");
     CAJ_HBIND_OPT(hipStreamDestroy, "hipStreamDestroy");
     CAJ_HBIND_OPT(hipMemcpyHtoDAsync, "hipMemcpyHtoDAsync");
+    CAJ_HBIND_OPT(hipModuleGetGlobal, "hipModuleGetGlobal");  // spec-override set
     CAJ_HBIND_OPT(hipMemcpyDtoHAsync, "hipMemcpyDtoHAsync");
     CAJ_HBIND_OPT(hipEventCreate, "hipEventCreate");
     CAJ_HBIND_OPT(hipEventRecord, "hipEventRecord");
@@ -12553,7 +12558,8 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    int32_t gridX, int32_t gridY, int32_t gridZ,
                                    int32_t blockX, int32_t blockY, int32_t blockZ,
                                    uint32_t sharedBytes, void* argv,
-                                   int64_t streamHandle) {
+                                   int64_t streamHandle,
+                                   int32_t specCount, const int32_t* specValues) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -12568,6 +12574,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         }
     }
     void* fn = e ? e->function : NULL;
+    void* mod = e ? e->module : NULL;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
     if (!fn) {
         fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
@@ -12602,6 +12609,28 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     // silent no-op. Make the context current on this thread first, and surface a
     // launch failure instead of discarding the return code.
     if (g_xpu_cuda.cuCtxSetCurrent) g_xpu_cuda.cuCtxSetCurrent(g_xpu_cuda.ctx);
+    // Host spec-constant override (stage12-spec-override Phase C): set the
+    // module's constant-memory spec globals before launch. The kernel reads
+    // `(slot < count) ? values[slot] : default`, so writing count (0 when no
+    // override, clearing any prior launch's values) suffices; the symbols are
+    // absent for kernels without spec constants → getGlobal fails → skip (the
+    // kernel then has no spec read anyway). UNVERIFIED on-device (no NV HW here);
+    // safe-by-default — a failed/absent copy leaves the zero-init default.
+    if (mod && g_xpu_cuda.cuModuleGetGlobal && g_xpu_cuda.cuMemcpyHtoD) {
+        cajeta_cudeviceptr g; size_t gbytes;
+        int32_t count = (specCount > 0 && specValues) ? specCount : 0;
+        if (count > 60) count = 60;
+        if (g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod,
+                "__cajeta_xpu_spec_count") == 0 && gbytes >= sizeof(int32_t)) {
+            g_xpu_cuda.cuMemcpyHtoD(g, &count, sizeof(int32_t));
+            if (count > 0 && g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod,
+                    "__cajeta_xpu_spec_values") == 0) {
+                size_t want = (size_t) count * sizeof(int32_t);
+                g_xpu_cuda.cuMemcpyHtoD(g, specValues,
+                                        want <= gbytes ? want : gbytes);
+            }
+        }
+    }
     // 3-D grid/block; default stream; kernelParams = the CUDA argv the launch
     // site marshalled (pointers to each arg value). sharedBytes sizes the
     // kernel's dynamic (extern) shared memory; 0 for static-only kernels.
@@ -12626,7 +12655,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
                                   uint32_t sharedBytes, void* argvv,
-                                  int64_t streamHandle) {
+                                  int64_t streamHandle,
+                                  int32_t specCount, const int32_t* specValues) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -12641,7 +12671,27 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
         }
     }
     void* fn = e ? e->function : NULL;
+    void* mod = e ? e->module : NULL;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
+    // Host spec-constant override (Phase C): set the module's constant-memory
+    // spec globals before launch (count 0 = no override, clears prior values;
+    // absent symbol → no spec constants → skip). UNVERIFIED on-device (AMD
+    // in-process JIT is comgr-blocked here); safe-by-default (zero-init = default).
+    if (mod && g_xpu_hip.hipModuleGetGlobal && g_xpu_hip.hipMemcpyHtoD) {
+        void* g; size_t gbytes;
+        int32_t count = (specCount > 0 && specValues) ? specCount : 0;
+        if (count > 60) count = 60;
+        if (g_xpu_hip.hipModuleGetGlobal(&g, &gbytes, mod,
+                "__cajeta_xpu_spec_count") == 0 && gbytes >= sizeof(int32_t)) {
+            g_xpu_hip.hipMemcpyHtoD(g, &count, sizeof(int32_t));
+            if (count > 0 && g_xpu_hip.hipModuleGetGlobal(&g, &gbytes, mod,
+                    "__cajeta_xpu_spec_values") == 0) {
+                size_t want = (size_t) count * sizeof(int32_t);
+                g_xpu_hip.hipMemcpyHtoD(g, specValues,
+                                        want <= gbytes ? want : gbytes);
+            }
+        }
+    }
     if (!fn) {
         fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
                 kernelName);
@@ -12921,22 +12971,6 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     for (int i = 0; i < nsamp; ++i) cajeta_xpu_vk_destroy_sampler(samplers[i]);
 }
 
-// stage12-spec-override: a host spec-constant override is honored on Vulkan
-// (genuine pipeline-time OpSpecConstant) and CPU (runtime read). On the CUDA/HIP
-// device backends the per-launch device compile that would bake the override
-// is not yet wired (Phase C — those backends still read the compile-time
-// default). Warn ONCE per process so the divergence is never silent.
-static void caj_xpu_spec_override_unhonored_notice(int backend) {
-    static int warned = 0;
-    if (warned) return;
-    warned = 1;
-    fprintf(stderr,
-            "cajeta.xpu: host spec-constant override (spec:[...]) is honored on "
-            "Vulkan only for now; backend %s reads the compile-time default "
-            "(per-value variant specialization is a follow-up).\n",
-            cajeta_xpu_backend_name(backend));
-}
-
 // Dispatch a launch to whatever backend is active, on its current device.
 // `specCount`/`specValues` are host overrides for the kernel's user spec
 // constants (NULL/0 = none); see __cajeta_xpu_launch_v3.
@@ -12950,17 +12984,16 @@ static void caj_xpu_dispatch(const char* kernelName,
     switch (backend) {
         case CAJ_XPU_CUDA:
             // streamHandle (0 = default stream) orders this launch with the
-            // async copies queued on the same stream.
-            if (specCount > 0) caj_xpu_spec_override_unhonored_notice(backend);
+            // async copies queued on the same stream. Spec override → the
+            // module's constant-memory globals (Phase C).
             cajeta_xpu_launch_cuda(kernelName, gridX, gridY, gridZ,
                                    blockX, blockY, blockZ, sharedBytes, argv,
-                                   streamHandle);
+                                   streamHandle, specCount, specValues);
             return;
         case CAJ_XPU_HIP:
-            if (specCount > 0) caj_xpu_spec_override_unhonored_notice(backend);
             cajeta_xpu_launch_hip(kernelName, gridX, gridY, gridZ,
                                   blockX, blockY, blockZ, sharedBytes, argv,
-                                  streamHandle);
+                                  streamHandle, specCount, specValues);
             return;
         case CAJ_XPU_VULKAN:
             // Vulkan v1 submits on its own queue; per-stream ordering is a
