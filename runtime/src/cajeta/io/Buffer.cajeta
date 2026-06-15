@@ -1,0 +1,47 @@
+package cajeta.io;
+
+/**
+ * A byte buffer with typed, reinterpreting access. `T` is the buffer's natural
+ * element type; the `load*` family reads any width at an arbitrary **byte**
+ * offset (unaligned) — the SWAR / serialization workhorse a plain `int8[]`
+ * can't express. Backed by an owned `int8[]`.
+ *
+ * v1 ships the byte/word **read** core (`byteAt`, `loadU64`). Strided element
+ * access (`at`/`set`), `reinterpret<U>`, the `store*` family, and explicit
+ * little-/big-endian variants land as scenarios demand them (the GPU-side
+ * device buffer is the separate `cajeta.gpu.core.Buffer<T>`).
+ *
+ * ```cajeta
+ * Buffer<int8> buf = heap Buffer<int8>(#bytes, n);
+ * int64 word = buf.loadU64(off);   // unaligned little-endian 64-bit load
+ * ```
+ */
+public final class Buffer<T> {
+    int8[] data;        // owned backing bytes
+    int64 len;          // valid byte length
+
+    /** Wrap (take ownership of) `data`; `byteLength` is the valid byte count. */
+    public Buffer(#int8[] data, int64 byteLength) {
+        this.data = data;
+        this.len = byteLength;
+    }
+
+    /** Total valid bytes. */
+    public int64 byteCount() {
+        return this.len;
+    }
+
+    /** The byte at `off`. */
+    public int8 byteAt(int64 off) {
+        return this.data[off];
+    }
+
+    /**
+     * Unaligned little-endian 64-bit load at byte offset `off`. The caller must
+     * keep `off` in `[0, byteCount - 8]` (no bounds check — this is the hot
+     * primitive for SWAR scanners). Lowers to a single `load i64, align 1`.
+     */
+    public int64 loadU64(int64 off) {
+        return Cajeta.loadU64(this.data, off);
+    }
+}

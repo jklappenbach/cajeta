@@ -2252,6 +2252,37 @@ namespace cajeta {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_context_free");
                     return builder->CreateCall(fn, {loadValue(0)});
                 }
+                // Low-level memory/bit intrinsics for SWAR-class code
+                // (cajeta.io.Buffer). Pure codegen — no runtime C function.
+                // loadU64(int8[] buf, int64 off): unaligned little-endian 64-bit
+                // load of the array's bytes at byte offset `off`. The array data
+                // lives at header+8 (the count word precedes it — same ABI the
+                // @Native bridge uses). Caller must keep off in [0, count-8].
+                if (ns == "Cajeta" && methodCallName == "loadU64" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* i64Ty = builder->getInt64Ty();
+                    llvm::Value* hdr = loadValue(0);   // array header pointer
+                    llvm::Value* off = loadValue(1);   // i64 byte offset
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "buf_data");
+                    llvm::Value* eltPtr = builder->CreateGEP(
+                        i8Ty, data, off, "buf_word_ptr");
+                    llvm::LoadInst* ld = builder->CreateLoad(i64Ty, eltPtr, "buf_word");
+                    ld->setAlignment(llvm::Align(1));
+                    return ld;
+                }
+                // ctz64(int64 x): count trailing zero bits, 0..64 (x==0 -> 64).
+                // Maps to @llvm.cttz.i64; result truncated to int32.
+                if (ns == "Cajeta" && methodCallName == "ctz64" && parameters.size() == 1) {
+                    auto* lmod = module->getLlvmModule();
+                    auto* i64Ty = builder->getInt64Ty();
+                    llvm::Value* x = loadValue(0);
+                    llvm::Function* cttz = llvm::Intrinsic::getOrInsertDeclaration(
+                        lmod, llvm::Intrinsic::cttz, {i64Ty});
+                    llvm::Value* r = builder->CreateCall(
+                        cttz, {x, builder->getFalse()}, "ctz");
+                    return builder->CreateTrunc(r, builder->getInt32Ty(), "ctz32");
+                }
                 // Condition-variable intrinsics (R7-B). Fiber-aware, paired
                 // with a lock handle; `Mutex<T>.withLockWhen` builds on them.
                 // condvarWait(cv, lock) atomically releases `lock`, parks the
