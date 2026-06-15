@@ -778,6 +778,29 @@ codec as a first-class built-in):**
 Reproduce: `bench/src/bench/JsonBench.cajeta` (Cajeta) and the Jackson/Gson
 harness used to produce the table.
 
+### SIMD scanner — beats Jackson (2026-06)
+
+A simdjson-style scanner in **pure Cajeta** on the built-in `Vector<T,N>`
+(`docs/stdlib/Simd.md`): 16-byte block load (`Cajeta.vload16`), compare→movemask
+(`Vector.eqMask`), an integer prefix-XOR string mask (escaped/in-string `,{}[]`
+correctly excluded), and `popcount64`. The reader's token count is exactly
+`#brackets + #strings + #scalars`, each a popcount of a stage-1 mask.
+
+Same machine, full tokenize, MB/s — **token counts identical to the scalar
+reader** (twitter 29 573 / citm 85 035 / canada 223 236):
+
+| file | **Cajeta SIMD** | Jackson | **vs Jackson** |
+|---|---|---|---|
+| twitter | **~3265** | ~1551 | **2.1×** |
+| citm_catalog | **~3181** | ~1837 | **1.7×** |
+| canada | **~3463** | ~811 | **4.3×** |
+
+From ~0.45–0.64× (scalar/SWAR) to **1.7–4.3× Jackson** — native SIMD is the lever
+the JVM can't pull. Stage-1 classification alone runs 8–11 GB/s. Harness:
+`bench/src/bench/TokCount.cajeta` (token count + speed), `Stage1.cajeta` (engine).
+The typed-token emitter (KEY/STRING/NUMBER/…) over the same masks is the API
+follow-on. `tableLookup`(pshufb)/`clmul`/256-bit widen the margin further.
+
 ### v2 — future directions
 
 - **SIMD structural scan.** simdjson-style branchless quote/escape
