@@ -1,0 +1,108 @@
+package cajeta.concurrent;
+
+/**
+ * Ambient per-request state — docs/stdlib/FiberLocal.md. A fiber-keyed,
+ * scope-restored binding: the sound replacement for a thread-pool
+ * `ThreadLocal`/MDC. Carriers are pooled OS threads (a `__thread` slot would
+ * alias across the many fibers a carrier hosts), but fibers are single-use, so
+ * a per-fiber binding has naturally request-scoped lifetime and cannot leak
+ * into a later, unrelated request.
+ *
+ * The binding follows a request across the two execution shapes:
+ *  - **single fiber** owns the request end-to-end — `where` + `get`;
+ *  - **structured fan-out** — a child `spawn`ed inside a `scope` inherits the
+ *    binding automatically (the runtime snapshots the spawner's chain).
+ * For an unstructured handoff (channel → worker pool, `detach`), carry a
+ * `FiberContext` snapshot explicitly — see that class.
+ *
+ * **`T` may be any type** — reference or primitive. The binding value is boxed
+ * in a `FiberLocalBox<T>` before being handed to the per-fiber runtime store and
+ * read back through that box's typed `value` field, so a primitive `T` (e.g. an
+ * `int64` correlation id) round-trips correctly — the typed-slot approach
+ * `Optional<T>` uses, not a bitcast out of a raw pointer.
+ *
+ * ## Usage
+ * ```cajeta
+ * static FiberLocal<String> REQUEST_ID = heap FiberLocal<String>();
+ *
+ * REQUEST_ID.where(r.id, () -> {
+ *     handle(r);                       // anything in here sees REQUEST_ID.get()
+ * });                                  // binding restored on return OR throw
+ *
+ * // deep on the call path, no parameter threaded:
+ * String rid = REQUEST_ID.orElse("-");
+ * ```
+ */
+public class FiberLocal<T> {
+    // The binding value is boxed in a FiberLocalBox<T> before being handed to the
+    // per-fiber runtime store, and read back through that box's typed `value`
+    // field — so a value/primitive T round-trips correctly (the typed-slot
+    // approach Optional<T> uses) rather than being bitcast out of a raw pointer.
+    //
+    // Identity-only key: bindings live on the fiber, keyed by this object's
+    // address, so the class itself carries no per-instance binding state. The
+    // `marker` field exists only to give the object a non-empty body; it is
+    // never read. (A process-wide default value is a post-v1 feature — an owned
+    // reference field that is legitimately null trips the drop chain.)
+    int64 marker;
+
+    /** A FiberLocal key. `get()` on an unbound fiber throws; use `orElse`/`isBound`. */
+    public FiberLocal() {
+        this.marker = 0;
+    }
+
+    /**
+     * Bind `value` for the dynamic extent of `body`, restoring the prior
+     * binding when `body` returns OR throws. This is the recommended form:
+     * cleanup is structural (it rides the drop chain, like `Mutex.withLock`),
+     * so a binding can never leak past its scope.
+     *
+     * ```cajeta
+     * ctx.where(requestContext, () -> dispatch(request));
+     * ```
+     */
+    public void where(#T value, () -> void body) {
+        // Box the value (a reference) so the runtime stores a uniform pointer
+        // regardless of T. `box` is owned by this scope and drops — freeing the
+        // box and its value — after the finally pops the binding. The scope's
+        // join guarantees any child fiber that inherited this binding has
+        // finished before `box` drops, so an inherited pointer never dangles.
+        FiberLocalBox<T> box = heap FiberLocalBox<T>(value);
+        pointer token = Cajeta.fiberLocalPush(this, box);
+        try {
+            body();
+        } finally {
+            Cajeta.fiberLocalPop(token);
+        }
+    }
+
+    /** The current binding. Throws when unbound (use `orElse`/`isBound` to avoid). */
+    public T get() {
+        // Bind the intrinsic result to a typed local before use — the Cajeta.*
+        // intrinsic-call expressions carry no resolved Cajeta type, so using one
+        // inline (in a comparison) is unsupported. `p` stays `pointer` (no drop);
+        // the box is read through a cast so no owning local aliases it.
+        int32 bound = Cajeta.fiberLocalIsBound(this);
+        if (bound != 0) {
+            pointer p = Cajeta.fiberLocalGet(this);
+            return ((FiberLocalBox<T>) p).value;
+        }
+        throw 1;
+    }
+
+    /** The current binding, or `fallback` when unbound. Never throws. */
+    public T orElse(T fallback) {
+        int32 bound = Cajeta.fiberLocalIsBound(this);
+        if (bound != 0) {
+            pointer p = Cajeta.fiberLocalGet(this);
+            return ((FiberLocalBox<T>) p).value;
+        }
+        return fallback;
+    }
+
+    /** Whether a binding is in effect on the current fiber (ignores any default). */
+    public boolean isBound() {
+        int32 bound = Cajeta.fiberLocalIsBound(this);
+        return bound != 0;
+    }
+}

@@ -1,0 +1,59 @@
+package cajeta.concurrent;
+
+/**
+ * An immutable snapshot of the current fiber's `FiberLocal` bindings, for an
+ * explicit handoff across an unstructured boundary — a request pushed onto a
+ * `Channel` for a worker pool, or `detach`ed. See docs/stdlib/FiberLocal.md § 3
+ * (Layer 3).
+ *
+ * The ambient binding chain deliberately does NOT auto-follow such a boundary
+ * (a worker fiber serves many requests over its life, and the spawner's borrows
+ * may already be gone). Instead the producer `capture()`s a snapshot and
+ * `#`-transfers it with the work item; the consumer `run()`s under it, which
+ * reinstalls the bindings for one job and restores the worker's prior state
+ * afterward — so request N's context never bleeds into request N+1.
+ *
+ * ## Usage
+ * ```cajeta
+ * // producer (on the request's fiber):
+ * FiberContext ctx = FiberContext.capture();
+ * channel.send(Job(payload, #ctx));
+ *
+ * // worker fiber:
+ * Optional<Job> j = channel.receive();
+ * j.get().ctx.run(() -> process(j.get().payload));   // sees the producer's bindings
+ * ```
+ */
+public class FiberContext {
+    // Opaque handle to a deep-copied binding chain owned by this object; the
+    // runtime frees it when ~FiberContext fires.
+    pointer snapshot;
+
+    FiberContext(pointer snapshot) {
+        this.snapshot = snapshot;
+    }
+
+    /** Snapshot the calling fiber's current bindings. */
+    public static #FiberContext capture() {
+        pointer snap = Cajeta.fiberContextCapture();
+        return heap FiberContext(snap);
+    }
+
+    /**
+     * Install this snapshot for the dynamic extent of `body` (layered on top of
+     * the current fiber's bindings), restoring the prior state on return OR
+     * throw.
+     */
+    public void run(() -> void body) {
+        pointer token = Cajeta.fiberContextInstall(this.snapshot);
+        try {
+            body();
+        } finally {
+            Cajeta.fiberLocalPop(token);
+        }
+    }
+
+    public ~FiberContext() {
+        Cajeta.fiberContextFree(this.snapshot);
+    }
+}

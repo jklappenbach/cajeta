@@ -2218,6 +2218,40 @@ namespace cajeta {
                     llvm::Value* h = loadValue(0);
                     return builder->CreateCall(fn, {h});
                 }
+                // FiberLocal intrinsics (docs/stdlib/FiberLocal.md). Ambient
+                // per-request state, fiber-keyed and scope-restored. The key is a
+                // FiberLocal<T> object identity; values are reference-typed (a
+                // ptr), so the surface restricts T to a reference type in v1. All
+                // pass through as opaque ptr (object<->pointer convert freely).
+                // push/get/capture/install return a ptr; pop/free return void.
+                if (ns == "Cajeta" && methodCallName == "fiberLocalPush" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_local_push");
+                    return builder->CreateCall(fn, {loadValue(0), loadValue(1)});
+                }
+                if (ns == "Cajeta" && methodCallName == "fiberLocalPop" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_local_pop");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "fiberLocalGet" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_local_get");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "fiberLocalIsBound" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_local_is_bound");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "fiberContextCapture" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_context_capture");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "fiberContextInstall" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_context_install");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "fiberContextFree" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_context_free");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
                 // Condition-variable intrinsics (R7-B). Fiber-aware, paired
                 // with a lock handle; `Mutex<T>.withLockWhen` builds on them.
                 // condvarWait(cv, lock) atomically releases `lock`, parks the

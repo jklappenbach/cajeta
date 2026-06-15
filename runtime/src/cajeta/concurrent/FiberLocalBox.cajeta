@@ -1,0 +1,21 @@
+package cajeta.concurrent;
+
+/**
+ * Internal holder that boxes a `FiberLocal``<T>` binding value into a uniform
+ * reference representation. The per-fiber runtime store keys bindings to opaque
+ * pointers; wrapping the value in this reference box is what lets a
+ * `FiberLocal``<T>` bind **any** `T` — primitive or reference — instead of only
+ * references. `FiberLocal.where` allocates one per binding and stores its
+ * pointer; `FiberLocal.get` reads the value back through the typed `value` field
+ * (the same typed-slot approach `Optional``<T>` uses), so a value/primitive `T`
+ * round-trips correctly rather than being bitcast out of a raw pointer.
+ *
+ * Not part of the public surface — an implementation detail of `FiberLocal`.
+ */
+public class FiberLocalBox<T> {
+    public T value;
+
+    public FiberLocalBox(#T value) {
+        this.value = value;
+    }
+}

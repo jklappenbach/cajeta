@@ -1040,6 +1040,11 @@ struct cajeta_scope_frame {
 struct cajeta_drop_entry;
 struct cajeta_exception_frame;
 
+// FiberLocal binding frame (full definition in the § FiberLocal section near
+// the drop chain). Forward-declared here so the fiber control block can hold a
+// per-fiber binding-stack head, in the same family as scope_top/drop_top/exc_top.
+struct cajeta_fiber_local;
+
 struct cajeta_fiber {
     ucontext_t ctx;
     void* stack;
@@ -1060,6 +1065,12 @@ struct cajeta_fiber {
     // based on whether __cajeta_current_fiber is set.
     struct cajeta_drop_entry* drop_top;
     struct cajeta_exception_frame* exc_top;
+    // FiberLocal binding stack head (docs/stdlib/FiberLocal.md). Same per-fiber
+    // rationale as scope_top/drop_top/exc_top: a __thread slot would alias across
+    // the many fibers a carrier hosts. A fresh fiber inherits a deep-copied
+    // snapshot of its spawner's chain (set in __cajeta_task_run); the chain is
+    // freed at fiber teardown. The main thread uses __cajeta_main_fl_top below.
+    struct cajeta_fiber_local* fl_top;
     // R5-C: cancellation marker. When non-NULL, the fiber's next
     // __cajeta_task_wait resume will throw this Throwable* instead of
     // returning normally. Set by __cajeta_fiber_cancel from scope's
@@ -1093,6 +1104,12 @@ struct cajeta_fiber {
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  __cajeta_task_queue_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t  __cajeta_task_done_cond  = PTHREAD_COND_INITIALIZER;
+
+// FiberLocal helpers used by the fiber lifecycle below but defined in the
+// § FiberLocal section (near the drop chain). Forward-declared so __cajeta_task_run
+// can inherit the spawner's binding snapshot and the teardown path can free it.
+static struct cajeta_fiber_local* __cajeta_fiber_local_snapshot_current(void);
+static void __cajeta_fiber_local_free_chain(struct cajeta_fiber_local* head);
 
 // R8.2 — per-carrier Chase-Lev work-stealing deque, replacing the prior
 // linked-list ready queue. Single-producer (the owning carrier — i.e. the
@@ -1623,6 +1640,10 @@ static void* __cajeta_carrier_loop(void* arg) {
             // to avoid leaking one OS fiber + its stack per completed task.
             if (f->ctx.fiber) DeleteFiber(f->ctx.fiber);
 #endif
+            // Free any FiberLocal frames still linked (inherited snapshot copies,
+            // plus any unbalanced set/push the body left — where() pops its own).
+            __cajeta_fiber_local_free_chain(f->fl_top);
+            f->fl_top = NULL;
             __cajeta_fiber_stack_free(f->stack);
             free(f);
         }
@@ -1752,6 +1773,14 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     f->cancel_with = NULL;
     f->slot_ptr = fiber_slot;   // C2: so the carrier can null it before free
     f->dbg_top = NULL;
+    // Inherit-on-spawn (FiberLocal Layer 2): a deep-copied snapshot of the
+    // SPAWNER's binding chain. __cajeta_task_run runs on the spawner's context,
+    // so __cajeta_current_fiber (read inside snapshot_current) is the spawner
+    // — or NULL on the main thread, snapshotting the main __thread chain. A
+    // deep copy (not a shared pointer) keeps the child's lifetime independent of
+    // the spawner's pop order, which matters for detach as well as structured
+    // spawn; child where()s push fresh frames, never mutating an inherited one.
+    f->fl_top = __cajeta_fiber_local_snapshot_current();
     f->home_carrier = -1;   // assigned on first dispatch (see carrier_loop)
     if (fiber_slot) *fiber_slot = f;
 
@@ -3186,6 +3215,139 @@ static struct cajeta_drop_entry** __cajeta_drop_top_ptr(void) {
         return &__cajeta_current_fiber->drop_top;
     }
     return &__cajeta_main_drop_top;
+}
+
+// --- FiberLocal: ambient per-request state (docs/stdlib/FiberLocal.md) -------
+//
+// A fiber-keyed, scope-restored binding stack — the sound replacement for a
+// thread-pool ThreadLocal (fibers are single-use, so a binding cannot leak into
+// a later unrelated request; carriers are pooled, so a __thread slot would alias
+// across the fibers a carrier hosts — hence per-fiber storage, like the drop /
+// exception / scope chains above). Bindings are keyed by the FiberLocal<T>
+// object's identity (an opaque `void* key`); values are reference-typed (a
+// `void*`), which is why the surface restricts T to a reference type in v1.
+//
+// Frames are immutable once linked; a push prepends, a pop unlinks+frees newest-
+// first down to a restore token. where()/FiberContext.run() bracket push/pop via
+// the language's try/finally so cleanup fires on the normal AND the throw edge.
+
+struct cajeta_fiber_local {
+    void* key;                        // FiberLocal<T> instance identity
+    void* value;                      // T (reference payload)
+    struct cajeta_fiber_local* prev;  // next-oldest binding
+};
+
+// Main-thread binding head — mirrors __cajeta_main_drop_top. A carrier-hosted
+// fiber uses its own cajeta_fiber.fl_top; __cajeta_fl_top_ptr picks between them.
+static __thread struct cajeta_fiber_local* __cajeta_main_fl_top = NULL;
+
+static struct cajeta_fiber_local** __cajeta_fl_top_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->fl_top;
+    }
+    return &__cajeta_main_fl_top;
+}
+
+// Deep-copy a binding chain, linking the deepest copied frame onto `base`
+// (NULL for a standalone snapshot). Recursion depth == binding count, which is
+// tiny (a handful per request); newest-first order is preserved.
+static struct cajeta_fiber_local* __cajeta_fiber_local_copy_onto(
+        struct cajeta_fiber_local* head, struct cajeta_fiber_local* base) {
+    if (!head) return base;
+    struct cajeta_fiber_local* prev_copy =
+        __cajeta_fiber_local_copy_onto(head->prev, base);
+    struct cajeta_fiber_local* c = malloc(sizeof(*c));
+    if (!c) {
+        fprintf(stderr, "cajeta: fiber-local copy malloc failed\n");
+        abort();
+    }
+    c->key = head->key;
+    c->value = head->value;
+    c->prev = prev_copy;
+    return c;
+}
+
+// Free a chain newest-first. NULL-safe.
+static void __cajeta_fiber_local_free_chain(struct cajeta_fiber_local* head) {
+    while (head) {
+        struct cajeta_fiber_local* prev = head->prev;
+        free(head);
+        head = prev;
+    }
+}
+
+// Snapshot the CURRENT (spawner's) chain as an independent deep copy — used by
+// __cajeta_task_run for inherit-on-spawn.
+static struct cajeta_fiber_local* __cajeta_fiber_local_snapshot_current(void) {
+    return __cajeta_fiber_local_copy_onto(*__cajeta_fl_top_ptr(), NULL);
+}
+
+// --- intrinsics (wrapped by cajeta.concurrent.FiberLocal / FiberContext) -----
+
+// Push a binding; returns the prior head as an opaque restore token.
+void* __cajeta_fiber_local_push(void* key, void* value) {
+    struct cajeta_fiber_local** head = __cajeta_fl_top_ptr();
+    struct cajeta_fiber_local* f = malloc(sizeof(*f));
+    if (!f) {
+        fprintf(stderr, "cajeta: fiber-local push malloc failed\n");
+        abort();
+    }
+    f->key = key;
+    f->value = value;
+    f->prev = *head;
+    void* token = (void*) *head;
+    *head = f;
+    return token;
+}
+
+// Restore the head to `token`, freeing every frame newer than it.
+void __cajeta_fiber_local_pop(void* token) {
+    struct cajeta_fiber_local** head = __cajeta_fl_top_ptr();
+    struct cajeta_fiber_local* restore = (struct cajeta_fiber_local*) token;
+    struct cajeta_fiber_local* cur = *head;
+    while (cur != restore) {
+        struct cajeta_fiber_local* prev = cur->prev;
+        free(cur);
+        cur = prev;
+    }
+    *head = restore;
+}
+
+// Current binding for `key`, newest-first; NULL when unbound (the surface uses
+// __cajeta_fiber_local_is_bound to distinguish "bound to null" from "unbound").
+void* __cajeta_fiber_local_get(void* key) {
+    for (struct cajeta_fiber_local* c = *__cajeta_fl_top_ptr(); c; c = c->prev) {
+        if (c->key == key) return c->value;
+    }
+    return NULL;
+}
+
+int32_t __cajeta_fiber_local_is_bound(void* key) {
+    for (struct cajeta_fiber_local* c = *__cajeta_fl_top_ptr(); c; c = c->prev) {
+        if (c->key == key) return 1;
+    }
+    return 0;
+}
+
+// FiberContext: an immutable snapshot of all current bindings, for explicit
+// handoff across an unstructured boundary (channel / detach). capture() deep-
+// copies the chain; install() layers a fresh copy on top of the receiving
+// fiber's head and returns a token to pop back to; free() releases the snapshot
+// when the FiberContext object drops.
+void* __cajeta_fiber_context_capture(void) {
+    return (void*) __cajeta_fiber_local_copy_onto(*__cajeta_fl_top_ptr(), NULL);
+}
+
+void* __cajeta_fiber_context_install(void* snapshot) {
+    struct cajeta_fiber_local** head = __cajeta_fl_top_ptr();
+    void* token = (void*) *head;
+    *head = __cajeta_fiber_local_copy_onto(
+        (struct cajeta_fiber_local*) snapshot, *head);
+    return token;
+}
+
+void __cajeta_fiber_context_free(void* snapshot) {
+    __cajeta_fiber_local_free_chain((struct cajeta_fiber_local*) snapshot);
 }
 
 // Observability for tests: bumped every time a drop function actually fires
