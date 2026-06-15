@@ -15,9 +15,34 @@ Status: **shipped (v1 scalar baseline)**. The pull tokenizer
 compile-time synthesizer all exist under
 [`runtime/src/cajeta/codec/json/`](../../../runtime/src/cajeta/codec/json/)
 and are covered by tests (`test/parser/Json*Tests.cpp`). The forward
-items called out below (SIMD scan, options structs, a `JsonNumber`
-wrapper, escape *decoding*, relaxed mode) are **planned**, not built —
-each is flagged inline. Features.md S-1101 / S-1102.
+items called out below (options structs, a `JsonNumber` wrapper, escape
+*decoding*, relaxed mode) are **planned**, not built — each is flagged
+inline. Features.md S-1101 / S-1102.
+
+## Performance at a glance
+
+Measured on one machine (AMD Ryzen AI Max+ 395), MB/s, against Jackson
+(Java's reference JSON library) on the standard simdjson corpus. The
+SIMD scanner is pure Cajeta on the built-in `Vector<T,N>` (no `@Native`
+C) — see `docs/stdlib/Simd.md` and the harness in `bench/`.
+
+| workload | twitter | citm | canada | vs Jackson |
+|---|---|---|---|---|
+| **Cajeta — full typed tokenize** (KEY/STRING/NUMBER/…) | **~3100** | **~4250** | **~3100** | **2.0× / 2.3× / 3.8×** |
+| Cajeta — token count (stage-1 popcounts) | ~3200 | ~3400 | ~3450 | 2.1× / 1.9× / 4.3× |
+| Cajeta — stage-1 structural scan (classify only) | ~8000 | ~10900 | ~8200 | — (scan ceiling) |
+| Jackson — full tokenize (reference) | 1551 | 1837 | 811 | 1.0× |
+| Cajeta — scalar baseline (v1, pre-SIMD) | ~345 | ~395 | ~230 | 0.22–0.28× |
+
+The typed tokenizer emits the **exact** token stream of the pull
+`JsonReader` (validated token-for-token and per-type counts against the
+reader on all three datasets). The journey from the scalar baseline to
+here was three levers: removing a per-call scope-frame `malloc`
+(`--lazy-scope`, ~2×), porting the structural scan to SIMD on
+`Vector<T,N>` (the bulk of it), and keeping all hot **scanner state in
+registers** rather than a heap object (~2× on the typed walk — output
+stays heap, state goes to the stack). Net: **~0.25× → 2.0–3.8× Jackson**,
+a 10–15× swing.
 
 ## Goals, in priority order
 
@@ -28,8 +53,10 @@ each is flagged inline. Features.md S-1101 / S-1102.
    talks field-by-field to the user's struct. The library must be
    competitive with hand-tuned scalar JSON parsers in C and Java (rough
    target: ≥ 500 MB/s for the pull tokenizer on simple shapes on a
-   modern x86_64 core); SIMD-accelerated structural scanning is a
-   future direction, not a v1 dependency.
+   modern x86_64 core — long since cleared; see *Performance at a
+   glance* above). SIMD-accelerated structural scanning, once a future
+   direction, is now built (pure Cajeta on `Vector<T,N>`) and beats
+   Jackson 2–3.8×.
 2. **RFC 8259 conformance.** Strict by default — invalid input fails
    loudly. A `relaxed=true` reader option allows trailing commas and
    `//` / `/* */` comments for hand-written configs.
@@ -295,6 +322,51 @@ once.
 
 ---
 
+## Tier 2 — SAX push parser (`JsonSax` / `JsonHandler`)
+
+The push counterpart to the pull reader: subclass `JsonHandler`,
+override only the events you care about (every method is a no-op by
+default), and hand it to `JsonSax.parse`. The parser drives the document
+once and calls your events in document order — memory is O(nesting
+depth), independent of document size.
+
+```cajeta
+public class JsonHandler {
+    public void onStartObject();           public void onEndObject();
+    public void onStartArray();            public void onEndArray();
+    public void onKey(JsonReader r);       // pull: r.currentString()
+    public void onString(JsonReader r);    // pull: r.currentString()
+    public void onNumber(JsonReader r);    // pull: r.currentNumberAsInt64() / ...AsFloat64()
+    public void onBoolean(boolean v);      public void onNull();
+}
+public final class JsonSax {
+    public static void parse(int8[] bytes, int64 byteCount, JsonHandler h);
+}
+```
+
+Values are delivered **lazily** — the value events receive the
+`JsonReader` positioned at the token, so a handler pays to decode only
+what it pulls (skipping a value costs nothing). `BOOLEAN`/`NULL` carry no
+span, so the boolean is passed directly and `onNull` takes no argument.
+
+```cajeta
+public class KeyCounter extends JsonHandler {
+    public int64 keys;
+    public KeyCounter() { this.keys = 0; }
+    public void onKey(JsonReader r) { this.keys = this.keys + 1; }
+}
+KeyCounter c = heap KeyCounter();
+JsonSax.parse(bytes, length, c);     // c.keys == number of object keys
+```
+
+`JsonSax` is a thin driver over `JsonReader`, so push and pull emit the
+identical token stream; the SIMD scanner (*Performance at a glance*) is a
+drop-in speed upgrade for the driver loop. Use SAX when a callback shape
+fits the consumer; use the pull reader when you want to navigate (skip
+subtrees, peek) yourself.
+
+---
+
 ## Tier 2 — pull writer
 
 ```cajeta
@@ -360,6 +432,32 @@ w.beginObject()
  .endObject();
 #int8[] out = w.toBytes();
 ```
+
+### JSON Lines (`JsonLinesWriter`) — newline-delimited records
+
+For `.jsonl` output (one JSON value per line — the structured-logging
+wire format), `JsonLinesWriter` wraps a `FileWriter` sink and a reused
+`JsonWriter`. It exposes the same fluent build API; `endLine` commits the
+current record (appends `\n`, streams the line to the sink) and resets
+for the next. The internal buffer is reused across every record — **no
+per-line allocation**, and each record is a single `write`.
+
+```cajeta
+JsonLinesWriter jl = heap JsonLinesWriter(fileWriter);
+jl.beginObject()
+    .key("level").writeString("INFO")
+    .key("msg").writeString("started")
+    .key("ts").writeNumber(epochMillis)
+  .endObject()
+  .endLine();          // emits {"level":"INFO","msg":"started","ts":...}\n
+jl.flush();
+```
+
+The same zero-copy path is available directly on `JsonWriter`:
+`writeTo(FileWriter)` streams the encoded document to a sink and resets
+(no `toBytes` copy); `writeLineTo(FileWriter)` does the same with a
+trailing newline. Reach for these on hot paths where `toBytes`' per-call
+`int8[]` copy would dominate.
 
 ---
 
