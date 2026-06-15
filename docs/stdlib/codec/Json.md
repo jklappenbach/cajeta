@@ -729,6 +729,55 @@ state after a throw is undefined; discard the reader.
   parser for the same struct.
 - Writer: ≥ 800 MB/s compact output; pretty mode ≥ 200 MB/s.
 
+### v1 — measured (streaming tokenize, 2026-06)
+
+First same-machine baseline against the canonical
+[nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark) corpus
+(`twitter` / `citm_catalog` / `canada`). Workload is **streaming tokenization**:
+pull `JsonReader.next()` to `END`, counting tokens, numbers read lazily (no DOM).
+Compared against Jackson and Gson running the equivalent streaming loop
+(`JsonParser.nextToken()` / Gson `JsonReader` walk) on the **same files**. All
+three implementations produced **identical token counts** (twitter 29 573, citm
+85 035, canada 223 236) — a correctness cross-check.
+
+- **Machine:** AMD Ryzen AI Max+ 395 (Zen 5), Linux. Single thread.
+- **Cajeta:** `--release` native AOT (no warmup needed); per-iteration fresh
+  read, read-only baseline subtracted to isolate tokenization.
+- **Java:** OpenJDK 25 (Corretto), Jackson 2.18.2 / Gson 2.11.0, JIT warmed
+  (100 iters) then 200 measured; bytes read once, parsed in-memory.
+
+| file | size | **Cajeta** | Jackson | Gson | Cajeta vs Jackson | Cajeta vs Gson |
+|---|---|---|---|---|---|---|
+| twitter | 0.63 MB | **~377 MB/s** | ~1560 | ~485 | 0.24× | 0.78× |
+| citm_catalog | 1.73 MB | **~441 MB/s** | ~1810 | ~915 | 0.24× | 0.48× |
+| canada | 2.25 MB | **~257 MB/s** | ~810 | ~480 | 0.32× | 0.54× |
+
+**Reading:** tokenization is **Gson-class** (within ~2× of a mature, widely-used
+library) and **~3–4× behind Jackson** (best-in-class, byte-level symbol tables +
+structural tricks → the v2 SIMD direction below). For a young hand-written scalar
+tokenizer this is a credible starting point; the `≥ 500 MB/s` target above holds
+only for the simplest single-level integer/ASCII shapes, not the structure- and
+number-dense real corpus.
+
+**Gaps that outrank speed (found while benchmarking — fix before treating the
+codec as a first-class built-in):**
+
+1. **No float parsing in the value tree.** `Json.parse` → `JsonValue` throws on
+   any fractional/exponent literal, so `canada.json` (100 % floats) and
+   `twitter.json` (44 floats) cannot be DOM-parsed at all (only the lazy
+   streaming reader runs, by not converting). See § "Numbers in the tree" — a
+   float-carrying tree is the prerequisite, not an optimization.
+2. **Tier-3 DOM does not scale.** A full `JsonValue` tree of `citm_catalog`
+   (1.73 MB) exhausts the runtime live-allocation set (65 536) and faults — far
+   too many simultaneously-live nodes. The v2 arena allocator below is a
+   correctness fix here, not just perf.
+3. **`JsonReader` aliases its input.** The ctor stores the borrowed `int8[]`
+   into an owned field, so a buffer cannot be shared across readers without a
+   double-free. Take `#int8[]` (transfer) or hold a non-owning view.
+
+Reproduce: `bench/src/bench/JsonBench.cajeta` (Cajeta) and the Jackson/Gson
+harness used to produce the table.
+
 ### v2 — future directions
 
 - **SIMD structural scan.** simdjson-style branchless quote/escape
