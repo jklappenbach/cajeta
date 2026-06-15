@@ -281,6 +281,31 @@ public:
         return ld;
     }
 
+    // f32 companion of specConstantI32 — a float witness global the post-emit
+    // pass rewrites into a float OpSpecConstant (the rewrite is type-agnostic:
+    // it reuses the witness OpConstant's type, so no SpirvBackend change needed).
+    llvm::Value* specConstantF32(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 unsigned slot, float defaultValue) override {
+        constexpr unsigned kPrivateAS = 10;   // addressSpaceToStorageClass → Private
+        llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
+        unsigned specId = kFirstUserSpecId + slot;
+        std::string gname = "cajeta_spec_" + std::to_string(specId);
+        llvm::GlobalVariable* gv = m.getGlobalVariable(gname,
+                                                       /*AllowInternal=*/true);
+        if (!gv) {
+            gv = new llvm::GlobalVariable(
+                m, f32, /*isConstant=*/false,
+                llvm::GlobalValue::InternalLinkage,
+                llvm::ConstantFP::get(f32, (double) defaultValue),
+                gname, /*InsertBefore=*/nullptr,
+                llvm::GlobalValue::NotThreadLocal, kPrivateAS);
+            gv->setAlignment(llvm::MaybeAlign(4));
+        }
+        llvm::LoadInst* ld = b.CreateLoad(f32, gv, gname + ".v");
+        ld->setVolatile(true);
+        return ld;
+    }
+
     // Vulkan marks the entry via createKernel's attributes, not a CC here.
     void decorateKernel(llvm::Function* /*fn*/, llvm::Module& /*m*/) override {}
 

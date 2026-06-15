@@ -2207,6 +2207,32 @@ private:
                 return target.specConstantI32(builder, mod, (unsigned) slot,
                                               (int32_t) defC->getSExtValue());
             }
+            // Spec.getf(slot, default): an i32 compile-time slot + an f32
+            // compile-time default; returns f32. Same SpecId model as geti.
+            if (name == "getf") {
+                const auto& args = mc->getParameters();
+                if (args.size() != 2)
+                    unsupported("Spec.getf expects (slot, default) — a "
+                                "compile-time i32 slot and f32 default");
+                auto* slotC = llvm::dyn_cast<llvm::ConstantInt>(
+                    lowerExpr(args[0].expression));
+                auto* defC = llvm::dyn_cast<llvm::ConstantFP>(
+                    lowerExpr(args[1].expression));
+                if (!slotC || !defC)
+                    unsupported("Spec.getf(slot, default) needs a compile-time "
+                                "i32 slot and an f32 default constant");
+                uint64_t slot = slotC->getZExtValue();
+                if (slot >= LoweringTarget::kMaxUserSpecConstants)
+                    unsupported("Spec.getf slot must be < " +
+                                std::to_string(
+                                    LoweringTarget::kMaxUserSpecConstants));
+                llvm::APFloat apf = defC->getValueAPF();
+                bool lost = false;
+                apf.convert(llvm::APFloat::IEEEsingle(),
+                            llvm::APFloat::rmNearestTiesToEven, &lost);
+                return target.specConstantF32(builder, mod, (unsigned) slot,
+                                              apf.convertToFloat());
+            }
         } else if (recv == "Wave") {
             const auto& args = mc->getParameters();
             if (name == "width") return target.waveWidth(builder, mod);
@@ -4506,6 +4532,14 @@ llvm::Value* LoweringTarget::specConstantI32(llvm::IRBuilderBase& /*b*/,
     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()),
                                   (uint64_t) (int64_t) defaultValue,
                                   /*isSigned=*/true);
+}
+
+// f32 companion — bakes the float default (CPU/AMD/NVPTX). Vulkan overrides.
+llvm::Value* LoweringTarget::specConstantF32(llvm::IRBuilderBase& /*b*/,
+                                             llvm::Module& m, unsigned /*slot*/,
+                                             float defaultValue) {
+    return llvm::ConstantFP::get(llvm::Type::getFloatTy(m.getContext()),
+                                 (double) defaultValue);
 }
 
 // Default float atomic: a system-scope atomicrmw at `order` (Default → relaxed/
