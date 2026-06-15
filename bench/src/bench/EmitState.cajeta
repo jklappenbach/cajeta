@@ -1,0 +1,17 @@
+package bench;
+// Shared scanner state for the SIMD typed token emitter.
+public final class EmitState {
+    public int64[] counts;     // SO EO SA EA KEY STRING NUMBER BOOL NULL
+    public int8[] frame;       // 1=object 0=array
+    public int8[] expectKey;   // 1=object expecting a key
+    public int32 depth;
+    public boolean inStr; public boolean prevVal; public boolean pend;
+    public int8[] log; public int64 logN; public boolean logOn;
+    public EmitState() {
+        this.counts = heap int64[9];
+        this.frame = heap int8[4096];
+        this.expectKey = heap int8[4096];
+        this.depth = 0; this.inStr = false; this.prevVal = false; this.pend = false;
+        this.log = heap int8[1]; this.logN = 0; this.logOn = false;
+    }
+}
