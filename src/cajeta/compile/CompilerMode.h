@@ -97,6 +97,15 @@ namespace cajeta {
         // ordinary builds and the existing test suite are unaffected.
         bool            debugInfo           = false;
 
+        // ----- experimental perf -----
+        // Skip the per-method prologue __cajeta_scope_enter() (the implicit
+        // function-body structured-concurrency frame). That frame heap-allocs
+        // on EVERY call but is only needed when the body has a bare `spawn`.
+        // PROTOTYPE/UNSAFE: this prototype simply omits it, so it is correct
+        // only for spawn-free code (measures the alloc win; the safe version
+        // lazily pushes the frame at spawn sites). OFF by default.
+        bool            lazyScope           = false;
+
         // ----- reproducible builds -----
         // Accepted from the build tool's reproducibility flag set
         // (Reproducibility.cpp). Stored so the emit stage can honor them where

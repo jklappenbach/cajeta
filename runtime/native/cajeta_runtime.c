@@ -2450,6 +2450,20 @@ void __cajeta_scope_enter(void) {
     *top = f;
 }
 
+// --lazy-scope: push the implicit function-body scope frame on demand. With
+// --lazy-scope the prologue skips the unconditional scope_enter (it heap-allocs
+// on every call but is only needed for a bare `spawn`); a bare spawn calls this
+// before registering so it still has a frame to join against. Idempotent within
+// a method body: once a frame is pushed *top != watermark and this no-ops, and
+// an enclosing `scope { }` (its own frame) likewise makes it a no-op. The frame
+// is waited + popped by __cajeta_scope_exit_to(watermark) on every return path.
+void __cajeta_scope_ensure_at(void* watermark) {
+    struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
+    if ((void*) *top == watermark) {
+        __cajeta_scope_enter();
+    }
+}
+
 // Append a task's (done, exception) pair to the current scope frame.
 // spawn sites call this just before __cajeta_task_run; the corresponding
 // scope_exit waits on done then inspects exception. Doc behavior: spawn

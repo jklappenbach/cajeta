@@ -561,6 +561,13 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         if (opts.liveSetMode.has_value()) {
             compiler->getMutableFlags().liveSet = *opts.liveSetMode;
         }
+        // CAJETA_LAZY_SCOPE=1 runs the whole suite under --lazy-scope so the
+        // safe lazy-frame path (ensure_at at spawn sites) gets full coverage.
+        if (const char* lz = std::getenv("CAJETA_LAZY_SCOPE")) {
+            if (lz[0] == '1' || lz[0] == 'o' || lz[0] == 'O' || lz[0] == 't') {
+                compiler->getMutableFlags().lazyScope = true;
+            }
+        }
 
         // Pre-scan the just-written sources into the archive so forward
         // references across files can create placeholders (rather than throw or

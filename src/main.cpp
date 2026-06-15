@@ -302,6 +302,7 @@ int main(int argc, const char* argv[]) {
           else if (match(arg, "stack-trace-capture", value)) { if (!setBoolFlag("stack-trace-capture", value, compiler.getMutableFlags().stackTraceCapture))  { printUsage(argv[0]); return 1; } }
           else if (match(arg, "diag-hints",          value)) { if (!setBoolFlag("diag-hints",          value, compiler.getMutableFlags().diagHints))          { printUsage(argv[0]); return 1; } }
           else if (match(arg, "profile-counters",    value)) { if (!setBoolFlag("profile-counters",    value, compiler.getMutableFlags().profileCounters))    { printUsage(argv[0]); return 1; } }
+          else if (match(arg, "lazy-scope",          value)) { if (!setBoolFlag("lazy-scope",          value, compiler.getMutableFlags().lazyScope))          { printUsage(argv[0]); return 1; } }
 
         // Output / target.
         else if (match(arg, "emit", value)) {
