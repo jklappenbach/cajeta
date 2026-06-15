@@ -34,11 +34,13 @@ import cajeta.concurrent.FiberLocal;
 static FiberLocal<String> REQUEST_ID = heap FiberLocal<String>();
 
 Response handle(Request r) {
-    return REQUEST_ID.where(r.id, () -> {
-        User u = loadUser(r.userId);      // no ctx parameter
-        Cart c = loadCart(r.userId);
-        return render(u, c);
+    Holder<Response> out = heap Holder<Response>();   // v1 `where` is void — the
+    REQUEST_ID.where(r.id, () -> {                     // body writes its result
+        User u = loadUser(r.userId);                   // into a small heap holder
+        Cart c = loadCart(r.userId);                   // (see the note below).
+        out.value = render(u, c);
     });
+    return out.value;
 }
 
 // Anywhere on the call path, however deep:
@@ -52,9 +54,15 @@ void loadUser(int64 userId) {
 the prior value when the closure returns or throws** — you can't forget to clear
 it. `get()` reads the current binding. That's the whole single-fiber story.
 
-> **Why not `set`?** There is a `REQUEST_ID.set(id)` escape hatch, but prefer
-> `where`: `set` leans on the fiber ending to clean up, while `where` guarantees
-> restore structurally (it rides the drop chain, like `Mutex.withLock`).
+> **`where` returns `void` in v1.** The body's result comes back through a heap
+> holder it writes (above), not as a return value of `where`. A value-returning
+> `<R> where(...)` is designed but deferred (spec § 4); the holder is the idiom
+> until then.
+
+> **Why no `set`?** v1 has **no** imperative `set`/`remove` — only scoped
+> `where`. `set` would lean on the fiber ending to clean up, while `where`
+> guarantees restore structurally (it rides the drop chain, like
+> `Mutex.withLock`), so "forgot to clear it" is unrepresentable.
 
 ## 2. The request fans out — inheritance is automatic
 
@@ -63,7 +71,8 @@ spawned inside a `scope` inherit the binding:
 
 ```cajeta
 Response handle(Request r) {
-    return REQUEST_ID.where(r.id, () -> {
+    Holder<Response> out = heap Holder<Response>();
+    REQUEST_ID.where(r.id, () -> {
         Mutex<Parts> parts = heap Mutex(Parts());
         scope {
             spawn () -> async void {
@@ -75,8 +84,9 @@ Response handle(Request r) {
                 parts.withLock((p) -> p.withCart(c));
             };
         }
-        return render(parts.get());
+        out.value = render(parts.get());
     });
+    return out.value;
 }
 ```
 
@@ -115,7 +125,7 @@ async void worker(Channel<Job> q) {
 
 `FiberContext.capture()` grabs whatever's bound right now; `#`-transferring it
 makes the snapshot a single-owner value that crosses the boundary cleanly; and
-`FiberContext.run(ctx, body)` installs it for just one job and restores the
+`ctx.run(body)` (instance method) installs it for just one job and restores the
 worker's own (empty) state afterward — so request N's id never bleeds into
 request N+1.
 

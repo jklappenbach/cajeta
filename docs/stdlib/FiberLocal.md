@@ -124,10 +124,10 @@ channel.send(WorkItem(payload, #ctx));
 
 // Worker fiber: reinstall the snapshot for the extent of handling this item.
 Optional<WorkItem> item = channel.receive();
-FiberContext.run(item.get().ctx, () -> process(item.get().payload));
+item.get().ctx.run(() -> process(item.get().payload));
 ```
 
-`FiberContext.run(ctx, body)` installs the captured bindings for `body`'s extent
+`ctx.run(body)` (an instance method on the captured snapshot) installs its bindings for `body`'s extent
 and restores the worker's prior (empty) state on exit — so the worker fiber never
 accretes one request's state into the next. The snapshot is transferred with `#`
 (single new owner), matching the `detach`/channel captures rule
@@ -262,8 +262,9 @@ is a single pointer copy at spawn; no per-key work.
 
 ## 8. Lint / diagnostics
 
-- Prefer `where` over `set`: a `set` with no matching fiber-lifetime rationale →
-  advisory lint (`fiber-local-prefer-scoped`).
+- Prefer `where` over `set` *(latent — v1 ships only `where`)*: if `set` ever
+  ships, a `set` with no matching fiber-lifetime rationale → advisory lint
+  (`fiber-local-prefer-scoped`).
 - `get()` on a possibly-unbound key without a default → suggest `orElse`/`isBound`.
 - Capturing a `#`-owned heap binding into a `detach`/channel without
   `FiberContext.capture()` → reuse the existing `CAJETA_ERROR_DETACH_BORROW_CAPTURE`
@@ -274,7 +275,8 @@ is a single pointer copy at spawn; no per-key work.
 - The global `ID → context` registry as a core type (documented pattern only — § 3).
 - Automatic flow across `detach`/channels (explicit `FiberContext` by design).
 - Per-key change listeners / observers.
-- Removal of `set`/`remove` is on the table pending review (§ 4 open question).
+- `set`/`remove` are deliberately not shipped in v1 — scoped `where` only (§ 4);
+  add `set` only if a concrete need appears.
 
 ## 10. The logging tie-in (why this lands first)
 
@@ -285,15 +287,17 @@ structured sub-fibers (Layer 2), reinstalled across a worker handoff (Layer 3).
 `FiberLocal` is therefore a prerequisite, which is why it ships before the
 logging framework returns. See the logging spec's system-log section.
 
-## 11. Open questions for review
+## 11. Design questions — resolved in v1
 
-1. Ship `set`/`remove` in v1, or scoped-only (`where`) first? (Leaning
-   scoped-only + add `set` if a concrete need appears.)
+1. Ship `set`/`remove`, or scoped-only (`where`) first? **Resolved:** scoped-only
+   (`where`); `set`/`remove` deferred (§ 4, § 9). `where` is preferred regardless.
 2. Should `FiberContext.capture()` snapshot **all** keys, or take an explicit key
-   set? (All keys is ergonomic; explicit is leaner and avoids accidentally
-   shipping a heavy binding across a handoff.)
+   set? **Resolved:** snapshots all live bindings (the chain head) — ergonomic and
+   cheap since frames are immutable. An explicit-key form can be added later if a
+   heavy binding ever needs to be kept off a handoff.
 3. `get()` on unbound: throw, or require `Optional`-returning `find()` only?
-   (Leaning: `get()` throws `UnboundFiberLocalException`; `orElse`/`isBound` for
-   the may-be-absent path.)
-4. Token format for the Layer-3 registry escape hatch — leave entirely to user
-   code, or ship a minimal `FiberContext.toToken()/fromToken(map)` helper?
+   **Resolved:** `get()` throws when unbound; `orElse` / `isBound` cover the
+   may-be-absent path (validated by `orElseUnboundReturnsFallback` / `constructUnbound`).
+4. Token format for the Layer-3 registry escape hatch — ship a helper, or leave to
+   user code? **Resolved:** left entirely to user code in v1 (no `toToken`/`fromToken`
+   shipped); revisit if the FFI/string-boundary case becomes common.

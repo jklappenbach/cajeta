@@ -22,8 +22,9 @@ using cajeta_test::CajetaJit;
 namespace {
 
 // Compile a single `test.D` source whose static `run() -> int32` body is
-// supplied. `Box` is a package-private reference payload in the same file (v1
-// FiberLocal<T> requires a reference T; Box carries an int32 for assertions).
+// supplied. `Box` is a package-private reference payload in the same file; it
+// carries an int32 for assertions and doubles as a heap accumulator the lambdas
+// write through (v1 `where` is void, so a body's result comes back via a holder).
 int32_t runI32(const std::string& dBody) {
     std::string src =
         std::string("package test;\n")

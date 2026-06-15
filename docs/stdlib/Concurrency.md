@@ -5,7 +5,7 @@
 - **No data races at compile time.** The ownership/borrow machinery already used for single-threaded memory safety extends to thread boundaries; sharing mutable state without serialization is rejected before codegen.
 - **Structured concurrency by default.** Every spawned task has a scope. Scopes don't return until their children complete or are cancelled. "Fire and forget" requires explicit opt-in.
 - **No SAM interfaces for tasks.** Threading primitives consume function-typed values — there is no `Runnable`, no `Callable`, no `Future.get()` vs `CompletableFuture.then*` schism.
-- **No `synchronized`, no `volatile`, no `ThreadLocal`.** Each of those Java warts comes from sharing mutable state across threads; Cajeta makes that the unusual case, not the default. Locks exist, but only via the RAII-guard primitives below — never as a separate "acquire / forget to release" API.
+- **No `synchronized`, no `volatile`, no `ThreadLocal`.** Each of those Java warts comes from sharing mutable state across threads; Cajeta makes that the unusual case, not the default. Locks exist, but only via the RAII-guard primitives below — never as a separate "acquire / forget to release" API. (For the *legitimate* use of `ThreadLocal` — ambient per-request state — the sound, fiber-keyed replacement is **`FiberLocal`**; see [`FiberLocal.md`](FiberLocal.md).)
 - **No GC, no runtime bootstrap.** Task state machines lower to plain structs allocated on the single-owner heap. The runtime is a small set of C functions (executor + scheduler + sync primitives), in the same style as the existing `__cajeta_*` helpers.
 
 ## Non-goals (v1)
