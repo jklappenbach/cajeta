@@ -24,6 +24,14 @@ TEST(XpuAbiContractTests, abiVersionIsStampedAndQueryable) {
     EXPECT_GE(__cajeta_xpu_abi_version(), 1);
 }
 
+// Stage 11/12 host spec-constant override — the ABI version was bumped to 2 when
+// __cajeta_xpu_launch_v3 (carrying specCount/specValues) landed. Pins the value
+// so a downstream port can require >= 2 to use the spec-override surface.
+TEST(XpuAbiContractTests, abiVersionBumpedForSpecOverride) {
+    EXPECT_EQ(CAJETA_XPU_ABI_VERSION, 2);
+    EXPECT_EQ(__cajeta_xpu_abi_version(), 2);
+}
+
 // Inc 1 — the parameter-kind values are the frozen contract: they must hold
 // their wire numbers exactly (append-only, never renumbered), since the launch
 // site, the runtime, and any external marshaller all encode against them.

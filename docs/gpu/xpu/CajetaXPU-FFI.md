@@ -19,20 +19,26 @@ this document is the prose contract around it.
 ## 1. Versioning
 
 ```c
-#define CAJETA_XPU_ABI_VERSION 1
+#define CAJETA_XPU_ABI_VERSION 2
 int32_t __cajeta_xpu_abi_version(void);   // the value compiled into the runtime
 ```
 
 - An external caller checks `__cajeta_xpu_abi_version()` against the
   `CAJETA_XPU_ABI_VERSION` it compiled with **before** dispatching, to detect a
   runtime built against a different contract.
-- The version is bumped only on a **non-backward-compatible** change.
-- **Two append-only rules keep v1 stable as the surface grows:**
+- The version is bumped when the surface grows in a way a downstream may want to
+  require (e.g. `>= 2` to use the spec-constant override of `__cajeta_xpu_launch_v3`).
+- **Two append-only rules keep older symbols stable as the surface grows:**
   1. A launch needing a new field is added as a **new symbol suffix**
-     (`__cajeta_xpu_launch_v3`, `_v4`, …) — never by repurposing an existing
-     argument. Old symbols keep their exact signature and behavior.
+     (`__cajeta_xpu_launch_v4`, …) — never by repurposing an existing argument.
+     Old symbols keep their exact signature and behavior (`_v2`/`_v1` are now thin
+     shims over `_v3`).
   2. The parameter-kind enum (`CajetaXpuParamKind`) is **append-only**: new kinds
      are added at the end; existing wire values are never renumbered.
+
+**Version history:** v1 — register trio + `_v2` launcher (deviceId). v2 —
+`__cajeta_xpu_launch_v3` adds host **specialization-constant override**
+(`specCount`/`specValues`).
 
 ---
 
@@ -51,6 +57,28 @@ void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
                                          const uint32_t* byteSize);  // [count]
 
 // (c) Launch it.
+void __cajeta_xpu_launch_v3(const char* kernelName,
+                            int32_t gridX, int32_t gridY, int32_t gridZ,
+                            int32_t blockX, int32_t blockY, int32_t blockZ,
+                            uint32_t sharedBytes, void* argv,
+                            int64_t streamHandle, int32_t deviceId,
+                            int32_t specCount, const int32_t* specValues);
+```
+
+**`specCount` / `specValues` — host specialization-constant override.** A kernel's
+`Spec.geti(slot, default)` / `Spec.getf(slot, default)` reads user spec slot `slot`;
+the launch overrides it by supplying `specValues[i]` for slot `i` (`specCount` =
+how many leading slots are given; trailing/unset slots keep their compile-time
+default). Each value is a **raw 4-byte word** (i32 today; f32 reinterpreted, no ABI
+change). `specCount == 0` / `NULL` = no override (every slot reads its default —
+identical to `_v2`). Honored as a genuine pipeline-time `OpSpecConstant` on Vulkan
+and a runtime read on CPU (identical observed results); CUDA/HIP device-baking is a
+follow-up (they read the default + emit a one-time notice meanwhile). The Cajeta
+launch surface is `kernel.launch(s, grid:[…], block:[…], spec:[v0,v1,…])(args)`.
+
+`_v2` is a shim = `_v3(…, specCount=0, specValues=NULL)`:
+
+```c
 void __cajeta_xpu_launch_v2(const char* kernelName,
                             int32_t gridX, int32_t gridY, int32_t gridZ,
                             int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -134,7 +162,7 @@ order**. What each slot points at is determined by that parameter's
 
 | Tier | Symbols | Guarantee |
 |---|---|---|
-| **Frozen FFI** (this doc) | `__cajeta_xpu_abi_version`, `__cajeta_xpu_register_module`, `__cajeta_xpu_register_kernel_params`, `__cajeta_xpu_launch_v2`, `__cajeta_xpu_launch`, `CajetaXpuParamKind`, `CAJETA_XPU_ABI_VERSION` | Stable under the §1 append-only rules. Downstream may depend on these directly. |
+| **Frozen FFI** (this doc) | `__cajeta_xpu_abi_version`, `__cajeta_xpu_register_module`, `__cajeta_xpu_register_kernel_params`, `__cajeta_xpu_launch_v3`, `__cajeta_xpu_launch_v2`, `__cajeta_xpu_launch`, `CajetaXpuParamKind`, `CAJETA_XPU_ABI_VERSION` | Stable under the §1 append-only rules. Downstream may depend on these directly. |
 | **Companion surface** (`cajeta-gpu`) | `__cajeta_xpu_buffer_*`, `__cajeta_xpu_texture*`, `__cajeta_xpu_image_*`, `__cajeta_xpu_accel_*`, `__cajeta_xpu_stream_*` / `_event_*` / `_fence_*`, `__cajeta_xpu_device_supports` | Stable, but specified by `cajeta-gpu` (alloc/lifecycle/enumeration), not here. |
 | **Internal** | `__cajeta_xpu_register_backend`, `__cajeta_xpu_register_cpu_kernel`, in-kernel coordinate/wave/atomic intrinsic thunks, everything else | Implementation detail. No stability guarantee; do not call from external code. |
 

@@ -9675,7 +9675,9 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                 const uint8_t* kinds, int n,
                                 unsigned gx, unsigned gy, unsigned gz,
                                 unsigned bx, unsigned by, unsigned bz,
-                                unsigned sharedBytes) {
+                                unsigned sharedBytes,
+                                int userSpecCount,
+                                const int32_t* userSpecValues) {
     if (!spirv || len < 4 || n <= 0) return 0;
     // Serialize the dispatch: VkQueue + VkCommandPool require external host
     // synchronization, and an AS binding reads the g_vk_accels table — all shared
@@ -9726,18 +9728,31 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     // Spec constants: SpecId 0/1/2 = block.x/y/z (workgroup size, see
     // injectWorkgroupSizeSpecConstant), SpecId 3 = the dynamic shared array's
     // length in elements (= sharedBytes / 4; the dynamic-shared element is 4 bytes
-    // — int32/float32 — for now). Set at pipeline creation.
-    uint32_t specData[4] = { bx, by, bz, sharedBytes / 4u };
-    VkSpecializationMapEntry specEntries[4] = {
-        { 0, 0,                    sizeof(uint32_t) },
-        { 1, sizeof(uint32_t),     sizeof(uint32_t) },
-        { 2, 2 * sizeof(uint32_t), sizeof(uint32_t) },
-        { 3, 3 * sizeof(uint32_t), sizeof(uint32_t) },
-    };
+    // — int32/float32 — for now). SpecId kFirstUserSpecId(4)+i = the user's
+    // Spec.geti/getf slot `i`, supplied as a host override (raw 4-byte word; i32
+    // today, f32 reinterpreted later). All set at pipeline creation.
+    enum { CAJ_VK_FIRST_USER_SPEC_ID = 4 };   // mirrors LoweringTarget::kFirstUserSpecId
+    int nUser = userSpecCount;
+    if (nUser < 0) nUser = 0;
+    if (nUser > 60) nUser = 60;               // cap: 4 reserved + 60 user <= 64
+    uint32_t specData[64];
+    VkSpecializationMapEntry specEntries[64];
+    specData[0] = bx; specData[1] = by; specData[2] = bz;
+    specData[3] = sharedBytes / 4u;
+    specEntries[0] = (VkSpecializationMapEntry){ 0, 0,                    sizeof(uint32_t) };
+    specEntries[1] = (VkSpecializationMapEntry){ 1, sizeof(uint32_t),     sizeof(uint32_t) };
+    specEntries[2] = (VkSpecializationMapEntry){ 2, 2 * sizeof(uint32_t), sizeof(uint32_t) };
+    specEntries[3] = (VkSpecializationMapEntry){ 3, 3 * sizeof(uint32_t), sizeof(uint32_t) };
+    for (int i = 0; i < nUser; ++i) {
+        specData[4 + i] = (uint32_t) userSpecValues[i];   // raw word (bit-exact)
+        specEntries[4 + i] = (VkSpecializationMapEntry){
+            (uint32_t) (CAJ_VK_FIRST_USER_SPEC_ID + i),
+            (uint32_t) ((4 + i) * sizeof(uint32_t)), sizeof(uint32_t) };
+    }
     VkSpecializationInfo specInfo;
-    specInfo.mapEntryCount = 4;
+    specInfo.mapEntryCount = (uint32_t) (4 + nUser);
     specInfo.pMapEntries = specEntries;
-    specInfo.dataSize = sizeof(specData);
+    specInfo.dataSize = (size_t) (4 + nUser) * sizeof(uint32_t);
     specInfo.pData = specData;
 
     VkComputePipelineCreateInfo cpci;
@@ -9997,10 +10012,11 @@ static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
                                 const int64_t* b, const uint8_t* k, int n,
                                 unsigned gx, unsigned gy, unsigned gz,
                                 unsigned bx, unsigned by, unsigned bz,
-                                unsigned sharedBytes) {
+                                unsigned sharedBytes,
+                                int userSpecCount, const int32_t* userSpecValues) {
     (void) s; (void) l; (void) e; (void) b; (void) k; (void) n;
     (void) gx; (void) gy; (void) gz; (void) bx; (void) by; (void) bz;
-    (void) sharedBytes; return 0;
+    (void) sharedBytes; (void) userSpecCount; (void) userSpecValues; return 0;
 }
 #endif  // CAJETA_RT_HAS_VULKAN
 
@@ -10338,7 +10354,38 @@ struct cajeta_cpu_grid_slice {
     int32_t bStart;       // linear block index range [bStart, bEnd)
     int32_t bEnd;
     int32_t dynShared;    // dynamic shared-memory byte count (coord[12])
+    int32_t specCount;        // host spec-constant overrides (0 = none)
+    const int32_t* specValues;  // slot-indexed raw words; lives for the launch
 };
+
+// Host spec-constant override state for the CPU backend (Stage 11/12, hybrid
+// decision: CPU honors an override by READING the supplied value at runtime —
+// no per-value recompile; folding is a perf detail irrelevant on the oracle
+// path). Thread-local because the grid fans out across worker threads: each
+// worker's run_slice sets its OWN copy from its slice before invoking the
+// per-block wrapper, so the spec helpers (called from the inlined kernel on that
+// same thread) read the right values race-free. Set fresh per run_slice, so no
+// stale reads across launches.
+static __thread int32_t g_cpu_spec_count = 0;
+static __thread const int32_t* g_cpu_spec_values = NULL;
+
+// Read user spec slot `slot` (CPU): the host override if supplied, else the
+// kernel's compile-time `def`. The CPU kernel lowering emits calls to these
+// (CpuKernelLowering::specConstant{I32,F32}) instead of baking the default. The
+// f32 form reinterprets the raw override word (the transport is type-agnostic).
+int32_t __cajeta_xpu_cpu_spec_i32(int32_t slot, int32_t def) {
+    if (g_cpu_spec_values && slot >= 0 && slot < g_cpu_spec_count)
+        return g_cpu_spec_values[slot];
+    return def;
+}
+float __cajeta_xpu_cpu_spec_f32(int32_t slot, float def) {
+    if (g_cpu_spec_values && slot >= 0 && slot < g_cpu_spec_count) {
+        float f;
+        memcpy(&f, &g_cpu_spec_values[slot], sizeof(float));
+        return f;
+    }
+    return def;
+}
 
 // Run a contiguous slice of blocks. The launcher thunk is the per-BLOCK wrapper
 // (Inc 5B): it loops the block's work-items internally (vectorized), so we call
@@ -10350,6 +10397,11 @@ struct cajeta_cpu_grid_slice {
 // the fan-out is race-free for any kernel correct on a GPU. The 3-D grid is
 // linearized (x fastest) and decoded back to ctaid.xyz per block.
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
+    // Publish this worker's spec overrides for the kernel's spec helpers (TLS;
+    // see g_cpu_spec_*). Set every call, so a launch with no override (count 0)
+    // correctly reads defaults even after a prior overridden launch on this thread.
+    g_cpu_spec_count = s->specCount;
+    g_cpu_spec_values = s->specValues;
     int32_t coord[13] = {0, 0, 0, 0, 0, 0, s->bx, s->by, s->bz,
                          s->gx, s->gy, s->gz, s->dynShared};
     int64_t gxy = (int64_t) s->gx * s->gy;   // M9: 64-bit — gx*gy can exceed i32,
@@ -10386,7 +10438,8 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 static void cajeta_xpu_launch_cpu(const char* name,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
-                                  int32_t sharedBytes, void* argv) {
+                                  int32_t sharedBytes, void* argv,
+                                  int32_t specCount, const int32_t* specValues) {
     void* p = __cajeta_xpu_lookup_cpu_kernel(name);
     if (!p) {
         fprintf(stderr, "cajeta.xpu: no registered CPU kernel '%s' to launch\n",
@@ -10447,7 +10500,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
         struct cajeta_cpu_grid_slice all = {fn, (void**) argv,
                                             blockX, blockY, blockZ,
                                             gridX, gridY, gridZ,
-                                            0, nblocks, sharedBytes};
+                                            0, nblocks, sharedBytes,
+                                            specCount, specValues};
         cajeta_xpu_cpu_run_slice(&all);
         return;
     }
@@ -10466,6 +10520,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
         slices[i].bStart = cx;
         slices[i].bEnd = cx + count;
         slices[i].dynShared = sharedBytes;
+        slices[i].specCount = specCount;
+        slices[i].specValues = specValues;
         cx += count;
         if (i == nworkers - 1) {
             spawned[i] = 0;   // the calling thread runs the last slice
@@ -12740,7 +12796,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
 static void cajeta_xpu_launch_vulkan(const char* kernelName,
                                      int32_t gridX, int32_t gridY, int32_t gridZ,
                                      int32_t blockX, int32_t blockY, int32_t blockZ,
-                                     int32_t sharedBytes, void* argvv) {
+                                     int32_t sharedBytes, void* argvv,
+                                     int32_t specCount, const int32_t* specValues) {
     void** argv = (void**) argvv;
     // kparams are shared across variants (looked up by the base name); the launch
     // resolves the AS bind kind from the recorded impl below.
@@ -12858,26 +12915,49 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                              (unsigned) (blockX > 0 ? blockX : 1),
                              (unsigned) (blockY > 0 ? blockY : 1),
                              (unsigned) (blockZ > 0 ? blockZ : 1),
-                             (unsigned) (sharedBytes > 0 ? sharedBytes : 0));
+                             (unsigned) (sharedBytes > 0 ? sharedBytes : 0),
+                             (int) specCount, specValues);
     for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
     for (int i = 0; i < nsamp; ++i) cajeta_xpu_vk_destroy_sampler(samplers[i]);
 }
 
+// stage12-spec-override: a host spec-constant override is honored on Vulkan
+// (genuine pipeline-time OpSpecConstant) and CPU (runtime read). On the CUDA/HIP
+// device backends the per-launch device compile that would bake the override
+// is not yet wired (Phase C — those backends still read the compile-time
+// default). Warn ONCE per process so the divergence is never silent.
+static void caj_xpu_spec_override_unhonored_notice(int backend) {
+    static int warned = 0;
+    if (warned) return;
+    warned = 1;
+    fprintf(stderr,
+            "cajeta.xpu: host spec-constant override (spec:[...]) is honored on "
+            "Vulkan only for now; backend %s reads the compile-time default "
+            "(per-value variant specialization is a follow-up).\n",
+            cajeta_xpu_backend_name(backend));
+}
+
 // Dispatch a launch to whatever backend is active, on its current device.
+// `specCount`/`specValues` are host overrides for the kernel's user spec
+// constants (NULL/0 = none); see __cajeta_xpu_launch_v3.
 static void caj_xpu_dispatch(const char* kernelName,
                              int32_t gridX, int32_t gridY, int32_t gridZ,
                              int32_t blockX, int32_t blockY, int32_t blockZ,
                              uint32_t sharedBytes, void* argv,
-                             int64_t streamHandle) {
-    switch (cajeta_xpu_active_backend()) {
+                             int64_t streamHandle,
+                             int32_t specCount, const int32_t* specValues) {
+    int backend = cajeta_xpu_active_backend();
+    switch (backend) {
         case CAJ_XPU_CUDA:
             // streamHandle (0 = default stream) orders this launch with the
             // async copies queued on the same stream.
+            if (specCount > 0) caj_xpu_spec_override_unhonored_notice(backend);
             cajeta_xpu_launch_cuda(kernelName, gridX, gridY, gridZ,
                                    blockX, blockY, blockZ, sharedBytes, argv,
                                    streamHandle);
             return;
         case CAJ_XPU_HIP:
+            if (specCount > 0) caj_xpu_spec_override_unhonored_notice(backend);
             cajeta_xpu_launch_hip(kernelName, gridX, gridY, gridZ,
                                   blockX, blockY, blockZ, sharedBytes, argv,
                                   streamHandle);
@@ -12888,14 +12968,17 @@ static void caj_xpu_dispatch(const char* kernelName,
             (void) streamHandle;
             cajeta_xpu_launch_vulkan(kernelName, gridX, gridY, gridZ,
                                      blockX, blockY, blockZ,
-                                     (int32_t) sharedBytes, argv);
+                                     (int32_t) sharedBytes, argv,
+                                     specCount, specValues);
             return;
         case CAJ_XPU_CPU:
             // CPU launches run synchronously; the stream is ordering-irrelevant.
+            // CPU honors a spec override by reading it at runtime (hybrid).
             (void) streamHandle;
             cajeta_xpu_launch_cpu(kernelName, gridX, gridY, gridZ,
                                   blockX, blockY, blockZ,
-                                  (int32_t) sharedBytes, argv);
+                                  (int32_t) sharedBytes, argv,
+                                  specCount, specValues);
             return;
         default: return;   // none: diagnostic emitted
     }
@@ -12941,13 +13024,18 @@ static int caj_xpu_device_count(int backend) {
 // owns buffer affinity — buffers must already live on the target device; no
 // migration here). Multi-device >0 on CUDA/Vulkan needs per-device contexts not
 // yet built and is a defined "unsupported", not a silent wrong-device launch.
-// A future field is added as __cajeta_xpu_launch_v3, never by repurposing an arg.
-void __cajeta_xpu_launch_v2(const char* kernelName,
+// A future field is added as __cajeta_xpu_launch_v4, never by repurposing an arg.
+// `specCount`/`specValues` are host overrides for the kernel's user
+// specialization constants (NULL/0 = none); see the header for the slot→SpecId
+// mapping and per-backend honoring.
+void __cajeta_xpu_launch_v3(const char* kernelName,
                             int32_t gridX, int32_t gridY, int32_t gridZ,
                             int32_t blockX, int32_t blockY, int32_t blockZ,
                             uint32_t sharedBytes, void* argv,
-                            int64_t streamHandle, int32_t deviceId) {
+                            int64_t streamHandle, int32_t deviceId,
+                            int32_t specCount, const int32_t* specValues) {
     if (!kernelName) return;
+    if (specCount < 0 || !specValues) specCount = 0;
 
     if (deviceId >= 0) {
         int backend = cajeta_xpu_active_backend();
@@ -12969,7 +13057,7 @@ void __cajeta_xpu_launch_v2(const char* kernelName,
                 g_xpu_hip.hipSetDevice(deviceId);
                 caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
                                  blockX, blockY, blockZ, sharedBytes, argv,
-                                 streamHandle);
+                                 streamHandle, specCount, specValues);
                 g_xpu_hip.hipSetDevice(prev);
                 return;
             }
@@ -12984,12 +13072,23 @@ void __cajeta_xpu_launch_v2(const char* kernelName,
     }
 
     caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
-                     blockX, blockY, blockZ, sharedBytes, argv, streamHandle);
+                     blockX, blockY, blockZ, sharedBytes, argv, streamHandle,
+                     specCount, specValues);
 }
 
-// Backward-compat shim — the original positional entry point the compiler emit
-// still targets (no device-targeting language surface yet). Forwards to v2 with
-// deviceId = -1 (the active device). Frozen: keep this signature stable.
+// Compat shim (ABI v2): no spec override. Frozen signature.
+void __cajeta_xpu_launch_v2(const char* kernelName,
+                            int32_t gridX, int32_t gridY, int32_t gridZ,
+                            int32_t blockX, int32_t blockY, int32_t blockZ,
+                            uint32_t sharedBytes, void* argv,
+                            int64_t streamHandle, int32_t deviceId) {
+    __cajeta_xpu_launch_v3(kernelName, gridX, gridY, gridZ,
+                           blockX, blockY, blockZ, sharedBytes, argv,
+                           streamHandle, deviceId, /*specCount=*/0, /*specValues=*/NULL);
+}
+
+// Backward-compat shim — the original positional entry point. Forwards to v2
+// with deviceId = -1 (the active device). Frozen: keep this signature stable.
 void __cajeta_xpu_launch(const char* kernelName,
                          int32_t gridX, int32_t gridY, int32_t gridZ,
                          int32_t blockX, int32_t blockY, int32_t blockZ,

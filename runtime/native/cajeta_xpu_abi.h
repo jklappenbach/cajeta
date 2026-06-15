@@ -30,7 +30,7 @@ extern "C" {
  * argument; the parameter-kind enum is append-only (never renumbered). An
  * external caller checks __cajeta_xpu_abi_version() against this macro before
  * dispatching. */
-#define CAJETA_XPU_ABI_VERSION 1
+#define CAJETA_XPU_ABI_VERSION 2
 
 /* Per-kernel-parameter kind, in declaration order. The launch site packs one
  * argv slot per parameter; this kind tells the runtime how to read that slot
@@ -50,14 +50,31 @@ typedef enum CajetaXpuParamKind {
  * header/runtime handshake an external caller checks before dispatch. */
 int32_t __cajeta_xpu_abi_version(void);
 
-/* Launch a registered kernel (ABI v1). `argv` points to an array of one
+/* Launch a registered kernel (ABI v3). `argv` points to an array of one
  * pointer per kernel parameter, in declaration order, each marshalled per its
  * CajetaXpuParamKind (the runtime reads the per-kernel param metadata recorded
  * by __cajeta_xpu_register_kernel_params). `streamHandle` orders the launch on
  * a stream (0 = default). `deviceId` selects the target device: -1 = the
  * current active device; >= 0 = an index into the active backend's enumerated
- * devices (handles originate from cajeta-gpu enumeration). A future field is
- * added as __cajeta_xpu_launch_v3 — never by repurposing an argument. */
+ * devices (handles originate from cajeta-gpu enumeration).
+ *
+ * `specValues` supplies host overrides for the kernel's user specialization
+ * constants (Spec.geti/getf): entry `i` overrides spec slot `i` (Vulkan SpecId
+ * kFirstUserSpecId+i); `specCount` is how many leading slots are supplied
+ * (trailing/unset slots keep their compile-time default). Each value is a raw
+ * 4-byte word (i32 today; f32 reinterpreted later — no ABI change). NULL /
+ * specCount 0 = no override (every slot reads its default; identical to v2).
+ * Honored as a genuine pipeline-time spec constant on Vulkan and baked into the
+ * per-value variant on CPU; AMD/NVPTX fold it into the device compile.
+ * A future field is added as __cajeta_xpu_launch_v4 — never by repurposing. */
+void __cajeta_xpu_launch_v3(const char* kernelName,
+                            int32_t gridX, int32_t gridY, int32_t gridZ,
+                            int32_t blockX, int32_t blockY, int32_t blockZ,
+                            uint32_t sharedBytes, void* argv,
+                            int64_t streamHandle, int32_t deviceId,
+                            int32_t specCount, const int32_t* specValues);
+
+/* Compat shim (ABI v1): equivalent to v2 with deviceId = -1. Frozen. */
 void __cajeta_xpu_launch_v2(const char* kernelName,
                             int32_t gridX, int32_t gridY, int32_t gridZ,
                             int32_t blockX, int32_t blockY, int32_t blockZ,
