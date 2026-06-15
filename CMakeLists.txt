@@ -214,13 +214,18 @@ set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/jklappenbach/cajeta")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "Cajeta")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
-# The WiX generator rejects a license file without a .txt/.rtf extension, and
-# our repo LICENSE is extension-less. Stage a .txt copy in the build tree and
-# hand its path to CPackOptions.cmake (CPACK_-prefixed vars are exported into
-# the per-generator config) so the WIX branch can point at it.
+# The WiX (Windows) and productbuild (macOS) generators both reject resource
+# files without an accepted extension — WiX wants .txt/.rtf; productbuild wants
+# .rtf/.rtfd/.html/.txt. Our repo LICENSE is extension-less and README is .md,
+# so both are rejected as-is. Stage .txt copies in the build tree and hand their
+# paths to CPackOptions.cmake (CPACK_-prefixed vars are exported into the
+# per-generator config) so the WIX and productbuild branches can point at them.
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
                "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt" COPYONLY)
 set(CPACK_RESOURCE_FILE_LICENSE_TXT "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+               "${CMAKE_CURRENT_BINARY_DIR}/README.txt" COPYONLY)
+set(CPACK_RESOURCE_FILE_README_TXT "${CMAKE_CURRENT_BINARY_DIR}/README.txt")
 # cajeta-<ver>-<arch>; per-generator config can override (e.g. DEB wants amd64).
 set(CPACK_PACKAGE_FILE_NAME "cajeta-${CAJETA_VERSION}-${CMAKE_SYSTEM_PROCESSOR}")
 set(CPACK_PACKAGE_CHECKSUM SHA256)

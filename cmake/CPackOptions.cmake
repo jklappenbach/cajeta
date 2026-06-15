@@ -78,6 +78,16 @@ endif()
 # --- macOS (.pkg / productbuild) --- plan §6
 if(CPACK_GENERATOR MATCHES "productbuild|PackageMaker")
   set(CPACK_PRODUCTBUILD_IDENTIFIER "dev.cajeta.compiler")
+  # productbuild only accepts .rtf/.rtfd/.html/.txt for the License/ReadMe panes
+  # (it errors "Bad file extension specified" otherwise). Our repo LICENSE is
+  # extension-less and README is .md, so point both at the .txt copies the
+  # top-level CMake staged — same fix the WIX branch uses for the license.
+  if(CPACK_RESOURCE_FILE_LICENSE_TXT)
+    set(CPACK_RESOURCE_FILE_LICENSE "${CPACK_RESOURCE_FILE_LICENSE_TXT}")
+  endif()
+  if(CPACK_RESOURCE_FILE_README_TXT)
+    set(CPACK_RESOURCE_FILE_README "${CPACK_RESOURCE_FILE_README_TXT}")
+  endif()
   # Install the payload under /usr/local (not "/"): /usr/local/lib/cajeta/cajeta
   # + /usr/local/bin/cajeta symlink (§2 macOS path row). Signing + notarization
   # (Developer ID Installer → notarytool → stapler) remain a Mac-runner task.
