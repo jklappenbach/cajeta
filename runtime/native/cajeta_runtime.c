@@ -11170,21 +11170,20 @@ static int64_t cajeta_xpu_hip_tex2darray_alloc(uint32_t w, uint32_t h,
     return (int64_t) (intptr_t) t;
 }
 
-// TextureCube on AMD: a cubemap hipArray (hipMalloc3DArray + hipArrayCubemap),
-// 6 faces in the extent's depth slot. Like the layered array, the texobj is
-// dimension-agnostic (RES_ARRAY) and the upload reuses the 3-D memcpy3D path
-// with d = 6 (a cubemap memcpy3D copies all 6 faces).
+// TextureCube on AMD: EMULATED as a 6-LAYER LAYERED array (hipArrayCubemap is
+// unsupported by the HIP runtime on gfx1151 — invalid-arg, confirmed ROCm 7.2.2 +
+// 7.11.0; see reference_amd_hip_mipmap_cubemap_unsupported). A layered array IS
+// supported, so we store the 6 faces as 6 layers and do the major-axis face
+// projection IN-KERNEL (AmdgpuKernelLowering::sampleTextureCube) → sample the
+// chosen layer via __ockl_image_sample_2Da. Same storage + upload as a 6-layer
+// Texture2DArray (RES_ARRAY texobj; memcpy3D copies all 6 faces). Limitation: no
+// hardware seamless filtering across face edges (each face clamps at its edge).
 static int64_t cajeta_xpu_hip_texcube_alloc(uint32_t size, int32_t format) {
     if (!cajeta_hip_tex3d_supported()) return 0;
     struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
     struct caj_hip_extent ext; ext.w = size; ext.h = size; ext.d = 6;
     void* array = NULL;
-    // NB: on gfx1151 this returns hipErrorInvalidValue — cubemap arrays are
-    // unimplemented in the HIP runtime on this APU (confirmed ROCm 7.2.2 + 7.11.0;
-    // as with mipmapped arrays), so TextureCube on AMD degrades to "no device
-    // texture" (handle 0 → the kernel doesn't launch). The path is correct and the
-    // SAME GPU does cubemaps via Vulkan/RADV — use the Vulkan backend on AMD.
-    if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, CAJ_HIP_ARRAY_CUBEMAP) != 0 ||
+    if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, CAJ_HIP_ARRAY_LAYERED) != 0 ||
         !array)
         return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));

@@ -360,10 +360,13 @@ public:
         return rgba;
     }
 
-    // TextureCube.sample(sampler, x, y, z) → __ockl_image_sample_CM (the cube-map
-    // twin of __ockl_image_sample_2D/3D). The cube ockl coord is a <4 x float>
-    // {x, y, z, 0} DIRECTION — the HW picks the face + projects. The sampler object
-    // rides the texture object at +48, as in 2-D/3-D. Returns the <4 x float> gather.
+    // TextureCube.sample(sampler, x, y, z) — EMULATED. The HIP runtime can't make a
+    // cubemap array on gfx1151 (see runtime cajeta_xpu_hip_texcube_alloc), so the
+    // cube is stored as a 6-LAYER layered array and we do the major-axis face
+    // projection HERE (branchless port of __cajeta_xpu_cpu_texcube_sample_rgba —
+    // same comparisons/order, so AMD bit-matches the CPU oracle), then sample the
+    // chosen face via __ockl_image_sample_2Da (layer = face). Face order
+    // +X,-X,+Y,-Y,+Z,-Z. Limitation: no seamless cross-face filtering (per-face clamp).
     llvm::Value* sampleTextureCube(llvm::IRBuilderBase& b, llvm::Module& m,
                                    llvm::Value* texHandle,
                                    llvm::Value* /*samplerHandle*/, llvm::Value* x,
@@ -371,19 +374,52 @@ public:
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         auto* p4 = llvm::PointerType::get(ctx, 4);
         auto* v4f = llvm::FixedVectorType::get(f32, 4);
-        llvm::Value* sampPtr =
-            b.CreateConstGEP1_32(i8, texHandle, 48, "tex.samp.obj");
-        llvm::Value* zero = llvm::ConstantFP::get(f32, 0.0);
+        auto cI = [&](int v) { return llvm::ConstantInt::get(i32, v); };
+        auto cF = [&](double v) { return llvm::ConstantFP::get(f32, v); };
+
+        llvm::Value* ax = b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, x, nullptr, "ax");
+        llvm::Value* ay = b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, y, nullptr, "ay");
+        llvm::Value* az = b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, z, nullptr, "az");
+        // Major-axis selection, matching the CPU if/elseif/else exactly:
+        //   xMajor = ax>=ay && ax>=az ; yMajor = !xMajor && ay>=ax && ay>=az ; else zMajor.
+        llvm::Value* xMajor = b.CreateAnd(b.CreateFCmpOGE(ax, ay), b.CreateFCmpOGE(ax, az), "xMajor");
+        llvm::Value* yMajor = b.CreateAnd(b.CreateNot(xMajor),
+                                 b.CreateAnd(b.CreateFCmpOGE(ay, ax), b.CreateFCmpOGE(ay, az)), "yMajor");
+        llvm::Value* xPos = b.CreateFCmpOGE(x, cF(0.0));
+        llvm::Value* yPos = b.CreateFCmpOGE(y, cF(0.0));
+        llvm::Value* zPos = b.CreateFCmpOGE(z, cF(0.0));
+        llvm::Value* negX = b.CreateFNeg(x), *negY = b.CreateFNeg(y), *negZ = b.CreateFNeg(z);
+        // face: X→{+0,-1} Y→{+2,-3} Z→{+4,-5}
+        llvm::Value* faceX = b.CreateSelect(xPos, cI(0), cI(1));
+        llvm::Value* faceY = b.CreateSelect(yPos, cI(2), cI(3));
+        llvm::Value* faceZ = b.CreateSelect(zPos, cI(4), cI(5));
+        llvm::Value* face = b.CreateSelect(xMajor, faceX,
+                              b.CreateSelect(yMajor, faceY, faceZ), "cube.face");
+        // ma = dominant |axis| (guard 0 → 1)
+        llvm::Value* ma = b.CreateSelect(xMajor, ax, b.CreateSelect(yMajor, ay, az));
+        ma = b.CreateSelect(b.CreateFCmpOEQ(ma, cF(0.0)), cF(1.0), ma, "cube.ma");
+        // sc: +X:-z -X:z  Y:x  +Z:x -Z:-x   tc: X:-y  +Y:z -Y:-z  Z:-y
+        llvm::Value* scX = b.CreateSelect(xPos, negZ, z);
+        llvm::Value* scZ = b.CreateSelect(zPos, x, negX);
+        llvm::Value* sc = b.CreateSelect(xMajor, scX, b.CreateSelect(yMajor, x, scZ));
+        llvm::Value* tcY = b.CreateSelect(yPos, z, negZ);
+        llvm::Value* tc = b.CreateSelect(xMajor, negY, b.CreateSelect(yMajor, tcY, negY));
+        // u = 0.5*(sc/ma + 1) ; v = 0.5*(tc/ma + 1)
+        llvm::Value* u = b.CreateFMul(cF(0.5), b.CreateFAdd(b.CreateFDiv(sc, ma), cF(1.0)), "cube.u");
+        llvm::Value* v = b.CreateFMul(cF(0.5), b.CreateFAdd(b.CreateFDiv(tc, ma), cF(1.0)), "cube.v");
+
+        llvm::Value* sampPtr = b.CreateConstGEP1_32(i8, texHandle, 48, "tex.samp.obj");
+        llvm::Value* faceF = b.CreateSIToFP(face, f32, "cube.facef");
         llvm::Value* coord = llvm::PoisonValue::get(v4f);
-        coord = b.CreateInsertElement(coord, x, uint64_t(0));
-        coord = b.CreateInsertElement(coord, y, uint64_t(1));
-        coord = b.CreateInsertElement(coord, z, uint64_t(2));
-        coord = b.CreateInsertElement(coord, zero, uint64_t(3), "texcube.dir");
+        coord = b.CreateInsertElement(coord, u, uint64_t(0));
+        coord = b.CreateInsertElement(coord, v, uint64_t(1));
+        coord = b.CreateInsertElement(coord, faceF, uint64_t(2));
+        coord = b.CreateInsertElement(coord, cF(0.0), uint64_t(3), "texcube.coord");
         auto* fnTy = llvm::FunctionType::get(v4f, {p4, p4, v4f}, false);
-        llvm::FunctionCallee s =
-            m.getOrInsertFunction("__ockl_image_sample_CM", fnTy);
+        llvm::FunctionCallee s = m.getOrInsertFunction("__ockl_image_sample_2Da", fnTy);
         return b.CreateCall(s, {texHandle, sampPtr, coord}, "texcube.sample.rgba");
     }
 

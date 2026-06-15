@@ -1296,18 +1296,13 @@ TEST(XpuHipDispatchDeviceTests, textureCubeSampleRoutesToHipOnDevice) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     int r = fn();
-    // AMD cubemap arrays are unsupported by the HIP runtime on gfx1151 —
-    // hipMalloc3DArray[hipArrayCubemap] → hipErrorInvalidValue. CONFIRMED a
-    // durable ROCm gap (standalone HIP probe reproduces it on ROCm 7.2.2 + 7.11.0;
-    // layered arrays alloc fine), NOT a cajeta bug. The SAME GPU does cubemap
-    // sampling via the Vulkan/RADV path (textureCubeSampleOnDevice). cajeta's
-    // runtime + ockl __ockl_image_sample_CM seam are correct. Use the Vulkan
-    // backend for cubemaps on AMD today. See project memory.
-    if (r == 555) {
-        GTEST_SKIP() << "AMD cubemap arrays unsupported by HIP/ROCm on gfx1151 "
-                        "(hipMalloc3DArray[cubemap] → invalid arg; ROCm 7.2.2 + "
-                        "7.11.0); use the Vulkan backend";
-    }
+    // TextureCube on AMD is EMULATED: hipArrayCubemap is unsupported by the HIP
+    // runtime on gfx1151 (invalid-arg, ROCm 7.2.2 + 7.11.0), so the 6 faces are
+    // stored as a 6-LAYER layered array and the major-axis face projection runs
+    // in-kernel (AmdgpuKernelLowering::sampleTextureCube) → __ockl_image_sample_2Da.
+    // Result bit-matches the CPU oracle + the Vulkan twin (textureCubeSampleOnDevice).
+    // A 555 here would mean even the layered alloc failed — a real regression, so we
+    // assert rather than skip. See reference_amd_hip_mipmap_cubemap_unsupported.
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: cube face selection mismatch at dir i)";
 }
 
