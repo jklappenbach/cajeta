@@ -38,6 +38,8 @@
 #include <signal.h>
 #include <unistd.h>   // write(2) for abort-survivable diagnostics (see below)
 
+#include "cajeta_xpu_abi.h"   // single source of truth for the XPU FFI contract
+
 // execinfo.h (backtrace + backtrace_symbols) — glibc + macOS only.
 // MinGW-w64 doesn't ship it; stub on Windows so the runtime compiles
 // there. Stack-trace capture on Windows uses DbgHelp's
@@ -7941,17 +7943,21 @@ static int cajeta_xpu_hip_init_locked(void) {
 // uniform kernelParams argv into descriptor bindings: buffers map to existing
 // storage buffers; scalars are copied into transient single-element SSBOs. The
 // pointers are program constant data (valid for the process lifetime).
-// Per-param kind in the launch metadata (matches xpu::KernelParamInfo::kind):
-// 0 = scalar (by-value primitive/POD → single-element SSBO), 1 = buffer,
-// 2 = texture (Texture2D → sampled image), 3 = sampler (Item 8 Stage B).
-#define CAJETA_KP_SCALAR  0
-#define CAJETA_KP_BUFFER  1
-#define CAJETA_KP_TEXTURE 2
-#define CAJETA_KP_SAMPLER 3
-#define CAJETA_KP_ACCEL   4   // AccelerationStructure -> descriptor-bound BVH
-#define CAJETA_KP_IMAGE   5   // Image2D (writable) -> STORAGE_IMAGE descriptor
-#define CAJETA_KP_BUFFER_ARRAY 6   // Buffer<T>[] -> bindless descriptor array
+// Per-param kind in the launch metadata (matches xpu::KernelParamInfo::kind).
+// The numeric values live exactly once, in CajetaXpuParamKind (the ABI header);
+// these short names are internal aliases for the runtime body below so the
+// literals can never drift from the compiler/FFI contract again.
+#define CAJETA_KP_SCALAR       CAJETA_XPU_KP_SCALAR
+#define CAJETA_KP_BUFFER       CAJETA_XPU_KP_BUFFER
+#define CAJETA_KP_TEXTURE      CAJETA_XPU_KP_TEXTURE
+#define CAJETA_KP_SAMPLER      CAJETA_XPU_KP_SAMPLER
+#define CAJETA_KP_ACCEL        CAJETA_XPU_KP_ACCEL   // AccelerationStructure -> descriptor-bound BVH
+#define CAJETA_KP_IMAGE        CAJETA_XPU_KP_IMAGE   // Image2D (writable) -> STORAGE_IMAGE descriptor
+#define CAJETA_KP_BUFFER_ARRAY CAJETA_XPU_KP_BUFFER_ARRAY  // Buffer<T>[] -> bindless descriptor array
                                    // (descriptorCount = N; N + handles in argv slot)
+
+// The ABI version queryable by external FFI callers (header/runtime handshake).
+int32_t __cajeta_xpu_abi_version(void) { return CAJETA_XPU_ABI_VERSION; }
 
 struct cajeta_kparams {
     char name[256];
@@ -12857,13 +12863,12 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     for (int i = 0; i < nsamp; ++i) cajeta_xpu_vk_destroy_sampler(samplers[i]);
 }
 
-// The host-source `kernel.launch(...)` entry point: dispatch to the active
-// backend (chosen + cached on first device touch).
-void __cajeta_xpu_launch(const char* kernelName,
-                         int32_t gridX, int32_t gridY, int32_t gridZ,
-                         int32_t blockX, int32_t blockY, int32_t blockZ,
-                         uint32_t sharedBytes, void* argv, int64_t streamHandle) {
-    if (!kernelName) return;
+// Dispatch a launch to whatever backend is active, on its current device.
+static void caj_xpu_dispatch(const char* kernelName,
+                             int32_t gridX, int32_t gridY, int32_t gridZ,
+                             int32_t blockX, int32_t blockY, int32_t blockZ,
+                             uint32_t sharedBytes, void* argv,
+                             int64_t streamHandle) {
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
             // streamHandle (0 = default stream) orders this launch with the
@@ -12894,6 +12899,104 @@ void __cajeta_xpu_launch(const char* kernelName,
             return;
         default: return;   // none: diagnostic emitted
     }
+}
+
+// How many devices the given backend exposes (>= 1). Best-effort; falls back to
+// 1 if the count can't be queried. The index space the launch `deviceId` selects
+// within (handles originate from cajeta-gpu enumeration; xpu consumes the index).
+static int caj_xpu_device_count(int backend) {
+    switch (backend) {
+        case CAJ_XPU_HIP: {
+            int c = 0;
+            if (g_xpu_hip.hipGetDeviceCount &&
+                g_xpu_hip.hipGetDeviceCount(&c) == 0 && c > 0) return c;
+            return 1;
+        }
+        case CAJ_XPU_CUDA: {
+            int c = 0;
+            if (g_xpu_cuda.cuDeviceGetCount &&
+                g_xpu_cuda.cuDeviceGetCount(&c) == 0 && c > 0) return c;
+            return 1;
+        }
+        case CAJ_XPU_VULKAN: {
+            uint32_t c = 0;
+            if (g_xpu_vk.vkEnumeratePhysicalDevices && g_xpu_vk.instance &&
+                g_xpu_vk.vkEnumeratePhysicalDevices(g_xpu_vk.instance, &c, NULL)
+                    == VK_SUCCESS && c > 0) return (int) c;
+            return 1;
+        }
+        case CAJ_XPU_CPU:
+        default:
+            return 1;
+    }
+}
+
+// The versioned host-source launch entry point (ABI v1): dispatch to the active
+// backend (chosen + cached on first device touch). `deviceId` selects the target
+// device — -1 = the current active device (no targeting; the pre-Stage-12
+// behavior); >= 0 = an index into the active backend's enumerated devices. An
+// out-of-range index is a defined no-op (a diagnostic, never UB). v1 targets
+// "where it is cheap + correct": deviceId 0 is the default device on every
+// backend, and HIP genuinely selects deviceId>0 via hipSetDevice (the caller
+// owns buffer affinity — buffers must already live on the target device; no
+// migration here). Multi-device >0 on CUDA/Vulkan needs per-device contexts not
+// yet built and is a defined "unsupported", not a silent wrong-device launch.
+// A future field is added as __cajeta_xpu_launch_v3, never by repurposing an arg.
+void __cajeta_xpu_launch_v2(const char* kernelName,
+                            int32_t gridX, int32_t gridY, int32_t gridZ,
+                            int32_t blockX, int32_t blockY, int32_t blockZ,
+                            uint32_t sharedBytes, void* argv,
+                            int64_t streamHandle, int32_t deviceId) {
+    if (!kernelName) return;
+
+    if (deviceId >= 0) {
+        int backend = cajeta_xpu_active_backend();
+        int count = caj_xpu_device_count(backend);
+        if (deviceId >= count) {
+            fprintf(stderr,
+                    "cajeta.xpu: launch deviceId %d out of range (%s exposes "
+                    "%d device%s); launch skipped\n",
+                    deviceId, cajeta_xpu_backend_name(backend), count,
+                    count == 1 ? "" : "s");
+            return;   // defined no-op, no UB
+        }
+        if (deviceId > 0) {
+            if (backend == CAJ_XPU_HIP && g_xpu_hip.hipSetDevice) {
+                // Bind the target device for this launch, then restore the
+                // runtime's default so subsequent (deviceId<=0) launches and
+                // buffer ops keep landing on the default device.
+                int prev = g_xpu_hip.device;
+                g_xpu_hip.hipSetDevice(deviceId);
+                caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
+                                 blockX, blockY, blockZ, sharedBytes, argv,
+                                 streamHandle);
+                g_xpu_hip.hipSetDevice(prev);
+                return;
+            }
+            fprintf(stderr,
+                    "cajeta.xpu: per-launch targeting to deviceId %d not yet "
+                    "implemented for backend %s (only deviceId 0/-1); launch "
+                    "skipped\n",
+                    deviceId, cajeta_xpu_backend_name(backend));
+            return;
+        }
+        // deviceId == 0 falls through: the default device on every backend.
+    }
+
+    caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
+                     blockX, blockY, blockZ, sharedBytes, argv, streamHandle);
+}
+
+// Backward-compat shim — the original positional entry point the compiler emit
+// still targets (no device-targeting language surface yet). Forwards to v2 with
+// deviceId = -1 (the active device). Frozen: keep this signature stable.
+void __cajeta_xpu_launch(const char* kernelName,
+                         int32_t gridX, int32_t gridY, int32_t gridZ,
+                         int32_t blockX, int32_t blockY, int32_t blockZ,
+                         uint32_t sharedBytes, void* argv, int64_t streamHandle) {
+    __cajeta_xpu_launch_v2(kernelName, gridX, gridY, gridZ,
+                           blockX, blockY, blockZ, sharedBytes, argv,
+                           streamHandle, /*deviceId=*/-1);
 }
 
 // Register a kernel's compiled cubin image under its PTX entry name. The

@@ -30,6 +30,8 @@
 #include <string>
 #include <vector>
 
+#include "cajeta_xpu_abi.h"   // CajetaXpuParamKind — the frozen XPU FFI contract
+
 namespace llvm {
     class Module;
     class Function;
@@ -65,18 +67,28 @@ namespace xpu {
     // byteSize; textures bind sampled images; samplers bind VkSamplers).
     // Backend-neutral classification, same as lowerKernel uses.
     struct KernelParamInfo {
-        // kind: 0 = scalar, 1 = buffer, 2 = texture, 3 = sampler, 4 =
-        // acceleration structure, 5 = storage image (Image2D, writable),
-        // 6 = buffer array (Buffer<T>[], a bindless descriptor array — byteSize
-        // unused; the per-launch count rides the argv slot). Matches the
-        // runtime's CAJETA_KP_* constants in cajeta_runtime.c.
+        // The kind values are the frozen XPU FFI contract: they live in exactly
+        // one place — CajetaXpuParamKind in runtime/native/cajeta_xpu_abi.h —
+        // and this enum is derived from it (static-asserted below), so the
+        // compiler emit, the runtime, and any external port can never drift.
         enum Kind : uint8_t {
-            Scalar = 0, Buffer = 1, Texture = 2, Sampler = 3, AccelStruct = 4,
-            Image = 5, BufferArray = 6
+            Scalar      = CAJETA_XPU_KP_SCALAR,
+            Buffer      = CAJETA_XPU_KP_BUFFER,
+            Texture     = CAJETA_XPU_KP_TEXTURE,
+            Sampler     = CAJETA_XPU_KP_SAMPLER,
+            AccelStruct = CAJETA_XPU_KP_ACCEL,
+            Image       = CAJETA_XPU_KP_IMAGE,
+            BufferArray = CAJETA_XPU_KP_BUFFER_ARRAY
         };
         uint8_t kind;
         unsigned byteSize;   // scalar/POD byte size (0 for buffer/texture/sampler)
     };
+    static_assert(KernelParamInfo::Scalar == 0 && KernelParamInfo::Buffer == 1 &&
+                  KernelParamInfo::Texture == 2 && KernelParamInfo::Sampler == 3 &&
+                  KernelParamInfo::AccelStruct == 4 && KernelParamInfo::Image == 5 &&
+                  KernelParamInfo::BufferArray == 6,
+                  "KernelParamInfo::Kind must match the frozen CajetaXpuParamKind "
+                  "values in cajeta_xpu_abi.h (the XPU FFI contract)");
     // `dl` MUST be the host module's DataLayout — the by-value POD/scalar byteSize
     // it computes has to match the footprint the launch site packs the argv with
     // (and the runtime memcpy's into the SSBO); an empty DataLayout mis-sizes

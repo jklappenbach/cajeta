@@ -9,7 +9,10 @@ the reason).
 
 This is a companion to the backend-variance discipline in
 [`CajetaXPU-Variance.md`](CajetaXPU-Variance.md); it extends the original
-NVIDIA∩AMD two-backend reckoning with the Vulkan/SPIR-V column.
+NVIDIA∩AMD two-backend reckoning with the Vulkan/SPIR-V column. The **stable
+launch + kernel-arg FFI contract** these backends dispatch through (the register
+trio, the `argv` marshalling per parameter kind, per-launch device targeting, and
+the ABI version policy) is frozen in [`CajetaXPU-FFI.md`](CajetaXPU-FFI.md).
 
 > **A fourth backend — CPU — and a runtime dispatcher now exist** (see
 > [`CajetaCPU.md`](CajetaCPU.md)). The CPU is deliberately *not* given a

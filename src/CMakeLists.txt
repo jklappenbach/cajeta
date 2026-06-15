@@ -863,6 +863,7 @@ if(WIN32)
 endif()
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/runtime/native   # cajeta_xpu_abi.h — the XPU FFI contract
         ${LLVM_INCLUDE_DIRS}
         ${ANTLR4_INCLUDE_DIR}
         ${ANTLR_CajetaGrammarLexer_OUTPUT_DIR}
