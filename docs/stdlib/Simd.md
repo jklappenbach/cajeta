@@ -1,7 +1,14 @@
-# `cajeta.simd` — portable SIMD vectors — Specification v1
+# SIMD on `Vector<T, N>` — Specification v1
 
-_Package: **`cajeta.simd`**. Companion plan: `plans/Simd-plan.md`. Tour:
-`docs/stdlib/Simd-tour.md`._
+_Extends the **existing built-in `Vector<T, N>`** (`src/cajeta/type/CajetaVector`,
+`VectorOps.h`) with the data-parallel classification ops a SIMD JSON scanner
+needs. `Vector<T,N>` is already a compiler-intercepted value type that lowers to
+LLVM `<N x T>`, runs on **both CPU (host JIT/AOT) and GPU (SPIR-V/AMD)**, and
+today does construction, swizzles, lane-wise arithmetic, and geometry helpers
+(dot/length/normalize/…). This spec adds: compare→mask, `movemask`,
+`tableLookup` (pshufb), `clmul`, bitwise lane ops, and `Buffer` block load/store
+— so CPU SIMD and GPU kernels share one lane vocabulary. Companion plan:
+`plans/Simd-plan.md`. Tour: `docs/stdlib/Simd-tour.md`._
 
 ## 1. Why this exists
 
@@ -201,7 +208,7 @@ maps to the LLVM vector type; operators dispatch to the vector IR.
 | `cajeta.io.Buffer` | the canonical SIMD load/store source; `loadU64`/`ctz64` are the scalar siblings of the vector ops. |
 | Ownership | value type — no `#`/drop; orthogonal to the borrow checker. |
 | Overflow checks | lane arithmetic is always wrapping, independent of `--overflow-checks`. |
-| XPU / GPU | distinct: `cajeta.gpu.core` is *device* kernels; `cajeta.simd` is *host* CPU SIMD. (Future: share a portable lane vocabulary.) |
+| XPU / GPU | **shared** — the *same* built-in `Vector<T,N>` is the GPU kernel vector (Stage-5 SPIR-V/AMD) and the host CPU SIMD register. Core ops (load/store, lane arith, compare) are identical IR on both; the CPU-only extraction ops (`mask`/`tableLookup`/`clmul`) have GPU analogs in the subgroup/wave/`Quad` ops. |
 | Capabilities | none required. |
 
 ## 10. Non-goals (v1)

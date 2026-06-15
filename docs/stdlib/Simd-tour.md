@@ -26,7 +26,8 @@ hands you a 16-bit mask of where they matched.
 ## 1. A vector is 16 lanes you operate on at once
 
 ```cajeta
-import cajeta.simd.Vector;     // or the alias i8x16
+// Vector<T,N> is a built-in value type — no import. The same type the GPU
+// kernels use; here on the CPU it's a SIMD register.
 
 i8x16 v = i8x16.load(buf, p);          // 16 bytes from the buffer at offset p
 i8x16 ones = i8x16.splat((int8) 1);    // 16 copies of 1

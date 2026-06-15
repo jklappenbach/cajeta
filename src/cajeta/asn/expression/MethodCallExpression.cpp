@@ -2996,6 +2996,25 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int32");
                     return vecops::idotWiden(*builder, self, other, acc, sgn);
                 }
+                // SIMD: eqMask(needle) -> int32. Per-lane equality packed into a
+                // bitmask (bit i set iff lane i == needle) — the JSON-scanner
+                // workhorse. Pairs with Cajeta.ctz64 to find the first match.
+                if (methodCallName == "eqMask") {
+                    if (parameters.size() != 1) {
+                        throw Exception("Vector.eqMask expects 1 argument",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* needle = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Value* nEl = vecops::coerceScalar(*builder, needle,
+                        vecT->getElementType()->getLlvmType());
+                    llvm::Value* bits = vecops::eqMask(*builder, self, nEl);
+                    resolvedType = CajetaType::of("int32");
+                    return builder->CreateZExt(bits,
+                        llvm::Type::getInt32Ty(builder->getContext()),
+                        "eqmask.i32");
+                }
                 if (methodCallName == "length") {
                     if (!isFloat) {
                         throw Exception(
