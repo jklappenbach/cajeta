@@ -10,6 +10,7 @@ build/
 build-prebuilt/
 build-cajeta/
 build-release/
+build-asan/
 run-logs/
 gen/
 cajeta.cbp
