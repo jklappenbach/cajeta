@@ -62,32 +62,27 @@ These are wired into the compiler and consumed at codegen.
 Symbol where each is handled is the authoritative pointer; the
 design doc is the prose spec.
 
-### Dependency injection / stereotypes (`cajeta.aot`)
+### Dependency injection — the `@Inject` *point* (`cajeta.aot`)
+
+`@Inject` is the one dependency-injection primitive that stays in the language —
+it marks *where* an instance is needed. *Which* framework resolves it is policy:
+cazo's container does, but so could any other.
 
 | Annotation        | Target               | Effect                                          | Handler                                            | Spec                                 |
 |-------------------|----------------------|-------------------------------------------------|----------------------------------------------------|--------------------------------------|
-| `@Component`      | class                | Class joins the compile-time DI graph; the synthesized `__cajeta_inject` provides instances at injection sites. | `CajetaLlvmVisitor.h:352`                          | `AspectModel.md` § Components       |
-| `@Component(name="primary")` | class     | Named variant of the above; multiple instances of the same type differentiated by name at injection sites via `@Inject(name="primary")`. | same                                               | `AspectModel.md` § Named components |
-| `@Repository`     | class                | Stereotype for data-access components. Identical wiring to `@Component`; the marker is for `@Aspect` pointcuts to target the data layer specifically (`@Around(Repository.class)`). | `CajetaLlvmVisitor.h:353`                          | `AspectModel.md` § Stereotypes      |
-| `@TestComponent`  | class                | Component visible only when `--profile=test` is active. Lets a test build substitute fakes / stubs for production components without touching production source. | `CajetaLlvmVisitor.h:354`                          | `AspectModel.md` § TestComponent    |
-| `@Profile("name")` | class               | Component is conditional on the active build profile (default, test, custom). Class is registered with the DI graph only if its `@Profile` matches the active profile. | `CajetaLlvmVisitor.h:365`; filtered in `CajetaModule.cpp:571` | `AspectModel.md` § Profiles    |
-| `@PostConstruct`  | method (instance, no args, void) | Called by the DI runtime once after construction + all field injections complete. Per-instance. | `ComponentInjectMethod.cpp:294`                    | `AspectModel.md` § Lifecycle        |
-| `@PreDestroy`     | method (instance, no args, void) | Called before the component's scope drop. Per-instance. Useful for resources that need ordered teardown beyond what the destructor + field auto-drop cover. | `ComponentInjectMethod.cpp:320`                    | `AspectModel.md` § Lifecycle        |
-| `@Inject`         | field, parameter     | Marks an injection site. The DI graph resolves it to a component instance at the point of construction (field) or invocation (parameter). | `CajetaModule.cpp:718`                             | `AspectModel.md` § Injection        |
-| `@Inject(name="primary")` | same        | Disambiguates when multiple `@Component(name=...)` variants of the same type exist. | same                                               | same                                |
+| `@Inject`         | field, parameter     | Marks an injection site. A DI container resolves it to an instance at the point of construction (field) or invocation (parameter). | `CajetaModule.cpp:718`                             | cazo `docs/AspectModel.md` § Injection |
+| `@Inject(name="primary")` | same        | Disambiguates when multiple named provider variants of the same type exist. | same                                               | same                                |
 
-### Aspects (`cajeta.aot`)
-
-| Annotation                          | Target            | Effect                                                                                  | Handler                                      | Spec                                                       |
-|-------------------------------------|-------------------|-----------------------------------------------------------------------------------------|----------------------------------------------|------------------------------------------------------------|
-| `@Aspect`                           | class             | Marks an aspect class. Itself also a `@Component`, so it can have `@Inject` fields.     | `CajetaLlvmVisitor.h:334`                    | `AspectModel.md` § Aspect class                            |
-| `@Before(Marker.class)`             | method in `@Aspect` | Run before any method annotated with `Marker`. Pointcut is by marker annotation.       | `CajetaModule.cpp:372` (advice match)        | `AspectModel.md` § Advice kinds                            |
-| `@After(Marker.class)`              | method in `@Aspect` | Run after, regardless of normal/throw exit.                                            | same                                         | same                                                       |
-| `@AfterReturning(Marker.class)`     | method in `@Aspect` | Run after only on normal return. Optional `returning="binding"` captures the return value. | same                                       | `AspectModel.md` § AfterReturning                          |
-| `@AfterThrowing(Marker.class)`      | method in `@Aspect` | Run after only on exception exit. Optional `throwing="binding"` captures the exception. | same                                       | `AspectModel.md` § AfterThrowing                           |
-| `@Around(Marker.class)`             | method in `@Aspect` | Wraps the target. Body must invoke `@Original` to forward.                              | `Method.cpp:1185` (extracted-body machinery) | `AspectModel.md` § Around                                  |
-| `@Order(n)`                         | aspect method     | Controls execution order when multiple aspects match the same target. Lower runs first. | `CajetaModule.cpp:527`                       | `AspectModel.md` § Ordering                                |
-| `@Original`                         | call site inside `@Around` | Pseudo-marker the body uses to forward to the wrapped method. Lowered to a direct call of the extracted body. | grammar + codegen                            | `AspectModel.md` § Around                                  |
+> **The component model, stereotypes, lifecycle, profiles, and aspect weaving
+> moved to cazo.** `@Component` / `@Repository` / `@TestComponent`,
+> `@Profile`, `@PostConstruct` / `@PreDestroy`, and the `@Aspect` /
+> `@Before` / `@After` / `@AfterReturning` / `@AfterThrowing` / `@Around` /
+> `@Original` / `@Order` family are **framework policy**, not core language —
+> see **https://github.com/jklappenbach/cajeta-cazo** (`docs/AspectModel.md`)
+> and [`AspectModel.md`](AspectModel.md) here for why and the interim status.
+> The compiler still *recognizes* these annotations during the transition
+> (`CajetaLlvmVisitor.h`, `CajetaModule.cpp`, `ComponentInjectMethod.cpp`), but
+> their authoritative spec now lives in cazo.
 
 ### Wire formats / views (`cajeta.wire`)
 
@@ -530,12 +525,16 @@ contributors don't reach for them expecting them to work.
 |-------------------------|-----------------|--------------------------------------------------------------------------------------------------|---------------------|
 | `@Throws(IOException.class, ...)` | method | Advisory declaration of exceptions a method may throw. Used by lint to surface uncaught throws at call sites. | `ErrorModel.md`     |
 
-### Aspects (advanced)
+### Aspects (advanced) — moved to cazo
+
+These advanced aspect extensions are part of the AOP framework, which now lives
+in **cazo** (https://github.com/jklappenbach/cajeta-cazo). Listed here only as a
+pointer; their spec is cazo's `docs/AspectModel.md`.
 
 | Annotation              | Intended target | Intended effect                                                                                  | Spec                       |
 |-------------------------|-----------------|--------------------------------------------------------------------------------------------------|----------------------------|
-| `@NoAdvice`             | method          | Opts the method out of aspect matching. Hot-path escape hatch.                                   | `AspectModel.md`           |
-| `@DeclareParents`       | aspect method   | AspectJ-style introduction of a new interface implementation onto a target class.                | `AspectModel.md`           |
+| `@NoAdvice`             | method          | Opts the method out of aspect matching. Hot-path escape hatch.                                   | cazo `docs/AspectModel.md` |
+| `@DeclareParents`       | aspect method   | AspectJ-style introduction of a new interface implementation onto a target class.                | cazo `docs/AspectModel.md` |
 
 ### Lint variants
 
@@ -557,7 +556,7 @@ contributors don't reach for them expecting them to work.
 | `@Transactional`        | method          | Aspect marker for transactional methods (user-defined, but reserved name).                       | `AspectModel.md`    |
 | `@DisplayAs("name")`    | method, field   | Override the display name in IDE / debugger views.                                               | `Debugging.md`      |
 | `@Parameter`            | parameter       | Reflection hint — retains the parameter name in the symbol table for introspection.              | `Reflection.md`  |
-| `@Scope("singleton"|"prototype"|"request")` | component class | DI scope. Already controllable per **injection site** via `@Inject(allocate=ALLOCATE_SINGLETON\|OWNER_SCOPE\|TRANSIENT)` (three modes shipped; `CALL_SCOPE` stubbed, `FIBER`/request planned). A class-level `@Scope` would make it declarative as a default. See `AspectModel.md` § *Injection lifespan* and `plans/DI-request-scope-and-test-enablers.md`. | `AspectModel.md`    |
+| `@Scope("singleton"|"prototype"|"request")` | component class | DI scope (cazo framework). Controllable per **injection site** via `@Inject(allocate=ALLOCATE_SINGLETON\|OWNER_SCOPE\|TRANSIENT)` (three modes shipped; `CALL_SCOPE` stubbed). Request scope ships in cazo over `FiberLocal` (`org.cajeta.cazo.context.RequestScope`). A class-level `@Scope` default is on the cazo roadmap. See cazo `docs/AspectModel.md`, `docs/RequestScope.md`, and `plan/cazo-plan.md`. | cazo `docs/AspectModel.md` |
 
 ### Rejected
 
