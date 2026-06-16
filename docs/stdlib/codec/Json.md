@@ -28,11 +28,38 @@ C) — see `docs/stdlib/Simd.md` and the harness in `bench/`.
 
 | workload | twitter | citm | canada | vs Jackson |
 |---|---|---|---|---|
+| **Cajeta — `Json.parse<T>` binding** (SIMD index + inline walk) | **~3690** | **~4010** | **~2850** | **2.4× / 2.2× / 3.5×** |
 | **Cajeta — full typed tokenize** (KEY/STRING/NUMBER/…) | **~3100** | **~4250** | **~3100** | **2.0× / 2.3× / 3.8×** |
 | Cajeta — token count (stage-1 popcounts) | ~3200 | ~3400 | ~3450 | 2.1× / 1.9× / 4.3× |
 | Cajeta — stage-1 structural scan (classify only) | ~8000 | ~10900 | ~8200 | — (scan ceiling) |
 | Jackson — full tokenize (reference) | 1551 | 1837 | 811 | 1.0× |
+| Cajeta — `Json.parse<T>` over the pull reader (superseded) | ~620 | ~700 | ~450 | 0.4× |
 | Cajeta — scalar baseline (v1, pre-SIMD) | ~345 | ~395 | ~230 | 0.22–0.28× |
+
+The **`Json.parse<T>` binding** is the headline path: the Tier-1 synthesizer
+codegens the deserializer directly over a SIMD *structural index* (stage 1) in
+a tight inline walk (stage 2) — dispatching on one byte per token, decoding only
+T's mapped fields and skipping unmapped subtrees with no value decode. Crucially
+it has **no per-token `JsonReader.next()` call boundary**: that boundary forces
+parser state into a heap object the AOT compiler can't register-promote and caps
+the pull path at ~0.4× Jackson (the superseded row). Driving the SIMD engine
+from a register-state walk carries the scan throughput all the way to the bound
+struct — **2.2–3.5× Jackson** (skip-all; real decode adds bounded per-field work
+Jackson also pays). See `plans/Json-fast-path.md`.
+
+**Machine & method.**
+
+- **CPU** — AMD Ryzen AI Max+ 395 ("Strix Halo", Zen 5), 16 cores / 32 threads,
+  up to 5.19 GHz, with a Radeon 8060S iGPU. Single-threaded benchmark.
+- **RAM** — 64 GiB. **OS** — Ubuntu 26.04 LTS, Linux kernel 7.0.0-22-generic.
+- **Toolchain** — `cajeta` 0.7.1, `--emit=exe --release` (LLVM O2), built against
+  the `cajeta-llvm` fork (LLVM 23). Native AOT, no JIT warmup.
+- **Method** — 200 measured iterations after 20 warmup. `Json.parse<T>` borrows
+  its input and frees it on drop (one-shot contract), so each iteration parses a
+  **fresh copy** and a copy-only baseline is subtracted. Datasets are the
+  standard simdjson corpus (`twitter` 617 KB, `citm_catalog` 1.6 MB, `canada`
+  2.1 MB). Jackson 2.18.2 measured on the JVM with generous JIT warmup
+  (100 iterations) over `byte[]`.
 
 The typed tokenizer emits the **exact** token stream of the pull
 `JsonReader` (validated token-for-token and per-type counts against the

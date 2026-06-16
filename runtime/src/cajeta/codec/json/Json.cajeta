@@ -232,6 +232,43 @@ public final class Json {
     }
 
     /**
+     * Tier-1 binding walk — consume one object value of type T at the
+     * cursor `jc.ci`, return a freshly-allocated T, and advance `jc.ci`
+     * past the object. This is the synthesizer's stage-2 deserialization
+     * driver: it runs straight over the SIMD structural index built by
+     * `JsonIndex.build`, dispatching on the one byte at each index position
+     * with NO per-token `JsonReader.next()` call boundary — that is what
+     * carries the SIMD scan throughput to the binding (2-3x Jackson vs the
+     * pull reader's 0.4x). The walk state rides a single `JsonCursor`
+     * pointer so the recursive instantiation stays codegen-stable. Public
+     * so the synthesizer can emit cross-class recursive calls.
+     *
+     * See docs/stdlib/codec/Json.md § Tier 1 and plans/Json-fast-path.md.
+     */
+    public static T walkValue<T>(JsonCursor jc) {
+        throw heap JsonParseException(
+            "Json.walkValue<T>: synthesizer not engaged", (int64) 0);
+    }
+
+    /**
+     * Thin delegating wrapper used for nested-class ARRAY elements. It does
+     * nothing but forward to `walkValue<T>`, yet the indirection is load-
+     * bearing: a synthesized `walkValue<Outer>` that recursively
+     * instantiates `walkValue<Element>` AT A CALL SITE INSIDE ITS ARRAY
+     * LOOP produces malformed IR (an undefined SSA value — the outer
+     * function's codegen state is clobbered by the same-template
+     * re-entrant instantiation). Routing the in-loop element call through a
+     * DIFFERENTLY-named template (`walkElement`, which instantiates
+     * `walkValue<Element>` at its own top level, not in a loop) breaks that
+     * pattern — exactly how the old `parseObjectFromReader` path stayed
+     * stable. Nested-class SCALAR fields call `walkValue` directly (their
+     * recursion isn't in a loop, so they're unaffected).
+     */
+    public static T walkElement<T>(JsonCursor jc) {
+        return Json.walkValue<T>(jc);
+    }
+
+    /**
      * Tier 1 emit — symmetric counterpart of parse<T>. Coexists with
      * Tier-3 `toBytes(JsonValue)` via the same template-vs-overload
      * disambiguation as parse.

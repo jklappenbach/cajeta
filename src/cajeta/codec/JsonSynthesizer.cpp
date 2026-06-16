@@ -280,6 +280,27 @@ namespace cajeta {
         return os.str();
     }
 
+    // Escape a wire key for embedding as a cajeta string literal — `"` and
+    // `\` become `\"` / `\\`. Wire keys rarely contain either, but a
+    // `@JsonProperty("with\"quote")` would otherwise emit invalid source.
+    std::string escapeCajetaString(const std::string& s) {
+        std::string out;
+        out.reserve(s.size() + 2);
+        for (char c : s) {
+            if (c == '"' || c == '\\') out.push_back('\\');
+            out.push_back(c);
+        }
+        return out;
+    }
+
+    // Index-form key guard: a `JsonIndex.keyEq` call comparing the key at
+    // `keyPos` (an int64 in scope) against the literal `key`. The walk's
+    // raw-byte match has the same semantics as the old `kb`/`klen`
+    // byte-compare guard (a JSON-escaped key won't match a literal name).
+    std::string keyEqGuard(const std::string& key) {
+        return "JsonIndex.keyEq(b, keyPos, \"" + escapeCajetaString(key) + "\")";
+    }
+
     // Emit the FULL post-key body for one supported field type — that
     // is, the statements that consume the value tokens AND assign the
     // result to out.<field>. The caller is responsible only for the
@@ -697,6 +718,299 @@ namespace cajeta {
         return os.str();
     }
 
+    // ===================================================================
+    // Index-form (Tier-1 binding) read path. These mirror the *Reader
+    // helpers above but drive the SIMD structural index (JsonIndex) in an
+    // inline walk — no per-token JsonReader.next() boundary. Scope at a
+    // matched key arm: `int8[] b`, `int32[] idx`, `int32 ci` (positioned
+    // at the value's first index entry), `T out`, `int64 keyPos`. Each arm
+    // consumes its value and leaves `ci` at the following separator.
+    // ===================================================================
+
+    // Array field over the index. `ci` enters at the `[` entry; on exit it
+    // sits at the separator past the `]`. ArrayList<E> accumulates, then a
+    // fresh E[] is filled — same ownership reasoning as readArrayField.
+    std::string readArrayFieldIndexed(const std::string& fieldName,
+                                       CajetaTypePtr elementType) {
+        if (!elementType || !elementType->getQName()) return "";
+        const std::string& et = elementType->getQName()->toCanonical();
+        bool elementIsClass =
+            std::dynamic_pointer_cast<CajetaClass>(elementType) != nullptr;
+        const std::string f = fieldName;
+        const std::string list = "tmp_" + f;
+        // Per-element body: consume one value at idx[ci] into `list`,
+        // advancing ci. ep_<f> holds idx[ci] (the element value entry).
+        std::string elem;
+        if (et == "int32") {
+            elem = list + ".add(JsonIndex.decodeI32(b, (int64) ep_" + f + ")); ci = ci + 1;\n";
+        } else if (et == "int64") {
+            elem = list + ".add(JsonIndex.decodeI64(b, (int64) ep_" + f + ")); ci = ci + 1;\n";
+        } else if (et == "boolean") {
+            elem = list + ".add(JsonIndex.decodeBool(b, (int64) ep_" + f + ")); ci = ci + 1;\n";
+        } else if (et == "float64") {
+            elem = list + ".add(JsonIndex.decodeF64(b, (int64) ep_" + f + ")); ci = ci + 1;\n";
+        } else if (et == "cajeta.lang.String") {
+            elem = "int8[] esb_" + f + " = JsonIndex.decodeStrBytes(b, (int64) ep_" + f + ");\n"
+                   "                    int32 esl_" + f + " = (int32) esb_" + f + ".count();\n"
+                   "                    " + list + ".add(heap cajeta.lang.String(#esb_" + f + ", esl_" + f + ")); ci = ci + 1;\n";
+        } else if (elementIsClass) {
+            // Proven shape: a #-returning recursive call to a local, then
+            // add(#local) — identical to the old parseObjectFromReader
+            // path, but walkValue(jc) passes a single class pointer (no
+            // array-typed params into the loop's recursive call).
+            elem = "jc.ci = ci;\n"
+                   "                    " + et + " e_" + f + " = Json.walkElement<" + et + ">(jc);\n"
+                   "                    ci = jc.ci;\n"
+                   "                    " + list + ".add(#e_" + f + ");\n";
+        } else {
+            return "";
+        }
+        std::ostringstream os;
+        os << "int32 ap_" << f << " = idx[ci];\n";
+        os << "            int8 ac_" << f << " = b[ap_" << f << "];\n";
+        os << "            if (ac_" << f << " != (int8) 91) {\n";
+        os << "                throw heap JsonParseException(\n";
+        os << "                    \"Tier-1 parse: expected '['\", (int64) ap_" << f << ");\n";
+        os << "            }\n";
+        os << "            ci = ci + 1;\n";
+        os << "            cajeta.collection.ArrayList<" << et << "> " << list
+           << " = heap cajeta.collection.ArrayList<" << et << ">();\n";
+        os << "            boolean adone_" << f << " = false;\n";
+        os << "            while (!adone_" << f << ") {\n";
+        os << "                int32 ep_" << f << " = idx[ci];\n";
+        os << "                int8 ec_" << f << " = b[ep_" << f << "];\n";
+        os << "                if (ec_" << f << " == (int8) 93) { ci = ci + 1; adone_" << f << " = true; }\n";
+        os << "                else {\n";
+        os << "                    " << elem;
+        os << "                    int32 es_" << f << " = idx[ci];\n";
+        os << "                    int8 esc_" << f << " = b[es_" << f << "];\n";
+        os << "                    if (esc_" << f << " == (int8) 44) { ci = ci + 1; }\n";
+        os << "                }\n";
+        os << "            }\n";
+        os << "            int32 sz_" << f << " = " << list << ".count();\n";
+        os << "            out." << f << " = heap " << et << "[sz_" << f << "];\n";
+        os << "            int32 ii_" << f << " = 0;\n";
+        os << "            while (ii_" << f << " < sz_" << f << ") {\n";
+        os << "                out." << f << "[ii_" << f << "] = " << list << ".get(ii_" << f << ");\n";
+        os << "                ii_" << f << " = ii_" << f << " + 1;\n";
+        os << "            }\n";
+        return os.str();
+    }
+
+    // Index-form value decode for one field. Returns the matched-arm body.
+    std::string readFieldAssignmentIndexed(const StructurePropertyPtr& prop) {
+        const std::string& f = prop->getName();
+        CajetaTypePtr ty = prop->getType();
+        if (!ty || !ty->getQName()) return "";
+        // @JsonRaw: capture wire-form bytes (with delimiters); skip cursor.
+        if (isJsonRaw(prop)) {
+            return "out." + f + " = JsonIndex.valueWireBytes(b, idx, ci);\n"
+                   "            ci = JsonIndex.skipValue(b, idx, ci);\n";
+        }
+        // Optional<T> — null value → empty Optional; else present.
+        if (isOptionalField(prop)) {
+            auto inner = optionalInnerType(prop);
+            if (!inner || !inner->getQName()) return "";
+            const std::string& ic = inner->getQName()->toCanonical();
+            std::string readInner;
+            std::string defaultInner;
+            bool innerIsRef = false;
+            if (ic == "int32") {
+                readInner = "int32 v = JsonIndex.decodeI32(b, (int64) vp_" + f + ");";
+                defaultInner = "(int32) 0";
+            } else if (ic == "int64") {
+                readInner = "int64 v = JsonIndex.decodeI64(b, (int64) vp_" + f + ");";
+                defaultInner = "(int64) 0";
+            } else if (ic == "boolean") {
+                readInner = "boolean v = JsonIndex.decodeBool(b, (int64) vp_" + f + ");";
+                defaultInner = "false";
+            } else if (ic == "float64") {
+                readInner = "float64 v = JsonIndex.decodeF64(b, (int64) vp_" + f + ");";
+                defaultInner = "(float64) 0.0";
+            } else if (ic == "cajeta.lang.String") {
+                readInner = "int8[] vb_" + f + " = JsonIndex.decodeStrBytes(b, (int64) vp_" + f + ");\n"
+                            "                int32 vl_" + f + " = (int32) vb_" + f + ".count();\n"
+                            "                cajeta.lang.String v = heap cajeta.lang.String(#vb_" + f + ", vl_" + f + ");";
+                defaultInner = "null";
+                innerIsRef = true;
+            } else {
+                return "";
+            }
+            std::string presentArg = innerIsRef ? "#v" : "v";
+            std::ostringstream os;
+            os << "int32 vp_" << f << " = idx[ci];\n";
+            os << "            int8 ob_" << f << " = b[vp_" << f << "];\n";
+            os << "            if (ob_" << f << " == (int8) 110) {\n";
+            os << "                out." << f << " = heap cajeta.lang.Optional<" << ic
+               << ">(false, " << defaultInner << ");\n";
+            os << "            } else {\n";
+            os << "                " << readInner << "\n";
+            os << "                out." << f << " = heap cajeta.lang.Optional<" << ic
+               << ">(true, " << presentArg << ");\n";
+            os << "            }\n";
+            os << "            ci = ci + 1;\n";
+            return os.str();
+        }
+        // Array fields (CajetaArray inherits CajetaClass — check first).
+        if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
+            return readArrayFieldIndexed(f, arr->getElementType());
+        }
+        const std::string& tc = ty->getQName()->toCanonical();
+        if (tc == "int32") {
+            return "int32 vp_" + f + " = idx[ci];\n"
+                   "            out." + f + " = JsonIndex.decodeI32(b, (int64) vp_" + f + ");\n"
+                   "            ci = ci + 1;\n";
+        }
+        if (tc == "int64") {
+            return "int32 vp_" + f + " = idx[ci];\n"
+                   "            out." + f + " = JsonIndex.decodeI64(b, (int64) vp_" + f + ");\n"
+                   "            ci = ci + 1;\n";
+        }
+        if (tc == "boolean") {
+            return "int32 vp_" + f + " = idx[ci];\n"
+                   "            out." + f + " = JsonIndex.decodeBool(b, (int64) vp_" + f + ");\n"
+                   "            ci = ci + 1;\n";
+        }
+        if (tc == "float64") {
+            return "int32 vp_" + f + " = idx[ci];\n"
+                   "            out." + f + " = JsonIndex.decodeF64(b, (int64) vp_" + f + ");\n"
+                   "            ci = ci + 1;\n";
+        }
+        if (tc == "cajeta.lang.String") {
+            return "int32 vp_" + f + " = idx[ci];\n"
+                   "            int8[] sb_" + f + " = JsonIndex.decodeStrBytes(b, (int64) vp_" + f + ");\n"
+                   "            int32 sl_" + f + " = (int32) sb_" + f + ".count();\n"
+                   "            out." + f + " = heap cajeta.lang.String(#sb_" + f + ", sl_" + f + ");\n"
+                   "            ci = ci + 1;\n";
+        }
+        // Nested class — recurse via walkValue(jc) (single class-ptr arg,
+        // #-returning). Sync the cursor through jc around the call.
+        if (auto nested = std::dynamic_pointer_cast<CajetaClass>(ty)) {
+            return "jc.ci = ci;\n"
+                   "            out." + f + " = Json.walkValue<" + tc + ">(jc);\n"
+                   "            ci = jc.ci;\n";
+        }
+        return "";
+    }
+
+    // Build the index-walk object body — the stage-2 driver. Expects
+    // locals `int8[] b`, `int32[] idx`, `int32 ci`, `T out` in scope; ci at
+    // the object's `{` index entry on entry. Returns the cursor past `}`.
+    std::string emitObjectWalkBody(const CajetaClassPtr& T,
+                                   const std::string& indent) {
+        std::string strategy = classNamingStrategy(T);
+        bool strict = classIsStrict(T);
+        std::ostringstream os;
+        os << indent << "int32 op = idx[ci];\n";
+        os << indent << "int8 oc = b[op];\n";
+        os << indent << "if (oc != (int8) 123) {\n";
+        os << indent << "    throw heap JsonParseException(\n";
+        os << indent << "        \"Tier-1 parse: expected '{'\", (int64) op);\n";
+        os << indent << "}\n";
+        os << indent << "ci = ci + 1;\n";
+        std::vector<std::string> requiredKeys;
+        for (auto& prop : T->getPropertyList()) {
+            if (isJsonRequired(prop)) {
+                os << indent << "boolean req_seen_" << prop->getName()
+                   << " = false;\n";
+            }
+        }
+        os << indent << "boolean go = true;\n";
+        os << indent << "while (go) {\n";
+        os << indent << "    int32 kp = idx[ci];\n";
+        os << indent << "    int8 kc = b[kp];\n";
+        os << indent << "    if (kc == (int8) 125) {\n";
+        for (auto& prop : T->getPropertyList()) {
+            if (!isJsonRequired(prop)) continue;
+            std::string key = effectiveJsonKey(prop, strategy);
+            os << indent << "        if (!req_seen_" << prop->getName() << ") {\n";
+            os << indent << "            throw heap JsonParseException(\n";
+            os << indent << "                \"Tier-1 parse: required field '"
+               << escapeCajetaString(key) << "' missing\", (int64) kp);\n";
+            os << indent << "        }\n";
+        }
+        os << indent << "        ci = ci + 1;\n";
+        os << indent << "        go = false;\n";
+        os << indent << "    } else {\n";
+        os << indent << "        int64 keyPos = (int64) kp;\n";
+        os << indent << "        ci = ci + 1;\n";   // colon
+        os << indent << "        ci = ci + 1;\n";   // value
+        bool first = true;
+        for (auto& prop : T->getPropertyList()) {
+            if (isJsonIgnoredOnRead(prop)) continue;
+            std::string assign = readFieldAssignmentIndexed(prop);
+            if (assign.empty()) continue;
+            std::string primary = effectiveJsonKey(prop, strategy);
+            std::ostringstream guard;
+            guard << "(" << keyEqGuard(primary) << ")";
+            for (auto& alias : jsonAliases(prop)) {
+                guard << " || (" << keyEqGuard(alias) << ")";
+            }
+            os << indent << "        " << (first ? "if" : "else if")
+               << " (" << guard.str() << ") {\n";
+            os << indent << "            " << assign;
+            if (isJsonRequired(prop)) {
+                os << indent << "            req_seen_" << prop->getName()
+                   << " = true;\n";
+            }
+            os << indent << "        }\n";
+            first = false;
+        }
+        std::string unknownArmBody;
+        if (strict) {
+            unknownArmBody = "throw heap JsonParseException("
+                "\"Tier-1 parse: unknown key (class is @JsonStrict)\", keyPos);";
+        } else {
+            unknownArmBody = "ci = JsonIndex.skipValue(b, idx, ci);";
+        }
+        if (first) {
+            os << indent << "        { " << unknownArmBody << " }\n";
+        } else {
+            os << indent << "        else { " << unknownArmBody << " }\n";
+        }
+        // After a value, ci sits at the separator (',' or '}').
+        os << indent << "        int32 spx = idx[ci];\n";
+        os << indent << "        int8 scx = b[spx];\n";
+        os << indent << "        if (scx == (int8) 44) { ci = ci + 1; }\n";
+        os << indent << "    }\n";
+        os << indent << "}\n";
+        return os.str();
+    }
+
+    // The shared walk core: allocate T, lift b/idx/ci out of `jc` into stack
+    // locals (register-resident across the per-key loop), run the walk, sync
+    // the cursor back, return the filled #T. Used verbatim by both
+    // `walkValue<T>` and the top-level `parse<T>` (which INLINES it rather
+    // than calling walkValue — see synthesizeParseBody).
+    std::string emitWalkCore(const CajetaClassPtr& T) {
+        const std::string& Tc = T->getQName()->toCanonical();
+        std::ostringstream os;
+        os << "    " << Tc << " out = heap " << Tc << "();\n";
+        os << "    int8[] b = jc.b;\n";
+        os << "    int32[] idx = jc.idx;\n";
+        os << "    int32 ci = jc.ci;\n";
+        os << emitObjectWalkBody(T, "    ");
+        os << "    jc.ci = ci;\n";
+        os << "    return out;\n";
+        return os.str();
+    }
+
+    // Synthesize `walkValue<T>(JsonCursor jc)` — the recursive binding walk
+    // for NESTED objects. The single-class-pointer recursion (vs threading
+    // array-typed params) keeps the recursive-instantiation codegen stable —
+    // passing int8[] / int32[] into a recursive call inside a loop produced
+    // cross-function IR that crashed the LLVM backend.
+    std::string synthesizeWalkValueBody(const CajetaClassPtr& T,
+                                         const std::string& methodName) {
+        const std::string& Tc = T->getQName()->toCanonical();
+        std::ostringstream os;
+        os << "public static #" << Tc << " " << methodName
+           << "(JsonCursor jc) {\n";
+        os << emitWalkCore(T);
+        os << "}\n";
+        return os.str();
+    }
+
     // Build the synthesized `parse` method body for T. The method
     // signature is `public static <__T> T parse(int8[] bytes, int64
     // length) { ... }` with __T as a vacuous template parameter (it
@@ -721,9 +1035,18 @@ namespace cajeta {
         std::ostringstream os;
         os << "public static #" << Tcanon
            << " " << methodName << "(int8[] bytes, int64 length) {\n";
-        os << "    " << Tcanon << " out = heap " << Tcanon << "();\n";
-        os << "    JsonReader r = heap JsonReader(bytes, length);\n";
-        os << emitObjectLoopBody(T, "    ");
+        // Stage 1: SIMD sparse structural index. jc owns the idx scratch
+        // (allocated in its ctor) so `parse` holds no array local.
+        os << "    JsonCursor jc = heap JsonCursor(bytes, length);\n";
+        os << "    int32 cnt = JsonIndex.build(bytes, length, jc.idx);\n";
+        // Stage 2: INLINE the walk core directly into parse (rather than
+        // calling walkValue<T>). This keeps the top-level instantiation
+        // depth shallow — parse<T> itself holds the object loop and only
+        // calls a DIFFERENT template (walkElement / walkValue) for nested
+        // values, mirroring the proven parseObjectFromReader design. The
+        // extra parse->walkValue<T> layer deepened the recursive-
+        // instantiation chain enough to leak nested drops into this frame.
+        os << emitWalkCore(T);
         os << "}\n";
         return os.str();
     }
@@ -1077,6 +1400,14 @@ namespace cajeta {
                 && paramTypes.size() == 1
                 && paramCanonAt(paramTypes, 0) == "cajeta.codec.json.JsonReader") {
             out = synthesizeParseFromReaderBody(T, methodName);
+            dumpIfRequested(out);
+            return true;
+        }
+        // Tier-1 binding walk over the SIMD structural index.
+        if (methodName == "walkValue"
+                && paramTypes.size() == 1
+                && paramCanonAt(paramTypes, 0) == "cajeta.codec.json.JsonCursor") {
+            out = synthesizeWalkValueBody(T, methodName);
             dumpIfRequested(out);
             return true;
         }
