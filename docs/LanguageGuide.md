@@ -248,6 +248,38 @@ Stream<String> names = people.stream().map<String>(Person::getName);  // method 
 See [`stdlib/Lambdas.md`](stdlib/Lambdas.md) and
 [`stdlib/MethodLevelTemplate.md`](stdlib/MethodLevelTemplate.md).
 
+### Named arguments
+
+Any call — method, static, or constructor — may pass its arguments **by name**,
+using the parameter name followed by a colon:
+
+```cajeta
+public class Rect {
+    public int32 w;
+    public int32 h;
+    public Rect(int32 w, int32 h) { this.w = w; this.h = h; }
+    public int32 area(int32 scale, int32 bias) { return this.w * this.h * scale + bias; }
+}
+
+Rect r = heap Rect(w: 4, h: 3);            // named constructor args
+int32 a = r.area(scale: 2, bias: 1);       // named method args  → 25
+```
+
+- **Matched by name, so order is free.** `r.area(bias: 1, scale: 2)` binds the
+  same as `r.area(scale: 2, bias: 1)` — the labels, not the positions, decide
+  which parameter each value fills.
+- **All-or-nothing.** Either *every* argument is labeled or *none* is. A
+  partially-labeled call is **not** matched by name and is **not** an error — it
+  silently falls back to fully positional binding in source order, and the stray
+  labels are ignored. So `area(scale: 2, 1)` and `area(2, bias: 1)` both bind
+  positionally (`scale = 2, bias = 1`); the label is decorative there. Label all
+  arguments or none — never mix.
+- The same `name: value` shape is used by **struct aggregate initializers**
+  (`Foo { field: value, … }`, see §5) and by the XPU **kernel launch** form
+  (`kernel.launch(stream, grid: […], block: […])`, see the XPU guide) — there the
+  unlabeled `stream` alongside labeled `grid`/`block` is handled by a dedicated
+  launch lowering, not the general rule above.
+
 ---
 
 ## 9. Classes, interfaces, enums, and views
