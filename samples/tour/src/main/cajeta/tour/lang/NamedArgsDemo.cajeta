@@ -1,0 +1,35 @@
+package tour.lang;
+
+import tour.DemoClass;
+import tour.Point;
+
+// Named (keyword) arguments. Any call — method, static, or constructor —
+// may pass its arguments by name (`name: value`). Arguments are then
+// matched by NAME, so call-site order is free. Rule: all-or-nothing —
+// label every argument or none; a partially-labeled call silently falls
+// back to positional binding (the labels are ignored). See
+// docs/LanguageGuide.md § "Named arguments".
+public class NamedArgsDemo extends DemoClass {
+
+    // Order-sensitive on purpose (a - b): a mis-bind would be visible.
+    public int32 diff(int32 a, int32 b) {
+        return a - b;
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Named arguments --");
+
+        // Named constructor args, in declaration order.
+        Point p = heap Point(x: 3, y: 4);
+        System.stdout.println("  Point(x: 3, y: 4).distSq() = " + p.distSq());
+
+        // Named constructor args, REVERSED — bound by name, so still x=1, y=2.
+        Point q = heap Point(y: 2, x: 1);
+        System.stdout.println("  Point(y: 2, x: 1) -> x=" + q.x + " y=" + q.y);
+
+        // Named method args, and order-independence: both read a=10, b=3 → 7.
+        System.stdout.println("  diff(a: 10, b: 3) = " + this.diff(a: 10, b: 3));
+        System.stdout.println("  diff(b: 3, a: 10) = " + this.diff(b: 3, a: 10));
+    }
+}
