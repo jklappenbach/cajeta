@@ -4439,6 +4439,35 @@ int64_t __cajeta_object_invoke_scalar(void* obj, int32_t idx, void* argArray) {
     return ret;
 }
 
+// REFL: invoke resolving the adapter from an EXPLICIT class RTTI rather than
+// from the receiver `obj`. This is what makes STATIC methods reflectable: a
+// static call has no receiver (`obj == NULL`), so the obj-derived path can't
+// find the adapter. `Method` always carries its declaring class's rtti, so it
+// can drive these. `obj` is passed straight to the adapter as the `this`
+// receiver — NULL for statics, the instance for instance methods (the thunk
+// only reads it for cases that have a leading `this`). The adapter belongs to
+// the method's DECLARING class, so the index aligns even on a subclass instance.
+void* __cajeta_rtti_invoke_obj(void* rtti, void* obj, int32_t idx, void* argArray) {
+    if (!rtti) return NULL;
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
+    if (!adapter) return NULL;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    void* ret = NULL;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+int64_t __cajeta_rtti_invoke_scalar(void* rtti, void* obj, int32_t idx, void* argArray) {
+    if (!rtti) return 0;
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
+    if (!adapter) return 0;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    int64_t ret = 0;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+
 // REFL-4 typed FP return paths. The per-class invoke adapter already stores a
 // float/double result into the 8-byte `ret` buffer (emitReflectInvokeBody
 // marshals floating-point returns); these variants read that buffer in the FP
