@@ -1,0 +1,28 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+import cajeta.codec.json.Json;
+import cajeta.codec.json.JsonReader;
+import cajeta.codec.json.JsonToken;
+
+class Empty { public int32 z; public Empty() { this.z = 0; } }
+
+public final class SkipBench {
+    static void check(String path, String name) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        int64 warm = 0; int64 k = 0; while (k < n) { warm = warm + (int64) b[k]; k = k + 1; }
+        // parse into a struct that maps nothing -> every value skipValue'd (no decode)
+        int64 t0 = Clock.nanoTime();
+        Empty e = Json.parse<Empty>(b, n);
+        int64 t1 = Clock.nanoTime();
+        float64 mb = ((float64) n)/1000000.0/(((float64)(t1-t0))/1000000000.0);
+        System.stdout.println(name + ": parse<Empty> (skip-all) " + mb + " MB/s  (z=" + e.z + " w=" + (warm&255) + ")");
+    }
+    public static int32 run() {
+        check("/tmp/jsonbench/twitter.json", "twitter");
+        check("/tmp/jsonbench/citm_catalog.json", "citm");
+        check("/tmp/jsonbench/canada.json", "canada");
+        return 0;
+    }
+}
