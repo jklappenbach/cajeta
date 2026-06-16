@@ -53,12 +53,24 @@ cvm --version | --help
 
 ## Status
 
-**Phase 0 (this commit) — bootstrap skeleton.** Real CLI dispatch + working
-environment/path resolution (`which`, `doctor`). The verbs that fetch and
-install a toolchain (`install`, `default`, `self update`) are honest stubs
-that announce intent and exit `2`; they do not yet touch the network or the
-filesystem.
+**Phase 1 — toolchain install works end to end.** `install`, `default`,
+`which`, and `doctor` are functional:
 
-**Phase 1 (next)** — manifest resolve → download → checksum verify → install
-to `~/.cajeta/versions/<ver>` → wire PATH; install-method detection;
-coexist/takeover reconciliation with a system-wide cajeta. See D12 Phase 1.
+- `cvm install [latest|<version>]` resolves the release manifest from GitHub
+  Releases, detects the host triple, downloads the self-contained binary,
+  **verifies its SHA-256 checksum**, installs it under
+  `~/.cajeta/versions/<ver>/`, and repoints the `cajeta` shim.
+- `cvm default <version>` repoints the shim to any installed toolchain.
+
+Validated end-to-end against the published **v0.7.0** release (2026-06-14):
+`cvm install` fetched the GA binary (commit `ab65456`, matching the `v0.7.0`
+tag), checksum-verified it, and the shim runs `cajeta 0.7.0`.
+
+**Not yet implemented (D12 Phase 1+).**
+
+- `cvm self update` — defers to your installer; install-method detection is
+  pending.
+- **Shell PATH wiring** — the shim is installed at `~/.cajeta/bin/cajeta` but
+  cvm does not yet edit your shell profile; add `~/.cajeta/bin` to `PATH`
+  yourself for now.
+- Coexist/takeover reconciliation with a system-wide cajeta.
