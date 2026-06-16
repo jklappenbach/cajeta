@@ -7767,6 +7767,7 @@ struct cajeta_hip_tex {
     // samplerSRD[4]} texobj rebuilt per launch with the bound sampler's modes.
     int emulated;
     void* devAlloc; uint64_t devBase; void* addr; void* srdBlob;
+    void* stagingHost;   // persistent host copy of the tiled surface (all levels)
     struct caj_amdtex_layout_c layout;
 };
 
@@ -11157,6 +11158,7 @@ static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h, int32_t format) 
     struct cajeta_hip_tex* t =
         (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = 1;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11187,6 +11189,7 @@ static int64_t cajeta_xpu_hip_image_alloc(uint32_t w, uint32_t h) {
         return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = 1;
     t->format = CAJ_TEXFMT_R32F; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11239,6 +11242,7 @@ static int64_t cajeta_xpu_hip_tex1d_alloc(uint32_t w, int32_t format) {
     if (g_xpu_hip.hipMallocArray(&array, &cd, w, 0, 0) != 0 || !array) return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = 1; t->d = 1;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11260,6 +11264,7 @@ static int64_t cajeta_xpu_hip_tex3d_alloc(uint32_t w, uint32_t h, uint32_t d,
     if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, 0) != 0 || !array) return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = d;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11280,6 +11285,7 @@ static int64_t cajeta_xpu_hip_tex2darray_alloc(uint32_t w, uint32_t h,
         return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = layers;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11303,6 +11309,7 @@ static int64_t cajeta_xpu_hip_texcube_alloc(uint32_t size, int32_t format) {
         return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = size; t->h = size; t->d = 6;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11427,6 +11434,13 @@ static int64_t cajeta_xpu_hip_tex_alloc_mip_emulated(uint32_t w, uint32_t h,
     t->format = format; t->levels = (int) levels;
     t->emulated = 1; t->devAlloc = devAlloc; t->devBase = devBase;
     t->addr = addr; t->srdBlob = NULL; t->layout = lo;
+    // Persistent host copy of the whole tiled surface: each uploadLevel scatters
+    // its level into this and re-pushes the lot, so earlier levels survive (the
+    // levels share one tile — a fresh per-level buffer would zero the others).
+    t->stagingHost = calloc(1, lo.surfSize);
+    if (!t->stagingHost) {
+        g_xpu_hip.hipFree(devAlloc); g_xpu_amdtex.destroy(addr); free(t); return 0;
+    }
     return (int64_t) (intptr_t) t;
 }
 
@@ -11437,10 +11451,10 @@ static void cajeta_xpu_hip_tex_upload_level_emulated(struct cajeta_hip_tex* t,
                                                      const float* src, uint32_t lw,
                                                      uint32_t lh, uint32_t level,
                                                      int32_t format) {
-    if (!t->addr || (int) level >= t->levels) return;
+    if (!t->addr || !t->stagingHost || (int) level >= t->levels) return;
     size_t texelBytes = cajeta_texfmt_texel_bytes(format);
     size_t texels = (size_t) lw * lh * cajeta_texfmt_channels(format);
-    // Encode the level into a linear (row-major) staging buffer first.
+    // Encode the level into a linear (row-major) buffer first.
     unsigned char* lin = (unsigned char*) malloc((size_t) lw * lh * texelBytes);
     if (!lin) return;
     if (cajeta_texfmt_is_unorm(format) || cajeta_texfmt_is_half(format) ||
@@ -11448,9 +11462,9 @@ static void cajeta_xpu_hip_tex_upload_level_emulated(struct cajeta_hip_tex* t,
         cajeta_texfmt_encode(lin, src, texels, format);
     else
         memcpy(lin, src, (size_t) lw * lh * texelBytes);
-    // Scatter into the device-layout staging buffer at each texel's tiled offset.
-    unsigned char* surf = (unsigned char*) calloc(1, t->layout.surfSize);
-    if (!surf) { free(lin); return; }
+    // Scatter into the PERSISTENT staging buffer at each texel's tiled offset, then
+    // re-push the whole surface (levels interleave within the shared tile).
+    unsigned char* surf = (unsigned char*) t->stagingHost;
     for (uint32_t y = 0; y < lh; ++y)
         for (uint32_t x = 0; x < lw; ++x) {
             uint64_t off = g_xpu_amdtex.addr_from_coord(
@@ -11460,7 +11474,7 @@ static void cajeta_xpu_hip_tex_upload_level_emulated(struct cajeta_hip_tex* t,
                 memcpy(surf + off, lin + ((size_t) y * lw + x) * texelBytes, texelBytes);
         }
     g_xpu_hip.hipMemcpyHtoD((void*) (uintptr_t) t->devBase, surf, t->layout.surfSize);
-    free(surf); free(lin);
+    free(lin);
 }
 
 // Build the per-launch texobj for an emulated mip texture: a fine-grain-SVM blob
@@ -11550,6 +11564,7 @@ static int64_t cajeta_xpu_hip_tex_alloc_mip(uint32_t w, uint32_t h, int32_t form
         if (g_xpu_hip.hipFreeMipmappedArray) g_xpu_hip.hipFreeMipmappedArray(mipmap);
         return 0;
     }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = NULL; t->mipmap = mipmap; t->w = w; t->h = h; t->d = 1;
     t->format = format; t->levels = (int) levels;
     return (int64_t) (intptr_t) t;
@@ -11592,6 +11607,7 @@ static void cajeta_xpu_hip_tex_free(int64_t handle) {
         if (t->srdBlob && g_xpu_hip.hipHostFree) g_xpu_hip.hipHostFree(t->srdBlob);
         if (t->devAlloc && g_xpu_hip.hipFree) g_xpu_hip.hipFree(t->devAlloc);
         if (t->addr && g_xpu_amdtex.destroy) g_xpu_amdtex.destroy(t->addr);
+        free(t->stagingHost);
         free(t);
         return;
     }

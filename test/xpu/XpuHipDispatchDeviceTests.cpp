@@ -1093,18 +1093,18 @@ TEST(XpuHipDispatchDeviceTests, mipmapFetchAndSampleLodRoutesToHipOnDevice) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     int r = fn();
-    // AMD mipmapped arrays are unsupported by the HIP runtime on gfx1151 —
-    // hipMallocMipmappedArray → hipErrorNotSupported(801). CONFIRMED a durable
-    // ROCm gap, NOT a cajeta bug: a standalone HIP probe reproduces 801 on BOTH
-    // ROCm 7.2.2 and 7.11.0, while layered/2D/3D arrays allocate fine. The
-    // hardware is capable — the SAME GPU does mipmap+LOD via the Vulkan/RADV path
-    // (XpuVulkanDispatchDeviceTests.mipmapFetchAndSampleLodOnDevice). cajeta's
-    // runtime + ockl _lod seam are correct and light up if ROCm implements it.
-    // Use the Vulkan backend for mip/LOD on AMD today. See project memory.
+    // HIP's hipMallocMipmappedArray returns hipErrorNotSupported(801) on gfx1151
+    // (a durable ROCm gap, ROCm 7.2.2 + 7.11.0). cajeta EMULATES mip Texture2D on
+    // AMD (option B): a hand-built gfx11 image SRD over an addrlib-tiled hipMalloc,
+    // sampled via __ockl_image_sample_lod_2D — proven bit-exact on-device
+    // (plans/gpu/xpu/probes/mipprobe.cpp). So on gfx1151 this now PASSES (r==777).
+    // The 555 path remains as graceful degradation: when libcajeta_amdtex is
+    // absent or the gfx arch isn't in the config table, emulation is unavailable
+    // and the mip texture doesn't allocate (handle 0 → kernel doesn't launch).
     if (r == 555) {
-        GTEST_SKIP() << "AMD mipmapped arrays unsupported by HIP/ROCm on gfx1151 "
-                        "(hipMallocMipmappedArray → 801; ROCm 7.2.2 + 7.11.0); "
-                        "use the Vulkan backend";
+        GTEST_SKIP() << "AMD mip emulation unavailable (no libcajeta_amdtex / "
+                        "unrecognised gfx arch); native hipMallocMipmappedArray is "
+                        "unsupported on gfx1151 — use the Vulkan backend";
     }
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (100: L0 fetch; 200: L1 fetch; 300: L1 sampleLod)";
