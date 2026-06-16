@@ -63,7 +63,10 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // annotation/registry classes, reflective adapters) + the cajeta.gpu.core
 // structures HEAD added. This count is self-anchoring — anchored to the live
 // modules.size() after the merge build.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 320;
+// 2026-06-15: 320 → 328 — feature/json-schema merge added the SIMD JSON binding
+// stdlib (cajeta.codec.json.{JsonIndex,JsonCursor,JsonHandler,JsonSax,
+// JsonLinesWriter} + cajeta.io.Buffer; +8 prelude structures).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 328;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

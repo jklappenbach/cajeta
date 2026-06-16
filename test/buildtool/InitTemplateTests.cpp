@@ -50,11 +50,12 @@ namespace {
 
 } // namespace
 
-TEST(InitTemplateTests, embedsAllFourArchetypes) {
+TEST(InitTemplateTests, embedsAllFiveArchetypes) {
     auto names = availableInitTemplates();
     std::set<std::string> nameSet(names.begin(), names.end());
-    EXPECT_EQ(names.size(), 4u);
+    EXPECT_EQ(names.size(), 5u);
     EXPECT_TRUE(nameSet.count("basic"));
+    EXPECT_TRUE(nameSet.count("library"));
     EXPECT_TRUE(nameSet.count("workspace"));
     EXPECT_TRUE(nameSet.count("multi-binary"));
     EXPECT_TRUE(nameSet.count("melt"));
