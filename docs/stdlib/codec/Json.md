@@ -71,6 +71,47 @@ registers** rather than a heap object (~2× on the typed walk — output
 stays heap, state goes to the stack). Net: **~0.25× → 2.0–3.8× Jackson**,
 a 10–15× swing.
 
+### Cross-language: Cajeta vs Rust vs Java
+
+Same machine, same methodology (idle box, peak-of-batches MB/s). The
+apples-to-apples comparison for the headline path is **structural skip-all** —
+fully scan + validate JSON structure and decode/materialize *nothing*. That is
+exactly what `Json.parse<BBEmpty>` does (build the SIMD index + depth-walk,
+skipping every value), and its direct analogs are Rust `serde_json`'s
+`IgnoredAny` (scalar) and Java Jackson's tokenize.
+
+| structural skip-all (build structure, decode nothing) | twitter | citm | canada |
+|---|---|---|---|
+| **Cajeta — `Json.parse<BBEmpty>`** (SIMD index + walk) | **3817** | **4102** | **2944** |
+| Rust — `serde_json` `IgnoredAny` (scalar) | 3452 | 2888 | 2704 |
+| Java — Jackson tokenize | 1551 | 1837 | 811 |
+| _Cajeta vs serde_json_ | _1.11×_ | _1.42×_ | _1.09×_ |
+| _Cajeta vs Jackson_ | _2.46×_ | _2.23×_ | _3.63×_ |
+
+Cajeta edges Rust's `serde_json` `IgnoredAny` on all three and is 2.2–3.6×
+Jackson. Note the comparison *favors* serde_json: `IgnoredAny` borrows its input
+(no per-iteration copy), whereas the Cajeta number has a fresh-copy baseline
+subtracted because `parse` frees its buffer — and Cajeta still wins.
+
+For context, Rust's **full-materialization** paths (which do strictly more work
+than skip-all — they build a navigable value tree, so they are *not* directly
+comparable to the skip-all row above):
+
+| full materialization (build a value tree) | twitter | citm | canada |
+|---|---|---|---|
+| Rust — `simd-json` tape (SIMD) | 1712 | 1889 | 916 |
+| Rust — `simd-json` owned DOM | 701 | 891 | 537 |
+| Rust — `serde_json` `Value` DOM | 538 | 823 | 598 |
+
+`simd-json`'s SIMD tape materializes every value into a flat tape, so it trails
+the skip-all structural number — the cost is the materialization, not the SIMD.
+A like-for-like SIMD-vs-SIMD *structural* comparison would need simd-json's
+stage-1 index alone, which the library doesn't expose as a standalone path.
+
+> Harness: `serde_json` 1.x + `simd-json` 0.13, `-C target-cpu=native`, 200
+> iterations peak-of-batches, copy baseline subtracted for `simd-json` (it mutates
+> its input in place). Same datasets as above.
+
 ## Goals, in priority order
 
 1. **Fast.** Throughput is the design's first constraint, not an
