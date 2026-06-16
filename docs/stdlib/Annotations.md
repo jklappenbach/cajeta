@@ -557,7 +557,7 @@ contributors don't reach for them expecting them to work.
 | `@Transactional`        | method          | Aspect marker for transactional methods (user-defined, but reserved name).                       | `AspectModel.md`    |
 | `@DisplayAs("name")`    | method, field   | Override the display name in IDE / debugger views.                                               | `Debugging.md`      |
 | `@Parameter`            | parameter       | Reflection hint — retains the parameter name in the symbol table for introspection.              | `Reflection.md`  |
-| `@Scope("singleton"|"prototype"|"request")` | component class | DI scope. Today implicit per-call-site; this would make it declarative. | `AspectModel.md`    |
+| `@Scope("singleton"|"prototype"|"request")` | component class | DI scope. Already controllable per **injection site** via `@Inject(allocate=ALLOCATE_SINGLETON\|OWNER_SCOPE\|TRANSIENT)` (three modes shipped; `CALL_SCOPE` stubbed, `FIBER`/request planned). A class-level `@Scope` would make it declarative as a default. See `AspectModel.md` § *Injection lifespan* and `plans/DI-request-scope-and-test-enablers.md`. | `AspectModel.md`    |
 
 ### Rejected
 
