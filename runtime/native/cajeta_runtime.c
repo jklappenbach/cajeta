@@ -4468,6 +4468,80 @@ int64_t __cajeta_rtti_invoke_scalar(void* rtti, void* obj, int32_t idx, void* ar
     return ret;
 }
 
+// ---- @Inject runtime override registry (test-only DI substitution) ---------
+//
+// Lets a test bind a substitute instance for a type so that a `@Inject` site
+// whose field type matches resolves to the substitute instead of the
+// statically-wired provider. Keyed by the type's `reflect.Class` object pointer
+// — what `T.class` lowers to (the named, linker-unified `<type>#ClassObject`
+// global) — so matching is pointer identity, no string compare.
+//
+// The compiler only emits the lookup in TEST builds (activeProfile == "test"),
+// so production injection paths carry zero overhead and don't link this at all
+// unless used. Entries hold BORROWED pointers: the test owns the substitute for
+// its lifetime; clear() forgets entries, it never frees the instances.
+//
+// v1 scope: singleton-mode, class-typed `@Inject` fields (mock by subclassing
+// and overriding virtuals). Interface-typed fields need a fat-pointer-aware
+// path and are not yet overridable.
+typedef struct CajetaInjectOverride {
+    void* classObj;
+    void* instance;
+    struct CajetaInjectOverride* next;
+} CajetaInjectOverride;
+
+static CajetaInjectOverride* __cajeta_inject_override_head = NULL;
+static pthread_mutex_t __cajeta_inject_override_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void __cajeta_inject_override_bind(void* classObj, void* instance) {
+    if (!classObj) return;
+    pthread_mutex_lock(&__cajeta_inject_override_mutex);
+    for (CajetaInjectOverride* e = __cajeta_inject_override_head; e; e = e->next) {
+        if (e->classObj == classObj) {
+            e->instance = instance;
+            pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+            return;
+        }
+    }
+    CajetaInjectOverride* node =
+        (CajetaInjectOverride*) malloc(sizeof(CajetaInjectOverride));
+    if (!node) {
+        pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+        return;
+    }
+    node->classObj = classObj;
+    node->instance = instance;
+    node->next = __cajeta_inject_override_head;
+    __cajeta_inject_override_head = node;
+    pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+}
+
+void* __cajeta_inject_override_get(void* classObj) {
+    if (!classObj) return NULL;
+    void* result = NULL;
+    pthread_mutex_lock(&__cajeta_inject_override_mutex);
+    for (CajetaInjectOverride* e = __cajeta_inject_override_head; e; e = e->next) {
+        if (e->classObj == classObj) {
+            result = e->instance;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+    return result;
+}
+
+void __cajeta_inject_override_clear(void) {
+    pthread_mutex_lock(&__cajeta_inject_override_mutex);
+    CajetaInjectOverride* e = __cajeta_inject_override_head;
+    while (e) {
+        CajetaInjectOverride* n = e->next;
+        free(e);
+        e = n;
+    }
+    __cajeta_inject_override_head = NULL;
+    pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+}
+
 // REFL-4 typed FP return paths. The per-class invoke adapter already stores a
 // float/double result into the 8-byte `ret` buffer (emitReflectInvokeBody
 // marshals floating-point returns); these variants read that buffer in the FP

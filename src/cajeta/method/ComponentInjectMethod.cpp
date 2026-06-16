@@ -238,6 +238,41 @@ namespace cajeta {
                 depPtr = freshInst;
             }
 
+            // Test-only @Inject override (DI-override-hook.md). In a TEST build
+            // (activeProfile == "test"), a test may bind a substitute instance
+            // for a type via cajeta-unit's TestContext; a matching @Inject field
+            // then resolves to the substitute instead of the static provider.
+            // Keyed by the field type's reflect.Class object (the same global
+            // `T.class` yields), so matching is pointer identity. Emitted only
+            // in test builds — production carries no lookup. v1 scope: singleton
+            // mode, class-typed (non-interface) fields, mocked by subclassing.
+            if (CajetaModule::getActiveProfile() == "test"
+                    && !fieldIface
+                    && rd.target && rd.target->klass
+                    && rd.allocate == CajetaModule::AllocateMode::Singleton) {
+                CajetaClassPtr fieldType =
+                    std::dynamic_pointer_cast<CajetaClass>(rd.field->getType());
+                llvm::GlobalVariable* classObjG =
+                    fieldType ? fieldType->getClassObjectGlobal() : nullptr;
+                if (classObjG) {
+                    llvm::Constant* classObjRef =
+                        CajetaModule::ensureGlobalInModule(lmod, classObjG);
+                    llvm::FunctionType* getFnTy =
+                        llvm::FunctionType::get(ptrTy, {ptrTy}, false);
+                    llvm::FunctionCallee getFn = lmod->getOrInsertFunction(
+                        "__cajeta_inject_override_get", getFnTy);
+                    llvm::Value* ovr = builder->CreateCall(
+                        getFn, {classObjRef}, rd.field->getName() + "_ovr");
+                    llvm::Value* hasOvr = builder->CreateICmpNE(
+                        ovr, llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy)),
+                        rd.field->getName() + "_hasovr");
+                    depPtr = builder->CreateSelect(
+                        hasOvr, ovr, depPtr,
+                        rd.field->getName() + "_sel");
+                }
+            }
+
             if (fieldIface) {
                 // Interface field: write the 24-byte fat pointer in place.
                 // word 0 = data (depPtr — underlying class instance)
