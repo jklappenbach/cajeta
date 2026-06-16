@@ -3427,14 +3427,18 @@ namespace cajeta {
                     receiver = builder->CreateLoad(
                         llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
                 } else if (dynamic_pointer_cast<DotExpression>(exprChild)
-                        && llvm::isa<llvm::GetElementPtrInst>(receiver)
+                        && (llvm::isa<llvm::GetElementPtrInst>(receiver)
+                            || llvm::isa<llvm::GlobalVariable>(receiver))
                         && receiverType
                         && dynamic_pointer_cast<CajetaClass>(receiverType)
                         && !dynamic_pointer_cast<CajetaView>(receiverType)) {
                     // Chained field access `a.b.method()` where `b` is a
-                    // class-ref OR array field. DotExpression returned the
-                    // field's slot pointer (a GEP); the slot stores a `ptr`
-                    // to the referent instance / array header (per
+                    // class-ref OR array field, OR a STATIC field receiver
+                    // `Class.STATIC.method()`. DotExpression returned the
+                    // field's slot pointer — a GEP for an instance field, or
+                    // the static-field GlobalVariable (its address) for a
+                    // static field. Either way the slot stores a `ptr` to the
+                    // referent instance / array header (per
                     // CajetaClass::fieldLayoutType rule that lays class-ref
                     // and array fields as `ptr`). Load through to
                     // materialize the instance/header pointer used as the
@@ -3444,9 +3448,11 @@ namespace cajeta {
                     // __cajeta_vtable_lookup would walk garbage; for arrays
                     // the same shape — `.count()` / `.stream()` would read
                     // the slot's first 8 bytes (the header pointer) as if
-                    // it were the count word. View and interface fields
-                    // stay inline, so the slot IS the language-level value
-                    // — skip the load there.
+                    // it were the count word. (The static-field case
+                    // previously fell through with no load → the global's
+                    // address was passed as `this` → SIGSEGV.) View and
+                    // interface fields stay inline, so the slot IS the
+                    // language-level value — skip the load there.
                     auto rc = dynamic_pointer_cast<CajetaClass>(receiverType);
                     if (!rc->isInterface()) {
                         receiver = builder->CreateLoad(
