@@ -25,6 +25,17 @@ class AmdgpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "amdgpu"; }
 
+    // No native inline ray query (cajeta has no AMDGPU RT seam — that path is
+    // Vulkan/SPIR-V's OpRayQuery, or a vendor RT extension), so the Acceleration-
+    // Structure noun is built as the portable software BVH and the RayQuery verb
+    // follows to the cajeta.gpu.core.SoftwareRayQuery walk — the same Portable tier
+    // the CPU and NVPTX backends use. Without this the base default (VulkanNative)
+    // routes RayQuery to rayQueryType(), which throws on AMDGPU. softwareRayQuery()
+    // derives from this in the base; the HIP noun provider uploads the BVH to a
+    // device buffer the kernel reads as bvh[i]. (coopMatrixTier stays the AMD
+    // override below — AMD has native WMMA.)
+    NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
+
     // AMDGPU allocas MUST live in the private address space (5). An AS-0
     // alloca here is invalid IR for the AMDGPU backend — the classic first
     // bug (cajeta-amd.md §2). mem2reg removes most of them before ISA emit;

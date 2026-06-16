@@ -17,6 +17,7 @@
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/xpu/amd/HipDriver.h"
 #include "cajeta/xpu/nvidia/CudaDriver.h"
 #include "cajeta/xpu/vulkan/VulkanDriver.h"
 
@@ -870,4 +871,95 @@ TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (NVPTX committed front-face != CPU)";
+}
+
+// ===========================================================================
+// AMD (AMDGPU → hsaco, HipDriver) software-BVH ray query — the symmetric twin of
+// the NVPTX arm. AMD has no cajeta native inline ray-query seam either, so
+// AmdgpuTarget.accelImpl() == SoftwareBvh: the AccelerationStructure builds the
+// portable software BVH, the HIP noun provider uploads it into a device buffer, and
+// the kernel runs the SoftwareRayQuery walk under its base name. The SAME driver
+// sources as the CPU/NVPTX legs, so each AMD 777 must equal the CPU 777 — the verb
+// following the noun across the fourth backend. Skips cleanly without a ROCm/HIP
+// device.
+// ---------------------------------------------------------------------------
+
+TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnAmdSoftwareBvh) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (AMD software AABB ray query: wrong hit count)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnAmdSoftwareBvh) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (AMD software triangle ray query != CPU)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnAmdSoftwareBvh) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (AMD nearest-hit confirm/committed != CPU)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnAmdSoftwareBvh) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (AMD candidate distance/barycentrics != CPU)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnAmdSoftwareBvh) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (AMD committed front-face != CPU)";
 }

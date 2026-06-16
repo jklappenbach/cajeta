@@ -350,7 +350,11 @@ paths are Vulkan-flavor; NVIDIA/AMD native `wmma`/RT seams are not yet wired.
 bit-exact), and ray-query over the portable software BVH (the same
 `SoftwareRayQuery` walk the CPU uses — AABB/triangle/nearest/barycentrics/front-face
 all match the CPU results). The native tensor-core/RT-core NVIDIA paths remain the
-future enhancement; the portable tiers are the correct, running floor.
+future enhancement; the portable tiers are the correct, running floor. **AMD gets
+the symmetric ray-query software-BVH path** (`AmdgpuTarget.accelImpl() == SoftwareBvh`
++ a HIP noun provider) — code-complete + compile-verified, on-device-PENDING the
+gfx1151 box (both NVPTX and AMDGPU had the same latent `accelImpl()` gap that made
+`RayQuery` throw; now fixed). AMD's cooperative-matrix is already native WMMA.
 
 | Feature | Vulkan (Cajeta's flavor) | On-device |
 |---|---|---|

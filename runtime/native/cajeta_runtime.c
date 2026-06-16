@@ -13118,10 +13118,62 @@ static const CajetaNounProvider caj_cuda_noun_provider = {
     caj_cuda_accel_free,
 };
 
-// Registry indexed by backend id. CUDA wires the software-BVH-on-device provider
-// above; HIP has no device AS yet (the symmetric follow-up): NULL there.
+// HIP/AMD provider — the symmetric twin of the CUDA arm. AMD likewise has no
+// cajeta native inline ray-query seam, so AmdgpuTarget.accelImpl() == SoftwareBvh:
+// build the host software BVH and upload it into a HIP device buffer the kernel
+// reads as bvh[i] under its base name (no $sw twin). Mirrors caj_cuda_* with
+// hipMalloc/hipMemcpyHtoD/hipFree (HIP handles are void*, cast to the int64 handle).
+static int64_t caj_hip_accel_upload_blob(int64_t blob) {
+    if (!blob) return 0;
+    if (!g_xpu_hip.hipMalloc || !g_xpu_hip.hipMemcpyHtoD) {
+        free((void*) (intptr_t) blob);
+        return 0;
+    }
+    const float* hdr = (const float*) (intptr_t) blob;
+    uint64_t bytes = (uint64_t) caj_bvh_block_words(hdr) * 4u;
+    void* dev = NULL;
+    if (g_xpu_hip.hipMalloc(&dev, (size_t) bytes) != 0 || !dev) {
+        free((void*) (intptr_t) blob);
+        return 0;
+    }
+    if (g_xpu_hip.hipMemcpyHtoD(dev, hdr, (size_t) bytes) != 0) {
+        if (g_xpu_hip.hipFree) g_xpu_hip.hipFree(dev);
+        free((void*) (intptr_t) blob);
+        return 0;
+    }
+    free((void*) (intptr_t) blob);
+    return (int64_t) (intptr_t) dev;
+}
+static int64_t caj_hip_accel_build_aabbs(const float* boxes, uint32_t count,
+                                         int32_t pref, CajetaAsImpl* out_impl) {
+    (void) pref;
+    if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
+    return caj_hip_accel_upload_blob(cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
+}
+static int64_t caj_hip_accel_build_triangles(const float* verts, uint32_t triCount,
+                                             uint32_t stride, CajetaAsImpl* out_impl) {
+    if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
+    return caj_hip_accel_upload_blob(
+        cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride));
+}
+static void caj_hip_accel_free(int64_t handle, CajetaAsImpl impl) {
+    (void) impl;
+    if (handle && g_xpu_hip.hipFree)
+        g_xpu_hip.hipFree((void*) (intptr_t) handle);
+}
+
+static const CajetaNounProvider caj_hip_noun_provider = {
+    "hip", CAJ_XPU_HIP,
+    caj_hip_accel_build_aabbs, caj_hip_accel_build_triangles,
+    caj_hip_accel_free,
+};
+
+// Registry indexed by backend id. CUDA + HIP now wire the software-BVH-on-device
+// provider (the AccelerationStructure noun built as a portable BVH uploaded to a
+// device buffer); Vulkan picks native BLAS or forced-software; CPU is the floor.
 static const CajetaNounProvider* const g_xpu_noun_providers[CAJ_XPU_COUNT] = {
     [CAJ_XPU_CUDA]   = &caj_cuda_noun_provider,
+    [CAJ_XPU_HIP]    = &caj_hip_noun_provider,
     [CAJ_XPU_VULKAN] = &caj_vk_noun_provider,
     [CAJ_XPU_CPU]    = &caj_cpu_noun_provider,
 };
