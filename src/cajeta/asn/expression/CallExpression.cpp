@@ -150,6 +150,7 @@ namespace cajeta {
         bool haveGrid = false, haveBlock = false;
         llvm::Value* sharedBytes = nullptr;   // dynamic shared memory; 0 if absent
         ExpressionPtr streamExpr;             // the unlabeled first param: the Stream
+        ExpressionPtr specExpr;               // optional `spec:[v0,v1,…]` overrides
         for (auto& p : callee->getParameters()) {
             std::string label = stripColon(p.label);
             if (label == "grid")  haveGrid  = lowerDims(p.expression, grid);
@@ -158,6 +159,10 @@ namespace cajeta {
                 llvm::Value* sb[3];
                 if (lowerDims(p.expression, sb)) sharedBytes = sb[0];
             }
+            // `spec:[v0,v1,…]` — host overrides for the kernel's user
+            // specialization constants (Spec.geti slot i = entry i). Optional;
+            // absent = every slot reads its compile-time default.
+            else if (label == "spec") specExpr = p.expression;
             // The unlabeled first param is the stream — its `handle` field is
             // threaded to the runtime so copies + this launch order on it.
             else if (label.empty()) streamExpr = p.expression;
@@ -390,6 +395,86 @@ namespace cajeta {
              llvm::ConstantInt::get(i64Ty, 0)}, "argv.base");
         llvm::Value* nameStr =
             builder->CreateGlobalString(kernelName, "xpu.kernel.name");
+
+        // Host spec-constant overrides: `spec:[v0,v1,…]` lowers to a stack
+        // `[N x i32]` (entry i overrides slot i); slot-indexed, sparse tail keeps
+        // defaults. Absent → no override (specCount 0). When present we target the
+        // versioned `__cajeta_xpu_launch_v3` (deviceId -1, no language surface yet);
+        // when absent we keep the exact pre-feature `__cajeta_xpu_launch` emit so
+        // every existing launch is byte-identical.
+        std::vector<llvm::Value*> specVals;
+        if (specExpr) {
+            std::vector<ExpressionPtr> elems;
+            if (auto arr = std::dynamic_pointer_cast<ArrayLiteralExpression>(specExpr))
+                elems = arr->getElements();
+            else
+                elems.push_back(specExpr);   // bare scalar = slot 0
+            for (auto& e : elems) {
+                llvm::Value* v = e->generateCode(module);
+                v = loadIfLValue(module, v, e);
+                llvm::Type* vt = v->getType();
+                if (vt->isFloatingPointTy()) {
+                    // f32 spec override (Spec.getf): transport the raw 32-bit
+                    // pattern, NOT a numeric conversion (else 1.5f → 1). Narrow
+                    // an f64 literal to f32 first (spec constants are 32-bit),
+                    // then bitcast to the i32 transport word; the consumer
+                    // (CPU __cajeta_xpu_cpu_spec_f32 / a Vulkan float
+                    // OpSpecConstant) reinterprets it back to float.
+                    if (!vt->isFloatTy())
+                        v = builder->CreateFPCast(
+                            v, llvm::Type::getFloatTy(ctx), "spec.f2f32");
+                    v = builder->CreateBitCast(v, i32Ty, "spec.fbits");
+                } else if (vt != i32Ty) {
+                    v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/false);
+                }
+                // Per-element type-directed: a mixed `spec:[3, 1.5f]` packs each
+                // slot by its own type (int → value word, float → bit pattern).
+                specVals.push_back(v);
+            }
+        }
+
+        if (!specVals.empty()) {
+            llvm::Type* specArrTy =
+                llvm::ArrayType::get(i32Ty, specVals.size());
+            llvm::Value* specArr =
+                builder->CreateAlloca(specArrTy, nullptr, "xpu.spec");
+            for (unsigned i = 0; i < specVals.size(); ++i) {
+                llvm::Value* slot = builder->CreateInBoundsGEP(
+                    specArrTy, specArr,
+                    {llvm::ConstantInt::get(i64Ty, 0),
+                     llvm::ConstantInt::get(i64Ty, i)}, "xpu.spec.slot");
+                builder->CreateStore(specVals[i], slot);
+            }
+            llvm::Value* specBase = builder->CreateInBoundsGEP(
+                specArrTy, specArr,
+                {llvm::ConstantInt::get(i64Ty, 0),
+                 llvm::ConstantInt::get(i64Ty, 0)}, "xpu.spec.base");
+
+            // void __cajeta_xpu_launch_v3(i8* name, gx,gy,gz, bx,by,bz,
+            //   i32 sharedBytes, ptr argv, i64 streamHandle, i32 deviceId,
+            //   i32 specCount, ptr specValues)
+            llvm::Function* launchV3 =
+                module->getRuntimeFunction("__cajeta_xpu_launch_v3");
+            if (!launchV3) {
+                llvm::FunctionType* ft = llvm::FunctionType::get(
+                    llvm::Type::getVoidTy(ctx),
+                    {ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty,
+                     ptrTy, i64Ty, i32Ty, i32Ty, ptrTy},
+                    /*vararg=*/false);
+                launchV3 = llvm::cast<llvm::Function>(
+                    module->getLlvmModule()
+                        ->getOrInsertFunction("__cajeta_xpu_launch_v3", ft)
+                        .getCallee());
+            }
+            builder->CreateCall(
+                launchV3,
+                {nameStr, grid[0], grid[1], grid[2], block[0], block[1],
+                 block[2], sharedBytes, argvBase, streamHandle,
+                 llvm::ConstantInt::get(i32Ty, (uint64_t) -1),     // deviceId
+                 llvm::ConstantInt::get(i32Ty, specVals.size()),    // specCount
+                 specBase});
+            return nullptr;  // launch is a void statement
+        }
 
         // void __cajeta_xpu_launch(i8* name, i32 gridX, i32 gridY, i32 gridZ,
         //                          i32 blockX, i32 blockY, i32 blockZ,

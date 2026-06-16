@@ -38,6 +38,8 @@
 #include <signal.h>
 #include <unistd.h>   // write(2) for abort-survivable diagnostics (see below)
 
+#include "cajeta_xpu_abi.h"   // single source of truth for the XPU FFI contract
+
 // execinfo.h (backtrace + backtrace_symbols) — glibc + macOS only.
 // MinGW-w64 doesn't ship it; stub on Windows so the runtime compiles
 // there. Stack-trace capture on Windows uses DbgHelp's
@@ -7592,6 +7594,7 @@ struct cajeta_cuda_api {
     int (*cuCtxSetCurrent)(void*);   // H9: bind the ctx to the launching thread
     int (*cuModuleLoadData)(void**, const void*);
     int (*cuModuleGetFunction)(void**, void*, const char*);
+    int (*cuModuleGetGlobal)(cajeta_cudeviceptr*, size_t*, void*, const char*);
     int (*cuMemAlloc)(cajeta_cudeviceptr*, size_t);
     int (*cuMemcpyHtoD)(cajeta_cudeviceptr, const void*, size_t);
     int (*cuMemcpyDtoH)(void*, cajeta_cudeviceptr, size_t);
@@ -7690,6 +7693,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamSynchronize");
     *(void**) (&g_xpu_cuda.cuStreamDestroy) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamDestroy_v2");
+    *(void**) (&g_xpu_cuda.cuModuleGetGlobal) =        // spec-override constant set
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuModuleGetGlobal_v2");
     *(void**) (&g_xpu_cuda.cuMemcpyHtoDAsync) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyHtoDAsync_v2");
     *(void**) (&g_xpu_cuda.cuMemcpyDtoHAsync) =
@@ -7808,6 +7813,7 @@ struct cajeta_hip_api {
     int (*hipSetDevice)(int);
     int (*hipModuleLoadData)(void**, const void*);
     int (*hipModuleGetFunction)(void**, void*, const char*);
+    int (*hipModuleGetGlobal)(void**, size_t*, void*, const char*);
     int (*hipMalloc)(void**, size_t);
     int (*hipMemcpyHtoD)(void*, const void*, size_t);
     int (*hipMemcpyDtoH)(void*, void*, size_t);
@@ -7872,8 +7878,39 @@ struct cajeta_hip_api {
     int (*hipEventQuery)(void*);
     int (*hipStreamWaitEvent)(void*, void*, unsigned);
     int (*hipEventDestroy)(void*);
+    // Device properties (R0600 ABI). Used only to read gcnArchName for the
+    // addrlib-based mip/cube emulation config lookup; optional.
+    int (*hipGetDevicePropertiesR0600)(void*, int);
 };
 static struct cajeta_hip_api g_xpu_hip;
+
+// --- libcajeta_amdtex (optional) ---------------------------------------------
+// The vendored-addrlib helper for AMD HIP mipmap/cube emulation (option B: a
+// hand-built gfx11 image SRD over an addrlib-tiled hipMalloc). dlopen'd exactly
+// like libamdhip64 so the heavy C++ stays out of the embedded JIT bitcode; when
+// the .so (or a recognised AMD GPU) is absent, the mip/cube emulation degrades to
+// unsupported and the existing fallbacks apply. ABI: runtime/native/amd/cajeta_amdtex.h.
+struct caj_amdtex_layout_c {       // byte-exact mirror of caj_amdtex_layout
+    uint64_t surfSize;
+    uint32_t baseAlign;
+    uint32_t pitch;
+    uint32_t swMode;
+    uint32_t levelW[16];
+    uint32_t levelH[16];
+    uint64_t levelOffset[16];
+};
+struct cajeta_amdtex_api {
+    void* lib;
+    int loaded;   // 0=untried, 1=ok, -1=failed
+    int (*query_gfx_config)(const char*, uint32_t*, uint32_t*, uint32_t*);
+    void* (*create)(uint32_t, uint32_t, uint32_t);
+    void (*destroy)(void*);
+    int (*mip_layout)(void*, uint32_t, uint32_t, uint32_t, uint32_t,
+                      struct caj_amdtex_layout_c*);
+    uint64_t (*addr_from_coord)(void*, uint32_t, uint32_t, uint32_t, uint32_t,
+                                uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+};
+static struct cajeta_amdtex_api g_xpu_amdtex;
 
 // HIP texture record: a Texture2D's device handle on AMD is a 1-based-... no, a
 // pointer to one of these (the hipArray + dims). The hipTextureObject is built
@@ -7884,6 +7921,16 @@ static struct cajeta_hip_api g_xpu_hip;
 // come from hipGetMipmappedArrayLevel; the texobj binds the mipmapped array.
 struct cajeta_hip_tex {
     void* array; void* mipmap; uint32_t w, h, d; int32_t format; int levels;
+    // Emulated mip path (option B, AMD only; emulated=1). When the HIP runtime
+    // lacks mipmapped arrays, the mip surface is a plain hipMalloc tiled by
+    // addrlib and sampled through a hand-built gfx11 image SRD. `devAlloc` is the
+    // raw allocation (freed), `devBase` the addrlib-aligned surface base, `addr`
+    // the addrlib handle, `srdBlob` the fine-grain-SVM {imageSRD[8],pad[4],
+    // samplerSRD[4]} texobj rebuilt per launch with the bound sampler's modes.
+    int emulated;
+    void* devAlloc; uint64_t devBase; void* addr; void* srdBlob;
+    void* stagingHost;   // persistent host copy of the tiled surface (all levels)
+    struct caj_amdtex_layout_c layout;
 };
 
 // --- Texture format table ----------------------------------------------------
@@ -8081,6 +8128,7 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipStreamSynchronize, "hipStreamSynchronize");
     CAJ_HBIND_OPT(hipStreamDestroy, "hipStreamDestroy");
     CAJ_HBIND_OPT(hipMemcpyHtoDAsync, "hipMemcpyHtoDAsync");
+    CAJ_HBIND_OPT(hipModuleGetGlobal, "hipModuleGetGlobal");  // spec-override set
     CAJ_HBIND_OPT(hipMemcpyDtoHAsync, "hipMemcpyDtoHAsync");
     CAJ_HBIND_OPT(hipEventCreate, "hipEventCreate");
     CAJ_HBIND_OPT(hipEventRecord, "hipEventRecord");
@@ -8088,6 +8136,7 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipEventQuery, "hipEventQuery");
     CAJ_HBIND_OPT(hipStreamWaitEvent, "hipStreamWaitEvent");
     CAJ_HBIND_OPT(hipEventDestroy, "hipEventDestroy");
+    CAJ_HBIND_OPT(hipGetDevicePropertiesR0600, "hipGetDevicePropertiesR0600");
     #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
@@ -8097,23 +8146,101 @@ static int cajeta_xpu_hip_init_locked(void) {
     return 1;
 }
 
+#if !defined(_WIN32)
+// Locate libcajeta_amdtex.so: $CAJETA_AMD_AMDTEX_LIB, then beside the executable
+// (build tree: build-cajeta/; install: bin/ with the .so in ../lib), then by
+// SONAME. Uses /proc/self/exe (no _GNU_SOURCE / dladdr — this TU avoids both).
+static void* cajeta_xpu_load_amdtex(void) {
+    const char* env = getenv("CAJETA_AMD_AMDTEX_LIB");
+    if (env && *env) { void* h = dlopen(env, RTLD_NOW | RTLD_LOCAL); if (h) return h; }
+    char exe[768]; char path[1024];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        char* slash = strrchr(exe, '/'); if (slash) *slash = '\0'; else exe[0] = '\0';
+        snprintf(path, sizeof(path), "%s/libcajeta_amdtex.so", exe);
+        void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL); if (h) return h;
+        // Build tree: binaries sit in build/src/ and build/test/; the .so lands in
+        // the build root one level up.
+        snprintf(path, sizeof(path), "%s/../libcajeta_amdtex.so", exe);
+        if ((h = dlopen(path, RTLD_NOW | RTLD_LOCAL))) return h;
+        snprintf(path, sizeof(path), "%s/../lib/libcajeta_amdtex.so", exe);
+        if ((h = dlopen(path, RTLD_NOW | RTLD_LOCAL))) return h;
+    }
+    return dlopen("libcajeta_amdtex.so", RTLD_NOW | RTLD_LOCAL);
+}
+#endif
+
+// Bind the optional addrlib helper. Idempotent (tri-state). Returns 1 if usable.
+static int cajeta_xpu_amdtex_init(void) {
+    if (g_xpu_amdtex.loaded == 1) return 1;
+    if (g_xpu_amdtex.loaded == -1) return 0;
+    g_xpu_amdtex.loaded = -1;
+#if defined(_WIN32)
+    return 0;   // ROCm/HIP texture emulation is Linux-only for cajeta.
+#else
+    g_xpu_amdtex.lib = cajeta_xpu_load_amdtex();
+    if (!g_xpu_amdtex.lib) return 0;
+    #define CAJ_ATBIND(fp, nm)                                                  \
+        do { *(void**)(&g_xpu_amdtex.fp) = dlsym(g_xpu_amdtex.lib, nm);         \
+             if (!g_xpu_amdtex.fp) return 0; } while (0)
+    CAJ_ATBIND(query_gfx_config, "cajeta_amdtex_query_gfx_config");
+    CAJ_ATBIND(create, "cajeta_amdtex_create");
+    CAJ_ATBIND(destroy, "cajeta_amdtex_destroy");
+    CAJ_ATBIND(mip_layout, "cajeta_amdtex_mip_layout");
+    CAJ_ATBIND(addr_from_coord, "cajeta_amdtex_addr_from_coord");
+    #undef CAJ_ATBIND
+    g_xpu_amdtex.loaded = 1;
+    return 1;
+#endif
+}
+
+// Read this device's gfx arch token (e.g. "gfx1151") into `out`. Scans the
+// (version-stable R0600) device-property blob for a "gfx<digit>" token rather
+// than mirroring the large, drift-prone hipDeviceProp_t — the leading marketing
+// `name` field never contains that token. Returns 1 on success.
+static int cajeta_xpu_hip_gfx_arch(char* out, size_t outLen) {
+    if (!g_xpu_hip.hipGetDevicePropertiesR0600) return 0;
+    // Over-allocate well past the real struct so the runtime can't overflow.
+    unsigned char buf[4096];
+    memset(buf, 0, sizeof(buf));
+    if (g_xpu_hip.hipGetDevicePropertiesR0600(buf, g_xpu_hip.device) != 0) return 0;
+    for (size_t i = 0; i + 4 < sizeof(buf); ++i) {
+        if (buf[i] == 'g' && buf[i+1] == 'f' && buf[i+2] == 'x' &&
+            buf[i+3] >= '0' && buf[i+3] <= '9') {
+            size_t j = 0;
+            while (i + j < sizeof(buf) && buf[i+j] &&
+                   buf[i+j] != ':' && buf[i+j] != ' ' && j + 1 < outLen) {
+                out[j] = (char) buf[i+j]; ++j;
+            }
+            out[j] = '\0';
+            return j > 3;
+        }
+    }
+    return 0;
+}
+
 // --- per-kernel parameter metadata (the Vulkan launch translation) ----------
 // The compiler registers, per Vulkan-bundled @Kernel, which args are buffers vs
 // scalars and the scalar byte sizes. The Vulkan launch path uses it to turn the
 // uniform kernelParams argv into descriptor bindings: buffers map to existing
 // storage buffers; scalars are copied into transient single-element SSBOs. The
 // pointers are program constant data (valid for the process lifetime).
-// Per-param kind in the launch metadata (matches xpu::KernelParamInfo::kind):
-// 0 = scalar (by-value primitive/POD → single-element SSBO), 1 = buffer,
-// 2 = texture (Texture2D → sampled image), 3 = sampler (Item 8 Stage B).
-#define CAJETA_KP_SCALAR  0
-#define CAJETA_KP_BUFFER  1
-#define CAJETA_KP_TEXTURE 2
-#define CAJETA_KP_SAMPLER 3
-#define CAJETA_KP_ACCEL   4   // AccelerationStructure -> descriptor-bound BVH
-#define CAJETA_KP_IMAGE   5   // Image2D (writable) -> STORAGE_IMAGE descriptor
-#define CAJETA_KP_BUFFER_ARRAY 6   // Buffer<T>[] -> bindless descriptor array
+// Per-param kind in the launch metadata (matches xpu::KernelParamInfo::kind).
+// The numeric values live exactly once, in CajetaXpuParamKind (the ABI header);
+// these short names are internal aliases for the runtime body below so the
+// literals can never drift from the compiler/FFI contract again.
+#define CAJETA_KP_SCALAR       CAJETA_XPU_KP_SCALAR
+#define CAJETA_KP_BUFFER       CAJETA_XPU_KP_BUFFER
+#define CAJETA_KP_TEXTURE      CAJETA_XPU_KP_TEXTURE
+#define CAJETA_KP_SAMPLER      CAJETA_XPU_KP_SAMPLER
+#define CAJETA_KP_ACCEL        CAJETA_XPU_KP_ACCEL   // AccelerationStructure -> descriptor-bound BVH
+#define CAJETA_KP_IMAGE        CAJETA_XPU_KP_IMAGE   // Image2D (writable) -> STORAGE_IMAGE descriptor
+#define CAJETA_KP_BUFFER_ARRAY CAJETA_XPU_KP_BUFFER_ARRAY  // Buffer<T>[] -> bindless descriptor array
                                    // (descriptorCount = N; N + handles in argv slot)
+
+// The ABI version queryable by external FFI callers (header/runtime handshake).
+int32_t __cajeta_xpu_abi_version(void) { return CAJETA_XPU_ABI_VERSION; }
 
 struct cajeta_kparams {
     char name[256];
@@ -9831,7 +9958,9 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                 const uint8_t* kinds, int n,
                                 unsigned gx, unsigned gy, unsigned gz,
                                 unsigned bx, unsigned by, unsigned bz,
-                                unsigned sharedBytes) {
+                                unsigned sharedBytes,
+                                int userSpecCount,
+                                const int32_t* userSpecValues) {
     if (!spirv || len < 4 || n <= 0) return 0;
     // Serialize the dispatch: VkQueue + VkCommandPool require external host
     // synchronization, and an AS binding reads the g_vk_accels table — all shared
@@ -9882,18 +10011,31 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     // Spec constants: SpecId 0/1/2 = block.x/y/z (workgroup size, see
     // injectWorkgroupSizeSpecConstant), SpecId 3 = the dynamic shared array's
     // length in elements (= sharedBytes / 4; the dynamic-shared element is 4 bytes
-    // — int32/float32 — for now). Set at pipeline creation.
-    uint32_t specData[4] = { bx, by, bz, sharedBytes / 4u };
-    VkSpecializationMapEntry specEntries[4] = {
-        { 0, 0,                    sizeof(uint32_t) },
-        { 1, sizeof(uint32_t),     sizeof(uint32_t) },
-        { 2, 2 * sizeof(uint32_t), sizeof(uint32_t) },
-        { 3, 3 * sizeof(uint32_t), sizeof(uint32_t) },
-    };
+    // — int32/float32 — for now). SpecId kFirstUserSpecId(4)+i = the user's
+    // Spec.geti/getf slot `i`, supplied as a host override (raw 4-byte word; i32
+    // today, f32 reinterpreted later). All set at pipeline creation.
+    enum { CAJ_VK_FIRST_USER_SPEC_ID = 4 };   // mirrors LoweringTarget::kFirstUserSpecId
+    int nUser = userSpecCount;
+    if (nUser < 0) nUser = 0;
+    if (nUser > 60) nUser = 60;               // cap: 4 reserved + 60 user <= 64
+    uint32_t specData[64];
+    VkSpecializationMapEntry specEntries[64];
+    specData[0] = bx; specData[1] = by; specData[2] = bz;
+    specData[3] = sharedBytes / 4u;
+    specEntries[0] = (VkSpecializationMapEntry){ 0, 0,                    sizeof(uint32_t) };
+    specEntries[1] = (VkSpecializationMapEntry){ 1, sizeof(uint32_t),     sizeof(uint32_t) };
+    specEntries[2] = (VkSpecializationMapEntry){ 2, 2 * sizeof(uint32_t), sizeof(uint32_t) };
+    specEntries[3] = (VkSpecializationMapEntry){ 3, 3 * sizeof(uint32_t), sizeof(uint32_t) };
+    for (int i = 0; i < nUser; ++i) {
+        specData[4 + i] = (uint32_t) userSpecValues[i];   // raw word (bit-exact)
+        specEntries[4 + i] = (VkSpecializationMapEntry){
+            (uint32_t) (CAJ_VK_FIRST_USER_SPEC_ID + i),
+            (uint32_t) ((4 + i) * sizeof(uint32_t)), sizeof(uint32_t) };
+    }
     VkSpecializationInfo specInfo;
-    specInfo.mapEntryCount = 4;
+    specInfo.mapEntryCount = (uint32_t) (4 + nUser);
     specInfo.pMapEntries = specEntries;
-    specInfo.dataSize = sizeof(specData);
+    specInfo.dataSize = (size_t) (4 + nUser) * sizeof(uint32_t);
     specInfo.pData = specData;
 
     VkComputePipelineCreateInfo cpci;
@@ -10153,10 +10295,11 @@ static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
                                 const int64_t* b, const uint8_t* k, int n,
                                 unsigned gx, unsigned gy, unsigned gz,
                                 unsigned bx, unsigned by, unsigned bz,
-                                unsigned sharedBytes) {
+                                unsigned sharedBytes,
+                                int userSpecCount, const int32_t* userSpecValues) {
     (void) s; (void) l; (void) e; (void) b; (void) k; (void) n;
     (void) gx; (void) gy; (void) gz; (void) bx; (void) by; (void) bz;
-    (void) sharedBytes; return 0;
+    (void) sharedBytes; (void) userSpecCount; (void) userSpecValues; return 0;
 }
 #endif  // CAJETA_RT_HAS_VULKAN
 
@@ -10494,7 +10637,38 @@ struct cajeta_cpu_grid_slice {
     int32_t bStart;       // linear block index range [bStart, bEnd)
     int32_t bEnd;
     int32_t dynShared;    // dynamic shared-memory byte count (coord[12])
+    int32_t specCount;        // host spec-constant overrides (0 = none)
+    const int32_t* specValues;  // slot-indexed raw words; lives for the launch
 };
+
+// Host spec-constant override state for the CPU backend (Stage 11/12, hybrid
+// decision: CPU honors an override by READING the supplied value at runtime —
+// no per-value recompile; folding is a perf detail irrelevant on the oracle
+// path). Thread-local because the grid fans out across worker threads: each
+// worker's run_slice sets its OWN copy from its slice before invoking the
+// per-block wrapper, so the spec helpers (called from the inlined kernel on that
+// same thread) read the right values race-free. Set fresh per run_slice, so no
+// stale reads across launches.
+static __thread int32_t g_cpu_spec_count = 0;
+static __thread const int32_t* g_cpu_spec_values = NULL;
+
+// Read user spec slot `slot` (CPU): the host override if supplied, else the
+// kernel's compile-time `def`. The CPU kernel lowering emits calls to these
+// (CpuKernelLowering::specConstant{I32,F32}) instead of baking the default. The
+// f32 form reinterprets the raw override word (the transport is type-agnostic).
+int32_t __cajeta_xpu_cpu_spec_i32(int32_t slot, int32_t def) {
+    if (g_cpu_spec_values && slot >= 0 && slot < g_cpu_spec_count)
+        return g_cpu_spec_values[slot];
+    return def;
+}
+float __cajeta_xpu_cpu_spec_f32(int32_t slot, float def) {
+    if (g_cpu_spec_values && slot >= 0 && slot < g_cpu_spec_count) {
+        float f;
+        memcpy(&f, &g_cpu_spec_values[slot], sizeof(float));
+        return f;
+    }
+    return def;
+}
 
 // Run a contiguous slice of blocks. The launcher thunk is the per-BLOCK wrapper
 // (Inc 5B): it loops the block's work-items internally (vectorized), so we call
@@ -10506,6 +10680,11 @@ struct cajeta_cpu_grid_slice {
 // the fan-out is race-free for any kernel correct on a GPU. The 3-D grid is
 // linearized (x fastest) and decoded back to ctaid.xyz per block.
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
+    // Publish this worker's spec overrides for the kernel's spec helpers (TLS;
+    // see g_cpu_spec_*). Set every call, so a launch with no override (count 0)
+    // correctly reads defaults even after a prior overridden launch on this thread.
+    g_cpu_spec_count = s->specCount;
+    g_cpu_spec_values = s->specValues;
     int32_t coord[13] = {0, 0, 0, 0, 0, 0, s->bx, s->by, s->bz,
                          s->gx, s->gy, s->gz, s->dynShared};
     int64_t gxy = (int64_t) s->gx * s->gy;   // M9: 64-bit — gx*gy can exceed i32,
@@ -10542,7 +10721,8 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 static void cajeta_xpu_launch_cpu(const char* name,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
-                                  int32_t sharedBytes, void* argv) {
+                                  int32_t sharedBytes, void* argv,
+                                  int32_t specCount, const int32_t* specValues) {
     void* p = __cajeta_xpu_lookup_cpu_kernel(name);
     if (!p) {
         fprintf(stderr, "cajeta.xpu: no registered CPU kernel '%s' to launch\n",
@@ -10603,7 +10783,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
         struct cajeta_cpu_grid_slice all = {fn, (void**) argv,
                                             blockX, blockY, blockZ,
                                             gridX, gridY, gridZ,
-                                            0, nblocks, sharedBytes};
+                                            0, nblocks, sharedBytes,
+                                            specCount, specValues};
         cajeta_xpu_cpu_run_slice(&all);
         return;
     }
@@ -10622,6 +10803,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
         slices[i].bStart = cx;
         slices[i].bEnd = cx + count;
         slices[i].dynShared = sharedBytes;
+        slices[i].specCount = specCount;
+        slices[i].specValues = specValues;
         cx += count;
         if (i == nworkers - 1) {
             spawned[i] = 0;   // the calling thread runs the last slice
@@ -11137,6 +11320,7 @@ static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h, int32_t format) 
     struct cajeta_hip_tex* t =
         (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = 1;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11167,6 +11351,7 @@ static int64_t cajeta_xpu_hip_image_alloc(uint32_t w, uint32_t h) {
         return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = 1;
     t->format = CAJ_TEXFMT_R32F; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11219,6 +11404,7 @@ static int64_t cajeta_xpu_hip_tex1d_alloc(uint32_t w, int32_t format) {
     if (g_xpu_hip.hipMallocArray(&array, &cd, w, 0, 0) != 0 || !array) return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = 1; t->d = 1;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11240,6 +11426,7 @@ static int64_t cajeta_xpu_hip_tex3d_alloc(uint32_t w, uint32_t h, uint32_t d,
     if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, 0) != 0 || !array) return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = d;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11260,30 +11447,31 @@ static int64_t cajeta_xpu_hip_tex2darray_alloc(uint32_t w, uint32_t h,
         return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = w; t->h = h; t->d = layers;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
 }
 
-// TextureCube on AMD: a cubemap hipArray (hipMalloc3DArray + hipArrayCubemap),
-// 6 faces in the extent's depth slot. Like the layered array, the texobj is
-// dimension-agnostic (RES_ARRAY) and the upload reuses the 3-D memcpy3D path
-// with d = 6 (a cubemap memcpy3D copies all 6 faces).
+// TextureCube on AMD: EMULATED as a 6-LAYER LAYERED array (hipArrayCubemap is
+// unsupported by the HIP runtime on gfx1151 — invalid-arg, confirmed ROCm 7.2.2 +
+// 7.11.0; see reference_amd_hip_mipmap_cubemap_unsupported). A layered array IS
+// supported, so we store the 6 faces as 6 layers and do the major-axis face
+// projection IN-KERNEL (AmdgpuKernelLowering::sampleTextureCube) → sample the
+// chosen layer via __ockl_image_sample_2Da. Same storage + upload as a 6-layer
+// Texture2DArray (RES_ARRAY texobj; memcpy3D copies all 6 faces). Limitation: no
+// hardware seamless filtering across face edges (each face clamps at its edge).
 static int64_t cajeta_xpu_hip_texcube_alloc(uint32_t size, int32_t format) {
     if (!cajeta_hip_tex3d_supported()) return 0;
     struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
     struct caj_hip_extent ext; ext.w = size; ext.h = size; ext.d = 6;
     void* array = NULL;
-    // NB: on gfx1151 / ROCm 7.2.2 this returns hipErrorInvalidValue — cubemap
-    // arrays are unimplemented on this APU (as with mipmapped arrays), so cube
-    // TextureCube on AMD degrades to "no device texture" (handle 0 → the kernel
-    // doesn't launch). The path is correct for ROCm/hardware that supports cubemap
-    // arrays.
-    if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, CAJ_HIP_ARRAY_CUBEMAP) != 0 ||
+    if (g_xpu_hip.hipMalloc3DArray(&array, &cd, ext, CAJ_HIP_ARRAY_LAYERED) != 0 ||
         !array)
         return 0;
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
     if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = array; t->mipmap = NULL; t->w = size; t->h = size; t->d = 6;
     t->format = format; t->levels = 1;
     return (int64_t) (intptr_t) t;
@@ -11354,16 +11542,182 @@ static int cajeta_hip_tex_mip_supported(void) {
            g_xpu_hip.hipCreateTextureObject && g_xpu_hip.hipDestroyTextureObject;
 }
 
+// === Emulated mip Texture2D (option B) =======================================
+// When the HIP runtime lacks mipmapped arrays (true on gfx1151, ROCm 7.2.2/7.11),
+// a mip texture is a single plain hipMalloc tiled by addrlib, sampled through a
+// HAND-BUILT gfx11 image SRD. Proven bit-exact on-device in the de-risk probe
+// (plans/gpu/xpu/probes/mipprobe.cpp); the SRD field semantics come from Mesa's
+// ac_descriptors.c / gfx11-rsrc.json. Requires libcajeta_amdtex + a recognised
+// gfx arch; otherwise this returns 0 and the caller falls back / degrades.
+#define CAJ_HIP_HOST_COHERENT 0x40000000u   // hipHostMallocCoherent
+
+// 2 MiB base alignment: the gfx11 _X swizzle derives pipe/bank-xor bits from the
+// base address; a 2 MiB-aligned base makes them zero, matching addrlib's
+// pipeBankXor=0 layout (so our SRD carries no tile_swizzle). Verified in the probe.
+#define CAJ_AMD_MIP_BASE_ALIGN 0x200000ull
+
+static int cajeta_hip_mip_emulation_available(void) {
+    return g_xpu_hip.hipMalloc && g_xpu_hip.hipFree && g_xpu_hip.hipMemcpyHtoD &&
+           g_xpu_hip.hipHostMalloc && g_xpu_hip.hipMallocArray &&
+           g_xpu_hip.hipFreeArray && g_xpu_hip.hipCreateTextureObject &&
+           g_xpu_hip.hipDestroyTextureObject && cajeta_xpu_amdtex_init();
+}
+
+// Allocate + lay out an emulated mip surface. Returns a tex record (emulated=1)
+// or 0 (caller falls back to the hipMallocMipmappedArray path).
+static int64_t cajeta_xpu_hip_tex_alloc_mip_emulated(uint32_t w, uint32_t h,
+                                                     int32_t format,
+                                                     uint32_t levels) {
+    if (!cajeta_hip_mip_emulation_available()) return 0;
+    char arch[64];
+    if (!cajeta_xpu_hip_gfx_arch(arch, sizeof(arch))) return 0;
+    uint32_t family = 0, rev = 0, gbcfg = 0;
+    if (g_xpu_amdtex.query_gfx_config(arch, &family, &rev, &gbcfg) != 0) return 0;
+    void* addr = g_xpu_amdtex.create(family, rev, gbcfg);
+    if (!addr) return 0;
+
+    uint32_t bpp = (uint32_t) (cajeta_texfmt_texel_bytes(format) * 8);
+    struct caj_amdtex_layout_c lo;
+    memset(&lo, 0, sizeof(lo));
+    if (g_xpu_amdtex.mip_layout(addr, w, h, levels, bpp, &lo) != 0) {
+        g_xpu_amdtex.destroy(addr); return 0;
+    }
+    void* devAlloc = NULL;
+    if (g_xpu_hip.hipMalloc(&devAlloc, lo.surfSize + CAJ_AMD_MIP_BASE_ALIGN) != 0 ||
+        !devAlloc) {
+        g_xpu_amdtex.destroy(addr); return 0;
+    }
+    uint64_t devBase = ((uint64_t) (uintptr_t) devAlloc + (CAJ_AMD_MIP_BASE_ALIGN - 1))
+                       & ~(CAJ_AMD_MIP_BASE_ALIGN - 1);
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) malloc(sizeof(*t));
+    if (!t) { g_xpu_hip.hipFree(devAlloc); g_xpu_amdtex.destroy(addr); return 0; }
+    memset(t, 0, sizeof(*t));
+    t->array = NULL; t->mipmap = NULL; t->w = w; t->h = h; t->d = 1;
+    t->format = format; t->levels = (int) levels;
+    t->emulated = 1; t->devAlloc = devAlloc; t->devBase = devBase;
+    t->addr = addr; t->srdBlob = NULL; t->layout = lo;
+    // Persistent host copy of the whole tiled surface: each uploadLevel scatters
+    // its level into this and re-pushes the lot, so earlier levels survive (the
+    // levels share one tile — a fresh per-level buffer would zero the others).
+    t->stagingHost = calloc(1, lo.surfSize);
+    if (!t->stagingHost) {
+        g_xpu_hip.hipFree(devAlloc); g_xpu_amdtex.destroy(addr); free(t); return 0;
+    }
+    return (int64_t) (intptr_t) t;
+}
+
+// Host-tile one level via addrlib + upload the whole (small, single-tile) surface.
+// Each level's texels are scattered across the shared tile, so the full surface is
+// re-staged + copied per level (levels are few and tiny — correctness over churn).
+static void cajeta_xpu_hip_tex_upload_level_emulated(struct cajeta_hip_tex* t,
+                                                     const float* src, uint32_t lw,
+                                                     uint32_t lh, uint32_t level,
+                                                     int32_t format) {
+    if (!t->addr || !t->stagingHost || (int) level >= t->levels) return;
+    size_t texelBytes = cajeta_texfmt_texel_bytes(format);
+    size_t texels = (size_t) lw * lh * cajeta_texfmt_channels(format);
+    // Encode the level into a linear (row-major) buffer first.
+    unsigned char* lin = (unsigned char*) malloc((size_t) lw * lh * texelBytes);
+    if (!lin) return;
+    if (cajeta_texfmt_is_unorm(format) || cajeta_texfmt_is_half(format) ||
+        cajeta_texfmt_is_integer(format))
+        cajeta_texfmt_encode(lin, src, texels, format);
+    else
+        memcpy(lin, src, (size_t) lw * lh * texelBytes);
+    // Scatter into the PERSISTENT staging buffer at each texel's tiled offset, then
+    // re-push the whole surface (levels interleave within the shared tile).
+    unsigned char* surf = (unsigned char*) t->stagingHost;
+    for (uint32_t y = 0; y < lh; ++y)
+        for (uint32_t x = 0; x < lw; ++x) {
+            uint64_t off = g_xpu_amdtex.addr_from_coord(
+                t->addr, t->w, t->h, (uint32_t) t->levels, (uint32_t) (texelBytes * 8),
+                t->layout.swMode, t->layout.pitch, level, x, y);
+            if (off != (uint64_t) -1 && off + texelBytes <= t->layout.surfSize)
+                memcpy(surf + off, lin + ((size_t) y * lw + x) * texelBytes, texelBytes);
+        }
+    g_xpu_hip.hipMemcpyHtoD((void*) (uintptr_t) t->devBase, surf, t->layout.surfSize);
+    free(lin);
+}
+
+// Build the per-launch texobj for an emulated mip texture: a fine-grain-SVM blob
+// {imageSRD[8], pad[4], samplerSRD[4]}. Clones a live single-level texobj of the
+// same base size/format (for the device's exact word2/3 format/dst_sel/type +
+// sampler encoding), then patches the three mip fields proven in the probe:
+//   WORD1 MAX_MIP[16:19]=levels-1, WORD3 {BASE_LEVEL=0, LAST_LEVEL=levels-1,
+//   SW_MODE[20:24]}, base address (word0 + word1[7:0]); sampler WORD2
+//   MIP_FILTER[26:27] + WORD1 MAX_LOD wide. Returns the blob ptr (int64) or 0.
+static int64_t cajeta_xpu_hip_mip_build_srd_blob(struct cajeta_hip_tex* t,
+                                                 int32_t filterMode,
+                                                 int32_t addressMode) {
+    // 1. Template: a 1-level base WxH array + texobj with the requested modes.
+    struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(t->format);
+    void* tmplArr = NULL;
+    if (g_xpu_hip.hipMallocArray(&tmplArr, &cd, t->w, t->h, 0) != 0 || !tmplArr)
+        return 0;
+    struct caj_hip_resource_desc rd; memset(&rd, 0, sizeof(rd));
+    rd.resType = CAJ_HIP_RES_ARRAY; rd.res.array.array = tmplArr;
+    struct caj_hip_texture_desc td; memset(&td, 0, sizeof(td));
+    int hipAddr = addressMode == 1 ? CAJ_HIP_ADDR_WRAP : CAJ_HIP_ADDR_CLAMP;
+    td.addressMode[0] = hipAddr; td.addressMode[1] = hipAddr; td.addressMode[2] = hipAddr;
+    int hipFilter = filterMode == 1 ? CAJ_HIP_FILTER_LINEAR : CAJ_HIP_FILTER_POINT;
+    td.filterMode = hipFilter;
+    td.readMode = cajeta_texfmt_is_unorm(t->format) ? CAJ_HIP_READ_NORMALIZED_FLOAT
+                                                    : CAJ_HIP_READ_ELEMENT;
+    td.normalizedCoords = 1;
+    void* tmplObj = NULL;
+    if (g_xpu_hip.hipCreateTextureObject(&tmplObj, &rd, &td, NULL) != 0 || !tmplObj) {
+        if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(tmplArr);
+        return 0;
+    }
+    // __hip_texture is fine-grain SVM: read the 16-dword {img[8],pad,samp[4]} blob.
+    uint32_t T[16]; memcpy(T, (const void*) tmplObj, sizeof(T));
+    g_xpu_hip.hipDestroyTextureObject(tmplObj);
+    if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(tmplArr);
+
+    // 2. Patch into the mip SRD (recipe: plans/gpu/xpu/probes/mipprobe.cpp).
+    uint32_t srd[16]; memset(srd, 0, sizeof(srd));
+    for (int j = 0; j < 8; ++j) srd[j] = T[j];      // image SRD
+    for (int j = 12; j < 16; ++j) srd[j] = T[j];    // sampler SRD
+    uint32_t last = (uint32_t) (t->levels - 1);
+    uint64_t a8 = t->devBase >> 8;
+    srd[0] = (uint32_t) (a8 & 0xFFFFFFFFu);
+    srd[1] = (T[1] & ~0xFFu) | (uint32_t) ((a8 >> 32) & 0xFFu);       // BASE_ADDR_HI
+    srd[1] = (srd[1] & ~(0xFu << 16)) | (last << 16);                 // MAX_MIP
+    srd[3] = (srd[3] & ~(0xFu << 12));                                // BASE_LEVEL = 0
+    srd[3] = (srd[3] & ~(0xFu << 16)) | (last << 16);                 // LAST_LEVEL
+    srd[3] = (srd[3] & ~(0x1Fu << 20)) | ((t->layout.swMode & 0x1Fu) << 20);  // SW_MODE
+    // Sampler: open MAX_LOD + enable mip filtering (a single-level template leaves
+    // MIP_FILTER=none, which would pin every sample to the base level).
+    srd[13] = (srd[13] & ~0xFFFu);                                    // MIN_LOD = 0
+    srd[13] = (srd[13] & ~(0xFFFu << 12)) | (0xFFFu << 12);           // MAX_LOD = max
+    uint32_t mipFilter = filterMode == 1 ? 2u : 1u;  // linear(trilinear) vs point
+    srd[14] = (srd[14] & ~(0x3u << 26)) | (mipFilter << 26);          // MIP_FILTER
+
+    // 3. Place the blob in fine-grain SVM (device reads it as the texobj kernarg).
+    if (!t->srdBlob &&
+        g_xpu_hip.hipHostMalloc(&t->srdBlob, sizeof(srd), CAJ_HIP_HOST_COHERENT) != 0)
+        t->srdBlob = NULL;
+    if (!t->srdBlob) return 0;
+    memcpy(t->srdBlob, srd, sizeof(srd));
+    return (int64_t) (intptr_t) t->srdBlob;
+}
+
 static int64_t cajeta_xpu_hip_tex_alloc_mip(uint32_t w, uint32_t h, int32_t format,
                                             uint32_t levels) {
+    // Prefer the emulated path (hand-built SRD over an addrlib-tiled hipMalloc):
+    // it works on hardware whose HIP runtime lacks mipmapped arrays (gfx1151), and
+    // is proven bit-exact on-device. Falls through to the native hipMipmappedArray
+    // path when emulation is unavailable (no helper .so / unknown arch / non-AMD).
+    int64_t emu = cajeta_xpu_hip_tex_alloc_mip_emulated(w, h, format, levels);
+    if (emu) return emu;
     if (!cajeta_hip_tex_mip_supported()) return 0;
     struct caj_hip_channel_format_desc cd = cajeta_hip_channel_desc(format);
     struct caj_hip_extent ext; ext.w = w; ext.h = h; ext.d = 0;  // 2-D mip array
     void* mipmap = NULL;
-    // NB: on gfx1151 / ROCm 7.2 this returns hipErrorNotSupported (801) — AMD
-    // mipmapped arrays are unimplemented on that APU, so mip Texture2D degrades to
-    // "no device texture" (handle 0 → the kernel doesn't launch). The path is
-    // correct for ROCm/hardware that does support mipmapped arrays.
+    // NB: on gfx1151 hipMallocMipmappedArray returns hipErrorNotSupported(801) —
+    // mipmapped arrays are unimplemented in the HIP runtime on this APU (ROCm
+    // 7.2.2 + 7.11.0). With the emulation above that no longer matters; this
+    // native path remains for HW/runtimes that DO implement mipmapped arrays.
     if (g_xpu_hip.hipMallocMipmappedArray(&mipmap, &cd, ext, levels, 0) != 0 ||
         !mipmap)
         return 0;
@@ -11372,6 +11726,7 @@ static int64_t cajeta_xpu_hip_tex_alloc_mip(uint32_t w, uint32_t h, int32_t form
         if (g_xpu_hip.hipFreeMipmappedArray) g_xpu_hip.hipFreeMipmappedArray(mipmap);
         return 0;
     }
+    memset(t, 0, sizeof(*t));   // emulated=0 + null the emulated-path pointers
     t->array = NULL; t->mipmap = mipmap; t->w = w; t->h = h; t->d = 1;
     t->format = format; t->levels = (int) levels;
     return (int64_t) (intptr_t) t;
@@ -11381,7 +11736,12 @@ static void cajeta_xpu_hip_tex_upload_level(int64_t handle, const float* src,
                                             uint32_t lw, uint32_t lh,
                                             uint32_t level, int32_t format) {
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
-    if (!t || !t->mipmap || (int) level >= t->levels) return;
+    if (!t) return;
+    if (t->emulated) {
+        cajeta_xpu_hip_tex_upload_level_emulated(t, src, lw, lh, level, format);
+        return;
+    }
+    if (!t->mipmap || (int) level >= t->levels) return;
     void* levelArray = NULL;   // owned by the mipmapped array; not freed here
     if (g_xpu_hip.hipGetMipmappedArrayLevel(&levelArray, t->mipmap, level) != 0 ||
         !levelArray)
@@ -11405,6 +11765,14 @@ static void cajeta_xpu_hip_tex_upload_level(int64_t handle, const float* src,
 static void cajeta_xpu_hip_tex_free(int64_t handle) {
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
     if (!t) return;
+    if (t->emulated) {
+        if (t->srdBlob && g_xpu_hip.hipHostFree) g_xpu_hip.hipHostFree(t->srdBlob);
+        if (t->devAlloc && g_xpu_hip.hipFree) g_xpu_hip.hipFree(t->devAlloc);
+        if (t->addr && g_xpu_amdtex.destroy) g_xpu_amdtex.destroy(t->addr);
+        free(t->stagingHost);
+        free(t);
+        return;
+    }
     if (t->array && g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(t->array);
     if (t->mipmap && g_xpu_hip.hipFreeMipmappedArray)
         g_xpu_hip.hipFreeMipmappedArray(t->mipmap);
@@ -11417,7 +11785,13 @@ static void cajeta_xpu_hip_tex_free(int64_t handle) {
 static int64_t cajeta_xpu_hip_make_texobj(int64_t texHandle, int32_t filterMode,
                                           int32_t addressMode) {
     struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) texHandle;
-    if (!t || (!t->array && !t->mipmap) || !cajeta_hip_tex_supported()) return 0;
+    if (!t) return 0;
+    // Emulated mip texture: the "texobj" is our hand-built SRD blob (rebuilt with
+    // the bound sampler's modes), NOT a hipTextureObject — see the cleanup guard
+    // in the launch path (it must not be hipDestroyTextureObject'd).
+    if (t->emulated)
+        return cajeta_xpu_hip_mip_build_srd_blob(t, filterMode, addressMode);
+    if ((!t->array && !t->mipmap) || !cajeta_hip_tex_supported()) return 0;
     struct caj_hip_resource_desc rd;
     memset(&rd, 0, sizeof(rd));
     if (t->mipmap) {   // mip Texture2D — bind the whole mipmapped array
@@ -12653,7 +13027,8 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    int32_t gridX, int32_t gridY, int32_t gridZ,
                                    int32_t blockX, int32_t blockY, int32_t blockZ,
                                    uint32_t sharedBytes, void* argv,
-                                   int64_t streamHandle) {
+                                   int64_t streamHandle,
+                                   int32_t specCount, const int32_t* specValues) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -12668,6 +13043,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         }
     }
     void* fn = e ? e->function : NULL;
+    void* mod = e ? e->module : NULL;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
     if (!fn) {
         fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
@@ -12702,6 +13078,28 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     // silent no-op. Make the context current on this thread first, and surface a
     // launch failure instead of discarding the return code.
     if (g_xpu_cuda.cuCtxSetCurrent) g_xpu_cuda.cuCtxSetCurrent(g_xpu_cuda.ctx);
+    // Host spec-constant override (stage12-spec-override Phase C): set the
+    // module's constant-memory spec globals before launch. The kernel reads
+    // `(slot < count) ? values[slot] : default`, so writing count (0 when no
+    // override, clearing any prior launch's values) suffices; the symbols are
+    // absent for kernels without spec constants → getGlobal fails → skip (the
+    // kernel then has no spec read anyway). UNVERIFIED on-device (no NV HW here);
+    // safe-by-default — a failed/absent copy leaves the zero-init default.
+    if (mod && g_xpu_cuda.cuModuleGetGlobal && g_xpu_cuda.cuMemcpyHtoD) {
+        cajeta_cudeviceptr g; size_t gbytes;
+        int32_t count = (specCount > 0 && specValues) ? specCount : 0;
+        if (count > 60) count = 60;
+        if (g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod,
+                "__cajeta_xpu_spec_count") == 0 && gbytes >= sizeof(int32_t)) {
+            g_xpu_cuda.cuMemcpyHtoD(g, &count, sizeof(int32_t));
+            if (count > 0 && g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod,
+                    "__cajeta_xpu_spec_values") == 0) {
+                size_t want = (size_t) count * sizeof(int32_t);
+                g_xpu_cuda.cuMemcpyHtoD(g, specValues,
+                                        want <= gbytes ? want : gbytes);
+            }
+        }
+    }
     // 3-D grid/block; default stream; kernelParams = the CUDA argv the launch
     // site marshalled (pointers to each arg value). sharedBytes sizes the
     // kernel's dynamic (extern) shared memory; 0 for static-only kernels.
@@ -12726,7 +13124,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
                                   uint32_t sharedBytes, void* argvv,
-                                  int64_t streamHandle) {
+                                  int64_t streamHandle,
+                                  int32_t specCount, const int32_t* specValues) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -12741,7 +13140,27 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
         }
     }
     void* fn = e ? e->function : NULL;
+    void* mod = e ? e->module : NULL;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
+    // Host spec-constant override (Phase C): set the module's constant-memory
+    // spec globals before launch (count 0 = no override, clears prior values;
+    // absent symbol → no spec constants → skip). UNVERIFIED on-device (AMD
+    // in-process JIT is comgr-blocked here); safe-by-default (zero-init = default).
+    if (mod && g_xpu_hip.hipModuleGetGlobal && g_xpu_hip.hipMemcpyHtoD) {
+        void* g; size_t gbytes;
+        int32_t count = (specCount > 0 && specValues) ? specCount : 0;
+        if (count > 60) count = 60;
+        if (g_xpu_hip.hipModuleGetGlobal(&g, &gbytes, mod,
+                "__cajeta_xpu_spec_count") == 0 && gbytes >= sizeof(int32_t)) {
+            g_xpu_hip.hipMemcpyHtoD(g, &count, sizeof(int32_t));
+            if (count > 0 && g_xpu_hip.hipModuleGetGlobal(&g, &gbytes, mod,
+                    "__cajeta_xpu_spec_values") == 0) {
+                size_t want = (size_t) count * sizeof(int32_t);
+                g_xpu_hip.hipMemcpyHtoD(g, specValues,
+                                        want <= gbytes ? want : gbytes);
+            }
+        }
+    }
     if (!fn) {
         fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
                 kernelName);
@@ -12757,6 +13176,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
     void* subArgv[64];
     void* texObjVals[8];
     int64_t texObjs[8];
+    int texObjEmu[8] = {0};   // 1 = emulated mip blob (owned by record; don't destroy)
     int ntex = 0;
     void* surfObjVals[8];
     int64_t surfObjs[8];
@@ -12799,6 +13219,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                         launchOk = 0; break;
                     }
                     texObjs[ntex] = obj;
+                    texObjEmu[ntex] =
+                        ((struct cajeta_hip_tex*) (intptr_t) rec)->emulated;
                     texObjVals[ntex] = (void*) (intptr_t) obj;
                     subArgv[i] = &texObjVals[ntex];      // arg = the texObj ptr
                     ++ntex;
@@ -12875,7 +13297,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
         if (launchOk)
             g_xpu_hip.hipDeviceSynchronize();   // finish before freeing resources
         for (int i = 0; i < ntex; ++i)          // also frees objs made before a skip
-            if (texObjs[i] && g_xpu_hip.hipDestroyTextureObject)
+            if (texObjs[i] && !texObjEmu[i] && g_xpu_hip.hipDestroyTextureObject)
                 g_xpu_hip.hipDestroyTextureObject((void*) (intptr_t) texObjs[i]);
         for (int i = 0; i < nsurf; ++i)
             if (surfObjs[i] && g_xpu_hip.hipDestroySurfaceObject)
@@ -12896,7 +13318,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
 static void cajeta_xpu_launch_vulkan(const char* kernelName,
                                      int32_t gridX, int32_t gridY, int32_t gridZ,
                                      int32_t blockX, int32_t blockY, int32_t blockZ,
-                                     int32_t sharedBytes, void* argvv) {
+                                     int32_t sharedBytes, void* argvv,
+                                     int32_t specCount, const int32_t* specValues) {
     void** argv = (void**) argvv;
     // kparams are shared across variants (looked up by the base name); the launch
     // resolves the AS bind kind from the recorded impl below.
@@ -13014,30 +13437,35 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                              (unsigned) (blockX > 0 ? blockX : 1),
                              (unsigned) (blockY > 0 ? blockY : 1),
                              (unsigned) (blockZ > 0 ? blockZ : 1),
-                             (unsigned) (sharedBytes > 0 ? sharedBytes : 0));
+                             (unsigned) (sharedBytes > 0 ? sharedBytes : 0),
+                             (int) specCount, specValues);
     for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
     for (int i = 0; i < nsamp; ++i) cajeta_xpu_vk_destroy_sampler(samplers[i]);
 }
 
-// The host-source `kernel.launch(...)` entry point: dispatch to the active
-// backend (chosen + cached on first device touch).
-void __cajeta_xpu_launch(const char* kernelName,
-                         int32_t gridX, int32_t gridY, int32_t gridZ,
-                         int32_t blockX, int32_t blockY, int32_t blockZ,
-                         uint32_t sharedBytes, void* argv, int64_t streamHandle) {
-    if (!kernelName) return;
-    switch (cajeta_xpu_active_backend()) {
+// Dispatch a launch to whatever backend is active, on its current device.
+// `specCount`/`specValues` are host overrides for the kernel's user spec
+// constants (NULL/0 = none); see __cajeta_xpu_launch_v3.
+static void caj_xpu_dispatch(const char* kernelName,
+                             int32_t gridX, int32_t gridY, int32_t gridZ,
+                             int32_t blockX, int32_t blockY, int32_t blockZ,
+                             uint32_t sharedBytes, void* argv,
+                             int64_t streamHandle,
+                             int32_t specCount, const int32_t* specValues) {
+    int backend = cajeta_xpu_active_backend();
+    switch (backend) {
         case CAJ_XPU_CUDA:
             // streamHandle (0 = default stream) orders this launch with the
-            // async copies queued on the same stream.
+            // async copies queued on the same stream. Spec override → the
+            // module's constant-memory globals (Phase C).
             cajeta_xpu_launch_cuda(kernelName, gridX, gridY, gridZ,
                                    blockX, blockY, blockZ, sharedBytes, argv,
-                                   streamHandle);
+                                   streamHandle, specCount, specValues);
             return;
         case CAJ_XPU_HIP:
             cajeta_xpu_launch_hip(kernelName, gridX, gridY, gridZ,
                                   blockX, blockY, blockZ, sharedBytes, argv,
-                                  streamHandle);
+                                  streamHandle, specCount, specValues);
             return;
         case CAJ_XPU_VULKAN:
             // Vulkan v1 submits on its own queue; per-stream ordering is a
@@ -13045,17 +13473,134 @@ void __cajeta_xpu_launch(const char* kernelName,
             (void) streamHandle;
             cajeta_xpu_launch_vulkan(kernelName, gridX, gridY, gridZ,
                                      blockX, blockY, blockZ,
-                                     (int32_t) sharedBytes, argv);
+                                     (int32_t) sharedBytes, argv,
+                                     specCount, specValues);
             return;
         case CAJ_XPU_CPU:
             // CPU launches run synchronously; the stream is ordering-irrelevant.
+            // CPU honors a spec override by reading it at runtime (hybrid).
             (void) streamHandle;
             cajeta_xpu_launch_cpu(kernelName, gridX, gridY, gridZ,
                                   blockX, blockY, blockZ,
-                                  (int32_t) sharedBytes, argv);
+                                  (int32_t) sharedBytes, argv,
+                                  specCount, specValues);
             return;
         default: return;   // none: diagnostic emitted
     }
+}
+
+// How many devices the given backend exposes (>= 1). Best-effort; falls back to
+// 1 if the count can't be queried. The index space the launch `deviceId` selects
+// within (handles originate from cajeta-gpu enumeration; xpu consumes the index).
+static int caj_xpu_device_count(int backend) {
+    switch (backend) {
+        case CAJ_XPU_HIP: {
+            int c = 0;
+            if (g_xpu_hip.hipGetDeviceCount &&
+                g_xpu_hip.hipGetDeviceCount(&c) == 0 && c > 0) return c;
+            return 1;
+        }
+        case CAJ_XPU_CUDA: {
+            int c = 0;
+            if (g_xpu_cuda.cuDeviceGetCount &&
+                g_xpu_cuda.cuDeviceGetCount(&c) == 0 && c > 0) return c;
+            return 1;
+        }
+        case CAJ_XPU_VULKAN: {
+            uint32_t c = 0;
+            if (g_xpu_vk.vkEnumeratePhysicalDevices && g_xpu_vk.instance &&
+                g_xpu_vk.vkEnumeratePhysicalDevices(g_xpu_vk.instance, &c, NULL)
+                    == VK_SUCCESS && c > 0) return (int) c;
+            return 1;
+        }
+        case CAJ_XPU_CPU:
+        default:
+            return 1;
+    }
+}
+
+// The versioned host-source launch entry point (ABI v1): dispatch to the active
+// backend (chosen + cached on first device touch). `deviceId` selects the target
+// device — -1 = the current active device (no targeting; the pre-Stage-12
+// behavior); >= 0 = an index into the active backend's enumerated devices. An
+// out-of-range index is a defined no-op (a diagnostic, never UB). v1 targets
+// "where it is cheap + correct": deviceId 0 is the default device on every
+// backend, and HIP genuinely selects deviceId>0 via hipSetDevice (the caller
+// owns buffer affinity — buffers must already live on the target device; no
+// migration here). Multi-device >0 on CUDA/Vulkan needs per-device contexts not
+// yet built and is a defined "unsupported", not a silent wrong-device launch.
+// A future field is added as __cajeta_xpu_launch_v4, never by repurposing an arg.
+// `specCount`/`specValues` are host overrides for the kernel's user
+// specialization constants (NULL/0 = none); see the header for the slot→SpecId
+// mapping and per-backend honoring.
+void __cajeta_xpu_launch_v3(const char* kernelName,
+                            int32_t gridX, int32_t gridY, int32_t gridZ,
+                            int32_t blockX, int32_t blockY, int32_t blockZ,
+                            uint32_t sharedBytes, void* argv,
+                            int64_t streamHandle, int32_t deviceId,
+                            int32_t specCount, const int32_t* specValues) {
+    if (!kernelName) return;
+    if (specCount < 0 || !specValues) specCount = 0;
+
+    if (deviceId >= 0) {
+        int backend = cajeta_xpu_active_backend();
+        int count = caj_xpu_device_count(backend);
+        if (deviceId >= count) {
+            fprintf(stderr,
+                    "cajeta.xpu: launch deviceId %d out of range (%s exposes "
+                    "%d device%s); launch skipped\n",
+                    deviceId, cajeta_xpu_backend_name(backend), count,
+                    count == 1 ? "" : "s");
+            return;   // defined no-op, no UB
+        }
+        if (deviceId > 0) {
+            if (backend == CAJ_XPU_HIP && g_xpu_hip.hipSetDevice) {
+                // Bind the target device for this launch, then restore the
+                // runtime's default so subsequent (deviceId<=0) launches and
+                // buffer ops keep landing on the default device.
+                int prev = g_xpu_hip.device;
+                g_xpu_hip.hipSetDevice(deviceId);
+                caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
+                                 blockX, blockY, blockZ, sharedBytes, argv,
+                                 streamHandle, specCount, specValues);
+                g_xpu_hip.hipSetDevice(prev);
+                return;
+            }
+            fprintf(stderr,
+                    "cajeta.xpu: per-launch targeting to deviceId %d not yet "
+                    "implemented for backend %s (only deviceId 0/-1); launch "
+                    "skipped\n",
+                    deviceId, cajeta_xpu_backend_name(backend));
+            return;
+        }
+        // deviceId == 0 falls through: the default device on every backend.
+    }
+
+    caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
+                     blockX, blockY, blockZ, sharedBytes, argv, streamHandle,
+                     specCount, specValues);
+}
+
+// Compat shim (ABI v2): no spec override. Frozen signature.
+void __cajeta_xpu_launch_v2(const char* kernelName,
+                            int32_t gridX, int32_t gridY, int32_t gridZ,
+                            int32_t blockX, int32_t blockY, int32_t blockZ,
+                            uint32_t sharedBytes, void* argv,
+                            int64_t streamHandle, int32_t deviceId) {
+    __cajeta_xpu_launch_v3(kernelName, gridX, gridY, gridZ,
+                           blockX, blockY, blockZ, sharedBytes, argv,
+                           streamHandle, deviceId, /*specCount=*/0, /*specValues=*/NULL);
+}
+
+// Backward-compat shim — the original positional entry point. Forwards to v2
+// with deviceId = -1 (the active device). Frozen: keep this signature stable.
+void __cajeta_xpu_launch(const char* kernelName,
+                         int32_t gridX, int32_t gridY, int32_t gridZ,
+                         int32_t blockX, int32_t blockY, int32_t blockZ,
+                         uint32_t sharedBytes, void* argv, int64_t streamHandle) {
+    __cajeta_xpu_launch_v2(kernelName, gridX, gridY, gridZ,
+                           blockX, blockY, blockZ, sharedBytes, argv,
+                           streamHandle, /*deviceId=*/-1);
 }
 
 // Register a kernel's compiled cubin image under its PTX entry name. The

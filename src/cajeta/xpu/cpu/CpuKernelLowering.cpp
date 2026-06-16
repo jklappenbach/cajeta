@@ -106,6 +106,40 @@ public:
         b.CreateCall(pf, call);
     }
 
+    // Specialization constants (Stage 11/12, hybrid host-override): the default
+    // LoweringTarget bakes the literal, but on CPU we read the value at runtime
+    // so a host `spec:[...]` override is honored without a per-value recompile
+    // (folding is irrelevant on the oracle path). Emit a call to the runtime
+    // helper, which returns the override for `slot` if the launch supplied one,
+    // else `defaultValue`. No override → the helper returns the default (today's
+    // observable result), so behavior is unchanged when nothing is passed.
+    llvm::Value* specConstantI32(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 unsigned slot, int32_t defaultValue) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* fnTy = llvm::FunctionType::get(i32, {i32, i32}, /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_spec_i32", fnTy);
+        return b.CreateCall(
+            callee,
+            {llvm::ConstantInt::get(i32, slot),
+             llvm::ConstantInt::get(i32, (uint64_t) (int64_t) defaultValue)},
+            "spec.i32");
+    }
+    llvm::Value* specConstantF32(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 unsigned slot, float defaultValue) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* f32 = llvm::Type::getFloatTy(ctx);
+        auto* fnTy = llvm::FunctionType::get(f32, {i32, f32}, /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_spec_f32", fnTy);
+        return b.CreateCall(callee,
+                            {llvm::ConstantInt::get(i32, slot),
+                             llvm::ConstantFP::get(f32, defaultValue)},
+                            "spec.f32");
+    }
+
     void decorateKernel(llvm::Function*, llvm::Module&) override {
         // Default C calling convention + external linkage (set at creation) is
         // exactly what the host driver / JIT looks up. Nothing to mark.

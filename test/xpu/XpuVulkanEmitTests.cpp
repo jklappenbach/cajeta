@@ -1873,3 +1873,44 @@ TEST(XpuVulkanEmitTests, lowersSpecConstantToOpSpecConstant) {
     else
         GTEST_SUCCEED() << "spirv-val not installed; skipped";
 }
+
+// Stage 11 — the f32 companion `Spec.getf(slot, default)` lowers to a genuine
+// float OpSpecConstant on Vulkan (SpecId 4 for slot 0), via the same type-
+// agnostic witness rewrite as geti — a float witness OpConstant, not a baked
+// literal. Proven by the SpecId-4 decoration + spirv-val.
+TEST(XpuVulkanEmitTests, lowersFloatSpecConstantToOpSpecConstant) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        out[i] = Spec.getf(0, 1.25f);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto klass = module->getStructures()["test.M"];
+    ASSERT_NE(klass, nullptr);
+    auto k = findMethod(klass, "k");
+    ASSERT_NE(k, nullptr);
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_specf_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    ASSERT_NE(lowerKernel(k, binModule), nullptr);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+
+    EXPECT_TRUE(hasSpecIdDecoration(spirv, /*specId=*/4))
+        << "expected a float OpSpecConstant with SpecId 4 for Spec.getf(0, …)";
+
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "float spec-constant kernel produced invalid SPIR-V";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped";
+}

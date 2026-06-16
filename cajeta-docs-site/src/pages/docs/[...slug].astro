@@ -1,0 +1,36 @@
+---
+import { getCollection, render } from 'astro:content';
+import Layout from '~/layouts/PageLayout.astro';
+import { docTitle, docDescription } from '~/utils/docs';
+
+// One page per markdown file in the canonical `docs/` tree (sourced via the
+// `docs` content collection — see src/content.config.ts). `entry.id` is the
+// path-relative slug, e.g. `stdlib/Lambdas` or `gpu/xpu/CajetaXPU`, which the
+// `[...slug]` rest param renders at /docs/<slug>.
+export async function getStaticPaths() {
+  const docs = await getCollection('docs');
+  return docs.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry },
+  }));
+}
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+
+// The docs/ markdown carries its own leading `# Heading`, so we do NOT render a
+// second layout-level <h1> — we just set the page <title> and let the content's
+// own heading lead.
+const title = docTitle(entry);
+const metadata = { title, description: docDescription(entry) };
+---
+
+<Layout metadata={metadata}>
+  <section class="px-4 py-16 sm:px-6 mx-auto lg:px-8 lg:py-20 max-w-4xl">
+    <div
+      class="mx-auto prose prose-lg max-w-4xl dark:prose-invert dark:prose-headings:text-slate-300 prose-md prose-headings:font-heading prose-headings:leading-tighter prose-headings:tracking-tighter prose-headings:font-bold prose-a:text-blue-600 dark:prose-a:text-blue-400 prose-img:rounded-md prose-img:shadow-lg"
+    >
+      <Content />
+    </div>
+  </section>
+</Layout>

@@ -176,6 +176,13 @@ namespace xpu {
                                              llvm::Module& m, unsigned slot,
                                              int32_t defaultValue);
 
+        // f32 companion of specConstantI32 (`Spec.getf(slot, default)` → f32).
+        // Same model: Vulkan emits a genuine float OpSpecConstant (override-able
+        // at pipeline creation); CPU/AMD/NVPTX bake the default literal.
+        virtual llvm::Value* specConstantF32(llvm::IRBuilderBase& b,
+                                             llvm::Module& m, unsigned slot,
+                                             float defaultValue);
+
         // Decorate a freshly-created kernel function: calling convention +
         // any kernel-marker metadata. NVPTX: ptx_kernel CC + nvvm.annotations.
         // AMDGPU: amdgpu_kernel CC, no metadata.

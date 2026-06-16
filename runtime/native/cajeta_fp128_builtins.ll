@@ -299,7 +299,7 @@ define dso_local fp128 @__floatditf(i64 noundef %0) local_unnamed_addr #0 {
   br label %21
 
 21:                                               ; preds = %1, %3
-  %22 = phi fp128 [ %20, %3 ], [ 0.000000e+00, %1 ]
+  %22 = phi fp128 [ %20, %3 ], [ 0xL00000000000000000000000000000000, %1 ]
   ret fp128 %22
 }
 
@@ -331,7 +331,7 @@ define dso_local fp128 @__floatsitf(i32 noundef %0) local_unnamed_addr #0 {
   br label %20
 
 20:                                               ; preds = %1, %3
-  %21 = phi fp128 [ %19, %3 ], [ 0.000000e+00, %1 ]
+  %21 = phi fp128 [ %19, %3 ], [ 0xL00000000000000000000000000000000, %1 ]
   ret fp128 %21
 }
 
@@ -360,7 +360,7 @@ define dso_local fp128 @__floatunditf(i64 noundef %0) local_unnamed_addr #0 {
   br label %17
 
 17:                                               ; preds = %1, %3
-  %18 = phi fp128 [ %16, %3 ], [ 0.000000e+00, %1 ]
+  %18 = phi fp128 [ %16, %3 ], [ 0xL00000000000000000000000000000000, %1 ]
   ret fp128 %18
 }
 
@@ -385,7 +385,7 @@ define dso_local fp128 @__floatunsitf(i32 noundef %0) local_unnamed_addr #0 {
   br label %16
 
 16:                                               ; preds = %1, %3
-  %17 = phi fp128 [ %15, %3 ], [ 0.000000e+00, %1 ]
+  %17 = phi fp128 [ %15, %3 ], [ 0xL00000000000000000000000000000000, %1 ]
   ret fp128 %17
 }
 

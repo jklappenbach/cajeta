@@ -2461,6 +2461,46 @@ TEST(XpuCpuDispatchTests, specConstantBakesDefaultOnCpu) {
     EXPECT_EQ(r, 777) << "got " << r << " (spec default not baked as 4242?)";
 }
 
+// Stage 11 — the f32 companion `Spec.getf(0, 2.5f)` bakes its compile-time
+// default on CPU (no pipeline-time binding), so every element reads 2.5. Scaled
+// by 1000 to check through the int32 return: 2.5 * 1000 = 2500.
+TEST(XpuCpuDispatchTests, specConstantFloatBakesDefaultOnCpu) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class SCF {\n"
+        "    @Kernel\n"
+        "    public static void fill(Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { out[i] = Spec.getf(0, 2.5f); }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        float32[] hout = heap float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        fill.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = hout[i] - 2.5f;\n"
+        "            if (d < -0.001f || d > 0.001f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.SCF", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "got " << r << " (float spec default not baked as 2.5?)";
+}
+
 // ----- Stage 11: bounded device-side dispatch (function-type values) -----
 //
 // A function-typed device value is an i32 TAG over a closed set of @Device

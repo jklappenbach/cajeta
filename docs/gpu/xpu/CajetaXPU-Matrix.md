@@ -9,7 +9,10 @@ the reason).
 
 This is a companion to the backend-variance discipline in
 [`CajetaXPU-Variance.md`](CajetaXPU-Variance.md); it extends the original
-NVIDIA∩AMD two-backend reckoning with the Vulkan/SPIR-V column.
+NVIDIA∩AMD two-backend reckoning with the Vulkan/SPIR-V column. The **stable
+launch + kernel-arg FFI contract** these backends dispatch through (the register
+trio, the `argv` marshalling per parameter kind, per-launch device targeting, and
+the ABI version policy) is frozen in [`CajetaXPU-FFI.md`](CajetaXPU-FFI.md).
 
 > **A fourth backend — CPU — and a runtime dispatcher now exist** (see
 > [`CajetaCPU.md`](CajetaCPU.md)). The CPU is deliberately *not* given a
@@ -296,6 +299,8 @@ Where a platform lacks a native primitive — can Cajeta provide it, and if not,
 - **Vulkan · block dim** → fixed compile-time `LocalSize` (first cut); spec-constant `LocalSizeId` is the refinement. *(§4)*
 - **AMD · workgroup dim read** → dispatch-packet load (no `ntid` intrinsic, but the value is recoverable). *(§1)*
 - **All · `tex.sample(sampler, u, v)`** (Item 8) → one `LoweringTarget::sampleTexture` seam, four native realizations: CPU C bilinear (`__cajeta_xpu_cpu_tex_sample`); Vulkan `llvm.spv.resource.samplelevel` → `OpImageSampleExplicitLod` (image + sampler descriptors); AMD `__ockl_image_sample_2D` → `image_sample` (ROCm device-lib **hybrid-linked only for sampling kernels** — reuses ROCm's SRD build + coord normalization rather than hand-packing gfx descriptors); NVIDIA `llvm.nvvm.tex.unified.2d` → PTX `tex.2d`. Texture marshals like a `Buffer` handle, `Sampler` like a by-value POD; on AMD/NVIDIA the sampler state rides the texture object (built per-launch). CPU+Vulkan+AMD on-device, NVIDIA emit-only. *(needs LLVM 23 for Vulkan)*
+
+- **Texture dimensions** — `Texture1D/2D/3D/2DArray` + fetch/sample work on CPU + Vulkan/RADV + AMD/gfx1151 on-device (NVIDIA emit-only). **`TextureCube` sample and mipmapped `Texture2D` + explicit-LOD (`sampleLod`/`fetchLod`, incl. trilinear cross-level blend) now work on CPU + Vulkan/RADV + AMD/gfx1151 on-device** (NVIDIA emit-only). HIP's high-level array APIs don't support these on gfx1151 — `hipMalloc3DArray[hipArrayCubemap]` → invalid-arg, `hipMallocMipmappedArray` → `hipErrorNotSupported(801)`, unchanged across ROCm 7.2.2 + 7.11.0 (a documented HIP gap — the official "Texture Management [Not supported]" group — not a hardware limit). cajeta **emulates** both on AMD: cubemaps via a LAYERED `hipArray` + in-kernel face projection, and mipmaps via a **hand-built gfx11 image SRD over an addrlib-tiled `hipMalloc`** (option B), sampled through the unchanged `__ockl_image_sample_lod_2D` seam — proven bit-exact on-device (`plans/gpu/xpu/probes/mipprobe.cpp`). The mip emulation rides the optional `libcajeta_amdtex` helper (vendored addrlib, dlopen'd like libamdhip64); where it's absent or the gfx arch isn't in its config table the AMD mip path degrades to unsupported and the Vulkan backend remains the fallback. Scope: explicit-LOD only (no auto-LOD/derivatives — N/A in compute), no anisotropic, no seamless cube edges; v1 mip format = R32F. *(`XpuHipDispatchDeviceTests.{mipmapFetchAndSampleLod,mipTrilinearBlend,textureCubeSample}RoutesToHipOnDevice`; project memory `project_amd_mip_emulation_shipped`)*
 
 **Not cleanly possible (and why):**
 

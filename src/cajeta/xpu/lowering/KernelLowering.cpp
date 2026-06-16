@@ -2207,6 +2207,32 @@ private:
                 return target.specConstantI32(builder, mod, (unsigned) slot,
                                               (int32_t) defC->getSExtValue());
             }
+            // Spec.getf(slot, default): an i32 compile-time slot + an f32
+            // compile-time default; returns f32. Same SpecId model as geti.
+            if (name == "getf") {
+                const auto& args = mc->getParameters();
+                if (args.size() != 2)
+                    unsupported("Spec.getf expects (slot, default) — a "
+                                "compile-time i32 slot and f32 default");
+                auto* slotC = llvm::dyn_cast<llvm::ConstantInt>(
+                    lowerExpr(args[0].expression));
+                auto* defC = llvm::dyn_cast<llvm::ConstantFP>(
+                    lowerExpr(args[1].expression));
+                if (!slotC || !defC)
+                    unsupported("Spec.getf(slot, default) needs a compile-time "
+                                "i32 slot and an f32 default constant");
+                uint64_t slot = slotC->getZExtValue();
+                if (slot >= LoweringTarget::kMaxUserSpecConstants)
+                    unsupported("Spec.getf slot must be < " +
+                                std::to_string(
+                                    LoweringTarget::kMaxUserSpecConstants));
+                llvm::APFloat apf = defC->getValueAPF();
+                bool lost = false;
+                apf.convert(llvm::APFloat::IEEEsingle(),
+                            llvm::APFloat::rmNearestTiesToEven, &lost);
+                return target.specConstantF32(builder, mod, (unsigned) slot,
+                                              apf.convertToFloat());
+            }
         } else if (recv == "Wave") {
             const auto& args = mc->getParameters();
             if (name == "width") return target.waveWidth(builder, mod);
@@ -4495,17 +4521,91 @@ void LoweringTarget::devicePrintf(llvm::IRBuilderBase&, llvm::Module&,
         "hostcall / Vulkan DebugPrintf deferred)", "XPU-N01");
 }
 
-// Default specialization constant: bake the compile-time default as an i32
-// literal. Correct for CPU/AMD/NVPTX — they (re)compile the kernel per launch,
-// so there is no pipeline-time binding to specialize against; the value IS the
-// default. Vulkan overrides with a real OpSpecConstant (override-able at
-// pipeline creation).
-llvm::Value* LoweringTarget::specConstantI32(llvm::IRBuilderBase& /*b*/,
-                                             llvm::Module& m, unsigned /*slot*/,
+// Default specialization-constant read — used by the device-baking backends
+// (NVPTX + AMDGPU; CPU and Vulkan override this). Stage 11/12 host override:
+// read the value from a pair of constant-memory globals the runtime sets per
+// launch (`__cajeta_xpu_spec_count` + `__cajeta_xpu_spec_values[]`, addrspace 4),
+// falling back to the compile-time default for any slot the launch did not
+// supply: `result = (slot u< count) ? values[slot] : default`.
+//
+// SAFE BY DEFAULT: the globals are zero-initialized, so if the runtime never
+// sets them (no host override, or a backend whose runtime copy isn't wired yet)
+// `count` is 0 and every read returns the baked default — byte-identical to the
+// pre-override behavior, never garbage. The loads are volatile so the optimizer
+// can't fold the zero initializer back in. The runtime overwrites the globals
+// via cuModuleGetGlobal/hipModuleGetGlobal + a host→device copy keyed on the
+// fixed symbol names. (Vulkan binds a genuine OpSpecConstant; this is the
+// device-baking analog. On-device honoring is gated on the per-launch copy.)
+namespace {
+constexpr unsigned kSpecConstantAS = 4;     // NVPTX/AMDGCN constant memory
+constexpr unsigned kSpecMaxUserSlots = 60;  // matches the runtime cap (4 + 60 <= 64)
+
+// Get-or-create the two constant-memory spec globals (count + raw 4-byte words).
+// Fixed names so the runtime can resolve them; external linkage + zeroinit so
+// they are a visible definition the host can write.
+std::pair<llvm::GlobalVariable*, llvm::GlobalVariable*>
+specConstantGlobals(llvm::Module& m) {
+    llvm::LLVMContext& ctx = m.getContext();
+    auto* i32 = llvm::Type::getInt32Ty(ctx);
+    auto* arrTy = llvm::ArrayType::get(i32, kSpecMaxUserSlots);
+    auto* countG = m.getGlobalVariable("__cajeta_xpu_spec_count", true);
+    if (!countG) {
+        countG = new llvm::GlobalVariable(
+            m, i32, /*isConstant=*/false, llvm::GlobalValue::ExternalLinkage,
+            llvm::ConstantInt::get(i32, 0), "__cajeta_xpu_spec_count", nullptr,
+            llvm::GlobalValue::NotThreadLocal, kSpecConstantAS);
+    }
+    auto* valsG = m.getGlobalVariable("__cajeta_xpu_spec_values", true);
+    if (!valsG) {
+        valsG = new llvm::GlobalVariable(
+            m, arrTy, /*isConstant=*/false, llvm::GlobalValue::ExternalLinkage,
+            llvm::ConstantAggregateZero::get(arrTy), "__cajeta_xpu_spec_values",
+            nullptr, llvm::GlobalValue::NotThreadLocal, kSpecConstantAS);
+    }
+    return {countG, valsG};
+}
+
+// Emit `(slot u< count) ? values[slot] : <default-as-i32-word>`, returning the
+// raw i32 word (the caller bitcasts to float for getf).
+llvm::Value* emitSpecConstantWordRead(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      unsigned slot, llvm::Value* defaultWord) {
+    if (slot >= kSpecMaxUserSlots) return defaultWord;   // out of range → default
+    llvm::LLVMContext& ctx = m.getContext();
+    auto* i32 = llvm::Type::getInt32Ty(ctx);
+    auto [countG, valsG] = specConstantGlobals(m);
+    llvm::Value* count = b.CreateLoad(i32, countG, /*isVolatile=*/true, "spec.count");
+    llvm::Value* inRange = b.CreateICmpULT(
+        llvm::ConstantInt::get(i32, slot), count, "spec.inrange");
+    llvm::Value* slotPtr = b.CreateInBoundsGEP(
+        valsG->getValueType(), valsG,
+        {llvm::ConstantInt::get(i32, 0), llvm::ConstantInt::get(i32, slot)},
+        "spec.slot");
+    llvm::Value* word = b.CreateLoad(i32, slotPtr, /*isVolatile=*/true, "spec.word");
+    return b.CreateSelect(inRange, word, defaultWord, "spec.sel");
+}
+}  // namespace
+
+llvm::Value* LoweringTarget::specConstantI32(llvm::IRBuilderBase& b,
+                                             llvm::Module& m, unsigned slot,
                                              int32_t defaultValue) {
-    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()),
-                                  (uint64_t) (int64_t) defaultValue,
-                                  /*isSigned=*/true);
+    llvm::Value* def = llvm::ConstantInt::get(
+        llvm::Type::getInt32Ty(m.getContext()), (uint64_t) (int64_t) defaultValue,
+        /*isSigned=*/true);
+    return emitSpecConstantWordRead(b, m, slot, def);
+}
+
+// f32 companion — same constant-memory read, on the raw word: default packed as
+// its bit pattern, the selected word bitcast back to float.
+llvm::Value* LoweringTarget::specConstantF32(llvm::IRBuilderBase& b,
+                                             llvm::Module& m, unsigned slot,
+                                             float defaultValue) {
+    llvm::LLVMContext& ctx = m.getContext();
+    auto* i32 = llvm::Type::getInt32Ty(ctx);
+    auto* f32 = llvm::Type::getFloatTy(ctx);
+    llvm::Value* defWord = b.CreateBitCast(
+        llvm::ConstantFP::get(f32, (double) defaultValue), i32, "spec.defbits");
+    llvm::Value* word = emitSpecConstantWordRead(b, m, slot, defWord);
+    return b.CreateBitCast(word, f32, "spec.f32");
 }
 
 // Default float atomic: a system-scope atomicrmw at `order` (Default → relaxed/
