@@ -854,6 +854,17 @@ namespace cajeta {
             bool isConstructor, bool floatingParams,
             const vector<CajetaTypePtr>& explicitMethodTypeArgs = {});
 
+        // Named arguments — option C (positional prefix + named suffix). When a
+        // call mixes positional and named args (`f(a, b, x: 1, y: 2)`), reorder
+        // `parameters` into formal declaration order and strip the labels, so the
+        // ordinary positional resolution + codegen apply. Returns true if the call
+        // was partial (and has been rewritten); false for all-positional or
+        // all-labeled calls (left untouched — those keep their existing paths).
+        // Throws (LANG-NAMEDARG) on an invalid mix: a positional arg after a named
+        // one, a duplicate label, or no method whose parameter names match.
+        bool normalizePartialLabeledCall(const string& methodName, bool isConstructor,
+                                         vector<ParameterEntry>& parameters);
+
         virtual void generatePrototype();
 
         virtual void generateCode();

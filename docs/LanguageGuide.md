@@ -263,17 +263,20 @@ public class Rect {
 
 Rect r = heap Rect(w: 4, h: 3);            // named constructor args
 int32 a = r.area(scale: 2, bias: 1);       // named method args  → 25
+int32 b = r.area(2, bias: 1);              // positional prefix + named suffix → 25
 ```
 
 - **Matched by name, so order is free.** `r.area(bias: 1, scale: 2)` binds the
   same as `r.area(scale: 2, bias: 1)` — the labels, not the positions, decide
   which parameter each value fills.
-- **All-or-nothing.** Either *every* argument is labeled or *none* is. A
-  partially-labeled call is **not** matched by name and is **not** an error — it
-  silently falls back to fully positional binding in source order, and the stray
-  labels are ignored. So `area(scale: 2, 1)` and `area(2, bias: 1)` both bind
-  positionally (`scale = 2, bias = 1`); the label is decorative there. Label all
-  arguments or none — never mix.
+- **Positional prefix, then named suffix.** A call may start with positional
+  arguments and switch to named ones: `area(2, bias: 1)` binds `scale` by position
+  and `bias` by name. The named suffix is still order-free
+  (`combine(1, c: 3, b: 2)` and `combine(1, b: 2, c: 3)` are equal).
+- **A positional argument may not follow a named one.** Once you name an argument,
+  every following argument must also be named — `area(scale: 2, 1)` is a **compile
+  error** (`LANG-NAMEDARG`), not a silent re-interpretation. (A named argument also
+  can't re-target a parameter the positional prefix already filled.)
 - The same `name: value` shape is used by **struct aggregate initializers**
   (`Foo { field: value, … }`, see §5) and by the XPU **kernel launch** form
   (`kernel.launch(stream, grid: […], block: […])`, see the XPU guide) — there the

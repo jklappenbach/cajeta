@@ -4,16 +4,19 @@ import tour.DemoClass;
 import tour.Point;
 
 // Named (keyword) arguments. Any call — method, static, or constructor —
-// may pass its arguments by name (`name: value`). Arguments are then
-// matched by NAME, so call-site order is free. Rule: all-or-nothing —
-// label every argument or none; a partially-labeled call silently falls
-// back to positional binding (the labels are ignored). See
+// may pass its arguments by name (`name: value`); they are matched by NAME,
+// so the order you write them is free. A call may also be a positional
+// PREFIX followed by a named SUFFIX (`combine(1, c: 3, b: 2)`); a positional
+// argument may not follow a named one (that's a compile error). See
 // docs/LanguageGuide.md § "Named arguments".
 public class NamedArgsDemo extends DemoClass {
 
-    // Order-sensitive on purpose (a - b): a mis-bind would be visible.
+    // Order-sensitive on purpose: digit positions reveal any mis-bind.
     public int32 diff(int32 a, int32 b) {
         return a - b;
+    }
+    public int32 combine(int32 a, int32 b, int32 c) {
+        return a * 100 + b * 10 + c;
     }
 
     public void execute() {
@@ -28,8 +31,11 @@ public class NamedArgsDemo extends DemoClass {
         Point q = heap Point(y: 2, x: 1);
         System.stdout.println("  Point(y: 2, x: 1) -> x=" + q.x + " y=" + q.y);
 
-        // Named method args, and order-independence: both read a=10, b=3 → 7.
+        // Named method args, order-independent: both read a=10, b=3 → 7.
         System.stdout.println("  diff(a: 10, b: 3) = " + this.diff(a: 10, b: 3));
         System.stdout.println("  diff(b: 3, a: 10) = " + this.diff(b: 3, a: 10));
+
+        // Positional prefix + named suffix (suffix order free): a=1, b=2, c=3 → 123.
+        System.stdout.println("  combine(1, c: 3, b: 2) = " + this.combine(1, c: 3, b: 2));
     }
 }

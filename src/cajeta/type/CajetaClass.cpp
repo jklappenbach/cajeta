@@ -4391,10 +4391,111 @@ namespace cajeta {
         return nullptr;
     }
 
+    // Named arguments — option C (positional prefix + named suffix). See the
+    // header. Reorders a partial call into formal declaration order + strips the
+    // labels so the normal positional path resolves it; leaves all-positional and
+    // all-labeled calls untouched. Throws LANG-NAMEDARG on an invalid mix.
+    bool CajetaClass::normalizePartialLabeledCall(const string& methodName,
+            bool isConstructor, vector<ParameterEntry>& parameters) {
+        size_t n = parameters.size();
+        size_t firstLabeled = n, labeledCount = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (!parameters[i].label.empty()) {
+                if (firstLabeled == n) firstLabeled = i;
+                labeledCount++;
+            }
+        }
+        if (labeledCount == 0) return false;        // all positional
+        if (labeledCount == n) return false;        // all labeled — existing path
+
+        // Partial: positional prefix [0, P), named suffix [P, n). Every argument
+        // after the first label must itself be labeled.
+        size_t P = firstLabeled;
+        for (size_t i = P; i < n; ++i) {
+            if (parameters[i].label.empty()) {
+                throw Exception("named arguments must form a trailing group: "
+                    "positional argument follows a named argument", "LANG-NAMEDARG");
+            }
+        }
+        // Argument labels carry the grammar's trailing ':' (parameterLabel:
+        // IDENTIFIER ':'); formal parameter names don't — normalize before matching.
+        auto stripColon = [](const string& s) {
+            return (!s.empty() && s.back() == ':') ? s.substr(0, s.size() - 1) : s;
+        };
+        set<string> namedLabels;
+        for (size_t i = P; i < n; ++i) {
+            if (!namedLabels.insert(stripColon(parameters[i].label)).second) {
+                throw Exception("duplicate named argument '" +
+                    stripColon(parameters[i].label) + "'", "LANG-NAMEDARG");
+            }
+        }
+
+        // Recover the label->position mapping for the named suffix from a method
+        // whose name + arity + suffix parameter-name set match. The mapping is by
+        // NAME only; resolveMethod does the type-based binding afterward.
+        bool found = false;
+        map<string, size_t> labelToFormalIndex;   // label -> formal index within [P, n)
+        auto scan = [&](map<string, map<string, MethodPtr>>& mp) {
+            for (auto& bucket : mp) {
+                for (auto& entry : bucket.second) {
+                    MethodPtr m = entry.second;
+                    if (!m || m->getName() != methodName) continue;
+                    auto formals = m->getParameterList();
+                    size_t off = (!formals.empty() && formals.front() &&
+                                  formals.front()->getName() == "this") ? 1 : 0;
+                    if (formals.size() - off != n) continue;
+                    set<string> suffixNames;
+                    for (size_t i = P; i < n; ++i)
+                        suffixNames.insert(formals[off + i]->getName());
+                    if (suffixNames != namedLabels) continue;   // names+position must line up
+                    map<string, size_t> perm;
+                    for (size_t i = P; i < n; ++i)
+                        perm[formals[off + i]->getName()] = i;
+                    if (!found) { labelToFormalIndex = perm; found = true; }
+                    else if (perm != labelToFormalIndex) {
+                        throw Exception("ambiguous named call: overloads of '" +
+                            methodName + "' order the named parameters differently",
+                            "LANG-NAMEDARG");
+                    }
+                }
+            }
+        };
+        scan(isConstructor ? unlabeledConstructorMap : unlabeledMethodMap);
+        if (!isConstructor) {                       // inherited instance methods
+            for (auto& parent : superClasses) scan(parent->unlabeledMethodMap);
+        }
+        if (!found) {
+            throw Exception("no '" + methodName + "' matches the named arguments "
+                "provided — check the parameter names", "LANG-NAMEDARG");
+        }
+
+        // Reorder: positional prefix unchanged, named suffix sorted into formal
+        // order, labels cleared (now a plain positional call).
+        vector<ParameterEntry> reordered;
+        reordered.reserve(n);
+        for (size_t i = 0; i < P; ++i) reordered.push_back(parameters[i]);
+        map<size_t, ParameterEntry> byFormalIndex;
+        for (size_t i = P; i < n; ++i)
+            byFormalIndex.insert({labelToFormalIndex[stripColon(parameters[i].label)],
+                                  parameters[i]});
+        for (auto& kv : byFormalIndex) {            // map iterates in key (formal index) order
+            ParameterEntry e = kv.second;
+            e.label.clear();
+            reordered.push_back(e);
+        }
+        parameters = reordered;
+        return true;
+    }
+
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
                                             CajetaModulePtr callerModule, bool forceDirectCall,
                                             const vector<CajetaTypePtr>& explicitMethodTypeArgs,
                                             llvm::Value* sretTarget) {
+        // Partial (positional + named) calls reorder to positional here; this also
+        // turns a mixed call into one with no labels, so `floatingParams` below is
+        // false for it and the positional resolution applies.
+        normalizePartialLabeledCall(methodName, isConstructor, parameters);
+
         bool floatingParams = true;
         for (auto &param : parameters) {
             if (param.label.empty()) {

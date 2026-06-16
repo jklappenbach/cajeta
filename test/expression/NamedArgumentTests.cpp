@@ -2,12 +2,14 @@
 // Named (keyword) arguments at call sites: `f(name: value, other: value)`.
 //
 // Cajeta parses a `parameterLabel? expression` for every call argument
-// (CajetaParser.g4 parameterEntry), and the resolver matches labeled calls by
-// name via a separate labeled method/constructor map (CajetaClass.cpp invokeMethod
-// → labeledMethodMap, Method::buildCanonical bakes labels into the signature).
-// Two rules: (1) named args are matched by name, so call-site ORDER is free;
-// (2) it is all-or-nothing — every argument must be labeled, or the call is
-// treated as positional.
+// (CajetaParser.g4 parameterEntry). Resolution rules:
+//   (1) Named args are matched BY NAME — so the order you write them is free.
+//   (2) A call may be all-positional, all-named, or a POSITIONAL PREFIX followed
+//       by a NAMED SUFFIX (option C, Python/C#/Kotlin style): `f(a, b, x: 1)`.
+//       The named suffix is reordered to the formal parameter order
+//       (CajetaClass::normalizePartialLabeledCall) and then resolved positionally.
+//   (3) A positional argument may NOT follow a named one — that is a compile error
+//       (LANG-NAMEDARG).
 //
 // These were previously only exercised by the XPU kernel-launch path
 // (grid:/block:/sharedBytes:/spec:); this file pins the general behavior.
@@ -36,11 +38,14 @@ int32_t runBody(const std::string& decls, const std::string& body) {
     return fn();
 }
 
-// A class whose method is order-sensitive (a - b), so a mis-bind would show.
+// A class whose methods are order-sensitive, so a mis-bind would show:
+//   sub(a, b)        = a - b
+//   combine(a, b, c) = a*100 + b*10 + c   (digit positions reveal any swap)
 const char* CALC =
     "public class Calc {\n"
     "    public Calc() {}\n"
     "    public int32 sub(int32 a, int32 b) { return a - b; }\n"
+    "    public int32 combine(int32 a, int32 b, int32 c) { return a * 100 + b * 10 + c; }\n"
     "}\n";
 
 } // namespace
@@ -75,22 +80,27 @@ TEST(NamedArgumentTests, constructorByNameOrderIndependent) {
         "return p.x * 10 + p.y;\n"), 12);
 }
 
-// Named args are ALL-OR-NOTHING. A partially-labeled call is NOT matched by name
-// and is NOT a hard error — it falls back to FULLY POSITIONAL binding in source
-// order, and the stray labels are ignored. (`floatingParams` in
-// CajetaClass.cpp::invokeMethod is true only when EVERY arg is labeled.) These
-// tests pin that contract so the fallback can't silently change:
-//   c.sub(10, b: 3) → positional sub(10, 3) = 7   (label `b:` ignored)
-//   c.sub(b: 3, 10) → positional sub(3, 10) = -7  (label `b:` ignored)
-// Practical guidance: label ALL arguments or NONE — never mix (see LanguageGuide).
-// NB: this fallback is specific to the GENERAL resolver; the XPU `.launch(stream,
-// grid: …, block: …)` form deliberately mixes and is handled by a dedicated
-// launch lowering (CallExpression.cpp), not this path.
-TEST(NamedArgumentTests, partialLabelingFallsBackToPositional) {
+// Option C: a positional PREFIX followed by a named SUFFIX. The prefix binds by
+// position, the suffix by name. `sub(10, b: 3)` → a=10 (positional), b=3 (named)
+// → 7.
+TEST(NamedArgumentTests, partialPrefixThenNamedSuffix) {
     EXPECT_EQ(runBody(CALC,
         "Calc c = heap Calc();\n"
         "return c.sub(10, b: 3);\n"), 7);
+}
+
+// The named suffix is matched by name, so its WRITTEN order is free even with a
+// positional prefix: a=1 (positional), then c:3,b:2 (named, reordered to b,c)
+// → 1*100 + 2*10 + 3 = 123 (NOT 1*100 + 3*10 + 2 = 132).
+TEST(NamedArgumentTests, partialNamedSuffixReordered) {
     EXPECT_EQ(runBody(CALC,
         "Calc c = heap Calc();\n"
-        "return c.sub(b: 3, 10);\n"), -7);
+        "return c.combine(1, c: 3, b: 2);\n"), 123);
+}
+
+// A positional argument may NOT follow a named one — compile error (LANG-NAMEDARG).
+TEST(NamedArgumentTests, positionalAfterNamedRejected) {
+    EXPECT_THROW(runBody(CALC,
+        "Calc c = heap Calc();\n"
+        "return c.sub(a: 10, 3);\n"), cajeta::Exception);
 }
