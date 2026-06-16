@@ -78,6 +78,27 @@ if(WIN32)
     target_link_libraries(${BINARY} PRIVATE ws2_32)
 endif()
 
+# Windows: keep the libLLVM DLL beside the test exe IN LOCKSTEP with the linked
+# LLVM. cajeta_test links the monolithic shared libLLVM-<ver>.dll, and Windows
+# resolves DLLs from the EXECUTABLE'S OWN DIRECTORY before PATH — so a stale copy
+# next to the exe silently shadows the fork DLL the runner (cajeta_tests.ps1) puts
+# on PATH. That bit us hard: a hand-dropped libLLVM-23git.dll predating the
+# SPV_KHR_quad_control commit made EVERY Vulkan SPIR-V emit fail with "Unknown
+# SPIR-V extension" → segfault, while `llc` (next to the fresh build/bin DLL)
+# worked. A POST_BUILD copy_if_different from the LLVM toolchain bin (the dir
+# find_package(LLVM) resolved, re-globbed each configure) keeps the exe-dir copy
+# current after every (re)link. No-op for a static LLVM toolchain (no DLL found).
+if(WIN32 AND LLVM_DIR)
+    get_filename_component(CAJETA_TEST_LLVM_BIN "${LLVM_DIR}/../../../bin" ABSOLUTE)
+    file(GLOB CAJETA_TEST_LLVM_DLLS "${CAJETA_TEST_LLVM_BIN}/libLLVM-*.dll")
+    if(CAJETA_TEST_LLVM_DLLS)
+        add_custom_command(TARGET ${BINARY} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        ${CAJETA_TEST_LLVM_DLLS} "$<TARGET_FILE_DIR:${BINARY}>"
+                COMMENT "Refreshing libLLVM DLL beside ${BINARY} (prevents stale-DLL shadowing)")
+    endif()
+endif()
+
 # Bake the project source root into the test binary so the disk-reading
 # CompilerTests (`canParseOnValidShortPackage`, etc.) can find their .cajeta
 # fixtures without requiring CAJETA_SOURCE_ROOT to be set in the environment.
