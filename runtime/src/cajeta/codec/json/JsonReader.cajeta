@@ -159,6 +159,40 @@ public class JsonReader {
     }
 
     /**
+     * Consume one complete value at the current position WITHOUT
+     * materializing it — a scalar (string/number/true/false/null) or a
+     * fully-nested object/array, balanced via a depth counter. The
+     * subtree's bytes are skipped, not decoded: no `currentString` /
+     * `currentNumber` work and no allocation for the skipped data. This
+     * is the on-demand skip used by the `Json.parse<T>` synthesizer for
+     * unknown keys (a struct only decodes the fields it maps). Throws
+     * `JsonParseException` if the input ends mid-value.
+     *
+     * ```cajeta
+     * // reader is positioned just before a value (e.g. after a KEY)
+     * reader.skipValue();   // value + any nested subtree consumed
+     * ```
+     */
+    public void skipValue() {
+        JsonToken t = this.next();
+        if (t == JsonToken.START_OBJECT || t == JsonToken.START_ARRAY) {
+            int32 d = 1;
+            while (d > 0) {
+                JsonToken u = this.next();
+                if (u == JsonToken.START_OBJECT || u == JsonToken.START_ARRAY) {
+                    d = d + 1;
+                } else if (u == JsonToken.END_OBJECT || u == JsonToken.END_ARRAY) {
+                    d = d - 1;
+                } else if (u == JsonToken.END) {
+                    throw heap JsonParseException(
+                        "unexpected end of input while skipping value",
+                        this.pos);
+                }
+            }
+        }
+    }
+
+    /**
      * Advance to and return the next `JsonToken`. Reading a cached
      * `peek()` returns that token without re-advancing; otherwise the
      * cursor scans forward over whitespace, separators, and container

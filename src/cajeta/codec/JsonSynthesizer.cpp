@@ -671,9 +671,11 @@ namespace cajeta {
             first = false;
         }
         // Unknown-key handling.
-        //   - Default (v1): silently consume the value's first token.
-        //     Real recursive skipValue() lands when `JsonReader.peek()`
-        //     surfaces (deferred to a separate commit).
+        //   - Default: recursively skip the whole value (scalar or a
+        //     nested object/array subtree) via JsonReader.skipValue() —
+        //     the unmapped bytes are consumed but never decoded (the
+        //     on-demand skip: a struct only materializes the fields it
+        //     maps).
         //   - `@JsonStrict` class-level: throw JsonParseException
         //     naming the unknown key.
         std::string unknownArmBody;
@@ -684,7 +686,7 @@ namespace cajeta {
                << "r.position());";
             unknownArmBody = sb.str();
         } else {
-            unknownArmBody = "t = r.next();";
+            unknownArmBody = "r.skipValue();";
         }
         if (first) {
             os << indent << "    { " << unknownArmBody << " }\n";
