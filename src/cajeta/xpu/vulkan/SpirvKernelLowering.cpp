@@ -698,6 +698,16 @@ public:
     // Workgroup for `shared` memory — see atomicScope). The op
     // (OpAtomicFAddEXT/FMinEXT/FMaxEXT) and its capability + extension are
     // selected by the backend from the BinOp.
+    //
+    // NOTE: FAdd → OpAtomicFAddEXT (VK_EXT_shader_atomic_float, broadly supported
+    // incl. NVIDIA). FMin/FMax → OpAtomicFMin/MaxEXT, which need
+    // VK_EXT_shader_atomic_float2 — supported on RADV but NOT on NVIDIA. There is
+    // no portable SPIR-V fallback: float min/max via an integer-bit-trick or a CAS
+    // loop both require an INTEGER atomic on the float buffer, and SPIR-V logical
+    // addressing forbids reinterpreting a float-typed storage pointer as int. So
+    // float atomic min/max is gated on the device exposing float2 (the device test
+    // skips otherwise); the device feature is enabled in cajeta_runtime.c /
+    // VulkanDriver when present.
     llvm::Value* atomicFloatRMW(llvm::IRBuilderBase& b, llvm::Module& m,
                                 AtomicFloatOp op, llvm::Value* ptr,
                                 llvm::Value* value,

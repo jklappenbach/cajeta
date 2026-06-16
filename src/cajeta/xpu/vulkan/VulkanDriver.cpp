@@ -283,6 +283,67 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
             dci.pEnabledFeatures = &coreF;
         }
     }
+    // EXT_shader_atomic_float{,2}: Buffer<float32>.atomic{Add,Min,Max} lower to
+    // OpAtomicF{Add,Min,Max}EXT, which NVIDIA (unlike RADV) faults on —
+    // VK_ERROR_DEVICE_LOST — unless the extension+feature are enabled at device
+    // creation. Mirror the in-process runtime device (cajeta_runtime.c): probe
+    // support, enable only the advertised bits, gate on the extension being
+    // present (enabling an unsupported extension fails vkCreateDevice). The
+    // structs/list live in this function scope so they outlive createDevice.
+    std::vector<const char*> devExts;
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT afEn{};
+    VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT af2En{};
+    {
+        auto enumExt = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+            d.getInstanceProcAddr(d.instance,
+                                  "vkEnumerateDeviceExtensionProperties"));
+        bool hasAf = false, hasAf2 = false;
+        if (enumExt) {
+            uint32_t n = 0;
+            enumExt(d.phys, nullptr, &n, nullptr);
+            if (n > 0 && n <= 4096) {
+                std::vector<VkExtensionProperties> ep(n);
+                enumExt(d.phys, nullptr, &n, ep.data());
+                for (auto& e : ep) {
+                    if (!strcmp(e.extensionName,
+                                VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME))
+                        hasAf = true;
+                    else if (!strcmp(e.extensionName,
+                                     VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME))
+                        hasAf2 = true;
+                }
+            }
+        }
+        if (getF2 && (hasAf || hasAf2)) {
+            VkPhysicalDeviceShaderAtomicFloatFeaturesEXT qa{};
+            qa.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+            VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT qa2{};
+            qa2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT;
+            qa.pNext = &qa2;
+            VkPhysicalDeviceFeatures2 qf{};
+            qf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            qf.pNext = &qa;
+            getF2(d.phys, &qf);
+            if (hasAf && qa.shaderBufferFloat32AtomicAdd) {
+                devExts.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+                afEn.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+                afEn.shaderBufferFloat32AtomicAdd = VK_TRUE;
+                afEn.pNext = const_cast<void*>(dci.pNext);
+                dci.pNext = &afEn;
+            }
+            if (hasAf2 && qa2.shaderBufferFloat32AtomicMinMax) {
+                devExts.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME);
+                af2En.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT;
+                af2En.shaderBufferFloat32AtomicMinMax = VK_TRUE;
+                af2En.pNext = const_cast<void*>(dci.pNext);
+                dci.pNext = &af2En;
+            }
+        }
+    }
+    if (!devExts.empty()) {
+        dci.enabledExtensionCount = static_cast<uint32_t>(devExts.size());
+        dci.ppEnabledExtensionNames = devExts.data();
+    }
     r = d.createDevice(d.phys, &dci, nullptr, &d.device);
     if (r != VK_SUCCESS) { logvk("vkCreateDevice", r); return false; }
 
@@ -540,6 +601,86 @@ bool VulkanDriver::coopMatrixAvailable() {
     return ok;
 }
 
+bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() {
+    // Self-contained probe (mirrors coopMatrixAvailable): does the first compute
+    // device expose VK_EXT_shader_atomic_float2 with shaderBufferFloat32AtomicMinMax?
+    // Float atomic min/max (OpAtomicFMin/MaxEXT) needs it, and there is no portable
+    // SPIR-V fallback (an integer-bit-trick / CAS would need an int atomic on the
+    // float buffer, which logical addressing forbids). NVIDIA does NOT expose it.
+    void* lib = nullptr;
+#if defined(__APPLE__)
+    for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
+                             "libMoltenVK.dylib"}) {
+#elif defined(_WIN32)
+    for (const char* name : {"vulkan-1.dll"}) {
+#else
+    for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
+#endif
+        lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+        if (lib) break;
+    }
+    if (!lib) return false;
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(lib, "vkGetInstanceProcAddr"));
+    if (!gipa) { dlclose(lib); return false; }
+    auto createInstance = reinterpret_cast<PFN_vkCreateInstance>(
+        gipa(VK_NULL_HANDLE, "vkCreateInstance"));
+    if (!createInstance) { dlclose(lib); return false; }
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    VkInstance inst = VK_NULL_HANDLE;
+    if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
+        dlclose(lib);
+        return false;
+    }
+    auto destroyInstance = reinterpret_cast<PFN_vkDestroyInstance>(
+        gipa(inst, "vkDestroyInstance"));
+    auto enumDevs = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+        gipa(inst, "vkEnumeratePhysicalDevices"));
+    auto enumExt =
+        reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+            gipa(inst, "vkEnumerateDeviceExtensionProperties"));
+    auto getF2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+        gipa(inst, "vkGetPhysicalDeviceFeatures2"));
+
+    bool ok = false;
+    if (destroyInstance && enumDevs && enumExt && getF2) {
+        uint32_t count = 0;
+        enumDevs(inst, &count, nullptr);
+        std::vector<VkPhysicalDevice> devs(count);
+        if (count) enumDevs(inst, &count, devs.data());
+        for (VkPhysicalDevice pd : devs) {
+            uint32_t n = 0;
+            enumExt(pd, nullptr, &n, nullptr);
+            if (!n || n > 4096) continue;
+            std::vector<VkExtensionProperties> ep(n);
+            enumExt(pd, nullptr, &n, ep.data());
+            bool hasExt = false;
+            for (auto& e : ep)
+                if (!strcmp(e.extensionName,
+                            VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME)) {
+                    hasExt = true;
+                    break;
+                }
+            if (!hasExt) continue;
+            VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT af2{};
+            af2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT;
+            VkPhysicalDeviceFeatures2 f2{};
+            f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            f2.pNext = &af2;
+            getF2(pd, &f2);
+            if (af2.shaderBufferFloat32AtomicMinMax) { ok = true; break; }
+        }
+    }
+    if (destroyInstance) destroyInstance(inst, nullptr);
+    dlclose(lib);
+    return ok;
+}
+
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t bytes) {
     if (!impl || bytes == 0) return 0;
     Impl& d = *impl;
@@ -769,6 +910,7 @@ VulkanDriver::~VulkanDriver() = default;
 bool VulkanDriver::available() { return false; }
 bool VulkanDriver::rayQueryAvailable() { return false; }
 bool VulkanDriver::coopMatrixAvailable() { return false; }
+bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() { return false; }
 bool VulkanDriver::init() { return false; }
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t) { return 0; }
 bool VulkanDriver::upload(Buffer, const void*, std::size_t) { return false; }

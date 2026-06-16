@@ -8749,7 +8749,12 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // an unsupported extension fails vkCreateDevice outright, which would break
     // the plain compute path on a non-RT GPU. Absent any of them, rayQuery stays
     // 0 and the device is created exactly as before.
-    int wantRayQuery = 0;
+    // wantAtomicFloat{,2}: VK_EXT_shader_atomic_float (FAdd) and
+    // VK_EXT_shader_atomic_float2 (FMin/FMax) back Buffer<float32>.atomic{Add,Min,
+    // Max} (OpAtomicFAddEXT / OpAtomicF{Min,Max}EXT). NVIDIA (unlike RADV) FAULTS
+    // — VK_ERROR_DEVICE_LOST — if a shader uses these without the extension+feature
+    // enabled at device creation. Probed here, enabled below when supported.
+    int wantRayQuery = 0, wantAtomicFloat = 0, wantAtomicFloat2 = 0;
     if (enumDevExt && getFeatures2) {
         uint32_t extCount = 0;
         enumDevExt(g_xpu_vk.phys, NULL, &extCount, NULL);
@@ -8759,14 +8764,38 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             if (exts) {
                 enumDevExt(g_xpu_vk.phys, NULL, &extCount, exts);
                 int hasAccel = 0, hasRayQ = 0, hasDefer = 0, hasBDA = 0;
+                int hasAtomicFloat = 0, hasAtomicFloat2 = 0;
                 for (uint32_t i = 0; i < extCount; ++i) {
                     const char* en = exts[i].extensionName;
                     if (!strcmp(en, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)) hasAccel = 1;
                     else if (!strcmp(en, VK_KHR_RAY_QUERY_EXTENSION_NAME)) hasRayQ = 1;
                     else if (!strcmp(en, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) hasDefer = 1;
                     else if (!strcmp(en, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) hasBDA = 1;
+                    else if (!strcmp(en, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)) hasAtomicFloat = 1;
+                    else if (!strcmp(en, VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME)) hasAtomicFloat2 = 1;
                 }
                 free(exts);
+
+                // Atomic-float feature query: enable only the bits the device
+                // advertises (the SPIR-V emit declares both add and min/max).
+                if (hasAtomicFloat || hasAtomicFloat2) {
+                    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af;
+                    memset(&af, 0, sizeof(af));
+                    af.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+                    VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT af2;
+                    memset(&af2, 0, sizeof(af2));
+                    af2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT;
+                    af.pNext = &af2;
+                    VkPhysicalDeviceFeatures2 aff2;
+                    memset(&aff2, 0, sizeof(aff2));
+                    aff2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    aff2.pNext = &af;
+                    getFeatures2(g_xpu_vk.phys, &aff2);
+                    if (hasAtomicFloat && af.shaderBufferFloat32AtomicAdd)
+                        wantAtomicFloat = 1;
+                    if (hasAtomicFloat2 && af2.shaderBufferFloat32AtomicMinMax)
+                        wantAtomicFloat2 = 1;
+                }
                 if (hasAccel && hasRayQ && hasDefer && hasBDA) {
                     VkPhysicalDeviceRayQueryFeaturesKHR rqf;
                     memset(&rqf, 0, sizeof(rqf));
@@ -8840,17 +8869,20 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
 
-    // Feature chain + extension list for the RT path (only when supported).
-    const char* rtExts[4] = {
-        VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-        VK_KHR_RAY_QUERY_EXTENSION_NAME,
-        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-        VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
-    };
+    // Device extensions + feature chain, accumulated across the optional paths
+    // (RT/ray-query, EXT_shader_atomic_float{,2}). Enabling an unsupported
+    // extension fails vkCreateDevice outright, so each path is gated on its probe
+    // above; absent all of them the device is created exactly as before.
+    const char* devExts[8];
+    uint32_t nDevExts = 0;
     VkPhysicalDeviceRayQueryFeaturesKHR enRqf;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR enAsf;
     VkPhysicalDeviceBufferDeviceAddressFeatures enBdaf;
     if (wantRayQuery) {
+        devExts[nDevExts++] = VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+        devExts[nDevExts++] = VK_KHR_RAY_QUERY_EXTENSION_NAME;
+        devExts[nDevExts++] = VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+        devExts[nDevExts++] = VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME;
         memset(&enRqf, 0, sizeof(enRqf));
         enRqf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
         enRqf.rayQuery = VK_TRUE;
@@ -8861,10 +8893,33 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         memset(&enBdaf, 0, sizeof(enBdaf));
         enBdaf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
         enBdaf.bufferDeviceAddress = VK_TRUE;
-        enBdaf.pNext = &enAsf;
+        enBdaf.pNext = (void*) dci.pNext;
         dci.pNext = &enBdaf;
-        dci.enabledExtensionCount = 4;
-        dci.ppEnabledExtensionNames = rtExts;
+    }
+    // EXT_shader_atomic_float{,2}: enable each independently (a feature struct for
+    // an extension that isn't in the enabled list is invalid), prepending to the
+    // pNext chain. Fixes Buffer<float32>.atomic{Add,Min,Max} device-loss on NVIDIA.
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT enAf;
+    VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT enAf2;
+    if (wantAtomicFloat) {
+        devExts[nDevExts++] = VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME;
+        memset(&enAf, 0, sizeof(enAf));
+        enAf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+        enAf.shaderBufferFloat32AtomicAdd = VK_TRUE;
+        enAf.pNext = (void*) dci.pNext;
+        dci.pNext = &enAf;
+    }
+    if (wantAtomicFloat2) {
+        devExts[nDevExts++] = VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME;
+        memset(&enAf2, 0, sizeof(enAf2));
+        enAf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT;
+        enAf2.shaderBufferFloat32AtomicMinMax = VK_TRUE;
+        enAf2.pNext = (void*) dci.pNext;
+        dci.pNext = &enAf2;
+    }
+    if (nDevExts > 0) {
+        dci.enabledExtensionCount = nDevExts;
+        dci.ppEnabledExtensionNames = devExts;
     }
 
     // Prepend shaderInt8 to whatever feature chain is set (the RT chain, or NULL).
@@ -10781,7 +10836,12 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
     int be = cajeta_xpu_active_backend();
     switch (cap) {
         case 0:  // RayQueryNative — hardware inline ray query
-#if defined(CAJETA_RT_HAS_VULKAN) && !defined(_WIN32)
+            // g_xpu_vk.rayQuery is detected in the main (Windows-included) Vulkan
+            // device init, so this reports the real device capability on Windows
+            // too (the RTX 4090's Vulkan driver advertises VK_KHR_ray_query). The
+            // old `&& !defined(_WIN32)` hard-zeroed it on Windows — wrong now that
+            // the Vulkan ray-query path is exercised there.
+#if defined(CAJETA_RT_HAS_VULKAN)
             return (be == CAJ_XPU_VULKAN && g_xpu_vk.rayQuery) ? 1 : 0;
 #else
             (void) be; return 0;

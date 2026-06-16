@@ -67,6 +67,24 @@ const char* kAtomicSource =
     "    }\n"
     "}\n";
 
+// Float ADD only — VK_EXT_shader_atomic_float (shaderBufferFloat32AtomicAdd) is
+// broadly supported, including NVIDIA, so this runs where the full min/max kernel
+// must skip (no VK_EXT_shader_atomic_float2). Same parallel-sum reduction.
+const char* kAtomicAddSource =
+    "package test;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void reduceAdd(Buffer<float32> out, Buffer<float32> in,\n"
+    "                                 uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            out.atomicAdd(0, in[i]);\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
 CajetaModulePtr compileForInspection(Compiler& compiler,
                                      const std::string& source) {
     static std::mt19937_64 rng(std::random_device{}());
@@ -154,6 +172,15 @@ TEST(XpuAtomicDeviceTests, floatAtomicsRunOnCpu) {
 TEST(XpuAtomicDeviceTests, floatAtomicsRunOnVulkanDevice) {
     using namespace cajeta::xpu::vulkan;
     if (!VulkanDriver::available()) GTEST_SKIP() << "no Vulkan compute device";
+    // This kernel uses atomicMin/atomicMax on float32. Float atomic min/max
+    // (OpAtomicFMin/MaxEXT) requires VK_EXT_shader_atomic_float2, and there is no
+    // portable SPIR-V fallback (an integer-bit-trick / CAS loop would need an
+    // integer atomic on the float buffer, which logical addressing forbids). NVIDIA
+    // does not expose float2, so skip there. (atomicAdd alone — float32 add — works
+    // via VK_EXT_shader_atomic_float on NVIDIA; see floatAddAtomicsRunOnVulkanDevice.)
+    if (!VulkanDriver::shaderAtomicFloatMinMaxAvailable())
+        GTEST_SKIP() << "no VK_EXT_shader_atomic_float2 (float atomic min/max) on "
+                        "this device (e.g. NVIDIA) — no portable SPIR-V fallback";
     Compiler compiler;
     auto module = compileForInspection(compiler, kAtomicSource);
     auto k = findMethod(module->getStructures()["test.M"], "reduce");
@@ -192,6 +219,50 @@ TEST(XpuAtomicDeviceTests, floatAtomicsRunOnVulkanDevice) {
     EXPECT_FLOAT_EQ(result[0], expectedSum());
     EXPECT_FLOAT_EQ(result[1], expectedMax());
     EXPECT_FLOAT_EQ(result[2], expectedMin());
+}
+
+// Float ADD atomic on its own — runs on NVIDIA Vulkan (VK_EXT_shader_atomic_float,
+// enabled at device creation in VulkanDriver/cajeta_runtime.c). The min/max kernel
+// above needs float2 and skips on NVIDIA; this proves the float-add device path.
+TEST(XpuAtomicDeviceTests, floatAddAtomicsRunOnVulkanDevice) {
+    using namespace cajeta::xpu::vulkan;
+    if (!VulkanDriver::available()) GTEST_SKIP() << "no Vulkan compute device";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kAtomicAddSource);
+    auto k = findMethod(module->getStructures()["test.M"], "reduceAdd");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_atomic_add_vk", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
+    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
+
+    std::vector<float> in = makeInput();
+    std::vector<float> out = {0.0f};
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    VulkanDriver::Buffer dOut = vk.alloc(out.size() * sizeof(float));
+    VulkanDriver::Buffer dIn = vk.alloc(in.size() * sizeof(float));
+    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u); ASSERT_NE(dIn, 0u); ASSERT_NE(dN, 0u);
+    ASSERT_TRUE(vk.upload(dOut, out.data(), out.size() * sizeof(float)));
+    ASSERT_TRUE(vk.upload(dIn, in.data(), in.size() * sizeof(float)));
+    ASSERT_TRUE(vk.upload(dN, &kN, sizeof(uint32_t)));
+
+    const unsigned block = kVulkanLocalSizeX;
+    const unsigned grid = (kN + block - 1) / block;
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "reduceAdd",
+                          {dOut, dIn, dN}, grid));
+
+    std::vector<float> result(out.size());
+    ASSERT_TRUE(vk.download(result.data(), dOut, result.size() * sizeof(float)));
+    vk.free(dOut); vk.free(dIn); vk.free(dN);
+
+    EXPECT_FLOAT_EQ(result[0], expectedSum());
 }
 
 TEST(XpuAtomicDeviceTests, floatAtomicsRunOnAmdDevice) {

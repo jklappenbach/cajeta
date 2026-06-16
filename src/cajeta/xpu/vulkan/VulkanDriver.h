@@ -59,6 +59,14 @@ namespace vulkan {
         // VkCooperativeMatrixPropertiesKHR list without creating a logical device.
         static bool coopMatrixAvailable();
 
+        // True iff the first compute device exposes VK_EXT_shader_atomic_float2
+        // with shaderBufferFloat32AtomicMinMax — the only way to run
+        // Buffer<float32>.atomic{Min,Max} (OpAtomicFMin/MaxEXT); there is no
+        // portable SPIR-V fallback. NVIDIA does NOT expose it, so the float
+        // atomic min/max device test skips there. Self-contained (no logical
+        // device), mirrors coopMatrixAvailable.
+        static bool shaderAtomicFloatMinMaxAvailable();
+
         VulkanDriver() = default;
         ~VulkanDriver();
         VulkanDriver(const VulkanDriver&) = delete;
