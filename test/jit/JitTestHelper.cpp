@@ -4,6 +4,7 @@
 
 #include "JitTestHelper.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -508,6 +509,25 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         out << source;
         out.close();
         sourcePaths.push_back(full);
+    }
+
+    // Designate the ENTRY class's module as `primary` (the merge target) by
+    // compiling it first — `primary` is set to whichever module is built first
+    // (see the !primary check below). The default map order is alphabetical by
+    // fqClass, which can make a NON-entry file primary and leave the entry's
+    // body (and any template instantiation it triggers, e.g.
+    // ArrayList<test.DemoClass>) in a DONOR module. Linking a donor that owns a
+    // monomorphized instantiation into primary mis-resolves the instantiation's
+    // struct type against a structurally-identical stdlib type, producing a
+    // bad-vtable SIGSEGV at run() time. Keeping the entry (and the instantiation
+    // it owns) IN primary matches the working single-entry-module path.
+    {
+        std::filesystem::path entryRel = classNameToRelativePath(fqEntryClass);
+        std::filesystem::path entryFull = sourceRoot / entryRel;
+        auto it = std::find(sourcePaths.begin(), sourcePaths.end(), entryFull);
+        if (it != sourcePaths.end()) {
+            std::rotate(sourcePaths.begin(), it, it + 1);
+        }
     }
 
     auto archiveRoot = std::filesystem::temp_directory_path()
