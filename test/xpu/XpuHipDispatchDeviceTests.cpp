@@ -1110,6 +1110,79 @@ TEST(XpuHipDispatchDeviceTests, mipmapFetchAndSampleLodRoutesToHipOnDevice) {
                       << " (100: L0 fetch; 200: L1 fetch; 300: L1 sampleLod)";
 }
 
+// Inc 3 — TRILINEAR (cross-level blend) on the emulated AMD mip path. A fractional
+// LOD must lerp adjacent mip levels: with a LINEAR sampler the hand-built SRD sets
+// the sampler's MIP_FILTER=linear, so the gfx11 TMU blends level floor(lod) and
+// floor(lod)+1 by frac(lod) natively — no per-level resample in the kernel. Same
+// 2x2x2 R32F texture as the mip test: L0 center (bilinear of {0,1,2,3}) = 1.5,
+// L1 = 99. sampleLod at lod 0.5 must read lerp(1.5, 99, 0.5) = 50.25 (well clear
+// of both 1.5 and 99); lod 0.0 = 1.5 and lod 1.0 = 99 bracket it. 555 = emulation
+// unavailable (graceful degrade), exactly like mipmapFetchAndSampleLod.
+TEST(XpuHipDispatchDeviceTests, mipTrilinearBlendRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.gpu.core.Buffer;\n"
+        "import cajeta.gpu.core.Texture2D;\n"
+        "import cajeta.gpu.core.TextureFormat;\n"
+        "import cajeta.gpu.core.Sampler;\n"
+        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.core.Thread;\n"
+        "public class TriHip {\n"
+        "    @Kernel\n"
+        "    public static void mip(Texture2D tex, Sampler sl, Buffer<float32> out) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < 1) {\n"
+        "            Vector<float32,4> a = tex.sampleLod(sl, 0.5f, 0.5f, 0.0f);\n"
+        "            Vector<float32,4> b = tex.sampleLod(sl, 0.5f, 0.5f, 1.0f);\n"
+        "            Vector<float32,4> c = tex.sampleLod(sl, 0.5f, 0.5f, 0.5f);\n"
+        "            out[0] = a.x; out[1] = b.x; out[2] = c.x;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2; uint32 h = 2;\n"
+        "        Texture2D tex = heap Texture2D(w, h, TextureFormat.R32F, 2);\n"
+        "        float32[] l0 = heap float32[4];\n"
+        "        l0[0] = 0.0f; l0[1] = 1.0f; l0[2] = 2.0f; l0[3] = 3.0f;\n"
+        "        float32[] l1 = heap float32[1]; l1[0] = 99.0f;\n"
+        "        tex.uploadLevel(0, l0);\n"
+        "        tex.uploadLevel(1, l1);\n"
+        "        Sampler sl = heap Sampler(1, 0);\n"   // linear filter, clamp
+        "        float32[] hout = heap float32[3];\n"
+        "        for (uint32 i = 0; i < 3; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> out = heap Buffer<float32>(3);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        mip.launch(s, grid: [1], block: [1])(tex, sl, out);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        if (hout[0] == -1.0f) { return (int32)(555); }\n"
+        "        float32 d0 = hout[0] - 1.5f;\n"
+        "        if (d0 < -0.05f || d0 > 0.05f) { return (int32)(100); }\n"
+        "        float32 d1 = hout[1] - 99.0f;\n"
+        "        if (d1 < -0.05f || d1 > 0.05f) { return (int32)(200); }\n"
+        "        float32 dc = hout[2] - 50.25f;\n"        // lerp(1.5, 99, 0.5)
+        "        if (dc < -1.0f || dc > 1.0f) { return (int32)(300); }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(src, "test.TriHip", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    if (r == 555) {
+        GTEST_SKIP() << "AMD mip emulation unavailable (no libcajeta_amdtex / "
+                        "unrecognised gfx arch)";
+    }
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (100: lod0=1.5; 200: lod1=99; 300: lod0.5 trilinear=50.25)";
+}
+
 // B3 multi-channel on the real AMD device: an RGBA32F Texture2D sampled on
 // gfx1151 returns all four channels (sample() -> Vector<float32,4>). Verifies the
 // 4-channel-float HIP channel descriptor + the AMD vec4 sampler path.
