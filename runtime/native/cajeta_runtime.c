@@ -7769,6 +7769,7 @@ struct cajeta_cuda_api {
 static struct cajeta_cuda_api g_xpu_cuda;                       // zero-initialized
 static pthread_mutex_t g_xpu_cuda_lock = PTHREAD_MUTEX_INITIALIZER;
 
+
 static void* cajeta_xpu_libsym(void* lib, const char* name) {
 #if defined(_WIN32)
     return (void*) GetProcAddress((HMODULE) lib, name);
@@ -7852,6 +7853,21 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuLaunchKernel, "cuLaunchKernel");
     CAJ_BIND(cuCtxSynchronize, "cuCtxSynchronize");
     #undef CAJ_BIND
+    if (getenv("CAJETA_XPU_DEBUG")) {
+        fprintf(stderr, "cajeta.xpu.cuda[dbg]: optional symbols: "
+            "AllocManaged=%p HostAlloc=%p FreeHost=%p StreamCreate=%p "
+            "StreamSync=%p StreamDestroy=%p ModuleGetGlobal=%p HtoDAsync=%p "
+            "DtoHAsync=%p EventCreate=%p EventRecord=%p EventSync=%p "
+            "EventQuery=%p StreamWaitEvent=%p EventDestroy=%p\n",
+            (void*) g_xpu_cuda.cuMemAllocManaged, (void*) g_xpu_cuda.cuMemHostAlloc,
+            (void*) g_xpu_cuda.cuMemFreeHost, (void*) g_xpu_cuda.cuStreamCreate,
+            (void*) g_xpu_cuda.cuStreamSynchronize, (void*) g_xpu_cuda.cuStreamDestroy,
+            (void*) g_xpu_cuda.cuModuleGetGlobal, (void*) g_xpu_cuda.cuMemcpyHtoDAsync,
+            (void*) g_xpu_cuda.cuMemcpyDtoHAsync, (void*) g_xpu_cuda.cuEventCreate,
+            (void*) g_xpu_cuda.cuEventRecord, (void*) g_xpu_cuda.cuEventSynchronize,
+            (void*) g_xpu_cuda.cuEventQuery, (void*) g_xpu_cuda.cuStreamWaitEvent,
+            (void*) g_xpu_cuda.cuEventDestroy);
+    }
     if (g_xpu_cuda.cuInit(0) != 0) return 0;
     int count = 0;
     if (g_xpu_cuda.cuDeviceGetCount(&count) != 0 || count <= 0) return 0;
@@ -12034,7 +12050,10 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
             return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 2, 1, 1); // sampled 2-D
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex_alloc(width, height, format);   // hipArray
-        // CUDA texture objects land in Stage D (emit-only).
+        // CUDA texture objects (cuArrayCreate + cuTexObjectCreate) are the AMD/
+        // Vulkan parity gap — not yet wired; alloc returns 0 so the launch guard
+        // in cajeta_xpu_launch_cuda skips the dispatch (graceful degrade). The
+        // NVPTX tex.unified.2d lowering is proven by the PTX emit tests.
         default: return 0;
     }
 }
@@ -13188,24 +13207,29 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 kernelName);
         return;
     }
-    // Image2D safety guard: the CUDA surface RUNTIME (cuSurfObjectCreate +
-    // per-launch surface marshalling) is not wired yet — __cajeta_xpu_image_alloc
-    // returns 0 for CUDA until B5. If a kernel has a storage-image param with an
-    // unbacked (0) handle, dispatching would feed sust/suld a null surface and
-    // fault; skip the launch instead (mirrors the HIP launchOk=0 guard), so the
-    // image stays unwritten and the caller degrades cleanly. (The compiler-side
-    // NVPTX storeImage/loadImage lowering is proven via the PTX emit test; the
-    // device run lands when the CUDA surface runtime does — B5.)
+    // Texture / Image2D safety guard: the CUDA texture+surface RUNTIME
+    // (cuArrayCreate / cuTexObjectCreate / cuSurfObjectCreate + per-launch
+    // marshalling) is not wired yet — __cajeta_xpu_texture_alloc and
+    // __cajeta_xpu_image_alloc return 0 for CUDA (the AMD/Vulkan parity gap; the
+    // compiler-side NVPTX tex.unified.2d / sust.b.2d lowering IS proven via the PTX
+    // emit tests). With kparams now registered for NVPTX (NvptxRegistration), a
+    // texture/image param is detectable here: an unbacked (0) handle would feed
+    // tex/suld a null object and FAULT the device, so skip the launch instead
+    // (mirrors the HIP launchOk=0 guard) — the resource stays unwritten and the
+    // caller degrades cleanly. Remove this guard when the CUDA texture/surface
+    // runtime lands (then translate the handle into a cuTexObject/cuSurfObject the
+    // way cajeta_xpu_launch_hip does for HIP).
     {
         void** av = (void**) argv;
         struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
         if (kp && kp->count > 0 && av) {
             for (int i = 0; i < kp->count; ++i)
-                if (kp->kind[i] == CAJETA_KP_IMAGE && av[i] &&
+                if ((kp->kind[i] == CAJETA_KP_IMAGE ||
+                     kp->kind[i] == CAJETA_KP_TEXTURE) && av[i] &&
                     *(int64_t*) av[i] == 0) {
-                    fprintf(stderr, "cajeta.xpu: CUDA storage images need the "
-                            "surface runtime (pending B5); not launching '%s'\n",
-                            kernelName);
+                    fprintf(stderr, "cajeta.xpu: CUDA textures/storage images need "
+                            "the texture+surface runtime (not yet wired); not "
+                            "launching '%s'\n", kernelName);
                     return;
                 }
         }
@@ -13221,8 +13245,9 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     // `(slot < count) ? values[slot] : default`, so writing count (0 when no
     // override, clearing any prior launch's values) suffices; the symbols are
     // absent for kernels without spec constants → getGlobal fails → skip (the
-    // kernel then has no spec read anyway). UNVERIFIED on-device (no NV HW here);
-    // safe-by-default — a failed/absent copy leaves the zero-init default.
+    // kernel then has no spec read anyway). Verified on-device (RTX 4090,
+    // XpuCudaDispatchDeviceTests.{specOverride,noOverride}*); safe-by-default —
+    // a failed/absent copy leaves the zero-init default.
     if (mod && g_xpu_cuda.cuModuleGetGlobal && g_xpu_cuda.cuMemcpyHtoD) {
         cajeta_cudeviceptr g; size_t gbytes;
         int32_t count = (specCount > 0 && specValues) ? specCount : 0;
@@ -13238,6 +13263,69 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
             }
         }
     }
+    // Bindless Buffer<T>[] translation (mirrors cajeta_xpu_launch_hip): the argv
+    // slot points at the HOST-marshalled [i64 count, i64 h0 … ] handle array; the
+    // device kernel takes a GLOBAL pointer to it (the default bufferArrayElement
+    // flat-loads each handle, itself a device address). Copy the array into device
+    // memory and pass &devPtr as the kernarg so the device can read it. (Texture /
+    // surface objects on CUDA are translated by the texture/surface runtime.)
+    void** useArgv = (void**) argv;
+    void* subArgv[64];
+    void* bufArrVals[8];
+    cajeta_cudeviceptr bufArrDev[8];
+    int nbufarr = 0;
+    {
+        struct cajeta_kparams* kpa = cajeta_xpu_find_kparams(kernelName);
+        if (kpa && kpa->count > 0 && kpa->count <= 64) {
+            int hasBufArr = 0;
+            for (int i = 0; i < kpa->count; ++i)
+                if (kpa->kind[i] == CAJETA_KP_BUFFER_ARRAY) hasBufArr = 1;
+            if (hasBufArr) {
+                int ok = 1;
+                for (int i = 0; i < kpa->count; ++i) {
+                    subArgv[i] = ((void**) argv)[i];
+                    if (kpa->kind[i] != CAJETA_KP_BUFFER_ARRAY) continue;
+                    if (nbufarr >= 8) {
+                        fprintf(stderr, "cajeta.xpu: CUDA kernel '%s' uses more than "
+                                "8 bindless buffer arrays (unsupported); not "
+                                "launching\n", kernelName);
+                        ok = 0; break;
+                    }
+                    const int64_t* hostArr = (const int64_t*) ((void**) argv)[i];
+                    int64_t cnt = hostArr ? hostArr[0] : -1;
+                    if (cnt < 0 || cnt > 16) {   // 16 = kMaxBindlessBuffers (host cap)
+                        fprintf(stderr, "cajeta.xpu: CUDA kernel '%s' bindless buffer-"
+                                "array count %lld out of range; not launching\n",
+                                kernelName, (long long) cnt);
+                        ok = 0; break;
+                    }
+                    size_t bytes = (size_t) (cnt + 1) * sizeof(int64_t);
+                    cajeta_cudeviceptr dev = 0;
+                    if (g_xpu_cuda.cuMemAlloc(&dev, bytes) != 0 || !dev) {
+                        fprintf(stderr, "cajeta.xpu: CUDA bindless buffer-array device "
+                                "alloc failed for kernel '%s'; not launching\n",
+                                kernelName);
+                        ok = 0; break;
+                    }
+                    if (g_xpu_cuda.cuMemcpyHtoD(dev, hostArr, bytes) != 0) {
+                        g_xpu_cuda.cuMemFree(dev);
+                        fprintf(stderr, "cajeta.xpu: CUDA bindless buffer-array upload "
+                                "failed for kernel '%s'; not launching\n", kernelName);
+                        ok = 0; break;
+                    }
+                    bufArrDev[nbufarr] = dev;
+                    bufArrVals[nbufarr] = (void*) (intptr_t) dev;  // device-array addr
+                    subArgv[i] = &bufArrVals[nbufarr];             // kernarg = &devPtr
+                    ++nbufarr;
+                }
+                if (!ok) {
+                    for (int j = 0; j < nbufarr; ++j) g_xpu_cuda.cuMemFree(bufArrDev[j]);
+                    return;
+                }
+                useArgv = subArgv;
+            }
+        }
+    }
     // 3-D grid/block; default stream; kernelParams = the CUDA argv the launch
     // site marshalled (pointers to each arg value). sharedBytes sizes the
     // kernel's dynamic (extern) shared memory; 0 for static-only kernels.
@@ -13245,7 +13333,14 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         fn, (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
         (unsigned) blockX, (unsigned) blockY, (unsigned) blockZ,
         (unsigned) sharedBytes, /*stream=*/(void*) (intptr_t) streamHandle,
-        (void**) argv, /*extra=*/NULL);
+        useArgv, /*extra=*/NULL);
+    // Free the device copies of the bindless handle arrays. Sync first (the launch
+    // is async; the kernel reads the array at entry) — mirrors the HIP path's
+    // hipDeviceSynchronize-before-free.
+    if (nbufarr > 0) {
+        g_xpu_cuda.cuCtxSynchronize();
+        for (int j = 0; j < nbufarr; ++j) g_xpu_cuda.cuMemFree(bufArrDev[j]);
+    }
     if (launchRc != 0)
         fprintf(stderr, "cajeta.xpu: cuLaunchKernel('%s') failed (%d)\n",
                 kernelName, launchRc);
@@ -13750,11 +13845,22 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
                                   uint64_t len) {
     if (!kernelName || !image) return;
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    if (!cajeta_xpu_find_module(kernelName)
-            && g_xpu_module_count < CAJETA_XPU_MAX_MODULES) {
-        struct cajeta_xpu_module* e = &g_xpu_modules[g_xpu_module_count++];
+    // Dedup by name, OVERWRITING on re-registration (mirrors the kparams registry).
+    // A second JIT'd program in the same process that reuses a kernel name (the
+    // test suite; any multi-program JIT host) MUST adopt the NEW image: the old
+    // one was embedded in the first program's module and is freed when that JIT is
+    // torn down, so keeping the stale pointer is a use-after-free at the next
+    // cuModuleLoadData (wrong kernel / crash). Resetting module+function forces a
+    // reload from the live image. (The old CUmodule/hipModule handle is leaked;
+    // re-registration is rare and the alternative — unloading without the owning
+    // backend context here — is unsafe.)
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
+    if (!e && g_xpu_module_count < CAJETA_XPU_MAX_MODULES) {
+        e = &g_xpu_modules[g_xpu_module_count++];
         strncpy(e->name, kernelName, sizeof(e->name) - 1);
         e->name[sizeof(e->name) - 1] = '\0';
+    }
+    if (e) {
         e->image = image;
         e->len = len;
         e->module = NULL;

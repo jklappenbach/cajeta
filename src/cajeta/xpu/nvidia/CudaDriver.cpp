@@ -49,6 +49,7 @@ struct CudaDriver::Api {
     int (*cuCtxCreate)(void**, unsigned, int) = nullptr;
     int (*cuModuleLoadData)(void**, const void*) = nullptr;
     int (*cuModuleGetFunction)(void**, void*, const char*) = nullptr;
+    int (*cuModuleGetGlobal)(CudaDevicePtr*, std::size_t*, void*, const char*) = nullptr;
     int (*cuMemAlloc)(CudaDevicePtr*, size_t) = nullptr;
     int (*cuMemcpyHtoD)(CudaDevicePtr, const void*, size_t) = nullptr;
     int (*cuMemcpyDtoH)(void*, CudaDevicePtr, size_t) = nullptr;
@@ -72,6 +73,7 @@ struct CudaDriver::Api {
             && bind(cuCtxCreate, "cuCtxCreate_v2")
             && bind(cuModuleLoadData, "cuModuleLoadData")
             && bind(cuModuleGetFunction, "cuModuleGetFunction")
+            && bind(cuModuleGetGlobal, "cuModuleGetGlobal_v2")
             && bind(cuMemAlloc, "cuMemAlloc_v2")
             && bind(cuMemcpyHtoD, "cuMemcpyHtoD_v2")
             && bind(cuMemcpyDtoH, "cuMemcpyDtoH_v2")
@@ -139,6 +141,14 @@ CudaFunction CudaDriver::getFunction(CudaModule m, const char* name) {
     if (!ok(api->cuModuleGetFunction(&f, m, name), "cuModuleGetFunction"))
         return nullptr;
     return f;
+}
+
+bool CudaDriver::setModuleGlobalI32(CudaModule m, const char* name, int32_t value) {
+    CudaDevicePtr g = 0;
+    std::size_t gbytes = 0;
+    if (!ok(api->cuModuleGetGlobal(&g, &gbytes, m, name), "cuModuleGetGlobal"))
+        return false;
+    return ok(api->cuMemcpyHtoD(g, &value, sizeof(int32_t)), "cuMemcpyHtoD(const)");
 }
 
 CudaDevicePtr CudaDriver::alloc(std::size_t bytes) {

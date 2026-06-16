@@ -51,6 +51,12 @@ namespace nvidia {
         CudaModule loadModule(const void* image, std::size_t len);
         CudaFunction getFunction(CudaModule m, const char* name);
 
+        // Write a 32-bit value to a module global by name (cuModuleGetGlobal +
+        // cuMemcpyHtoD) — the spec-constant override path the runtime uses.
+        // Returns false (with a stderr message) on any driver error. Used by the
+        // spec probe to reproduce the runtime's pre-launch constant-memory write.
+        bool setModuleGlobalI32(CudaModule m, const char* name, int32_t value);
+
         // Device memory + transfers.
         CudaDevicePtr alloc(std::size_t bytes);
         bool memcpyHtoD(CudaDevicePtr dst, const void* src, std::size_t bytes);

@@ -44,7 +44,7 @@ matrix says so explicitly rather than pretending otherwise:
 
 | Column | Status | Basis |
 |--------|--------|-------|
-| **NVIDIA** | **Emit-only** — on-device pending B5 (WSL2 + CUDA runner) | NVPTX → cubin; emit tests green. The 5 CUDA-gated exec tests are **skipped** on this box (AMD-only, no NV hardware) — promote to "on-device measured" once the B5 runner lands. |
+| **NVIDIA** | **Measured** — live backend, on-device (the **compute substrate**) | NVPTX → cubin (`ptxas`) → `cuLaunchKernel` via the dlopen'd `nvcuda`. **On-device verified on an RTX 4090 (sm_89, native Windows CUDA — no WSL2/B5 needed)**, 2026-06-16: SAXPY, grid-stride for-each, `@Device` buffer-param helpers, POD-by-value args, `Buffer.slice`, relaxed atomics, scoped memory fences, static+dynamic workgroup-shared reductions, **real CUDA streams + async copies**, **events/fences (cross-stream)**, **managed (`cuMemAllocManaged`) + pinned (`cuMemHostAlloc`) zero-copy memory**, **bindless `Buffer<T>[]`**, and **host spec-constant override** (constant-memory `cuModuleGetGlobal`). Tests: `XpuCudaDispatchDeviceTests` (17), `XpuCudaSpecProbeTests`, plus the C++-driver `XpuSaxpy/Shared/Loop/HostLaunchDeviceTests` — 23/23 green in one process. **Still emit-only on NVPTX:** wave/subgroup ops, textures/storage-images (the texture+surface runtime is the AMD/Vulkan parity gap), ray-query, cooperative-matrix, bounded device-dispatch tables. |
 | **AMD** | **Measured** — live backend, on-device | AMDGPU → hsaco, runs on gfx1151 (Strix Halo) via HIP. Emit + on-device tests green. |
 | **Vulkan** | **Measured** — live backend, on-device | SPIR-V (descriptor-set SSBOs) → `vkCmdDispatch`. Built 2026-05-30; SAXPY + static-shared tree reduction run on the Strix Halo APU via the radeon (RADV) ICD, and the emitted modules pass strict `spirv-val`. One build-discovered finding shaped the design: **BDA is unavailable**, so the buffer model is descriptor sets (§3). (LLVM 23's barrier emits Vulkan-invalid semantics; a post-emit fixup corrects it — §1.) |
 
@@ -261,8 +261,8 @@ check is width-agnostic — sum of 1s over a full wave == wave width ∈ {32, 64
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
 | Atomic RMW on global / shared | LLVM `atomicrmw` + scope | `native` | `native` | `native` · SPIR-V atomic ops with explicit Scope + Memory-Semantics (by construction; not exercised on-device this pass) |
-| Scoped fences | `Barrier.workgroupMemory()` / `.deviceMemory()` — a memory fence with NO thread rendezvous (the `memoryFence(scope, order)` seam), AcqRel default + optional `MemoryOrder`. Device-verified CPU/VK/AMD; NVPTX emit-only. The host-facing `Fence` class is a separate, unrelated thing (stream sync). | `native` · `membar.cta` (workgroup) / `membar.gl` (device) — emit-verified | `native` · `agent`/`workgroup`-scoped `acq_rel` fence (no `s_barrier`) — on-device gfx1151 | `native` · `OpMemoryBarrier` via `llvm.spv.{group,device}.memory.barrier` — `spirv-val` clean + on-device RADV |
-| Memory order (user-selectable) | `MemoryOrder` enum (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`) — an optional **compile-time-constant** trailing arg on kernel atomics + fences (e.g. `out.atomicAdd(i, 1, MemoryOrder.Relaxed)`); default unchanged. Threaded through the atomic/fence seams. Prereq: enum constants now resolve in kernel bodies. | `native` · honours all five (relaxed → `monotonic` atomicrmw) — emit-verified | `native` · honours all five — relaxed-atomic counter on-device gfx1151 | **clamps** `Relaxed`/`SeqCst` → `AcqRel` (Vulkan rejects a bare-relaxed device atomic — needs storage-class acq/rel) — `spirv-val` clean + relaxed-counter on-device RADV |
+| Scoped fences | `Barrier.workgroupMemory()` / `.deviceMemory()` — a memory fence with NO thread rendezvous (the `memoryFence(scope, order)` seam), AcqRel default + optional `MemoryOrder`. Device-verified CPU/VK/AMD/**NVIDIA**. The host-facing `Fence` class is a separate, unrelated thing (stream sync). | `native` · `membar.cta` (workgroup) / `membar.gl` (device) — **on-device RTX 4090** (`memoryFenceRoutesToCudaOnDevice`) | `native` · `agent`/`workgroup`-scoped `acq_rel` fence (no `s_barrier`) — on-device gfx1151 | `native` · `OpMemoryBarrier` via `llvm.spv.{group,device}.memory.barrier` — `spirv-val` clean + on-device RADV |
+| Memory order (user-selectable) | `MemoryOrder` enum (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`) — an optional **compile-time-constant** trailing arg on kernel atomics + fences (e.g. `out.atomicAdd(i, 1, MemoryOrder.Relaxed)`); default unchanged. Threaded through the atomic/fence seams. Prereq: enum constants now resolve in kernel bodies. | `native` · honours all five (relaxed → `monotonic` atomicrmw) — **relaxed-atomic counter on-device RTX 4090** (`relaxedAtomicCounterRoutesToCudaOnDevice`) | `native` · honours all five — relaxed-atomic counter on-device gfx1151 | **clamps** `Relaxed`/`SeqCst` → `AcqRel` (Vulkan rejects a bare-relaxed device atomic — needs storage-class acq/rel) — `spirv-val` clean + relaxed-counter on-device RADV |
 
 ---
 
@@ -354,8 +354,17 @@ paths for these are not yet wired.
 ---
 
 *Generated 2026-05-30; updated 2026-06-04 with Part C cooperative-matrix (CM1–CM5 +
-GEMM) and ray-query (Inc 1–3c) on-device landings, and an emit-only-vs-on-device
-correction to the NVIDIA column. AMD + Vulkan are on-device-measured; **NVIDIA is
-emit-only** pending the B5 WSL2+CUDA runner. See
-[`CajetaXPU-Variance.md`](CajetaXPU-Variance.md) for the NVIDIA∩AMD variance
+GEMM) and ray-query (Inc 1–3c) on-device landings. **Updated 2026-06-16: the
+NVIDIA compute substrate is now on-device-measured** on an RTX 4090 (sm_89, native
+Windows CUDA — the B5 WSL2 runner turned out to be unnecessary). Two real bugs were
+found and fixed by the on-device bring-up: (1) `NvptxRegistration` never emitted the
+`__cajeta_xpu_register_kernel_params` ctor (AMD/Vulkan did), so `find_kparams`
+returned NULL on CUDA and bindless/texture/image arg translation silently no-op'd;
+(2) `__cajeta_xpu_register_module` dropped re-registration of an existing kernel
+name (first-wins) instead of overwriting + resetting the cached module — a
+use-after-free for a second JIT'd program reusing a kernel name. Both fixed; all
+three GPU backends + CPU are now on-device-measured for the compute substrate.
+NVIDIA wave ops, textures/storage-images, ray-query, and cooperative-matrix remain
+emit-only (the texture+surface runtime is the documented AMD/Vulkan parity gap).
+See [`CajetaXPU-Variance.md`](CajetaXPU-Variance.md) for the NVIDIA∩AMD variance
 discipline and [`cajeta-gpu-plan.md`](../../../plans/gpu/cajeta-gpu-plan.md) Part C.*

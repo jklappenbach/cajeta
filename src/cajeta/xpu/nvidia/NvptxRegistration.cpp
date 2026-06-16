@@ -6,6 +6,7 @@
 #include "NvptxBackend.h"
 #include "NvptxKernelLowering.h"
 
+#include "../lowering/KernelLowering.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/error/Exception.h"
@@ -38,6 +39,7 @@ namespace nvidia {
         if (!tm) return 0;
 
         llvm::LLVMContext& ctx = hostModule.getContext();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -48,6 +50,18 @@ namespace nvidia {
             llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty}, false);
         llvm::FunctionCallee regFn =
             hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
+
+        // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
+        //                                          i8* kind, i32* byteSize)
+        // The CUDA launch path reads this to translate Texture2D/Image2D args
+        // into texture/surface objects and to copy bindless Buffer<T>[] handle
+        // arrays to the device (cajeta_xpu_launch_cuda). Without it find_kparams
+        // returns NULL on NVIDIA and those translations silently no-op — the gap
+        // the AMD/Vulkan registration passes already close.
+        llvm::FunctionType* kpTy = llvm::FunctionType::get(
+            voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false);
+        llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_kernel_params", kpTy);
 
         int emitted = 0;
         for (auto& method : kernels) {
@@ -95,6 +109,39 @@ namespace nvidia {
                 b.CreateGlobalString(entryName, "xpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, cubinGV,
                                  llvm::ConstantInt::get(i64Ty, cubin.size())});
+
+            // Per-kernel parameter kinds (scalar/buffer/texture/sampler/image/
+            // buffer-array) so the CUDA launch path can translate texture/image
+            // args into texture/surface objects and copy bindless arrays to the
+            // device. Mirrors AmdgpuRegistration / VulkanRegistration.
+            std::vector<KernelParamInfo> info =
+                collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
+            if (!info.empty()) {
+                std::vector<uint8_t> kinds;
+                std::vector<uint32_t> sizes;
+                kinds.reserve(info.size());
+                sizes.reserve(info.size());
+                for (auto& pi : info) {
+                    kinds.push_back(pi.kind);
+                    sizes.push_back(pi.byteSize);
+                }
+                llvm::Constant* kindInit = llvm::ConstantDataArray::get(
+                    ctx, llvm::ArrayRef<uint8_t>(kinds.data(), kinds.size()));
+                auto* kindGV = new llvm::GlobalVariable(
+                    hostModule, kindInit->getType(), /*isConstant=*/true,
+                    llvm::GlobalValue::PrivateLinkage, kindInit,
+                    "xpu.kpkind." + entryName);
+                llvm::Constant* szInit = llvm::ConstantDataArray::get(
+                    ctx, llvm::ArrayRef<uint32_t>(sizes.data(), sizes.size()));
+                auto* szGV = new llvm::GlobalVariable(
+                    hostModule, szInit->getType(), /*isConstant=*/true,
+                    llvm::GlobalValue::PrivateLinkage, szInit,
+                    "xpu.kpsz." + entryName);
+                b.CreateCall(kpFn, {nameStr,
+                                    llvm::ConstantInt::get(i32Ty,
+                                                           (uint32_t) info.size()),
+                                    kindGV, szGV});
+            }
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).
