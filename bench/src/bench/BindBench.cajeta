@@ -1,0 +1,65 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+import cajeta.codec.json.Json;
+
+// End-to-end Json.parse<T> throughput over the index-walk binding path.
+// `BBEmpty` maps nothing -> the whole document is skipped via the index
+// depth-walk (zero value decode): directly comparable to the old pull-based
+// Json.parse<Empty> = 620/700/450 MB/s and to Jackson tokenize 1551/1837/811.
+//
+// parse borrows its input and the cursor frees it on drop (same one-shot
+// contract as JsonReader), so a tight loop can't reuse one buffer — each
+// iteration parses a FRESH copy. A copy-only baseline is subtracted so the
+// reported number is the parse itself.
+final class BBEmpty { public BBEmpty() {} }
+
+public final class BindBench {
+
+    static #int8[] freshCopy(int8[] src, int64 n) {
+        int8[] c = heap int8[n];
+        int64 i = 0;
+        while (i < n) { c[i] = src[i]; i = i + 1; }
+        return c;
+    }
+
+    static void bench(String path, String name) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        int64 sink = 0;
+        // warmup
+        int32 w = 0;
+        while (w < 20) {
+            int8[] cb = freshCopy(b, n);
+            BBEmpty e = Json.parse<BBEmpty>(cb, n);
+            if (e != null) { sink = sink + 1; }
+            w = w + 1;
+        }
+        // copy-only baseline
+        int64 tc0 = Clock.nanoTime();
+        int32 c = 0;
+        while (c < 200) { int8[] cb = freshCopy(b, n); sink = sink + (int64) cb[0]; c = c + 1; }
+        int64 nsCopy = Clock.nanoTime() - tc0;
+        // parse (fresh copy each iter)
+        int64 t0 = Clock.nanoTime();
+        int32 i = 0;
+        while (i < 200) {
+            int8[] cb = freshCopy(b, n);
+            BBEmpty e = Json.parse<BBEmpty>(cb, n);
+            if (e != null) { sink = sink + 1; }
+            i = i + 1;
+        }
+        int64 nsAll = Clock.nanoTime() - t0;
+        int64 nsParse = nsAll - nsCopy;
+        if (nsParse < 1) { nsParse = 1; }
+        float64 mb = ((float64)(n * 200)) / 1000000.0 / (((float64) nsParse)/1000000000.0);
+        System.stdout.println(name + ": parse<BBEmpty> skip-all = " + mb + " MB/s  sink=" + sink);
+    }
+
+    public static int32 run() {
+        bench("/tmp/jsonbench/twitter.json", "twitter");
+        bench("/tmp/jsonbench/citm_catalog.json", "citm");
+        bench("/tmp/jsonbench/canada.json", "canada");
+        return 0;
+    }
+}

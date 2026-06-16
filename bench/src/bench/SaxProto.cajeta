@@ -1,0 +1,37 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.codec.json.JsonReader;
+import cajeta.codec.json.JsonToken;
+// Prototype push driver over the pull JsonReader.
+public final class SaxProto {
+    static void parse(int8[] bytes, int64 n, SaxBase h) {
+        JsonReader r = heap JsonReader(bytes, n);
+        JsonToken t = r.next();
+        while (t != JsonToken.END) {
+            if (t == JsonToken.START_OBJECT) { h.onStartObject(); }
+            else if (t == JsonToken.END_OBJECT) { h.onEndObject(); }
+            else if (t == JsonToken.START_ARRAY) { h.onStartArray(); }
+            else if (t == JsonToken.END_ARRAY) { h.onEndArray(); }
+            else if (t == JsonToken.KEY) { h.onKey(r); }
+            else if (t == JsonToken.STRING) { h.onString(r); }
+            else if (t == JsonToken.NUMBER) { h.onNumber(r); }
+            else if (t == JsonToken.BOOLEAN) { h.onBoolean(r.currentBoolean()); }
+            else if (t == JsonToken.NULL) { h.onNull(); }
+            t = r.next();
+        }
+    }
+    static void check(String path, String name) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        SaxCounter h = heap SaxCounter();
+        parse(b, n, h);
+        System.stdout.println(name + ": SO=" + h.so + " EO=" + h.eo + " SA=" + h.sa + " EA=" + h.ea
+            + " KEY=" + h.key + " STR=" + h.str + " NUM=" + h.num + " BOOL=" + h.bool + " NULL=" + h.nul);
+    }
+    public static int32 run() {
+        check("/tmp/jsonbench/twitter.json", "twitter");
+        check("/tmp/jsonbench/citm_catalog.json", "citm");
+        check("/tmp/jsonbench/canada.json", "canada");
+        return 0;
+    }
+}

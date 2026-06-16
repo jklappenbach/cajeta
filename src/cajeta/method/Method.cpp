@@ -1311,9 +1311,16 @@ namespace cajeta {
             llvm::Value* mark = builder->CreateCall(saveFn, {});
             builder->CreateStore(mark, scopeWatermark);
         }
-        if (llvm::Function* enterFn = module->getRuntimeFunction(
-                "__cajeta_scope_enter")) {
-            builder->CreateCall(enterFn, {});
+        // PROTOTYPE (--lazy-scope): skip the per-method implicit scope frame.
+        // It heap-allocs on every call but is only needed for a bare `spawn` in
+        // the body; omitting it is correct for spawn-free code and measures the
+        // alloc win. scope_exit_to(watermark) below is a safe no-op when no
+        // frame was pushed (`while (*top != watermark)`).
+        if (!module->getFlags().lazyScope) {
+            if (llvm::Function* enterFn = module->getRuntimeFunction(
+                    "__cajeta_scope_enter")) {
+                builder->CreateCall(enterFn, {});
+            }
         }
 
         // Debugger CP5: push a debug frame for this method (no-op unless

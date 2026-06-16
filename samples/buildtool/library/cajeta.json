@@ -1,0 +1,81 @@
+{
+    // Library starter — what `cajeta init library` writes.
+    //
+    // A LIBRARY project has NO `main` / no `entry-method`: it compiles to a
+    // reusable `.cja` archive that other projects depend on (via
+    // settings.dependencies), rather than a native executable. The only
+    // structural difference from the `basic` (binary) archetype is the
+    // absence of `settings.build.entry-method` — with no entry point the
+    // build action emits a `.cja` library instead of an exe.
+
+    "details": {
+        "name":               "com.example.library",
+        "version":            "0.1.0",
+        "description":        "Single-package library starter (.cja archive)",
+        "license":            "Apache-2.0",
+        "authors":            ["sample"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        // Declare only what the library's public API actually needs. A
+        // pure-computation library may need none at all; capabilities are
+        // re-validated against the consumer's manifest at the point of use.
+        "capabilities": [],
+
+        // Third-party runtime dependencies. The core stdlib (cajeta.lang,
+        // cajeta.io, cajeta.codec, …) is built into the toolchain — neither
+        // declared nor fetched — and only the parts your code uses are linked
+        // into a consumer's binary (dead-code elimination).
+        "dependencies": {},
+
+        // Test-only dependencies — not shipped in the published .cja.
+        "dev-dependencies": {
+            "cajeta.testkit": "1.0.*"
+        },
+
+        "repositories": [
+            { "name": "central", "url": "https://repo.cajeta.org",
+              "priority": 0 }
+        ],
+
+        // NO `entry-method` here — that is what makes this a library. With an
+        // entry point the build emits an exe; without one it emits a .cja.
+        "build": {
+            "target": "host"
+        }
+    },
+
+    "tasks": {
+
+        "build": {
+            "description": "Compile sources to a .cja library archive",
+            "actions": [
+                { "action": "build", "flavor": "debug", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "test": {
+            "description": "Build + run the library's unit tests",
+            "actions": [
+                { "action": "build", "flavor": "debug", "profile": "test",
+                  "id": "art" },
+                { "action": "test", "params": { "input": "${art.path}" } }
+            ]
+        },
+
+        "release": {
+            "description": "Optimized release build of the library (.cja)",
+            "actions": [
+                { "action": "build", "flavor": "release", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

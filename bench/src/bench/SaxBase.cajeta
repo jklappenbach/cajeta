@@ -1,0 +1,15 @@
+package bench;
+import cajeta.codec.json.JsonReader;
+// Prototype SAX handler base: overridable no-op events. Values are pulled
+// lazily from the reader (zero-cost when the handler ignores them).
+public class SaxBase {
+    public void onStartObject() {}
+    public void onEndObject() {}
+    public void onStartArray() {}
+    public void onEndArray() {}
+    public void onKey(JsonReader r) {}
+    public void onString(JsonReader r) {}
+    public void onNumber(JsonReader r) {}
+    public void onBoolean(boolean v) {}
+    public void onNull() {}
+}

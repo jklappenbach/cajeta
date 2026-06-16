@@ -4066,6 +4066,24 @@ namespace cajeta {
             llvm::Value* excRegSlot = outerBuilder->CreateStructGEP(
                 taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
                 "scope_register_exc");
+            // --lazy-scope: the prologue skipped the implicit function-body
+            // frame, so ensure one exists before this (possibly bare) spawn
+            // registers. No-op when an enclosing `scope { }` or an earlier bare
+            // spawn already pushed a frame (the runtime compares *top to the
+            // method's entry watermark). Off by default → identical codegen.
+            if (module->getFlags().lazyScope) {
+                if (auto mth = module->getCurrentMethod()) {
+                    if (llvm::AllocaInst* wm = mth->getScopeWatermark()) {
+                        if (llvm::Function* ensureFn = module->getRuntimeFunction(
+                                "__cajeta_scope_ensure_at")) {
+                            llvm::Value* wmVal = outerBuilder->CreateLoad(
+                                llvm::PointerType::get(*module->getLlvmContext(), 0),
+                                wm);
+                            outerBuilder->CreateCall(ensureFn, {wmVal});
+                        }
+                    }
+                }
+            }
             if (llvm::Function* regFn = module->getRuntimeFunction(
                     "__cajeta_scope_register")) {
                 outerBuilder->CreateCall(regFn,

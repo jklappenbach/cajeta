@@ -1,0 +1,42 @@
+package cajeta.codec.json;
+
+/**
+ * SAX-style streaming parser: drives a JSON document once and pushes
+ * each structural token and value to a `JsonHandler` in document
+ * order. This is the push API; the pull equivalent is `JsonReader`.
+ *
+ * The driver is a thin adapter over `JsonReader`, so it inherits the
+ * reader's tokenization (span-based strings/numbers, lazy value
+ * decoding) and adds no buffering of its own — memory is O(nesting
+ * depth), independent of document size. (The validated SIMD scanner is
+ * a drop-in speed upgrade for this loop; both emit the identical token
+ * stream.)
+ *
+ * ```cajeta
+ * JsonSax.parse(bytes, length, myHandler);
+ * ```
+ */
+public final class JsonSax {
+
+    /**
+     * Parse `byteCount` bytes of UTF-8 JSON from `bytes`, invoking
+     * `handler`'s events in document order until the input is
+     * exhausted.
+     */
+    public static void parse(int8[] bytes, int64 byteCount, JsonHandler handler) {
+        JsonReader r = heap JsonReader(bytes, byteCount);
+        JsonToken t = r.next();
+        while (t != JsonToken.END) {
+            if (t == JsonToken.START_OBJECT) { handler.onStartObject(); }
+            else if (t == JsonToken.END_OBJECT) { handler.onEndObject(); }
+            else if (t == JsonToken.START_ARRAY) { handler.onStartArray(); }
+            else if (t == JsonToken.END_ARRAY) { handler.onEndArray(); }
+            else if (t == JsonToken.KEY) { handler.onKey(r); }
+            else if (t == JsonToken.STRING) { handler.onString(r); }
+            else if (t == JsonToken.NUMBER) { handler.onNumber(r); }
+            else if (t == JsonToken.BOOLEAN) { handler.onBoolean(r.currentBoolean()); }
+            else if (t == JsonToken.NULL) { handler.onNull(); }
+            t = r.next();
+        }
+    }
+}

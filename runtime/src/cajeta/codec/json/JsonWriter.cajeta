@@ -1,6 +1,7 @@
 package cajeta.codec.json;
 
 import cajeta.lang.String;
+import cajeta.io.file.FileWriter;
 
 /**
  * Streaming JSON encoder that builds wire-form bytes incrementally.
@@ -424,6 +425,45 @@ public final class JsonWriter {
         this.depth = 0;
         this.afterKey = false;
         return out;
+    }
+
+    /**
+     * Stream the encoded document straight to a `FileWriter` sink and
+     * reset the writer for reuse — no intermediate `int8[]` allocation
+     * (the internal buffer is reused across calls). Use this on a hot
+     * path that emits many documents, where `toBytes`' per-call copy
+     * would dominate.
+     *
+     * ```cajeta
+     * #JsonWriter w = heap JsonWriter();
+     * w.beginObject().key("ok").writeBoolean(true).endObject();
+     * w.writeTo(sink);   // {"ok":true} written; w is empty again
+     * ```
+     */
+    public void writeTo(FileWriter sink) {
+        int8[] b = this.buf;
+        int32 sz = this.size;
+        sink.write(b, sz);
+        this.size = 0;
+        this.depth = 0;
+        this.afterKey = false;
+    }
+
+    /**
+     * Like `writeTo`, but terminates the record with a newline — one
+     * JSON value per line (JSON Lines / `.jsonl`). The newline is
+     * appended into the reused buffer so the whole line is a single
+     * `write`, and the writer is reset for the next record. This is the
+     * primitive a JSONL logger sits on (see `JsonLinesWriter`).
+     */
+    public void writeLineTo(FileWriter sink) {
+        this.append((int8) 10);
+        int8[] b = this.buf;
+        int32 sz = this.size;
+        sink.write(b, sz);
+        this.size = 0;
+        this.depth = 0;
+        this.afterKey = false;
     }
 
     /** Emit a `,` before a value when the current frame already has a sibling, unless we just wrote a key. */

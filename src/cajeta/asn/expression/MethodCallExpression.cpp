@@ -2252,6 +2252,65 @@ namespace cajeta {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_context_free");
                     return builder->CreateCall(fn, {loadValue(0)});
                 }
+                // Low-level memory/bit intrinsics for SWAR-class code
+                // (cajeta.io.Buffer). Pure codegen — no runtime C function.
+                // loadU64(int8[] buf, int64 off): unaligned little-endian 64-bit
+                // load of the array's bytes at byte offset `off`. The array data
+                // lives at header+8 (the count word precedes it — same ABI the
+                // @Native bridge uses). Caller must keep off in [0, count-8].
+                if (ns == "Cajeta" && methodCallName == "loadU64" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* i64Ty = builder->getInt64Ty();
+                    llvm::Value* hdr = loadValue(0);   // array header pointer
+                    llvm::Value* off = loadValue(1);   // i64 byte offset
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "buf_data");
+                    llvm::Value* eltPtr = builder->CreateGEP(
+                        i8Ty, data, off, "buf_word_ptr");
+                    llvm::LoadInst* ld = builder->CreateLoad(i64Ty, eltPtr, "buf_word");
+                    ld->setAlignment(llvm::Align(1));
+                    return ld;
+                }
+                // ctz64(int64 x): count trailing zero bits, 0..64 (x==0 -> 64).
+                // Maps to @llvm.cttz.i64; result truncated to int32.
+                if (ns == "Cajeta" && methodCallName == "ctz64" && parameters.size() == 1) {
+                    auto* lmod = module->getLlvmModule();
+                    auto* i64Ty = builder->getInt64Ty();
+                    llvm::Value* x = loadValue(0);
+                    llvm::Function* cttz = llvm::Intrinsic::getOrInsertDeclaration(
+                        lmod, llvm::Intrinsic::cttz, {i64Ty});
+                    llvm::Value* r = builder->CreateCall(
+                        cttz, {x, builder->getFalse()}, "ctz");
+                    return builder->CreateTrunc(r, builder->getInt32Ty(), "ctz32");
+                }
+                // vload16(int8[] buf, int64 off) -> Vector<int8,16>: load a
+                // 16-byte block (unaligned) from the array data at byte offset
+                // `off`. Bind to a Vector<int8,16> local. The SIMD scanner's
+                // block source; pairs with v.eqMask / tableLookup.
+                if (ns == "Cajeta" && methodCallName == "vload16" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* v16  = llvm::FixedVectorType::get(i8Ty, 16);
+                    llvm::Value* hdr = loadValue(0);
+                    llvm::Value* off = loadValue(1);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "buf_data");
+                    llvm::Value* ptr = builder->CreateGEP(
+                        i8Ty, data, off, "buf_blk_ptr");
+                    llvm::LoadInst* ld = builder->CreateLoad(v16, ptr, "vload16");
+                    ld->setAlignment(llvm::Align(1));
+                    return ld;
+                }
+                // popcount64(int64 x) -> int32: set-bit count via @llvm.ctpop.i64.
+                // Counts bits in a SIMD mask (e.g. structural/quote/scalar masks).
+                if (ns == "Cajeta" && methodCallName == "popcount64" && parameters.size() == 1) {
+                    auto* lmod = module->getLlvmModule();
+                    auto* i64Ty = builder->getInt64Ty();
+                    llvm::Value* x = loadValue(0);
+                    llvm::Function* ctpop = llvm::Intrinsic::getOrInsertDeclaration(
+                        lmod, llvm::Intrinsic::ctpop, {i64Ty});
+                    llvm::Value* r = builder->CreateCall(ctpop, {x}, "popcnt");
+                    return builder->CreateTrunc(r, builder->getInt32Ty(), "popcnt32");
+                }
                 // Condition-variable intrinsics (R7-B). Fiber-aware, paired
                 // with a lock handle; `Mutex<T>.withLockWhen` builds on them.
                 // condvarWait(cv, lock) atomically releases `lock`, parks the
@@ -2964,6 +3023,25 @@ namespace cajeta {
                                 & SIGNED_FLAG) != 0;
                     resolvedType = CajetaType::of("int32");
                     return vecops::idotWiden(*builder, self, other, acc, sgn);
+                }
+                // SIMD: eqMask(needle) -> int32. Per-lane equality packed into a
+                // bitmask (bit i set iff lane i == needle) — the JSON-scanner
+                // workhorse. Pairs with Cajeta.ctz64 to find the first match.
+                if (methodCallName == "eqMask") {
+                    if (parameters.size() != 1) {
+                        throw Exception("Vector.eqMask expects 1 argument",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* needle = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Value* nEl = vecops::coerceScalar(*builder, needle,
+                        vecT->getElementType()->getLlvmType());
+                    llvm::Value* bits = vecops::eqMask(*builder, self, nEl);
+                    resolvedType = CajetaType::of("int32");
+                    return builder->CreateZExt(bits,
+                        llvm::Type::getInt32Ty(builder->getContext()),
+                        "eqmask.i32");
                 }
                 if (methodCallName == "length") {
                     if (!isFloat) {

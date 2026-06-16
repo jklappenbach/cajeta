@@ -1,0 +1,156 @@
+package bench;
+import cajeta.io.file.File;
+
+// Stage-2 BINDING walk prototype: drives the sparse structural index straight
+// into struct fields — key match by bytes, scalar/string decode, nested-object
+// recurse, unmapped-subtree skip — all INLINE (no JsonReader.next() boundary).
+// This is the hand-written shape the JsonSynthesizer will codegen.
+
+final class BInner { public int64 a; public BInner() { this.a = 0; } }
+
+final class BRec {
+    public int64 id;
+    public boolean flag;
+    public String name;
+    public BInner inner;
+    public BRec() { this.id = 0; this.flag = false; this.name = null; this.inner = null; }
+}
+
+public final class BindProto {
+
+    // key at openQuotePos (the '"'); does the quoted key equal `name`?
+    static boolean keyEq(int8[] b, int32 openQuotePos, String name) {
+        int8[] nb = name.bytes;
+        int32 nlen = name.byteLength;
+        int32 i = 0;
+        while (i < nlen) {
+            int32 bp = openQuotePos + 1 + i;
+            int8 cb = b[bp];
+            int8 nbi = nb[i];
+            if (cb != nbi) { return false; }
+            i = i + 1;
+        }
+        int32 endp = openQuotePos + 1 + nlen;
+        int8 ec = b[endp];
+        return ec == (int8)34;   // closing quote right after → exact-length match
+    }
+
+    // parse a (possibly negative) integer starting at pos
+    static int64 parseI64(int8[] b, int32 pos) {
+        int32 p = pos;
+        boolean neg = false;
+        int8 c0 = b[p];
+        if (c0 == (int8)45) { neg = true; p = p + 1; }
+        int64 v = 0;
+        boolean go = true;
+        while (go) {
+            int8 c = b[p];
+            if (c >= (int8)48 && c <= (int8)57) {
+                v = v * 10 + (int64)(c - (int8)48);
+                p = p + 1;
+            } else { go = false; }
+        }
+        if (neg) { v = 0 - v; }
+        return v;
+    }
+
+    // string value at openQuotePos → owned String (no escapes handled in proto)
+    static #String parseStr(int8[] b, int32 openQuotePos) {
+        int32 sp = openQuotePos + 1;
+        int32 e = sp;
+        boolean go = true;
+        while (go) { int8 c = b[e]; if (c == (int8)34) { go = false; } else { e = e + 1; } }
+        int32 len = e - sp;
+        int8[] buf = heap int8[len];
+        int32 i = 0;
+        while (i < len) { int32 q = sp + i; int8 cc = b[q]; buf[i] = cc; i = i + 1; }
+        return heap String(#buf, len);
+    }
+
+    // skip the value whose first index entry is at ci; returns next cursor.
+    static int32 skipVal(int8[] b, int32[] idx, int32 ci) {
+        int32 pos = idx[ci];
+        int8 c = b[pos];
+        if (c == (int8)123 || c == (int8)91) {
+            int32 depth = 0;
+            boolean go = true;
+            while (go) {
+                int32 q = idx[ci];
+                int8 cc = b[q];
+                if (cc == (int8)123 || cc == (int8)91) { depth = depth + 1; }
+                else if (cc == (int8)125 || cc == (int8)93) { depth = depth - 1; }
+                ci = ci + 1;
+                if (depth == 0) { go = false; }
+            }
+            return ci;
+        }
+        return ci + 1;   // scalar or string = single index entry
+    }
+
+    static int32 walkInner(int8[] b, int32[] idx, int32 ci, BInner out) {
+        ci = ci + 1;   // past '{'
+        boolean go = true;
+        while (go) {
+            int32 pos = idx[ci];
+            int8 c = b[pos];
+            if (c == (int8)125) { ci = ci + 1; go = false; }
+            else {
+                int32 keyPos = pos;
+                ci = ci + 1;   // colon
+                ci = ci + 1;   // value
+                int32 vp = idx[ci];
+                if (keyEq(b, keyPos, "a")) { out.a = parseI64(b, vp); ci = ci + 1; }
+                else { ci = skipVal(b, idx, ci); }
+                int32 sp = idx[ci];
+                int8 sc = b[sp];
+                if (sc == (int8)44) { ci = ci + 1; }
+            }
+        }
+        return ci;
+    }
+
+    static int32 walkRec(int8[] b, int32[] idx, int32 ci, BRec out) {
+        ci = ci + 1;   // past '{'
+        boolean go = true;
+        while (go) {
+            int32 pos = idx[ci];
+            int8 c = b[pos];
+            if (c == (int8)125) { ci = ci + 1; go = false; }
+            else {
+                int32 keyPos = pos;
+                ci = ci + 1;   // colon
+                ci = ci + 1;   // value
+                int32 vp = idx[ci];
+                if (keyEq(b, keyPos, "id")) { out.id = parseI64(b, vp); ci = ci + 1; }
+                else if (keyEq(b, keyPos, "flag")) { int8 fb = b[vp]; out.flag = (fb == (int8)116); ci = ci + 1; }
+                else if (keyEq(b, keyPos, "name")) { out.name = parseStr(b, vp); ci = ci + 1; }
+                else if (keyEq(b, keyPos, "inner")) { out.inner = heap BInner(); ci = walkInner(b, idx, ci, out.inner); }
+                else { ci = skipVal(b, idx, ci); }
+                int32 sp = idx[ci];
+                int8 sc = b[sp];
+                if (sc == (int8)44) { ci = ci + 1; }
+            }
+        }
+        return ci;
+    }
+
+    public static int32 run() {
+        int8[] b = File.readAllBytes("/tmp/jsonbench/bind.json");
+        int64 n = (int64) b.count();
+        int32[] idx = heap int32[n + 16];
+        EmitState sc = heap EmitState();
+        int32 cnt = IdxBuild.buildIndex(b, n, idx, sc);
+
+        BRec out = heap BRec();
+        walkRec(b, idx, 0, out);
+
+        System.stdout.println("idxCount=" + cnt);
+        System.stdout.println("id=" + out.id + " (expect 42)");
+        System.stdout.println("flag=" + out.flag + " (expect true)");
+        String nm = out.name;
+        System.stdout.println("name=" + nm + " (expect hello)");
+        int64 ia = -1; if (out.inner != null) { ia = out.inner.a; }
+        System.stdout.println("inner.a=" + ia + " (expect 7)");
+        return 0;
+    }
+}

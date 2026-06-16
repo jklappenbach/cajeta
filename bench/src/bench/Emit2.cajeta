@@ -1,0 +1,193 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+
+// SIMD-driven typed token emitter: stage-1 masks -> significant-position stream
+// (ctz-iterate) -> the same state machine validated against the real JsonReader.
+public final class Emit2 {
+
+    static void emitAt(int8 c, EmitState st) {
+        if (st.logOn) { st.log[st.logN] = c; st.logN = st.logN + 1; }
+        if (c == (int8)34) {
+            boolean isKey = st.depth > 0 && (st.containerStack & 1) == 1 && st.expectKey;
+            if (isKey) { st.counts[4]=st.counts[4]+1; st.expectKey = false; }
+            else { st.counts[5]=st.counts[5]+1; }
+        } else if (c == (int8)123) { st.counts[0]=st.counts[0]+1; st.containerStack = (st.containerStack << 1) | 1; st.depth=st.depth+1; st.expectKey = true; }
+        else if (c == (int8)91) { st.counts[2]=st.counts[2]+1; st.containerStack = st.containerStack << 1; st.depth=st.depth+1; st.expectKey = false; }
+        else if (c == (int8)125) { st.counts[1]=st.counts[1]+1; st.containerStack = st.containerStack >> 1; st.depth=st.depth-1; st.expectKey = false; }
+        else if (c == (int8)93) { st.counts[3]=st.counts[3]+1; st.containerStack = st.containerStack >> 1; st.depth=st.depth-1; st.expectKey = false; }
+        else if (c == (int8)58) { }
+        else if (c == (int8)44) { if ((st.containerStack & 1) == 1) { st.expectKey = true; } }
+        else {
+            if (c==(int8)116 || c==(int8)102) { st.counts[7]=st.counts[7]+1; }
+            else if (c==(int8)110) { st.counts[8]=st.counts[8]+1; }
+            else { st.counts[6]=st.counts[6]+1; }
+        }
+    }
+
+    static void scalarRange(int8[] b, int64 from, int64 to, EmitState st) {
+        int64 i = from;
+        if (st.pend) { i = i + 1; st.pend = false; }
+        while (i < to) {
+            int8 c = b[i];
+            if (st.inStr) {
+                if (c == (int8)92) { if (i + 1 >= to) { st.pend = true; i = to; } else { i = i + 2; } continue; }
+                if (c == (int8)34) { st.inStr = false; }
+            } else {
+                boolean isWs = c==(int8)32||c==(int8)9||c==(int8)10||c==(int8)13;
+                boolean isStruct = c==(int8)123||c==(int8)125||c==(int8)91||c==(int8)93||c==(int8)58||c==(int8)44;
+                if (c == (int8)34) { emitAt(c, st); st.inStr = true; st.prevVal = false; }
+                else if (isStruct) { emitAt(c, st); st.prevVal = false; }
+                else if (isWs) { st.prevVal = false; }
+                else { if (!st.prevVal) { emitAt(c, st); } st.prevVal = true; }
+            }
+            i = i + 1;
+        }
+    }
+
+    // Extraction floor: identical scan + ctz-extract loop as simdEmit, but the
+    // per-token body just sums the byte (no state machine). Isolates "visit every
+    // token position" cost from the dispatch/bookkeeping cost.
+    static int64 simdExtract(int8[] b, int64 n) {
+        int64 p = 0; int64 acc = 0; boolean inStr = false; boolean prevVal = false;
+        while (p + 16 <= n) {
+            Vector<int8,16> v = Cajeta.vload16(b, p);
+            int32 bsM = v.eqMask((int8)92);
+            if (bsM == 0) {
+                int32 qm = v.eqMask((int8)34);
+                int32 lb = v.eqMask((int8)123)|v.eqMask((int8)125)|v.eqMask((int8)91)|v.eqMask((int8)93)|v.eqMask((int8)58)|v.eqMask((int8)44);
+                int32 ws = v.eqMask((int8)32)|v.eqMask((int8)9)|v.eqMask((int8)10)|v.eqMask((int8)13);
+                int32 carry = 0; if (inStr) { carry = 65535; }
+                int32 vb0 = 0; if (prevVal) { vb0 = 1; }
+                int32 pf = qm; pf=pf^(pf<<1); pf=pf^(pf<<2); pf=pf^(pf<<4); pf=pf^(pf<<8); pf=pf&65535;
+                int32 isn = (carry ^ (pf << 1)) & 65535;
+                int32 openQ = qm & (~isn) & 65535;
+                int32 valueB = (~ws & ~lb & ~qm & ~isn) & 65535;
+                int32 vbPrev = ((valueB << 1) | vb0) & 65535;
+                int32 scalarStart = valueB & (~vbPrev) & 65535;
+                int32 m = ((lb & (~isn)) | openQ | scalarStart) & 65535;
+                while (m != 0) {
+                    int64 pos = Cajeta.ctz64((int64)(m & 65535));
+                    int64 idx = p + pos;
+                    int8 cb = b[idx];
+                    acc = acc + (int64) cb;
+                    m = m & (m - 1);
+                }
+                int32 par = (pf >> 15) & 1;
+                inStr = ((((carry & 1) ^ par) & 1) != 0);
+                prevVal = (((valueB >> 15) & 1) != 0);
+            }
+            p = p + 16;
+        }
+        return acc;
+    }
+
+    static void simdEmit(int8[] b, int64 n, EmitState st) {
+        // All hot scanner state in stack locals — register-resident, no per-token
+        // heap traffic. Synced back to st only at exit and around backslash blocks.
+        int64 c0=st.counts[0]; int64 c1=st.counts[1]; int64 c2=st.counts[2];
+        int64 c3=st.counts[3]; int64 c4=st.counts[4]; int64 c5=st.counts[5];
+        int64 c6=st.counts[6]; int64 c7=st.counts[7]; int64 c8=st.counts[8];
+        uint64 cstack=st.containerStack; boolean ekey=st.expectKey; int32 depth=st.depth;
+        boolean instr=st.inStr; boolean pval=st.prevVal;
+        int64 p = 0;
+        while (p + 16 <= n) {
+            Vector<int8,16> v = Cajeta.vload16(b, p);
+            int32 bsM = v.eqMask((int8)92);
+            if (bsM != 0 || st.pend) {
+                st.counts[0]=c0; st.counts[1]=c1; st.counts[2]=c2; st.counts[3]=c3; st.counts[4]=c4;
+                st.counts[5]=c5; st.counts[6]=c6; st.counts[7]=c7; st.counts[8]=c8;
+                st.containerStack=cstack; st.expectKey=ekey; st.depth=depth; st.inStr=instr; st.prevVal=pval;
+                scalarRange(b, p, p + 16, st);
+                c0=st.counts[0]; c1=st.counts[1]; c2=st.counts[2]; c3=st.counts[3]; c4=st.counts[4];
+                c5=st.counts[5]; c6=st.counts[6]; c7=st.counts[7]; c8=st.counts[8];
+                cstack=st.containerStack; ekey=st.expectKey; depth=st.depth; instr=st.inStr; pval=st.prevVal;
+            } else {
+                int32 lb = v.eqMask((int8)123); int32 rb = v.eqMask((int8)125);
+                int32 ls = v.eqMask((int8)91);  int32 rs = v.eqMask((int8)93);
+                int32 col = v.eqMask((int8)58);  int32 com = v.eqMask((int8)44);
+                int32 qm = v.eqMask((int8)34);
+                int32 ws = v.eqMask((int8)32)|v.eqMask((int8)9)|v.eqMask((int8)10)|v.eqMask((int8)13);
+                int32 structM = lb|rb|ls|rs|col|com;
+                int32 carry = 0; if (instr) { carry = 65535; }
+                int32 vb0 = 0; if (pval) { vb0 = 1; }
+                int32 pf = qm; pf=pf^(pf<<1); pf=pf^(pf<<2); pf=pf^(pf<<4); pf=pf^(pf<<8); pf=pf&65535;
+                int32 inStr = (carry ^ (pf << 1)) & 65535;
+                int32 openQ = qm & (~inStr) & 65535;
+                int32 valueB = (~ws & ~structM & ~qm & ~inStr) & 65535;
+                int32 vbPrev = ((valueB << 1) | vb0) & 65535;
+                int32 scalarStart = valueB & (~vbPrev) & 65535;
+                int32 sig = ((structM & (~inStr)) | openQ | scalarStart) & 65535;
+                int32 m = sig;
+                while (m != 0) {
+                    int64 pos = Cajeta.ctz64((int64)(m & 65535));
+                    int64 idx = p + pos;
+                    int8 cb = b[idx];
+                    if (cb == (int8)34) {
+                        if (depth > 0 && (cstack & 1) == 1 && ekey) { c4=c4+1; ekey=false; } else { c5=c5+1; }
+                    } else if (cb == (int8)123) { c0=c0+1; cstack=(cstack<<1)|1; depth=depth+1; ekey=true; }
+                    else if (cb == (int8)91) { c2=c2+1; cstack=cstack<<1; depth=depth+1; ekey=false; }
+                    else if (cb == (int8)125) { c1=c1+1; cstack=cstack>>1; depth=depth-1; ekey=false; }
+                    else if (cb == (int8)93) { c3=c3+1; cstack=cstack>>1; depth=depth-1; ekey=false; }
+                    else if (cb == (int8)58) { }
+                    else if (cb == (int8)44) { if ((cstack & 1) == 1) { ekey=true; } }
+                    else {
+                        if (cb==(int8)116 || cb==(int8)102) { c7=c7+1; }
+                        else if (cb==(int8)110) { c8=c8+1; } else { c6=c6+1; }
+                    }
+                    m = m & (m - 1);
+                }
+                int32 par = (pf >> 15) & 1;
+                instr = ((((carry & 1) ^ par) & 1) != 0);
+                pval = (((valueB >> 15) & 1) != 0);
+            }
+            p = p + 16;
+        }
+        st.counts[0]=c0; st.counts[1]=c1; st.counts[2]=c2; st.counts[3]=c3; st.counts[4]=c4;
+        st.counts[5]=c5; st.counts[6]=c6; st.counts[7]=c7; st.counts[8]=c8;
+        st.containerStack=cstack; st.expectKey=ekey; st.depth=depth; st.inStr=instr; st.prevVal=pval;
+        scalarRange(b, p, n, st);
+    }
+
+    static boolean eq9(int64[] a, int64[] c) {
+        int32 i = 0; boolean ok = true;
+        while (i < 9) { if (a[i] != c[i]) { ok = false; } i = i + 1; }
+        return ok;
+    }
+
+    static void reset(EmitState st) {
+        int32 i = 0; while (i < 9) { st.counts[i] = 0; i = i + 1; }
+        st.depth = 0; st.containerStack = 0; st.expectKey = false;
+        st.inStr = false; st.prevVal = false; st.pend = false;
+    }
+
+    static void check(String path, String name) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        EmitState sc = heap EmitState(); scalarRange(b, 0, n, sc);
+        EmitState sm = heap EmitState(); simdEmit(b, n, sm);
+        boolean ok = eq9(sc.counts, sm.counts);
+        int32 w = 0; int64 sink = 0;
+        while (w < 20) { reset(sm); simdEmit(b, n, sm); sink = sink + sm.counts[6]; w = w + 1; }
+        int64 t0 = Clock.nanoTime(); int32 i = 0;
+        while (i < 200) { reset(sm); simdEmit(b, n, sm); sink = sink + sm.counts[6]; i = i + 1; }
+        int64 ns = Clock.nanoTime() - t0;
+        float64 mb = ((float64)(n * 200)) / 1000000.0 / (((float64) ns)/1000000000.0);
+        // extraction floor: same ctz-extract walk, no state machine
+        int32 w2 = 0; while (w2 < 20) { sink = sink + simdExtract(b, n); w2 = w2 + 1; }
+        int64 t1 = Clock.nanoTime(); int32 j = 0;
+        while (j < 200) { sink = sink + simdExtract(b, n); j = j + 1; }
+        int64 ns2 = Clock.nanoTime() - t1;
+        float64 mb2 = ((float64)(n * 200)) / 1000000.0 / (((float64) ns2)/1000000000.0);
+        System.stdout.println(name + ": KEY=" + sc.counts[4] + " STR=" + sc.counts[5]
+            + " NUM=" + sc.counts[6] + (ok ? "  ok" : "  MISMATCH")
+            + "   emit=" + mb + " extract-floor=" + mb2 + " MB/s");
+    }
+
+    public static int32 run() {
+        check("/tmp/jsonbench/twitter.json", "twitter");
+        check("/tmp/jsonbench/citm_catalog.json", "citm");
+        check("/tmp/jsonbench/canada.json", "canada");
+        return 0;
+    }
+}

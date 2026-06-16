@@ -1,0 +1,109 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+public final class Stage1 {
+    static boolean isStruct(int8 c) {
+        return c==(int8)123||c==(int8)125||c==(int8)91||c==(int8)93||c==(int8)58||c==(int8)44;
+    }
+    // ground truth: structural chars outside strings, with \-escapes
+    static int64 scalarStruct(int8[] b, int64 n) {
+        int64 cnt = 0; boolean inStr = false; int64 i = 0;
+        while (i < n) {
+            int8 c = b[i];
+            if (inStr) {
+                if (c == (int8)92) { i = i + 2; continue; }
+                if (c == (int8)34) { inStr = false; }
+            } else {
+                if (c == (int8)34) { inStr = true; }
+                else if (isStruct(c)) { cnt = cnt + 1; }
+            }
+            i = i + 1;
+        }
+        return cnt;
+    }
+    // SIMD: 16-byte blocks, prefix-XOR string mask. Blocks with a backslash (or a
+    // pending escape from the prior block) fall to a correct scalar fixup; the
+    // common no-escape block takes the SIMD fast path. inStr parity carried.
+    static int64 simdStruct(int8[] b, int64 n) {
+        int64 cnt = 0;
+        int32 carry = 0; boolean pend = false;
+        int64 p = 0;
+        while (p + 16 <= n) {
+            Vector<int8,16> v = Cajeta.vload16(b, p);
+            int32 bs = v.eqMask((int8)92);
+            if (bs != 0 || pend) {
+                boolean inStr = (carry != 0);
+                int64 q = p; int64 end = p + 16;
+                if (pend) { q = q + 1; pend = false; }   // first byte was escaped
+                while (q < end) {
+                    int8 c = b[q];
+                    if (inStr) {
+                        if (c == (int8)92) {
+                            if (q + 1 >= end) { pend = true; q = end; } else { q = q + 2; }
+                            continue;
+                        }
+                        if (c == (int8)34) { inStr = false; }
+                    } else {
+                        if (c == (int8)34) { inStr = true; }
+                        else if (isStruct(c)) { cnt = cnt + 1; }
+                    }
+                    q = q + 1;
+                }
+                carry = inStr ? 1 : 0;
+            } else {
+                int32 qm = v.eqMask((int8)34);
+                int32 s = v.eqMask((int8)123)|v.eqMask((int8)125)|v.eqMask((int8)91)
+                        |v.eqMask((int8)93)|v.eqMask((int8)58)|v.eqMask((int8)44);
+                int32 pf = qm;
+                pf = pf^(pf<<1); pf=pf^(pf<<2); pf=pf^(pf<<4); pf=pf^(pf<<8); pf = pf & 65535;
+                int32 cmask = (carry != 0) ? 65535 : 0;
+                int32 inStr = (cmask ^ (pf << 1)) & 65535;
+                int32 real = s & (~inStr) & 65535;
+                while (real != 0) { real = real & (real - 1); cnt = cnt + 1; }
+                int32 par = (pf >> 15) & 1;
+                carry = (carry ^ par) & 1;
+            }
+            p = p + 16;
+        }
+        boolean inStr2 = (carry != 0);
+        if (pend) { p = p + 1; }
+        while (p < n) {
+            int8 c = b[p];
+            if (inStr2) {
+                if (c == (int8)92) { p = p + 2; continue; }
+                if (c == (int8)34) { inStr2 = false; }
+            } else {
+                if (c == (int8)34) { inStr2 = true; }
+                else if (isStruct(c)) { cnt = cnt + 1; }
+            }
+            p = p + 1;
+        }
+        return cnt;
+    }
+    static void check(String path, String name) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        System.stdout.println(name + ": scalar=" + scalarStruct(b, n) + " simd=" + simdStruct(b, n));
+    }
+    static void bench(String path, String name) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        int32 w = 0; int64 sink = 0;
+        while (w < 20) { sink = sink + simdStruct(b, n); w = w + 1; }
+        int64 t0 = Clock.nanoTime(); int32 i = 0;
+        while (i < 200) { sink = sink + simdStruct(b, n); i = i + 1; }
+        int64 sNs = Clock.nanoTime() - t0;
+        i = 0; int64 r0 = Clock.nanoTime();
+        while (i < 200) { sink = sink + scalarStruct(b, n); i = i + 1; }
+        int64 scNs = Clock.nanoTime() - r0;
+        float64 simdMb = ((float64)(n * 200)) / 1000000.0 / (((float64) sNs)/1000000000.0);
+        float64 scMb  = ((float64)(n * 200)) / 1000000.0 / (((float64) scNs)/1000000000.0);
+        System.stdout.println(name + ": SIMD stage1 " + simdMb + " MB/s   scalar " + scMb + " MB/s   (sink " + sink + ")");
+    }
+    public static int32 run() {
+        bench("/tmp/jsonbench/twitter.json", "twitter");
+        bench("/tmp/jsonbench/citm_catalog.json", "citm");
+        bench("/tmp/jsonbench/canada.json", "canada");
+        return 0;
+    }
+}

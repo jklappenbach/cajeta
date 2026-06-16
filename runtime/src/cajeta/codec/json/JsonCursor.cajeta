@@ -1,0 +1,34 @@
+package cajeta.codec.json;
+
+/**
+ * Walk state for the Tier-1 binding deserializer: the input buffer, the
+ * SIMD structural index, and the forward cursor into that index. Passed as
+ * a SINGLE class pointer to the synthesized recursive `Json.walkValue<T>`
+ * calls.
+ *
+ * Why a class instead of threading `(int8[] b, int32[] idx, int32 ci)`
+ * directly: passing array-typed parameters to a recursive templated call
+ * inside a loop produced malformed IR (a value referencing an instruction
+ * in another function), which crashed the LLVM optimizer. Wrapping the
+ * arrays in one class pointer — exactly the shape the proven
+ * `parseObjectFromReader(JsonReader r)` recursion uses — sidesteps it. The
+ * hot walk still lifts `b`/`idx`/`ci` into stack locals; `ci` is synced
+ * back to `this.ci` only around nested recursions.
+ */
+public final class JsonCursor {
+    int8[] b;
+    int32[] idx;
+    int32 ci;
+
+    // Owns the structural-index scratch as a field (like JsonReader owns its
+    // depthStack). Keeping idx off the `parse` stack frame matters: a
+    // locally-owned int32[] in `parse` is freed via the direct array-free
+    // path, which — unlike the class drop chain — leaks across the recursive
+    // template-instantiation barrier and corrupts the caller's IR. As a
+    // class field, idx is reclaimed by JsonCursor's own drop chain instead.
+    public JsonCursor(int8[] b, int64 length) {
+        this.b = b;
+        this.idx = heap int32[length + 16];
+        this.ci = 0;
+    }
+}

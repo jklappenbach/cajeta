@@ -133,6 +133,22 @@ namespace vecops {
         return b.CreateVectorSplat(lanes, scalar, "vec.splat");
     }
 
+    // eqMask(v, needle) -> iN: per-lane equality packed into an integer, bit i
+    // set iff lane i == needle (the SIMD movemask). icmp -> <N x i1> -> bitcast
+    // iN; LLVM lowers this to pcmpeqb+pmovmskb (x86) / cmeq+reduce (NEON).
+    // `needle` must already be the element scalar type. Caller zext's to int32.
+    inline llvm::Value* eqMask(llvm::IRBuilderBase& b, llvm::Value* v,
+                               llvm::Value* needle) {
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(v->getType());
+        unsigned n = vecTy->getNumElements();
+        llvm::Value* sp = b.CreateVectorSplat(n, needle, "eqmask.splat");
+        llvm::Value* cmp = vecTy->getElementType()->isFloatingPointTy()
+            ? b.CreateFCmpOEQ(v, sp, "eqmask.cmp")
+            : b.CreateICmpEQ(v, sp, "eqmask.cmp");            // <N x i1>
+        auto* iN = llvm::IntegerType::get(b.getContext(), n);
+        return b.CreateBitCast(cmp, iN, "eqmask.bits");      // packed movemask
+    }
+
     // dot(a, b) -> scalar. Element-wise multiply then horizontal add. `isFloat`
     // picks fmul/fadd vs mul/add from the element type.
     inline llvm::Value* dot(llvm::IRBuilderBase& b, llvm::Value* a,

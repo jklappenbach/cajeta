@@ -1,0 +1,75 @@
+package cajeta.codec.json;
+
+import cajeta.lang.String;
+import cajeta.io.file.FileWriter;
+
+/**
+ * JSON Lines (`.jsonl`) writer: one JSON value per line, newline-
+ * delimited, streamed to a `FileWriter` sink. Built for hot paths like
+ * a structured logger — a single growable buffer is reused across every
+ * record (no per-line `int8[]` allocation), and each `endLine` is one
+ * `write` of the record plus its terminating `\n`.
+ *
+ * The value-building methods mirror `JsonWriter` and chain fluently;
+ * call `endLine` to commit the current record and reset for the next.
+ *
+ * ```cajeta
+ * JsonLinesWriter jl = heap JsonLinesWriter(fileWriter);
+ * jl.beginObject()
+ *     .key("level").writeString("INFO")
+ *     .key("msg").writeString("started")
+ *     .key("ts").writeNumber(epochMillis)
+ *   .endObject()
+ *   .endLine();          // emits {"level":"INFO","msg":"started","ts":...}\n
+ * jl.flush();
+ * ```
+ */
+public final class JsonLinesWriter {
+    JsonWriter w;
+    FileWriter sink;
+
+    /** Wrap a sink. Records are emitted to it newline-delimited. */
+    public JsonLinesWriter(FileWriter sink) {
+        this.w = heap JsonWriter();
+        this.sink = sink;
+    }
+
+    /** Open an object (`{`) in the current record. */
+    public JsonLinesWriter beginObject() { this.w.beginObject(); return this; }
+    /** Close the current object (`}`). */
+    public JsonLinesWriter endObject() { this.w.endObject(); return this; }
+    /** Open an array (`[`) in the current record. */
+    public JsonLinesWriter beginArray() { this.w.beginArray(); return this; }
+    /** Close the current array (`]`). */
+    public JsonLinesWriter endArray() { this.w.endArray(); return this; }
+
+    /** Write an object key. */
+    public JsonLinesWriter key(String name) { this.w.key(name); return this; }
+    /** Write a string value. */
+    public JsonLinesWriter writeString(String s) { this.w.writeString(s); return this; }
+    /** Write an integer value. */
+    public JsonLinesWriter writeNumber(int64 v) { this.w.writeNumber(v); return this; }
+    /** Write a floating-point value. */
+    public JsonLinesWriter writeNumber(float64 v) { this.w.writeNumber(v); return this; }
+    /** Write a boolean value. */
+    public JsonLinesWriter writeBoolean(boolean v) { this.w.writeBoolean(v); return this; }
+    /** Write a `null` value. */
+    public JsonLinesWriter writeNull() { this.w.writeNull(); return this; }
+    /** Write a pre-built value tree. */
+    public JsonLinesWriter writeValue(JsonValue v) { this.w.writeValue(v); return this; }
+
+    /**
+     * Commit the current record: append `\n`, stream the line to the
+     * sink, and reset for the next record. No allocation — the buffer
+     * is reused.
+     */
+    public JsonLinesWriter endLine() {
+        this.w.writeLineTo(this.sink);
+        return this;
+    }
+
+    /** Flush the underlying sink. */
+    public void flush() {
+        this.sink.flush();
+    }
+}

@@ -771,7 +771,7 @@ endif()
 # not what a freshly-init'd project needs. The init command writes a
 # minimal next-steps message instead.
 set(CAJETA_INIT_TEMPLATE_ROOT ${PROJECT_SOURCE_DIR}/samples/buildtool)
-set(CAJETA_INIT_TEMPLATE_NAMES basic workspace multi-binary melt)
+set(CAJETA_INIT_TEMPLATE_NAMES basic library workspace multi-binary melt)
 set(CAJETA_INIT_TEMPLATE_FILES "")
 set(CAJETA_INIT_MANIFEST_ROWS "")
 foreach(tname ${CAJETA_INIT_TEMPLATE_NAMES})

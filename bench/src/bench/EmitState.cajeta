@@ -1,0 +1,19 @@
+package bench;
+// Shared scanner state for the SIMD typed token emitter.
+public final class EmitState {
+    public int64[] counts;     // SO EO SA EA KEY STRING NUMBER BOOL NULL
+    // Register-resident scanner state: a bit-stack of container kinds
+    // (1=object, 0=array; top = low bit) and a single key-position bit.
+    // No heap, no bounds checks per token. Depth <= 64 (deep-nesting
+    // fallback noted for production).
+    public uint64 containerStack; public boolean expectKey;
+    public int32 depth;
+    public boolean inStr; public boolean prevVal; public boolean pend;
+    public int8[] log; public int64 logN; public boolean logOn;
+    public EmitState() {
+        this.counts = heap int64[9];
+        this.containerStack = 0; this.expectKey = false;
+        this.depth = 0; this.inStr = false; this.prevVal = false; this.pend = false;
+        this.log = heap int8[1]; this.logN = 0; this.logOn = false;
+    }
+}

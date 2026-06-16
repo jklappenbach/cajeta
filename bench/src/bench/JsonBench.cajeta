@@ -1,0 +1,87 @@
+package bench;
+
+import cajeta.codec.json.JsonReader;
+import cajeta.codec.json.JsonToken;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+
+/**
+ * Streaming-tokenization throughput for the Cajeta JSON reader on the
+ * nativejson-benchmark corpus (twitter / citm_catalog / canada). Tokenization is
+ * lazy (numbers aren't converted), so it runs on the float-bearing files too.
+ *
+ * Each iteration reads a FRESH buffer (the reader aliases its input into an
+ * owned field, so buffers can't be shared). A read-only baseline (readAllBytes +
+ * drop) is timed separately and subtracted to isolate tokenization. Build with
+ * `--release`.
+ */
+public final class JsonBench {
+
+    static int64 readOnly(String path) {
+        int8[] bytes = File.readAllBytes(path);
+        return (int64) bytes.count();
+    }
+
+    static int64 tokenizeFile(String path) {
+        int8[] bytes = File.readAllBytes(path);
+        int64 len = (int64) bytes.count();
+        JsonReader r = heap JsonReader(bytes, len);
+        int64 n = 0;
+        JsonToken t = r.next();
+        while (t != JsonToken.END) {
+            n = n + 1;
+            t = r.next();
+        }
+        return n;
+    }
+
+    static void benchFile(String path, String name, int32 warmup, int32 iters) {
+        int64 len = readOnly(path);
+
+        int32 w = 0;
+        while (w < warmup) {
+            readOnly(path);
+            tokenizeFile(path);
+            w = w + 1;
+        }
+
+        // read-only baseline
+        int64 r0 = Clock.nanoTime();
+        int32 i = 0;
+        while (i < iters) {
+            readOnly(path);
+            i = i + 1;
+        }
+        int64 readNs = Clock.nanoTime() - r0;
+
+        // read + tokenize
+        int64 toks = 0;
+        int64 t0 = Clock.nanoTime();
+        i = 0;
+        while (i < iters) {
+            toks = tokenizeFile(path);
+            i = i + 1;
+        }
+        int64 totalNs = Clock.nanoTime() - t0;
+
+        int64 parseNs = totalNs - readNs;
+        if (parseNs < 1) {
+            parseNs = 1;
+        }
+        float64 parseSecs = ((float64) parseNs) / 1000000000.0;
+        float64 totalMb = ((float64) (len * ((int64) iters))) / 1000000.0;
+        float64 mbps = totalMb / parseSecs;
+        float64 perMs = (parseSecs * 1000.0) / ((float64) iters);
+
+        System.stdout.println(name + ": " + len + " B, " + toks + " tokens, "
+            + iters + " iters, parse " + perMs + " ms, " + mbps + " MB/s (tokenize-only)");
+    }
+
+    public static int32 run() {
+        System.stdout.println("== Cajeta JSON streaming-tokenize throughput (--release) ==");
+        benchFile("/tmp/jsonbench/twitter.json", "twitter", 20, 200);
+        benchFile("/tmp/jsonbench/citm_catalog.json", "citm_catalog", 20, 200);
+        benchFile("/tmp/jsonbench/canada.json", "canada", 20, 200);
+        return 0;
+    }
+}

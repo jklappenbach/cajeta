@@ -1,0 +1,19 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.codec.json.Json;
+
+class Rec {
+    public int32 a;
+    public int32 b;
+    public Rec() { this.a = 0; this.b = 0; }
+}
+
+public final class SkipTest {
+    public static int32 run() {
+        int8[] bytes = File.readAllBytes("/tmp/jsonbench/skip.json");
+        int64 n = (int64) bytes.count();
+        Rec r = Json.parse<Rec>(bytes, n);
+        System.stdout.println("a=" + r.a + " b=" + r.b + (r.a == 1 && r.b == 2 ? "  OK (nested unknown key skipped)" : "  FAIL"));
+        return 0;
+    }
+}

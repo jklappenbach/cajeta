@@ -159,6 +159,40 @@ public class JsonReader {
     }
 
     /**
+     * Consume one complete value at the current position WITHOUT
+     * materializing it — a scalar (string/number/true/false/null) or a
+     * fully-nested object/array, balanced via a depth counter. The
+     * subtree's bytes are skipped, not decoded: no `currentString` /
+     * `currentNumber` work and no allocation for the skipped data. This
+     * is the on-demand skip used by the `Json.parse<T>` synthesizer for
+     * unknown keys (a struct only decodes the fields it maps). Throws
+     * `JsonParseException` if the input ends mid-value.
+     *
+     * ```cajeta
+     * // reader is positioned just before a value (e.g. after a KEY)
+     * reader.skipValue();   // value + any nested subtree consumed
+     * ```
+     */
+    public void skipValue() {
+        JsonToken t = this.next();
+        if (t == JsonToken.START_OBJECT || t == JsonToken.START_ARRAY) {
+            int32 d = 1;
+            while (d > 0) {
+                JsonToken u = this.next();
+                if (u == JsonToken.START_OBJECT || u == JsonToken.START_ARRAY) {
+                    d = d + 1;
+                } else if (u == JsonToken.END_OBJECT || u == JsonToken.END_ARRAY) {
+                    d = d - 1;
+                } else if (u == JsonToken.END) {
+                    throw heap JsonParseException(
+                        "unexpected end of input while skipping value",
+                        this.pos);
+                }
+            }
+        }
+    }
+
+    /**
      * Advance to and return the next `JsonToken`. Reading a cached
      * `peek()` returns that token without re-advancing; otherwise the
      * cursor scans forward over whitespace, separators, and container
@@ -369,29 +403,59 @@ public class JsonReader {
      * string or a truncated escape sequence.
      */
     void scanStringSpan() {
-        this.pos = this.pos + 1;     // past opening '"'
-        this.tokenStart = this.pos;
-        while (this.pos < this.byteCount) {
-            int8 c = this.input[this.pos];
+        // SWAR: scan 8 bytes per step for a closing '"' (0x22) or an escape
+        // '\' (0x5C), via the classic byte-in-word find (uint64 wraps, so the
+        // `- ones` borrow trick is trap-free). Falls to a scalar tail for the
+        // final < 8 bytes. Numbers/positions match the byte-at-a-time scanner.
+        int64 p = this.pos + 1;     // past opening '"'
+        int64 bc = this.byteCount;
+        this.tokenStart = p;
+        uint64 ones = 0x0101010101010101;
+        uint64 high = 0x8080808080808080;
+        uint64 qq = 0x2222222222222222;   // '"' broadcast
+        uint64 bs = 0x5C5C5C5C5C5C5C5C;   // '\' broadcast
+        while (p + 8 <= bc) {
+            uint64 w = (uint64) Cajeta.loadU64(this.input, p);
+            uint64 xq = w ^ qq; uint64 mq = (xq - ones) & (~xq) & high;
+            uint64 xb = w ^ bs; uint64 mb = (xb - ones) & (~xb) & high;
+            uint64 m = mq | mb;
+            if (m != 0) {
+                int32 idx = Cajeta.ctz64((int64) m) >> 3;
+                int64 at = p + (int64) idx;
+                int8 c = this.input[at];
+                if (c == (int8) 34) {
+                    this.tokenEnd = at;
+                    this.pos = at + 1;
+                    return;
+                }
+                p = at + 2;     // backslash: skip the escaped byte
+                if (p > bc) {
+                    this.pos = bc;
+                    throw heap JsonParseException("unterminated string", bc);
+                }
+            } else {
+                p = p + 8;
+            }
+        }
+        while (p < bc) {
+            int8 c = this.input[p];
             if (c == (int8) 34) {
-                this.tokenEnd = this.pos;
-                this.pos = this.pos + 1;
+                this.tokenEnd = p;
+                this.pos = p + 1;
                 return;
             }
             if (c == (int8) 92) {
-                this.pos = this.pos + 2;
-                if (this.pos > this.byteCount) {
-                    throw heap JsonParseException(
-                        "unterminated escape sequence",
-                        this.pos);
+                p = p + 2;
+                if (p > bc) {
+                    this.pos = bc;
+                    throw heap JsonParseException("unterminated string", bc);
                 }
             } else {
-                this.pos = this.pos + 1;
+                p = p + 1;
             }
         }
-        throw heap JsonParseException(
-            "unterminated string",
-            this.pos);
+        this.pos = bc;
+        throw heap JsonParseException("unterminated string", bc);
     }
 
     /**
@@ -401,21 +465,45 @@ public class JsonReader {
      */
     void scanNumberSpan() {
         this.tokenStart = this.pos;
-        this.pos = this.pos + 1;
-        while (this.pos < this.byteCount) {
-            int8 c = this.input[this.pos];
+        int64 p = this.pos + 1;     // first char (sign/digit) is always part of it
+        int64 bc = this.byteCount;
+        uint64 high = 0x8080808080808080;
+        // SWAR-skip runs of digits (the bulk of a number), 8 bytes/step, then
+        // scalar-handle the occasional '.'/'e'/'E'/'+'/'-' and re-enter the
+        // fast path. A byte is a digit iff 0x30 <= b <= 0x39: bias-add detects
+        // each range edge (bytes are ASCII < 0x80 here, so no inter-byte carry).
+        while (true) {
+            while (p + 8 <= bc) {
+                uint64 w = (uint64) Cajeta.loadU64(this.input, p);
+                uint64 ge30 = (w + 0x5050505050505050) & high;   // b >= 0x30
+                uint64 gt39 = (w + 0x4646464646464646) & high;   // b > 0x39
+                uint64 digit = ge30 & (~gt39) & high;            // 0x80 per digit
+                uint64 nd = (~digit) & high;                     // 0x80 per non-digit
+                if (nd == 0) {
+                    p = p + 8;
+                } else {
+                    int32 idx = Cajeta.ctz64((int64) nd) >> 3;
+                    p = p + (int64) idx;
+                    break;
+                }
+            }
+            if (p >= bc) {
+                this.tokenEnd = p;
+                this.pos = p;
+                return;
+            }
+            int8 c = this.input[p];
             boolean isDigit = c >= (int8) 48 && c <= (int8) 57;
-            boolean isDot = c == (int8) 46;
-            boolean isExp = c == (int8) 101 || c == (int8) 69;
-            boolean isSign = c == (int8) 43 || c == (int8) 45;
-            if (isDigit || isDot || isExp || isSign) {
-                this.pos = this.pos + 1;
+            boolean isSpecial = c == (int8) 46 || c == (int8) 101
+                || c == (int8) 69 || c == (int8) 43 || c == (int8) 45;
+            if (isDigit || isSpecial) {
+                p = p + 1;
             } else {
-                this.tokenEnd = this.pos;
+                this.tokenEnd = p;
+                this.pos = p;
                 return;
             }
         }
-        this.tokenEnd = this.pos;
     }
 
     /**

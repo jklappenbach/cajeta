@@ -53,6 +53,39 @@ TEST(VectorTests, constructAndComponentRead) {
         "        return (int32) v.w;\n"), 4);
 }
 
+// SIMD eqMask: per-lane equality packed into a bitmask (bit i set iff lane i ==
+// needle) — the JSON-scanner workhorse. Lanes 2 and 5 are '"' -> mask 0b100100.
+TEST(VectorTests, eqMaskBitmask) {
+    EXPECT_EQ(runI32(
+        "        Vector<int8,16> v = heap Vector<int8,16>(\n"
+        "            (int8)97,(int8)97,(int8)34,(int8)97,(int8)97,(int8)34,(int8)97,(int8)97,\n"
+        "            (int8)97,(int8)97,(int8)97,(int8)97,(int8)97,(int8)97,(int8)97,(int8)97);\n"
+        "        int32 m = v.eqMask((int8)34);\n"
+        "        return m;\n"), 36);
+}
+
+// eqMask + Cajeta.ctz64 -> the index of the first matching lane (== 2 here).
+TEST(VectorTests, eqMaskFirstViaCtz) {
+    EXPECT_EQ(runI32(
+        "        Vector<int8,16> v = heap Vector<int8,16>(\n"
+        "            (int8)97,(int8)97,(int8)34,(int8)97,(int8)97,(int8)34,(int8)97,(int8)97,\n"
+        "            (int8)97,(int8)97,(int8)97,(int8)97,(int8)97,(int8)97,(int8)97,(int8)97);\n"
+        "        int32 m = v.eqMask((int8)34);\n"
+        "        return Cajeta.ctz64((int64) m);\n"), 2);
+}
+
+// vload16 loads a 16-byte block from an int8[]; eqMask classifies it — the SIMD
+// scanner's inner loop. Bytes 2 and 5 are '"' -> mask 0b100100.
+TEST(VectorTests, vload16ThenEqMask) {
+    EXPECT_EQ(runI32(
+        "        int8[] b = heap int8[16];\n"
+        "        int64 i = 0;\n"
+        "        while (i < 16) { b[i] = (int8) 97; i = i + 1; }\n"
+        "        b[2] = (int8) 34; b[5] = (int8) 34;\n"
+        "        Vector<int8,16> v = Cajeta.vload16(b, 0);\n"
+        "        return v.eqMask((int8) 34);\n"), 36);
+}
+
 // .r/.g/.b/.a alias the first four lanes.
 TEST(VectorTests, colorAliases) {
     EXPECT_EQ(runI32(

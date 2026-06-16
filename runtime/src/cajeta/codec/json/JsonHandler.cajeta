@@ -1,0 +1,50 @@
+package cajeta.codec.json;
+
+/**
+ * SAX-style content handler: the push counterpart to the pull
+ * `JsonReader`. Subclass it, override only the events you care about
+ * (every method is a no-op by default), and feed it to
+ * `JsonSax` `parse(...)`. The parser drives the document once and
+ * calls these methods in document order.
+ *
+ * Values are delivered **lazily**: the value events receive the
+ * `JsonReader` positioned at the token, and you pull only what you
+ * want — `r.currentString()`, `r.currentNumberAsInt64()`,
+ * `r.currentNumberAsFloat64()`. If a handler ignores a value it costs
+ * nothing to decode it. `BOOLEAN` and `NULL` carry no span, so the
+ * boolean is passed directly and `onNull` takes no argument.
+ *
+ * ```cajeta
+ * public class Counter extends JsonHandler {
+ *     public int64 keys;
+ *     public Counter() { this.keys = 0; }
+ *     public void onKey(JsonReader r) { this.keys = this.keys + 1; }
+ * }
+ * Counter c = heap Counter();
+ * JsonSax.parse(bytes, length, c);   // c.keys == number of object keys
+ * ```
+ *
+ * For random access to a few fields without walking the whole
+ * document, prefer the pull `JsonReader` directly (skip subtrees via
+ * the structural index); for a materialized tree, use `Json` `parse`.
+ */
+public class JsonHandler {
+    /** Called at the start of an object (`{`). */
+    public void onStartObject() {}
+    /** Called at the end of an object (`}`). */
+    public void onEndObject() {}
+    /** Called at the start of an array (`[`). */
+    public void onStartArray() {}
+    /** Called at the end of an array (`]`). */
+    public void onEndArray() {}
+    /** An object key. Pull it with `r.currentString()`. */
+    public void onKey(JsonReader r) {}
+    /** A string value. Pull it with `r.currentString()`. */
+    public void onString(JsonReader r) {}
+    /** A numeric value. Pull it with `r.currentNumberAsInt64()` / `...AsFloat64()`. */
+    public void onNumber(JsonReader r) {}
+    /** A boolean value (`true` / `false`). */
+    public void onBoolean(boolean v) {}
+    /** A `null` value. */
+    public void onNull() {}
+}
