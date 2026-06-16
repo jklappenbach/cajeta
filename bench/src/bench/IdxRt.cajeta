@@ -1,0 +1,71 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+import cajeta.codec.json.JsonIndex;
+
+// Validates the RUNTIME cajeta.codec.json.JsonIndex engine: build + skipValue
+// + keyEq + decoders, exercised exactly as the synthesizer will. Confirms the
+// stdlib class compiles and is byte-correct, and re-measures combined throughput.
+public final class IdxRt {
+
+    static int32 walkRec(int8[] b, int32[] idx, int32 ci, BRec out) {
+        ci = ci + 1;   // past '{'
+        boolean go = true;
+        while (go) {
+            int32 pos = idx[ci];
+            int8 c = b[pos];
+            if (c == (int8)125) { ci = ci + 1; go = false; }
+            else {
+                int64 keyPos = (int64) pos;
+                ci = ci + 1;   // colon
+                ci = ci + 1;   // value
+                int32 vp = idx[ci];
+                int64 vpos = (int64) vp;
+                if (JsonIndex.keyEq(b, keyPos, "id")) { out.id = JsonIndex.decodeI64(b, vpos); ci = ci + 1; }
+                else if (JsonIndex.keyEq(b, keyPos, "flag")) { out.flag = JsonIndex.decodeBool(b, vpos); ci = ci + 1; }
+                else if (JsonIndex.keyEq(b, keyPos, "name")) {
+                    int8[] sb = JsonIndex.decodeStrBytes(b, vpos);
+                    int32 sl = (int32) sb.count();
+                    out.name = heap String(#sb, sl);
+                    ci = ci + 1;
+                }
+                else { ci = JsonIndex.skipValue(b, idx, ci); }
+                int32 sp = idx[ci];
+                int8 sc = b[sp];
+                if (sc == (int8)44) { ci = ci + 1; }
+            }
+        }
+        return ci;
+    }
+
+    static void bench(String path, String name) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        int32[] idx = heap int32[n + 16];
+        int32 cnt = JsonIndex.build(b, n, idx);
+        int64 sink = 0;
+        int32 w = 0; while (w < 20) { sink = sink + JsonIndex.build(b, n, idx); w = w + 1; }
+        int64 t0 = Clock.nanoTime(); int32 i = 0;
+        while (i < 200) { sink = sink + JsonIndex.build(b, n, idx); i = i + 1; }
+        int64 ns = Clock.nanoTime() - t0;
+        float64 mb = ((float64)(n * 200)) / 1000000.0 / (((float64) ns)/1000000000.0);
+        System.stdout.println(name + ": idxCount=" + cnt + " build=" + mb + " MB/s sink=" + sink);
+    }
+
+    public static int32 run() {
+        // correctness via the runtime engine
+        int8[] b = File.readAllBytes("/tmp/jsonbench/bind.json");
+        int64 n = (int64) b.count();
+        int32[] idx = heap int32[n + 16];
+        int32 cnt = JsonIndex.build(b, n, idx);
+        BRec out = heap BRec();
+        walkRec(b, idx, 0, out);
+        String nm = out.name;
+        System.stdout.println("RT bind: id=" + out.id + " flag=" + out.flag + " name=" + nm + " (expect 42/true/hello)");
+
+        bench("/tmp/jsonbench/twitter.json", "twitter");
+        bench("/tmp/jsonbench/citm_catalog.json", "citm");
+        bench("/tmp/jsonbench/canada.json", "canada");
+        return 0;
+    }
+}

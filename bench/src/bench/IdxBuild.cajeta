@@ -1,0 +1,146 @@
+package bench;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+
+// Stage-1 structural-index builder + stage-2 skip-all walk.
+// Proves the binding-deserializer architecture: SIMD scan appends only
+// significant positions to a reused int32[] scratch (sparse index), then a
+// tight INLINE walk (no per-token call boundary) traverses it. Compare combined
+// build+walk MB/s vs Jackson 1551 and vs the pull-based Json.parse<Empty> = 620.
+public final class IdxBuild {
+
+    // Scalar fallback for blocks containing a backslash (escape-aware). Appends
+    // significant positions to idx[] starting at cnt; returns the new cnt. Uses
+    // st for inStr/prevVal/pend carry across blocks. Rare path — only blocks
+    // with '\' take it, so a heap state object here costs nothing measurable.
+    static int32 scalarAppend(int8[] b, int64 from, int64 to, EmitState st,
+                              int32[] idx, int32 cnt) {
+        int64 i = from;
+        if (st.pend) { i = i + 1; st.pend = false; }
+        while (i < to) {
+            int8 c = b[i];
+            if (st.inStr) {
+                if (c == (int8)92) { if (i + 1 >= to) { st.pend = true; i = to; } else { i = i + 2; } continue; }
+                if (c == (int8)34) { st.inStr = false; }
+            } else {
+                boolean isWs = c==(int8)32||c==(int8)9||c==(int8)10||c==(int8)13;
+                boolean isStruct = c==(int8)123||c==(int8)125||c==(int8)91||c==(int8)93||c==(int8)58||c==(int8)44;
+                if (c == (int8)34) { idx[cnt]=(int32)i; cnt=cnt+1; st.inStr = true; st.prevVal = false; }
+                else if (isStruct) { idx[cnt]=(int32)i; cnt=cnt+1; st.prevVal = false; }
+                else if (isWs) { st.prevVal = false; }
+                else { if (!st.prevVal) { idx[cnt]=(int32)i; cnt=cnt+1; } st.prevVal = true; }
+            }
+            i = i + 1;
+        }
+        return cnt;
+    }
+
+    // SIMD structural-index build. Appends significant positions to idx[],
+    // returns the count. All hot scanner state in stack locals (register
+    // resident); synced to the scalar-fallback state object only around
+    // backslash blocks. Mirrors Emit2.simdEmit's mask math exactly.
+    static int32 buildIndex(int8[] b, int64 n, int32[] idx, EmitState sc) {
+        int32 cnt = 0;
+        boolean instr = false; boolean pval = false;
+        sc.inStr = false; sc.prevVal = false; sc.pend = false;
+        int64 p = 0;
+        while (p + 16 <= n) {
+            Vector<int8,16> v = Cajeta.vload16(b, p);
+            int32 bsM = v.eqMask((int8)92);
+            if (bsM != 0 || sc.pend) {
+                sc.inStr = instr; sc.prevVal = pval;
+                cnt = scalarAppend(b, p, p + 16, sc, idx, cnt);
+                instr = sc.inStr; pval = sc.prevVal;
+            } else {
+                int32 lb = v.eqMask((int8)123); int32 rb = v.eqMask((int8)125);
+                int32 ls = v.eqMask((int8)91);  int32 rs = v.eqMask((int8)93);
+                int32 col = v.eqMask((int8)58);  int32 com = v.eqMask((int8)44);
+                int32 qm = v.eqMask((int8)34);
+                int32 ws = v.eqMask((int8)32)|v.eqMask((int8)9)|v.eqMask((int8)10)|v.eqMask((int8)13);
+                int32 structM = lb|rb|ls|rs|col|com;
+                int32 carry = 0; if (instr) { carry = 65535; }
+                int32 vb0 = 0; if (pval) { vb0 = 1; }
+                int32 pf = qm; pf=pf^(pf<<1); pf=pf^(pf<<2); pf=pf^(pf<<4); pf=pf^(pf<<8); pf=pf&65535;
+                int32 inStr = (carry ^ (pf << 1)) & 65535;
+                int32 openQ = qm & (~inStr) & 65535;
+                int32 valueB = (~ws & ~structM & ~qm & ~inStr) & 65535;
+                int32 vbPrev = ((valueB << 1) | vb0) & 65535;
+                int32 scalarStart = valueB & (~vbPrev) & 65535;
+                int32 sig = ((structM & (~inStr)) | openQ | scalarStart) & 65535;
+                int32 m = sig;
+                while (m != 0) {
+                    int64 pos = Cajeta.ctz64((int64)(m & 65535));
+                    int64 off = p + pos;
+                    idx[cnt] = (int32) off; cnt = cnt + 1;
+                    m = m & (m - 1);
+                }
+                int32 par = (pf >> 15) & 1;
+                instr = ((((carry & 1) ^ par) & 1) != 0);
+                pval = (((valueB >> 15) & 1) != 0);
+            }
+            p = p + 16;
+        }
+        sc.inStr = instr; sc.prevVal = pval;
+        cnt = scalarAppend(b, p, n, sc, idx, cnt);
+        return cnt;
+    }
+
+    // Stage-2 skip-all walk: traverse the entire index with a depth counter,
+    // exactly the work the synthesizer's unmapped-subtree skip does, but INLINE
+    // (no JsonReader.next() call boundary). Returns an accumulator to defeat DCE.
+    static int64 skipWalk(int8[] b, int32[] idx, int32 cnt) {
+        int64 acc = 0;
+        int32 ci = 0;
+        while (ci < cnt) {
+            int32 pos = idx[ci];
+            int8 c = b[pos];
+            // classify by first byte; sum to keep the load live
+            if (c == (int8)123 || c == (int8)91) { acc = acc + 1; }
+            else if (c == (int8)125 || c == (int8)93) { acc = acc - 1; }
+            else { acc = acc + (int64) c; }
+            ci = ci + 1;
+        }
+        return acc;
+    }
+
+    static void check(String path, String name) {
+        int8[] b = File.readAllBytes(path);
+        int64 n = (int64) b.count();
+        int32[] idx = heap int32[n + 16];   // reused scratch (allocated once)
+        EmitState sc = heap EmitState();
+        int32 cnt = buildIndex(b, n, idx, sc);
+
+        int64 sink = 0;
+        // warmup
+        int32 w = 0; while (w < 20) { sink = sink + buildIndex(b, n, idx, sc); w = w + 1; }
+        // build-only timing
+        int64 t0 = Clock.nanoTime(); int32 i = 0;
+        while (i < 200) { sink = sink + buildIndex(b, n, idx, sc); i = i + 1; }
+        int64 nsB = Clock.nanoTime() - t0;
+        float64 mbB = ((float64)(n * 200)) / 1000000.0 / (((float64) nsB)/1000000000.0);
+
+        // walk-only timing (over the prebuilt index)
+        int32 w2 = 0; while (w2 < 20) { sink = sink + skipWalk(b, idx, cnt); w2 = w2 + 1; }
+        int64 t1 = Clock.nanoTime(); int32 j = 0;
+        while (j < 200) { sink = sink + skipWalk(b, idx, cnt); j = j + 1; }
+        int64 nsW = Clock.nanoTime() - t1;
+        float64 mbW = ((float64)(n * 200)) / 1000000.0 / (((float64) nsW)/1000000000.0);
+
+        // combined build+walk per iteration (the real per-parse cost)
+        int32 w3 = 0; while (w3 < 20) { int32 c2 = buildIndex(b, n, idx, sc); sink = sink + skipWalk(b, idx, c2); w3 = w3 + 1; }
+        int64 t2 = Clock.nanoTime(); int32 k = 0;
+        while (k < 200) { int32 c2 = buildIndex(b, n, idx, sc); sink = sink + skipWalk(b, idx, c2); k = k + 1; }
+        int64 nsC = Clock.nanoTime() - t2;
+        float64 mbC = ((float64)(n * 200)) / 1000000.0 / (((float64) nsC)/1000000000.0);
+
+        System.stdout.println(name + ": idxCount=" + cnt + " sink=" + sink
+            + "   build=" + mbB + " walk=" + mbW + " combined=" + mbC + " MB/s");
+    }
+
+    public static int32 run() {
+        check("/tmp/jsonbench/twitter.json", "twitter");
+        check("/tmp/jsonbench/citm_catalog.json", "citm");
+        check("/tmp/jsonbench/canada.json", "canada");
+        return 0;
+    }
+}
