@@ -110,6 +110,11 @@ if(CAJETA_BUILD_CAJETADOC)
     add_subdirectory(tools/cajetadoc)
 endif()
 
+# libcajeta_amdtex — optional AMD HIP mipmap/cube texture-emulation helper
+# (vendored addrlib + C-ABI wrapper, dlopen'd by the runtime). Built before src/
+# so it's available when the test/AOT paths exercise the AMD texture backend.
+add_subdirectory(runtime/native/amd)
+
 add_subdirectory(src)
 
 # cajetadoc_core (configured above, before src/) #includes the ANTLR-generated
