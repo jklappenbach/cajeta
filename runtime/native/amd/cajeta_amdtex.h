@@ -34,9 +34,21 @@ typedef struct caj_amdtex_layout {
     uint64_t levelOffset[CAJ_AMDTEX_MAX_LEVELS];// per-level base byte offset
 } caj_amdtex_layout;
 
-// Create an addrlib handle for a gfx device. family/rev/gbAddrConfig come from the
-// HSA agent / hip device (see cajeta_amdtex_query_gfx_config). Returns NULL on
-// failure. Opaque (ADDR_HANDLE under the hood).
+// Resolve the addrlib config triple (chip family id, chip external revision,
+// GB_ADDR_CONFIG) for a device, keyed by its gfx arch string (e.g. "gfx1151",
+// as returned by hipGetDeviceProperties().gcnArchName — a trailing ":xnack..."
+// feature suffix is tolerated). These three values are addrlib's required
+// AddrCreate inputs; GB_ADDR_CONFIG in particular is not exposed by any public
+// HIP/HSA query (only ROCr's internal libhsakmt tile-config thunk has it), so for
+// the swizzle modes cajeta uses it is carried here as a per-architecture constant
+// — the same per-GPU-table approach drivers and game engines take. Returns 0 and
+// fills *family/*rev/*gbAddrConfig on a known arch; returns non-zero (mip/cube
+// emulation then degrades to unsupported) on an unrecognised one.
+int cajeta_amdtex_query_gfx_config(const char* gcnArchName, uint32_t* family,
+                                   uint32_t* rev, uint32_t* gbAddrConfig);
+
+// Create an addrlib handle for a gfx device. family/rev/gbAddrConfig come from
+// cajeta_amdtex_query_gfx_config. Returns NULL on failure. Opaque (ADDR_HANDLE).
 void* cajeta_amdtex_create(uint32_t family, uint32_t rev, uint32_t gbAddrConfig);
 void  cajeta_amdtex_destroy(void* handle);
 

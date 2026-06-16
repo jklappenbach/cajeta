@@ -32,6 +32,41 @@ constexpr int kGfxEngineArcticIsland = 0x0D;
 
 }  // namespace
 
+// Per-architecture addrlib config table. Keyed by the gfx arch token. The triple
+// is (chipFamily, chipExternalRevision, GB_ADDR_CONFIG) — addrlib's AddrCreate
+// inputs. Values verified against amdgpu_query_gpu_info on the listed parts. Add a
+// row (and re-validate the SRD on the metal) to extend to a new gfx11 SKU.
+namespace {
+struct GfxConfig {
+    const char* arch;
+    uint32_t family;
+    uint32_t rev;
+    uint32_t gbAddrConfig;
+};
+const GfxConfig kGfxConfigs[] = {
+    // gfx1151 — Strix Halo (Radeon 8060S APU). FAMILY_GFX1150 = 0x96.
+    {"gfx1151", 0x96, 0xc1, 0x00000343},
+};
+}  // namespace
+
+extern "C" int cajeta_amdtex_query_gfx_config(const char* gcnArchName,
+                                              uint32_t* family, uint32_t* rev,
+                                              uint32_t* gbAddrConfig) {
+    if (!gcnArchName) return 1;
+    for (const auto& c : kGfxConfigs) {
+        size_t n = std::strlen(c.arch);
+        // Match the arch token, tolerating a trailing ":xnack-"/"+sramecc" suffix.
+        if (std::strncmp(gcnArchName, c.arch, n) == 0 &&
+            (gcnArchName[n] == '\0' || gcnArchName[n] == ':')) {
+            if (family) *family = c.family;
+            if (rev) *rev = c.rev;
+            if (gbAddrConfig) *gbAddrConfig = c.gbAddrConfig;
+            return 0;
+        }
+    }
+    return 1;  // unknown arch — caller degrades the feature to unsupported
+}
+
 extern "C" void* cajeta_amdtex_create(uint32_t family, uint32_t rev,
                                       uint32_t gbAddrConfig) {
     ADDR_CREATE_INPUT ci;
