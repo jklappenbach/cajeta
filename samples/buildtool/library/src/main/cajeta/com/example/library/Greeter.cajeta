@@ -1,0 +1,16 @@
+package com.example.library;
+
+// Sample public API for the `library` archetype.
+//
+// A library has NO `main`. It exposes types and methods that other projects
+// call after declaring this library in their `settings.dependencies`. The
+// build compiles this package into a `.cja` archive; consumers link only the
+// parts they use (dead-code elimination). Replace this with your real API.
+public class Greeter {
+
+    // A trivial public method so the archetype builds to a non-empty .cja
+    // out of the box. Delete it and add your own.
+    public String greeting(String name) {
+        return "Hello, " + name + "!";
+    }
+}
