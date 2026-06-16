@@ -201,20 +201,20 @@ TEST(XpuCooperativeMatrixDeviceTests, mixedPrecisionMatmulOnDevice) {
                 << "tile mismatch at (" << i << "," << j << ")";
 }
 
-// NVIDIA (NVPTX → cubin, CudaDriver): the SAME f16/f16->f32 single-tile matmul on
-// a real NVIDIA GPU. NvptxTarget does not override coopMatrixTier, so it takes the
-// base PORTABLE tier — a Function-storage `[16*16 x elem]` flat tile + a strided
-// gather/scatter + a triple-loop multiply-add (emit-correct on every backend; not
-// tensor-core accelerated, which would be a future wmma/mma.sync seam). Per-
-// invocation: the whole tile is computed by each thread (no lane distribution), so
-// a single-thread block computes the tile once. Exact-integer inputs ⇒ the device
-// tile must equal the integer reference, matching the Vulkan native path above.
-// The portable tier emits a sticky `note: [mma-tiering]` over lowering; we capture
-// it to confirm NVPTX took the software flat-tile path. Skips without a CUDA GPU.
+// NVIDIA (NVPTX → cubin, CudaDriver): the f16/f16->f32 single-tile matmul on the
+// PORTABLE tier, pinned via CAJETA_GPU_COOPMATRIX_IMPL=software (NvptxTarget now
+// reports Native for this config — see portableMatmulOnNvptxDevice's native twin
+// below — so the override is what keeps this exercising the flat-tile path). The
+// portable tile is a Function-storage `[16*16 x elem]` array + a strided gather/
+// scatter + a triple-loop multiply-add, computed per-invocation, so a single-thread
+// block computes the tile once. Exact-integer inputs ⇒ bit-exact vs the integer
+// reference. The forced-software path emits a sticky `note: [mma-tiering]` over
+// lowering; we capture it to confirm the portable path was taken. Skips without CUDA.
 TEST(XpuCooperativeMatrixDeviceTests, portableMatmulOnNvptxDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
+    EnvGuard forceSw("CAJETA_GPU_COOPMATRIX_IMPL", "software");
     Compiler compiler;
     auto module = compileForInspection(compiler, kMatmulSource);
     auto k = findMethod(module->getStructures()["test.M"], "matmul");
@@ -231,7 +231,7 @@ TEST(XpuCooperativeMatrixDeviceTests, portableMatmulOnNvptxDevice) {
     cajeta::xpu::nvidia::lowerKernel(k, dev);
     std::cerr.rdbuf(prev);
     EXPECT_NE(captured.str().find("[mma-tiering]"), std::string::npos)
-        << "NVPTX CooperativeMatrix should take the portable tier and emit a note; "
+        << "forced-software NVPTX CooperativeMatrix should emit the tiering note; "
            "got: " << captured.str();
 
     std::string ptx = cajeta::xpu::nvidia::emitPtx(dev, *tm);
@@ -287,6 +287,121 @@ TEST(XpuCooperativeMatrixDeviceTests, portableMatmulOnNvptxDevice) {
         for (unsigned j = 0; j < N; ++j)
             EXPECT_EQ(out[i * N + j], ref[i * N + j])
                 << "NVPTX portable tile mismatch at (" << i << "," << j << ")";
+}
+
+// NVIDIA NATIVE tensor cores (wmma): the SAME f16/f16->f32 single-tile matmul on
+// the RTX 4090's tensor cores. NvptxTarget.coopMatrixTier reports Native for
+// 16x16x16 f16->f32, so CooperativeMatrix lowers to the NVVM wmma.load/mma/store
+// intrinsics (warp-collective). The tile is held DISTRIBUTED across the 32 lanes
+// of one warp, so the launch MUST be a full warp (block = 32) — every lane runs
+// the collective load/mma/store. Exact-integer f16 inputs ⇒ the device tile is
+// bit-exact vs the integer reference, matching the portable path above and the
+// Vulkan/AMD native paths. NO `[mma-tiering]` note here (this IS the native tier).
+// Skips without a CUDA GPU. (JIT-runtime stderr is dead on this platform, but this
+// direct lower→ptxas→CudaDriver path has live stderr: ptxas/driver errors surface.)
+TEST(XpuCooperativeMatrixDeviceTests, nativeMatmulOnNvptxDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kMatmulSource);
+    auto k = findMethod(module->getStructures()["test.M"], "matmul");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_coopmat_nv_native", ctx);
+    cajeta::xpu::nvidia::configureDeviceModule(dev, *tm);
+
+    // Native tier: no tiering note should fire.
+    std::ostringstream captured;
+    std::streambuf* prev = std::cerr.rdbuf(captured.rdbuf());
+    cajeta::xpu::nvidia::lowerKernel(k, dev);
+    std::cerr.rdbuf(prev);
+    EXPECT_EQ(captured.str().find("[mma-tiering]"), std::string::npos)
+        << "native NVPTX CooperativeMatrix should NOT emit a tiering note; got: "
+        << captured.str();
+
+    std::string ptx = cajeta::xpu::nvidia::emitPtx(dev, *tm);
+    ASSERT_FALSE(ptx.empty());
+    EXPECT_NE(ptx.find("wmma.mma"), std::string::npos)
+        << "expected a wmma.mma tensor-core instruction in the PTX";
+    std::vector<uint8_t> cubin = cajeta::xpu::nvidia::assembleCubin(ptx, "sm_89");
+    ASSERT_FALSE(cubin.empty()) << "ptxas rejected the wmma PTX";
+
+    std::vector<_Float16> hostA(TILE), hostB(TILE);
+    std::vector<float> ref(TILE, 0.0f);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned kk = 0; kk < N; ++kk)
+            hostA[i * N + kk] = (_Float16) ((i + 2 * kk) % 5);
+    for (unsigned kk = 0; kk < N; ++kk)
+        for (unsigned j = 0; j < N; ++j)
+            hostB[kk * N + j] = (_Float16) ((3 * kk + j) % 4);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j) {
+            float acc = 0.0f;
+            for (unsigned kk = 0; kk < N; ++kk)
+                acc += (float) hostA[i * N + kk] * (float) hostB[kk * N + j];
+            ref[i * N + j] = acc;
+        }
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "matmul");
+    ASSERT_NE(fn, nullptr);
+
+    auto dA = cuda.alloc(TILE * sizeof(_Float16));
+    auto dB = cuda.alloc(TILE * sizeof(_Float16));
+    auto dC = cuda.alloc(TILE * sizeof(float));
+    ASSERT_NE(dA, 0u);
+    ASSERT_NE(dB, 0u);
+    ASSERT_NE(dC, 0u);
+    ASSERT_TRUE(cuda.memcpyHtoD(dA, hostA.data(), TILE * sizeof(_Float16)));
+    ASSERT_TRUE(cuda.memcpyHtoD(dB, hostB.data(), TILE * sizeof(_Float16)));
+    std::vector<float> seed(TILE, -1.0f);
+    ASSERT_TRUE(cuda.memcpyHtoD(dC, seed.data(), TILE * sizeof(float)));
+
+    void* params[] = { &dA, &dB, &dC };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, /*block=*/32, params));  // a full warp
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<float> out(TILE, -2.0f);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dC, TILE * sizeof(float)));
+    cuda.free(dA);
+    cuda.free(dB);
+    cuda.free(dC);
+
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j)
+            EXPECT_EQ(out[i * N + j], ref[i * N + j])
+                << "NVPTX native (wmma) tile mismatch at (" << i << "," << j << ")";
+}
+
+// Emit-only (GPU-free, runs on any CI runner): the NVPTX native CooperativeMatrix
+// lowers to the tensor-core wmma instruction family. Proves acceptance A2 without a
+// device — lower kMatmulSource through NVPTX and assert the PTX carries the
+// wmma.load (a/b), wmma.mma, and wmma.store ops.
+TEST(XpuCooperativeMatrixDeviceTests, nvptxCoopMatrixLowersToWmma) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kMatmulSource);
+    auto k = findMethod(module->getStructures()["test.M"], "matmul");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_coopmat_nv_emit", ctx);
+    cajeta::xpu::nvidia::configureDeviceModule(dev, *tm);
+    cajeta::xpu::nvidia::lowerKernel(k, dev);
+    std::string ptx = cajeta::xpu::nvidia::emitPtx(dev, *tm);
+    ASSERT_FALSE(ptx.empty());
+    EXPECT_NE(ptx.find("wmma.load.a"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("wmma.load.b"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("wmma.mma"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("wmma.store"), std::string::npos) << ptx;
 }
 
 // GEMM-1 — K-accumulation across multiple tiles via OFFSET addressing. One 16x16
