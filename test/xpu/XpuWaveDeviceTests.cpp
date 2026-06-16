@@ -18,6 +18,9 @@
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
 #include "cajeta/xpu/amd/HipDriver.h"
+#include "cajeta/xpu/nvidia/NvptxBackend.h"
+#include "cajeta/xpu/nvidia/NvptxKernelLowering.h"
+#include "cajeta/xpu/nvidia/CudaDriver.h"
 #include "cajeta/xpu/vulkan/SpirvBackend.h"
 #include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
 #include "cajeta/xpu/vulkan/VulkanDriver.h"
@@ -775,5 +778,268 @@ TEST(XpuWaveDeviceTests, vulkanPrefixScanRunsOnDevice) {
     std::vector<uint32_t> out(2 * n, 0);
     ASSERT_TRUE(vk.download(out.data(), dOut, 2 * n * sizeof(uint32_t)));
     vk.free(dOut); vk.free(dN);
+    expectScans(out, n);
+}
+
+// ===========================================================================
+// NVIDIA (NVPTX → cubin via ptxas, CudaDriver). The on-device counterpart of
+// the AMD/Vulkan arms above: the SAME Cajeta wave kernels lower through the
+// NVPTX backend and run on a real NVIDIA GPU (warp width 32). Every check uses
+// the wave-size-agnostic first-wave window (lanes 0..31), which holds at warp
+// 32, so the AMD/Vulkan expectations carry over unchanged. The wave ops lower
+// to shfl.sync.idx (shuffle), vote.ballot.sync (ballot), redux.sync.{add,umax,
+// umin,and,or,xor} (reduce family, sm_80+), the laneid/warpsize sregs, and the
+// shuffle-butterfly default (rotate, prefix scans). Skips cleanly when no CUDA
+// device/driver is present.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Lower a Cajeta kernel through the NVPTX backend and assemble a cubin for
+// sm_89 (the RTX 4090). Returns empty on any failure.
+std::vector<uint8_t> lowerNvptxCubin(const cajeta::MethodPtr& k,
+                                     const char* moduleName) {
+    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+    if (!tm) return {};
+    llvm::LLVMContext ctx;
+    llvm::Module dev(moduleName, ctx);
+    cajeta::xpu::nvidia::configureDeviceModule(dev, *tm);
+    if (!cajeta::xpu::nvidia::lowerKernel(k, dev)) return {};
+    std::string ptx = cajeta::xpu::nvidia::emitPtx(dev, *tm);
+    if (ptx.empty()) return {};
+    return cajeta::xpu::nvidia::assembleCubin(ptx, "sm_89");
+}
+
+} // namespace
+
+TEST(XpuWaveDeviceTests, nvptxShuffleBallotRunsOnDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kWaveSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavetest");
+    ASSERT_NE(k, nullptr);
+
+    std::vector<uint8_t> cubin = lowerNvptxCubin(k, "xpu_wave_nvdevice");
+    ASSERT_FALSE(cubin.empty()) << "NVPTX lowering/ptxas failed";
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "wavetest");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned block = 32;  // one warp window
+    auto dOut = cuda.alloc(block * sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    void* params[] = { &dOut };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, block, params));
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<uint32_t> out(block, 0);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dOut, block * sizeof(uint32_t)));
+    cuda.free(dOut);
+    for (unsigned i = 0; i < kVerify; ++i)
+        EXPECT_EQ(out[i], kExpected) << "lane " << i;
+}
+
+TEST(XpuWaveDeviceTests, nvptxReduceSumRunsOnDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kReduceSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavereduce");
+    ASSERT_NE(k, nullptr);
+
+    std::vector<uint8_t> cubin = lowerNvptxCubin(k, "xpu_reduce_nvdevice");
+    ASSERT_FALSE(cubin.empty()) << "NVPTX lowering/ptxas failed";
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "wavereduce");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned block = kReduceBlock;  // 64 = two full warps
+    const std::size_t bytes = block * sizeof(uint32_t);
+    auto dIn = cuda.alloc(bytes);
+    auto dOut = cuda.alloc(bytes);
+    ASSERT_NE(dIn, 0u);
+    ASSERT_NE(dOut, 0u);
+    std::vector<uint32_t> ones(block, 1);
+    ASSERT_TRUE(cuda.memcpyHtoD(dIn, ones.data(), bytes));
+    void* params[] = { &dIn, &dOut };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, block, params));
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<uint32_t> out(block, 0);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dOut, bytes));
+    cuda.free(dIn);
+    cuda.free(dOut);
+    expectUniformWaveWidth(out);  // warp 32 ⇒ reduceSum(1) == 32
+}
+
+TEST(XpuWaveDeviceTests, nvptxLaneIdRunsOnDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kLaneSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavelane");
+    ASSERT_NE(k, nullptr);
+
+    std::vector<uint8_t> cubin = lowerNvptxCubin(k, "xpu_lane_nvdevice");
+    ASSERT_FALSE(cubin.empty()) << "NVPTX lowering/ptxas failed";
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "wavelane");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned block = 32;  // one warp window
+    auto dOut = cuda.alloc(block * sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    void* params[] = { &dOut };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, block, params));
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<uint32_t> out(block, 0);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dOut, block * sizeof(uint32_t)));
+    cuda.free(dOut);
+    for (unsigned i = 0; i < kVerify; ++i)
+        EXPECT_EQ(out[i], i) << "lane " << i;
+}
+
+TEST(XpuWaveDeviceTests, nvptxWaveWidthRunsOnDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kWidthSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavewidth");
+    ASSERT_NE(k, nullptr);
+
+    std::vector<uint8_t> cubin = lowerNvptxCubin(k, "xpu_width_nvdevice");
+    ASSERT_FALSE(cubin.empty()) << "NVPTX lowering/ptxas failed";
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "wavewidth");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned block = kReduceBlock;  // 64 = two full warps
+    auto dOut = cuda.alloc(block * sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    void* params[] = { &dOut };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, block, params));
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<uint32_t> out(block, 0);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dOut, block * sizeof(uint32_t)));
+    cuda.free(dOut);
+    expectUniformWaveWidth(out);  // warpsize sreg ⇒ every lane reads 32
+}
+
+TEST(XpuWaveDeviceTests, nvptxRotateRunsOnDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kRotateSource);
+    auto k = findMethod(module->getStructures()["test.M"], "waverot");
+    ASSERT_NE(k, nullptr);
+
+    std::vector<uint8_t> cubin = lowerNvptxCubin(k, "xpu_rotate_nvdevice");
+    ASSERT_FALSE(cubin.empty()) << "NVPTX lowering/ptxas failed";
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "waverot");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned block = 32;  // one warp window
+    auto dOut = cuda.alloc(block * sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    void* params[] = { &dOut };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, block, params));
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<uint32_t> out(block, 0);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dOut, block * sizeof(uint32_t)));
+    cuda.free(dOut);
+    expectRotatedLaneId(out);
+}
+
+TEST(XpuWaveDeviceTests, nvptxReduceFamilyRunsOnDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kReduceOpsSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavereduceops");
+    ASSERT_NE(k, nullptr);
+
+    std::vector<uint8_t> cubin = lowerNvptxCubin(k, "xpu_reduceops_nvdevice");
+    ASSERT_FALSE(cubin.empty()) << "NVPTX lowering/ptxas failed";
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "wavereduceops");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned n = kReduceOpsBlock;  // threads per region (= block)
+    auto dOut = cuda.alloc(5 * n * sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    void* params[] = { &dOut, (void*) &n };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, kReduceOpsBlock, params));
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<uint32_t> out(5 * n, 0);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dOut, 5 * n * sizeof(uint32_t)));
+    cuda.free(dOut);
+    expectReduceFamily(out, n);
+}
+
+TEST(XpuWaveDeviceTests, nvptxPrefixScanRunsOnDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kScanSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavescan");
+    ASSERT_NE(k, nullptr);
+
+    std::vector<uint8_t> cubin = lowerNvptxCubin(k, "xpu_scan_nvdevice");
+    ASSERT_FALSE(cubin.empty()) << "NVPTX lowering/ptxas failed";
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "wavescan");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned n = kScanBlock;
+    auto dOut = cuda.alloc(2 * n * sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    void* params[] = { &dOut, (void*) &n };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, kScanBlock, params));
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<uint32_t> out(2 * n, 0);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dOut, 2 * n * sizeof(uint32_t)));
+    cuda.free(dOut);
     expectScans(out, n);
 }

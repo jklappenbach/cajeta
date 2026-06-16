@@ -29,6 +29,16 @@ class NvptxTarget : public LoweringTarget {
 public:
     const char* name() const override { return "nvptx"; }
 
+    // No native inline ray query (cajeta has no NVPTX RT-core / OptiX seam), so
+    // the AccelerationStructure noun is built as the portable software BVH and
+    // the RayQuery verb follows to the cajeta.gpu.core.SoftwareRayQuery walk over
+    // a software BVH buffer — the same Portable tier the CPU backend uses
+    // (ray-query-to-core inc 1). Without this the base default (VulkanNative)
+    // routes RayQuery to rayQueryType(), which throws on NVPTX. softwareRayQuery()
+    // derives from this in the base; coopMatrixTier stays the base Portable
+    // (flat-tile matmul) since there is no NVPTX native wmma seam yet.
+    NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
+
     // NVPTX allocas live in the generic address space (0); mem2reg removes
     // most before PTX emit.
     unsigned allocaAddressSpace() const override { return 0; }

@@ -17,6 +17,7 @@
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/xpu/nvidia/CudaDriver.h"
 #include "cajeta/xpu/vulkan/VulkanDriver.h"
 
 #include <cstdlib>
@@ -778,4 +779,95 @@ TEST(ToffeeSpatialIndexDeviceTests, forcedSoftwareOfApiOnDevice) {
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (Vulkan FORCED-SOFTWARE via AsImpl.Software != native/CPU)";
+}
+
+// ===========================================================================
+// NVIDIA (NVPTX → cubin, CudaDriver) software-BVH ray query. NVIDIA has no cajeta
+// native inline ray-query seam, so NvptxTarget.accelImpl() == SoftwareBvh: the
+// AccelerationStructure noun builds the portable software BVH (the shared CPU
+// builder), the CUDA noun provider uploads it into a device buffer, and the kernel
+// runs the cajeta.gpu.core.SoftwareRayQuery walk under its base name (no $sw twin
+// — the whole NVPTX kernel is the software walk). The SAME driver sources as the
+// CPU software-BVH legs above, so each NVPTX 777 must equal the CPU 777 — the verb
+// following the noun across a third backend. Skips cleanly without a CUDA device.
+// ---------------------------------------------------------------------------
+
+TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnNvptxSoftwareBvh) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (NVPTX software AABB ray query: wrong hit count)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnNvptxSoftwareBvh) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (NVPTX software triangle ray query != CPU)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnNvptxSoftwareBvh) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (NVPTX nearest-hit confirm/committed != CPU)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnNvptxSoftwareBvh) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (NVPTX candidate distance/barycentrics != CPU)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (NVPTX committed front-face != CPU)";
 }

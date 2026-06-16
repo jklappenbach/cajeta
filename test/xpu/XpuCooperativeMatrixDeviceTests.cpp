@@ -28,6 +28,9 @@
 #include "cajeta/xpu/vulkan/SpirvBackend.h"
 #include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
 #include "cajeta/xpu/vulkan/VulkanDriver.h"
+#include "cajeta/xpu/nvidia/NvptxBackend.h"
+#include "cajeta/xpu/nvidia/NvptxKernelLowering.h"
+#include "cajeta/xpu/nvidia/CudaDriver.h"
 #include "cajeta/xpu/lowering/LoweringTarget.h"
 
 #include "cajeta/compile/Compiler.h"
@@ -196,6 +199,94 @@ TEST(XpuCooperativeMatrixDeviceTests, mixedPrecisionMatmulOnDevice) {
         for (unsigned j = 0; j < N; ++j)
             EXPECT_EQ(out[i * N + j], ref[i * N + j])
                 << "tile mismatch at (" << i << "," << j << ")";
+}
+
+// NVIDIA (NVPTX → cubin, CudaDriver): the SAME f16/f16->f32 single-tile matmul on
+// a real NVIDIA GPU. NvptxTarget does not override coopMatrixTier, so it takes the
+// base PORTABLE tier — a Function-storage `[16*16 x elem]` flat tile + a strided
+// gather/scatter + a triple-loop multiply-add (emit-correct on every backend; not
+// tensor-core accelerated, which would be a future wmma/mma.sync seam). Per-
+// invocation: the whole tile is computed by each thread (no lane distribution), so
+// a single-thread block computes the tile once. Exact-integer inputs ⇒ the device
+// tile must equal the integer reference, matching the Vulkan native path above.
+// The portable tier emits a sticky `note: [mma-tiering]` over lowering; we capture
+// it to confirm NVPTX took the software flat-tile path. Skips without a CUDA GPU.
+TEST(XpuCooperativeMatrixDeviceTests, portableMatmulOnNvptxDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kMatmulSource);
+    auto k = findMethod(module->getStructures()["test.M"], "matmul");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_coopmat_nvdevice", ctx);
+    cajeta::xpu::nvidia::configureDeviceModule(dev, *tm);
+
+    std::ostringstream captured;
+    std::streambuf* prev = std::cerr.rdbuf(captured.rdbuf());
+    cajeta::xpu::nvidia::lowerKernel(k, dev);
+    std::cerr.rdbuf(prev);
+    EXPECT_NE(captured.str().find("[mma-tiering]"), std::string::npos)
+        << "NVPTX CooperativeMatrix should take the portable tier and emit a note; "
+           "got: " << captured.str();
+
+    std::string ptx = cajeta::xpu::nvidia::emitPtx(dev, *tm);
+    ASSERT_FALSE(ptx.empty());
+    std::vector<uint8_t> cubin = cajeta::xpu::nvidia::assembleCubin(ptx, "sm_89");
+    ASSERT_FALSE(cubin.empty()) << "ptxas rejected the portable coop-matrix PTX";
+
+    std::vector<_Float16> hostA(TILE), hostB(TILE);
+    std::vector<float> ref(TILE, 0.0f);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned kk = 0; kk < N; ++kk)
+            hostA[i * N + kk] = (_Float16) ((i + 2 * kk) % 5);
+    for (unsigned kk = 0; kk < N; ++kk)
+        for (unsigned j = 0; j < N; ++j)
+            hostB[kk * N + j] = (_Float16) ((3 * kk + j) % 4);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j) {
+            float acc = 0.0f;
+            for (unsigned kk = 0; kk < N; ++kk)
+                acc += (float) hostA[i * N + kk] * (float) hostB[kk * N + j];
+            ref[i * N + j] = acc;
+        }
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = cuda.getFunction(mod, "matmul");
+    ASSERT_NE(fn, nullptr);
+
+    auto dA = cuda.alloc(TILE * sizeof(_Float16));
+    auto dB = cuda.alloc(TILE * sizeof(_Float16));
+    auto dC = cuda.alloc(TILE * sizeof(float));
+    ASSERT_NE(dA, 0u);
+    ASSERT_NE(dB, 0u);
+    ASSERT_NE(dC, 0u);
+    ASSERT_TRUE(cuda.memcpyHtoD(dA, hostA.data(), TILE * sizeof(_Float16)));
+    ASSERT_TRUE(cuda.memcpyHtoD(dB, hostB.data(), TILE * sizeof(_Float16)));
+    std::vector<float> seed(TILE, -1.0f);
+    ASSERT_TRUE(cuda.memcpyHtoD(dC, seed.data(), TILE * sizeof(float)));
+
+    void* params[] = { &dA, &dB, &dC };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, /*block=*/1, params));  // per-invocation tile
+    ASSERT_TRUE(cuda.synchronize());
+
+    std::vector<float> out(TILE, -2.0f);
+    ASSERT_TRUE(cuda.memcpyDtoH(out.data(), dC, TILE * sizeof(float)));
+    cuda.free(dA);
+    cuda.free(dB);
+    cuda.free(dC);
+
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j)
+            EXPECT_EQ(out[i * N + j], ref[i * N + j])
+                << "NVPTX portable tile mismatch at (" << i << "," << j << ")";
 }
 
 // GEMM-1 — K-accumulation across multiple tiles via OFFSET addressing. One 16x16

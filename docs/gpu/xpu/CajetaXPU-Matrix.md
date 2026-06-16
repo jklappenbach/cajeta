@@ -44,7 +44,7 @@ matrix says so explicitly rather than pretending otherwise:
 
 | Column | Status | Basis |
 |--------|--------|-------|
-| **NVIDIA** | **Measured** — live backend, on-device (the **compute substrate**) | NVPTX → cubin (`ptxas`) → `cuLaunchKernel` via the dlopen'd `nvcuda`. **On-device verified on an RTX 4090 (sm_89, native Windows CUDA — no WSL2/B5 needed)**, 2026-06-16: SAXPY, grid-stride for-each, `@Device` buffer-param helpers, POD-by-value args, `Buffer.slice`, relaxed atomics, scoped memory fences, static+dynamic workgroup-shared reductions, **real CUDA streams + async copies**, **events/fences (cross-stream)**, **managed (`cuMemAllocManaged`) + pinned (`cuMemHostAlloc`) zero-copy memory**, **bindless `Buffer<T>[]`**, and **host spec-constant override** (constant-memory `cuModuleGetGlobal`). Tests: `XpuCudaDispatchDeviceTests` (17), `XpuCudaSpecProbeTests`, plus the C++-driver `XpuSaxpy/Shared/Loop/HostLaunchDeviceTests` — 23/23 green in one process. **Still emit-only on NVPTX:** wave/subgroup ops, textures/storage-images (the texture+surface runtime is the AMD/Vulkan parity gap), ray-query, cooperative-matrix, bounded device-dispatch tables. |
+| **NVIDIA** | **Measured** — live backend, on-device (the **compute substrate**) | NVPTX → cubin (`ptxas`) → `cuLaunchKernel` via the dlopen'd `nvcuda`. **On-device verified on an RTX 4090 (sm_89, native Windows CUDA — no WSL2/B5 needed)**, 2026-06-16: SAXPY, grid-stride for-each, `@Device` buffer-param helpers, POD-by-value args, `Buffer.slice`, relaxed atomics, scoped memory fences, static+dynamic workgroup-shared reductions, **real CUDA streams + async copies**, **events/fences (cross-stream)**, **managed (`cuMemAllocManaged`) + pinned (`cuMemHostAlloc`) zero-copy memory**, **bindless `Buffer<T>[]`**, and **host spec-constant override** (constant-memory `cuModuleGetGlobal`). Tests: `XpuCudaDispatchDeviceTests` (17), `XpuCudaSpecProbeTests`, plus the C++-driver `XpuSaxpy/Shared/Loop/HostLaunchDeviceTests` — 23/23 green in one process. **Now also on-device verified (2026-06-16):** the **texture+surface runtime** (`cuArrayCreate`/`cuTexObjectCreate`/`cuSurfObjectCreate` — closes the AMD/Vulkan parity gap), the full **`@Wave`/subgroup** family (shuffle/ballot/reduceSum/reduce-family/laneId/width/rotate/prefix-scan via `shfl`/`vote.ballot`/`redux.sync`/sregs), **ray-query** over the portable software BVH (`NvptxTarget.accelImpl() == SoftwareBvh` + a CUDA noun provider that uploads the BVH to a device buffer — AABB/triangle/nearest/barycentrics/front-face all match the CPU path), and **cooperative-matrix** on the portable flat-tile tier (f16/f16→f32 bit-exact). Tests: `XpuCudaDispatchDeviceTests.{texture,image}*`, `XpuWaveDeviceTests.nvptx*` (7), `ToffeeSpatialIndexDeviceTests.*OnNvptxSoftwareBvh` (5), `XpuCooperativeMatrixDeviceTests.portableMatmulOnNvptxDevice`. **Still emit-only / future on NVPTX:** native tensor-core `wmma`/`mma.sync` cooperative-matrix (the portable tier runs today), native RT-core ray-query (the software BVH runs today), bounded device-dispatch tables. |
 | **AMD** | **Measured** — live backend, on-device | AMDGPU → hsaco, runs on gfx1151 (Strix Halo) via HIP. Emit + on-device tests green. |
 | **Vulkan** | **Measured** — live backend, on-device | SPIR-V (descriptor-set SSBOs) → `vkCmdDispatch`. Built 2026-05-30; SAXPY + static-shared tree reduction run on the Strix Halo APU via the radeon (RADV) ICD, and the emitted modules pass strict `spirv-val`. One build-discovered finding shaped the design: **BDA is unavailable**, so the buffer model is descriptor sets (§3). (LLVM 23's barrier emits Vulkan-invalid semantics; a post-emit fixup corrects it — §1.) |
 
@@ -223,8 +223,9 @@ seam — and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index),
 `Wave.ballotSync`, `Wave.reduceSum`, and `Wave.laneId` lower through the shared AST
 walk with only five `LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`/
 `waveReduceSum`/`waveLaneId`) forking. Built 2026-05-30; emit-verified on all three
-GPU backends, run on-device on AMD + Vulkan; **wave = SIMD lane on the CPU backend
-(Inc 5C, 2026-05-31)**.
+GPU backends, run on-device on AMD + Vulkan + **NVIDIA (RTX 4090, 2026-06-16 —
+shuffle/ballot/reduceSum/reduce-family/laneId/width/rotate/prefix-scan)**; **wave =
+SIMD lane on the CPU backend (Inc 5C, 2026-05-31)**.
 
 | Feature | Core | NVIDIA | AMD | Vulkan | CPU (Inc 5C) |
 |---------|------|--------|-----|--------|--------------|
@@ -251,8 +252,10 @@ narrower and were only visible by running it:
   the Core API normalizes to i64).
 
 Tests: `XpuWaveEmitTests` (3 backends + `spirv-val`, shuffle/ballot/reduce),
-`XpuWaveDeviceTests` (shuffle/ballot/reduce on-device on AMD + Vulkan; the reduce
-check is width-agnostic — sum of 1s over a full wave == wave width ∈ {32, 64}).
+`XpuWaveDeviceTests` (shuffle/ballot/reduce on-device on AMD + Vulkan + **NVIDIA**;
+the `nvptx*` arms cover shuffle/ballot, reduceSum, laneId, width, rotate, the
+reduce family, and prefix scans; the reduce/width checks are width-agnostic — sum
+of 1s over a full wave == wave width ∈ {32, 64}, which is 32 on NVIDIA).
 
 ---
 
@@ -340,8 +343,14 @@ and spec-valid.
 ## Part C cutting-edge SPIR-V (via the `cajeta-llvm` fork, LLVM 23)
 
 Both delivered on-device on the RADV / STRIX_HALO (Radeon 8060S) box (2026-06-04),
-through the fork's `cajeta-spirv` branch. Vulkan-flavor only; NVIDIA/AMD native
-paths for these are not yet wired.
+through the fork's `cajeta-spirv` branch. The **native** (matrix-core / RT-core)
+paths are Vulkan-flavor; NVIDIA/AMD native `wmma`/RT seams are not yet wired.
+**NVIDIA now runs both via the portable/software tiers on-device (RTX 4090,
+2026-06-16):** cooperative-matrix on the portable flat-tile tier (f16/f16→f32
+bit-exact), and ray-query over the portable software BVH (the same
+`SoftwareRayQuery` walk the CPU uses — AABB/triangle/nearest/barycentrics/front-face
+all match the CPU results). The native tensor-core/RT-core NVIDIA paths remain the
+future enhancement; the portable tiers are the correct, running floor.
 
 | Feature | Vulkan (Cajeta's flavor) | On-device |
 |---|---|---|
@@ -364,7 +373,11 @@ returned NULL on CUDA and bindless/texture/image arg translation silently no-op'
 name (first-wins) instead of overwriting + resetting the cached module — a
 use-after-free for a second JIT'd program reusing a kernel name. Both fixed; all
 three GPU backends + CPU are now on-device-measured for the compute substrate.
-NVIDIA wave ops, textures/storage-images, ray-query, and cooperative-matrix remain
-emit-only (the texture+surface runtime is the documented AMD/Vulkan parity gap).
+**Follow-up landed the same day:** NVIDIA wave ops, the texture+surface runtime,
+ray-query (portable software BVH — new `NvptxTarget.accelImpl() == SoftwareBvh` +
+a CUDA noun provider), and cooperative-matrix (portable flat-tile tier) are now all
+on-device-verified on the RTX 4090. What remains future on NVPTX is only the
+*native* tensor-core (`wmma`/`mma.sync`) and RT-core seams — the portable/software
+tiers run today and match the CPU/Vulkan results.
 See [`CajetaXPU-Variance.md`](CajetaXPU-Variance.md) for the NVIDIA∩AMD variance
 discipline and [`cajeta-gpu-plan.md`](../../../plans/gpu/cajeta-gpu-plan.md) Part C.*
