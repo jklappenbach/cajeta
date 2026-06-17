@@ -94,6 +94,7 @@ namespace cajeta {
         // no LLVM function. The flag toggles those behaviors on the same
         // CajetaClass that the visitor builds for `interface X { ... }`.
         bool interfaceFlag = false;
+        bool annotationFlag = false;
         // Forward-reference placeholder marker. CajetaType::fromContext
         // sets this when it creates a CajetaClass for a name that's
         // known-to-the-archive but hasn't been declared yet by the
@@ -302,6 +303,12 @@ namespace cajeta {
 
         bool isInterface() const { return interfaceFlag; }
         void setIsInterface(bool v) { interfaceFlag = v; }
+        // Annotation type (`annotation Foo {}`): registered in canonicalMap so it
+        // resolves as a type token, but never prototyped into structures (so it
+        // stays out of the type-based-pointcut discriminator). See
+        // visitAnnotationTypeDeclaration / buildPendingPrototypes.
+        bool isAnnotation() const { return annotationFlag; }
+        void setIsAnnotation(bool v) { annotationFlag = v; }
         bool isPlaceholder() const { return placeholderFlag; }
         void setPlaceholder(bool v) { placeholderFlag = v; }
 

@@ -60,7 +60,7 @@ TEST(AdviceCodegenTests, noAdviceNoExtraDrops) {
 TEST(AdviceCodegenTests, beforeFiresAroundBody) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class AuditAspect {\n"
         "    @Before(Audited.class)\n"
         "    public static void onCall() {\n"
@@ -85,7 +85,7 @@ TEST(AdviceCodegenTests, beforeFiresAroundBody) {
 TEST(AdviceCodegenTests, afterFiresOnFallThroughExit) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class AuditAspect {\n"
         "    @After(Audited.class)\n"
         "    public static void onExit() {\n"
@@ -110,7 +110,7 @@ TEST(AdviceCodegenTests, afterFiresOnFallThroughExit) {
 TEST(AdviceCodegenTests, afterFiresOnExplicitReturn) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class AuditAspect {\n"
         "    @After(Audited.class)\n"
         "    public static void onExit() {\n"
@@ -141,7 +141,7 @@ TEST(AdviceCodegenTests, afterFiresOnExplicitReturn) {
 TEST(AdviceCodegenTests, beforeAndAfterBothFire) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class AuditAspect {\n"
         "    @Before(Audited.class)\n"
         "    public static void onEntry() {\n"
@@ -172,7 +172,7 @@ TEST(AdviceCodegenTests, beforeAndAfterBothFire) {
 TEST(AdviceCodegenTests, multipleBeforeAdviceAllFire) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class AspectA {\n"
         "    @Before(Audited.class)\n"
         "    public static void a() {\n"

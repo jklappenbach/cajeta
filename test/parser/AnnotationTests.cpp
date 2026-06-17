@@ -3,7 +3,7 @@
 //   - Class declarations with user annotations parse and codegen without
 //     crashing (the annotation is captured by name on the CajetaClass via
 //     Annotatable::addAnnotation; consumers can read it later).
-//   - `@interface MyAnn { ... }` declarations parse without crashing.
+//   - `annotation MyAnn { ... }` declarations parse without crashing.
 //
 // Deferred:
 //   - Element-value capture (`@MyAnn(key="hello")`).
@@ -48,12 +48,12 @@ TEST(AnnotationTests, classWithUserAnnotationCompiles) {
     EXPECT_EQ(runI32(src), 42);
 }
 
-// `@interface MyAnn` declaration parses without breaking compilation of
+// `annotation MyAnn` declaration parses without breaking compilation of
 // other code in the same translation unit.
 TEST(AnnotationTests, annotationTypeDeclarationParses) {
     auto src =
         "package test;\n"
-        "public @interface Loggable { }\n"
+        "public annotation Loggable { }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        return 7;\n"

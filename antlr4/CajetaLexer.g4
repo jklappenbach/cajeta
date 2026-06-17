@@ -35,6 +35,7 @@ lexer grammar CajetaLexer;
 // Keywords
 
 ABSTRACT:           'abstract';
+ANNOTATION:         'annotation';
 ASSERT:             'assert';
 BOOLEAN:            'boolean';
 BREAK:              'break';

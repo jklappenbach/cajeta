@@ -28,8 +28,8 @@ package tour;
 // marker-based matching: the aspect's @Before / @After / @Around
 // reference these classes, and only methods carrying the matching
 // annotation get wrapped.
-@interface Traced { }
-@interface Multiplied { }
+annotation Traced { }
+annotation Multiplied { }
 
 // An @Aspect class. Advice methods are public static; the compiler
 // emits the wrapper around each pointcut-matched target method.

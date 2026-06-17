@@ -51,7 +51,7 @@ annotations the compiler checks but emits no code for.
 - The package qualifier is omitted in code samples below; the
   compiler resolves bare names via the implicit import of each
   `cajeta.*` annotation package.
-- User-defined annotation types use the `@interface` declaration
+- User-defined annotation types use the `annotation` declaration
   syntax (`annotationTypeDeclaration`, `antlr4/CajetaParser.g4:471`).
 
 ---
@@ -569,13 +569,13 @@ pointer; their spec is cazo's `docs/AspectModel.md`.
 
 ## Section 5 — User-defined marker annotations
 
-Users declare their own annotations via the standard `@interface`
+Users declare their own annotations via the standard `annotation`
 syntax (`annotationTypeDeclaration`, `antlr4/CajetaParser.g4:471`):
 
 ```cajeta
 package com.example;
 
-public @interface Audited {
+public annotation Audited {
     String reason() default "";
 }
 ```

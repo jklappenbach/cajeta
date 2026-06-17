@@ -1675,12 +1675,29 @@ namespace cajeta {
 
         virtual std::any
         visitAnnotationTypeDeclaration(CajetaParser::AnnotationTypeDeclarationContext* ctx) override {
-            // v1: `@interface MyAnn { ... }` parses but is otherwise inert.
-            // The annotation name is recognized when other code does
-            // `@MyAnn` (Annotatable stores it by name), but the body's
-            // element-method declarations aren't registered. Returning a
-            // null `any` keeps onStructureDeclaration from trying to cast
-            // a non-class result to CajetaClassPtr.
+            // v1: `annotation MyAnn { ... }` body element-methods stay inert.
+            // We DO register the annotation as a minimal interface-like type in
+            // canonicalMap (name only — no layout/vtable/codegen) so it resolves
+            // as a type token, e.g. `Class.classesAnnotated<@MyAnn>()`. Not added
+            // to structures, so onStructureDeclaration/generatePrototype never
+            // touch it; returning null keeps it off the codegen worklist.
+            // Register the annotation as a minimal type in canonicalMap (name
+            // only) so it resolves as a type token, e.g. classesAnnotated<@A>().
+            // Flagged isAnnotation so buildPendingPrototypes skips it — it never
+            // lands in the structure map, keeping it out of the type-based
+            // pointcut discriminator (resolveAdviceMatches). Body elements inert.
+            // Package "code" matches how a bare `@Ann` usage canonicalizes
+            // (QualifiedName::fromContext → "code.Ann"), so the declared type and
+            // the applied annotation unify — classesAnnotated<@Ann>() injects the
+            // same canonical the runtime registry matches on.
+            QualifiedNamePtr qName = QualifiedName::getOrInsert(
+                ctx->identifier()->getText(), "code");
+            list<QualifiedNamePtr> none;
+            auto ann = make_shared<CajetaClass>(pModule, qName, none, none);
+            ann->setIsAnnotation(true);
+            auto& canon = CajetaType::getCanonicalMap();
+            canon[qName->toCanonical()] = static_pointer_cast<CajetaType>(ann);
+            canon[qName->getTypeName()] = static_pointer_cast<CajetaType>(ann);
             return std::any(nullptr);
         }
 

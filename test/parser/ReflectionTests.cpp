@@ -1360,7 +1360,7 @@ TEST(ReflectionTests, classAnnotationClassRefArg) {
         "import cajeta.lang.String;\n"
         "import cajeta.reflect.Class;\n"
         "import cajeta.reflect.Annotation;\n"
-        "@interface Marker { }\n"
+        "annotation Marker { }\n"
         "@Refers(Marker.class)\n"
         "public class Widget {\n"
         "    public Widget() { return; }\n"
@@ -2005,6 +2005,39 @@ TEST(ReflectionTests, classesAnnotatedFilters) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Class<?>[] tagged = Class.classesAnnotated(\"code.Marker\");\n"
+        "        int32 found = 0;\n"
+        "        int32 other = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < (int32) tagged.count()) {\n"
+        "            if (tagged[i].getName().equals(\"test.Tagged\")) { found = found + 1; }\n"
+        "            if (tagged[i].getName().equals(\"test.Plain\"))  { other = other + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (found == 1 && other == 0) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// REFL-12: classesAnnotated<@A>() token form — the annotation rides as a method
+// type arg (resolved now that annotation decls register as types) and lowers to
+// the string overload. Finds @Audited's class, not the plain one.
+TEST(ReflectionTests, classesAnnotatedTokenForm) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "annotation Audited { }\n"
+        "public class Plain {\n"
+        "    public Plain() { return; }\n"
+        "}\n"
+        "@Audited\n"
+        "public class Tagged {\n"
+        "    public Tagged() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class<?>[] tagged = Class.classesAnnotated<Audited>();\n"
         "        int32 found = 0;\n"
         "        int32 other = 0;\n"
         "        int32 i = 0;\n"

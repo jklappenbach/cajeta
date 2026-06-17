@@ -417,7 +417,7 @@ public interface Module<X, Y> {
 // Field annotation: marks a struct field as a learnable parameter.
 // The synthesizer for parameters() / withParameters() walks fields
 // with this annotation, recursing into sub-Modules.
-public @interface Parameter {
+public annotation Parameter {
     boolean trainable() default true;
 }
 ```
