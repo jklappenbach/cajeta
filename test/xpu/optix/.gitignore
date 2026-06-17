@@ -1,0 +1,5 @@
+# These PTX files are CHECKED-IN test fixtures (the OptiX module compiler re-JITs
+# them to the device SM at runtime), not build artifacts — override the global
+# *.ptx ignore so they stay tracked and regeneration via the sibling .cu is visible.
+!optix_progs.ptx
+!optix_tri.ptx

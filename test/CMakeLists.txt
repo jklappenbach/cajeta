@@ -29,6 +29,39 @@ add_executable(${BINARY} ${TEST_SOURCES})
 # unaffected (they resolve relative to the including file).
 target_include_directories(${BINARY} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# OptiX (NVIDIA RT-core ray-query) parity probe — header-only detection, mirroring
+# the runtime's __has_include(<vulkan/vulkan.h>) gating idiom. OptiX is a COMPILE-TIME
+# dependency only: the headers here, plus the driver's nvoptix.dll at runtime (loaded
+# via optixInit, like cajeta dlopen's nvcuda.dll) — no OptiX library to link or ship.
+# Absent SDK -> CAJETA_TEST_HAS_OPTIX undefined -> OptiXRayQueryProbeTests.cpp compiles
+# to nothing (software floor unaffected). Override search with -DCAJETA_OPTIX_ROOT=<sdk>.
+find_path(CAJETA_OPTIX_INCLUDE_DIR optix.h
+        HINTS "${CAJETA_OPTIX_ROOT}/include" "$ENV{OptiX_INSTALL_DIR}/include"
+              "$ENV{OPTIX_ROOT}/include"
+        PATHS "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.1.0/include"
+              "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.0.0/include"
+              "/opt/optix/include"
+        DOC "OptiX SDK include directory (contains optix.h)")
+# OptiX headers #include <cuda.h>; locate the CUDA toolkit include dir for it.
+find_path(CAJETA_CUDA_INCLUDE_DIR cuda.h
+        HINTS "$ENV{CUDA_PATH}/include"
+        PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include"
+        DOC "CUDA toolkit include directory (cuda.h, required by the OptiX headers)")
+if(CAJETA_OPTIX_INCLUDE_DIR AND CAJETA_CUDA_INCLUDE_DIR)
+    message(STATUS "OptiX RT-core probe ENABLED: ${CAJETA_OPTIX_INCLUDE_DIR}")
+    target_include_directories(${BINARY} PRIVATE
+            ${CAJETA_OPTIX_INCLUDE_DIR} ${CAJETA_CUDA_INCLUDE_DIR})
+    target_compile_definitions(${BINARY} PRIVATE CAJETA_TEST_HAS_OPTIX=1)
+    if(WIN32)
+        # The OptiX Windows DLL loader (optixLoadWindowsDllFromName) uses the
+        # Configuration-Manager + registry APIs to locate nvoptix.dll.
+        target_link_libraries(${BINARY} PRIVATE cfgmgr32 advapi32)
+    endif()
+else()
+    message(STATUS "OptiX RT-core probe DISABLED (optix.h / cuda.h not found; "
+            "set -DCAJETA_OPTIX_ROOT to enable). Software ray-query floor unaffected.")
+endif()
+
 # ROCm / upstream LLVM is built with LLVM_ENABLE_RTTI=OFF, so it ships no
 # C++ typeinfo for its own classes — it uses LLVM's hand-rolled
 # isa<>/dyn_cast<> RTTI instead. The llvm::Error consumers (toString /
