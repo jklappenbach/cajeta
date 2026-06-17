@@ -1774,6 +1774,79 @@ TEST(ReflectionTests, forNameStdlibClass) {
         "}\n"), 1);
 }
 
+// ---- REFL-12: bounded reflection (Class.newInstance<T> / Class.forName<T>) --
+
+// A reusable Shape hierarchy + an unrelated Animal for the subtype boundary.
+#define REFL12_HIERARCHY \
+    "package test;\n" \
+    "import cajeta.reflect.Class;\n" \
+    "import cajeta.lang.Optional;\n" \
+    "import cajeta.lang.String;\n" \
+    "public class Shape {\n" \
+    "    public int32 sides;\n" \
+    "    public Shape() { this.sides = 0; return; }\n" \
+    "    public int32 sideCount() { return this.sides; }\n" \
+    "}\n" \
+    "public class Circle extends Shape {\n" \
+    "    public Circle() { this.sides = 7; return; }\n" \
+    "}\n" \
+    "public class Animal {\n" \
+    "    public int32 legs;\n" \
+    "    public Animal() { this.legs = 4; return; }\n" \
+    "}\n"
+
+// Bounded newInstance: a subtype name resolves, constructs, and the result is
+// statically a Shape (no cast) — sideCount() dispatches to Circle's state (7).
+TEST(ReflectionTests, boundedNewInstanceSubtypeResolves) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Shape> s = Class.newInstance<Shape>(\"test.Circle\");\n"
+        "        if (s.isEmpty()) { return 11; }\n"
+        "        return s.get().sideCount();\n"
+        "    }\n"
+        "}\n"), 7);
+}
+
+// The exact-type bound is the degenerate case: newInstance<Shape> of Shape
+// itself resolves (identity counts as subtype) and runs Shape's ctor (sides=0).
+TEST(ReflectionTests, boundedNewInstanceExactTypeResolves) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Shape> s = Class.newInstance<Shape>(\"test.Shape\");\n"
+        "        return s.isPresent() ? 100 : 0;\n"
+        "    }\n"
+        "}\n"), 100);
+}
+
+// Boundary check: a name that resolves to a NON-subtype (Animal is not a Shape)
+// yields empty — a clean not-found, not a bad cast / crash.
+TEST(ReflectionTests, boundedNewInstanceNonSubtypeEmpty) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Shape> s = Class.newInstance<Shape>(\"test.Animal\");\n"
+        "        return s.isPresent() ? 1 : 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// An unknown name also yields empty (same path as unbounded forName).
+TEST(ReflectionTests, boundedNewInstanceUnknownEmpty) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Shape> s = Class.newInstance<Shape>(\"test.NoSuch\");\n"
+        "        return s.isPresent() ? 1 : 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
 // REFL-8 unblocks TemplateArgument.getType() for a class-typed argument:
 // Box<Widget>'s argument resolves to the Widget Class.
 TEST(ReflectionTests, templateArgGetTypeResolvesClass) {

@@ -4142,6 +4142,27 @@ void* __cajeta_class_at(int32_t idx) {
     return g_cajeta_classes[idx].classObject;
 }
 
+// REFL-12 bounded reflection: is `leafRtti`'s type the same as, or a descendant
+// of, `boundRtti`'s type? `leafRtti`/`boundRtti` are CajetaRtti* (the #RttiGlobal
+// a Class instance holds in its `rtti` field). The bound is the compile-time `T`
+// in `Class<T>`; the leaf is resolved at runtime (e.g. forName of a string). The
+// check walks the leaf TYPE's actual vtable parent chain (each rtti carries its
+// type's `vtable`; the chain link is CAJETA_VTABLE_PARENT_OFFSET) for the bound
+// type's vtable — the same proven walk __cajeta_exc_matches uses for try/catch.
+// Returns 1 iff leaf <: bound, else 0. Defensive: depth-capped, address-guarded.
+int32_t __cajeta_is_subtype(void* leafRtti, void* boundRtti) {
+    if (!leafRtti || !boundRtti) return 0;
+    void* boundVtable = ((CajetaRtti*) boundRtti)->vtable;
+    if (!boundVtable) return 0;
+    void* vtable = ((CajetaRtti*) leafRtti)->vtable;
+    for (int depth = 0; depth < 256; ++depth) {
+        if ((uintptr_t) vtable < 4096) break;
+        if (vtable == boundVtable) return 1;
+        vtable = *(void**) ((char*) vtable + CAJETA_VTABLE_PARENT_OFFSET);
+    }
+    return 0;
+}
+
 // RTTI scalar readers — `rtti` is a CajetaRtti* (the #RttiGlobal address a
 // Class instance holds in its `rtti` field).
 int32_t __cajeta_rtti_field_count(void* rtti) {

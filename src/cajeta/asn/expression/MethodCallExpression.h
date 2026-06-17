@@ -60,6 +60,13 @@ namespace cajeta {
         // and the call resolves cleanly. v1 scope: syntactic
         // receiver-identifier equality.
         CajetaTypePtr preProjectionReturnType;
+        // REFL-12: idempotency guard for the bounded-reflection lowering.
+        // `Class.newInstance<Shape>(name)` / `Class.forName<Shape>(name)` are
+        // rewritten by appending the bound (`Shape.class`) as a synthesized
+        // second argument so the call resolves to the 2-arg bounded overload.
+        // generateCode may run more than once; this ensures the arg is injected
+        // exactly once.
+        bool boundedReflInjected = false;
     public:
         CajetaTypePtr getPreProjectionReturnType() const {
             return preProjectionReturnType;
