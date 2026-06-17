@@ -81,6 +81,13 @@ void printUsage(const char* progname) {
               << "\n"
               << "Output:\n"
               << "  --emit=ir|obj|cja|uber|exe           Output mode. Default ir.\n"
+              << "  --link-mode=lean|full                Linker/DCE policy. lean (default for --emit=exe)\n"
+              << "                                       strips classes outside the keep-set; full keeps\n"
+              << "                                       every class (default elsewhere; --keep-all alias).\n"
+              << "  --why-kept=<class>                   Lean DCE: report which reflection site kept the\n"
+              << "                                       named (canonical) class in the keep-set.\n"
+              << "  --keepset-json=<path>                Lean DCE: write the generated keep-set + provenance\n"
+              << "                                       to <path> as JSON.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
@@ -230,6 +237,9 @@ int main(int argc, const char* argv[]) {
     // default its arch to gfx1151 (vs the nvptx sm_89 default) only when the
     // user didn't pin one. The two backends share a single xpuArch field.
     bool xpuArchExplicit = false;
+    // Track an explicit --link-mode / --keep-all so the default flip to Lean
+    // for --emit=exe (below) only applies when the user didn't pin a mode.
+    bool linkModeExplicit = false;
 
     auto parseModeName = [&](const std::string& name) -> bool {
         if (name == "debug")            { compiler.setMode(CompilerMode::Debug); return true; }
@@ -367,6 +377,33 @@ int main(int argc, const char* argv[]) {
             compiler.getMutableFlags().debugPrefixMap = value;
         } else if (match(arg, "seed", value)) {
             compiler.getMutableFlags().seed = value;
+        } else if (match(arg, "link-mode", value)) {
+            // Lean linker / DCE policy (plans/compiler/lean-linker-dce.md).
+            // full = keep every class's reflection registration ctor (today's
+            // behavior); lean = emit registration only for keep-set classes so
+            // --gc-sections strips the rest. Intended default for --emit=exe is
+            // lean (set from emitMode in 0b); `--link-mode=full` / `--keep-all`
+            // is the opt-out.
+            LinkMode lm;
+            if (!setEnumFlag<LinkMode>("link-mode", value,
+                    { {"full", LinkMode::Full},
+                      {"lean", LinkMode::Lean} }, lm)) {
+                printUsage(argv[0]); return 1;
+            }
+            compiler.getMutableFlags().linkMode = lm;
+            linkModeExplicit = true;
+        } else if (arg == "--keep-all") {
+            // Alias for --link-mode=full (keep every class; no stripping).
+            compiler.getMutableFlags().linkMode = LinkMode::Full;
+            linkModeExplicit = true;
+        } else if (match(arg, "why-kept", value)) {
+            // Lean DCE diagnostic: report which reflection site/root kept the
+            // named class (canonical name) in the keep-set.
+            compiler.getMutableFlags().whyKept = value;
+        } else if (match(arg, "keepset-json", value)) {
+            // Lean DCE diagnostic: write the generated keep-set + provenance to
+            // this path as JSON (lean builds only).
+            compiler.getMutableFlags().keepsetJson = value;
         } else if (match(arg, "xpu-backend", value)) {
             // Comma-separated list — a binary can bundle several targets
             // (e.g. vulkan,cpu); the runtime dispatcher picks the best
@@ -432,6 +469,13 @@ int main(int argc, const char* argv[]) {
     }
     if (compiler.usesXpuBackend(XpuBackend::Amdgpu) && !xpuArchExplicit) {
         compiler.setXpuArch("gfx1151");
+    }
+
+    // Lean linking is the default for --emit=exe (bounded reflection makes it
+    // sound; unbounded reflection degrades to a conservative keep). Other emit
+    // modes (ir/obj/cja/uber) and an explicit --link-mode/--keep-all keep Full.
+    if (compiler.getEmitMode() == EmitMode::Exe && !linkModeExplicit) {
+        compiler.getMutableFlags().linkMode = LinkMode::Lean;
     }
 
     try {

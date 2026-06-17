@@ -189,6 +189,16 @@ namespace cajeta {
         // are the new accessors. boundsCheckEnabled is a backward-compat shim.
         CompilerFlags compilerFlags = CompilerFlags::defaultsForMode(CompilerMode::Debug);
 
+        // Lean linker / DCE keep-set (plans/compiler/lean-linker-dce.md). The
+        // whole-program set of class canonical names whose reflection
+        // registration ctor must still be emitted under LinkMode::Lean.
+        // Shared across every module of a single compile (it is a whole-program
+        // decision), set by the Compiler after resolveDependencyGraph and before
+        // codegen. Null in Open mode / JIT (no gating); when null, keepsClass()
+        // keeps everything. Step 0a populates it with ALL classes (inert); 0b
+        // narrows it via reachability.
+        std::shared_ptr<const std::set<std::string>> keepSet;
+
         // Cache of interned source-file `const char*` globals — populated on
         // demand by getOrCreateSourceFileConstant. One entry per source
         // path emitted into this module; reused across all chain-push
@@ -384,6 +394,33 @@ namespace cajeta {
             return strutureToModule;
         }
 
+        // DCE Tier-0b reflection-usage accumulator (lean-linker-dce.md §3.2).
+        // Reset per compile via resetReflectionKeep (stdlib-prime cache reuses
+        // the process). forcesAll ⇒ keep-all; sites ⇒ narrow contributions the
+        // Compiler resolves against the full canonicalMap after quiescence.
+        struct ReflSite {
+            enum Kind { BoundClosure, ForNameLiteral, PackageLiteral, Annotated };
+            Kind kind;
+            std::string selector;  // T canonical / class name / package / anno short
+        };
+        struct ReflectionKeep {
+            bool forcesAll = false;
+            std::vector<ReflSite> sites;
+            // 0c classifier: human-readable reason for each forces-ALL site, so a
+            // lean build can warn and suggest a tighter selector.
+            std::vector<std::string> forceAllReasons;
+        };
+        static ReflectionKeep& reflectionKeep() {
+            static ReflectionKeep instance;
+            return instance;
+        }
+        static void resetReflectionKeep() { reflectionKeep() = ReflectionKeep(); }
+        static void noteForceAll(const std::string& reason) {
+            auto& k = reflectionKeep();
+            k.forcesAll = true;
+            k.forceAllReasons.push_back(reason);
+        }
+
         // Aspect registry — see the aspectClasses field. Callers that
         // walk it (A3 pointcut matching) take the list as it stands at
         // codegen time; aspect declarations all land during the parse
@@ -557,6 +594,22 @@ namespace cajeta {
         }
         const CompilerFlags& getFlags() const { return compilerFlags; }
         void setFlags(const CompilerFlags& f) { compilerFlags = f; }
+
+        // Lean linker / DCE: share the whole-program keep-set with this module
+        // (Compiler calls this on every module after computing it).
+        void setKeepSet(std::shared_ptr<const std::set<std::string>> ks) {
+            keepSet = std::move(ks);
+        }
+        // Should class `canon` (a canonical name) keep its reflection
+        // registration ctor? Under Full mode — or before a keep-set is computed
+        // (JIT, or pre-0b) — everything is kept. Under Lean, only keep-set
+        // members. The two emission sites (StructureMetadata / CajetaClass) gate
+        // appendToGlobalCtors on this. See plans/compiler/lean-linker-dce.md.
+        bool keepsClass(const std::string& canon) const {
+            if (compilerFlags.linkMode == LinkMode::Full) return true;
+            if (!keepSet) return true;
+            return keepSet->count(canon) > 0;
+        }
 
         // Reproducible builds: the constructor seeds the module's embedded
         // source-file name with the absolute on-disk path, which would bake

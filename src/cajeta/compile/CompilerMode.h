@@ -64,6 +64,18 @@ namespace cajeta {
     // LoopVectorize + SLP). Applies to --emit=obj/exe; see compile/Optimizer.h.
     enum class OptLevel { O0, O1, O2, O3 };
 
+    // Lean linker / DCE policy (the `--link-mode` flag; plans/compiler/
+    // lean-linker-dce.md). Full keeps every class's reflection registration
+    // ctor (today's behavior — keep-everything, defeats --gc-sections); Lean
+    // emits a class's registration ctor only when the class is in the generated
+    // keep-set, so unkept classes lose their llvm.global_ctors anchor and
+    // section-GC strips them. Lean is the intended default for --emit=exe (set
+    // in Compiler from emitMode, not from CompilerMode); Full is the default
+    // everywhere else (JIT/obj/cja) and the `--link-mode=full` / `--keep-all`
+    // opt-out. Step 0a wires the toggle + the gate with a keep-all keep-set
+    // (inert); 0b narrows it via the reachability BFS.
+    enum class LinkMode { Full, Lean };
+
     struct CompilerFlags {
         // ----- safety nets (runtime checks) -----
         BoundsCheck     bounds              = BoundsCheck::On;
@@ -88,6 +100,19 @@ namespace cajeta {
 
         // ----- optimization -----
         OptLevel        opt                 = OptLevel::O0;  // IR opt for --emit=obj/exe
+
+        // ----- lean linker / DCE -----
+        // Class-registration link policy (the --link-mode flag). Defaults Full
+        // (keep every class's registration ctor — today's behavior); Compiler
+        // flips it to Lean for --emit=exe unless the user opts out. Mode-
+        // independent, so defaultsForMode leaves it Full for every CompilerMode.
+        LinkMode        linkMode            = LinkMode::Full;
+        // --why-kept=<canonical class>: print which reflection site/root kept the
+        // named class in the lean keep-set (empty = off). Diagnostic only.
+        std::string     whyKept             = "";
+        // --keepset-json=<path>: write the generated keep-set + provenance to this
+        // JSON file (empty = off; lean builds only).
+        std::string     keepsetJson         = "";
 
         // ----- debugging -----
         // Emit __cajeta_dbg_safepoint(loc_id) at each statement boundary so the

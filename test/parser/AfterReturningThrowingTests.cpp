@@ -39,7 +39,7 @@ int32_t runI32(const std::string& src) {
 TEST(AfterReturningThrowingTests, afterReturningFiresOnNormalReturn) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @AfterReturning(Audited.class)\n"
         "    public static void onReturn() {\n"
@@ -64,7 +64,7 @@ TEST(AfterReturningThrowingTests, afterReturningFiresOnNormalReturn) {
 TEST(AfterReturningThrowingTests, afterReturningSkipsThrowPath) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @AfterReturning(Audited.class)\n"
         "    public static void onReturn() {\n"
@@ -95,7 +95,7 @@ TEST(AfterReturningThrowingTests, afterReturningSkipsThrowPath) {
 TEST(AfterReturningThrowingTests, afterThrowingFiresOnThrowPath) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @AfterThrowing(Audited.class)\n"
         "    public static void onThrow() {\n"
@@ -125,7 +125,7 @@ TEST(AfterReturningThrowingTests, afterThrowingFiresOnThrowPath) {
 TEST(AfterReturningThrowingTests, afterThrowingSkipsNormalReturn) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @AfterThrowing(Audited.class)\n"
         "    public static void onThrow() {\n"
@@ -150,7 +150,7 @@ TEST(AfterReturningThrowingTests, afterThrowingSkipsNormalReturn) {
 TEST(AfterReturningThrowingTests, afterThrowingDoesNotSuppress) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @AfterThrowing(Audited.class)\n"
         "    public static void onThrow() { return; }\n"
@@ -178,7 +178,7 @@ TEST(AfterReturningThrowingTests, afterThrowingDoesNotSuppress) {
 TEST(AfterReturningThrowingTests, bothNormalPathFiresAfterReturningOnly) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @AfterReturning(Audited.class)\n"
         "    public static void onReturn() {\n"
@@ -208,7 +208,7 @@ TEST(AfterReturningThrowingTests, bothNormalPathFiresAfterReturningOnly) {
 TEST(AfterReturningThrowingTests, bothThrowPathFiresAfterThrowingOnly) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @AfterReturning(Audited.class)\n"
         "    public static void onReturn() {\n"

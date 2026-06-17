@@ -4142,6 +4142,27 @@ void* __cajeta_class_at(int32_t idx) {
     return g_cajeta_classes[idx].classObject;
 }
 
+// REFL-12 bounded reflection: is `leafRtti`'s type the same as, or a descendant
+// of, `boundRtti`'s type? `leafRtti`/`boundRtti` are CajetaRtti* (the #RttiGlobal
+// a Class instance holds in its `rtti` field). The bound is the compile-time `T`
+// in `Class<T>`; the leaf is resolved at runtime (e.g. forName of a string). The
+// check walks the leaf TYPE's actual vtable parent chain (each rtti carries its
+// type's `vtable`; the chain link is CAJETA_VTABLE_PARENT_OFFSET) for the bound
+// type's vtable — the same proven walk __cajeta_exc_matches uses for try/catch.
+// Returns 1 iff leaf <: bound, else 0. Defensive: depth-capped, address-guarded.
+int32_t __cajeta_is_subtype(void* leafRtti, void* boundRtti) {
+    if (!leafRtti || !boundRtti) return 0;
+    void* boundVtable = ((CajetaRtti*) boundRtti)->vtable;
+    if (!boundVtable) return 0;
+    void* vtable = ((CajetaRtti*) leafRtti)->vtable;
+    for (int depth = 0; depth < 256; ++depth) {
+        if ((uintptr_t) vtable < 4096) break;
+        if (vtable == boundVtable) return 1;
+        vtable = *(void**) ((char*) vtable + CAJETA_VTABLE_PARENT_OFFSET);
+    }
+    return 0;
+}
+
 // RTTI scalar readers — `rtti` is a CajetaRtti* (the #RttiGlobal address a
 // Class instance holds in its `rtti` field).
 int32_t __cajeta_rtti_field_count(void* rtti) {
@@ -4437,6 +4458,109 @@ int64_t __cajeta_object_invoke_scalar(void* obj, int32_t idx, void* argArray) {
     int64_t ret = 0;
     adapter(obj, idx, args, &ret);
     return ret;
+}
+
+// REFL: invoke resolving the adapter from an EXPLICIT class RTTI rather than
+// from the receiver `obj`. This is what makes STATIC methods reflectable: a
+// static call has no receiver (`obj == NULL`), so the obj-derived path can't
+// find the adapter. `Method` always carries its declaring class's rtti, so it
+// can drive these. `obj` is passed straight to the adapter as the `this`
+// receiver — NULL for statics, the instance for instance methods (the thunk
+// only reads it for cases that have a leading `this`). The adapter belongs to
+// the method's DECLARING class, so the index aligns even on a subclass instance.
+void* __cajeta_rtti_invoke_obj(void* rtti, void* obj, int32_t idx, void* argArray) {
+    if (!rtti) return NULL;
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
+    if (!adapter) return NULL;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    void* ret = NULL;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+int64_t __cajeta_rtti_invoke_scalar(void* rtti, void* obj, int32_t idx, void* argArray) {
+    if (!rtti) return 0;
+    void (*adapter)(void*, int32_t, void*, void*) =
+        (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
+    if (!adapter) return 0;
+    void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
+    int64_t ret = 0;
+    adapter(obj, idx, args, &ret);
+    return ret;
+}
+
+// ---- @Inject runtime override registry (test-only DI substitution) ---------
+//
+// Lets a test bind a substitute instance for a type so that a `@Inject` site
+// whose field type matches resolves to the substitute instead of the
+// statically-wired provider. Keyed by the type's `reflect.Class` object pointer
+// — what `T.class` lowers to (the named, linker-unified `<type>#ClassObject`
+// global) — so matching is pointer identity, no string compare.
+//
+// The compiler only emits the lookup in TEST builds (activeProfile == "test"),
+// so production injection paths carry zero overhead and don't link this at all
+// unless used. Entries hold BORROWED pointers: the test owns the substitute for
+// its lifetime; clear() forgets entries, it never frees the instances.
+//
+// v1 scope: singleton-mode, class-typed `@Inject` fields (mock by subclassing
+// and overriding virtuals). Interface-typed fields need a fat-pointer-aware
+// path and are not yet overridable.
+typedef struct CajetaInjectOverride {
+    void* classObj;
+    void* instance;
+    struct CajetaInjectOverride* next;
+} CajetaInjectOverride;
+
+static CajetaInjectOverride* __cajeta_inject_override_head = NULL;
+static pthread_mutex_t __cajeta_inject_override_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void __cajeta_inject_override_bind(void* classObj, void* instance) {
+    if (!classObj) return;
+    pthread_mutex_lock(&__cajeta_inject_override_mutex);
+    for (CajetaInjectOverride* e = __cajeta_inject_override_head; e; e = e->next) {
+        if (e->classObj == classObj) {
+            e->instance = instance;
+            pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+            return;
+        }
+    }
+    CajetaInjectOverride* node =
+        (CajetaInjectOverride*) malloc(sizeof(CajetaInjectOverride));
+    if (!node) {
+        pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+        return;
+    }
+    node->classObj = classObj;
+    node->instance = instance;
+    node->next = __cajeta_inject_override_head;
+    __cajeta_inject_override_head = node;
+    pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+}
+
+void* __cajeta_inject_override_get(void* classObj) {
+    if (!classObj) return NULL;
+    void* result = NULL;
+    pthread_mutex_lock(&__cajeta_inject_override_mutex);
+    for (CajetaInjectOverride* e = __cajeta_inject_override_head; e; e = e->next) {
+        if (e->classObj == classObj) {
+            result = e->instance;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&__cajeta_inject_override_mutex);
+    return result;
+}
+
+void __cajeta_inject_override_clear(void) {
+    pthread_mutex_lock(&__cajeta_inject_override_mutex);
+    CajetaInjectOverride* e = __cajeta_inject_override_head;
+    while (e) {
+        CajetaInjectOverride* n = e->next;
+        free(e);
+        e = n;
+    }
+    __cajeta_inject_override_head = NULL;
+    pthread_mutex_unlock(&__cajeta_inject_override_mutex);
 }
 
 // REFL-4 typed FP return paths. The per-class invoke adapter already stores a

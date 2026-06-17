@@ -78,14 +78,14 @@ MethodPtr findMethod(CajetaModulePtr module,
 } // namespace
 
 // Marker-annotation pointcut: `@Before(Audited.class)` advises every
-// method annotated `@Audited`. Audited is declared via @interface,
+// method annotated `@Audited`. Audited is declared via annotation,
 // which the visitor doesn't register as a class — the resolver
 // falls through to MarkerAnnotation mode. Only the annotated method
 // gets a match.
 TEST(PointcutMatchingTests, markerAnnotationMatchesOnlyAnnotatedMethods) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class AuditAspect {\n"
         "    @Before(Audited.class)\n"
         "    public static int32 onCall() { return 0; }\n"
@@ -153,7 +153,7 @@ TEST(PointcutMatchingTests, typeBasedMatchesEveryMethodOnTargetClass) {
 TEST(PointcutMatchingTests, multipleAspectsAdviseOneMethod) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class AspectA {\n"
         "    @Before(Audited.class)\n"
         "    public static int32 aBefore() { return 0; }\n"
@@ -190,7 +190,7 @@ TEST(PointcutMatchingTests, multipleAspectsAdviseOneMethod) {
 TEST(PointcutMatchingTests, allFiveAdviceKindsClassify) {
     auto src =
         "package test;\n"
-        "@interface Traced { }\n"
+        "annotation Traced { }\n"
         "@Aspect public class FullAspect {\n"
         "    @Before(Traced.class)         public static int32 b() { return 0; }\n"
         "    @After(Traced.class)          public static int32 a() { return 0; }\n"
@@ -228,7 +228,7 @@ TEST(PointcutMatchingTests, allFiveAdviceKindsClassify) {
 TEST(PointcutMatchingTests, aspectMethodsAreSkipped) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class SelfAdvising {\n"
         "    @Before(Audited.class)\n"
         "    @Audited\n"                       // self-annotated, but still skipped

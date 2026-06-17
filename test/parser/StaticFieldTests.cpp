@@ -260,3 +260,120 @@ TEST(StaticFieldTests, crossClassAccess) {
         "}\n";
     EXPECT_EQ(runI32(src), 203);
 }
+
+// Regression: an UNQUALIFIED same-class static-field read (`N`, the shorthand
+// for `D.N`) must load the field's VALUE. IdentifierExpression returns the
+// field's GlobalVariable slot — the same l-value shape as a local's alloca —
+// so loadIfLValue / the call-arg coercion must load through it. Pre-fix the
+// read yielded the global's ADDRESS (a ptr), giving garbage / a segfault on use.
+
+// (a) bare read into a local.
+TEST(StaticFieldTests, bareUnqualifiedStaticReadIntoLocal) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    static final int32 N = 42;\n"
+        "    public static int32 run() {\n"
+        "        int32 x = N;\n"
+        "        return x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// (b) bare read passed directly as a call argument (the `hasAnnotation(TAG)`
+// shape that surfaced the bug). Exercises the per-call entry-coercion path.
+TEST(StaticFieldTests, bareUnqualifiedStaticReadAsCallArg) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    static final int32 N = 42;\n"
+        "    static int32 echo(int32 v) { return v; }\n"
+        "    public static int32 run() {\n"
+        "        return echo(N);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// (c) bare read in a binary-op (both operands coerced through loadIfLValue).
+TEST(StaticFieldTests, bareUnqualifiedStaticReadInBinaryOp) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    static final int32 A = 40;\n"
+        "    static final int32 B = 2;\n"
+        "    public static int32 run() {\n"
+        "        return A + B;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// Regression: an instance method calling a same-class static method with a
+// static String-field arg (plus a second arg) under source-tags used to leave
+// the module's builder pointer dangling after method codegen; the later clinit
+// pass (generateStaticInitializers) then dereferenced it and SIGSEGV'd the
+// COMPILER. The clinit now emits through its own local builder. Mirrors the
+// minimal trigger; must compile + run cleanly.
+TEST(StaticFieldTests, clinitSurvivesStaticArgFromInstanceMethod) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "public final class D {\n"
+        "    static final String TAG = \"hi\";\n"
+        "    static boolean eq(String a, String b) { return a.equals(b); }\n"
+        "    public int32 f() { return eq(TAG, \"hi\") ? 1 : 0; }\n"
+        "    public static int32 run() {\n"
+        "        D d = heap D();\n"
+        "        return d.f();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// Regression: a BARE (unqualified) static String field used as a METHOD
+// RECEIVER — `TAG.equals(...)` inside an instance method. IdentifierExpression
+// returns the field's GlobalVariable slot (its address); the l-value coercion
+// must load through it to materialize the String pointer used as `this`.
+// Pre-fix the global's ADDRESS was passed as the receiver (and the vtable load
+// read the String pointer instead of its vtable) → garbage dispatch / SIGSEGV.
+// The IdentifierExpression analogue of the DotExpression `Class.STATIC.method()`
+// fix (a49714dc).
+TEST(StaticFieldTests, bareUnqualifiedStaticFieldAsReceiver) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "public final class D {\n"
+        "    static final String TAG = \"hi\";\n"
+        "    public int32 f() {\n"
+        "        if (TAG.equals(\"hi\")) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        D d = heap D();\n"
+        "        return d.f();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// And the negative branch: the receiver's VALUE must drive the comparison
+// (not a garbage pointer), so a non-matching arg returns 0.
+TEST(StaticFieldTests, bareUnqualifiedStaticFieldReceiverNegative) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "public final class D {\n"
+        "    static final String TAG = \"hi\";\n"
+        "    public int32 f() {\n"
+        "        if (TAG.equals(\"bye\")) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        D d = heap D();\n"
+        "        return d.f();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}

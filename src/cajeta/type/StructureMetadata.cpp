@@ -745,26 +745,10 @@ namespace cajeta {
             // those accessors, so a null-vtable entry must not be discoverable.
             // Class.of never returns these (such classes are never reflected on
             // in v1), which is why earlier phases never tripped over them.
-            if (!llvm::isa<llvm::ConstantPointerNull>(classVtableRef)) {
-                llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
-                llvm::FunctionType* regTy =
-                    llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
-                llvm::FunctionCallee regFn =
-                    lmod->getOrInsertFunction("__cajeta_register_class", regTy);
-                std::string canon = structure->toCanonical();
-                llvm::Function* regCtor = llvm::Function::Create(
-                    llvm::FunctionType::get(voidTy, false),
-                    llvm::GlobalValue::InternalLinkage,
-                    "__cajeta_class_reg_ctor." + canon, lmod);
-                llvm::IRBuilder<> rb(
-                    llvm::BasicBlock::Create(ctx, "entry", regCtor));
-                llvm::Constant* nameStr =
-                    rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
-                rb.CreateCall(regFn,
-                    {nameStr, structure->getClassObjectGlobal()});
-                rb.CreateRetVoid();
-                llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
-            }
+            //
+            // DCE Tier-0b: reg ctor is emitted in finalizeClassObject, not here —
+            // populate runs mid-codegen-loop, before the keep-set exists. We only
+            // set the #ClassObject initializer above.
         }
     }
 

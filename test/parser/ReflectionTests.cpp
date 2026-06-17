@@ -285,7 +285,7 @@ TEST(ReflectionTests, parameterIntrospection) {
 }
 
 // REFL-4 object model: construct via a Constructor object, verify validity.
-TEST(ReflectionTests, constructorObjectNewInstance) {
+TEST(ReflectionTests, constructorObjectHeapInstance) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Constructor ctor = Class.of(seed).getConstructor(0);\n"
@@ -383,7 +383,7 @@ TEST(ReflectionTests, methodInvokeStackArgsMulti) {
 
 // REFL-4 marshalling: construct via the 1-arg User(int32 startId) through a
 // Constructor object; the new instance's id is the passed argument (99).
-TEST(ReflectionTests, constructorNewInstanceWithArg) {
+TEST(ReflectionTests, constructorHeapInstanceWithArg) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Class<?> c = Class.of(seed);\n"
@@ -406,7 +406,7 @@ TEST(ReflectionTests, constructorNewInstanceWithArg) {
 // REFL-2C: reflectively construct a User via the synthesized heapInstance
 // adapter, then confirm the result is a valid, fully-formed instance — its
 // vtable->classObject->rtti chain resolves and reports the right field count.
-TEST(ReflectionTests, newInstanceProducesValidObject) {
+TEST(ReflectionTests, heapInstanceProducesValidObject) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Class<?> c = Class.of(seed);\n"
@@ -416,7 +416,7 @@ TEST(ReflectionTests, newInstanceProducesValidObject) {
 
 // REFL-2C: a heapInstance'd object is functional — reflectively invoking the
 // no-arg bump() on it returns 1 (its id was zero-initialized by construction).
-TEST(ReflectionTests, newInstanceObjectIsFunctional) {
+TEST(ReflectionTests, heapInstanceObjectIsFunctional) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Class<?> c = Class.of(seed);\n"
@@ -1360,7 +1360,7 @@ TEST(ReflectionTests, classAnnotationClassRefArg) {
         "import cajeta.lang.String;\n"
         "import cajeta.reflect.Class;\n"
         "import cajeta.reflect.Annotation;\n"
-        "@interface Marker { }\n"
+        "annotation Marker { }\n"
         "@Refers(Marker.class)\n"
         "public class Widget {\n"
         "    public Widget() { return; }\n"
@@ -1774,6 +1774,104 @@ TEST(ReflectionTests, forNameStdlibClass) {
         "}\n"), 1);
 }
 
+// ---- REFL-12: bounded reflection (Class.heapInstance<T> / Class.forName<T>) --
+
+// A reusable Shape hierarchy + an unrelated Animal for the subtype boundary.
+#define REFL12_HIERARCHY \
+    "package test;\n" \
+    "import cajeta.reflect.Class;\n" \
+    "import cajeta.lang.Optional;\n" \
+    "import cajeta.lang.String;\n" \
+    "public class Shape {\n" \
+    "    public int32 sides;\n" \
+    "    public Shape() { this.sides = 0; return; }\n" \
+    "    public int32 sideCount() { return this.sides; }\n" \
+    "}\n" \
+    "public class Circle extends Shape {\n" \
+    "    public Circle() { this.sides = 7; return; }\n" \
+    "}\n" \
+    "public class Animal {\n" \
+    "    public int32 legs;\n" \
+    "    public Animal() { this.legs = 4; return; }\n" \
+    "}\n"
+
+// Bounded heapInstance: a subtype name resolves, constructs, and the result is
+// statically a Shape (no cast) — sideCount() dispatches to Circle's state (7).
+TEST(ReflectionTests, boundedHeapInstanceSubtypeResolves) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Circle\");\n"
+        "        if (s.isEmpty()) { return 11; }\n"
+        "        return s.get().sideCount();\n"
+        "    }\n"
+        "}\n"), 7);
+}
+
+// The exact-type bound is the degenerate case: heapInstance<Shape> of Shape
+// itself resolves (identity counts as subtype) and runs Shape's ctor (sides=0).
+TEST(ReflectionTests, boundedHeapInstanceExactTypeResolves) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Shape\");\n"
+        "        return s.isPresent() ? 100 : 0;\n"
+        "    }\n"
+        "}\n"), 100);
+}
+
+// Boundary check: a name that resolves to a NON-subtype (Animal is not a Shape)
+// yields empty — a clean not-found, not a bad cast / crash.
+TEST(ReflectionTests, boundedHeapInstanceNonSubtypeEmpty) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Animal\");\n"
+        "        return s.isPresent() ? 1 : 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// An unknown name also yields empty (same path as unbounded forName).
+TEST(ReflectionTests, boundedHeapInstanceUnknownEmpty) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.NoSuch\");\n"
+        "        return s.isPresent() ? 1 : 0;\n"
+        "    }\n"
+        "}\n"), 0);
+}
+
+// Bounded enumeration: subtypes<Shape>() is the closed-world closure — Shape
+// itself + Circle (inclusive of the bound), and nothing unrelated (Animal).
+TEST(ReflectionTests, boundedSubtypesClosure) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        #Class<?>[] subs = Class.subtypes<Shape>();\n"
+        "        return (int32) subs.count();\n"
+        "    }\n"
+        "}\n"), 2);
+}
+
+// A leaf with no subtypes returns just itself (identity counts as subtype).
+TEST(ReflectionTests, boundedSubtypesLeafIsSelf) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        #Class<?>[] subs = Class.subtypes<Animal>();\n"
+        "        return (int32) subs.count();\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
 // REFL-8 unblocks TemplateArgument.getType() for a class-typed argument:
 // Box<Widget>'s argument resolves to the Widget Class.
 TEST(ReflectionTests, templateArgGetTypeResolvesClass) {
@@ -1907,6 +2005,39 @@ TEST(ReflectionTests, classesAnnotatedFilters) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Class<?>[] tagged = Class.classesAnnotated(\"code.Marker\");\n"
+        "        int32 found = 0;\n"
+        "        int32 other = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < (int32) tagged.count()) {\n"
+        "            if (tagged[i].getName().equals(\"test.Tagged\")) { found = found + 1; }\n"
+        "            if (tagged[i].getName().equals(\"test.Plain\"))  { other = other + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (found == 1 && other == 0) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// REFL-12: classesAnnotated<@A>() token form — the annotation rides as a method
+// type arg (resolved now that annotation decls register as types) and lowers to
+// the string overload. Finds @Audited's class, not the plain one.
+TEST(ReflectionTests, classesAnnotatedTokenForm) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "annotation Audited { }\n"
+        "public class Plain {\n"
+        "    public Plain() { return; }\n"
+        "}\n"
+        "@Audited\n"
+        "public class Tagged {\n"
+        "    public Tagged() { return; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class<?>[] tagged = Class.classesAnnotated<Audited>();\n"
         "        int32 found = 0;\n"
         "        int32 other = 0;\n"
         "        int32 i = 0;\n"

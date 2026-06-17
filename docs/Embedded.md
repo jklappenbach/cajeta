@@ -292,6 +292,46 @@ The static analyzer needs to ensure that types like `ArrayList`, `HashMap`, `Has
 
 ---
 
+## Lean linking & the reflection keep-set (shipped)
+
+Reflection forces every class to register itself into `llvm.global_ctors` so it stays discoverable by name. That registration anchor defeats `--gc-sections`, so a naïve build links **every** class — and the whole reflection/TLS/OpenSSL tail — into even a one-line program. The lean linker strips a class's registration anchor when no reflection site can reach it, letting section-GC drop it.
+
+**`--emit=exe` defaults to `--link-mode=lean`.** `--link-mode=full` (alias `--keep-all`) opts out and keeps every class (the old behavior; still the default for `--emit=ir|obj|cja|uber` and JIT/test). Measured on HelloWorld:
+
+| | `--link-mode=full` | `--link-mode=lean` (default) |
+|---|---|---|
+| binary | 2.51 MB | **370 KB** (−85%) |
+| reflection reg-ctors | 268 | 0 |
+| OpenSSL symbols | 45 | 0 |
+
+**Sound by construction via bounded reflection.** The keep-set is a *reflection-discoverability* set, not a code-liveness set (`--gc-sections` already keeps any class normal code references — an unkept class merely stops being reflectively *findable*). Each reflection site contributes exactly its statically-resolvable blast radius:
+
+| Site | Keeps |
+|---|---|
+| `Class.subtypes<Base>()`, `Class.heapInstance<Base>(name)` | `Base`'s closed-world subtype closure (from the type hierarchy, so rare-conditional leaves are safe) |
+| `Class.forName("literal")` | that one class |
+| `Class.classesInPackage("pkg")` | classes in `pkg` |
+| `Class.classesAnnotated<@A>()` / `("A")` | classes bearing `@A` |
+| `@Retained` | unconditional manual keep-pin |
+
+Because a bounded site can only resolve to a class in its closure, and the closure is kept, there is no "stripped but reached" failure — no trace, no manifest, no completeness proof. **Unbounded** reflection (`forName(dynamicString)`, `allClasses()`, a top-type bound, `TemplateArgument.getType()`) can't be narrowed, so it degrades to a conservative **keep-all + warning** — never a silent strip. So a default-lean build cannot crash on an unexercised reflective path.
+
+**Tuning workflow.** The keep-set is generated, never authored — there is no include/exclude file. To shrink a binary, tighten the bound (or drop a class from the classpath). Three diagnostics make the keep-set legible:
+
+- `--why-kept=<canonical.Class>` — prints the site/root that kept a class (`subtype closure of …`, `forName("…")`, `@Retained keep-pin`, …) or `STRIPPED`.
+- `--keepset-json=<path>` — writes the full keep-set with per-class provenance (`{class, keptBy}`); `forcesAll:true` when a build went unbounded.
+- `warning: [reflection-forces-keep-all] <site> — …` — emitted per unbounded site, naming the selector to tighten.
+
+```
+$ cajeta --emit=exe --why-kept=app.PluginA --keepset-json=ks.json \
+         app.Main.run src/ out/
+why-kept: app.PluginA — kept by subtype closure of app.Plugin
+```
+
+This is the Java differentiator: erased `Class<T>` + open world means even GraalVM/R8 need a hand-written reflection config; cajeta's reified monomorphized types + closed-world link make the bound a *complete* keep-set automatically. (Tier-1 method-level tree-shaking and Tier-2 `internalize`+`globalDCE` build further on top; see `plans/compiler/lean-linker-dce.md`.)
+
+---
+
 ## Per-tier size targets
 
 Goals after each roadmap phase lands. Hello-world program (single `println`), x86_64 baseline for T1 / T2, ARM Cortex-M for T3 / T4. Actual values will depend on the host toolchain and final phase decisions.
@@ -343,6 +383,7 @@ Items that need a design pass before the related phase ships:
 | Phase | Status | Notes |
 |---|---|---|
 | Baseline (T1) | **shipped** | HelloWorld 36 KB; full feature surface |
+| Lean linker (DCE Tier-0) | **shipped** | `--link-mode=lean` default for `--emit=exe`; bounded reflection keep-set; `--why-kept` / `--keepset-json` / forces-keep-all warning. HelloWorld 2.51 MB→370 KB |
 | E1 — `--mode=embedded-linux` | proposed | Half a session; mostly `CompilerMode.h` |
 | E2 — Configurable live-set | proposed | First cut easy; free-list refactor multi-session |
 | E3 — Threading abstraction | proposed | One to two sessions |

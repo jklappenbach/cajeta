@@ -2064,15 +2064,19 @@ namespace cajeta {
         llvm::BasicBlock* entry = llvm::BasicBlock::Create(
             ctx, "entry", clinit);
 
-        // Save the module's current insert point so callers that emit
-        // more code after generateCode don't see a clinit-internal
-        // builder state.
-        auto* builder = module->getBuilder();
-        auto savedBB = builder->GetInsertBlock();
-        auto savedIP = savedBB
-            ? builder->GetInsertPoint()
-            : llvm::BasicBlock::iterator();
-        builder->SetInsertPoint(entry);
+        // Emit the clinit body through a FRESH local builder. This pass runs
+        // after the method-codegen pass (Compiler.cpp), where the module's
+        // leftover `builder` pointer can be stale: a method's RAII restore sets
+        // it back to the pre-method value, and for some body shapes that chains
+        // back to a destroyed stack/heap builder — dereferencing it here
+        // (GetInsertBlock) then segfaults. The clinit is a self-contained
+        // function with no caller insert-point to preserve, so use our own
+        // builder and just save/restore the module's builder POINTER (never
+        // dereferenced) for whatever runs next.
+        llvm::IRBuilder<> clinitBuilder(entry);
+        llvm::IRBuilder<>* builder = &clinitBuilder;
+        llvm::IRBuilder<>* prevModuleBuilder = module->getBuilder();
+        module->setBuilder(builder);
 
         // Push self onto the structure stack so bare identifier
         // references inside an initializer (e.g. `b = a + 5;`)
@@ -2148,9 +2152,10 @@ namespace cajeta {
         if (pushedSelf) {
             module->getStructureStack().pop_back();
         }
-        if (savedBB) {
-            builder->SetInsertPoint(savedBB, savedIP);
-        }
+        // Restore the module's builder pointer (clinitBuilder is about to go out
+        // of scope). The pointer is never dereferenced before the next
+        // generateStaticInitializers / method-codegen sets its own builder.
+        module->setBuilder(prevModuleBuilder);
 
         // Register the clinit with llvm.global_ctors. Default priority
         // 65535 — same bucket as the runtime's __cajeta_runtime_init /
@@ -3043,60 +3048,60 @@ namespace cajeta {
     }
 
     void CajetaClass::finalizeClassObject() {
-        // See header. A #ClassObject is { ptr Class#VTable, ptr rtti }. Slot 0
-        // is NULL only for classes parsed before cajeta.reflect.Class (the
-        // lookup in StructureMetadata::populate couldn't find Class's vtable
-        // yet). Those were also NOT registered (registration there is guarded on
-        // a non-null slot 0). By the time this post-pass runs the whole stdlib —
-        // Class included — is built, so we can resolve Class#VTable, patch slot
-        // 0, and register the class. Idempotent: a class whose slot 0 already
-        // resolved returns immediately (and was already registered at populate).
+        // Sole class-registration site (DCE Tier-0b; lean-linker-dce.md §3.2).
+        // #ClassObject = { ptr Class#VTable, ptr rtti }; slot 0 is null for
+        // classes parsed before cajeta.reflect.Class. Patch slot 0 for those,
+        // then emit the keepsClass-gated reg ctor for any non-null-slot-0 class.
         llvm::GlobalVariable* co = getClassObjectGlobal();
         if (!co || !co->hasInitializer()) return;
         auto* init = llvm::dyn_cast<llvm::ConstantStruct>(co->getInitializer());
         if (!init || init->getNumOperands() < 2) return;
-        if (!init->getOperand(0)->isNullValue()) return;   // already resolved
-
-        // REFL-1.7: embed the canonical Class<?> instantiation's vtable (the
-        // bare "cajeta.reflect.Class" now names the never-built template).
-        auto& s2m = CajetaModule::getStructureToModule();
-        auto mit = s2m.find("cajeta.reflect.Class<?>");
-        if (mit == s2m.end() || !mit->second) return;
-        auto& structs = mit->second->getStructures();
-        auto sit = structs.find("cajeta.reflect.Class<?>");
-        if (sit == structs.end() || !sit->second) return;
-        llvm::GlobalVariable* cv = sit->second->getVirtualTableGlobal();
-        if (!cv) return;
 
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
-        llvm::Constant* classVtableRef =
-            CajetaModule::ensureGlobalInModule(lmod, cv);
 
-        auto* coTy = llvm::cast<llvm::StructType>(co->getValueType());
-        co->setInitializer(llvm::ConstantStruct::get(
-            coTy, {classVtableRef, init->getOperand(1)}));
+        if (init->getOperand(0)->isNullValue()) {
+            // Deferred class (parsed before Class<?>); patch slot 0 with the
+            // Class<?> vtable. If unresolvable, leave null + unregistered.
+            auto& s2m = CajetaModule::getStructureToModule();
+            auto mit = s2m.find("cajeta.reflect.Class<?>");
+            if (mit == s2m.end() || !mit->second) return;
+            auto& structs = mit->second->getStructures();
+            auto sit = structs.find("cajeta.reflect.Class<?>");
+            if (sit == structs.end() || !sit->second) return;
+            llvm::GlobalVariable* cv = sit->second->getVirtualTableGlobal();
+            if (!cv) return;
+            llvm::Constant* classVtableRef =
+                CajetaModule::ensureGlobalInModule(lmod, cv);
+            auto* coTy = llvm::cast<llvm::StructType>(co->getValueType());
+            co->setInitializer(llvm::ConstantStruct::get(
+                coTy, {classVtableRef, init->getOperand(1)}));
+        }
 
-        // Deferred registration (mirrors StructureMetadata::populate's REFL-8
-        // block). These names were not emitted at populate time for this class
-        // (its slot 0 was null), so there is no collision.
+        // REFL-8 registration, keepsClass-gated. Only non-null-slot-0 classes are
+        // discoverable. Dedup by name: the canonicalMap can reach a canon >1×.
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
-        llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
-        llvm::FunctionType* regTy =
-            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
-        llvm::FunctionCallee regFn =
-            lmod->getOrInsertFunction("__cajeta_register_class", regTy);
         std::string canon = toCanonical();
-        llvm::Function* regCtor = llvm::Function::Create(
-            llvm::FunctionType::get(voidTy, false),
-            llvm::GlobalValue::InternalLinkage,
-            "__cajeta_class_reg_ctor." + canon, lmod);
-        llvm::IRBuilder<> rb(llvm::BasicBlock::Create(ctx, "entry", regCtor));
-        llvm::Constant* nameStr =
-            rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
-        rb.CreateCall(regFn, {nameStr, co});
-        rb.CreateRetVoid();
-        llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+        std::string regCtorName = "__cajeta_class_reg_ctor." + canon;
+        if (!co->getInitializer()->getAggregateElement(0u)->isNullValue()
+                && module->keepsClass(canon)
+                && lmod->getFunction(regCtorName) == nullptr) {
+            llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+            llvm::FunctionType* regTy =
+                llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
+            llvm::FunctionCallee regFn =
+                lmod->getOrInsertFunction("__cajeta_register_class", regTy);
+            llvm::Function* regCtor = llvm::Function::Create(
+                llvm::FunctionType::get(voidTy, false),
+                llvm::GlobalValue::InternalLinkage,
+                regCtorName, lmod);
+            llvm::IRBuilder<> rb(llvm::BasicBlock::Create(ctx, "entry", regCtor));
+            llvm::Constant* nameStr =
+                rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
+            rb.CreateCall(regFn, {nameStr, co});
+            rb.CreateRetVoid();
+            llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+        }
     }
 
     void CajetaClass::ensureClassWildcardInstantiated() {

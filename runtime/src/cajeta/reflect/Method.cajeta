@@ -37,6 +37,14 @@ public final class Method {
     private static int64 invoke0(Object o, int32 idx);
     @Native("__cajeta_object_invoke_scalar")
     private static int64 invokeN(Object o, int32 idx, int64[] args);
+    // REFL: RTTI-driven invoke. Resolves the per-class adapter from the
+    // method's declaring-class rtti (not the receiver), so STATIC methods —
+    // which pass a NULL receiver — dispatch. `o` is the `this` receiver (NULL
+    // for statics) handed straight to the adapter.
+    @Native("__cajeta_rtti_invoke_scalar")
+    private static int64 rttiInvokeScalar(pointer rtti, Object o, int32 idx, int64[] args);
+    @Native("__cajeta_rtti_invoke_obj")
+    private static #Object rttiInvokeObj(pointer rtti, Object o, int32 idx, int64[] args);
     // REFL-4.4 fiber-stack arg buffers: discrete args, no heap int64[].
     @Native("__cajeta_object_invoke_scalar1")
     private static int64 invoke1(Object o, int32 idx, int64 a0);
@@ -142,7 +150,7 @@ public final class Method {
      * int64 (smaller scalars in the low bytes, pointers whole, void → 0).
      * Argument-passing variants land with REFL-4 marshalling.
      */
-    public int64 invokeScalar(Object o) { checkAccess(); return invoke0(o, this.index); }
+    public int64 invokeScalar(Object o) { checkAccess(); return rttiInvokeScalar(this.rtti, o, this.index, null); }
 
     /**
      * Invoke this method on `o` with raw arguments packed into `args` (one
@@ -153,7 +161,7 @@ public final class Method {
      */
     public int64 invokeScalar(Object o, int64[] args) {
         checkAccess();
-        return invokeN(o, this.index, args);
+        return rttiInvokeScalar(this.rtti, o, this.index, args);
     }
 
     /**
@@ -179,12 +187,12 @@ public final class Method {
     }
 
     /** Invoke a NO-ARGUMENT int32-returning method, narrowed from the int64 path. */
-    public int32 invokeInt32(Object o) { checkAccess(); return (int32) invoke0(o, this.index); }
+    public int32 invokeInt32(Object o) { checkAccess(); return (int32) rttiInvokeScalar(this.rtti, o, this.index, null); }
 
     /** Invoke an int32-returning method with raw-packed `args`, narrowed. */
     public int32 invokeInt32(Object o, int64[] args) {
         checkAccess();
-        return (int32) invokeN(o, this.index, args);
+        return (int32) rttiInvokeScalar(this.rtti, o, this.index, args);
     }
 
     /**
@@ -234,10 +242,10 @@ public final class Method {
      * can't see the borrow's lifetime, so treating it as owned would risk a
      * double free. No-arg form passes a null arg buffer.
      */
-    public #Object invokeObject(Object o) { checkAccess(); return invokeObj(o, this.index, null); }
+    public #Object invokeObject(Object o) { checkAccess(); return rttiInvokeObj(this.rtti, o, this.index, null); }
     public #Object invokeObject(Object o, int64[] args) {
         checkAccess();
-        return invokeObj(o, this.index, args);
+        return rttiInvokeObj(this.rtti, o, this.index, args);
     }
 
     /**

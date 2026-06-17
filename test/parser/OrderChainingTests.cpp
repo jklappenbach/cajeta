@@ -43,7 +43,7 @@ int32_t runI32(const std::string& src) {
 TEST(OrderChainingTests, twoAroundChainInOrder) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class OuterAspect {\n"
         "    @Order(1)\n"
         "    @Around(Audited.class)\n"
@@ -75,7 +75,7 @@ TEST(OrderChainingTests, twoAroundChainInOrder) {
 TEST(OrderChainingTests, threeAroundChainReachesOriginal) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A1 {\n"
         "    @Order(1)\n"
         "    @Around(Audited.class)\n"
@@ -114,7 +114,7 @@ TEST(OrderChainingTests, threeAroundChainReachesOriginal) {
 TEST(OrderChainingTests, intermediateAroundShortCircuits) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class OuterAspect {\n"
         "    @Order(1)\n"
         "    @Around(Audited.class)\n"
@@ -149,7 +149,7 @@ TEST(OrderChainingTests, intermediateAroundShortCircuits) {
 TEST(OrderChainingTests, beforeOrderResetThenDrop) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A1 {\n"
         "    @Order(1)\n"
         "    @Before(Audited.class)\n"
@@ -186,7 +186,7 @@ TEST(OrderChainingTests, beforeOrderResetThenDrop) {
 TEST(OrderChainingTests, unorderedAdviceFollowsOrdered) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A2 {\n"
         "    @Order(2)\n"
         "    @Around(Audited.class)\n"

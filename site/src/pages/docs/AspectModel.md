@@ -64,7 +64,7 @@ A class annotated `@Aspect`. Holds one or more advice methods plus any state. Re
 
 ```cajeta
 // User-defined marker — applied to methods to opt them into advice.
-public @interface Audited {
+public annotation Audited {
     String reason = "";   // optional annotation parameter
 }
 
@@ -434,7 +434,7 @@ Opt-out with `@NoAdvice` on the subclass override if needed (rare).
 ### Example 1: logging via marker annotation
 
 ```cajeta
-public @interface Logged { String level = "info"; }
+public annotation Logged { String level = "info"; }
 
 @Aspect public class LoggingAspect {
     @Inject Logger log;
@@ -454,7 +454,7 @@ class PaymentProcessor {
 ### Example 2: transactional boundary via @Around
 
 ```cajeta
-public @interface Transactional {}
+public annotation Transactional {}
 
 @Aspect public class TransactionalAspect {
     @Inject TransactionManager txm;

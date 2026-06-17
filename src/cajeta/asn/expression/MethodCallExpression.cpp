@@ -413,6 +413,169 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
 
+        // ----- REFL-12: bounded reflection lowering -----
+        // The bounded reflection entry points carry the bound `Shape` as an
+        // explicit method type argument: `Class.heapInstance<Shape>(name)` and
+        // `Class.subtypes<Shape>()`. The bound is the supertype the developer
+        // already needs to use the result; surfacing it as `<Shape>` makes the
+        // result type-checked / closure-scoped and hands the lean linker a
+        // closed-world keep-token (the bound's subtype closure; see
+        // plans/compiler/lean-linker-dce.md). Both lower the SAME way: append the
+        // bound as a synthesized `Shape.class` literal so the call resolves to a
+        // stdlib overload taking `Class<?> bound`, which runs the runtime
+        // `leaf <: T` check via __cajeta_is_subtype. They differ only in whether
+        // the `<Shape>` token survives the rewrite:
+        //   - heapInstance<Shape>(name) -> heapInstance(name, Shape.class): KEEP
+        //     the token — it binds the `Optional<T>` return type natively.
+        //   - subtypes<Shape>()        -> subtypes(Shape.class):          DROP the
+        //     token — the return is the wildcard `#Class<?>[]` (T is purely the
+        //     keep-token + filter), and a concrete element type would re-trip the
+        //     ClassObject borrow-drop that defers `forName<T>` (see Class.cajeta).
+        // Guarded so the arg is injected exactly once.
+        if (!boundedReflInjected
+                && explicitMethodTypeArgs.size() == 1
+                && explicitMethodTypeArgs[0]
+                && !children.empty()) {
+            // bounded by-name heapInstance<T>(name); the <T> token distinguishes
+            // it from the by-index heapInstance(int32) primitive (no type arg).
+            bool isBoundedHeapInstance =
+                methodCallName == "heapInstance" && parameters.size() == 1;
+            bool isBoundedSubtypes =
+                methodCallName == "subtypes" && parameters.empty();
+            // classesAnnotated<@A>(): inject A's canonical name as the String arg
+            // and keep only @A-bearing classes.
+            bool isAnnotatedToken =
+                methodCallName == "classesAnnotated" && parameters.empty();
+            if (isBoundedHeapInstance || isBoundedSubtypes || isAnnotatedToken) {
+                if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        children[0])) {
+                    auto rt = CajetaType::of(recvId->getTextValue());
+                    if (rt && rt->toCanonical() == "cajeta.reflect.Class") {
+                        std::string tok =
+                            explicitMethodTypeArgs[0]->toCanonical();
+                        MethodCallParameter arg;
+                        if (isAnnotatedToken) {
+                            arg.expression =
+                                std::make_shared<TextLiteralExpression>(
+                                    "\"" + tok + "\"", LITERAL_TYPE_STRING);
+                        } else {
+                            arg.expression =
+                                std::make_shared<ClassLiteralExpression>(
+                                    tok, nullptr);
+                        }
+                        parameters.push_back(arg);
+                        boundedReflInjected = true;
+                        auto& keep = CajetaModule::reflectionKeep();
+                        using RS = CajetaModule::ReflSite;
+                        if (isAnnotatedToken) {
+                            auto p = tok.rfind('.');
+                            keep.sites.push_back({RS::Annotated,
+                                p == std::string::npos ? tok : tok.substr(p + 1)});
+                            explicitMethodTypeArgs.clear();
+                        } else {
+                            // REFL-12.3: bound = lean keep-token (subtype closure).
+                            keep.sites.push_back({RS::BoundClosure, tok});
+                            // subtypes' return is wildcard — drop the token so the
+                            // call resolves to the non-templated overload.
+                            if (isBoundedSubtypes) explicitMethodTypeArgs.clear();
+                        }
+                    }
+                }
+            }
+        }
+
+        // DCE Tier-0b: classify registry-consuming reflection from non-reflect
+        // code (lean-linker-dce.md §3.2). Resolvable sites record a narrow site
+        // descriptor; open ones set forcesAll. Must be complete — a missed site
+        // lets the linker strip a class a later forName needs.
+        if (!children.empty()) {
+            static const std::set<std::string> kClassReflEntry = {
+                "forName", "allClasses", "classesInPackage",
+                "classesAnnotated", "subtypes", "heapInstance"};
+            bool isClassEntry = false, isGetType = false;
+            if (kClassReflEntry.count(methodCallName)) {
+                if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        children[0])) {
+                    auto rt = CajetaType::of(recvId->getTextValue());
+                    isClassEntry =
+                        rt && rt->toCanonical() == "cajeta.reflect.Class";
+                }
+            } else if (methodCallName == "getType") {
+                if (auto recvExpr =
+                        std::dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!recvExpr->getResolvedType()) {
+                        recvExpr->resolveTypes(module);
+                    }
+                    auto rt = recvExpr->getResolvedType();
+                    isGetType = rt &&
+                        rt->toCanonical() == "cajeta.reflect.TemplateArgument";
+                }
+            }
+            bool callerInReflect = false;
+            if (auto cm = module->getCurrentMethod()) {
+                if (auto owner = cm->getParent()) {
+                    callerInReflect =
+                        owner->toCanonical().rfind("cajeta.reflect.", 0) == 0;
+                }
+            }
+            if ((isClassEntry || isGetType) && !callerInReflect) {
+                auto& keep = CajetaModule::reflectionKeep();
+                // a constant-folded String arg → narrow; else open
+                auto stringLiteralArg = [&](int i) -> std::string {
+                    if (i >= (int) parameters.size()) return "";
+                    auto lit = std::dynamic_pointer_cast<TextLiteralExpression>(
+                        parameters[i].expression);
+                    if (!lit ||
+                            lit->getLiteralType() != LITERAL_TYPE_STRING) {
+                        return "";
+                    }
+                    std::string v = lit->getRawValue();  // includes quotes
+                    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') {
+                        return v.substr(1, v.size() - 2);
+                    }
+                    return "";
+                };
+                auto shortName = [](const std::string& canon) {
+                    auto p = canon.rfind('.');
+                    return p == std::string::npos ? canon : canon.substr(p + 1);
+                };
+                using RS = CajetaModule::ReflSite;
+                using M = CajetaModule;
+                if (isGetType) {
+                    M::noteForceAll("TemplateArgument.getType() — resolves any "
+                        "template-argument type by name; bound it with a concrete "
+                        "Class<T> instead");
+                } else if (methodCallName == "forName") {
+                    std::string s = stringLiteralArg(0);
+                    if (!s.empty()) keep.sites.push_back({RS::ForNameLiteral, s});
+                    else M::noteForceAll("forName(<non-literal>) — pass a string "
+                        "literal, or use Class.subtypes<Base>() for a bounded set");
+                } else if (methodCallName == "classesInPackage") {
+                    std::string s = stringLiteralArg(0);
+                    if (!s.empty()) keep.sites.push_back({RS::PackageLiteral, s});
+                    else M::noteForceAll("classesInPackage(<non-literal>) — pass a "
+                        "package-name string literal");
+                } else if (methodCallName == "classesAnnotated") {
+                    std::string s = stringLiteralArg(0);
+                    if (!s.empty())
+                        keep.sites.push_back({RS::Annotated, shortName(s)});
+                    else M::noteForceAll("classesAnnotated(<non-literal>) — pass an "
+                        "annotation token classesAnnotated<@A>() or a name literal");
+                } else if (methodCallName == "heapInstance"
+                        || methodCallName == "subtypes") {
+                    // bounded form already recorded BoundClosure above; the
+                    // by-index heapInstance(int32) isn't a Class-static call so
+                    // it never reaches here
+                    if (!boundedReflInjected)
+                        M::noteForceAll(methodCallName + "(...) without a <T> bound "
+                            "— add a type bound, e.g. subtypes<Base>()");
+                } else {  // allClasses + any other enumerator
+                    M::noteForceAll(methodCallName + "() — enumerates the whole "
+                        "registry; use Class.subtypes<Base>() for a bounded set");
+                }
+            }
+        }
+
         // ----- Buffer<T>.elementBytes() intrinsic -----
         // Cajeta has no source-level sizeof, but the Buffer<T> device methods
         // (alloc/upload/download) need n*sizeof(T) byte counts. This call is
@@ -3426,15 +3589,22 @@ namespace cajeta {
                 } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
                     receiver = builder->CreateLoad(
                         llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
-                } else if (dynamic_pointer_cast<DotExpression>(exprChild)
-                        && llvm::isa<llvm::GetElementPtrInst>(receiver)
+                } else if ((dynamic_pointer_cast<DotExpression>(exprChild)
+                            || dynamic_pointer_cast<IdentifierExpression>(exprChild))
+                        && (llvm::isa<llvm::GetElementPtrInst>(receiver)
+                            || llvm::isa<llvm::GlobalVariable>(receiver))
                         && receiverType
                         && dynamic_pointer_cast<CajetaClass>(receiverType)
                         && !dynamic_pointer_cast<CajetaView>(receiverType)) {
                     // Chained field access `a.b.method()` where `b` is a
-                    // class-ref OR array field. DotExpression returned the
-                    // field's slot pointer (a GEP); the slot stores a `ptr`
-                    // to the referent instance / array header (per
+                    // class-ref OR array field, OR a STATIC field receiver —
+                    // qualified `Class.STATIC.method()` (DotExpression) or bare
+                    // `STATIC.method()` (IdentifierExpression, same-class static
+                    // shorthand / implicit-this instance field). The receiver is
+                    // the field's slot pointer — a GEP for an instance field, or
+                    // the static-field GlobalVariable (its address) for a
+                    // static field. Either way the slot stores a `ptr` to the
+                    // referent instance / array header (per
                     // CajetaClass::fieldLayoutType rule that lays class-ref
                     // and array fields as `ptr`). Load through to
                     // materialize the instance/header pointer used as the
@@ -3444,9 +3614,11 @@ namespace cajeta {
                     // __cajeta_vtable_lookup would walk garbage; for arrays
                     // the same shape — `.count()` / `.stream()` would read
                     // the slot's first 8 bytes (the header pointer) as if
-                    // it were the count word. View and interface fields
-                    // stay inline, so the slot IS the language-level value
-                    // — skip the load there.
+                    // it were the count word. (The static-field case
+                    // previously fell through with no load → the global's
+                    // address was passed as `this` → SIGSEGV.) View and
+                    // interface fields stay inline, so the slot IS the
+                    // language-level value — skip the load there.
                     auto rc = dynamic_pointer_cast<CajetaClass>(receiverType);
                     if (!rc->isInterface()) {
                         receiver = builder->CreateLoad(
@@ -4172,6 +4344,15 @@ namespace cajeta {
             llvm::Value* value = param.expression->generateCode(module);
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
+            } else if (llvm::isa_and_nonnull<llvm::GlobalVariable>(value)
+                    && dynamic_pointer_cast<IdentifierExpression>(param.expression)) {
+                // A bare static-field identifier (`TAG`, the `Main.TAG`
+                // shorthand) returns the field's GlobalVariable slot — load
+                // through to the value, mirroring the alloca case. Gated on
+                // IdentifierExpression so a String / `T.class` literal global
+                // (an r-value whose ADDRESS is the value) is left untouched.
+                auto* g = llvm::cast<llvm::GlobalVariable>(value);
+                value = builder->CreateLoad(g->getValueType(), g);
             }
             // Field reads (DotExpression) on a primitive or function-
             // typed field return an l-value GEP slot. Load through so

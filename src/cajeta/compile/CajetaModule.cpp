@@ -363,9 +363,9 @@ namespace cajeta {
     // resolves to a registered class in the global structure map,
     // it's type-based ("every method on this class"). Otherwise it's
     // assumed to be marker-annotation mode ("every method annotated
-    // with this name") — annotation types declared via `@interface`
-    // don't register as classes today (visitAnnotationTypeDeclaration
-    // is inert), so absence-from-structures is a reliable proxy.
+    // with this name"). `annotation` types register in canonicalMap (so
+    // they resolve as type tokens, e.g. classesAnnotated<@A>()) but NOT in
+    // the structure map, so absence-from-structures is still a reliable proxy.
     void CajetaModule::resolveAdviceMatches() {
         if (aspectClasses.empty()) return;
 
@@ -407,6 +407,7 @@ namespace cajeta {
                     auto& structs = mod->getStructures();
                     auto it = structs.find(canonical);
                     if (it == structs.end() || !it->second) continue;
+                    if (it->second->isAnnotation()) continue;  // marker, not a type pointcut
                     auto qn = it->second->getQName();
                     if (qn && qn->getTypeName() == shortName) {
                         return it->second;
@@ -984,6 +985,7 @@ namespace cajeta {
                 auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
                 if (!klass) continue;
                 if (klass->isPlaceholder()) continue;       // wait for fill-in
+                if (klass->isAnnotation()) continue;        // type token only, no layout
                 if (klass->isPrototypeBuilt()) continue;
                 if (klass->isTemplate()) continue;          // templates lay out only on instantiate
                 klass->tryGeneratePrototype();

@@ -41,7 +41,7 @@ int32_t runI32(const std::string& src) {
 TEST(AroundAdviceTests, aroundSkippingProceedReturnsConstant) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @Around(Audited.class)\n"
         "    public static int32 around((int32) -> int32 proceed, int32 x) {\n"
@@ -63,7 +63,7 @@ TEST(AroundAdviceTests, aroundSkippingProceedReturnsConstant) {
 TEST(AroundAdviceTests, aroundDelegatesToProceedReturnsOriginal) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @Around(Audited.class)\n"
         "    public static int32 around((int32) -> int32 proceed, int32 x) {\n"
@@ -83,7 +83,7 @@ TEST(AroundAdviceTests, aroundDelegatesToProceedReturnsOriginal) {
 TEST(AroundAdviceTests, aroundTransformsReturnValue) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @Around(Audited.class)\n"
         "    public static int32 around((int32) -> int32 proceed, int32 x) {\n"
@@ -105,7 +105,7 @@ TEST(AroundAdviceTests, aroundTransformsReturnValue) {
 TEST(AroundAdviceTests, aroundTransformsArgumentToProceed) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect public class A {\n"
         "    @Around(Audited.class)\n"
         "    public static int32 around((int32) -> int32 proceed, int32 x) {\n"

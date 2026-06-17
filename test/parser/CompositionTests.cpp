@@ -108,7 +108,7 @@ TEST(CompositionTests, advicePointcutMatchesInterfaceImpl) {
 TEST(CompositionTests, aspectClassAlsoComponent) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Aspect @Component public class AuditAspect {\n"
         "    public AuditAspect() { return; }\n"
         "    @Before(Audited.class)\n"
@@ -140,7 +140,7 @@ TEST(CompositionTests, aspectClassAlsoComponent) {
 TEST(CompositionTests, fullStack) {
     auto src =
         "package test;\n"
-        "@interface Audited { }\n"
+        "annotation Audited { }\n"
         "@Component public class Dep {\n"
         "    public int32 value;\n"
         "    public Dep() { value = 9; return; }\n"

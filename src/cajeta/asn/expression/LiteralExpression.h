@@ -48,6 +48,15 @@ namespace cajeta {
             }
         }
 
+        // Synthesized literal (no parse context) — e.g. the compiler injects a
+        // string arg for classesAnnotated<@A>(). `rawValue` must already carry
+        // the source form generateCode expects (quotes for STRING).
+        TextLiteralExpression(string rawValue, LiteralType type)
+            : LiteralExpression(nullptr) {
+            value = std::move(rawValue);
+            literalType = type;
+        }
+
         LiteralType getLiteralType() const { return literalType; }
 
         void resolveTypes(CajetaModulePtr module) override;

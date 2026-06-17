@@ -470,7 +470,7 @@ elementValueArrayInitializer
     ;
 
 annotationTypeDeclaration
-    : '@' INTERFACE identifier annotationTypeBody
+    : ANNOTATION identifier annotationTypeBody
     ;
 
 annotationTypeBody

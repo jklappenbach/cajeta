@@ -154,6 +154,14 @@ public final class Class<T> {
     @Native("__cajeta_class_for_name")
     private static Class<?> forNameNative(int8[] nameBytes);
 
+    // REFL-12: is `leafRtti`'s type the same as, or a subtype of, `boundRtti`'s?
+    // Walks the leaf's vtable parent chain looking for the bound's vtable
+    // (reuses the exception-match idiom). Backs the bounded reflection boundary
+    // check — a resolved leaf must satisfy `leaf <: T` before it is handed back
+    // as a `T`. Returns 1 on subtype (or identity), 0 otherwise.
+    @Native("__cajeta_is_subtype")
+    private static int32 isSubtype(pointer leafRtti, pointer boundRtti);
+
     /**
      * Resolve a class by its canonical name (e.g. `"test.User"`,
      * `"cajeta.lang.String"`) to its cached `Class` — the inverse of
@@ -179,6 +187,43 @@ public final class Class<T> {
             return stack Optional<Class<?>>(false, #null);
         }
         return stack Optional<Class<?>>(true, c);
+    }
+
+    // NOTE (REFL-12): a bounded `forName<T>` returning `Optional<Class<T>>` is
+    // deferred. A `Class` handle is a process-lifetime BORROW (the cached
+    // #ClassObject, never freed), but `Optional<Class<Shape>>` — a *concrete*
+    // instantiation — synthesizes an element drop that frees its held value,
+    // faulting on the global ClassObject. The unbounded `forName` above escapes
+    // this only because wildcard `Class<?>` element-drops are suppressed. The
+    // right fix is to mark `Class<T>` non-droppable (a process-lifetime borrow)
+    // so owning containers never free it — the same ownership gap tracked for
+    // collections. Until then, bounded reflection ships via `heapInstance<T>`
+    // (below), whose held value genuinely IS owned, so its drop is correct.
+
+    /**
+     * REFL-12 — **bounded** by-name allocation. `Class.heapInstance<Shape>(name)`
+     * resolves `name`, verifies `leaf <: Shape`, then constructs it via its
+     * no-argument constructor and hands back an `Optional<Shape>` — type-checked,
+     * no unchecked downcast. Empty when the name is unknown OR resolves to a
+     * non-`Shape` (a normal not-found, not a throw). The bound (`Shape.class`) is
+     * injected by the compiler from the `<Shape>` token. The subtype check makes
+     * the `(T)` cast sound. Primary bounded-reflection entry point + DCE keep
+     * token; overloads the by-index `heapInstance(int32)` primitive below.
+     *
+     * ```cajeta
+     * Optional<Shape> s = Class.heapInstance<Shape>(name);
+     * if (s.isPresent()) { s.get().draw(); }
+     * ```
+     */
+    public static Optional<T> heapInstance<T>(String name, Class<?> bound) {
+        Class<?> c = forNameNative(name.bytes);
+        if (c == null) {
+            return stack Optional<T>(false, #null);
+        }
+        if (isSubtype(c.rtti, bound.rtti) == 0) {
+            return stack Optional<T>(false, #null);
+        }
+        return stack Optional<T>(true, #(T) c.heapInstance(0));
     }
 
     // --- identity ---------------------------------------------------------
@@ -597,6 +642,47 @@ public final class Class<T> {
         while (i < n) {
             Class<?> c = registryAt(i);
             if (c.hasAnnotation(annotationName)) {
+                arr[j] = c;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #arr;
+    }
+
+    /**
+     * REFL-12 — **bounded enumeration.** `Class.subtypes<Shape>()` returns every
+     * retained class that is a subtype of (or is) the bound `Shape`: the
+     * closed-world subtype closure. This is the runtime face of the same closure
+     * the lean linker keeps for a `Class<Shape>` bound — enumerate the plugins,
+     * load them, and the linker has already retained exactly this set (see
+     * plans/compiler/lean-linker-dce.md). The bound (`Shape.class`) is injected
+     * by the compiler from the `<Shape>` token; source code never passes it.
+     * Elements are `Class<?>` borrows (process-lifetime), never freed — so the
+     * returned type stays wildcard, sidestepping the owned-handle drop that
+     * defers a `Class<Shape>[]` form (see the `forName<T>` note above). Two-pass
+     * over the registry, reusing {@link #isSubtype}.
+     *
+     * ```cajeta
+     * #Class<?>[] kinds = Class.subtypes<Shape>();
+     * ```
+     */
+    public static #Class<?>[] subtypes(Class<?> bound) {
+        int32 n = registryCount();
+        int32 matches = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (isSubtype(registryAt(i).rtti, bound.rtti) != 0) {
+                matches = matches + 1;
+            }
+            i = i + 1;
+        }
+        Class<?>[] arr = heap Class<?>[matches];
+        int32 j = 0;
+        i = 0;
+        while (i < n) {
+            Class<?> c = registryAt(i);
+            if (isSubtype(c.rtti, bound.rtti) != 0) {
                 arr[j] = c;
                 j = j + 1;
             }
