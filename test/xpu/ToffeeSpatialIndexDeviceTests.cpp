@@ -1570,6 +1570,89 @@ TEST(ToffeeSpatialIndexDeviceTests, lazyOptixBuiltOnFirstNativeLaunch) {
                          "on the first supported-shape launch)";
 }
 
+// ── M3 Phase 4 — safe AUTO on CUDA prefers RT cores ──────────────────────────
+// Phase 3 delivered the AUTO→OptiX flip via lazy build; this confirms it for the
+// TRIANGLE-geometry lazy branch (caj_cuda_as_resolve_optix's build_triangles path,
+// kind=1 — 3b only exercised the AABB kind=0 branch) and proves RT-core dispatch under
+// AUTO the strong way: the OptiX rep is built (implSet 1→5) so the launch took
+// optixLaunch (not the software cubin), AND the nearest-hit result is correct. The four
+// canonical shapes otherwise run on RT cores under forced =optix (the device suite); the
+// AUTO Unsupported-shape software fallback is covered by softwareOnlyConsumerSkipsOptixBuild.
+const char* kAutoTriDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class NearRqAuto {\n"
+    "    @Kernel\n"   // SUPPORTED triangle nearest-hit (NearestTri) -> lazy OptiX at launch
+    "    public static void nearest(AccelerationStructure scene,\n"
+    "                               Buffer<float32> outT, Buffer<uint32> outI) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i == 0) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          0.25f, 0.25f, 10.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, -1.0f, 100.0f);\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) { rq.confirmIntersection(); }\n"
+    "            }\n"
+    "            outT[0] = rq.committedDistance();\n"
+    "            outI[0] = rq.committedType();\n"
+    "            outI[1] = rq.committedPrimitiveIndex();\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        float32[] verts = heap float32[18];\n"
+    "        verts[0]=0.0f;  verts[1]=0.0f;  verts[2]=2.0f;\n"
+    "        verts[3]=1.0f;  verts[4]=0.0f;  verts[5]=2.0f;\n"
+    "        verts[6]=0.0f;  verts[7]=1.0f;  verts[8]=2.0f;\n"
+    "        verts[9]=0.0f;  verts[10]=0.0f; verts[11]=4.0f;\n"
+    "        verts[12]=1.0f; verts[13]=0.0f; verts[14]=4.0f;\n"
+    "        verts[15]=0.0f; verts[16]=1.0f; verts[17]=4.0f;\n"
+    "        AccelerationStructure mesh = heap AccelerationStructure(verts, 2, 3);\n"
+    "        int32 pre = mesh.implSet();\n"            // expect 1 (software-only, no OptiX yet)
+    "        float32[] ht = heap float32[1]; ht[0]=-9.0f;\n"
+    "        uint32[] hi = heap uint32[2]; hi[0]=9; hi[1]=9;\n"
+    "        Buffer<float32> outT = heap Buffer<float32>(1);\n"
+    "        Buffer<uint32> outI = heap Buffer<uint32>(2);\n"
+    "        outT.upload(ht); outI.upload(hi);\n"
+    "        Stream s = Stream.current();\n"
+    "        nearest.launch(s, grid: [1], block: [64])(mesh, outT, outI);\n"
+    "        s.sync();\n"
+    "        outT.download(ht); outI.download(hi);\n"
+    "        if (hi[0] != 1) { return 100; }\n"        // committed type = triangle
+    "        float32 dt = ht[0] - 6.0f;\n"
+    "        if (dt * dt > 0.001f) { return 101; }\n"  // nearest distance = 6
+    "        if (hi[1] != 1) { return 102; }\n"        // nearest prim = z=4 (idx 1)
+    "        if (pre != 1) { return 110; }\n"          // OptiX must NOT exist before launch
+    "        return 700 + mesh.implSet();\n"           // 705 = lazy OptiX built (RT cores); 701 = engine absent
+    "    }\n"
+    "}\n";
+
+TEST(ToffeeSpatialIndexDeviceTests, autoPrefersOptixForTriangleShape) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    unsetenv("CAJETA_GPU_AS_IMPL");   // AUTO — no opt-in
+    std::map<std::string, std::string> sources = {{"test.NearRqAuto", kAutoTriDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.NearRqAuto", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    if (r == 701) {
+        GTEST_SKIP() << "CUDA present but OptiX engine absent — lazy build cannot fire";
+    }
+    EXPECT_EQ(r, 705) << "fail code " << r
+                      << " (1xx: wrong nearest-hit; 110: OptiX existed before launch; 705 "
+                         "expected = AUTO lazily built the triangle OptiX rep and ran the "
+                         "nearest-hit on RT cores with the correct result)";
+}
+
 // M2 Phase 3-D — the OptiX RT-core VERB end to end through the full compiler. The
 // SAME kRqMinDriver as the software/native legs, but with CAJETA_GPU_AS_IMPL=optix:
 // the AS builds on the OptiX tier, NvptxRegistration emits the kernel's OptiX program
