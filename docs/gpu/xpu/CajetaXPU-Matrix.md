@@ -263,7 +263,10 @@ of 1s over a full wave == wave width ∈ {32, 64}, which is 32 on NVIDIA).
 
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
-| Atomic RMW on global / shared | LLVM `atomicrmw` + scope | `native` | `native` | `native` · SPIR-V atomic ops with explicit Scope + Memory-Semantics (by construction; not exercised on-device this pass) |
+| Atomic RMW on global / shared | LLVM `atomicrmw` + scope | `native` | `native` | `native` · SPIR-V atomic ops with explicit Scope + Memory-Semantics — **int atomics on-device RTX 4090 (NVIDIA Vulkan)** + RADV |
+| Int atomics (`Buffer<int32>.atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange,CompareExchange}`) | core `OpAtomicI*` (no ext) | `native` | `native` | `native` · core ops — on-device (RTX 4090 + RADV) |
+| Float atomic **add** (`Buffer<float32>.atomicAdd`) | `atomicrmw fadd` | `native` | `native` | `native` · `OpAtomicFAddEXT` (VK_EXT_shader_atomic_float / `shaderBufferFloat32AtomicAdd`) — **enabled at device creation; on-device RTX 4090** (`floatAddAtomicsRunOnVulkanDevice`) + RADV. (The extension+feature MUST be enabled or NVIDIA device-losts; this was a latent bug.) |
+| Float atomic **min/max** (`Buffer<float32>.atomic{Min,Max}`) | `atomicrmw fmin/fmax` | `native` | `native` | `OpAtomicFMin/MaxEXT` needs **VK_EXT_shader_atomic_float2** — present on RADV (on-device), **ABSENT on NVIDIA**. No portable SPIR-V fallback: an integer-bit-trick / CAS loop both need an integer atomic on the float buffer, which logical addressing forbids (no pointer reinterpretation). So the device test **skips** when float2 is unavailable (`VulkanDriver::shaderAtomicFloatMinMaxAvailable`). |
 | Scoped fences | `Barrier.workgroupMemory()` / `.deviceMemory()` — a memory fence with NO thread rendezvous (the `memoryFence(scope, order)` seam), AcqRel default + optional `MemoryOrder`. Device-verified CPU/VK/AMD/**NVIDIA**. The host-facing `Fence` class is a separate, unrelated thing (stream sync). | `native` · `membar.cta` (workgroup) / `membar.gl` (device) — **on-device RTX 4090** (`memoryFenceRoutesToCudaOnDevice`) | `native` · `agent`/`workgroup`-scoped `acq_rel` fence (no `s_barrier`) — on-device gfx1151 | `native` · `OpMemoryBarrier` via `llvm.spv.{group,device}.memory.barrier` — `spirv-val` clean + on-device RADV |
 | Memory order (user-selectable) | `MemoryOrder` enum (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`) — an optional **compile-time-constant** trailing arg on kernel atomics + fences (e.g. `out.atomicAdd(i, 1, MemoryOrder.Relaxed)`); default unchanged. Threaded through the atomic/fence seams. Prereq: enum constants now resolve in kernel bodies. | `native` · honours all five (relaxed → `monotonic` atomicrmw) — **relaxed-atomic counter on-device RTX 4090** (`relaxedAtomicCounterRoutesToCudaOnDevice`) | `native` · honours all five — relaxed-atomic counter on-device gfx1151 | **clamps** `Relaxed`/`SeqCst` → `AcqRel` (Vulkan rejects a bare-relaxed device atomic — needs storage-class acq/rel) — `spirv-val` clean + relaxed-counter on-device RADV |
 
@@ -367,10 +370,24 @@ gfx1151 box (both NVPTX and AMDGPU had the same latent `accelImpl()` gap that ma
 | Feature | Vulkan (Cajeta's flavor) | On-device |
 |---|---|---|
 | **Cooperative matrix** `CooperativeMatrix<T,Rows,Cols,Use>` | `OpTypeCooperativeMatrixKHR` + load/store/mul-add via `llvm.spv.cooperative.matrix.*`; mandates `OpMemoryModel Logical VulkanKHR`. CM1–CM5 + multi-tile GEMM | ✅ f16/f16→f32 16×16×16 bit-exact on RDNA3 WMMA cores; 64×64×64 tiled GEMM bit-exact (needed the `SPIRVFixupMergePlacement` backend fix). CM6 LDS-staging deferred |
-| **Ray query + accel structures** `RayQuery` / `AccelerationStructure` | `OpTypeRayQueryKHR` / `OpTypeAccelerationStructureKHR` + init/proceed/get via `llvm.spv.ray.query.*`; AS bound through the standard `handlefrombinding` path | ✅ spatial-index (RTNN) pattern over a BLAS, on-device; consumed by Toffee `SpatialIndex` (3c) |
+| **Ray query + accel structures** `RayQuery` / `AccelerationStructure` | `OpTypeRayQueryKHR` / `OpTypeAccelerationStructureKHR` + init/proceed/get via `llvm.spv.ray.query.*`; AS bound through the standard `handlefrombinding` path | ✅ spatial-index (RTNN) pattern over AABB + triangle geometry, on-device; consumed by Toffee `SpatialIndex` (3c) |
 
 `float16` is IEEE binary16 (`getHalfTy`, not bfloat) to match the device's
 `VK_COMPONENT_TYPE_FLOAT16_KHR` cooperative-matrix config.
+
+**Ray-query AS impl, by platform.** The `AccelerationStructure` noun has two impls
+(CajetaGPU §1.5): the **native** Vulkan BLAS+TLAS (`OpRayQuery`) and the **portable
+software BVH** (the `SoftwareRayQuery` walk over a `Buffer<float32>`, shared with
+CPU/NVPTX/AMD). On a ray-query Linux device (RADV) AUTO resolves to **native**; on
+**Windows** AUTO resolves to **software** (`caj_native_rayquery_available` is
+Win32-gated — native ray-query is not wired on Windows), so the RTX 4090 runs the
+software walk for both AABB and triangle geometry (matching the CPU/NVPTX/AMD
+oracles, all green). Two bugs fixed on the way: the native **triangle** builder
+recorded a BLAS as the traceable AS (must be a TLAS — NVIDIA returns no hits, RADV
+tolerated it; now wraps the BLAS in a TLAS like the AABB path), and the triangle
+provider **forced native** instead of following the resolved impl (now has the
+software-BVH arm, so Windows uses software like AABB). `RayQueryNative` capability
+(`Device.supports`) also no longer hard-zeroes on Windows.
 
 ---
 
