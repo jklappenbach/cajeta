@@ -371,9 +371,14 @@ int cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
 // hitgroup has a CLOSESTHIT program (no intersection / anyhit) and no payload —
 // closesthit commits the nearest and writes T / type / prim to the params buffers.
 // Otherwise structurally identical to cajeta_xpu_optix_launch (the AABB-count path).
+// Triangle-traversal launch (built-in primitive). The hitgroup is shape-driven:
+// pass a non-empty `closesthitName` for the nearest-hit shape (commits the closest
+// hit) and/or a non-empty `anyhitName` for the candidate-enumeration shape (reads
+// per-candidate getters + optixIgnoreIntersection). An empty string ("") for either
+// omits that program slot. miss + raygen are always present.
 int cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
                                 const char* raygenName, const char* closesthitName,
-                                const char* missName,
+                                const char* anyhitName, const char* missName,
                                 const void* paramsHost, uint64_t paramsLen,
                                 uint32_t width) {
     OptixState& s = ensureInit();
@@ -409,7 +414,12 @@ int cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
     OptixProgramGroupDesc msD = {}; msD.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
     msD.miss.module = mod; msD.miss.entryFunctionName = missName;
     OptixProgramGroupDesc hgD = {}; hgD.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
-    hgD.hitgroup.moduleCH = mod; hgD.hitgroup.entryFunctionNameCH = closesthitName;
+    if (closesthitName && closesthitName[0]) {
+        hgD.hitgroup.moduleCH = mod; hgD.hitgroup.entryFunctionNameCH = closesthitName;
+    }
+    if (anyhitName && anyhitName[0]) {
+        hgD.hitgroup.moduleAH = mod; hgD.hitgroup.entryFunctionNameAH = anyhitName;
+    }
     logSize = sizeof(log);
     if (optixProgramGroupCreate(s.ctx, &rgD, 1, &pgo, log, &logSize, &rg) != OPTIX_SUCCESS) { cleanup(); return -3; }
     logSize = sizeof(log);
@@ -470,7 +480,7 @@ int      cajeta_xpu_optix_launch(const char*, uint64_t, const char*, const char*
                                  const char*, const char*, const void*, uint64_t,
                                  uint32_t) { return -1; }
 int      cajeta_xpu_optix_launch_tri(const char*, uint64_t, const char*, const char*,
-                                     const char*, const void*, uint64_t,
+                                     const char*, const char*, const void*, uint64_t,
                                      uint32_t) { return -1; }
 }
 

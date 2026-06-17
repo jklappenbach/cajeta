@@ -50,13 +50,17 @@ namespace nvidia {
     // with the runtime's __cajeta_xpu_register_optix_rayquery `shape` arg + the
     // launch dispatch (cajeta_runtime.c), so keep them in sync.
     enum class OptixRqShape {
-        Unsupported = -1,
-        CountAabb   = 0,   // AABB candidate count: anyhit increments + ignores
-        NearestTri  = 1,   // triangle nearest-hit: closesthit commits T/prim
+        Unsupported  = -1,
+        CountAabb    = 0,   // AABB candidate count: anyhit increments + ignores
+        NearestTri   = 1,   // triangle nearest-hit: closesthit commits T/prim
+        BaryCandidate = 2,  // triangle candidate getters: anyhit reads T/bary + ignores
     };
 
     // Classify a ray-query kernel by its proceed-loop body + signature:
     //   - calls confirmIntersection() / a committed* getter -> NearestTri
+    //     (signature 1 AS, 2 Buffer, 0 scalar) else Unsupported
+    //   - calls a candidate* getter (candidateDistance/BarycentricU/BarycentricV)
+    //     (signature 1 AS, 1 Buffer, 0 scalar) -> BaryCandidate else Unsupported
     //   - canonical count signature (1 AS, 4 Buffer, 1 scalar) + candidateType
     //     -> CountAabb
     //   - otherwise -> Unsupported.
@@ -101,6 +105,23 @@ namespace nvidia {
     // not compile-time constants.
     std::string emitOptixNearestModule(const MethodPtr& method,
                                        llvm::Module& optixModule);
+
+    // The compiler ↔ runtime launch-params layout for the triangle candidate-getter
+    // (barycentric) shape. The emitted `params` const global is a packed struct:
+    //   handle : OptixTraversableHandle (u64)        — the triangle AS traversable
+    //   out    : device ptr (u64) to Buffer<float32> — kernel buffer arg 0 (out)
+    // The single ray is BAKED into __raygen__ from the initialize() literals.
+
+    // Emit the OptiX triangle candidate-getter program set for `method`:
+    // __raygen__<k> (single baked ray, built-in triangle traversal) / __anyhit__<k>
+    // (reads the candidate's optixGetRayTmax + optixGetTriangleBarycentrics, writes
+    // out[0]=t, out[1]=u, out[2]=v via params, then optixIgnoreIntersection to keep
+    // enumerating — faithful candidate semantics) / __miss__<k> (no-op). No
+    // closesthit (the kernel never commits). Returns the raygen entry name. Throws
+    // XPU-N04 if the signature/body is not the canonical candidate-getter shape or
+    // the ray args are not compile-time constants.
+    std::string emitOptixBaryModule(const MethodPtr& method,
+                                    llvm::Module& optixModule);
 
 } // namespace nvidia
 } // namespace xpu

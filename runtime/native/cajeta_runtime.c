@@ -13197,6 +13197,7 @@ extern int      cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
 extern int      cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
                                             const char* raygenName,
                                             const char* closesthitName,
+                                            const char* anyhitName,
                                             const char* missName,
                                             const void* paramsHost, uint64_t paramsLen,
                                             uint32_t width);
@@ -13210,8 +13211,9 @@ extern int      cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
 // here via __cajeta_xpu_register_optix_rayquery, keyed by the same name as the
 // kernel's ordinary software-BVH cubin. The CUDA launch path (cajeta_xpu_launch_cuda)
 // dispatches here when the active AS impl is OptiX; otherwise the software cubin runs.
-// shape: 0 = AABB candidate count (prog1=intersection, prog2=anyhit, prog3=miss);
-//        1 = triangle nearest-hit  (prog1=closesthit, prog2=miss, prog3 unused).
+// shape: 0 = AABB candidate count    (prog1=intersection, prog2=anyhit, prog3=miss);
+//        1 = triangle nearest-hit     (prog1=closesthit, prog2=miss, prog3 unused);
+//        2 = triangle candidate bary  (prog1=anyhit, prog2=miss, prog3 unused).
 // Keep in sync with cajeta::xpu::nvidia::OptixRqShape.
 struct cajeta_optix_rq {
     char name[256];
@@ -13971,8 +13973,16 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv)
         p.outT   = *(uint64_t*) av[1];
         p.outI   = *(uint64_t*) av[2];
         rc = cajeta_xpu_optix_launch_tri(rq->ptx, rq->ptxLen, rq->raygen,
-                                         rq->prog1 /*closesthit*/, rq->prog2 /*miss*/,
-                                         &p, sizeof(p), 1);
+                                         rq->prog1 /*closesthit*/, "" /*anyhit*/,
+                                         rq->prog2 /*miss*/, &p, sizeof(p), 1);
+    } else if (rq->shape == 2) {
+        // Triangle candidate getters: argv [AS, out] -> { handle, out }.
+        struct { uint64_t handle, out; } p;
+        p.handle = trav;
+        p.out    = *(uint64_t*) av[1];
+        rc = cajeta_xpu_optix_launch_tri(rq->ptx, rq->ptxLen, rq->raygen,
+                                         "" /*closesthit*/, rq->prog1 /*anyhit*/,
+                                         rq->prog2 /*miss*/, &p, sizeof(p), 1);
     } else {
         // AABB candidate count: argv [AS, ox,oy,oz, out, n] -> the count params.
         struct {

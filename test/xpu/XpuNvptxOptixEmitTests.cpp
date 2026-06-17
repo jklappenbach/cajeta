@@ -128,6 +128,35 @@ const char* kNearestKernel =
     "    }\n"
     "}\n";
 
+// The canonical triangle candidate-getter kernel (the kBaryDriver shape): an AS and
+// a single Buffer<float32> out; reads candidate distance + barycentrics inside the
+// proceed loop (no confirm); a compile-time-constant ray.
+const char* kBaryKernel =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqBary {\n"
+    "    @Kernel\n"
+    "    public static void getBary(AccelerationStructure scene, Buffer<float32> out) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i == 0) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          0.25f, 0.25f, 5.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, -1.0f, 100.0f);\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) {\n"
+    "                    out[0] = rq.candidateDistance();\n"
+    "                    out[1] = rq.candidateBarycentricU();\n"
+    "                    out[2] = rq.candidateBarycentricV();\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
 // A ray-query kernel whose signature is NOT the canonical count shape (one origin
 // buffer, not three) — must be rejected with XPU-N04.
 const char* kNonCanonicalKernel =
@@ -221,6 +250,46 @@ TEST(XpuNvptxOptixEmitTests, nearestShapeEmitsClosesthitPrograms) {
     EXPECT_NE(ptx.find("_optix_trace_typed_32"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("_optix_get_ray_tmax"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("_optix_read_primitive_idx"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("params"), std::string::npos) << ptx;
+}
+
+// The triangle candidate-getter kernel is classified BaryCandidate and emits the
+// raygen / anyhit / miss program set + the `params` block (built-in triangle
+// traversal — anyhit reads the candidate's tmax + barycentrics, no closesthit/
+// intersection). The ray literals are baked into raygen.
+TEST(XpuNvptxOptixEmitTests, baryShapeEmitsAnyhitGetters) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kBaryKernel, "test.RqBary");
+    auto klass = module->getStructures()["test.RqBary"];
+    ASSERT_NE(klass, nullptr);
+    auto getBary = findMethod(klass, "getBary");
+    ASSERT_NE(getBary, nullptr);
+    EXPECT_TRUE(nvptxKernelUsesRayQuery(getBary));
+    EXPECT_EQ((int) classifyRayQueryShape(getBary), (int) OptixRqShape::BaryCandidate);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module optixModule("rq_bary_optix", deviceCtx);
+    configureDeviceModule(optixModule, *tm);
+
+    std::string raygen = emitOptixBaryModule(getBary, optixModule);
+    EXPECT_EQ(raygen, "__raygen__getBary");
+
+    std::string ptx = emitPtx(optixModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+
+    EXPECT_NE(ptx.find(".visible .entry __raygen__getBary"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find(".visible .entry __anyhit__getBary"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find(".visible .entry __miss__getBary"), std::string::npos) << ptx;
+    // No closesthit/intersection — the kernel never commits.
+    EXPECT_EQ(ptx.find("__closesthit__getBary"), std::string::npos) << ptx;
+    EXPECT_EQ(ptx.find("__intersection__getBary"), std::string::npos) << ptx;
+    // optixTrace ABI + the candidate getters anyhit reads + ignore-intersection.
+    EXPECT_NE(ptx.find("_optix_trace_typed_32"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("_optix_get_ray_tmax"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("_optix_get_triangle_barycentrics"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("_optix_ignore_intersection"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("params"), std::string::npos) << ptx;
 }
 

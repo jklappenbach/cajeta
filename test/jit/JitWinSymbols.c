@@ -64,6 +64,7 @@ extern int      cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
 extern int      cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
                                             const char* raygenName,
                                             const char* closesthitName,
+                                            const char* anyhitName,
                                             const char* missName,
                                             const void* paramsHost, uint64_t paramsLen,
                                             unsigned width);
