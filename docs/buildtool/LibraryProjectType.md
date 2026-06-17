@@ -85,9 +85,20 @@ own `settings.dependencies`:
 ```
 
 The build tool resolves the version, fetches the `.cja` from the highest-priority
-repository that has it, verifies its `sha256`, and links the used symbols. The library's
-declared capabilities are unioned into the consumer's required-capability set and checked
-against what the consumer's manifest permits.
+repository that has it, verifies its `sha256`, and puts it on the compiler `--classpath`.
+The library's declared capabilities are unioned into the consumer's required-capability set
+and checked against what the consumer's manifest permits.
+
+**How a dep's code reaches the binary.** A classpath `.cja` always contributes its class
+*declarations* (so the consumer's source type-checks against the library API). For
+`--emit=exe`/`--emit=obj`, the consumer additionally re-drives each classpath class's body
+through its *own* codegen (from the source bytes the `.cja` bundles) and emits those objects
+into the link — so the library's code is actually linked, target-correct, and pulls in
+exactly the stdlib template instantiations it needs (a published library `.cja` is
+stdlib-stripped, so its own bitcode entries can't be linked standalone). `--gc-sections`
+then drops whatever the entry point never reaches. `--emit=cja`/`--emit=uber` keep deps
+external: a `cja` ships declarations only; an `uber` bundles each dep's bitcode under
+`deps/<name>-<version>/` for a self-contained, JIT-hosted artifact.
 
 ## 7. Conventions
 

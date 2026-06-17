@@ -857,24 +857,45 @@ namespace cajeta {
         // revisit. Per-module emitForModule moves out of the loop and
         // runs once after quiescence so each module's IR / .o is written
         // exactly once, with the freshest method set.
+        // Binary emit (--emit=obj/exe) must LINK the classpath deps, not just
+        // resolve their declarations: a user call into a dep is an extern at
+        // codegen, and the dep's published .cja bitcode is a stdlib-stripped
+        // library (its template instantiations live as `cajeta.*` canonicals the
+        // archive drops). Re-driving the dep's bodies through the consumer's own
+        // codegen below emits them target-correct AND pulls in exactly the stdlib
+        // instantiations they need; gc-sections then strips whatever the entry
+        // never reaches. Archive/IR emit keep deps external (declarations only).
+        const bool linkClasspathDeps =
+            (emitMode == EmitMode::Obj || emitMode == EmitMode::Exe)
+            && !externalModules.empty();
+
         size_t prevMethodCount = 0;
         while (true) {
+            // Rebuilt each iteration so modules added mid-codegen (a body that
+            // triggers a fresh template instantiation) are picked up next pass.
+            std::vector<CajetaModulePtr> codegenModules(
+                modules.begin(), modules.end());
+            if (linkClasspathDeps) {
+                codegenModules.insert(codegenModules.end(),
+                    externalModules.begin(), externalModules.end());
+            }
+
             size_t methodCount = 0;
-            for (auto& module: modules) {
+            for (auto& module: codegenModules) {
                 methodCount += module->getAllMethods().size();
             }
-            for (auto& module: modules) {
+            for (auto& module: codegenModules) {
                 for (auto& method: module->getAllMethods()) {
                     method->getLlvmFunctionType();
                 }
             }
-            for (auto& module: modules) {
+            for (auto& module: codegenModules) {
                 for (auto& method: module->getAllMethods()) {
                     method->generateCode();
                 }
             }
             size_t after = 0;
-            for (auto& module: modules) {
+            for (auto& module: codegenModules) {
                 after += module->getAllMethods().size();
             }
             if (after == methodCount && after == prevMethodCount) break;
@@ -1016,6 +1037,13 @@ namespace cajeta {
                 if (klass) klass->generateStaticInitializers();
             }
         }
+        if (linkClasspathDeps) {
+            for (auto& module: externalModules) {
+                for (auto& [name, klass] : module->getStructures()) {
+                    if (klass) klass->generateStaticInitializers();
+                }
+            }
+        }
         // XPU device codegen (--xpu-backend=nvptx): embed each @Kernel's cubin +
         // registration ctor into its host module, before the host module is
         // written out below. No-op for the default host-only path.
@@ -1051,6 +1079,16 @@ namespace cajeta {
                 // Incremental compilation (Phase 2): emit the per-module
                 // instantiation-obligation sidecar alongside its IR.
                 module->writeObligationsSidecar();
+            }
+            // Classpath deps for binary emit: emit each (now body-generated)
+            // external module's object so its symbols are defined at link. The
+            // external ctor set archivePath from the canonical name but no
+            // archiveRoot; point it at the build root so the .o lands there.
+            if (linkClasspathDeps) {
+                for (auto& module: externalModules) {
+                    module->setArchiveRoot(archiveRootPath);
+                    emitForModule(module);
+                }
             }
         }
 
