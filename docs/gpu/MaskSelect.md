@@ -70,7 +70,7 @@ register-resident, branchless — the **same source on CPU, Vulkan, and AMD**.
 **Rules.** Comparison operators on value types yield per-lane masks (typed
 `Vector<boolean,N>` / `Matrix<boolean,R,C>`); equality is not special, so
 whole-object equality is `(a == b).all()`. Masks are register-only values —
-`Buffer<Vector<boolean,N>>` and bool-vector kernel args stay rejected (the
+`GpuBuffer<Vector<boolean,N>>` and bool-vector kernel args stay rejected (the
 `<N x i1>` memory layout is ABI-ambiguous). Runnable end to end in
 `samples/Tour/xpu` (the `mask / select` section). See `ValueTypeCatalog.md`
 for the `Vector` / `Matrix` surfaces.

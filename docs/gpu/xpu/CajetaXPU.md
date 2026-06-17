@@ -30,8 +30,8 @@ today and is named to admit more tomorrow without renaming the prefix.
 > and **[`CajetaCPU.md`](CajetaCPU.md)** (CPU backend bring-up log). As built:
 > attributes are **PascalCase** (`@Kernel`, `@Device`, `@Host`, `@Backend`, `@Wave`,
 > `@PushConstant`); thread/wave intrinsics are class statics
-> (`Thread.globalIdX()`, `Thread.x()`, `Workgroup.dimX()`, `Wave.width()`,
-> `Wave.laneId()`); the portable types (`Buffer<T>`, `Stream`, `Thread`, `Wave`,
+> (`GpuThread.globalIdX()`, `GpuThread.x()`, `Workgroup.dimX()`, `Wave.width()`,
+> `Wave.laneId()`); the portable types (`GpuBuffer<T>`, `GpuStream`, `GpuThread`, `Wave`,
 > `Barrier`, `Texture2D`, `Sampler`) live in package **`cajeta.gpu`**; and there
 > are **four** backends (NVIDIA/NVPTX, AMD/AMDGPU, Vulkan/SPIR-V, CPU). Treat the
 > code blocks below as design intent, not copy-pasteable surface syntax.
@@ -68,7 +68,7 @@ silicon (Google Coral, Tesla Dojo), or programmable fabrics (Xilinx /
 Intel FPGA, AMD XDNA) become Cajeta backends, they slot in alongside
 `cajeta.xpu.nvidia` / `amd` / `vulkan` without renaming anything user
 code references — the address-space types, the capability traits, the
-`Buffer<T>` / `Stream` / `Event` interfaces, the `@kernel` attribute.
+`GpuBuffer<T>` / `GpuStream` / `Event` interfaces, the `@kernel` attribute.
 New backends bring new capability traits and possibly new sub-
 namespaces; existing code that touches only `cajeta.gpu.*` keeps
 working on the new silicon at the cost of a recompile.
@@ -135,7 +135,7 @@ less-common ground is the *combination* of memory-safety with GPU as a
 first-class, multi-backend language feature:
 
 1. **Borrow-checking across the host/device launch boundary** — the
-   deferred-borrow-until-`Stream.sync()` model (§3.5, §11). Rust-CUDA
+   deferred-borrow-until-`GpuStream.sync()` model (§3.5, §11). Rust-CUDA
    and cubecl inherit Rust's borrow checker for device-side code, but
    full lifetime tracking of a buffer borrowed by an in-flight launch
    until the next sync is not something the surveyed ecosystems model
@@ -261,7 +261,7 @@ new divergences.
 - Return `void`.
 - Take only parameters of types that satisfy the `KernelArg` trait
   (`cajeta.gpu`; v1 simulates it via the `@KernelArg` marker) —
-  primitives, POD structs, `Buffer<T>`, `Texture2D`/`Sampler`, and
+  primitives, POD structs, `GpuBuffer<T>`, `Texture2D`/`Sampler`, and
   `@PushConstant` structs (Vulkan only).
 - Cannot throw. Errors are reported through a per-launch status
   buffer; see §3.7.
@@ -287,7 +287,7 @@ borrow checker accounts for.
 
 ```cajeta
 @kernel
-void saxpy(Buffer<float> y, Buffer<float> x, float a, uint32 n) {
+void saxpy(GpuBuffer<float> y, GpuBuffer<float> x, float a, uint32 n) {
     let i = xpu.thread.global_id_x();
     if (i < n) {
         y[i] = a * x[i] + y[i];
@@ -295,7 +295,7 @@ void saxpy(Buffer<float> y, Buffer<float> x, float a, uint32 n) {
 }
 
 // host side
-let stream = xpu.Stream.default();
+let stream = xpu.GpuStream.default();
 saxpy.launch(stream, grid: [(n + 255) / 256], block: [256])
      (y_buf, x_buf, 2.0f, n);
 ```
@@ -316,7 +316,7 @@ Workgroup  : 1D / 2D / 3D of Threads, with shared memory + barrier
 Wave       : a hardware-scheduled subset of a workgroup, lock-stepped
              (a.k.a. "warp" on NV, "wavefront" on AMD, "subgroup" on Vulkan).
              Width is queryable at compile and run time.
-Thread     : the unit of program execution
+GpuThread     : the unit of program execution
 ```
 
 `xpu.wave.width()` is a `const` expression on a *target* basis:
@@ -376,9 +376,9 @@ All three backends conform to the Vulkan memory model — a clean
 superset of LLVM's "scoped atomics" model and of the PTX/HSA memory
 models.
 
-- Atomics carry an explicit scope: `Thread`, `Workgroup`, `Device`,
+- Atomics carry an explicit scope: `GpuThread`, `Workgroup`, `Device`,
   `Queue`. `Queue` is only meaningful on Vulkan. The scope follows the
-  pointer's storage (a `shared` array → Workgroup, a `Buffer<T>` →
+  pointer's storage (a `shared` array → Workgroup, a `GpuBuffer<T>` →
   Device).
 - The **memory order** is an optional compile-time `MemoryOrder`
   argument on atomics and fences — `out.atomicAdd(i, 1,
@@ -407,24 +407,24 @@ models.
 ### 3.5 Streams, events, and ordering
 
 ```cajeta
-class xpu.Stream    { ... }    // ordered queue of work
+class xpu.GpuStream    { ... }    // ordered queue of work
 class xpu.Event     { ... }    // device-side fence handle
 class xpu.Fence     { ... }    // host-observable signal
 ```
 
-| Backend | Stream                       | Event                        | Fence                         |
+| Backend | GpuStream                       | Event                        | Fence                         |
 |---------|------------------------------|------------------------------|-------------------------------|
 | NVIDIA  | CUDA stream (`cuStream`)     | `cuEvent`                    | stream sync handle            |
 | AMD     | HIP stream                   | `hipEvent`                   | stream sync handle            |
 | Vulkan  | queue + command buffer chain | `VkEvent` or timeline value  | `VkFence` or timeline wait    |
 
 The borrow checker treats `launch` as a borrow scope whose lifetime
-ends at the next `Stream.sync()` or `Event.wait()` ordered-after the
+ends at the next `GpuStream.sync()` or `Event.wait()` ordered-after the
 launch. Concretely:
 
 ```cajeta
 {
-    let buf = xpu.Buffer<float>.alloc(n);
+    let buf = xpu.GpuBuffer<float>.alloc(n);
     saxpy.launch(stream, ...)(buf, ...);     // borrows `buf`
     // buf cannot be moved, freed, or aliased until...
     stream.sync();                            // ...this point.
@@ -437,12 +437,12 @@ be dropped with a live borrow. The runtime also asserts that no
 allocation it owns is freed while a stream still has a pending launch
 referencing it.
 
-### 3.6 The `Buffer<T>` and `Texture<...>` types
+### 3.6 The `GpuBuffer<T>` and `Texture<...>` types
 
-`Buffer<T>` is the unified handle to device memory. The only type all
+`GpuBuffer<T>` is the unified handle to device memory. The only type all
 three backends agree on for cross-cutting data structures.
 
-A `Buffer<T>` holds:
+A `GpuBuffer<T>` holds:
 - a backend-tagged storage handle (`CUdeviceptr` / `hipDeviceptr_t` /
   `VkBuffer`)
 - a length in elements
@@ -472,7 +472,7 @@ Kernels cannot throw. Two mechanisms are provided:
    small status buffer; `xpu.kernel.fail(code)` writes to it and
    triggers a host-side `XpuKernelError` on the next sync.
 2. **Optional bounds-checking mode.** In `--xpu-debug` builds, all
-   `Buffer<T>` indexing emits a bounds check whose failure path
+   `GpuBuffer<T>` indexing emits a bounds check whose failure path
    calls `xpu.kernel.fail(OutOfBounds)`. Off by default in release.
 
 ---
@@ -825,27 +825,27 @@ backends without explicit interop (§8.3).
 | AMD / HIP     | `hipMalloc` / `hipMallocAsync`                       |
 | Vulkan        | VMA (Vulkan Memory Allocator) wrapped as `xpu.vulkan.HeapPool` |
 
-### 8.1 The `Buffer<T>` type
+### 8.1 The `GpuBuffer<T>` type
 
-`Buffer<T>` is generic over a backend tag:
+`GpuBuffer<T>` is generic over a backend tag:
 
 ```cajeta
-xpu.nvidia.Buffer<float>      // CUDA storage
-xpu.amd.Buffer<float>         // HIP storage
-xpu.vulkan.Buffer<float>      // VkBuffer + VkDeviceMemory
-xpu.Buffer<float>             // alias for the active backend in a build
+xpu.nvidia.GpuBuffer<float>      // CUDA storage
+xpu.amd.GpuBuffer<float>         // HIP storage
+xpu.vulkan.GpuBuffer<float>      // VkBuffer + VkDeviceMemory
+xpu.GpuBuffer<float>             // alias for the active backend in a build
 ```
 
-`xpu.Buffer<T>` is the type higher-level libraries (`cajeta.math`,
+`xpu.GpuBuffer<T>` is the type higher-level libraries (`cajeta.math`,
 Toffee, Torch, `cajeta.render`) write against. The build selects which
 backend it resolves to. Code that must address multiple backends in
 the same translation unit imports the qualified names.
 
-### 8.2 Stream-ordered vs blocking allocation
+### 8.2 GpuStream-ordered vs blocking allocation
 
 NVIDIA and AMD both expose stream-ordered allocators — `cuMemAllocAsync`
 and `hipMallocAsync` — which avoid sync-on-free for buffers tied to
-one stream. `xpu.Buffer.alloc_async(stream, n)` opts into this on the
+one stream. `xpu.GpuBuffer.alloc_async(stream, n)` opts into this on the
 native backends; Vulkan falls through to its pool allocator with no
 synchronization difference.
 
@@ -1006,10 +1006,10 @@ The borrow checker treats XPU launches as a deferred borrow with a
 lifetime ending at the next sync. Three cases bite users in CUDA-land
 and Cajeta should not let them through:
 
-1. **Buffer freed while launch in flight.**
+1. **GpuBuffer freed while launch in flight.**
 
    ```cajeta
-   let buf = xpu.Buffer<float>.alloc(n);
+   let buf = xpu.GpuBuffer<float>.alloc(n);
    kernel.launch(stream, ...)(buf, ...);
    buf.free();                       // ERROR: live borrow until stream.sync()
    ```
@@ -1087,7 +1087,7 @@ Graphics phases (raster, ray tracing, mesh shaders) are tracked in
   as `cajeta.xpu.webgpu` alongside the others.
 - **NPU integration.** Hexagon / Neural Engine / Meteor Lake NPU /
   XDNA. Each has its own runtime and execution model; they share
-  `cajeta.gpu`'s `Buffer<T>` / `Stream` / `Event` shape but
+  `cajeta.gpu`'s `GpuBuffer<T>` / `GpuStream` / `Event` shape but
   diverge sharply on the kernel surface (most NPUs don't have wave-
   tiered execution — they're VLIW or systolic). Likely lands as
   separate sibling namespaces (`cajeta.xpu.hexagon`,

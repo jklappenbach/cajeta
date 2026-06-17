@@ -85,12 +85,12 @@ TEST(XpuCudaSpecProbeTests, noOverrideReadsBakedDefaultOnDevice) {
 
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class SC {\n"
         "    @Kernel\n"
-        "    public static void fill(Buffer<int32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void fill(GpuBuffer<int32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) { out[i] = Spec.geti(0, 99); }\n"
         "    }\n"
         "}\n";

@@ -52,13 +52,13 @@ namespace {
 // same ballot mask (low 4 bits → 0xF=15), so the device result is 50.
 const char* kWaveSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void wavetest(Buffer<uint32> out) {\n"
-    "        uint32 t = Thread.x();\n"
+    "    public static void wavetest(GpuBuffer<uint32> out) {\n"
+    "        uint32 t = GpuThread.x();\n"
     "        uint32 r = Wave.shuffleSync(t * 10 + 5, 3);\n"
     "        uint64 b = Wave.ballotSync(t < 4);\n"
     "        out[t] = r + (uint32) b;\n"
@@ -71,13 +71,13 @@ const char* kWaveSource =
 // three expose a single hardware wave-reduce intrinsic (NVPTX's gated sm_80+).
 const char* kReduceSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void wavereduce(Buffer<uint32> out) {\n"
-    "        uint32 t = Thread.x();\n"
+    "    public static void wavereduce(GpuBuffer<uint32> out) {\n"
+    "        uint32 t = GpuThread.x();\n"
     "        out[t] = Wave.reduceSum(1);\n"
     "    }\n"
     "}\n";
@@ -87,13 +87,13 @@ const char* kReduceSource =
 // SubgroupLocalInvocationId.
 const char* kLaneSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void wavelane(Buffer<uint32> out) {\n"
-    "        uint32 t = Thread.x();\n"
+    "    public static void wavelane(GpuBuffer<uint32> out) {\n"
+    "        uint32 t = GpuThread.x();\n"
     "        out[t] = Wave.laneId();\n"
     "    }\n"
     "}\n";
@@ -269,13 +269,13 @@ TEST(XpuWaveEmitTests, spirvNonWaveKernelOmitsMaximalReconvergence) {
 // kernel uses a cross-lane op, so it also requests maximal reconvergence.
 const char* kRotateSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "import cajeta.gpu.Wave;\n"
     "public class R {\n"
     "    @Kernel\n"
-    "    public static void waverot(Buffer<uint32> out) {\n"
-    "        uint32 t = Thread.x();\n"
+    "    public static void waverot(GpuBuffer<uint32> out) {\n"
+    "        uint32 t = GpuThread.x();\n"
     "        out[t] = Wave.rotate(Wave.laneId(), 1);\n"
     "    }\n"
     "}\n";
@@ -286,13 +286,13 @@ const char* kRotateSource =
 // the module is spirv-val-clean.
 const char* kScanSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "import cajeta.gpu.Wave;\n"
     "public class S {\n"
     "    @Kernel\n"
-    "    public static void wavescan(Buffer<uint32> out) {\n"
-    "        uint32 t = Thread.x();\n"
+    "    public static void wavescan(GpuBuffer<uint32> out) {\n"
+    "        uint32 t = GpuThread.x();\n"
     "        out[t] = Wave.prefixSum(t) + Wave.prefixProduct(t);\n"
     "    }\n"
     "}\n";
@@ -351,13 +351,13 @@ TEST(XpuWaveEmitTests, spirvLowersPrefixScanAndValidates) {
 // asserts the five ops emit and the module is spirv-val-clean.
 const char* kReduceFamilySource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "import cajeta.gpu.Wave;\n"
     "public class F {\n"
     "    @Kernel\n"
-    "    public static void wavereduceops(Buffer<uint32> out) {\n"
-    "        uint32 t = Thread.x();\n"
+    "    public static void wavereduceops(GpuBuffer<uint32> out) {\n"
+    "        uint32 t = GpuThread.x();\n"
     "        uint32 a = Wave.reduceMax(t) + Wave.reduceMin(t);\n"
     "        uint32 b = Wave.reduceAnd(t) + Wave.reduceOr(t) + Wave.reduceXor(t);\n"
     "        out[t] = a + b;\n"

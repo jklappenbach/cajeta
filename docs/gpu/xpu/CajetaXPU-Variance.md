@@ -13,7 +13,7 @@ The rule statement and pointer back to this doc live in
 > `LoweringTarget` vtable; see [`CajetaCPU.md`](CajetaCPU.md)). It held the
 > three-column discipline with a single new fork: the **coordinate source**. A
 > CPU has no hardware grid or coordinate intrinsics, so its kernel gains 9
-> trailing `i32` coordinate params and `Thread`/`Workgroup` reads pull from those
+> trailing `i32` coordinate params and `GpuThread`/`Workgroup` reads pull from those
 > (the grid→threads model); buffers are flat `addrspace(0)`, the wave is width-1,
 > barriers are deferred (`XPU-N01`). Everything else — the body walk, operators,
 > control flow, `globalId = ctaid*ntid + tid` — stayed Core, confirming the
@@ -60,15 +60,15 @@ variance checks.
 | 1  | Wave / subgroup width      | 32 const                          | CDNA 64; RDNA 32 or 64               | runtime query at pipeline-create                      | `xpu.wave.width()` is const-expr *per target*, never a literal                                |
 | 2  | Launch arg model           | direct pass                       | direct pass                          | push-constant + descriptor partition, bound at record | `launch(...)` needs a backend-aware binding pass; "just pass the args" is an NV mental model  |
 | 3  | Allocator                  | `cuMemAllocAsync` stream-ordered  | `hipMallocAsync` stream-ordered      | VMA, no stream-ordered equivalent                     | `alloc_async(stream)` either degrades or is vendor-only                                       |
-| 4  | Atomic scopes              | Thread / Block / Device / System  | workgroup / agent / system           | Invocation / Subgroup / Workgroup / QueueFamily / Device | use Vulkan's set in core — it is the superset                                              |
+| 4  | Atomic scopes              | GpuThread / Block / Device / System  | workgroup / agent / system           | Invocation / Subgroup / Workgroup / QueueFamily / Device | use Vulkan's set in core — it is the superset                                              |
 | 5  | Memory model               | PTX scoped atomics                | HSA                                  | Vulkan memory model (superset)                        | spec barriers / fences against Vulkan semantics                                               |
-| 6  | Sync primitives            | stream + event                    | stream + event                       | timeline semaphore + descriptor-pool tie-ins          | `Stream` / `Event` / `Fence` must round-trip through Vulkan without a leaky case              |
-| 7  | Raw device pointers        | default                           | default                              | needs `KHR_buffer_device_address`                     | `&Buffer<T>` → raw ptr decay is a capability, not a default                                   |
+| 6  | Sync primitives            | stream + event                    | stream + event                       | timeline semaphore + descriptor-pool tie-ins          | `GpuStream` / `Event` / `Fence` must round-trip through Vulkan without a leaky case              |
+| 7  | Raw device pointers        | default                           | default                              | needs `KHR_buffer_device_address`                     | `&GpuBuffer<T>` → raw ptr decay is a capability, not a default                                   |
 | 8  | Kernel-side malloc         | yes                               | yes                                  | no                                                    | vendor-only by definition                                                                     |
 | 9  | printf in kernel           | yes                               | yes                                  | `KHR_non_semantic_info`                               | portable but extension-gated                                                                  |
 | 10 | Graph capture              | CUDA graphs                       | HIP graphs                           | secondary command buffers (different shape)           | likely vendor-only, not core                                                                  |
 | 11 | Per-arch codegen           | fatbin of SM archs                | bundle of gfx archs                  | one SPIR-V                                            | `--xpu-arch` is multi-valued for native backends only                                         |
-| 12 | Borrow-check on launch     | deferred borrow until `Stream.sync()` | same                             | same                                                  | no friction — already aligns on all three                                                     |
+| 12 | Borrow-check on launch     | deferred borrow until `GpuStream.sync()` | same                             | same                                                  | no friction — already aligns on all three                                                     |
 
 ---
 
@@ -106,10 +106,10 @@ would be most expensive.
 - **`launch(stream, grid, block)(args)` syntax.** The Vulkan binding
   pass is the hard part — either the syntax accommodates it or we
   end up with two launch syntaxes, which we don't want.
-- **`Buffer<T>` lifecycle** (alloc / free / upload / download / map).
+- **`GpuBuffer<T>` lifecycle** (alloc / free / upload / download / map).
   Must round-trip through Vulkan's bind-memory-to-buffer model
   without a leaky special case.
-- **`Stream` / `Event` / `Fence`.** Must round-trip through Vulkan
+- **`GpuStream` / `Event` / `Fence`.** Must round-trip through Vulkan
   timeline semaphores.
 - **`xpu.barrier.workgroup()` / `xpu.barrier.wave()`.** Must lower to
   `OpControlBarrier` with the correct scope.

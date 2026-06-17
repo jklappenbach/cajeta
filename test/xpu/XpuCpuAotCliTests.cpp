@@ -33,13 +33,13 @@ namespace fs = std::filesystem;
 
 const char* kKernelSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+    "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
     "                             float32 a, uint32 n) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            y[i] = a * x[i] + y[i];\n"
     "        }\n"
@@ -188,13 +188,13 @@ TEST(XpuCpuAotCliTests, cpuBackendVectorizesBlockWrapper) {
     fs::create_directories(build);
     std::ofstream(srcDir / "M.cajeta") <<
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void scale(Buffer<float32> y, Buffer<float32> x,\n"
+        "    public static void scale(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
         "                             float32 a) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        y[i] = a * x[i];\n"   // divergence-free → vectorizes everywhere
         "    }\n"
         "}\n";

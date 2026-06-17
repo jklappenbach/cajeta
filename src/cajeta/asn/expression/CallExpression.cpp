@@ -186,7 +186,7 @@ namespace cajeta {
             if (!streamExpr->getResolvedType()) streamExpr->resolveTypes(module);
             auto sklass = std::dynamic_pointer_cast<CajetaClass>(
                 streamExpr->getResolvedType());
-            if (sklass && sklass->toCanonical() == "cajeta.gpu.Stream") {
+            if (sklass && sklass->toCanonical() == "cajeta.gpu.GpuStream") {
                 auto& sprops = sklass->getProperties();
                 auto it = sprops.find("handle");
                 if (it != sprops.end()) {
@@ -217,7 +217,7 @@ namespace cajeta {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(
                 argExpr->getResolvedType());
             bool isBuffer = klass &&
-                klass->toCanonical().rfind("cajeta.gpu.Buffer", 0) == 0;
+                klass->toCanonical().rfind("cajeta.gpu.GpuBuffer", 0) == 0;
             // Texture2D (Item 8): marshalled exactly like a Buffer — its
             // deviceHandle (the runtime texture-object pointer / image handle)
             // flows through the kernelParams slot, and the launch borrows it.
@@ -242,7 +242,7 @@ namespace cajeta {
                                             arrTy->getElementType())
                                       : nullptr;
             bool isBufferArray = bufElemKlass &&
-                bufElemKlass->toCanonical().rfind("cajeta.gpu.Buffer", 0) == 0;
+                bufElemKlass->toCanonical().rfind("cajeta.gpu.GpuBuffer", 0) == 0;
 
             // Launch borrow scope (CajetaXPU §3.5/§11): a launch borrows each
             // device-resource arg (Buffer / Texture2D / AccelerationStructure)

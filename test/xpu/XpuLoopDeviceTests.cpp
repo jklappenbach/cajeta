@@ -77,16 +77,16 @@ TEST(XpuLoopDeviceTests, singleThreadReductionRunsOnDevice) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
 
-    // Thread 0 sums in[0..n) into result[0]; every other thread is idle.
+    // GpuThread 0 sums in[0..n) into result[0]; every other thread is idle.
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void reduceSum(Buffer<int32> result, Buffer<int32> in,\n"
+        "    public static void reduceSum(GpuBuffer<int32> result, GpuBuffer<int32> in,\n"
         "                                 uint32 n) {\n"
-        "        uint32 t = Thread.globalIdX();\n"
+        "        uint32 t = GpuThread.globalIdX();\n"
         "        if (t == 0) {\n"
         "            int32 sum = 0;\n"
         "            for (uint32 j = 0; j < n; j += 1) {\n"

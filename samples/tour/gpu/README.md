@@ -88,11 +88,11 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
 
 At first device touch the runtime picks the active backend among the **bundled**
 set (the manifest) ∩ the **available** set (it probes each), caches the choice,
-and routes the whole orchestration — the `Buffer<T>` constructor (allocate) and
-destructor (free), `upload` / `kernel.launch` / `Stream.sync` / `download` — to
-it. `Buffer<T>` is RAII: `heap Buffer<T>(n)` allocates device memory and the drop
+and routes the whole orchestration — the `GpuBuffer<T>` constructor (allocate) and
+destructor (free), `upload` / `kernel.launch` / `GpuStream.sync` / `download` — to
+it. `GpuBuffer<T>` is RAII: `heap GpuBuffer<T>(n)` allocates device memory and the drop
 chain frees it at scope exit, so the demos never call `allocate()`/`free()` (a
-launch-borrowed buffer that would drop before `Stream.sync()` is a compile error,
+launch-borrowed buffer that would drop before `GpuStream.sync()` is a compile error,
 XPU-K02). If nothing is available it
 prints a precise *"no available backend among {…}; rebuild with `cpu`…"*
 diagnostic instead of crashing (explicit-only bundling is a build-time contract).
@@ -103,9 +103,9 @@ diagnostic instead of crashing (explicit-only bundling is a build-time contract)
 and one wave-cooperative kernel (correct everywhere, at the hardware's wave width):
 
 - `saxpy(y, x, a, n)` — `y[i] = a*x[i] + y[i]`, the canonical accelerator
-  "hello world". Uses **`heap Buffer<T>(n)`**.
+  "hello world". Uses **`heap GpuBuffer<T>(n)`**.
 - `vecAdd(c, a, b, n)` — `c[i] = a[i] + b[i]`, element-wise. Uses
-  **`stack Buffer<T>(n)`**.
+  **`stack GpuBuffer<T>(n)`**.
 - `transform(outx, outy, px, py, m, tx, ty, n)` — `out[i] = M·p[i] + t`, a 2-D
   affine transform that showcases the **intrinsic linear-algebra value types on
   the device**: a `Matrix<float32,2,2>` passed **by value** as a kernel parameter
@@ -146,7 +146,7 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   `note: [mma-tiering]` (a severity below *warning* — it tells you the tier
   without dissuading use, and the path auto-promotes to the cores where the
   hardware exposes the config, e.g. bf16 WMMA on AMD). Walkthrough:
-  `cajeta.gpu.CooperativeMatrix` + `docs/LintRules.md` § Notes.
+  `cajeta.gpu.xpu.CooperativeMatrix` + `docs/LintRules.md` § Notes.
 - `coopGemmStaged` — **the LDS-staged variant**. The same 16×16 tile matmul, but
   the A and B tiles are first staged into workgroup-shared memory (LDS) by the
   whole workgroup via `CoopStage.panel`, published with a `Barrier.workgroup`, and
@@ -176,15 +176,15 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   16 (AVX-512), 8 (AVX2), 32 (NVIDIA), or 64 (AMD). With all-ones input each
   lane's wave-sum *is* the wave width, so the demo prints the width it discovered.
 
-The two demos deliberately use the two `Buffer<T>` forms. `Buffer<T>` is RAII —
-the constructor allocates device memory, `~Buffer()` frees it via the drop chain
+The two demos deliberately use the two `GpuBuffer<T>` forms. `GpuBuffer<T>` is RAII —
+the constructor allocates device memory, `~GpuBuffer()` frees it via the drop chain
 at scope exit, and `#buf` transfers ownership. The handle is a fixed 24-byte
 struct `{ptr, deviceHandle, elementCount}`; the element count sizes the *device*
-allocation, which lives off-stack — so `stack Buffer<T>(n)` reserves only the
+allocation, which lives off-stack — so `stack GpuBuffer<T>(n)` reserves only the
 handle on the frame (like a `std::vector` / Rust `Vec` header on the stack over
 off-stack data) and is the cheaper, preferred form for the common same-scope
 case. `heap` is for handles that must outlive the frame (returned/stored/moved).
-A launch-borrowed buffer that would drop before `Stream.sync()` is a compile
+A launch-borrowed buffer that would drop before `GpuStream.sync()` is a compile
 error (XPU-K02) for either form.
 
 `block = 64` is used because Vulkan bakes its workgroup size into the SPIR-V at 64;

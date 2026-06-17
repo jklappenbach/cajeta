@@ -1,14 +1,14 @@
 package cajeta.gpu;
 
 /**
- * Stream — ordered queue of XPU work.
+ * GpuStream — ordered queue of XPU work.
  *
  * A backend-tagged handle to an in-order command stream. Kernel
- * launches submitted to the same Stream complete in submission
+ * launches submitted to the same GpuStream complete in submission
  * order; launches on different Streams run in parallel (subject to
  * cross-stream synchronization the user requests via Event/Fence).
  *
- * Stream is the borrow-scope anchor for launched buffers: a buffer
+ * GpuStream is the borrow-scope anchor for launched buffers: a buffer
  * passed as a kernel argument is borrowed for the lifetime of the
  * launch, with the borrow released at the next `sync()` ordered
  * after the launch on this stream. See CajetaXPU.md §3.5.
@@ -18,14 +18,14 @@ package cajeta.gpu;
  * (CPU emulation) treats the handle as a host-side sequence number;
  * later steps map it to the real driver object.
  *
- * Per the spec, `Stream.default()` returns the per-thread default
+ * Per the spec, `GpuStream.default()` returns the per-thread default
  * stream — but `default` is a Cajeta keyword, so the spelling here
- * is `Stream.current()`. To be reconciled in CajetaXPU.md.
+ * is `GpuStream.current()`. To be reconciled in CajetaXPU.md.
  */
-public final class Stream {
+public final class GpuStream {
     int64 handle;
 
-    Stream(int64 handle) {
+    GpuStream(int64 handle) {
         this.handle = handle;
     }
 
@@ -33,8 +33,8 @@ public final class Stream {
      * The per-thread default stream (handle 0). Always returns the same
      * stream for the same thread; safe to retain across launches.
      */
-    public static #Stream current() {
-        Stream s = heap Stream(nativeCurrent());
+    public static #GpuStream current() {
+        GpuStream s = heap GpuStream(nativeCurrent());
         return #s;                                 // move out; source dtor no-ops
     }
 
@@ -44,8 +44,8 @@ public final class Stream {
      * launches submitted to it queue independently of other streams; the caller
      * owns it and must `destroy()` it when done.
      */
-    public static #Stream create() {
-        Stream s = heap Stream(nativeCreate());
+    public static #GpuStream create() {
+        GpuStream s = heap GpuStream(nativeCreate());
         return #s;                                 // move out; source dtor no-ops
     }
 
@@ -78,7 +78,7 @@ public final class Stream {
     }
 
     // Native stream primitives. The handle (int64) IS the backend stream object
-    // (0 = the default stream); current()/create() return it wrapped in a Stream
+    // (0 = the default stream); current()/create() return it wrapped in a GpuStream
     // and the instance ops pass `this.handle` so the C side speaks only handles.
     @Native("__cajeta_xpu_stream_current")
     private static int64 nativeCurrent();

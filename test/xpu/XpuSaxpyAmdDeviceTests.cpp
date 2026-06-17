@@ -86,13 +86,13 @@ TEST(XpuSaxpyAmdDeviceTests, runsOnDevice) {
     // 1. Compile the kernel source to an hsaco.
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
         "                              float32 a, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
         "    }\n"
         "}\n";
@@ -171,13 +171,13 @@ TEST(XpuSaxpyAmdDeviceTests, multiArchBundleRunsOnDevice) {
 
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
         "                              float32 a, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
         "    }\n"
         "}\n";
@@ -242,8 +242,8 @@ TEST(XpuSaxpyAmdDeviceTests, deviceDispatchTableOnDevice) {
     }
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class Ops {\n"
         "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
         "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
@@ -251,8 +251,8 @@ TEST(XpuSaxpyAmdDeviceTests, deviceDispatchTableOnDevice) {
         "}\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void dispatch(Buffer<int32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void dispatch(GpuBuffer<int32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            ((int32) -> int32)[] ops = { Ops::sq, Ops::cube, Ops::neg };\n"
         "            uint32 sel = i % 3;\n"

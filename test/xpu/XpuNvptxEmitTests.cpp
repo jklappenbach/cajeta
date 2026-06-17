@@ -153,13 +153,13 @@ TEST(XpuNvptxEmitTests, emitsPtxForHandBuiltKernel) {
 TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
         "                              float32 a, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            y[i] = a * x[i] + y[i];\n"
         "        }\n"
@@ -198,7 +198,7 @@ TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
     // `if (i < n)` lowers to an UNSIGNED compare + guarded branch (uint32).
     EXPECT_NE(ptx.find("setp.ge.u32"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("bra"), std::string::npos) << ptx;
-    // Buffer params land in global memory (opaque 32-bit loads emit as .b32).
+    // GpuBuffer params land in global memory (opaque 32-bit loads emit as .b32).
     EXPECT_NE(ptx.find("ld.global"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("st.global"), std::string::npos) << ptx;
     // The a*x+y float math: separate multiply + add (no fast-math
@@ -215,15 +215,15 @@ TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
 TEST(XpuNvptxEmitTests, lowersTextureSampleToPtxTex) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
         "import cajeta.gpu.Texture2D;\n"
         "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void sampleTex(Texture2D tex, Sampler s,\n"
-        "                                 Buffer<float32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "                                 GpuBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) { Vector<float32,4> c = tex.sample(s, 0.5, 0.5); out[i] = c.x; }\n"
         "    }\n"
         "}\n";
@@ -265,11 +265,11 @@ TEST(XpuNvptxEmitTests, lowersImageStoreLoadToPtxSurf) {
     auto src =
         "package test;\n"
         "import cajeta.gpu.Image2D;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void rmw(Image2D img, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            float32 v = img.load(i, 0);\n"
         "            img.store(i, 0, 2.0f * v + 1.0f);\n"
@@ -315,17 +315,17 @@ TEST(XpuNvptxEmitTests, imageLoadStoreRmwOnNvptx) {
     const char* src =
         "package test;\n"
         "import cajeta.gpu.Image2D;\n"
-        "import cajeta.gpu.Stream;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuStream;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class ImgRmwNv {\n"
         "    @Kernel\n"
         "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < w * h) { img.store(i % w, i / w, (float32)(i / w * w + i % w)); }\n"
         "    }\n"
         "    @Kernel\n"
         "    public static void rmw(Image2D img, uint32 w, uint32 h) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < w * h) {\n"
         "            uint32 x = i % w;\n"
         "            uint32 y = i / w;\n"
@@ -338,7 +338,7 @@ TEST(XpuNvptxEmitTests, imageLoadStoreRmwOnNvptx) {
         "        uint32 h = 4;\n"
         "        uint32 n = w * h;\n"
         "        Image2D img = heap Image2D(w, h);\n"
-        "        Stream s = Stream.current();\n"
+        "        GpuStream s = GpuStream.current();\n"
         "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
         "        s.sync();\n"
         "        rmw.launch(s, grid: [1], block: [64])(img, w, h);\n"
@@ -380,13 +380,13 @@ TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {
 
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
         "                              float32 a, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
         "    }\n"
         "}\n";
@@ -421,14 +421,14 @@ TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {
 TEST(XpuNvptxEmitTests, lowersMemoryFenceToPtxMembar) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "import cajeta.gpu.Barrier;\n"
         "public class MF {\n"
         "    @Kernel\n"
-        "    public static void fence(Buffer<int32> data, Buffer<int32> out,\n"
+        "    public static void fence(GpuBuffer<int32> data, GpuBuffer<int32> out,\n"
         "                             uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            data[i] = (int32)(i * 2);\n"
         "            Barrier.deviceMemory();\n"
@@ -470,14 +470,14 @@ TEST(XpuNvptxEmitTests, lowersMemoryFenceToPtxMembar) {
 TEST(XpuNvptxEmitTests, lowersRelaxedAtomicToMonotonicPtx) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "import cajeta.gpu.MemoryOrder;\n"
         "public class MO {\n"
         "    @Kernel\n"
-        "    public static void bump(Buffer<int32> a, Buffer<int32> b,\n"
+        "    public static void bump(GpuBuffer<int32> a, GpuBuffer<int32> b,\n"
         "                            uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            a.atomicAdd(0, 1, MemoryOrder.Relaxed);\n"
         "            b.atomicAdd(0, 1, MemoryOrder.AcqRel);\n"
@@ -510,12 +510,12 @@ TEST(XpuNvptxEmitTests, lowersRelaxedAtomicToMonotonicPtx) {
 TEST(XpuNvptxEmitTests, lowersDebugPrintfToVprintf) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class Prnt {\n"
         "    @Kernel\n"
-        "    public static void k(Buffer<int32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void k(GpuBuffer<int32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            Debug.printf(\"cajeta-pf %d\\n\", (int32) i);\n"
         "            out[i] = (int32) i;\n"
@@ -558,8 +558,8 @@ TEST(XpuNvptxEmitTests, lowersDebugPrintfToVprintf) {
 TEST(XpuNvptxEmitTests, lowersDeviceDispatchToBranchChain) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class Ops {\n"
         "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
         "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
@@ -567,8 +567,8 @@ TEST(XpuNvptxEmitTests, lowersDeviceDispatchToBranchChain) {
         "}\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void dispatch(Buffer<int32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void dispatch(GpuBuffer<int32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            ((int32) -> int32)[] ops = { Ops::sq, Ops::cube, Ops::neg };\n"
         "            uint32 sel = i % 3;\n"

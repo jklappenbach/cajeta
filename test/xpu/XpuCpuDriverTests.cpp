@@ -143,13 +143,13 @@ std::unique_ptr<llvm::orc::LLJIT> registerKernel(Compiler& compiler,
 // SAXPY, 3 params (y, x, a) — the buffer + scalar unpack shape.
 const char* kSaxpySource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+    "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
     "                             float32 a) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        y[i] = a * x[i] + y[i];\n"
     "    }\n"
     "}\n";
@@ -159,13 +159,13 @@ const char* kSaxpySource =
 // general, not SAXPY-3-shaped.
 const char* kSaxpyGuardedSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+    "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
     "                             float32 a, uint32 n) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            y[i] = a * x[i] + y[i];\n"
     "        }\n"
@@ -177,13 +177,13 @@ const char* kSaxpyGuardedSource =
 // is what makes the dangling-key regression below reproducible in isolation.
 const char* kSaxpyTeardownSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void saxpy_teardown_probe(Buffer<float32> y,\n"
-    "                                             Buffer<float32> x, float32 a) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "    public static void saxpy_teardown_probe(GpuBuffer<float32> y,\n"
+    "                                             GpuBuffer<float32> x, float32 a) {\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        y[i] = a * x[i] + y[i];\n"
     "    }\n"
     "}\n";

@@ -1,6 +1,6 @@
-package cajeta.gpu;
+package cajeta.gpu.xpu;
 
-import cajeta.gpu.Buffer;
+import cajeta.gpu.GpuBuffer;
 
 /**
  * CoopStage — the cooperative global→LDS staging copy for tiled GEMM (the
@@ -17,7 +17,7 @@ import cajeta.gpu.Buffer;
  * stride over the `rows`x`cols` panel and copy it from a row-major source matrix
  * (leading dimension `ld`, the source's full row width) into a contiguous
  * row-major LDS tile (stride = `cols`). It is a device-only intrinsic, lowered at
- * the `@Kernel` call site to a strided copy over `Thread.x()` / `Workgroup.dimX()`
+ * the `@Kernel` call site to a strided copy over `GpuThread.x()` / `Workgroup.dimX()`
  * — there is no real call. Use it inside a K-loop, paired with a barrier:
  *
  *     Shared<float16> sa = shared float16[32 * 16];
@@ -45,7 +45,7 @@ public final class CoopStage {
      * destination is packed row-major with stride `cols`, so a subsequent
      * `CooperativeMatrix.load(dst, subOffset, 0, cols)` addresses tiles within it.
      */
-    public static void panel<T>(Shared<T> dst, Buffer<T> src,
+    public static void panel<T>(Shared<T> dst, GpuBuffer<T> src,
                                 uint32 rowBase, uint32 colBase,
                                 uint32 rows, uint32 cols, uint32 ld) {
     }

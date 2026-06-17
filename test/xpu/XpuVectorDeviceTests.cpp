@@ -58,12 +58,12 @@ namespace {
 // name in the type resolver, like a primitive.
 const char* kVecSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void vecmath(Buffer<float32> out, uint32 n) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "    public static void vecmath(GpuBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            Vector<float32,4> v = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
     "            Vector<float32,4> w = v * 2.0f;\n"
@@ -87,12 +87,12 @@ float expectedAt(uint32_t i) { return 54.0f + (float) i; }
 //   out[i] = s + i  ==  16.5 + i
 const char* kVecIntrinSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class MI {\n"
     "    @Kernel\n"
-    "    public static void vintrin(Buffer<float32> out, uint32 n) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "    public static void vintrin(GpuBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            Vector<float32,4> a = heap Vector<float32,4>(1.0f, 5.0f, 3.0f, 2.0f);\n"
     "            Vector<float32,4> b = heap Vector<float32,4>(4.0f, 2.0f, 6.0f, 8.0f);\n"
@@ -115,12 +115,12 @@ float intrinExpectedAt(uint32_t i) { return 16.5f + (float) i; }
 //   s = cr.z + rf.x + rf.y + d = 1 + 2 + 5 = 8;  out[i] = 8 + i
 const char* kVecGeomSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class MG {\n"
     "    @Kernel\n"
-    "    public static void vgeom(Buffer<float32> out, uint32 n) {\n"
-    "        uint32 idx = Thread.globalIdX();\n"
+    "    public static void vgeom(GpuBuffer<float32> out, uint32 n) {\n"
+    "        uint32 idx = GpuThread.globalIdX();\n"
     "        if (idx < n) {\n"
     "            Vector<float32,3> a = heap Vector<float32,3>(1.0f, 0.0f, 0.0f);\n"
     "            Vector<float32,3> b = heap Vector<float32,3>(0.0f, 1.0f, 0.0f);\n"
@@ -146,12 +146,12 @@ float geomExpectedAt(uint32_t i) { return 8.0f + (float) i; }
 //   s = 8 + 1 = 9 ;  out[i] = 9 + i
 const char* kVecMaskSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class MM {\n"
     "    @Kernel\n"
-    "    public static void vmask(Buffer<float32> out, uint32 n) {\n"
-    "        uint32 idx = Thread.globalIdX();\n"
+    "    public static void vmask(GpuBuffer<float32> out, uint32 n) {\n"
+    "        uint32 idx = GpuThread.globalIdX();\n"
     "        if (idx < n) {\n"
     "            Vector<float32,4> a = heap Vector<float32,4>(1.0f, 5.0f, 3.0f, 2.0f);\n"
     "            Vector<float32,4> b = heap Vector<float32,4>(4.0f, 2.0f, 6.0f, 8.0f);\n"
@@ -172,12 +172,12 @@ float maskExpectedAt(uint32_t i) { return 9.0f + (float) i; }
 //   s = 3 + 2 + 2 = 7 ;  out[i] = 7 + i
 const char* kVecSwizSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class MS {\n"
     "    @Kernel\n"
-    "    public static void vswiz(Buffer<float32> out, uint32 n) {\n"
-    "        uint32 idx = Thread.globalIdX();\n"
+    "    public static void vswiz(GpuBuffer<float32> out, uint32 n) {\n"
+    "        uint32 idx = GpuThread.globalIdX();\n"
     "        if (idx < n) {\n"
     "            Vector<float32,4> v = heap Vector<float32,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
     "            Vector<float32,3> zyx = v.zyx;\n"
@@ -196,12 +196,12 @@ float swizExpectedAt(uint32_t i) { return 7.0f + (float) i; }
 //   a=(1,2,3,4) b=(10,20,30,40); c=a+b=(11,22,33,44); out = c.x + c.w = 55
 const char* kF16Source =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class HF {\n"
     "    @Kernel\n"
-    "    public static void f16k(Buffer<float32> out, uint32 n) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "    public static void f16k(GpuBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            Vector<float16,4> a = heap Vector<float16,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
     "            Vector<float16,4> b = heap Vector<float16,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
@@ -212,12 +212,12 @@ const char* kF16Source =
     "}\n";
 const char* kBf16Source =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class HB {\n"
     "    @Kernel\n"
-    "    public static void bf16k(Buffer<float32> out, uint32 n) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "    public static void bf16k(GpuBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            Vector<bfloat16,4> a = heap Vector<bfloat16,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
     "            Vector<bfloat16,4> b = heap Vector<bfloat16,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
@@ -229,18 +229,18 @@ const char* kBf16Source =
 
 float halfExpectedAt(uint32_t i) { return 55.0f + (float) i; }
 
-// S6 interop probe: a Buffer whose element type is itself a vector. Exercises
+// S6 interop probe: a GpuBuffer whose element type is itself a vector. Exercises
 // buffer-of-vector marshalling (16-byte stride) and a whole-vector store
 // `out[i] = <4 x float>` — distinct from the scalar-element buffer above.
 //   out[i] = (i, 1, 2, 3) * 2 = (2i, 2, 4, 6)
 const char* kVecBufSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class MB {\n"
     "    @Kernel\n"
-    "    public static void vecbuf(Buffer<Vector<float32,4>> out, uint32 n) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "    public static void vecbuf(GpuBuffer<Vector<float32,4>> out, uint32 n) {\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            Vector<float32,4> v = heap Vector<float32,4>(\n"
     "                (float32) i, 1.0f, 2.0f, 3.0f);\n"
@@ -355,7 +355,7 @@ TEST(XpuVectorDeviceTests, runsOnCpu) {
         EXPECT_FLOAT_EQ(out[i], expectedAt(i)) << "element " << i;
 }
 
-// S6: a Buffer<Vector<float32,4>> — buffer element type is a vector. JIT the
+// S6: a GpuBuffer<Vector<float32,4>> — buffer element type is a vector. JIT the
 // kernel and run it; each 4-float element must equal (2i, 2, 4, 6). Proves the
 // 16-byte element stride and a whole-vector store through `out[i] =`.
 TEST(XpuVectorDeviceTests, bufferOfVectorRunsOnCpu) {
@@ -1002,12 +1002,12 @@ TEST(XpuVectorDeviceTests, bfloat16RunsOnAmdDevice) { runHalfOnAmd(kBf16Source, 
 // dot-product unit); on CPU/AMD to the portable widening reduce. Both bit-exact.
 const char* kDp4aSource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class DP {\n"
     "    @Kernel\n"
-    "    public static void dp4a(Buffer<int32> out, uint32 n) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "    public static void dp4a(GpuBuffer<int32> out, uint32 n) {\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            Vector<int8,4> a = heap Vector<int8,4>(1, 2, 3, 4);\n"
     "            Vector<int8,4> b = heap Vector<int8,4>(5, 6, 7, 8);\n"

@@ -175,7 +175,7 @@ TEST(XpuLaunchGrammarTests, fullLaunchStatementParsesInMethodBody) {
         "package test;\n"
         "public class Host {\n"
         "    public static void run(uint32 n) {\n"
-        "        let stream = Stream.current();\n"
+        "        let stream = GpuStream.current();\n"
         "        saxpy.launch(stream, grid: [(n + 255) / 256], block: [256])"
         "(y, x, 2.0f, n);\n"
         "    }\n"

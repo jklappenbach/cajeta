@@ -5,7 +5,7 @@
 // KernelArg trait (CajetaXPU.md §3.1.1). v1's admissible set:
 //
 //   - primitives (anything with PRIMITIVE_FLAG)
-//   - cajeta.gpu.Buffer<T> (any T)
+//   - cajeta.gpu.GpuBuffer<T> (any T)
 //   - POD structs by value (a class with only primitive fields and no
 //     inheritance) — admitted without a marker interface (Item 7)
 //   - user types declared `implements KernelArg`
@@ -105,14 +105,14 @@ TEST(XpuKernelArgTests, primitivesAdmissible) {
     EXPECT_NO_THROW(compileAndCodegen(compiler, src, "test.K"));
 }
 
-// Buffer<T> is admissible for any T, by canonical-name prefix match.
+// GpuBuffer<T> is admissible for any T, by canonical-name prefix match.
 TEST(XpuKernelArgTests, bufferTypeAdmissible) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
         "public class K {\n"
         "    @Kernel\n"
-        "    public static void run(Buffer<float32> y, Buffer<float32> x,\n"
+        "    public static void run(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
         "                           float32 a, uint32 n) { }\n"
         "}\n";
     Compiler compiler;
@@ -125,13 +125,13 @@ TEST(XpuKernelArgTests, bufferTypeAdmissible) {
 TEST(XpuKernelArgTests, textureAndSamplerAdmissible) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
         "import cajeta.gpu.Texture2D;\n"
         "import cajeta.gpu.Sampler;\n"
         "public class K {\n"
         "    @Kernel\n"
         "    public static void run(Texture2D tex, Sampler s,\n"
-        "                           Buffer<float32> out, uint32 n) { }\n"
+        "                           GpuBuffer<float32> out, uint32 n) { }\n"
         "}\n";
     Compiler compiler;
     EXPECT_NO_THROW(compileAndCodegen(compiler, src, "test.K"));

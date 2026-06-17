@@ -15,7 +15,7 @@ package cajeta.math;
  * the generated code is identical to a pure-intrinsic value type.
  *
  * The method/operator BODIES below are resolution placeholders — exactly like
- * {@link cajeta.gpu.CooperativeMatrix} and {@link cajeta.gpu.RayQuery}.
+ * {@link cajeta.gpu.xpu.CooperativeMatrix} and {@link cajeta.gpu.RayQuery}.
  * They are never emitted as real calls: each operator is intercepted at its use
  * site and the result SHAPE is computed by the interceptor. (Deepening to real
  * dispatch, and lifting the method-templated-operator restriction that a truly

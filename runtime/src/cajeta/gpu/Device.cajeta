@@ -26,7 +26,7 @@ public final class Device {
      */
     public static boolean supports(Capability cap) {
         // The enum constant resolves to its i32 ordinal (the stable Capability
-        // contract the runtime switches on), as MemoryKind does for Buffer.
+        // contract the runtime switches on), as MemoryKind does for GpuBuffer.
         return Device.nativeSupports(cap) != 0;
     }
 

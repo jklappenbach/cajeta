@@ -4,7 +4,7 @@ package cajeta.gpu;
  * XpuKernelError — surfaced when a kernel signals a per-launch
  * fault via `xpu.kernel.fail(code)`. Per CajetaXPU.md §3.7, every
  * launch implicitly allocates a small status buffer; if the
- * device-side `fail(code)` writes to it, the next `Stream.sync()`
+ * device-side `fail(code)` writes to it, the next `GpuStream.sync()`
  * on the host throws this exception with the recorded code.
  *
  * The error-code namespace is shared across backends. Codes 0..63

@@ -7,10 +7,10 @@ package cajeta.gpu;
  * plane and a 3-D texture a (width, height, depth) volume, a 1-D texture indexes
  * a single (width) row — the natural carrier for gradients, transfer functions,
  * tone curves, and other 1-D lookup tables where hardware-filtered interpolation
- * between adjacent entries is wanted (a {@link Buffer} read gives the exact entry
+ * between adjacent entries is wanted (a {@link GpuBuffer} read gives the exact entry
  * but no interpolation/addressing).
  *
- * Like {@link Buffer}/{@link Texture2D}, this is a small host-side handle
+ * Like {@link GpuBuffer}/{@link Texture2D}, this is a small host-side handle
  * (deviceHandle + the width) over a device image resource. Backends tag the
  * underlying storage (HIP 1-D array / Vulkan 1-D sampled image + view); from the
  * user's perspective it is one opaque type with the standard create/upload/free
@@ -19,8 +19,8 @@ package cajeta.gpu;
  *
  * MEMORY MODEL. The handle (this struct) is governed by the drop chain; the
  * device image is acquired by the constructor and released by ~Texture1D() at
- * scope exit (the Buffer/Texture2D RAII convention). A launch borrows each
- * Texture1D argument until the next Stream.sync().
+ * scope exit (the GpuBuffer/Texture2D RAII convention). A launch borrows each
+ * Texture1D argument until the next GpuStream.sync().
  *
  * TEXEL TYPE. The type parameter `T` is the scalar a fetch/sample yields per
  * channel; it **defaults to `float32`**, so every bare `Texture1D` spelling is
@@ -129,7 +129,7 @@ public final class Texture1D<T = float32> {
         return result;
     }
 
-    // Device-image primitives. Instance @Native methods (the Buffer convention):
+    // Device-image primitives. Instance @Native methods (the GpuBuffer convention):
     // pointer-shaped at the ABI boundary, so one C symbol per name serves the
     // type. The leading `this` the forwarder passes is ignored by the C side.
     // Distinct __cajeta_xpu_texture1d_* symbols from the 2-D/3-D set: the image

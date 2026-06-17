@@ -651,6 +651,7 @@ set(CAJETA_STDLIB_DIRS
         # already in the prelude when these parse.
         ${CAJETA_STDLIB_ROOT}/cajeta/collection/ltm
         ${CAJETA_STDLIB_ROOT}/cajeta/gpu
+        ${CAJETA_STDLIB_ROOT}/cajeta/gpu/xpu
         # Linear-algebra value types (B1). Matrix references resolve to the flat
         # CajetaMatrix representation; the declared class supplies the operator
         # surface. Depends only on Vector (synthesized) and Object (lang), both

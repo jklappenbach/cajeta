@@ -9,7 +9,7 @@ portable device capability. Compute (`cajeta-xpu`) and graphics (`cajeta-gfx`) a
 cajeta.gpu                     (foundation — the shared portable contract)
    ▲                              ▲
 cajeta.gpu.xpu             cajeta.gpu.gfx
-(compute, Tensor)          (rendering pipeline)
+(compute primitives)       (rendering pipeline)
 ```
 
 All three are **stdlib**, nested in one namespace the way `java.nio` holds its buffers while
@@ -35,21 +35,27 @@ bounding volumes; GFX owns the ray-tracing pipeline** (hit/miss shaders + SBT). 
 The stdlib GPU tier is three nested, **write-once-run-everywhere** packages:
 
 - **`cajeta.gpu`** — the shared foundation: value types & math, the memory/buffer model,
-  textures & images, `@Kernel`, inline `RayQuery`, `CooperativeMatrix`, waves/atomics. The
-  classes *both* facets need.
-- **`cajeta.gpu.xpu`** — the compute facet: the `Tensor` (the n-d array) + basic numerical
-  algorithms, built on `cajeta.gpu`.
+  textures & images, `@Kernel`, inline `RayQuery`, waves/atomics. The classes *both* facets need.
+- **`cajeta.gpu.xpu`** — the compute-*primitive* facet: GPU compute primitives that are
+  compute-only (gfx does not use them) — `CooperativeMatrix`/`CoopStage` (tensor-core matmul)
+  today, more as they land — that the numerical library lowers onto. Built on `cajeta.gpu`.
+  (The `Tensor` and the numpy-equivalent numerical library do **not** live here — they are
+  **`cajeta.math`**, a backend-agnostic, CPU-first stdlib package that *uses* `cajeta.gpu` /
+  `cajeta.gpu.xpu` for acceleration. See `documents/cajeta-math/numpy-porting-spec.md`.)
 - **`cajeta.gpu.gfx`** — the graphics facet: rasterization, the render graph, the ray-tracing
   pipeline + basic graphics algorithms — the **primitives an engine dev composes, not an
   engine** — built on `cajeta.gpu`.
 
 **The boundary (deliberate):** stdlib carries *primitives that tightly wrap GPU capabilities
 plus basic algorithms* — a framework-neutral starting point. It does **not** carry framework
-opinions. Opinionated ML frameworks (a `torch`/`keras` surface, with autograd-by-default, the
-`nn` module set, optimizers) and applications (a spatial-index engine like Toffee) are
-**separate libraries** that build on `cajeta.gpu.xpu` — keeping cajeta from taking a framework
-stance in its own stdlib. (The `Tensor` lives in stdlib because it is the generic n-d array
-every framework wraps; the *opinions layered on it* do not.)
+opinions. The numpy-equivalent numerical library (the `Tensor` + core ops + `linalg`/`fft`/
+`random`) is also stdlib, but as **`cajeta.math`** (backend-agnostic, CPU-first), not here —
+it is the generic n-d array every framework wraps, so it is canonical-in-stdlib, while the
+*opinions layered on it* are not. Opinionated ML frameworks (a `torch`/`keras` surface —
+autograd-by-default, the `nn` module set, optimizers), the scipy/sklearn breadth
+(`cajeta.sci`/`cajeta.learn`), and applications (a spatial-index engine like Toffee) are
+**separate libraries** built on `cajeta.math` — keeping cajeta from taking a framework stance
+in its own stdlib.
 
 There are no `cajeta.gpu.nvidia` / `.amd` / `.metal` / `.vulkan` packages in stdlib either.
 Vendor-exclusive silicon (NV cooperative vector / TMA, AMD MFMA, Metal simdgroup-matrix,
@@ -209,8 +215,8 @@ device-verified · **◐** emit-only (NVIDIA) · **◷** intended-core, fallback
 | Verb | CPU | VK | AMD | NV | Metal |
 |------|:--:|:--:|:--:|:--:|:--:|
 | `bufferElementPtr` / `bufferParamType` | ● | ● | ● | ◐ | ✗ |
-| `bufferArrayElement` (bindless `Buffer<T>[]`) | ● | ● | ● | — | ✗ |
-| `Buffer<T>` alloc/upload/download · `MemoryKind` (Device/Pinned/Unified) · `slice` | ● | ● | ● | ◐ | ✗ |
+| `bufferArrayElement` (bindless `GpuBuffer<T>[]`) | ● | ● | ● | — | ✗ |
+| `GpuBuffer<T>` alloc/upload/download · `MemoryKind` (Device/Pinned/Unified) · `slice` | ● | ● | ● | ◐ | ✗ |
 
 ### 3.3 Value types & math ([`ValueTypeCatalog.md`](ValueTypeCatalog.md))
 
@@ -249,7 +255,7 @@ unsupported on gfx1151/ROCm 7.2.2 — degrades gracefully, device test SKIPs.
 
 ## 4. Core nouns — and ray query as the worked example
 
-The datastructures core owns: `Buffer<T>`, `Texture2D`/`Image2D`, and `AccelerationStructure`.
+The datastructures core owns: `GpuBuffer<T>`, `Texture2D`/`Image2D`, and `AccelerationStructure`.
 Each goes through the **noun seam** (§1.2): a core build-description with per-backend
 representations. Ray query is the case that *defines* the seam, because its noun (the scene)
 is the heavy part.
@@ -290,7 +296,7 @@ Build description = the geometry — **triangle (vertex + index buffers) and/or 
 (`(min, max)` × N)** — plus build params. Today it has one representation: a Vulkan
 `VK_KHR_acceleration_structure` BVH over AABBs only — so the noun is doubly narrow
 (Vulkan-locked *and* AABB-only). To be core it needs a **portable software BVH** built
-(LBVH / binned-SAH) over both geometry kinds into a plain `Buffer<T>` (node array + primitive
+(LBVH / binned-SAH) over both geometry kinds into a plain `GpuBuffer<T>` (node array + primitive
 refs), runnable on host or as a build kernel. Same description, two builds; the hardware BVH
 is the *acceleration*, the software BVH is what makes it core.
 

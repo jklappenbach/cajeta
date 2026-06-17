@@ -589,7 +589,7 @@ namespace cajeta {
                 auto parent = cm->getParent();
                 if (parent && parent->isInstantiation()
                         && parent->toCanonical().rfind(
-                               "cajeta.gpu.Buffer", 0) == 0
+                               "cajeta.gpu.GpuBuffer", 0) == 0
                         && !parent->getTypeArguments().empty()) {
                     auto elemT = parent->getTypeArguments()[0];
                     llvm::Type* lt = elemT ? elemT->getLlvmType() : nullptr;
@@ -812,10 +812,10 @@ namespace cajeta {
                             if (f->getType()) canonical = f->getType()->toCanonical();
                         }
                     }
-                    bool isStream = canonical == "cajeta.gpu.Stream";
+                    bool isStream = canonical == "cajeta.gpu.GpuStream";
                     bool isEvent  = canonical == "cajeta.gpu.Event";
                     bool isBuffer =
-                        canonical.rfind("cajeta.gpu.Buffer", 0) == 0;
+                        canonical.rfind("cajeta.gpu.GpuBuffer", 0) == 0;
                     if ((isStream && methodCallName == "sync") ||
                         (isEvent && methodCallName == "waitHost")) {
                         sc->releaseLaunchBorrows();

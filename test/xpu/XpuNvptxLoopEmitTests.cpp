@@ -91,13 +91,13 @@ std::string lowerToPtx(const std::string& src, const std::string& fqClass,
 TEST(XpuNvptxLoopEmitTests, lowersStridedSumLoop) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void strideSum(Buffer<int32> out, Buffer<int32> in,\n"
+        "    public static void strideSum(GpuBuffer<int32> out, GpuBuffer<int32> in,\n"
         "                                  uint32 n, uint32 stride) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        int32 acc = 0;\n"
         "        for (uint32 j = i; j < n; j += stride) {\n"
         "            acc += in[j];\n"
@@ -124,12 +124,12 @@ TEST(XpuNvptxLoopEmitTests, lowersStridedSumLoop) {
 TEST(XpuNvptxLoopEmitTests, lowersIntegerOpsMix) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void opsmix(Buffer<uint32> out, uint32 n, uint32 d) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void opsmix(GpuBuffer<uint32> out, uint32 n, uint32 d) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            out[i] = ((i % d) ^ (i << 1)) | (i >> 2);\n"
         "        }\n"
@@ -152,8 +152,8 @@ TEST(XpuNvptxLoopEmitTests, lowersIntegerOpsMix) {
 TEST(XpuNvptxLoopEmitTests, lowersPodStructArg) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n"
         "public class Params {\n"
         "    int32 mul;\n"
         "    int32 add;\n"
@@ -162,8 +162,8 @@ TEST(XpuNvptxLoopEmitTests, lowersPodStructArg) {
         "}\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void k(Buffer<int32> out, Params p) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void k(GpuBuffer<int32> out, Params p) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        out[i] = (int32)i * p.mul + p.add;\n"
         "    }\n"
         "}\n";

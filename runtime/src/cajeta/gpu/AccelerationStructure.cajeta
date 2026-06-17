@@ -9,7 +9,7 @@ package cajeta.gpu;
  * acceleration structure built from `VK_KHR_acceleration_structure`. From the
  * kernel's perspective it is one opaque, descriptor-bound resource: on Vulkan it
  * lowers to an `OpTypeAccelerationStructureKHR` bound at (set 0, binding = arg
- * index) via the same `resource.handlefrombinding` path Buffer/Texture2D use.
+ * index) via the same `resource.handlefrombinding` path GpuBuffer/Texture2D use.
  *
  * SPATIAL-INDEX USE. Beyond classic ray tracing, a BVH is a hardware-accelerated
  * spatial index: build it over the AABBs of your points/cells, then in a kernel
@@ -19,8 +19,8 @@ package cajeta.gpu;
  *
  * MEMORY MODEL. The handle (this struct) is governed by the drop chain; the
  * device BVH is acquired by the constructor and released by ~AccelerationStructure()
- * at scope exit (the Buffer/Texture2D RAII convention). A launch borrows each
- * AccelerationStructure argument until the next Stream.sync().
+ * at scope exit (the GpuBuffer/Texture2D RAII convention). A launch borrows each
+ * AccelerationStructure argument until the next GpuStream.sync().
  *
  * v1 LIMITS: a single bottom-level AS built from AABB (procedural/bounding-box)
  * geometry, opaque, no instance transforms or rebuild/refit. Triangle geometry,
@@ -151,7 +151,7 @@ public final class AccelerationStructure {
         return this.deviceImplSet(this.deviceHandle, this.impl);
     }
 
-    // Device-BVH primitives. Instance @Native methods (the Buffer/Texture2D
+    // Device-BVH primitives. Instance @Native methods (the GpuBuffer/Texture2D
     // convention): pointer-shaped at the ABI boundary, so one C symbol per name
     // serves the type. The leading `this` the forwarder passes is ignored by the
     // C side. The runtime implementations live in the Vulkan device layer

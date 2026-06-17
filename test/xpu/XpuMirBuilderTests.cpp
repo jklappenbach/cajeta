@@ -224,7 +224,7 @@ TEST(XpuMirBuilderTests, addressSpaceRecognitionHelper) {
     EXPECT_EQ(as, AddressSpace::Generic);
 
     EXPECT_FALSE(cajeta::xpu::isAddressSpaceCanonical(
-        "cajeta.gpu.Stream", as));
+        "cajeta.gpu.GpuStream", as));
     EXPECT_FALSE(cajeta::xpu::isAddressSpaceCanonical(
         "user.pkg.Global", as));     // wrong package
 }

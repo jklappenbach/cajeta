@@ -119,13 +119,13 @@ std::string lowerKernelIr(const std::string& src, const std::string& cls,
 TEST(XpuValueTypeOperatorDeviceTests, deviceEqualityOperatorDispatches) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n")
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n")
         + kVec2Eq +
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void eqk(Vec2 a, Vec2 b, Buffer<float32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void eqk(Vec2 a, Vec2 b, GpuBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            float32 r = 0.0f;\n"
         "            if (a == b) { r = 1.0f; }\n"
@@ -145,13 +145,13 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceEqualityOperatorDispatches) {
 TEST(XpuValueTypeOperatorDeviceTests, deviceInequalityDerivesFromEquality) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n")
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n")
         + kVec2Eq +
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void nek(Vec2 a, Vec2 b, Buffer<float32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void nek(Vec2 a, Vec2 b, GpuBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            float32 r = 0.0f;\n"
         "            if (a != b) { r = 1.0f; }\n"
@@ -174,13 +174,13 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceInequalityDerivesFromEquality) {
 TEST(XpuValueTypeOperatorDeviceTests, deviceAggregateReturningOperatorDispatches) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n")
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n")
         + kVec2Add +
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void addk(Vec2 a, Vec2 b, Buffer<float32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void addk(Vec2 a, Vec2 b, GpuBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            Vec2 c = a + b;\n"
         "            out[i] = c.x + c.y + (float32) i;\n"
@@ -212,13 +212,13 @@ TEST(XpuValueTypeOperatorDeviceTests, deviceAggregateReturningOperatorDispatches
 TEST(XpuValueTypeOperatorDeviceTests, deviceOperatorKernelValidatesAsSpirv) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n")
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n")
         + kVec2Add +
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void addk(Buffer<float32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void addk(GpuBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            Vec2 a = heap Vec2((float32) i, 1.0f);\n"
         "            Vec2 b = heap Vec2(2.0f, (float32) i);\n"

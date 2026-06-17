@@ -125,7 +125,7 @@ namespace cajeta {
             // Same-short-name collision guard (see CajetaType::
             // findTemplateByShortName): `heap Stream<int32>()` must build the
             // generic cajeta.lang.stream.Stream, not the non-generic
-            // cajeta.gpu.Stream the bare-name lookup may have landed.
+            // cajeta.gpu.GpuStream the bare-name lookup may have landed.
             if (!klass || !klass->isTemplate()) {
                 if (auto t = CajetaType::findTemplateByShortName(typeName)) klass = dynamic_pointer_cast<CajetaClass>(t);
             }

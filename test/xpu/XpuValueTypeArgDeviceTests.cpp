@@ -80,13 +80,13 @@ const char* kVec2 =
 TEST(XpuValueTypeArgDeviceTests, flatValueTypeArgFieldReadLowers) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n")
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n")
         + kVec2 +
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void readvt(Vec2 v, Buffer<float32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void readvt(Vec2 v, GpuBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) { out[i] = v.x + v.y + (float32) i; }\n"
         "    }\n"
         "}\n";
@@ -114,8 +114,8 @@ TEST(XpuValueTypeArgDeviceTests, flatValueTypeArgFieldReadLowers) {
 TEST(XpuValueTypeArgDeviceTests, nestedValueTypeFieldReadLowers) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.gpu.Buffer;\n"
-        "import cajeta.gpu.Thread;\n")
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuThread;\n")
         + kVec2 +
         "@ValueType public final class Box {\n"
         "    public Vec2 lo;\n"
@@ -124,8 +124,8 @@ TEST(XpuValueTypeArgDeviceTests, nestedValueTypeFieldReadLowers) {
         "}\n"
         "public class MN {\n"
         "    @Kernel\n"
-        "    public static void readnested(Box b, Buffer<float32> out, uint32 n) {\n"
-        "        uint32 i = Thread.globalIdX();\n"
+        "    public static void readnested(Box b, GpuBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
         "        if (i < n) { out[i] = b.lo.x + b.hi.y + (float32) i; }\n"
         "    }\n"
         "}\n";

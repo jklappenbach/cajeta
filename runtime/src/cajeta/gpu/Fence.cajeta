@@ -8,7 +8,7 @@ package cajeta.gpu;
  * a signal the CPU can poll or block on without involving the
  * device beyond the initial submission.
  *
- * v1 implementation is a thin wrapper over `Stream.sync()` on the
+ * v1 implementation is a thin wrapper over `GpuStream.sync()` on the
  * native backends; on Vulkan it lowers to `VkFence` or a timeline-
  * semaphore host-wait. Per CajetaXPU.md §3.5.
  */
@@ -34,7 +34,7 @@ public final class Fence {
      * `stream` completes. The host can poll `query()` or block in
      * `waitHost()` to observe the signal.
      */
-    public void signal(Stream stream) {
+    public void signal(GpuStream stream) {
         int64 sh = stream.handle;
         this.nativeSignal(this.handle, sh);
     }

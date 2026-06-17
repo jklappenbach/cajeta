@@ -1,8 +1,8 @@
 //
 // Step 2 — xpu.core Cajeta stdlib declarations.
 //
-// Verifies that the cajeta.gpu stdlib package (Stream, Event,
-// Fence, Buffer<T>, address-space markers, capability traits, Thread/
+// Verifies that the cajeta.gpu stdlib package (GpuStream, Event,
+// Fence, GpuBuffer<T>, address-space markers, capability traits, GpuThread/
 // Workgroup/Barrier/Wave builtins, KernelArg, KernelError) is parsed
 // into the compiler's structure table by the embedded-stdlib pass,
 // and that user code can import + reference these types without
@@ -94,26 +94,26 @@ TEST(XpuCoreStdlibTests, nonGenericClassesRegistered) {
     compileForInspection(compiler,
         "package test;\npublic class T { }\n", "test.T");
 
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Stream"),       nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.GpuStream"),       nullptr);
     EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Event"),        nullptr);
     EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Fence"),        nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Thread"),       nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.GpuThread"),       nullptr);
     EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Workgroup"),    nullptr);
     EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Barrier"),      nullptr);
     EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Wave"),         nullptr);
     EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.XpuKernelError"), nullptr);
 }
 
-// User code can import + reference Stream as a field type. This is
+// User code can import + reference GpuStream as a field type. This is
 // the smoke test that the stdlib parses cleanly enough to be
 // consumed by ordinary user code.
 TEST(XpuCoreStdlibTests, userCodeCanReferenceStream) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Stream;\n"
+        "import cajeta.gpu.GpuStream;\n"
         "public class K {\n"
-        "    Stream s;\n"
-        "    public K(Stream s) {\n"
+        "    GpuStream s;\n"
+        "    public K(GpuStream s) {\n"
         "        this.s = s;\n"
         "    }\n"
         "}\n";
@@ -123,16 +123,16 @@ TEST(XpuCoreStdlibTests, userCodeCanReferenceStream) {
     ASSERT_NE(klass, nullptr);
 }
 
-// Generic Buffer<T> instantiation. Buffer<float32> synthesizes a
+// Generic GpuBuffer<T> instantiation. GpuBuffer<float32> synthesizes a
 // concrete class; its @Native methods emit forwarders that resolve
 // to the void*-shape stubs in cajeta_runtime.c.
 TEST(XpuCoreStdlibTests, bufferGenericInstantiates) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
         "public class K {\n"
-        "    Buffer<float32> buf;\n"
-        "    public K(Buffer<float32> buf) {\n"
+        "    GpuBuffer<float32> buf;\n"
+        "    public K(GpuBuffer<float32> buf) {\n"
         "        this.buf = buf;\n"
         "    }\n"
         "    public uint64 size() {\n"
@@ -143,8 +143,8 @@ TEST(XpuCoreStdlibTests, bufferGenericInstantiates) {
     auto module = compileForInspection(compiler, src, "test.K");
     auto klass = module->getStructures()["test.K"];
     ASSERT_NE(klass, nullptr);
-    // Compile success itself proves Buffer<float32> instantiated:
-    // a Buffer<T> field type, ctor parameter, and the buf.length()
+    // Compile success itself proves GpuBuffer<float32> instantiated:
+    // a GpuBuffer<T> field type, ctor parameter, and the buf.length()
     // call all reference the synthesized concrete class. If the
     // instantiation had failed we'd never reach this assertion.
 }

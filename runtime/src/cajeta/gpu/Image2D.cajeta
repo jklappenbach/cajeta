@@ -12,11 +12,11 @@ package cajeta.gpu;
  * store to any texel. It is the "gfx bridge" surface — compute kernels that
  * produce an image (procedural fills, rasterization, image-to-image passes).
  *
- * Like {@link Buffer} and Texture2D, this is a small host-side handle
+ * Like {@link GpuBuffer} and Texture2D, this is a small host-side handle
  * (deviceHandle + width/height) over a device image resource governed by the
  * drop chain: the constructor acquires the device image and ~Image2D() releases
  * it at scope exit. A launch borrows each Image2D argument until the next
- * Stream.sync().
+ * GpuStream.sync().
  *
  *     Image2D img = heap Image2D(w, h);
  *     kernel.launch(s, ...)(img, ...);          // kernel writes img.store(x,y,v)
@@ -101,7 +101,7 @@ public final class Image2D {
         this.deviceDownload(this.deviceHandle, out, this.width, this.height);
     }
 
-    // Device-image primitives. Instance @Native methods (the Buffer convention):
+    // Device-image primitives. Instance @Native methods (the GpuBuffer convention):
     // pointer-shaped at the ABI boundary, so one C symbol per name serves the
     // type. The leading `this` the forwarder passes is ignored by the C side.
     @Native("__cajeta_xpu_image_alloc")

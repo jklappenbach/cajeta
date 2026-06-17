@@ -1,6 +1,6 @@
-package cajeta.gpu;
+package cajeta.gpu.xpu;
 
-import cajeta.gpu.Buffer;
+import cajeta.gpu.GpuBuffer;
 
 /**
  * CooperativeMatrix — a tile of a matrix multiply held *cooperatively* by a
@@ -63,7 +63,7 @@ import cajeta.gpu.Buffer;
  * then every wave loads its operand tiles out of the shared panel — turning N
  * redundant global reads into one global read plus N cheap LDS reads (the reuse
  * that keeps the matrix cores fed). `load(Shared<T>, ...)` addresses a sub-tile
- * inside the LDS tile exactly as the `Buffer<T>` overload does for global; the
+ * inside the LDS tile exactly as the `GpuBuffer<T>` overload does for global; the
  * matrix VALUE still never leaves the register file. The full staged GEMM
  * (`CoopStage.panel` → `Barrier.workgroup` → `load(Shared)` → `mma`, multiple
  * waves sharing the panels) is device-verified on **all three GPU-capable
@@ -143,23 +143,23 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
-     * Device-only intrinsic: load this tile from `src` (a global Buffer<T>),
+     * Device-only intrinsic: load this tile from `src` (a global GpuBuffer<T>),
      * starting at element `offset` and reading a `Rows`x`Cols` tile with the
      * given `layout` (0 = row-major, 1 = column-major) and row/column `stride`
      * (in elements). `offset` selects a sub-tile of a larger matrix: for a
      * row-major M×K matrix, tile (ti,tj) starts at `(ti*Rows)*K + tj*Cols` with
      * stride `K` — the addressing a tiled GEMM walks over.
      */
-    public void load(Buffer<T> src, uint32 offset, uint32 layout, uint32 stride) {
+    public void load(GpuBuffer<T> src, uint32 offset, uint32 layout, uint32 stride) {
     }
 
     /**
      * Device-only intrinsic: load this tile from a workgroup-shared (`Shared<T>`,
-     * i.e. LDS) tile instead of a global `Buffer<T>` — the consume side of the
+     * i.e. LDS) tile instead of a global `GpuBuffer<T>` — the consume side of the
      * LDS-staged GEMM. The workgroup stages a panel global→LDS once (see
      * `CoopStage.panel`), barriers, and then every wave loads its operand tile out
      * of that shared panel; `offset`/`layout`/`stride` address the sub-tile inside
-     * the LDS tile exactly as the `Buffer<T>` overload does for global memory.
+     * the LDS tile exactly as the `GpuBuffer<T>` overload does for global memory.
      * Same fragment layout and tier rules — only the source storage class differs.
      */
     public void load(Shared<T> src, uint32 offset, uint32 layout, uint32 stride) {
@@ -182,11 +182,11 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
-     * Device-only intrinsic: store this tile to `dst` (a global Buffer<T>),
+     * Device-only intrinsic: store this tile to `dst` (a global GpuBuffer<T>),
      * starting at element `offset`, with the given `layout` and `stride` — the
      * write-side counterpart of `load`'s sub-tile addressing.
      */
-    public void store(Buffer<T> dst, uint32 offset, uint32 layout, uint32 stride) {
+    public void store(GpuBuffer<T> dst, uint32 offset, uint32 layout, uint32 stride) {
     }
 
     /**

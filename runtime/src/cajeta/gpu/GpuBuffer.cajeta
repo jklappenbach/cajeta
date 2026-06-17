@@ -1,7 +1,7 @@
 package cajeta.gpu;
 
 /**
- * Buffer<T> — unified handle to device memory.
+ * GpuBuffer<T> — unified handle to device memory.
  *
  * The cross-cutting type higher-level libraries (cajeta.math,
  * Toffee, Torch, cajeta.render) write against. Backends tag the
@@ -13,18 +13,18 @@ package cajeta.gpu;
  * functions and produces a borrow of the element type. On the
  * host, callers use the explicit upload/download paths.
  *
- * MEMORY MODEL (CajetaXPU.md §3.5/§3.6). A Buffer is a small host-side
+ * MEMORY MODEL (CajetaXPU.md §3.5/§3.6). A GpuBuffer is a small host-side
  * handle (deviceHandle + elementCount) over device memory that lives in
  * VRAM. The device memory is an *owned resource*, tied to the handle's
  * lifetime via RAII (the same convention as FileReader/File/Path):
  *
  *   - the *handle* (this 16-byte struct) lives on the stack or heap and is
- *     governed by the drop chain. `heap Buffer<T>(n)` is the common form;
- *     `Buffer<T>.alloc(n)` returns a `heap` handle for factory-style escape.
+ *     governed by the drop chain. `heap GpuBuffer<T>(n)` is the common form;
+ *     `GpuBuffer<T>.alloc(n)` returns a `heap` handle for factory-style escape.
  *   - the *device memory* is acquired by the constructor and released by
- *     `~Buffer()` at scope exit — forgetting to free() can no longer leak
+ *     `~GpuBuffer()` at scope exit — forgetting to free() can no longer leak
  *     VRAM. The launch-borrow checker guards the timing: a launch borrows each
- *     Buffer argument until the next `Stream.sync()`, and letting a buffer
+ *     GpuBuffer argument until the next `GpuStream.sync()`, and letting a buffer
  *     reach its drop (or an explicit `free()`) while a launch still references
  *     it is a compile error (XPU-K02). Move-out (`#buf`) transfers ownership;
  *     the moved-from handle's destructor no-ops.
@@ -33,10 +33,10 @@ package cajeta.gpu;
  * to the target DataLayout size of T — so the runtime primitives speak
  * only int64 handles and byte counts and stay independent of T.
  */
-public final class Buffer<T> {
+public final class GpuBuffer<T> {
     int64 deviceHandle;
     uint64 elementCount;
-    // Ownership of the underlying device storage. An allocating Buffer owns it
+    // Ownership of the underlying device storage. An allocating GpuBuffer owns it
     // (true) and releases it at drop; a *view* produced by `slice()` borrows a
     // sub-range of a parent's storage (false) and never frees — so the drop
     // chain can't double-free a parent's memory through a view. See `slice()`.
@@ -47,7 +47,7 @@ public final class Buffer<T> {
     // the zero-copy host-access path. See MemoryKind.
     int32 kind;
 
-    Buffer(int64 deviceHandle, uint64 elementCount) {
+    GpuBuffer(int64 deviceHandle, uint64 elementCount) {
         this.deviceHandle = deviceHandle;
         this.elementCount = elementCount;
         this.owned = true;
@@ -56,19 +56,19 @@ public final class Buffer<T> {
 
     /**
      * RAII constructor: allocate device storage for `elementCount` elements.
-     * The constructor acquires the device memory and `~Buffer()` releases it,
-     * so a Buffer cleans up through the drop chain like any other owning handle
+     * The constructor acquires the device memory and `~GpuBuffer()` releases it,
+     * so a GpuBuffer cleans up through the drop chain like any other owning handle
      * (the same shape as FileReader/File/Path). This is the idiomatic form —
      * prefer it over the 2-arg ctor + `allocate()`:
      *
-     *     Buffer<float32> x = heap Buffer<float32>(n);   // allocates here
+     *     GpuBuffer<float32> x = heap GpuBuffer<float32>(n);   // allocates here
      *     x.upload(hx);
      *     kernel.launch(s, ...)(x, ...);
      *     s.sync();
      *     x.download(hx);
      *     // device memory freed automatically when x leaves scope
      */
-    public Buffer(uint64 elementCount) {
+    public GpuBuffer(uint64 elementCount) {
         this.elementCount = elementCount;
         this.owned = true;
         this.kind = 0;       // MemoryKind.Device
@@ -81,10 +81,10 @@ public final class Buffer<T> {
      * guarded and idempotent: a prior explicit free(), or a moved-from handle
      * (`#buf`), makes this a no-op — the move marks the source's drop entry
      * inactive, so this never double-frees. A launch-borrowed buffer may not
-     * reach its drop before `Stream.sync()`; doing so is a compile error
+     * reach its drop before `GpuStream.sync()`; doing so is a compile error
      * (XPU-K02), the same rule that guards an explicit free().
      */
-    ~Buffer() {
+    ~GpuBuffer() {
         if (this.owned && this.deviceHandle != 0) {
             this.deviceFree(this.deviceHandle, this.kind);
             this.deviceHandle = 0;
@@ -97,7 +97,7 @@ public final class Buffer<T> {
 
     /**
      * Compiler intrinsic: lowered at each call site to the target
-     * DataLayout byte size of the enclosing Buffer<T>'s element type T.
+     * DataLayout byte size of the enclosing GpuBuffer<T>'s element type T.
      * The body here is a resolution placeholder — it is never emitted as
      * a real call (CallExpression / MethodCallExpression intercepts it).
      */
@@ -107,11 +107,11 @@ public final class Buffer<T> {
 
     // Device-memory primitives. These are *instance* @Native methods rather
     // than statics: a static call qualified by the generic class name
-    // (`Buffer.foo()`) resolves to the uninstantiated template and lowers to
+    // (`GpuBuffer.foo()`) resolves to the uninstantiated template and lowers to
     // null, whereas instance dispatch (`this.foo()`) resolves against the
     // runtime instantiation. The leading `this` the forwarder passes is
     // ignored by the C side. Pointer-shaped at the ABI boundary, so one C
-    // symbol per name serves every Buffer<T>; the element size is folded into
+    // symbol per name serves every GpuBuffer<T>; the element size is folded into
     // the byte counts the callers pass.
     @Native("__cajeta_xpu_buffer_alloc")
     private int64 deviceAlloc(uint64 byteCount, int32 kind);
@@ -145,11 +145,11 @@ public final class Buffer<T> {
      * Allocate a device buffer of `n` elements and return a heap handle.
      * Heap is mandatory here: the result escapes this frame, so a stack
      * handle would be rejected by the escape checker. For same-scope
-     * allocations prefer `stack Buffer<T>(...)` + `allocate()` at the use
+     * allocations prefer `stack GpuBuffer<T>(...)` + `allocate()` at the use
      * site.
      */
-    public static #Buffer<T> alloc(uint64 n) {
-        Buffer<T> buf = heap Buffer<T>(n);   // RAII ctor allocates device memory
+    public static #GpuBuffer<T> alloc(uint64 n) {
+        GpuBuffer<T> buf = heap GpuBuffer<T>(n);   // RAII ctor allocates device memory
         return #buf;                          // move out: source dtor no-ops
     }
 
@@ -158,7 +158,7 @@ public final class Buffer<T> {
      * direct construction when a `heap`/`stack` handle is preferred over the
      * `alloc` factory:
      *
-     *     Buffer<float32> x = stack Buffer<float32>(0, n);
+     *     GpuBuffer<float32> x = stack GpuBuffer<float32>(0, n);
      *     x.allocate();
      *
      * Replaces any previously held handle (call once per buffer).
@@ -173,9 +173,9 @@ public final class Buffer<T> {
 
     /**
      * Allocate storage with a chosen memory residency (a {@link MemoryKind}).
-     * Mirrors the `Buffer(0, n)` + `allocate()` idiom, adding the kind:
+     * Mirrors the `GpuBuffer(0, n)` + `allocate()` idiom, adding the kind:
      *
-     *     Buffer<float32> u = heap Buffer<float32>(0, n);
+     *     GpuBuffer<float32> u = heap GpuBuffer<float32>(0, n);
      *     u.allocate(MemoryKind.Unified);          // managed, host-accessible
      *     u.hostStore(hx);                         // zero-copy on an APU
      *     kernel.launch(s, ...)(u, ...);           // kernel reads the same memory
@@ -187,7 +187,7 @@ public final class Buffer<T> {
      * transfer). `Device` keeps the explicit `upload`/`download` model. `kind` is
      * a `MemoryKind` ordinal (the enum constant resolves to its i32 ordinal); it
      * is taken as a separate overload (not a 2-arg constructor) to stay distinct
-     * from the `Buffer(int64 deviceHandle, uint64 elementCount)` form. See {@link
+     * from the `GpuBuffer(int64 deviceHandle, uint64 elementCount)` form. See {@link
      * MemoryKind}.
      */
     public void allocate(int32 kind) {
@@ -222,11 +222,11 @@ public final class Buffer<T> {
      * issue the real async copy; CPU and the Vulkan coherent map copy
      * synchronously (semantically identical — done by the time sync returns).
      */
-    public void uploadAsync(T[] host, Stream stream) {
+    public void uploadAsync(T[] host, GpuStream stream) {
         uint64 bytes = this.elementCount * elementBytes();
         // Bind the param's field to a local before passing it (reading a
         // class-typed param's field inline as a call arg lowers to null — the
-        // documented idiom, as Stream.waitFor does with e.handle).
+        // documented idiom, as GpuStream.waitFor does with e.handle).
         int64 sh = stream.handle;
         this.deviceUploadAsync(this.deviceHandle, host, bytes, sh);
     }
@@ -235,7 +235,7 @@ public final class Buffer<T> {
      * Asynchronous device → host download, the twin of {@link #uploadAsync}:
      * enqueued on `stream`, completing by the next `stream.sync()`.
      */
-    public void downloadAsync(T[] host, Stream stream) {
+    public void downloadAsync(T[] host, GpuStream stream) {
         uint64 bytes = this.elementCount * elementBytes();
         int64 sh = stream.handle;   // see uploadAsync: bind before passing
         this.deviceDownloadAsync(this.deviceHandle, host, bytes, sh);
@@ -243,7 +243,7 @@ public final class Buffer<T> {
 
     /**
      * Explicit early release — an idempotent escape hatch (the FileReader
-     * `close()` pattern). Rarely needed now that `~Buffer()` releases at scope
+     * `close()` pattern). Rarely needed now that `~GpuBuffer()` releases at scope
      * exit; use it to free device memory before the handle's scope ends.
      * Null-guards + clears the handle so the destructor then no-ops.
      */
@@ -279,14 +279,14 @@ public final class Buffer<T> {
     }
 
     /**
-     * Sub-buffer view: a non-owning Buffer over `count` elements of this
+     * Sub-buffer view: a non-owning GpuBuffer over `count` elements of this
      * buffer starting at element `offset`. The view shares this buffer's
      * device storage — it allocates nothing and frees nothing — so it can be
      * uploaded/downloaded through and passed to a kernel as a sub-range:
      *
-     *     Buffer<float32> all = heap Buffer<float32>(n);
+     *     GpuBuffer<float32> all = heap GpuBuffer<float32>(n);
      *     all.upload(host);
-     *     Buffer<float32> tail = all.slice(n / 2, n / 2);   // second half
+     *     GpuBuffer<float32> tail = all.slice(n / 2, n / 2);   // second half
      *     kernel.launch(s, n / 2)(tail, ...);               // touches the tail
      *     s.sync();
      *
@@ -297,7 +297,7 @@ public final class Buffer<T> {
      *
      * BORROW / LIFETIME: a view borrows the parent's storage — the parent must
      * outlive every view of it (a view dangles if the parent drops first). The
-     * view itself is non-owning (`owned = false`), so `~Buffer()`/`free()` on
+     * view itself is non-owning (`owned = false`), so `~GpuBuffer()`/`free()` on
      * the view no-op and the parent's memory is released exactly once, by the
      * parent. The launch-borrow rule (XPU-K02) still applies to the view value
      * passed at a launch site. Parent-outlives-view is interim lint / debug-
@@ -308,9 +308,9 @@ public final class Buffer<T> {
      * (matches in-kernel `buf[i]`), and `offset + count <= length()` is the
      * caller's responsibility.
      */
-    public #Buffer<T> slice(uint64 offset, uint64 count) {
+    public #GpuBuffer<T> slice(uint64 offset, uint64 count) {
         int64 base = this.deviceSlice(this.deviceHandle, offset * elementBytes());
-        Buffer<T> sub = heap Buffer<T>(base, count);
+        GpuBuffer<T> sub = heap GpuBuffer<T>(base, count);
         sub.owned = false;           // non-owning: shares the parent's storage
         sub.kind = this.kind;        // inherit residency (host-accessible if parent is)
         return #sub;                 // move out; the source dtor no-ops

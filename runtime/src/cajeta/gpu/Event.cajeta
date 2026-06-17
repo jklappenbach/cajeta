@@ -3,7 +3,7 @@ package cajeta.gpu;
 /**
  * Event — device-side fence handle.
  *
- * Records a point in a Stream's submission order. A second Stream
+ * Records a point in a GpuStream's submission order. A second GpuStream
  * can `waitFor(event)` to introduce a cross-stream dependency,
  * which the runtime resolves device-side (no host roundtrip).
  *
@@ -39,7 +39,7 @@ public final class Event {
      * Named `recordOn` rather than the spec's `record` because
      * `record` is a Cajeta keyword (record-type declarations).
      */
-    public void recordOn(Stream stream) {
+    public void recordOn(GpuStream stream) {
         int64 sh = stream.handle;
         this.nativeRecord(this.handle, sh);
     }
@@ -47,7 +47,7 @@ public final class Event {
     /**
      * Block the host until this event has been signaled on the
      * device. Use sparingly — prefer cross-stream waits via
-     * `Stream.waitFor(event)`.
+     * `GpuStream.waitFor(event)`.
      */
     public void waitHost() {
         this.nativeWait(this.handle);

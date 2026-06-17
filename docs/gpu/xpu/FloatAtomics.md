@@ -2,7 +2,7 @@
 
 A reduction — sum, max, min over data many threads produce — needs every thread
 to fold its value into one shared accumulator *without* losing updates to a race.
-The atomic read-modify-write is that primitive: `Buffer<float32>` exposes it
+The atomic read-modify-write is that primitive: `GpuBuffer<float32>` exposes it
 directly.
 
 ```
@@ -18,8 +18,8 @@ hit the same address at once and the result is still correct.
 
 ```
 @Kernel
-public static void reduce(Buffer<float32> out, Buffer<float32> in, uint32 n) {
-    uint32 i = Thread.globalIdX();
+public static void reduce(GpuBuffer<float32> out, GpuBuffer<float32> in, uint32 n) {
+    uint32 i = GpuThread.globalIdX();
     if (i < n) {
         out.atomicAdd(0, in[i]);   // parallel sum   -> out[0]
         out.atomicMax(1, in[i]);   // parallel max   -> out[1]
@@ -66,7 +66,7 @@ are always order-independent.
 
 ---
 
-**Rules.** Float atomics are methods on `Buffer<float32>` (f32, v1): `atomicAdd`,
+**Rules.** Float atomics are methods on `GpuBuffer<float32>` (f32, v1): `atomicAdd`,
 `atomicMin`, `atomicMax` of `(index, value)`, returning the old value. They are
 **device-only** (inside an `@Kernel`) and require a *writable* buffer. On Vulkan
 they need `SPV_EXT_shader_atomic_float_add` / `_min_max` (RADV exposes both for

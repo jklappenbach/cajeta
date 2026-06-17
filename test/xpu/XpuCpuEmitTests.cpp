@@ -2,7 +2,7 @@
 // CajetaXPU CPU backend — the grid→threads lowering on the seam (cajeta-cpu.md
 // Increment 1).
 //
-// The SAME portable GPU-style kernel (Buffer<T> + Thread.globalIdX()) that
+// The SAME portable GPU-style kernel (GpuBuffer<T> + GpuThread.globalIdX()) that
 // targets NVPTX/AMDGPU/SPIR-V lowers through the shared AST walk for the CPU,
 // with only the CpuTarget forking: the kernel gains 12 trailing i32 coordinate
 // params (the grid→threads model), coordinate reads come from those args (no
@@ -36,18 +36,18 @@ using cajeta::CajetaModulePtr;
 
 namespace {
 
-// Portable SAXPY: Buffer<T> params + Thread.globalIdX() — identical in spirit
+// Portable SAXPY: GpuBuffer<T> params + GpuThread.globalIdX() — identical in spirit
 // to the Vulkan/AMD device kernels. globalIdX exercises all three coordinate
 // reads (ctaid*ntid + tid), so the grid→threads arg model is fully covered.
 const char* kSaxpySource =
     "package test;\n"
-    "import cajeta.gpu.Buffer;\n"
-    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.GpuThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+    "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
     "                             float32 a) {\n"
-    "        uint32 i = Thread.globalIdX();\n"
+    "        uint32 i = GpuThread.globalIdX();\n"
     "        y[i] = a * x[i] + y[i];\n"
     "    }\n"
     "}\n";
