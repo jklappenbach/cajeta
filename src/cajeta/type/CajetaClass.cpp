@@ -2064,15 +2064,19 @@ namespace cajeta {
         llvm::BasicBlock* entry = llvm::BasicBlock::Create(
             ctx, "entry", clinit);
 
-        // Save the module's current insert point so callers that emit
-        // more code after generateCode don't see a clinit-internal
-        // builder state.
-        auto* builder = module->getBuilder();
-        auto savedBB = builder->GetInsertBlock();
-        auto savedIP = savedBB
-            ? builder->GetInsertPoint()
-            : llvm::BasicBlock::iterator();
-        builder->SetInsertPoint(entry);
+        // Emit the clinit body through a FRESH local builder. This pass runs
+        // after the method-codegen pass (Compiler.cpp), where the module's
+        // leftover `builder` pointer can be stale: a method's RAII restore sets
+        // it back to the pre-method value, and for some body shapes that chains
+        // back to a destroyed stack/heap builder — dereferencing it here
+        // (GetInsertBlock) then segfaults. The clinit is a self-contained
+        // function with no caller insert-point to preserve, so use our own
+        // builder and just save/restore the module's builder POINTER (never
+        // dereferenced) for whatever runs next.
+        llvm::IRBuilder<> clinitBuilder(entry);
+        llvm::IRBuilder<>* builder = &clinitBuilder;
+        llvm::IRBuilder<>* prevModuleBuilder = module->getBuilder();
+        module->setBuilder(builder);
 
         // Push self onto the structure stack so bare identifier
         // references inside an initializer (e.g. `b = a + 5;`)
@@ -2148,9 +2152,10 @@ namespace cajeta {
         if (pushedSelf) {
             module->getStructureStack().pop_back();
         }
-        if (savedBB) {
-            builder->SetInsertPoint(savedBB, savedIP);
-        }
+        // Restore the module's builder pointer (clinitBuilder is about to go out
+        // of scope). The pointer is never dereferenced before the next
+        // generateStaticInitializers / method-codegen sets its own builder.
+        module->setBuilder(prevModuleBuilder);
 
         // Register the clinit with llvm.global_ctors. Default priority
         // 65535 — same bucket as the runtime's __cajeta_runtime_init /

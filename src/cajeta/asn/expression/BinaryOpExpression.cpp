@@ -129,6 +129,12 @@ namespace cajeta {
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
                 return builder->CreateLoad(a->getAllocatedType(), a);
             }
+            // A bare static-field identifier (`TAG` for `Main.TAG`) returns the
+            // GlobalVariable slot, same shape as a local's alloca — load through
+            // it too, or the read yields the slot ADDRESS instead of the value.
+            if (auto* g = llvm::dyn_cast<llvm::GlobalVariable>(v)) {
+                return builder->CreateLoad(g->getValueType(), g);
+            }
         }
         if (ast && dynamic_pointer_cast<ArrayIndexExpression>(ast)) {
             CajetaTypePtr elemType = ast->getResolvedType();

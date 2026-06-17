@@ -4341,6 +4341,15 @@ namespace cajeta {
             llvm::Value* value = param.expression->generateCode(module);
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
+            } else if (llvm::isa_and_nonnull<llvm::GlobalVariable>(value)
+                    && dynamic_pointer_cast<IdentifierExpression>(param.expression)) {
+                // A bare static-field identifier (`TAG`, the `Main.TAG`
+                // shorthand) returns the field's GlobalVariable slot — load
+                // through to the value, mirroring the alloca case. Gated on
+                // IdentifierExpression so a String / `T.class` literal global
+                // (an r-value whose ADDRESS is the value) is left untouched.
+                auto* g = llvm::cast<llvm::GlobalVariable>(value);
+                value = builder->CreateLoad(g->getValueType(), g);
             }
             // Field reads (DotExpression) on a primitive or function-
             // typed field return an l-value GEP slot. Load through so
