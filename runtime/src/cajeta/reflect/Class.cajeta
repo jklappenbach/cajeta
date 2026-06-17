@@ -649,4 +649,45 @@ public final class Class<T> {
         }
         return #arr;
     }
+
+    /**
+     * REFL-12 — **bounded enumeration.** `Class.subtypes<Shape>()` returns every
+     * retained class that is a subtype of (or is) the bound `Shape`: the
+     * closed-world subtype closure. This is the runtime face of the same closure
+     * the lean linker keeps for a `Class<Shape>` bound — enumerate the plugins,
+     * load them, and the linker has already retained exactly this set (see
+     * plans/compiler/lean-linker-dce.md). The bound (`Shape.class`) is injected
+     * by the compiler from the `<Shape>` token; source code never passes it.
+     * Elements are `Class<?>` borrows (process-lifetime), never freed — so the
+     * returned type stays wildcard, sidestepping the owned-handle drop that
+     * defers a `Class<Shape>[]` form (see the `forName<T>` note above). Two-pass
+     * over the registry, reusing {@link #isSubtype}.
+     *
+     * ```cajeta
+     * #Class<?>[] kinds = Class.subtypes<Shape>();
+     * ```
+     */
+    public static #Class<?>[] subtypes(Class<?> bound) {
+        int32 n = registryCount();
+        int32 matches = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (isSubtype(registryAt(i).rtti, bound.rtti) != 0) {
+                matches = matches + 1;
+            }
+            i = i + 1;
+        }
+        Class<?>[] arr = heap Class<?>[matches];
+        int32 j = 0;
+        i = 0;
+        while (i < n) {
+            Class<?> c = registryAt(i);
+            if (isSubtype(c.rtti, bound.rtti) != 0) {
+                arr[j] = c;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #arr;
+    }
 }

@@ -414,39 +414,54 @@ namespace cajeta {
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
 
         // ----- REFL-12: bounded reflection lowering -----
-        // `Class.newInstance<Shape>(name)` carries the bound `Shape` as an
-        // explicit method type argument. The bound is the supertype the developer
+        // The bounded reflection entry points carry the bound `Shape` as an
+        // explicit method type argument: `Class.newInstance<Shape>(name)` and
+        // `Class.subtypes<Shape>()`. The bound is the supertype the developer
         // already needs to use the result; surfacing it as `<Shape>` makes the
-        // result type-checked (`Optional<Shape>`, not a raw `Object` + unchecked
-        // downcast) and hands the lean linker a closed-world keep-token (the
-        // bound's subtype closure; see plans/compiler/lean-linker-dce.md). The
-        // 2-arg stdlib overload `<T> newInstance(String, Class<?>)` performs the
-        // runtime `leaf <: T` boundary check via __cajeta_is_subtype. We rewrite
-        // the 1-arg bounded call into the 2-arg form by appending the bound as a
-        // synthesized `Shape.class` literal, then let normal dispatch resolve the
-        // overload — binding `T` from the SAME `<Shape>` token still threaded
-        // through explicitMethodTypeArgs — and return the correctly typed
-        // `Optional<Shape>`. Guarded so the arg is injected exactly once. (A
-        // bounded `forName<T>` is deferred — see Class.cajeta: Optional<Class<T>>
-        // would free the process-lifetime ClassObject borrow on drop.)
+        // result type-checked / closure-scoped and hands the lean linker a
+        // closed-world keep-token (the bound's subtype closure; see
+        // plans/compiler/lean-linker-dce.md). Both lower the SAME way: append the
+        // bound as a synthesized `Shape.class` literal so the call resolves to a
+        // stdlib overload taking `Class<?> bound`, which runs the runtime
+        // `leaf <: T` check via __cajeta_is_subtype. They differ only in whether
+        // the `<Shape>` token survives the rewrite:
+        //   - newInstance<Shape>(name) -> newInstance(name, Shape.class): KEEP the
+        //     token — it binds the `Optional<T>` return type natively.
+        //   - subtypes<Shape>()        -> subtypes(Shape.class):          DROP the
+        //     token — the return is the wildcard `#Class<?>[]` (T is purely the
+        //     keep-token + filter), and a concrete element type would re-trip the
+        //     ClassObject borrow-drop that defers `forName<T>` (see Class.cajeta).
+        // Guarded so the arg is injected exactly once.
         if (!boundedReflInjected
-                && methodCallName == "newInstance"
                 && explicitMethodTypeArgs.size() == 1
-                && parameters.size() == 1
+                && explicitMethodTypeArgs[0]
                 && !children.empty()) {
-            if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
-                    children[0])) {
-                auto rt = CajetaType::of(recvId->getTextValue());
-                if (rt && rt->toCanonical() == "cajeta.reflect.Class"
-                        && explicitMethodTypeArgs[0]) {
-                    MethodCallParameter boundArg;
-                    boundArg.expression = std::make_shared<ClassLiteralExpression>(
-                        explicitMethodTypeArgs[0]->toCanonical(), nullptr);
-                    parameters.push_back(boundArg);
-                    boundedReflInjected = true;
-                    // (REFL-12.3) `explicitMethodTypeArgs[0]` is the reflective
-                    // keep-token; record it for the lean-linker keep-set
-                    // generator here once that pass lands.
+            bool isBoundedNewInstance =
+                methodCallName == "newInstance" && parameters.size() == 1;
+            bool isBoundedSubtypes =
+                methodCallName == "subtypes" && parameters.empty();
+            if (isBoundedNewInstance || isBoundedSubtypes) {
+                if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        children[0])) {
+                    auto rt = CajetaType::of(recvId->getTextValue());
+                    if (rt && rt->toCanonical() == "cajeta.reflect.Class") {
+                        MethodCallParameter boundArg;
+                        boundArg.expression =
+                            std::make_shared<ClassLiteralExpression>(
+                                explicitMethodTypeArgs[0]->toCanonical(),
+                                nullptr);
+                        parameters.push_back(boundArg);
+                        boundedReflInjected = true;
+                        // (REFL-12.3) `explicitMethodTypeArgs[0]` is the
+                        // reflective keep-token; record it for the lean-linker
+                        // keep-set generator here once that pass lands.
+                        if (isBoundedSubtypes) {
+                            // subtypes' return is wildcard — the bound rides only
+                            // as the injected value arg; clear the token so the
+                            // call resolves to the non-templated overload.
+                            explicitMethodTypeArgs.clear();
+                        }
+                    }
                 }
             }
         }

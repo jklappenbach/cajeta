@@ -1847,6 +1847,31 @@ TEST(ReflectionTests, boundedNewInstanceUnknownEmpty) {
         "}\n"), 0);
 }
 
+// Bounded enumeration: subtypes<Shape>() is the closed-world closure — Shape
+// itself + Circle (inclusive of the bound), and nothing unrelated (Animal).
+TEST(ReflectionTests, boundedSubtypesClosure) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        #Class<?>[] subs = Class.subtypes<Shape>();\n"
+        "        return (int32) subs.count();\n"
+        "    }\n"
+        "}\n"), 2);
+}
+
+// A leaf with no subtypes returns just itself (identity counts as subtype).
+TEST(ReflectionTests, boundedSubtypesLeafIsSelf) {
+    EXPECT_EQ(runCustomI32(
+        REFL12_HIERARCHY
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        #Class<?>[] subs = Class.subtypes<Animal>();\n"
+        "        return (int32) subs.count();\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
 // REFL-8 unblocks TemplateArgument.getType() for a class-typed argument:
 // Box<Widget>'s argument resolves to the Widget Class.
 TEST(ReflectionTests, templateArgGetTypeResolvesClass) {
