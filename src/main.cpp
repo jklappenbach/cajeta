@@ -81,9 +81,9 @@ void printUsage(const char* progname) {
               << "\n"
               << "Output:\n"
               << "  --emit=ir|obj|cja|uber|exe           Output mode. Default ir.\n"
-              << "  --link-mode=lean|full                Linker/DCE policy. full (default) keeps every\n"
-              << "                                       class; lean strips classes outside the keep-set\n"
-              << "                                       (--keep-all = --link-mode=full).\n"
+              << "  --link-mode=lean|full                Linker/DCE policy. lean (default for --emit=exe)\n"
+              << "                                       strips classes outside the keep-set; full keeps\n"
+              << "                                       every class (default elsewhere; --keep-all alias).\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
@@ -233,6 +233,9 @@ int main(int argc, const char* argv[]) {
     // default its arch to gfx1151 (vs the nvptx sm_89 default) only when the
     // user didn't pin one. The two backends share a single xpuArch field.
     bool xpuArchExplicit = false;
+    // Track an explicit --link-mode / --keep-all so the default flip to Lean
+    // for --emit=exe (below) only applies when the user didn't pin a mode.
+    bool linkModeExplicit = false;
 
     auto parseModeName = [&](const std::string& name) -> bool {
         if (name == "debug")            { compiler.setMode(CompilerMode::Debug); return true; }
@@ -384,9 +387,11 @@ int main(int argc, const char* argv[]) {
                 printUsage(argv[0]); return 1;
             }
             compiler.getMutableFlags().linkMode = lm;
+            linkModeExplicit = true;
         } else if (arg == "--keep-all") {
             // Alias for --link-mode=full (keep every class; no stripping).
             compiler.getMutableFlags().linkMode = LinkMode::Full;
+            linkModeExplicit = true;
         } else if (match(arg, "xpu-backend", value)) {
             // Comma-separated list — a binary can bundle several targets
             // (e.g. vulkan,cpu); the runtime dispatcher picks the best
@@ -452,6 +457,13 @@ int main(int argc, const char* argv[]) {
     }
     if (compiler.usesXpuBackend(XpuBackend::Amdgpu) && !xpuArchExplicit) {
         compiler.setXpuArch("gfx1151");
+    }
+
+    // Lean linking is the default for --emit=exe (bounded reflection makes it
+    // sound; unbounded reflection degrades to a conservative keep). Other emit
+    // modes (ir/obj/cja/uber) and an explicit --link-mode/--keep-all keep Full.
+    if (compiler.getEmitMode() == EmitMode::Exe && !linkModeExplicit) {
+        compiler.getMutableFlags().linkMode = LinkMode::Lean;
     }
 
     try {
