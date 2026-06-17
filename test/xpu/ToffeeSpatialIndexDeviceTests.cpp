@@ -1407,8 +1407,8 @@ TEST(ToffeeSpatialIndexDeviceTests, autoRecordsSoftwareImplOnNvptxDevice) {
 // the OptiX rep; that is deferred to the first SUPPORTED-shape launch (R4 cost control —
 // an AS consumed only by software kernels never pays for OptiX). implSet() observes the
 // transition: software-only (1) right after build, software|OptiX (5) after a supported
-// launch lazily builds the OptiX rep. (The drop-software-floor hint of 3c is deferred —
-// a spec-level MAY; the floor is always retained for now.)
+// launch lazily builds the OptiX rep. The drop-software-floor hint (3c) is below:
+// AsImpl.NativeNoFloor omits the floor (implSet()==4).
 
 // 3a — a software-only consumer never triggers the lazy OptiX build. Under AUTO, build an
 // AABB AS and launch an UNSUPPORTED-shape kernel (AS, 2 Buffer, 1 scalar → software cubin
@@ -1568,6 +1568,93 @@ TEST(ToffeeSpatialIndexDeviceTests, lazyOptixBuiltOnFirstNativeLaunch) {
                       << " (1xx: wrong counts; 110: OptiX existed before launch (not "
                          "lazy); 705 expected = pre-launch software-only then OptiX built "
                          "on the first supported-shape launch)";
+}
+
+// 3c — the drop-software-floor hint. AsImpl.NativeNoFloor asserts all consumers are
+// supported native shapes, so the build omits the software floor: implSet() reports
+// OptiX-only (4, no software bit 1), and a supported-shape kernel still runs on the RT
+// cores. The caller trades the Unsupported-shape safety net for the floor's memory.
+// run() returns 700 + implSet() → 704 (floor dropped) on the 4090; 701 if the OptiX
+// engine is absent (NativeNoFloor then degenerates to the software BVH as the only rep).
+const char* kNoFloorDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.AsImpl;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqNoFloor {\n"
+    "    @Kernel\n"   // SUPPORTED canonical AABB candidate-count -> RT cores, no floor needed
+    "    public static void countHits(AccelerationStructure scene,\n"
+    "                                 Buffer<float32> qx, Buffer<float32> qy,\n"
+    "                                 Buffer<float32> qz, Buffer<uint32> out,\n"
+    "                                 uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          qx[i], qy[i], qz[i], 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = AccelerationStructure.of(boxes, np, AsImpl.NativeNoFloor);\n"
+    "        uint32 n = 4;\n"
+    "        float32[] hqx = heap float32[n]; float32[] hqy = heap float32[n]; float32[] hqz = heap float32[n];\n"
+    "        uint32[] hout = heap uint32[n];\n"
+    "        hqx[0]=0.0f;  hqy[0]=0.0f; hqz[0]=0.0f;\n"
+    "        hqx[1]=5.0f;  hqy[1]=0.0f; hqz[1]=0.0f;\n"
+    "        hqx[2]=10.0f; hqy[2]=0.0f; hqz[2]=0.0f;\n"
+    "        hqx[3]=19.7f; hqy[3]=0.0f; hqz[3]=0.0f;\n"
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9;\n"
+    "        Buffer<float32> qx = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qy = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qz = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        qx.upload(hqx); qy.upload(hqy); qz.upload(hqz); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        countHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"
+    "        if (hout[1] != 0) { return 101; }\n"
+    "        if (hout[2] != 1) { return 102; }\n"
+    "        if (hout[3] != 1) { return 103; }\n"
+    "        return 700 + scene.implSet();\n"   // 704 = OptiX-only (floor dropped); 701 = engine absent
+    "    }\n"
+    "}\n";
+
+TEST(ToffeeSpatialIndexDeviceTests, dropSoftwareFloorHintHonored) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    unsetenv("CAJETA_GPU_AS_IMPL");   // the hint drives the build, not the env
+    std::map<std::string, std::string> sources = {{"test.RqNoFloor", kNoFloorDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqNoFloor", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    if (r == 701) {
+        GTEST_SKIP() << "CUDA present but OptiX engine absent — NativeNoFloor degenerates "
+                        "to the software BVH (the only rep); nothing to drop";
+    }
+    EXPECT_EQ(r, 704) << "fail code " << r
+                      << " (1xx: wrong counts; 705: the software floor was retained despite "
+                         "AsImpl.NativeNoFloor — implSet should be OptiX-only (4), not 5)";
 }
 
 // ── M3 Phase 4 — safe AUTO on CUDA prefers RT cores ──────────────────────────

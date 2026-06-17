@@ -13311,9 +13311,11 @@ static CajetaAsImpl caj_cuda_resolve_as_impl(int pref) {
         // unknown value: ignore; fall through to the explicit preference.
     }
     if (pref == CAJ_AS_PREF_SOFTWARE) return CAJ_AS_IMPL_SOFTWARE_BVH;
-    if (pref == CAJ_AS_PREF_NATIVE)
+    // NATIVE and NATIVE_NO_FLOOR both prefer OptiX; they differ only in whether the
+    // build keeps the software FLOOR (see caj_cuda_accel_build_aabbs), not the impl tag.
+    if (pref == CAJ_AS_PREF_NATIVE || pref == CAJ_AS_PREF_NATIVE_NO_FLOOR)
         return optix ? CAJ_AS_IMPL_OPTIX : CAJ_AS_IMPL_SOFTWARE_BVH;
-    return CAJ_AS_IMPL_SOFTWARE_BVH;   // AUTO — software floor until M2 (the OptiX verb)
+    return CAJ_AS_IMPL_SOFTWARE_BVH;   // AUTO — software floor is the build-time primary
 }
 
 static CajetaAsImpl caj_resolve_as_impl(int pref) {
@@ -13331,7 +13333,9 @@ static CajetaAsImpl caj_resolve_as_impl(int pref) {
         // unknown value: ignore; fall through to the explicit preference.
     }
     if (pref == CAJ_AS_PREF_SOFTWARE) return CAJ_AS_IMPL_SOFTWARE_BVH;
-    if (pref == CAJ_AS_PREF_NATIVE)
+    // Vulkan native is a single rep (no separate software floor to drop), so
+    // NATIVE_NO_FLOOR behaves exactly like NATIVE here — the floor-drop is CUDA-only.
+    if (pref == CAJ_AS_PREF_NATIVE || pref == CAJ_AS_PREF_NATIVE_NO_FLOOR)
         return native ? CAJ_AS_IMPL_VULKAN_NATIVE : CAJ_AS_IMPL_SOFTWARE_BVH;
     return caj_default_as_impl(native);   // AUTO
 }
@@ -13625,10 +13629,16 @@ static int64_t caj_cuda_accel_build_aabbs(const float* boxes, uint32_t count,
         if (h) {
             if (out_impl) *out_impl = CAJ_AS_IMPL_OPTIX;
             // M3: build the portable software FLOOR as a secondary rep (uploaded to
-            // device) so the verb can fall back for an Unsupported-shape kernel.
-            int64_t floor = caj_cuda_accel_upload_blob(
-                cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
-            if (floor) caj_as_sec_register(h, CAJ_AS_IMPL_SOFTWARE_BVH, floor);
+            // device) so the verb can fall back for an Unsupported-shape kernel — UNLESS
+            // the caller dropped it via AsImpl.NativeNoFloor (Phase 3c: asserts all
+            // consumers are supported native shapes, trading the safety net for memory;
+            // implSet() then reports OptiX-only = 4, and an Unsupported-shape launch is
+            // diagnosed + skipped rather than handed the OptixAs* handle).
+            if (pref != CAJ_AS_PREF_NATIVE_NO_FLOOR) {
+                int64_t floor = caj_cuda_accel_upload_blob(
+                    cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
+                if (floor) caj_as_sec_register(h, CAJ_AS_IMPL_SOFTWARE_BVH, floor);
+            }
             return h;
         }
         // OptiX build failed (or SDK absent at runtime) -> the software floor.

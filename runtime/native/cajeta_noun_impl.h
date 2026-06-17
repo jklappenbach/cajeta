@@ -30,9 +30,12 @@ typedef enum CajetaAsImpl {
 // composes with the `CAJETA_GPU_AS_IMPL` env override. Ordinals MUST match the
 // `AsImpl` enum in runtime/src/cajeta/gpu/core/AsImpl.cajeta (comment-synced).
 typedef enum CajetaAsPref {
-    CAJ_AS_PREF_AUTO     = 0,  // heuristic default (native if supported, else software)
-    CAJ_AS_PREF_SOFTWARE = 1,  // force the portable software BVH
-    CAJ_AS_PREF_NATIVE   = 2   // prefer native (falls back to software if unsupported)
+    CAJ_AS_PREF_AUTO           = 0,  // heuristic default (native if supported, else software)
+    CAJ_AS_PREF_SOFTWARE       = 1,  // force the portable software BVH
+    CAJ_AS_PREF_NATIVE         = 2,  // prefer native (falls back to software if unsupported)
+    CAJ_AS_PREF_NATIVE_NO_FLOOR = 3  // prefer native AND drop the software floor (the caller
+                                     // asserts all consumers are supported native shapes —
+                                     // resolves like NATIVE; the build omits the floor rep)
 } CajetaAsPref;
 
 // The default impl an AUTO build picks: native iff the active backend offers
