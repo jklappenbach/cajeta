@@ -44,6 +44,24 @@ namespace nvidia {
     // parameter (the same definition the Vulkan dual-variant path uses).
     bool nvptxKernelUsesRayQuery(const MethodPtr& method);
 
+    // The canonical OptiX program-emission shapes (v1). A ray-query kernel is
+    // classified by its body + signature; an unrecognized one is Unsupported
+    // (the registration leaves it on the software cubin). The ordinal is shared
+    // with the runtime's __cajeta_xpu_register_optix_rayquery `shape` arg + the
+    // launch dispatch (cajeta_runtime.c), so keep them in sync.
+    enum class OptixRqShape {
+        Unsupported = -1,
+        CountAabb   = 0,   // AABB candidate count: anyhit increments + ignores
+        NearestTri  = 1,   // triangle nearest-hit: closesthit commits T/prim
+    };
+
+    // Classify a ray-query kernel by its proceed-loop body + signature:
+    //   - calls confirmIntersection() / a committed* getter -> NearestTri
+    //   - canonical count signature (1 AS, 4 Buffer, 1 scalar) + candidateType
+    //     -> CountAabb
+    //   - otherwise -> Unsupported.
+    OptixRqShape classifyRayQueryShape(const MethodPtr& method);
+
     // The compiler ↔ runtime launch-params layout for the OptiX count shape. The
     // emitted `params` const global is a packed struct in THIS order; the runtime
     // (M2 Phase 3-C) fills the matching struct before optixLaunch. Fields:
@@ -65,6 +83,24 @@ namespace nvidia {
     // kernel's signature is not the canonical AABB-count shape.
     std::string emitOptixCountModule(const MethodPtr& method,
                                      llvm::Module& optixModule);
+
+    // The compiler ↔ runtime launch-params layout for the triangle nearest-hit
+    // shape. The emitted `params` const global is a packed struct in THIS order:
+    //   handle : OptixTraversableHandle (u64)        — the triangle AS traversable
+    //   outT   : device ptr (u64) to Buffer<float32> — kernel buffer arg 0 (outT)
+    //   outI   : device ptr (u64) to Buffer<uint32>  — kernel buffer arg 1 (outI)
+    // The ray (origin/dir/tmin/tmax) is BAKED into __raygen__ from the kernel's
+    // initialize() literals (the nearest shape hardcodes its single ray).
+
+    // Emit the OptiX triangle nearest-hit program set for `method`: __raygen__<k>
+    // (single ray from the initialize() literals, built-in triangle traversal) /
+    // __closesthit__<k> (writes committed T / type=1 / primitive index to outT,
+    // outI via params) / __miss__<k> (writes committed type 0). No intersection /
+    // anyhit (built-in triangle). Returns the raygen entry name. Throws XPU-N04 if
+    // the signature/body is not the canonical nearest-hit shape or the ray args are
+    // not compile-time constants.
+    std::string emitOptixNearestModule(const MethodPtr& method,
+                                       llvm::Module& optixModule);
 
 } // namespace nvidia
 } // namespace xpu

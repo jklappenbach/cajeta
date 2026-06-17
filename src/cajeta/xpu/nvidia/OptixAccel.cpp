@@ -367,6 +367,92 @@ int cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
     return rc;
 }
 
+// Triangle nearest-hit launch (M2 Phase 4). Built-in triangle traversal, so the
+// hitgroup has a CLOSESTHIT program (no intersection / anyhit) and no payload —
+// closesthit commits the nearest and writes T / type / prim to the params buffers.
+// Otherwise structurally identical to cajeta_xpu_optix_launch (the AABB-count path).
+int cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
+                                const char* raygenName, const char* closesthitName,
+                                const char* missName,
+                                const void* paramsHost, uint64_t paramsLen,
+                                uint32_t width) {
+    OptixState& s = ensureInit();
+    if (!s.ok || !ptx || !ptxLen || !paramsHost || !paramsLen || width == 0) return -1;
+    ScopedPrimary sp(s.cuCtx);
+
+    char log[4096]; size_t logSize = sizeof(log);
+    OptixModuleCompileOptions mco = {};
+    OptixPipelineCompileOptions pco = {};
+    pco.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
+    pco.numPayloadValues = 0;            // closesthit writes via params, not payload
+    pco.numAttributeValues = 2;          // built-in triangle barycentrics
+    pco.pipelineLaunchParamsVariableName = "params";
+    pco.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE;
+
+    OptixModule mod = nullptr;
+    OptixProgramGroup rg = nullptr, ms = nullptr, hg = nullptr;
+    OptixPipeline pipeline = nullptr;
+    auto cleanup = [&]() {
+        if (pipeline) optixPipelineDestroy(pipeline);
+        if (hg) optixProgramGroupDestroy(hg);
+        if (ms) optixProgramGroupDestroy(ms);
+        if (rg) optixProgramGroupDestroy(rg);
+        if (mod) optixModuleDestroy(mod);
+    };
+
+    if (optixModuleCreate(s.ctx, &mco, &pco, ptx, (size_t) ptxLen, log, &logSize, &mod)
+            != OPTIX_SUCCESS) { cleanup(); return -2; }
+
+    OptixProgramGroupOptions pgo = {};
+    OptixProgramGroupDesc rgD = {}; rgD.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
+    rgD.raygen.module = mod; rgD.raygen.entryFunctionName = raygenName;
+    OptixProgramGroupDesc msD = {}; msD.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
+    msD.miss.module = mod; msD.miss.entryFunctionName = missName;
+    OptixProgramGroupDesc hgD = {}; hgD.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    hgD.hitgroup.moduleCH = mod; hgD.hitgroup.entryFunctionNameCH = closesthitName;
+    logSize = sizeof(log);
+    if (optixProgramGroupCreate(s.ctx, &rgD, 1, &pgo, log, &logSize, &rg) != OPTIX_SUCCESS) { cleanup(); return -3; }
+    logSize = sizeof(log);
+    if (optixProgramGroupCreate(s.ctx, &msD, 1, &pgo, log, &logSize, &ms) != OPTIX_SUCCESS) { cleanup(); return -3; }
+    logSize = sizeof(log);
+    if (optixProgramGroupCreate(s.ctx, &hgD, 1, &pgo, log, &logSize, &hg) != OPTIX_SUCCESS) { cleanup(); return -3; }
+
+    OptixProgramGroup groups[] = {rg, ms, hg};
+    OptixPipelineLinkOptions plo = {}; plo.maxTraceDepth = 1;
+    logSize = sizeof(log);
+    if (optixPipelineCreate(s.ctx, &pco, &plo, groups, 3, log, &logSize, &pipeline)
+            != OPTIX_SUCCESS) { cleanup(); return -4; }
+
+    struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) Rec { char h[OPTIX_SBT_RECORD_HEADER_SIZE]; };
+    Rec rgR, msR, hgR;
+    optixSbtRecordPackHeader(rg, &rgR);
+    optixSbtRecordPackHeader(ms, &msR);
+    optixSbtRecordPackHeader(hg, &hgR);
+    CUdeviceptr d_rg = 0, d_ms = 0, d_hg = 0, d_params = 0;
+    auto up = [&](CUdeviceptr* d, const void* src, size_t n) -> bool {
+        if (p_cuMemAlloc(d, n) != 0) return false;
+        return p_cuMemcpyHtoD(*d, src, n) == 0;
+    };
+    int rc = -5;
+    if (up(&d_rg, &rgR, sizeof(Rec)) && up(&d_ms, &msR, sizeof(Rec)) &&
+        up(&d_hg, &hgR, sizeof(Rec)) && up(&d_params, paramsHost, (size_t) paramsLen)) {
+        OptixShaderBindingTable sbt = {};
+        sbt.raygenRecord = d_rg;
+        sbt.missRecordBase = d_ms; sbt.missRecordStrideInBytes = sizeof(Rec); sbt.missRecordCount = 1;
+        sbt.hitgroupRecordBase = d_hg; sbt.hitgroupRecordStrideInBytes = sizeof(Rec); sbt.hitgroupRecordCount = 1;
+        if (optixLaunch(pipeline, /*stream=*/0, d_params, (size_t) paramsLen, &sbt,
+                        width, 1, 1) == OPTIX_SUCCESS &&
+            p_cuStreamSynchronize(0) == 0)
+            rc = 0;
+    }
+    if (d_rg) p_cuMemFree(d_rg);
+    if (d_ms) p_cuMemFree(d_ms);
+    if (d_hg) p_cuMemFree(d_hg);
+    if (d_params) p_cuMemFree(d_params);
+    cleanup();
+    return rc;
+}
+
 } // extern "C"
 
 #else // !CAJETA_HAS_OPTIX — stubs so the runtime always links; software floor only.
@@ -383,6 +469,9 @@ void     cajeta_xpu_optix_accel_free(int64_t) {}
 int      cajeta_xpu_optix_launch(const char*, uint64_t, const char*, const char*,
                                  const char*, const char*, const void*, uint64_t,
                                  uint32_t) { return -1; }
+int      cajeta_xpu_optix_launch_tri(const char*, uint64_t, const char*, const char*,
+                                     const char*, const void*, uint64_t,
+                                     uint32_t) { return -1; }
 }
 
 #endif // CAJETA_HAS_OPTIX

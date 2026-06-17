@@ -65,13 +65,15 @@ namespace nvidia {
             "__cajeta_xpu_register_kernel_params", kpTy);
 
         // void __cajeta_xpu_register_optix_rayquery(i8* name, i8* ptx, i64 len,
-        //     i8* raygen, i8* is, i8* anyhit, i8* miss)
+        //     i32 shape, i8* raygen, i8* prog1, i8* prog2, i8* prog3)
         // For a ray-query kernel against an OptiX-impl AS the launch is an
         // optixLaunch pipeline, not cuLaunchKernel; this registers the OptiX
-        // program PTX (a separate module) keyed by the same kernel name. The launch
-        // path picks optixLaunch when the AS impl is OptiX, the cubin otherwise.
+        // program PTX (a separate module) keyed by the same kernel name. `shape`
+        // selects the launch dispatch + program-slot roles (count: is/anyhit/miss;
+        // nearest: closesthit/miss). The launch path picks optixLaunch when the AS
+        // impl is OptiX, the software cubin otherwise.
         llvm::FunctionType* rqTy = llvm::FunctionType::get(
-            voidTy, {ptrTy, ptrTy, i64Ty, ptrTy, ptrTy, ptrTy, ptrTy}, false);
+            voidTy, {ptrTy, ptrTy, i64Ty, i32Ty, ptrTy, ptrTy, ptrTy, ptrTy}, false);
         llvm::FunctionCallee rqFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_optix_rayquery", rqTy);
 
@@ -159,15 +161,18 @@ namespace nvidia {
             // AS runs as an optixLaunch pipeline, not cuLaunchKernel. Emit its
             // program PTX into a SEPARATE module (ptxas rejects the `_optix_*` asm,
             // so it never goes through assembleCubin) and register it keyed by the
-            // same name. Only the canonical count shape is supported — a ray-query
-            // kernel of any other signature throws XPU-N04 here and simply keeps its
-            // software cubin (the launch then never selects the OptiX path).
-            if (nvptxKernelUsesRayQuery(method)) {
+            // same name + a shape tag. Only the canonical count + triangle nearest-
+            // hit shapes are supported — any other ray-query kernel is Unsupported
+            // and keeps its software cubin (the launch never selects the OptiX path).
+            OptixRqShape shape = classifyRayQueryShape(method);
+            if (shape != OptixRqShape::Unsupported) {
                 try {
                     llvm::LLVMContext oCtx;
                     llvm::Module oMod("xpu.optix." + entryName, oCtx);
                     configureDeviceModule(oMod, *tm);
-                    std::string raygen = emitOptixCountModule(method, oMod);
+                    std::string raygen = (shape == OptixRqShape::NearestTri)
+                        ? emitOptixNearestModule(method, oMod)
+                        : emitOptixCountModule(method, oMod);
                     std::string optixPtx = emitPtx(oMod, *tm);
                     if (!optixPtx.empty()) {
                         // PTX text as a NUL-terminated host constant; len excludes NUL.
@@ -178,21 +183,28 @@ namespace nvidia {
                             llvm::GlobalValue::PrivateLinkage, pInit,
                             "xpu.optixptx." + entryName);
                         ptxGV->setAlignment(llvm::MaybeAlign(1));
-                        // Program names follow emitOptixCountModule: __<stage>__<k>.
+                        // Program slots by shape (see __cajeta_xpu_register_optix_rayquery):
+                        //   count   -> prog1=intersection, prog2=anyhit, prog3=miss
+                        //   nearest -> prog1=closesthit,    prog2=miss,   prog3=""
                         llvm::Value* rg = b.CreateGlobalString(raygen,
                             "xpu.orgn." + entryName);
-                        llvm::Value* is = b.CreateGlobalString(
-                            "__intersection__" + entryName, "xpu.ois." + entryName);
-                        llvm::Value* ah = b.CreateGlobalString(
-                            "__anyhit__" + entryName, "xpu.oah." + entryName);
-                        llvm::Value* ms = b.CreateGlobalString(
-                            "__miss__" + entryName, "xpu.oms." + entryName);
+                        llvm::Value *p1, *p2, *p3;
+                        if (shape == OptixRqShape::NearestTri) {
+                            p1 = b.CreateGlobalString("__closesthit__" + entryName, "xpu.och." + entryName);
+                            p2 = b.CreateGlobalString("__miss__" + entryName, "xpu.oms." + entryName);
+                            p3 = b.CreateGlobalString("", "xpu.op3." + entryName);
+                        } else {
+                            p1 = b.CreateGlobalString("__intersection__" + entryName, "xpu.ois." + entryName);
+                            p2 = b.CreateGlobalString("__anyhit__" + entryName, "xpu.oah." + entryName);
+                            p3 = b.CreateGlobalString("__miss__" + entryName, "xpu.oms." + entryName);
+                        }
                         b.CreateCall(rqFn, {nameStr, ptxGV,
                             llvm::ConstantInt::get(i64Ty, optixPtx.size()),
-                            rg, is, ah, ms});
+                            llvm::ConstantInt::get(i32Ty, (int32_t) shape),
+                            rg, p1, p2, p3});
                     }
                 } catch (cajeta::Exception&) {
-                    // Non-canonical ray-query signature (XPU-N04) — software cubin only.
+                    // Unsupported/non-constant ray-query shape (XPU-N04) — software cubin only.
                 }
             }
             b.CreateRetVoid();

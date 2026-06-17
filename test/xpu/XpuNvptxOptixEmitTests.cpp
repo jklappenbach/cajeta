@@ -99,6 +99,35 @@ const char* kCountKernel =
     "    }\n"
     "}\n";
 
+// The canonical triangle nearest-hit kernel (the kNearestDriver shape): an AS, a
+// Buffer<float32> outT, a Buffer<uint32> outI; confirms triangle candidates and
+// reads committed getters; a compile-time-constant ray (one with a unary-minus dz).
+const char* kNearestKernel =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqNear {\n"
+    "    @Kernel\n"
+    "    public static void nearest(AccelerationStructure scene,\n"
+    "                               Buffer<float32> outT, Buffer<uint32> outI) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i == 0) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          0.25f, 0.25f, 10.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, -1.0f, 100.0f);\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) { rq.confirmIntersection(); }\n"
+    "            }\n"
+    "            outT[0] = rq.committedDistance();\n"
+    "            outI[0] = rq.committedType();\n"
+    "            outI[1] = rq.committedPrimitiveIndex();\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
 // A ray-query kernel whose signature is NOT the canonical count shape (one origin
 // buffer, not three) — must be rejected with XPU-N04.
 const char* kNonCanonicalKernel =
@@ -153,6 +182,45 @@ TEST(XpuNvptxOptixEmitTests, countShapeEmitsOptixPrograms) {
     EXPECT_NE(ptx.find("_optix_report_intersection_0"), std::string::npos) << ptx;
     // The launch-params block OptiX populates (pipelineLaunchParamsVariableName).
     EXPECT_NE(ptx.find(".const"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("params"), std::string::npos) << ptx;
+}
+
+// The triangle nearest-hit kernel is classified NearestTri and emits the
+// raygen / closesthit / miss program set + the `params` block (built-in triangle
+// traversal — no intersection/anyhit). The ray literals (incl. the unary-minus dz)
+// are baked into raygen via the optixTrace ABI call.
+TEST(XpuNvptxOptixEmitTests, nearestShapeEmitsClosesthitPrograms) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kNearestKernel, "test.RqNear");
+    auto klass = module->getStructures()["test.RqNear"];
+    ASSERT_NE(klass, nullptr);
+    auto nearest = findMethod(klass, "nearest");
+    ASSERT_NE(nearest, nullptr);
+    EXPECT_TRUE(nvptxKernelUsesRayQuery(nearest));
+    EXPECT_EQ((int) classifyRayQueryShape(nearest), (int) OptixRqShape::NearestTri);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module optixModule("rq_near_optix", deviceCtx);
+    configureDeviceModule(optixModule, *tm);
+
+    std::string raygen = emitOptixNearestModule(nearest, optixModule);
+    EXPECT_EQ(raygen, "__raygen__nearest");
+
+    std::string ptx = emitPtx(optixModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+
+    EXPECT_NE(ptx.find(".visible .entry __raygen__nearest"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find(".visible .entry __closesthit__nearest"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find(".visible .entry __miss__nearest"), std::string::npos) << ptx;
+    // No custom intersection/anyhit for built-in triangles.
+    EXPECT_EQ(ptx.find("__intersection__nearest"), std::string::npos) << ptx;
+    EXPECT_EQ(ptx.find("__anyhit__nearest"), std::string::npos) << ptx;
+    // optixTrace ABI + the committed getters closesthit reads.
+    EXPECT_NE(ptx.find("_optix_trace_typed_32"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("_optix_get_ray_tmax"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("_optix_read_primitive_idx"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("params"), std::string::npos) << ptx;
 }
 

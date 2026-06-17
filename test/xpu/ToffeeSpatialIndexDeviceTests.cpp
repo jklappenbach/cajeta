@@ -1129,6 +1129,29 @@ TEST(ToffeeSpatialIndexDeviceTests, aabbCountRayQueryOnOptixDevice) {
                       << " (OptiX RT-core AABB ray query via the compiler != CPU)";
 }
 
+// M2 Phase 4 — the OptiX triangle nearest-hit verb through the full compiler. The
+// SAME kNearestDriver as the software/CPU legs, with CAJETA_GPU_AS_IMPL=optix: the
+// triangle AS builds on the OptiX tier, NvptxRegistration emits the nearest-hit
+// program set (raygen with the baked ray + closesthit committing T/type/prim + miss),
+// and the launch dispatches to cajeta_xpu_optix_launch_tri (built-in triangle
+// traversal). Its 777 must equal the nearestHitOnNvptxSoftwareBvh / CPU legs.
+TEST(ToffeeSpatialIndexDeviceTests, nearestHitRayQueryOnOptixDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    AsImplEnvGuard forceOptix("optix");
+    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (OptiX RT-core triangle nearest-hit via the compiler != CPU)";
+}
+
 // ===========================================================================
 // AMD (AMDGPU → hsaco, HipDriver) software-BVH ray query — the symmetric twin of
 // the NVPTX arm. AMD has no cajeta native inline ray-query seam either, so

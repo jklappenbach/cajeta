@@ -13194,6 +13194,12 @@ extern int      cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
                                         const char* anyhitName, const char* missName,
                                         const void* paramsHost, uint64_t paramsLen,
                                         uint32_t width);
+extern int      cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
+                                            const char* raygenName,
+                                            const char* closesthitName,
+                                            const char* missName,
+                                            const void* paramsHost, uint64_t paramsLen,
+                                            uint32_t width);
 
 // --- OptiX ray-query program registry (M2 Phase 3-C-ii) ---------------------
 // A ray-query @Kernel whose AccelerationStructure resolves to the OptiX impl can
@@ -13204,14 +13210,18 @@ extern int      cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
 // here via __cajeta_xpu_register_optix_rayquery, keyed by the same name as the
 // kernel's ordinary software-BVH cubin. The CUDA launch path (cajeta_xpu_launch_cuda)
 // dispatches here when the active AS impl is OptiX; otherwise the software cubin runs.
+// shape: 0 = AABB candidate count (prog1=intersection, prog2=anyhit, prog3=miss);
+//        1 = triangle nearest-hit  (prog1=closesthit, prog2=miss, prog3 unused).
+// Keep in sync with cajeta::xpu::nvidia::OptixRqShape.
 struct cajeta_optix_rq {
     char name[256];
     const void* ptx;     // OptiX program PTX text (an embedded host constant)
     uint64_t ptxLen;
+    int32_t shape;
     char raygen[256];
-    char is[256];
-    char anyhit[256];
-    char miss[256];
+    char prog1[256];
+    char prog2[256];
+    char prog3[256];
 };
 #define CAJETA_XPU_MAX_OPTIX_RQ 32
 static struct cajeta_optix_rq g_optix_rq[CAJETA_XPU_MAX_OPTIX_RQ];
@@ -13219,9 +13229,9 @@ static int g_optix_rq_count;
 
 // Registration ctor entry point (NvptxRegistration emits the call at module init).
 void __cajeta_xpu_register_optix_rayquery(const char* name, const void* ptx,
-                                          uint64_t ptxLen, const char* raygen,
-                                          const char* is, const char* anyhit,
-                                          const char* miss) {
+                                          uint64_t ptxLen, int32_t shape,
+                                          const char* raygen, const char* prog1,
+                                          const char* prog2, const char* prog3) {
     if (!name || !ptx || ptxLen == 0) return;
     struct cajeta_optix_rq* e = NULL;
     for (int i = 0; i < g_optix_rq_count; ++i)
@@ -13231,11 +13241,11 @@ void __cajeta_xpu_register_optix_rayquery(const char* name, const void* ptx,
         e = &g_optix_rq[g_optix_rq_count++];
     }
     snprintf(e->name,   sizeof(e->name),   "%s", name);
-    e->ptx = ptx; e->ptxLen = ptxLen;
+    e->ptx = ptx; e->ptxLen = ptxLen; e->shape = shape;
     snprintf(e->raygen, sizeof(e->raygen), "%s", raygen ? raygen : "");
-    snprintf(e->is,     sizeof(e->is),     "%s", is ? is : "");
-    snprintf(e->anyhit, sizeof(e->anyhit), "%s", anyhit ? anyhit : "");
-    snprintf(e->miss,   sizeof(e->miss),   "%s", miss ? miss : "");
+    snprintf(e->prog1,  sizeof(e->prog1),  "%s", prog1 ? prog1 : "");
+    snprintf(e->prog2,  sizeof(e->prog2),  "%s", prog2 ? prog2 : "");
+    snprintf(e->prog3,  sizeof(e->prog3),  "%s", prog3 ? prog3 : "");
 }
 
 static struct cajeta_optix_rq* cajeta_xpu_find_optix_rq(const char* name) {
@@ -13946,26 +13956,47 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv)
     void** av = (void**) argv;
     if (!av) return;
     int64_t asHandle = *(int64_t*) av[0];
-    struct {
-        uint64_t handle, originX, originY, originZ, out;
-        uint32_t n;
-        uint64_t boxes;
-    } p;
-    p.handle  = cajeta_xpu_optix_traversable(asHandle);
-    p.originX = *(uint64_t*) av[1];
-    p.originY = *(uint64_t*) av[2];
-    p.originZ = *(uint64_t*) av[3];
-    p.out     = *(uint64_t*) av[4];
-    p.n       = *(uint32_t*) av[5];
-    p.boxes   = cajeta_xpu_optix_accel_boxes(asHandle);
-    if (!p.handle || !p.boxes) {
+    uint64_t trav = cajeta_xpu_optix_traversable(asHandle);
+    if (!trav) {
         fprintf(stderr, "cajeta.xpu: OptiX ray-query launch '%s' missing "
-                "traversable/boxes for AS handle %lld; not launching\n",
+                "traversable for AS handle %lld; not launching\n",
                 rq->name, (long long) asHandle);
         return;
     }
-    int rc = cajeta_xpu_optix_launch(rq->ptx, rq->ptxLen, rq->raygen, rq->is,
-                                     rq->anyhit, rq->miss, &p, sizeof(p), p.n);
+    int rc;
+    if (rq->shape == 1) {
+        // Triangle nearest-hit: argv [AS, outT, outI] -> { handle, outT, outI }.
+        struct { uint64_t handle, outT, outI; } p;
+        p.handle = trav;
+        p.outT   = *(uint64_t*) av[1];
+        p.outI   = *(uint64_t*) av[2];
+        rc = cajeta_xpu_optix_launch_tri(rq->ptx, rq->ptxLen, rq->raygen,
+                                         rq->prog1 /*closesthit*/, rq->prog2 /*miss*/,
+                                         &p, sizeof(p), 1);
+    } else {
+        // AABB candidate count: argv [AS, ox,oy,oz, out, n] -> the count params.
+        struct {
+            uint64_t handle, originX, originY, originZ, out;
+            uint32_t n;
+            uint64_t boxes;
+        } p;
+        p.handle  = trav;
+        p.originX = *(uint64_t*) av[1];
+        p.originY = *(uint64_t*) av[2];
+        p.originZ = *(uint64_t*) av[3];
+        p.out     = *(uint64_t*) av[4];
+        p.n       = *(uint32_t*) av[5];
+        p.boxes   = cajeta_xpu_optix_accel_boxes(asHandle);
+        if (!p.boxes) {
+            fprintf(stderr, "cajeta.xpu: OptiX ray-query launch '%s' missing "
+                    "boxes for AS handle %lld; not launching\n",
+                    rq->name, (long long) asHandle);
+            return;
+        }
+        rc = cajeta_xpu_optix_launch(rq->ptx, rq->ptxLen, rq->raygen,
+                                     rq->prog1 /*is*/, rq->prog2 /*anyhit*/,
+                                     rq->prog3 /*miss*/, &p, sizeof(p), p.n);
+    }
     if (rc != 0)
         fprintf(stderr, "cajeta.xpu: OptiX ray-query launch '%s' failed (%d)\n",
                 rq->name, rc);

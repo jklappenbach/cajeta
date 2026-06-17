@@ -61,6 +61,12 @@ extern int      cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
                                         const char* anyhitName, const char* missName,
                                         const void* paramsHost, uint64_t paramsLen,
                                         unsigned width);
+extern int      cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
+                                            const char* raygenName,
+                                            const char* closesthitName,
+                                            const char* missName,
+                                            const void* paramsHost, uint64_t paramsLen,
+                                            unsigned width);
 
 // libmingwex printf-family / strtod: the runtime's fprintf/snprintf/strtod
 // calls lower to these under ANSI stdio. Bind them by their real names so we
@@ -167,6 +173,7 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("cajeta_xpu_optix_traversable",            &cajeta_xpu_optix_traversable),
     CJ_SYM("cajeta_xpu_optix_accel_boxes",            &cajeta_xpu_optix_accel_boxes),
     CJ_SYM("cajeta_xpu_optix_launch",                 &cajeta_xpu_optix_launch),
+    CJ_SYM("cajeta_xpu_optix_launch_tri",             &cajeta_xpu_optix_launch_tri),
 };
 
 const CajetaJitWinSym* cajeta_jit_win_symbols(size_t* count) {
