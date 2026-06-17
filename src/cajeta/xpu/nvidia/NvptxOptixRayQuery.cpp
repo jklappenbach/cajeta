@@ -17,6 +17,8 @@
 #include "../../asn/expression/Expression.h"
 #include "../../asn/expression/MethodCallExpression.h"
 #include "../../asn/expression/LiteralExpression.h"
+#include "../../asn/expression/Identifier.h"
+#include "../../type/FormalParameter.h"
 #include "cajeta/error/Exception.h"
 
 #include "llvm/IR/Constants.h"
@@ -82,6 +84,14 @@ llvm::Value* callU32Getter(llvm::IRBuilder<>& b, const char* op, const char* nm)
     auto* ia = llvm::InlineAsm::get(llvm::FunctionType::get(i32, false),
         std::string("call ($0), ") + op + ", ();", "=r", /*sideeffect=*/true);
     return b.CreateCall(ia, {}, nm);
+}
+// A u32->u32 optix getter (`call ($0), <op>, ($1);`) — e.g. the hit-kind decoders.
+llvm::Value* callU32Getter1(llvm::IRBuilder<>& b, const char* op, llvm::Value* arg,
+                            const char* nm) {
+    auto* i32 = llvm::Type::getInt32Ty(b.getContext());
+    auto* ia = llvm::InlineAsm::get(llvm::FunctionType::get(i32, {i32}, false),
+        std::string("call ($0), ") + op + ", ($1);", "=r,r", /*sideeffect=*/true);
+    return b.CreateCall(ia, {arg}, nm);
 }
 // A single-f32-result optix getter (`call ($0), <op>, ();`).
 llvm::Value* callF32Getter(llvm::IRBuilder<>& b, const char* op, const char* nm) {
@@ -263,10 +273,12 @@ OptixRqShape classifyRayQueryShape(const MethodPtr& method) {
     ParamTally t = tallyParams(method);
     if (committed) {
         // Triangle nearest-hit: (AccelerationStructure, Buffer outT, Buffer outI).
-        // (Front-face — committedFrontFace with a 1/3/1 signature — is not yet a
-        // supported OptiX shape; it keeps its software cubin.)
         if (t.accel == 1 && t.buffer == 2 && t.scalar == 0 && t.other == 0)
             return OptixRqShape::NearestTri;
+        // Committed-triangle per-launch (kTri count / kFront front-face):
+        // (AS, Buffer b0, Buffer b1, Buffer out, count). Per-launch dynamic ray.
+        if (t.accel == 1 && t.buffer == 3 && t.scalar == 1 && t.other == 0)
+            return OptixRqShape::CommittedTri;
         return OptixRqShape::Unsupported;
     }
     if (candGetter) {
@@ -674,6 +686,176 @@ std::string emitOptixBaryModule(const MethodPtr& method, llvm::Module& m) {
     {
         llvm::Function* fn = makeEntry(m, "__miss__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
+        b.CreateRetVoid();
+    }
+
+    return "__raygen__" + kname;
+}
+
+std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m) {
+    llvm::LLVMContext& ctx = m.getContext();
+    auto* i32 = llvm::Type::getInt32Ty(ctx);
+    auto* i64 = llvm::Type::getInt64Ty(ctx);
+    auto* f32 = llvm::Type::getFloatTy(ctx);
+    auto* gptr = llvm::PointerType::get(ctx, kGlobalAS);
+
+    const auto throwN04 = [&](const std::string& why) {
+        throw cajeta::Exception(
+            "XPU OptiX ray query (v1) committed-triangle shape: " + why + " Kernel '" +
+            method->getName() + "' does not match the canonical (AccelerationStructure, "
+            "Buffer b0, Buffer b1, Buffer out, count) per-launch shape with a "
+            "const-or-buffer[i] ray; force the software tier with "
+            "CAJETA_GPU_AS_IMPL=software.", "XPU-N04");
+    };
+    if (classifyRayQueryShape(method) != OptixRqShape::CommittedTri)
+        throwN04("signature/body mismatch.");
+
+    // ---- buffer param names in signature order (b0, b1, out) -------------------
+    // collectKernelParamInfo (= collectParams) skips an implicit `this`, so filter it
+    // here too to keep the index-zip exact (the @Kernel is static, but be robust).
+    auto info = collectKernelParamInfo(method, ctx, m.getDataLayout());
+    std::vector<std::string> formal;
+    for (auto& p : method->getParameterList())
+        if (p && p->getName() != "this") formal.push_back(p->getName());
+    std::vector<std::string> bufNames;            // Buffer params, in signature order
+    for (size_t i = 0; i < info.size() && i < formal.size(); ++i)
+        if (info[i].kind == KernelParamInfo::Buffer)
+            bufNames.push_back(formal[i]);
+    if (bufNames.size() != 3) throwN04("expected exactly 3 Buffer params.");
+    enum Field { F_HANDLE = 0, F_B0 = 1, F_B1 = 2, F_OUT = 3, F_N = 4 };
+
+    // ---- resolve each ray component: a constant, or a b0[i]/b1[i] load ----------
+    // RayComp.field == -1 means a constant `value`; else it's F_B0/F_B1 (load[i]).
+    struct RayComp { int field = -1; float value = 0.0f; };
+    const auto resolveComp = [&](const ExpressionPtr& e) -> RayComp {
+        RayComp rc;
+        if (evalConstF32(e, rc.value)) return rc;
+        // A `name[i]` load: ArrayIndexExpression whose base identifier is b0 or b1.
+        if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(e)) {
+            const auto& kids = ai->getChildren();
+            if (!kids.empty()) {
+                if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(kids[0])) {
+                    const std::string& nm = id->getTextValue();
+                    if (nm == bufNames[0]) { rc.field = F_B0; return rc; }
+                    if (nm == bufNames[1]) { rc.field = F_B1; return rc; }
+                }
+            }
+        }
+        throwN04("a ray component is neither a constant nor a b0[i]/b1[i] load.");
+        return rc;  // unreachable
+    };
+
+    std::vector<std::shared_ptr<MethodCallExpression>> calls;
+    if (method->getBlock()) collectCalls(method->getBlock(), calls);
+    std::shared_ptr<MethodCallExpression> init;
+    bool frontFace = false;
+    for (const auto& mc : calls) {
+        if (mc->getMethodCallName() == "initialize" && mc->getParameters().size() == 11)
+            init = mc;
+        if (mc->getMethodCallName() == "committedFrontFace") frontFace = true;
+    }
+    if (!init) throwN04("no initialize(...) call.");
+    const auto& a = init->getParameters();
+    // args[3..10] = ox, oy, oz, tMin, dx, dy, dz, tMax.
+    RayComp ox = resolveComp(a[3].expression),  oy = resolveComp(a[4].expression);
+    RayComp oz = resolveComp(a[5].expression),  tMin = resolveComp(a[6].expression);
+    RayComp dx = resolveComp(a[7].expression),  dy = resolveComp(a[8].expression);
+    RayComp dz = resolveComp(a[9].expression),  tMax = resolveComp(a[10].expression);
+
+    const std::string kname = method->getName();
+
+    // ---- the `params` launch block (.const) — { handle, b0, b1, out, n } -------
+    std::vector<llvm::Type*> fields = {i64, i64, i64, i64, i32};
+    auto* paramsTy = llvm::StructType::create(ctx, fields, "RqCommittedTriParams");
+    auto* paramsG = new llvm::GlobalVariable(
+        m, paramsTy, /*isConstant=*/false, llvm::GlobalValue::ExternalLinkage,
+        llvm::ConstantAggregateZero::get(paramsTy), "params", nullptr,
+        llvm::GlobalValue::NotThreadLocal, kConstAS);
+    paramsG->setAlignment(llvm::Align(8));
+
+    llvm::IRBuilder<> b(ctx);
+    auto loadField = [&](unsigned idx, llvm::Type* ty) -> llvm::Value* {
+        llvm::Value* p = b.CreateConstInBoundsGEP2_32(paramsTy, paramsG, 0, idx);
+        return b.CreateLoad(ty, p, "p.f" + std::to_string(idx));
+    };
+    auto bufPtr = [&](unsigned field) -> llvm::Value* {
+        return b.CreateIntToPtr(loadField(field, i64), gptr, "buf");
+    };
+    auto traceAsm = makeTraceAsm(ctx);
+
+    // ---- __raygen__<k> : per-launch index, resolved ray, triangle traversal -----
+    {
+        llvm::Function* fn = makeEntry(m, "__raygen__" + kname);
+        auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+        auto* body = llvm::BasicBlock::Create(ctx, "body", fn);
+        auto* ret = llvm::BasicBlock::Create(ctx, "ret", fn);
+        b.SetInsertPoint(entry);
+        llvm::Value* i = callU32Getter(b, "_optix_get_launch_index_x", "li");
+        llvm::Value* n = loadField(F_N, i32);
+        b.CreateCondBr(b.CreateICmpUGE(i, n, "oob"), ret, body);
+
+        b.SetInsertPoint(body);
+        llvm::Value* i64idx = b.CreateZExt(i, i64, "i64");
+        // Materialize a ray component: constant, or a per-launch load from its buffer.
+        auto comp = [&](const RayComp& rc, const char* nm) -> llvm::Value* {
+            if (rc.field < 0) return llvm::ConstantFP::get(f32, rc.value);
+            llvm::Value* base = bufPtr((unsigned) rc.field);
+            llvm::Value* ep = b.CreateInBoundsGEP(f32, base, i64idx, nm);
+            return b.CreateLoad(f32, ep, nm);
+        };
+        llvm::Value* handle = loadField(F_HANDLE, i64);
+        std::vector<llvm::Value*> t;
+        t.push_back(llvm::ConstantInt::get(i32, 0));      // payload type
+        t.push_back(handle);
+        t.push_back(comp(ox, "ox")); t.push_back(comp(oy, "oy")); t.push_back(comp(oz, "oz"));
+        t.push_back(comp(dx, "dx")); t.push_back(comp(dy, "dy")); t.push_back(comp(dz, "dz"));
+        t.push_back(comp(tMin, "tmin")); t.push_back(comp(tMax, "tmax"));
+        t.push_back(llvm::ConstantFP::get(f32, 0.0));     // time
+        t.push_back(llvm::ConstantInt::get(i32, 255));    // visibilityMask
+        t.push_back(llvm::ConstantInt::get(i32, 0));      // rayFlags
+        t.push_back(llvm::ConstantInt::get(i32, 0));      // SBToffset
+        t.push_back(llvm::ConstantInt::get(i32, 1));      // SBTstride
+        t.push_back(llvm::ConstantInt::get(i32, 0));      // missSBTIndex
+        t.push_back(llvm::ConstantInt::get(i32, 0));      // payloadSize (closesthit via params)
+        for (int k = 0; k < 32; ++k) t.push_back(llvm::ConstantInt::get(i32, 0));
+        b.CreateCall(traceAsm, t, "trace");
+        b.CreateBr(ret);
+
+        b.SetInsertPoint(ret);
+        b.CreateRetVoid();
+    }
+
+    // ---- __closesthit__<k> : write out[i] (hit-flag, or front-face 1/2) ---------
+    {
+        llvm::Function* fn = makeEntry(m, "__closesthit__" + kname);
+        b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
+        llvm::Value* i = callU32Getter(b, "_optix_get_launch_index_x", "li");
+        llvm::Value* i64idx = b.CreateZExt(i, i64, "i64");
+        llvm::Value* out = bufPtr(F_OUT);
+        llvm::Value* val;
+        if (frontFace) {
+            // optixIsFrontFaceHit = !(backface(hitKind) == 1) -> 1 front / 2 back.
+            llvm::Value* hk = callU32Getter(b, "_optix_get_hit_kind", "hk");
+            llvm::Value* bf = callU32Getter1(b, "_optix_get_backface_from_hit_kind", hk, "bf");
+            llvm::Value* isBack = b.CreateICmpEQ(bf, llvm::ConstantInt::get(i32, 1), "isBack");
+            val = b.CreateSelect(isBack, llvm::ConstantInt::get(i32, 2),
+                                 llvm::ConstantInt::get(i32, 1), "ff");
+        } else {
+            val = llvm::ConstantInt::get(i32, 1);          // hit-flag: committed type triangle
+        }
+        b.CreateStore(val, b.CreateInBoundsGEP(i32, out, i64idx, "out.i"));
+        b.CreateRetVoid();
+    }
+
+    // ---- __miss__<k> : out[i] = 0 (no committed hit) ----------------------------
+    {
+        llvm::Function* fn = makeEntry(m, "__miss__" + kname);
+        b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
+        llvm::Value* i = callU32Getter(b, "_optix_get_launch_index_x", "li");
+        llvm::Value* i64idx = b.CreateZExt(i, i64, "i64");
+        llvm::Value* out = bufPtr(F_OUT);
+        b.CreateStore(llvm::ConstantInt::get(i32, 0),
+                      b.CreateInBoundsGEP(i32, out, i64idx, "out.i"));
         b.CreateRetVoid();
     }
 

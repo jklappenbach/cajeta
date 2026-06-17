@@ -1204,6 +1204,48 @@ TEST(ToffeeSpatialIndexDeviceTests, candidateGettersRayQueryOnOptixDevice) {
                       << " (OptiX RT-core candidate getters via the compiler != CPU)";
 }
 
+// M2 Phase 4-E — the OptiX committed-triangle per-launch verb (CommittedTri shape).
+// The SAME kTriDriver / kFrontDriver as the software/CPU legs, with
+// CAJETA_GPU_AS_IMPL=optix: a per-launch dynamic ray (ray components resolved from the
+// initialize() args as const-or-buffer[i] loads), built-in triangle traversal,
+// closesthit writes out[i] (hit-flag for the count kernel; front-face 1/2 for the
+// front-face kernel). Each 777 must equal the *OnNvptxSoftwareBvh / CPU legs.
+TEST(ToffeeSpatialIndexDeviceTests, triangleCountRayQueryOnOptixDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    AsImplEnvGuard forceOptix("optix");
+    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (OptiX RT-core triangle hit-count via the compiler != CPU)";
+}
+
+TEST(ToffeeSpatialIndexDeviceTests, frontFaceRayQueryOnOptixDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    AsImplEnvGuard forceOptix("optix");
+    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (OptiX RT-core front-face via the compiler != CPU; if it's "
+                         "the back-hit code, OptiX front-face winding differs from cajeta's "
+                         "det>0 convention — negate in emitOptixCommittedTriModule)";
+}
+
 // ===========================================================================
 // AMD (AMDGPU → hsaco, HipDriver) software-BVH ray query — the symmetric twin of
 // the NVPTX arm. AMD has no cajeta native inline ray-query seam either, so

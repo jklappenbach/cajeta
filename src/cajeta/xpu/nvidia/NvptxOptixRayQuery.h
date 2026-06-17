@@ -54,6 +54,7 @@ namespace nvidia {
         CountAabb    = 0,   // AABB candidate count: anyhit increments + ignores
         NearestTri   = 1,   // triangle nearest-hit: closesthit commits T/prim
         BaryCandidate = 2,  // triangle candidate getters: anyhit reads T/bary + ignores
+        CommittedTri  = 3,  // triangle committed per-launch: closesthit writes hit/front-face
     };
 
     // Classify a ray-query kernel by its proceed-loop body + signature:
@@ -122,6 +123,27 @@ namespace nvidia {
     // the ray args are not compile-time constants.
     std::string emitOptixBaryModule(const MethodPtr& method,
                                     llvm::Module& optixModule);
+
+    // The compiler ↔ runtime launch-params layout for the committed-triangle
+    // per-launch shape (the kTri-count / kFront front-face kernels). The emitted
+    // `params` const global is a packed struct:
+    //   handle : OptixTraversableHandle (u64)        — the triangle AS traversable
+    //   b0     : device ptr (u64)                    — kernel Buffer arg 0 (ray-fed)
+    //   b1     : device ptr (u64)                    — kernel Buffer arg 1 (ray-fed)
+    //   out    : device ptr (u64)                    — kernel Buffer arg 2 (output)
+    //   n      : u32                                 — the count scalar (launch width)
+    // Each ray component is resolved per-arg from initialize(): a compile-time
+    // constant, or a `b0[i]`/`b1[i]` load (the launch-index-fed buffers).
+
+    // Emit the OptiX committed-triangle per-launch program set for `method`:
+    // __raygen__<k> (per-launch index i<n; ray from the resolved const/buffer
+    // components; built-in triangle traversal) / __closesthit__<k> (writes out[i] —
+    // front-face mode `front?1:2` if the body reads committedFrontFace, else hit-flag
+    // `1`) / __miss__<k> (writes out[i]=0). No anyhit/intersection. Returns the raygen
+    // entry name. Throws XPU-N04 if the signature/body is not the canonical
+    // committed-triangle shape or a ray arg is neither constant nor a buffer[i] load.
+    std::string emitOptixCommittedTriModule(const MethodPtr& method,
+                                            llvm::Module& optixModule);
 
 } // namespace nvidia
 } // namespace xpu

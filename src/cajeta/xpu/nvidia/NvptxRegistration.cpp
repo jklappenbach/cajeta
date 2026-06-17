@@ -176,6 +176,8 @@ namespace nvidia {
                             raygen = emitOptixNearestModule(method, oMod); break;
                         case OptixRqShape::BaryCandidate:
                             raygen = emitOptixBaryModule(method, oMod); break;
+                        case OptixRqShape::CommittedTri:
+                            raygen = emitOptixCommittedTriModule(method, oMod); break;
                         default:
                             raygen = emitOptixCountModule(method, oMod); break;
                     }
@@ -190,13 +192,15 @@ namespace nvidia {
                             "xpu.optixptx." + entryName);
                         ptxGV->setAlignment(llvm::MaybeAlign(1));
                         // Program slots by shape (see __cajeta_xpu_register_optix_rayquery):
-                        //   count   -> prog1=intersection, prog2=anyhit, prog3=miss
-                        //   nearest -> prog1=closesthit,    prog2=miss,   prog3=""
-                        //   bary    -> prog1=anyhit,        prog2=miss,   prog3=""
+                        //   count    -> prog1=intersection, prog2=anyhit, prog3=miss
+                        //   nearest  -> prog1=closesthit,    prog2=miss,   prog3=""
+                        //   bary     -> prog1=anyhit,        prog2=miss,   prog3=""
+                        //   committed-> prog1=closesthit,    prog2=miss,   prog3=""
                         llvm::Value* rg = b.CreateGlobalString(raygen,
                             "xpu.orgn." + entryName);
                         llvm::Value *p1, *p2, *p3;
-                        if (shape == OptixRqShape::NearestTri) {
+                        if (shape == OptixRqShape::NearestTri ||
+                            shape == OptixRqShape::CommittedTri) {
                             p1 = b.CreateGlobalString("__closesthit__" + entryName, "xpu.och." + entryName);
                             p2 = b.CreateGlobalString("__miss__" + entryName, "xpu.oms." + entryName);
                             p3 = b.CreateGlobalString("", "xpu.op3." + entryName);

@@ -157,6 +157,40 @@ const char* kBaryKernel =
     "    }\n"
     "}\n";
 
+// The committed-triangle per-launch kernel (the kFrontDriver shape): an AS, two
+// Buffer<float32> ray-component buffers (origin-z + dir-z, indexed by launch index),
+// a Buffer<uint32> out, a count; confirms triangle candidates and reads committed
+// front-face. Per-launch DYNAMIC ray (oz[i] origin-z, dz[i] dir-z; x/y + tMin/tMax
+// constant) — exercises the const-or-buffer[i] ray resolver.
+const char* kCommittedTriKernel =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqFront {\n"
+    "    @Kernel\n"
+    "    public static void getFront(AccelerationStructure scene,\n"
+    "                                Buffer<float32> oz, Buffer<float32> dz,\n"
+    "                                Buffer<uint32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          0.25f, 0.25f, oz[i], 0.0f,\n"
+    "                          0.0f, 0.0f, dz[i], 100.0f);\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) { rq.confirmIntersection(); }\n"
+    "            }\n"
+    "            uint32 f = 0;\n"
+    "            if (rq.committedType() == 1) {\n"
+    "                if (rq.committedFrontFace()) { f = 1; } else { f = 2; }\n"
+    "            }\n"
+    "            out[i] = f;\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
 // A ray-query kernel whose signature is NOT the canonical count shape (one origin
 // buffer, not three) — must be rejected with XPU-N04.
 const char* kNonCanonicalKernel =
@@ -290,6 +324,45 @@ TEST(XpuNvptxOptixEmitTests, baryShapeEmitsAnyhitGetters) {
     EXPECT_NE(ptx.find("_optix_get_ray_tmax"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("_optix_get_triangle_barycentrics"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("_optix_ignore_intersection"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("params"), std::string::npos) << ptx;
+}
+
+// The committed-triangle per-launch kernel is classified CommittedTri and emits the
+// raygen / closesthit / miss program set + the `params` block. The front-face body
+// makes closesthit read the hit-kind decoders; the per-launch dynamic ray (oz[i],
+// dz[i]) makes raygen load from the ray-component buffers. No anyhit/intersection.
+TEST(XpuNvptxOptixEmitTests, committedTriShapeEmitsClosesthitFrontFace) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kCommittedTriKernel, "test.RqFront");
+    auto klass = module->getStructures()["test.RqFront"];
+    ASSERT_NE(klass, nullptr);
+    auto getFront = findMethod(klass, "getFront");
+    ASSERT_NE(getFront, nullptr);
+    EXPECT_TRUE(nvptxKernelUsesRayQuery(getFront));
+    EXPECT_EQ((int) classifyRayQueryShape(getFront), (int) OptixRqShape::CommittedTri);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module optixModule("rq_front_optix", deviceCtx);
+    configureDeviceModule(optixModule, *tm);
+
+    std::string raygen = emitOptixCommittedTriModule(getFront, optixModule);
+    EXPECT_EQ(raygen, "__raygen__getFront");
+
+    std::string ptx = emitPtx(optixModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+
+    EXPECT_NE(ptx.find(".visible .entry __raygen__getFront"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find(".visible .entry __closesthit__getFront"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find(".visible .entry __miss__getFront"), std::string::npos) << ptx;
+    // Built-in triangle: no custom intersection/anyhit.
+    EXPECT_EQ(ptx.find("__intersection__getFront"), std::string::npos) << ptx;
+    EXPECT_EQ(ptx.find("__anyhit__getFront"), std::string::npos) << ptx;
+    // optixTrace ABI + the front-face hit-kind decoders closesthit reads.
+    EXPECT_NE(ptx.find("_optix_trace_typed_32"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("_optix_get_hit_kind"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("_optix_get_backface_from_hit_kind"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("params"), std::string::npos) << ptx;
 }
 
