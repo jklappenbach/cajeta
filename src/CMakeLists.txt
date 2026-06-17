@@ -898,6 +898,38 @@ if(CAJETA_HAS_SPV_COOP_MATRIX)
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_SPV_COOP_MATRIX=1)
 endif()
 
+# OptiX (NVIDIA RT-core acceleration structures) — header-only SDK; the engine is
+# the driver's nvoptix.dll (loaded lazily by optixInit), so this is a COMPILE-TIME-
+# only dependency, detected by header presence (mirroring the runtime's
+# __has_include gating). Found -> src/cajeta/xpu/nvidia/OptixAccel.cpp compiles its
+# real path + links cfgmgr32 (the OptiX DLL loader); absent -> that TU is stubs and
+# the software-BVH ray-query floor is unaffected. Override with -DCAJETA_OPTIX_ROOT.
+# Shares the CAJETA_OPTIX_INCLUDE_DIR / CAJETA_CUDA_INCLUDE_DIR cache vars with
+# test/CMakeLists.txt (find_path is cached -> one detection).
+find_path(CAJETA_OPTIX_INCLUDE_DIR optix.h
+        HINTS "${CAJETA_OPTIX_ROOT}/include" "$ENV{OptiX_INSTALL_DIR}/include"
+              "$ENV{OPTIX_ROOT}/include"
+        PATHS "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.1.0/include"
+              "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.0.0/include"
+              "/opt/optix/include"
+        DOC "OptiX SDK include directory (contains optix.h)")
+find_path(CAJETA_CUDA_INCLUDE_DIR cuda.h
+        HINTS "$ENV{CUDA_PATH}/include"
+        PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include"
+        DOC "CUDA toolkit include directory (cuda.h, required by the OptiX headers)")
+if(CAJETA_OPTIX_INCLUDE_DIR AND CAJETA_CUDA_INCLUDE_DIR)
+    message(STATUS "OptiX AS runtime ENABLED: ${CAJETA_OPTIX_INCLUDE_DIR}")
+    target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_OPTIX=1)
+    target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
+            ${CAJETA_OPTIX_INCLUDE_DIR} ${CAJETA_CUDA_INCLUDE_DIR})
+    if(WIN32)
+        target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC cfgmgr32 advapi32)
+    endif()
+else()
+    message(STATUS "OptiX AS runtime DISABLED (optix.h / cuda.h not found; "
+            "software ray-query floor unaffected)")
+endif()
+
 # `cajeta doc` subcommand. DocCommand.cpp + the cajetadoc engine (the
 # cajetadoc_core OBJECT library) are compiled/linked into the executable only,
 # so cajeta_lib (the whole compiler) is untouched and not forced to recompile.

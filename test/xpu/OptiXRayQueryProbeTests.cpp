@@ -39,17 +39,24 @@
 #include <windows.h>
 
 #include <optix.h>
-#include <optix_function_table_definition.h>   // defines the table; exactly one TU
-#include <optix_stubs.h>
+#include <optix_stubs.h>   // stubs call through the table OptixAccel.cpp defines
+
+// The OptiX runtime glue (src/cajeta/xpu/nvidia/OptixAccel.cpp) owns the single
+// function-table definition + the lazily-initialized device context over the CUDA
+// primary context. The probe reuses that context (one owner, no duplicate table).
+extern "C" void*    cajeta_xpu_optix_context(void);
+extern "C" int      cajeta_xpu_optix_available(void);
+extern "C" int64_t  cajeta_xpu_optix_accel_build_aabbs(const float* boxes, unsigned count);
+extern "C" uint64_t cajeta_xpu_optix_traversable(int64_t handle);
+extern "C" void     cajeta_xpu_optix_accel_free(int64_t handle);
 
 namespace {
 
 // ---- CUDA driver API, dynamically loaded from nvcuda.dll (no MSVC import lib
 // under mingw; cuda.h via optix declares the bare names, so load into p_-ptrs).
+// Init + the CUDA primary context (made current) are the glue's job; the probe
+// only needs the memory/stream ops, which act on the current (glue's) context.
 #define DRV(name, ret, ...) typedef ret (*name##_t)(__VA_ARGS__); name##_t p_##name = nullptr;
-DRV(cuInit, CUresult, unsigned)
-DRV(cuDeviceGet, CUresult, CUdevice*, int)
-DRV(cuCtxCreate, CUresult, CUcontext*, unsigned, CUdevice)
 DRV(cuMemAlloc, CUresult, CUdeviceptr*, size_t)
 DRV(cuMemFree, CUresult, CUdeviceptr)
 DRV(cuMemcpyHtoD, CUresult, CUdeviceptr, const void*, size_t)
@@ -62,9 +69,6 @@ bool loadCuda() {
     HMODULE h = LoadLibraryA("nvcuda.dll");
     if (!h) return false;
 #define BIND(name, sym) p_##name = (name##_t) GetProcAddress(h, sym); if (!p_##name) return false;
-    BIND(cuInit, "cuInit")
-    BIND(cuDeviceGet, "cuDeviceGet")
-    BIND(cuCtxCreate, "cuCtxCreate_v2")
     BIND(cuMemAlloc, "cuMemAlloc_v2")
     BIND(cuMemFree, "cuMemFree_v2")
     BIND(cuMemcpyHtoD, "cuMemcpyHtoD_v2")
@@ -97,20 +101,39 @@ CUdeviceptr upload(const void* host, size_t bytes) {
     CUdeviceptr d = 0; p_cuMemAlloc(&d, bytes); p_cuMemcpyHtoD(d, host, bytes); return d;
 }
 
-// A CUDA context + OptiX device context for the active GPU. Returns false (no
-// crash) if anything is unavailable, so the caller can SKIP.
-bool makeContexts(CUcontext* cu, OptixDeviceContext* ox) {
-    if (!loadCuda()) return false;
-    if (p_cuInit(0) != 0) return false;
-    CUdevice dev;
-    if (p_cuDeviceGet(&dev, 0) != 0) return false;
-    if (p_cuCtxCreate(cu, 0, dev) != 0) return false;
-    if (optixInit() != OPTIX_SUCCESS) return false;
-    OptixDeviceContextOptions o = {};
-    return optixDeviceContextCreate(*cu, &o, ox) == OPTIX_SUCCESS;
+// The OptiX device context from the runtime glue (which lazily runs optixInit +
+// retains/sets-current the CUDA primary context the memory ops below act on).
+// Returns nullptr if OptiX/CUDA is unavailable, so the caller can SKIP.
+OptixDeviceContext glueContext() {
+    if (!loadCuda()) return nullptr;
+    return (OptixDeviceContext) cajeta_xpu_optix_context();
 }
 
 } // namespace
+
+// The runtime glue's AS build/free path directly (the CUDA noun provider's OptiX
+// arm calls exactly these). Isolates the glue from the JIT/active-backend path: if
+// this passes but optixRecordsImplOnNvptxDevice falls back to software, the issue
+// is in the JIT resolution, not the glue build.
+TEST(OptiXRayQueryProbe, glueBuildsAndFreesAabbAs) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    if (!cajeta_xpu_optix_available()) {
+        GTEST_SKIP() << "OptiX runtime unavailable (SDK built in but nvoptix/CUDA absent)";
+    }
+    float boxes[18] = {
+        -0.5f,-0.5f,-0.5f,  0.5f, 0.5f, 0.5f,
+         9.5f,-0.5f,-0.5f, 10.5f, 0.5f, 0.5f,
+        19.5f,-0.5f,-0.5f, 20.5f, 0.5f, 0.5f,
+    };
+    int64_t h = cajeta_xpu_optix_accel_build_aabbs(boxes, 3);
+    EXPECT_NE(h, 0) << "glue optixAccelBuild (custom prim) returned no handle";
+    if (h) {
+        EXPECT_NE(cajeta_xpu_optix_traversable(h), 0ull) << "null traversable";
+        cajeta_xpu_optix_accel_free(h);
+    }
+}
 
 // AABB candidate count on the RT cores == the software oracle's {1,0,1,1}.
 TEST(OptiXRayQueryProbe, aabbCandidateCountMatchesSoftwareOracle) {
@@ -120,8 +143,8 @@ TEST(OptiXRayQueryProbe, aabbCandidateCountMatchesSoftwareOracle) {
     std::string ptx = readPtx("optix_progs.ptx");
     ASSERT_FALSE(ptx.empty()) << "test/xpu/optix/optix_progs.ptx not found";
 
-    CUcontext cu; OptixDeviceContext octx;
-    ASSERT_TRUE(makeContexts(&cu, &octx)) << "OptiX/CUDA context creation failed";
+    OptixDeviceContext octx = glueContext();
+    ASSERT_NE(octx, nullptr) << "OptiX/CUDA context unavailable from the runtime glue";
 
     const unsigned np = 3;
     float boxes[np * 6] = {
@@ -218,8 +241,8 @@ TEST(OptiXRayQueryProbe, triangleNearestHitMatchesSoftwareOracle) {
     std::string ptx = readPtx("optix_tri.ptx");
     ASSERT_FALSE(ptx.empty()) << "test/xpu/optix/optix_tri.ptx not found";
 
-    CUcontext cu; OptixDeviceContext octx;
-    ASSERT_TRUE(makeContexts(&cu, &octx)) << "OptiX/CUDA context creation failed";
+    OptixDeviceContext octx = glueContext();
+    ASSERT_NE(octx, nullptr) << "OptiX/CUDA context unavailable from the runtime glue";
 
     float verts[18] = { 0,0,2, 1,0,2, 0,1,2,   0,0,4, 1,0,4, 0,1,4 };
     CUdeviceptr d_verts = upload(verts, sizeof(verts));

@@ -13157,6 +13157,15 @@ void __cajeta_xpu_image_free(void* self, int64_t handle) {
 // free follows the RECORDED impl, not the active backend.
 #include "cajeta_noun_impl.h"
 
+// OptiX AS runtime glue (src/cajeta/xpu/nvidia/OptixAccel.cpp). Resolved at JIT
+// link time via the process-symbol generator (the TLS-engine pattern); stubs
+// returning 0 when cajeta was built without the OptiX SDK, so this always links.
+extern int     cajeta_xpu_optix_available(void);
+extern int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, uint32_t count);
+extern int64_t cajeta_xpu_optix_accel_build_triangles(const float* verts,
+                                                      uint32_t triCount, uint32_t stride);
+extern void    cajeta_xpu_optix_accel_free(int64_t handle);
+
 // Native inline ray query available on the active device? (Same condition as
 // __cajeta_xpu_device_supports(RayQueryNative).) The native-vs-software input.
 static int caj_native_rayquery_available(void) {
@@ -13180,7 +13189,35 @@ static int caj_native_rayquery_available(void) {
 // override convention (inc-4 brick #4); the compile-time-feature instance is
 // resolveImplTier() in src/cajeta/xpu/lowering/KernelLowering.cpp (e.g.
 // CAJETA_GPU_COOPMATRIX_IMPL). Same precedence + case-sensitive string match.
+// CUDA's native AS tier is OptiX (RT cores), resolved separately from Vulkan's
+// because the "native impl" ordinal differs (CAJ_AS_IMPL_OPTIX vs _VULKAN_NATIVE)
+// and the availability probe is different (cajeta_xpu_optix_available, not the
+// Vulkan ray-query flag). M1 NOTE: AUTO on CUDA stays SOFTWARE — the OptiX *verb*
+// (a kernel traversing the AS via optixTrace) lands in M2; until then an OptiX AS
+// is opt-in (AsImpl.Native / CAJETA_GPU_AS_IMPL=optix|native) and not yet consumed
+// by a lowered kernel. Flipping AUTO to OPTIX before M2 would hand the software
+// walk an OptiX handle it would misread as a buffer.
+static CajetaAsImpl caj_cuda_resolve_as_impl(int pref) {
+    int optix = cajeta_xpu_optix_available();
+    const char* env = getenv("CAJETA_GPU_AS_IMPL");
+    if (env && *env) {
+        if (strcmp(env, "software") == 0) return CAJ_AS_IMPL_SOFTWARE_BVH;
+        if (strcmp(env, "optix") == 0 || strcmp(env, "native") == 0)
+            return optix ? CAJ_AS_IMPL_OPTIX : CAJ_AS_IMPL_SOFTWARE_BVH;
+        // unknown value: ignore; fall through to the explicit preference.
+    }
+    if (pref == CAJ_AS_PREF_SOFTWARE) return CAJ_AS_IMPL_SOFTWARE_BVH;
+    if (pref == CAJ_AS_PREF_NATIVE)
+        return optix ? CAJ_AS_IMPL_OPTIX : CAJ_AS_IMPL_SOFTWARE_BVH;
+    return CAJ_AS_IMPL_SOFTWARE_BVH;   // AUTO — software floor until M2 (the OptiX verb)
+}
+
 static CajetaAsImpl caj_resolve_as_impl(int pref) {
+    // Backend-aware: CUDA resolves to the OptiX tier, Vulkan to its native BLAS,
+    // everything else to the portable floor. Keyed on the active backend so the
+    // recorded impl (implTag) and the build path always agree on one device.
+    if (cajeta_xpu_active_backend() == CAJ_XPU_CUDA)
+        return caj_cuda_resolve_as_impl(pref);
     int native = caj_native_rayquery_available();
     const char* env = getenv("CAJETA_GPU_AS_IMPL");
     if (env && *env) {
@@ -13328,19 +13365,30 @@ static int64_t caj_cuda_accel_upload_blob(int64_t blob) {
 }
 static int64_t caj_cuda_accel_build_aabbs(const float* boxes, uint32_t count,
                                           int32_t pref, CajetaAsImpl* out_impl) {
-    (void) pref;
+    CajetaAsImpl impl = caj_cuda_resolve_as_impl(pref);
+    if (impl == CAJ_AS_IMPL_OPTIX) {
+        int64_t h = cajeta_xpu_optix_accel_build_aabbs(boxes, count);
+        if (h) { if (out_impl) *out_impl = CAJ_AS_IMPL_OPTIX; return h; }
+        // OptiX build failed (or SDK absent at runtime) -> the software floor.
+    }
     if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
     return caj_cuda_accel_upload_blob(cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
 }
 static int64_t caj_cuda_accel_build_triangles(const float* verts, uint32_t triCount,
                                               uint32_t stride, CajetaAsImpl* out_impl) {
+    CajetaAsImpl impl = caj_cuda_resolve_as_impl(CAJ_AS_PREF_AUTO);
+    if (impl == CAJ_AS_IMPL_OPTIX) {
+        int64_t h = cajeta_xpu_optix_accel_build_triangles(verts, triCount, stride);
+        if (h) { if (out_impl) *out_impl = CAJ_AS_IMPL_OPTIX; return h; }
+    }
     if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
     return caj_cuda_accel_upload_blob(
         cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride));
 }
 static void caj_cuda_accel_free(int64_t handle, CajetaAsImpl impl) {
-    (void) impl;
-    if (handle && g_xpu_cuda.cuMemFree)
+    if (!handle) return;
+    if (impl == CAJ_AS_IMPL_OPTIX) { cajeta_xpu_optix_accel_free(handle); return; }
+    if (g_xpu_cuda.cuMemFree)
         g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle);
 }
 

@@ -539,7 +539,7 @@ namespace xpu {
         // software BVH. The capability-heuristic brick lets one backend pick either.
         // This is the ray-query noun's ABI-pinned encoding of the degrade choice;
         // it feeds rayQueryTier() below (the unified ImplTier face).
-        enum class NounImpl { SoftwareBvh = 0, VulkanNative = 1 };
+        enum class NounImpl { SoftwareBvh = 0, VulkanNative = 1, Optix = 2 };
         virtual NounImpl accelImpl() const { return NounImpl::VulkanNative; }
 
         // The ray-query verb tier in the unified ImplTier vocabulary: SoftwareBvh

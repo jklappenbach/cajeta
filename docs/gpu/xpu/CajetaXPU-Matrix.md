@@ -401,9 +401,14 @@ are selectable and agree. Bugs fixed on the way to native: the native **triangle
 builder recorded a BLAS as the traceable AS (must be a TLAS — NVIDIA returns no
 hits, RADV tolerated it; now wraps the BLAS in a TLAS like the AABB path), and the
 runtime resolver + `RayQueryNative` capability were both Win32-gated (now removed —
-the 4090's native RT-core path is wired and validated). NVIDIA's **CUDA** backend
-and AMD's **HIP** backend still use the software BVH (NVIDIA RT cores are reached via
-OptiX, not the NVPTX device path — out of scope here).
+the 4090's native RT-core path is wired and validated). AMD's **HIP** backend still
+uses the software BVH. NVIDIA's **CUDA** backend is growing an **OptiX RT-core tier**
+(`CAJ_AS_IMPL_OPTIX`): NVIDIA RT cores are reached via OptiX (a pipeline model, no
+inline-RQ intrinsic), so M0 proved OptiX results match the software oracle on the
+4090 and M1 landed the runtime AS provider (build + record the OptiX AS on-device,
+`implTag` 2); the traversal verb (NVPTX→OptiX codegen + `optixLaunch`) is in progress
+(M2). OptiX is a compile-time-only dependency — the engine is the driver's
+`nvoptix.dll`. See `documents/gpu-rayquery-optix/`.
 
 ---
 

@@ -35,12 +35,25 @@
 #include "JitWinSymbols.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <io.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+// OptiX AS runtime glue (src/cajeta/xpu/nvidia/OptixAccel.cpp). The EMBEDDED
+// runtime bitcode's CUDA noun provider references these (the first host-lib
+// symbols the embedded runtime calls that aren't themselves embedded — OptiX is
+// C++ + needs the driver loader, so it can't live in JIT bitcode). Without
+// registering them here, every JIT module on Windows fails to materialize. (On
+// Linux the JIT's -rdynamic export table resolves them; this bridge is _WIN32.)
+extern int     cajeta_xpu_optix_available(void);
+extern int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, unsigned count);
+extern int64_t cajeta_xpu_optix_accel_build_triangles(const float* verts,
+                                                      unsigned triCount, unsigned stride);
+extern void    cajeta_xpu_optix_accel_free(int64_t handle);
 
 // libmingwex printf-family / strtod: the runtime's fprintf/snprintf/strtod
 // calls lower to these under ANSI stdio. Bind them by their real names so we
@@ -138,6 +151,12 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("_commit",          &_commit),
     CJ_SYM("getenv",           &getenv),
     CJ_SYM("_putenv_s",        &_putenv_s),
+    // OptiX AS glue (see the extern block above): the embedded runtime's CUDA
+    // noun provider calls these, so every JIT module needs them resolvable.
+    CJ_SYM("cajeta_xpu_optix_available",              &cajeta_xpu_optix_available),
+    CJ_SYM("cajeta_xpu_optix_accel_build_aabbs",      &cajeta_xpu_optix_accel_build_aabbs),
+    CJ_SYM("cajeta_xpu_optix_accel_build_triangles",  &cajeta_xpu_optix_accel_build_triangles),
+    CJ_SYM("cajeta_xpu_optix_accel_free",             &cajeta_xpu_optix_accel_free),
 };
 
 const CajetaJitWinSym* cajeta_jit_win_symbols(size_t* count) {

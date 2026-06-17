@@ -16,10 +16,21 @@ built and cross-checked against the Vulkan native path (§8); what remains is th
 > `AccelerationStructure.of(.., AsImpl.Native | AsImpl.Software)` or the process-wide
 > `CAJETA_GPU_AS_IMPL=native|software` override, and the chosen impl is recorded on
 > the noun and readable via `AccelerationStructure.implTag()` (0 = software BVH,
-> 1 = native BLAS). Proof: `autoRecordsNativeImplOnDevice` (AUTO records native on the
-> 4090) + `forcedNativeOfApiOnDevice`/`forcedSoftwareOfApiOnDevice` in
-> `ToffeeSpatialIndexDeviceTests`. NVIDIA's CUDA and AMD's HIP backends still use the
-> software BVH (their RT cores are reached via OptiX / a non-cajeta path). It is the headline item of the GPU
+> 1 = native BLAS, 2 = OptiX). Proof: `autoRecordsNativeImplOnDevice` (AUTO records
+> native on the 4090) + `forcedNativeOfApiOnDevice`/`forcedSoftwareOfApiOnDevice` in
+> `ToffeeSpatialIndexDeviceTests`. AMD's HIP backend still uses the software BVH.
+
+> **NVIDIA CUDA — OptiX RT-core tier (in progress).** NVIDIA's RT cores are reached
+> via **OptiX** (a pipeline model, not inline ray query — there is no NVVM inline-RQ
+> intrinsic), so the CUDA backend gets a third AS impl, `CAJ_AS_IMPL_OPTIX` (2).
+> **M0** (`OptiXRayQueryProbe`) proved OptiX RT-core results match the software oracle
+> on the 4090; **M1** landed the runtime AS provider (`src/cajeta/xpu/nvidia/OptixAccel.cpp`
+> + the CUDA noun provider's OptiX arm) — `CAJETA_GPU_AS_IMPL=optix`/`native` build &
+> record the OptiX AS on-device (`optixRecordsImplOnNvptxDevice` → implTag 2). The
+> **verb** (a kernel traversing the AS via an OptiX pipeline / `optixTrace`) is **M2**;
+> until then AUTO on CUDA stays on the software BVH floor and OptiX is opt-in.
+> OptiX is a compile-time-only dependency (header-only SDK; the engine is the driver's
+> `nvoptix.dll`). See `documents/gpu-rayquery-optix/`. It is the headline item of the GPU
 foundation
 ([`plans/gpu/cajeta-gpu-plan.md §3.3`](../../plans/gpu/cajeta-gpu-plan.md)) and the
 worked example of the model in [`CajetaGPU.md §1` / `§4`](CajetaGPU.md). Read those

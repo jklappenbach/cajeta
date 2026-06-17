@@ -19,7 +19,11 @@
 
 typedef enum CajetaAsImpl {
     CAJ_AS_IMPL_SOFTWARE_BVH  = 0,  // portable software BVH (a plain Buffer<float32>)
-    CAJ_AS_IMPL_VULKAN_NATIVE = 1   // VK_KHR_acceleration_structure native BLAS
+    CAJ_AS_IMPL_VULKAN_NATIVE = 1,  // VK_KHR_acceleration_structure native BLAS
+    CAJ_AS_IMPL_OPTIX         = 2   // NVIDIA OptiX RT-core AS (optixAccelBuild); the
+                                    // verb traverses via an OptiX pipeline (optixTrace),
+                                    // not the SoftwareRayQuery walk — see the CUDA noun
+                                    // provider's OptiX arm + the NVPTX OptiX verb (M2).
 } CajetaAsImpl;
 
 // The app's per-AS impl *preference* (inc-4 brick #3) — the in-code override that

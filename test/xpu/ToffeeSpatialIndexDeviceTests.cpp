@@ -16,6 +16,7 @@
 #include "gtest/gtest.h"
 
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"   // portable setenv/unsetenv on MinGW
 #include "cajeta/xpu/XpuTarget.h"
 #include "cajeta/xpu/amd/HipDriver.h"
 #include "cajeta/xpu/nvidia/CudaDriver.h"
@@ -1045,6 +1046,60 @@ TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (NVPTX committed front-face != CPU)";
+}
+
+// ── NVIDIA OptiX RT-core AS tier (Milestone 1) ──────────────────────────────
+// RAII env guard (CAJETA_GPU_AS_IMPL for the scope), restored on destruction.
+namespace { struct AsImplEnvGuard {
+    AsImplEnvGuard(const char* v) { setenv("CAJETA_GPU_AS_IMPL", v, 1); }
+    ~AsImplEnvGuard() { unsetenv("CAJETA_GPU_AS_IMPL"); }
+}; }
+
+// Build-only driver (no kernel launch): the OptiX *verb* (traversal via optixTrace)
+// is M2, so M1 validates that the CUDA noun provider BUILDS + RECORDS the OptiX AS
+// tier and frees it. run() builds an AABB AS and returns 700 + implTag(): on the
+// 4090 with the OptiX SDK and CAJETA_GPU_AS_IMPL=optix that is 702 (CAJ_AS_IMPL_OPTIX);
+// 700 would mean it fell back to the software floor (OptiX unavailable at runtime).
+const char* kOptixImplDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqOptix {\n"
+    // A @Kernel (even unlaunched) makes the bundle register the CUDA backend at
+    // module init, so it is the active backend when the AS builds below — without
+    // it the build wouldn't route to the CUDA noun provider's OptiX arm.
+    "    @Kernel\n"
+    "    public static void noop(Buffer<uint32> b) {\n"
+    "        uint32 i = Thread.globalIdX(); if (i == 0) { b[0] = 1; }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = heap AccelerationStructure(boxes, np);\n"
+    "        return 700 + scene.implTag();\n"   // 702 = OptiX, 700 = software fallback
+    "    }\n"
+    "}\n";
+
+TEST(ToffeeSpatialIndexDeviceTests, optixRecordsImplOnNvptxDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    AsImplEnvGuard forceOptix("optix");   // CUDA: optix|native -> the OptiX AS tier
+    std::map<std::string, std::string> sources = {{"test.RqOptix", kOptixImplDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqOptix", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 702) << "fail code " << r
+                      << " (700: OptiX AS build/record fell back to software — the "
+                         "CUDA OptiX noun arm didn't take, or OptiX unavailable on-device)";
 }
 
 // ===========================================================================
