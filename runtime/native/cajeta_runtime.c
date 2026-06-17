@@ -14130,16 +14130,29 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    uint32_t sharedBytes, void* argv,
                                    int64_t streamHandle,
                                    int32_t specCount, const int32_t* specValues) {
-    // M2 Phase 3-C-ii: OptiX RT-core dispatch. If this kernel emitted an OptiX
-    // program set (NvptxRegistration) and the active AS impl resolves to OptiX, run
-    // the optixLaunch pipeline instead of cuLaunchKernel — the software-BVH cubin
-    // would read the OptixAs handle as a device buffer and fault. The impl is
-    // deterministic per device (env > pref > default), so resolving it here matches
-    // the impl the AS was built with (caj_cuda_resolve_as_impl, used by the builder).
+    // M3 Phase 2: launch-time impl selection (the verb picks). Read the ACTUAL
+    // AccelerationStructure argument's recorded impl (POD offset 12 = ((int32*)pod)[3])
+    // rather than a global resolve, so ONE AS can serve an OptiX-shape kernel (which
+    // emitted an OptiX program set → optixLaunch / RT cores) AND an Unsupported-shape
+    // kernel (no program set → the software cubin over the retained software floor) in
+    // the same program. The verb picks per launch; no kernel ever receives a rep it
+    // cannot traverse (R2). When the software path gets a non-software AS primary
+    // (OptiX) the marshalling pass below swaps in the registered software floor so the
+    // software cubin reads a real BVH blob, not the OptixAs* — eliminating the silent
+    // fault (R6). Supersedes the M2 global caj_cuda_resolve_as_impl(AUTO)==OPTIX gate.
     {
+        void** av0 = (void**) argv;
+        struct cajeta_kparams* kpx = cajeta_xpu_find_kparams(kernelName);
+        int32_t asArgImpl = -1;            // this launch's AS arg impl (-1 = no AS arg)
+        if (kpx && av0) {
+            for (int i = 0; i < kpx->count; ++i)
+                if (kpx->kind[i] == CAJETA_KP_ACCEL && av0[i]) {
+                    asArgImpl = ((const int32_t*) av0[i])[3];
+                    break;
+                }
+        }
         struct cajeta_optix_rq* rq = cajeta_xpu_find_optix_rq(kernelName);
-        if (rq && cajeta_xpu_optix_available() &&
-            caj_cuda_resolve_as_impl(CAJ_AS_PREF_AUTO) == CAJ_AS_IMPL_OPTIX) {
+        if (rq && cajeta_xpu_optix_available() && asArgImpl == CAJ_AS_IMPL_OPTIX) {
             cajeta_xpu_launch_cuda_optix(rq, argv);
             return;
         }
@@ -14229,14 +14242,28 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     int nbufarr = 0;
     unsigned long long texObjs[8]; void* texObjVals[8]; int ntex = 0;
     unsigned long long surfObjs[8]; void* surfObjVals[8]; int nsurf = 0;
+    // M3 Phase 2: substitute AccelerationStructure PODs (handle swapped to the software
+    // floor) for the software-path floor fallback. POD layout {i64 handle, u32 count,
+    // i32 impl} = 16 bytes, matching the cajeta AS struct the cubin reads by value.
+    struct { int64_t handle; uint32_t count; int32_t impl; } asPods[8];
+    int nas = 0;
     {
         struct cajeta_kparams* kpa = cajeta_xpu_find_kparams(kernelName);
         if (kpa && kpa->count > 0 && kpa->count <= 64) {
             int hasXlat = 0;
-            for (int i = 0; i < kpa->count; ++i)
+            for (int i = 0; i < kpa->count; ++i) {
                 if (kpa->kind[i] == CAJETA_KP_BUFFER_ARRAY ||
                     kpa->kind[i] == CAJETA_KP_TEXTURE ||
-                    kpa->kind[i] == CAJETA_KP_IMAGE) hasXlat = 1;
+                    kpa->kind[i] == CAJETA_KP_IMAGE) {
+                    hasXlat = 1;
+                } else if (kpa->kind[i] == CAJETA_KP_ACCEL && ((void**) argv)[i] &&
+                           ((const int32_t*) ((void**) argv)[i])[3]
+                               != CAJ_AS_IMPL_SOFTWARE_BVH) {
+                    // A non-software AS primary reaching the software cubin — needs the
+                    // floor swap (R6). The optix path already returned above if taken.
+                    hasXlat = 1;
+                }
+            }
             if (hasXlat) {
                 // The (single, v1) Sampler param supplies the filter/address modes.
                 int32_t filterMode = CAJ_CU_TR_FILTER_MODE_LINEAR, addressMode = 0;
@@ -14310,6 +14337,31 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                         bufArrVals[nbufarr] = (void*) (intptr_t) dev;
                         subArgv[i] = &bufArrVals[nbufarr];
                         ++nbufarr;
+                    } else if (kpa->kind[i] == CAJETA_KP_ACCEL) {
+                        // M3 Phase 2 floor swap. The software cubin reads field 0 (the
+                        // handle) as the BVH-blob device pointer; a non-software AS
+                        // primary (OptiX OptixAs*) would fault. Substitute a POD copy
+                        // pointing at the retained software-BVH floor (Phase 1 registry).
+                        int32_t asImpl = ((const int32_t*) ((void**) argv)[i])[3];
+                        if (asImpl != CAJ_AS_IMPL_SOFTWARE_BVH) {
+                            if (nas >= 8) { ok = 0; break; }
+                            int64_t primary = *(int64_t*) ((void**) argv)[i];
+                            int32_t sImpl = 0; int64_t sHandle = 0;
+                            if (!caj_as_sec_lookup(primary, &sImpl, &sHandle) ||
+                                sImpl != CAJ_AS_IMPL_SOFTWARE_BVH || !sHandle) {
+                                fprintf(stderr, "cajeta.xpu: ray-query kernel '%s' takes "
+                                    "the software path but its AccelerationStructure "
+                                    "carries no software-BVH floor (impl %d); not "
+                                    "launching (forced =optix with an unsupported "
+                                    "shape?)\n", kernelName, asImpl);
+                                ok = 0; break;
+                            }
+                            asPods[nas].handle = sHandle;
+                            asPods[nas].count  = ((const uint32_t*) ((void**) argv)[i])[2];
+                            asPods[nas].impl   = CAJ_AS_IMPL_SOFTWARE_BVH;
+                            subArgv[i] = &asPods[nas];
+                            ++nas;
+                        }
                     }
                 }
                 if (!ok) {

@@ -1171,6 +1171,195 @@ TEST(ToffeeSpatialIndexDeviceTests, multiImplAsSoftwareOnlyUnderAuto) {
                       << " (AUTO on CUDA must be software-only [bit 1] until the M3 flip)";
 }
 
+// M3 Phase 2 — launch-time impl selection (the verb picks). ONE AccelerationStructure
+// (built OptiX-primary + software floor under =optix) is consumed by TWO kernels in the
+// same program: a SUPPORTED canonical AABB-count shape `countHits` (AS, qx, qy, qz, out,
+// n) → emits an OptiX program set → runs on the RT cores via optixLaunch; and an
+// UNSUPPORTED shape `countOne` (AS, qx, out, n — a signature no canonical shape matches)
+// → no OptiX program → the software cubin, which the M3 launch hands the retained
+// software FLOOR (not the OptixAs* primary, which would fault). Both must return the same
+// neighbour counts {1,0,1,1}. This is the decisive proof that selection is per-launch and
+// the floor fallback eliminates the M2 silent fault. The unsupported kernel bakes qy=qz=0
+// so its single qx buffer reproduces the supported kernel's degenerate-ray RTNN query.
+const char* kSelectDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqSelect {\n"
+    "    @Kernel\n"   // SUPPORTED: canonical AABB candidate-count -> OptiX RT cores
+    "    public static void countHits(AccelerationStructure scene,\n"
+    "                                 Buffer<float32> qx, Buffer<float32> qy,\n"
+    "                                 Buffer<float32> qz, Buffer<uint32> out,\n"
+    "                                 uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          qx[i], qy[i], qz[i], 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    @Kernel\n"   // UNSUPPORTED shape (AS, 2 Buffer, 1 scalar) -> software floor
+    "    public static void countOne(AccelerationStructure scene,\n"
+    "                                Buffer<float32> qx, Buffer<uint32> out,\n"
+    "                                uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          qx[i], 0.0f, 0.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = heap AccelerationStructure(boxes, np);\n"
+    "        uint32 n = 4;\n"
+    "        float32[] hqx = heap float32[n]; float32[] hqy = heap float32[n]; float32[] hqz = heap float32[n];\n"
+    "        uint32[] hout = heap uint32[n];\n"
+    "        hqx[0]=0.0f;  hqy[0]=0.0f; hqz[0]=0.0f;\n"
+    "        hqx[1]=5.0f;  hqy[1]=0.0f; hqz[1]=0.0f;\n"
+    "        hqx[2]=10.0f; hqy[2]=0.0f; hqz[2]=0.0f;\n"
+    "        hqx[3]=19.7f; hqy[3]=0.0f; hqz[3]=0.0f;\n"
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9;\n"
+    "        Buffer<float32> qx = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qy = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qz = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        qx.upload(hqx); qy.upload(hqy); qz.upload(hqz); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    // 1) supported shape -> OptiX RT cores
+    "        countHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"
+    "        if (hout[1] != 0) { return 101; }\n"
+    "        if (hout[2] != 1) { return 102; }\n"
+    "        if (hout[3] != 1) { return 103; }\n"
+    // 2) unsupported shape, SAME AS -> software floor fallback (no fault)
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9; out.upload(hout);\n"
+    "        countOne.launch(s, grid: [1], block: [64])(scene, qx, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 200; }\n"
+    "        if (hout[1] != 0) { return 201; }\n"
+    "        if (hout[2] != 1) { return 202; }\n"
+    "        if (hout[3] != 1) { return 203; }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+// 2a — the decisive launch-time-selection test: one AS, a supported kernel on the RT
+// cores and an Unsupported-shape kernel on the software floor, both correct (777).
+TEST(ToffeeSpatialIndexDeviceTests, sameAsTwoKernelsSelectsPerLaunch) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    AsImplEnvGuard forceOptix("optix");
+    std::map<std::string, std::string> sources = {{"test.RqSelect", kSelectDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqSelect", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (1xx: supported shape on OptiX wrong; 2xx: Unsupported shape "
+                         "did not fall back to the software floor correctly — the M3 "
+                         "launch-time selection / floor swap regressed)";
+}
+
+// 2b — forced =optix with an UNSUPPORTED shape must NOT fault on the OptixAs* primary:
+// it falls back to the retained software floor and returns the correct counts. Driver
+// runs ONLY the unsupported kernel, in isolation, against an OptiX-forced AS.
+const char* kUnsupOptixDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqUnsup {\n"
+    "    @Kernel\n"   // (AS, 2 Buffer, 1 scalar) -> Unsupported -> software floor
+    "    public static void countOne(AccelerationStructure scene,\n"
+    "                                Buffer<float32> qx, Buffer<uint32> out,\n"
+    "                                uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          qx[i], 0.0f, 0.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = heap AccelerationStructure(boxes, np);\n"
+    "        uint32 n = 4;\n"
+    "        float32[] hqx = heap float32[n]; uint32[] hout = heap uint32[n];\n"
+    "        hqx[0]=0.0f; hqx[1]=5.0f; hqx[2]=10.0f; hqx[3]=19.7f;\n"
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9;\n"
+    "        Buffer<float32> qx = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        qx.upload(hqx); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        countOne.launch(s, grid: [1], block: [64])(scene, qx, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"
+    "        if (hout[1] != 0) { return 101; }\n"
+    "        if (hout[2] != 1) { return 102; }\n"
+    "        if (hout[3] != 1) { return 103; }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+TEST(ToffeeSpatialIndexDeviceTests, forcedOptixUnsupportedShapeFallsBackToSoftware) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    AsImplEnvGuard forceOptix("optix");
+    std::map<std::string, std::string> sources = {{"test.RqUnsup", kUnsupOptixDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqUnsup", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (forced =optix + Unsupported shape must fall back to the "
+                         "software floor — a fault/garbage here is the M2 silent-fault "
+                         "regression the M3 floor swap exists to eliminate)";
+}
+
 // M2 Phase 4-C policy — on CUDA, AUTO (no CAJETA_GPU_AS_IMPL) records SOFTWARE, even
 // when OptiX is available. The portable software BVH is the v1 default floor; OptiX
 // RT cores are strictly OPT-IN (=optix), because the AS impl is resolved before the
