@@ -348,8 +348,9 @@ and spec-valid.
 Both delivered on-device on the RADV / STRIX_HALO (Radeon 8060S) box (2026-06-04),
 through the fork's `cajeta-spirv` branch. The native matrix-core path is now wired
 on all three GPU backends (Vulkan `OpCooperativeMatrix`, AMD RDNA3 WMMA, **NVIDIA
-tensor-core `wmma`**, 2026-06-16); the native RT-core ray-query seam is still
-Vulkan-only (NVIDIA/AMD use the portable software BVH).
+tensor-core `wmma`**, 2026-06-16); the native RT-core ray-query seam is
+Vulkan-only and now on-device-validated on both RADV (Linux) and the RTX 4090
+(Windows) — the NVPTX/AMDGPU backends use the portable software BVH.
 **NVIDIA now runs both via the portable/software tiers on-device (RTX 4090,
 2026-06-16):** cooperative-matrix on the portable flat-tile tier (f16/f16→f32
 bit-exact), and ray-query over the portable software BVH (the same
@@ -360,8 +361,12 @@ via the NVVM `wmma.load`/`wmma.mma`/`wmma.store` intrinsics (the cajeta seam der
 the fragment struct type from the load intrinsic so load/mma/store agree; the warp-
 collective launch uses a full warp). So all three GPU backends now have a native
 cooperative-matrix path (Vulkan `OpCooperativeMatrix`, AMD RDNA3 WMMA, NVIDIA
-tensor-core wmma). The native RT-core ray-query path remains the future enhancement;
-the software BVH is the running floor. **AMD gets
+tensor-core wmma). **The native RT-core ray-query path is now on-device-validated
+on the RTX 4090's Windows Vulkan backend** (2026-06-16): AABB + triangle BLAS/TLAS
+traced via `OpRayQuery` on the RT cores, results matching the software-BVH oracle,
+with AUTO resolving to native and `AsImpl.Software`/`AsImpl.Native` selectable. The
+software BVH stays the portable floor (CPU/NVPTX/AMD, and non-RT Vulkan devices).
+**AMD gets
 the symmetric ray-query software-BVH path** (`AmdgpuTarget.accelImpl() == SoftwareBvh`
 + a HIP noun provider) — code-complete + compile-verified, on-device-PENDING the
 gfx1151 box (both NVPTX and AMDGPU had the same latent `accelImpl()` gap that made
@@ -376,18 +381,29 @@ gfx1151 box (both NVPTX and AMDGPU had the same latent `accelImpl()` gap that ma
 `VK_COMPONENT_TYPE_FLOAT16_KHR` cooperative-matrix config.
 
 **Ray-query AS impl, by platform.** The `AccelerationStructure` noun has two impls
-(CajetaGPU §1.5): the **native** Vulkan BLAS+TLAS (`OpRayQuery`) and the **portable
-software BVH** (the `SoftwareRayQuery` walk over a `Buffer<float32>`, shared with
-CPU/NVPTX/AMD). On a ray-query Linux device (RADV) AUTO resolves to **native**; on
-**Windows** AUTO resolves to **software** (`caj_native_rayquery_available` is
-Win32-gated — native ray-query is not wired on Windows), so the RTX 4090 runs the
-software walk for both AABB and triangle geometry (matching the CPU/NVPTX/AMD
-oracles, all green). Two bugs fixed on the way: the native **triangle** builder
-recorded a BLAS as the traceable AS (must be a TLAS — NVIDIA returns no hits, RADV
-tolerated it; now wraps the BLAS in a TLAS like the AABB path), and the triangle
-provider **forced native** instead of following the resolved impl (now has the
-software-BVH arm, so Windows uses software like AABB). `RayQueryNative` capability
-(`Device.supports`) also no longer hard-zeroes on Windows.
+(CajetaGPU §1.5): the **native** Vulkan BLAS+TLAS (`OpRayQuery`, RT cores) and the
+**portable software BVH** (the `SoftwareRayQuery` walk over a `Buffer<float32>`,
+shared with CPU/NVPTX/AMD). On any **ray-query-capable Vulkan device — RADV on Linux
+AND the RTX 4090 on Windows** — AUTO resolves to **native**; the `caj_native_
+rayquery_available` resolver and the `RayQueryNative` capability share one condition
+(active backend is Vulkan + the device advertises ray query), so they never
+disagree. On a non-RT Vulkan device (or the CPU/NVPTX/AMD backends, which have no
+native inline ray-query seam) AUTO resolves to the software BVH floor. The impl is
+selectable per AS: `AccelerationStructure.of(.., AsImpl.Native | AsImpl.Software)`
+or the process-wide `CAJETA_GPU_AS_IMPL=native|software` override; the chosen impl
+is recorded on the noun (`AccelerationStructure.implTag()`) and the verb follows it.
+
+**On-device (RTX 4090, Windows, 2026-06-16):** native AABB + triangle ray query —
+hits/primitive-index/T/barycentrics/front-face/nearest-hit — all match the software
+oracle; `autoRecordsNativeImplOnDevice` proves AUTO records native (impl 1) on the
+4090, and `forcedNativeOfApiOnDevice`/`forcedSoftwareOfApiOnDevice` prove both impls
+are selectable and agree. Bugs fixed on the way to native: the native **triangle**
+builder recorded a BLAS as the traceable AS (must be a TLAS — NVIDIA returns no
+hits, RADV tolerated it; now wraps the BLAS in a TLAS like the AABB path), and the
+runtime resolver + `RayQueryNative` capability were both Win32-gated (now removed —
+the 4090's native RT-core path is wired and validated). NVIDIA's **CUDA** backend
+and AMD's **HIP** backend still use the software BVH (NVIDIA RT cores are reached via
+OptiX, not the NVPTX device path — out of scope here).
 
 ---
 

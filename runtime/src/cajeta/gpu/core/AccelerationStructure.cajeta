@@ -125,6 +125,18 @@ public final class AccelerationStructure {
         return this.primitiveCount;
     }
 
+    /**
+     * The impl this structure was built with — the recorded {@link AsImpl} ordinal
+     * (0 = portable software BVH, 1 = native VK_KHR_acceleration_structure BLAS).
+     * Resolved at build time from the active backend's capability, the explicit
+     * preference, and the `CAJETA_GPU_AS_IMPL` env override, then recorded so the
+     * verb (RayQuery) follows the noun. Lets a caller confirm whether a query runs
+     * on hardware ray query (native) or the software walk on this device.
+     */
+    public int32 implTag() {
+        return this.impl;
+    }
+
     // Device-BVH primitives. Instance @Native methods (the Buffer/Texture2D
     // convention): pointer-shaped at the ABI boundary, so one C symbol per name
     // serves the type. The leading `this` the forwarder passes is ignored by the

@@ -13160,7 +13160,11 @@ void __cajeta_xpu_image_free(void* self, int64_t handle) {
 // Native inline ray query available on the active device? (Same condition as
 // __cajeta_xpu_device_supports(RayQueryNative).) The native-vs-software input.
 static int caj_native_rayquery_available(void) {
-#if defined(CAJETA_RT_HAS_VULKAN) && !defined(_WIN32)
+#if defined(CAJETA_RT_HAS_VULKAN)
+    // No Win32 gate: native ray query is available wherever the Vulkan device
+    // advertises it (the RTX 4090's Windows Vulkan driver does). This MUST agree
+    // with __cajeta_xpu_device_supports(RayQueryNative) — same condition — so the
+    // capability query and the AS-impl resolver never disagree on one device.
     return (cajeta_xpu_active_backend() == CAJ_XPU_VULKAN && g_xpu_vk.rayQuery) ? 1 : 0;
 #else
     return 0;
@@ -13256,12 +13260,11 @@ static int64_t caj_vk_accel_build_triangles(const float* verts, uint32_t triCoun
                                             uint32_t stride, CajetaAsImpl* out_impl) {
     // Follow the resolved impl, exactly like the AABB path: software → build the
     // portable host BVH and upload it to a storage buffer the "$sw" kernel reads;
-    // native → the VK_GEOMETRY_TYPE_TRIANGLES_KHR BLAS+TLAS. On Windows AUTO
-    // resolves to software (caj_native_rayquery_available is Win32-gated), matching
-    // the AABB path — so triangle ray query runs the proven SoftwareRayQuery walk
-    // there instead of the native OpRayQuery path (which is not wired for native on
-    // Windows). On a ray-query Linux device AUTO stays native. (The triangle ctor
-    // carries no pref override, so AUTO — same default the noun records.)
+    // native → the VK_GEOMETRY_TYPE_TRIANGLES_KHR BLAS+TLAS traced via OpRayQuery.
+    // AUTO resolves to native on any ray-query-capable Vulkan device (Windows
+    // included — caj_native_rayquery_available is no longer Win32-gated), and to
+    // software on a non-RT device. (The triangle ctor carries no pref override, so
+    // AUTO — same default the noun records.)
     CajetaAsImpl impl = caj_resolve_as_impl(CAJ_AS_PREF_AUTO);
     if (out_impl) *out_impl = impl;
     if (impl == CAJ_AS_IMPL_SOFTWARE_BVH) {

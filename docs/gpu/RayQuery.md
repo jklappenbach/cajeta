@@ -1,11 +1,25 @@
 # Ray query → core: the portable BVH noun + software traversal
 
-**Status: software path (Inc 1–3) SHIPPED; Inc 4 plumbing the remaining open item.**
+**Status: software path (Inc 1–3) SHIPPED; native RT-core path on-device-validated
+(RADV + RTX 4090); Inc 4 auto-selection heuristic the remaining open item.**
 This is the design for making *inline ray query* a genuine `cajeta.gpu.core` feature —
 one that runs on **every** backend, not just Vulkan. The portable software BVH +
 stackless traversal (AABBs, triangles, full candidate/committed getters + commit) is
 built and cross-checked against the Vulkan native path (§8); what remains is the
-selection-heuristic / plumbing hardening of Inc 4. It is the headline item of the GPU
+*automatic* density/extent selection heuristic of Inc 4.
+
+> **Native on-device (2026-06-16).** The native Vulkan path (`OpRayQuery` over a
+> BLAS+TLAS, on the RT cores) is now validated on the **RTX 4090 on Windows** as well
+> as RADV on Linux. AUTO resolves to native on any ray-query-capable Vulkan device
+> (the `caj_native_rayquery_available` resolver and `Device.supports(RayQueryNative)`
+> share one condition, so they never disagree); the impl is selectable per AS via
+> `AccelerationStructure.of(.., AsImpl.Native | AsImpl.Software)` or the process-wide
+> `CAJETA_GPU_AS_IMPL=native|software` override, and the chosen impl is recorded on
+> the noun and readable via `AccelerationStructure.implTag()` (0 = software BVH,
+> 1 = native BLAS). Proof: `autoRecordsNativeImplOnDevice` (AUTO records native on the
+> 4090) + `forcedNativeOfApiOnDevice`/`forcedSoftwareOfApiOnDevice` in
+> `ToffeeSpatialIndexDeviceTests`. NVIDIA's CUDA and AMD's HIP backends still use the
+> software BVH (their RT cores are reached via OptiX / a non-cajeta path). It is the headline item of the GPU
 foundation
 ([`plans/gpu/cajeta-gpu-plan.md §3.3`](../../plans/gpu/cajeta-gpu-plan.md)) and the
 worked example of the model in [`CajetaGPU.md §1` / `§4`](CajetaGPU.md). Read those
@@ -289,7 +303,10 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
 - [~] `Device.supports(RayQueryNative)` + the selection heuristic with override (§6).
       *Done: `Device.supports(Capability.RayQueryNative)` (`Capability.cajeta`,
       `Device.cajeta`) + the manual `CAJETA_GPU_AS_IMPL` impl override (`AsImpl.cajeta`,
-      `resolveImplTier`). Open: the **automatic** density/extent selection heuristic.*
+      `resolveImplTier`) + the `AccelerationStructure.implTag()` accessor so a caller
+      can confirm which impl a build chose. AUTO/native are on-device-validated on the
+      RTX 4090 (Windows) — the resolver and capability share one un-gated condition.
+      Open: the **automatic** density/extent selection heuristic.*
 - [ ] On-device cajeta LBVH build kernel (move build off the host; dogfood the seam).
 - [x] Promote the noun seam to the first-class SPI the VendorExtensionSDK seed needs —
       built as `CajetaNounProvider` (`runtime/native/cajeta_noun_impl.h`), dogfooded on
