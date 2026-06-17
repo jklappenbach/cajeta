@@ -1,7 +1,8 @@
 # Ray query → core: the portable BVH noun + software traversal
 
-**Status: software path (Inc 1–3) SHIPPED; native RT-core path on-device-validated
-(RADV + RTX 4090); Inc 4 auto-selection heuristic the remaining open item.**
+**Status: software path (Inc 1–3) SHIPPED; native Vulkan RT-core path on-device-validated
+(RADV + RTX 4090); NVIDIA OptiX RT-core verb (Inc 5, M0–M2) validated end-to-end on the
+RTX 4090; Inc 4 auto-selection heuristic the remaining open item.**
 This is the design for making *inline ray query* a genuine `cajeta.gpu.core` feature —
 one that runs on **every** backend, not just Vulkan. The portable software BVH +
 stackless traversal (AABBs, triangles, full candidate/committed getters + commit) is
@@ -20,18 +21,32 @@ built and cross-checked against the Vulkan native path (§8); what remains is th
 > native on the 4090) + `forcedNativeOfApiOnDevice`/`forcedSoftwareOfApiOnDevice` in
 > `ToffeeSpatialIndexDeviceTests`. AMD's HIP backend still uses the software BVH.
 
-> **NVIDIA CUDA — OptiX RT-core tier (in progress).** NVIDIA's RT cores are reached
-> via **OptiX** (a pipeline model, not inline ray query — there is no NVVM inline-RQ
-> intrinsic), so the CUDA backend gets a third AS impl, `CAJ_AS_IMPL_OPTIX` (2).
-> **M0** (`OptiXRayQueryProbe`) proved OptiX RT-core results match the software oracle
-> on the 4090; **M1** landed the runtime AS provider (`src/cajeta/xpu/nvidia/OptixAccel.cpp`
-> + the CUDA noun provider's OptiX arm) — `CAJETA_GPU_AS_IMPL=optix`/`native` build &
-> record the OptiX AS on-device (`optixRecordsImplOnNvptxDevice` → implTag 2). The
-> **verb** (a kernel traversing the AS via an OptiX pipeline / `optixTrace`) is **M2**;
-> until then AUTO on CUDA stays on the software BVH floor and OptiX is opt-in.
-> OptiX is a compile-time-only dependency (header-only SDK; the engine is the driver's
-> `nvoptix.dll`). See `documents/gpu-rayquery-optix/`. It is the headline item of the GPU
-foundation
+> **NVIDIA CUDA — OptiX RT-core tier (verb validated end-to-end, 2026-06-17).**
+> NVIDIA's RT cores are reached via **OptiX** (a pipeline model, not inline ray query —
+> there is no NVVM inline-RQ intrinsic), so the CUDA backend gets a third AS impl,
+> `CAJ_AS_IMPL_OPTIX` (2). **M0** (`OptiXRayQueryProbe`) proved OptiX RT-core results
+> match the software oracle on the 4090; **M1** landed the runtime AS provider
+> (`src/cajeta/xpu/nvidia/OptixAccel.cpp` + the CUDA noun provider's OptiX arm). **M2**
+> now lands the **verb through the full compiler**: a `RayQuery` `@Kernel` against an
+> OptiX-impl AS is lowered (NvptxRegistration + `NvptxOptixRayQuery`) into a SEPARATE
+> OptiX program-PTX module (`_optix_*` asm ptxas rejects, so it never goes through the
+> cubin) and dispatched via `optixLaunch`, not `cuLaunchKernel`. Three canonical shapes
+> run on the RT cores end-to-end, each matching the software oracle (777) on the 4090:
+> **AABB candidate-count** (raygen + custom-prim intersection + anyhit-counts-and-ignores
+> + miss; `aabbCountRayQueryOnOptixDevice`), **triangle nearest-hit** (built-in triangle,
+> raygen + closesthit commits T/type/prim; `nearestHitRayQueryOnOptixDevice`), and
+> **triangle candidate getters** (built-in triangle, anyhit reads `optixGetRayTmax` +
+> `optixGetTriangleBarycentrics` then ignores; `candidateGettersRayQueryOnOptixDevice`).
+> A ray-query kernel outside these canonical shapes throws XPU-N04 at registration and
+> keeps its software cubin — never a silent miscompile. **AS-impl policy:** AUTO on CUDA
+> stays on the software-BVH floor; OptiX is **opt-in** via `CAJETA_GPU_AS_IMPL=optix`
+> (the AUTO→OptiX flip is deferred — the impl is resolved before the consumer kernel is
+> known, so auto-routing an Unsupported shape onto an OptiX AS would fault). The
+> `RayQueryRtCore` capability (`Device.supports`) reports the RT-core path per device
+> (true iff CUDA + OptiX engine loaded); `RayQueryNative` stays false on CUDA since
+> OptiX has no inline RQ. OptiX is a compile-time-only dependency (header-only SDK; the
+> engine is the driver's `nvoptix.dll`). See `documents/gpu-rayquery-optix/`. It is the
+headline item of the GPU foundation
 ([`plans/gpu/cajeta-gpu-plan.md §3.3`](../../plans/gpu/cajeta-gpu-plan.md)) and the
 worked example of the model in [`CajetaGPU.md §1` / `§4`](CajetaGPU.md). Read those
 first for the *why*; this doc is the *what* and the *how*, including the BVH noun.
@@ -218,11 +233,22 @@ override exists for).
 ## 6. Selection heuristic + `Device.supports`
 
 - `Device.supports(Capability.RayQueryNative)` — does the bound device advertise native
-  inline ray query? Drives the default noun-impl choice; user-overridable.
+  **inline** ray query (VK_KHR_ray_query or equivalent)? True on a ray-query Vulkan
+  device; **false on CUDA** (OptiX has no inline RQ — its RT cores are pipeline-only).
+  Drives the default noun-impl choice; user-overridable.
+- `Device.supports(Capability.RayQueryRtCore)` — does the bound device advertise the
+  **pipeline-based** RT-core path (NVIDIA OptiX)? True iff the active backend is CUDA
+  and the OptiX engine (`nvoptix.dll`) loaded. This is the heuristic input an app uses
+  to choose the OptiX opt-in path on CUDA; the two capabilities are distinct because the
+  CUDA RT-core path is reached through an `optixLaunch` pipeline, not an inline op.
 - Heuristic inputs: device support, geometry kind, primitive count, expected query
   count / radius (build cost amortization). Native when advertised and the workload
   suits it; software otherwise — and software is always a *valid* answer, never a
-  failure.
+  failure. **On CUDA the OptiX RT-core tier is opt-in** (`CAJETA_GPU_AS_IMPL=optix`):
+  AUTO stays on the software floor because the AS impl is resolved before the consumer
+  kernel is known, so auto-routing a ray-query shape that has no OptiX program would
+  fault. The AUTO→OptiX flip is deferred until the supported-shape set is broad enough
+  (or a per-compilation-unit "all-supported → flip" gate exists).
 
 This is the first concrete use of `Device.supports` + the capability heuristic from the
 foundation plan §1; ray query is what makes them real rather than speculative.
@@ -312,16 +338,44 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
 
 **Inc 4 — Plumbing hardening (shared with the rest of the model).**
 - [~] `Device.supports(RayQueryNative)` + the selection heuristic with override (§6).
-      *Done: `Device.supports(Capability.RayQueryNative)` (`Capability.cajeta`,
-      `Device.cajeta`) + the manual `CAJETA_GPU_AS_IMPL` impl override (`AsImpl.cajeta`,
-      `resolveImplTier`) + the `AccelerationStructure.implTag()` accessor so a caller
-      can confirm which impl a build chose. AUTO/native are on-device-validated on the
-      RTX 4090 (Windows) — the resolver and capability share one un-gated condition.
-      Open: the **automatic** density/extent selection heuristic.*
+      *Done: `Device.supports(Capability.RayQueryNative)` + `RayQueryRtCore`
+      (`Capability.cajeta`, `Device.cajeta`) + the manual `CAJETA_GPU_AS_IMPL` impl
+      override (`AsImpl.cajeta`, `resolveImplTier`) + the `AccelerationStructure.implTag()`
+      accessor so a caller can confirm which impl a build chose. AUTO/native are
+      on-device-validated on the RTX 4090 (Windows) — the resolver and capability share
+      one un-gated condition. Open: the **automatic** density/extent selection heuristic,
+      and the AUTO→OptiX flip on CUDA (deferred — see Inc 5 + §6).*
 - [ ] On-device cajeta LBVH build kernel (move build off the host; dogfood the seam).
 - [x] Promote the noun seam to the first-class SPI the VendorExtensionSDK seed needs —
       built as `CajetaNounProvider` (`runtime/native/cajeta_noun_impl.h`), dogfooded on
       `AccelerationStructure` (the verb follows the noun's recorded impl tag).
+
+**Inc 5 — NVIDIA CUDA OptiX RT-core tier (the verb on a third silicon path). ✅ M0–M2 DONE.**
+NVIDIA has no inline-RQ intrinsic, so the CUDA RT cores are reached through an OptiX
+*pipeline* — but as an IMPLEMENTATION of the same `cajeta.gpu.core` inline `RayQuery`
+verb (the pipeline is internal, never user-authored; cf. §9). See
+`documents/gpu-rayquery-optix/` for the spec/plan; on-device proof on the RTX 4090.
+- [x] **M0/M1** — OptiX RT-core ↔ software parity (`OptiXRayQueryProbe`) + the runtime AS
+      provider (`OptixAccel.cpp`, `CAJ_AS_IMPL_OPTIX`=2, `optixRecordsImplOnNvptxDevice`).
+- [x] **M2 verb codegen** — a `RayQuery` `@Kernel` against an OptiX-impl AS lowers
+      (`NvptxOptixRayQuery` + `NvptxRegistration`) to a SEPARATE OptiX program-PTX module
+      (the `_optix_*` asm ptxas rejects, so it bypasses the cubin) registered by kernel
+      name + a shape tag, and the CUDA launch path dispatches `optixLaunch` instead of
+      `cuLaunchKernel`. Three canonical shapes, each matching the software oracle (777) on
+      the 4090: **AABB candidate-count** (custom-prim intersection + anyhit-counts-ignores),
+      **triangle nearest-hit** (built-in triangle + closesthit commits T/type/prim),
+      **triangle candidate getters** (built-in triangle + anyhit reads `optixGetRayTmax` +
+      `optixGetTriangleBarycentrics` then ignores). Tests: `XpuNvptxOptixEmitTests` (PTX
+      emission, GPU-free) + `{aabbCount,nearestHit,candidateGetters}RayQueryOnOptixDevice`.
+      Any non-canonical shape → XPU-N04 at registration → keeps its software cubin (no
+      silent miscompile).
+- [x] **AS-impl policy + capability** — `Device.supports(Capability.RayQueryRtCore)`
+      (true iff CUDA + OptiX engine); AUTO on CUDA stays software (`autoRecordsSoftware
+      ImplOnNvptxDevice`), OptiX opt-in via `CAJETA_GPU_AS_IMPL=optix`. The AUTO→OptiX
+      flip is deferred (the impl is resolved before the consumer kernel is known, so
+      auto-routing an Unsupported shape would fault its software cubin on an OptiX handle).
+- [ ] Front-face committed getter on OptiX (`optixIsFrontFaceHit`) + broader shapes; then
+      the AUTO→OptiX flip (or a per-compilation-unit "all-supported → flip" gate).
 
 **Quality follow-up (not gating "core"):**
 - [ ] binned-SAH builder behind the same noun seam.
@@ -332,8 +386,12 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
 
 - **TLAS / instancing** — deferred; the next core AS axis (ICP / pose will want it),
   *not* gfx. (`plans §3.3`.)
-- **Ray-tracing *pipeline*** (raygen / closesthit / miss + SBT) — **gfx**, not core.
-  The GPU↔GFX seam is inline-ray-query (here) vs RT-pipeline (there).
+- **Ray-tracing *pipeline*** (raygen / closesthit / miss + SBT) as a **user-authored**
+  surface — **gfx**, not core. The GPU↔GFX seam is inline-ray-query (here) vs a
+  user-facing RT-pipeline (there). *Nuance:* the NVIDIA OptiX core impl (Inc 5) builds a
+  raygen/anyhit/closesthit/intersection/miss pipeline INTERNALLY — that is a compiler
+  lowering of the inline `RayQuery` verb (no NVVM inline-RQ intrinsic exists), not a
+  pipeline the user writes; it stays an implementation detail of core inline ray query.
 - **Triangle *rendering*** beyond intersection (material binding, shading) — gfx.
 - **Vendor-exclusive RT** (NV OMM/DMM, cluster AS) — external vendor libraries.
 

@@ -44,7 +44,7 @@ matrix says so explicitly rather than pretending otherwise:
 
 | Column | Status | Basis |
 |--------|--------|-------|
-| **NVIDIA** | **Measured** — live backend, on-device (the **compute substrate**) | NVPTX → cubin (`ptxas`) → `cuLaunchKernel` via the dlopen'd `nvcuda`. **On-device verified on an RTX 4090 (sm_89, native Windows CUDA — no WSL2/B5 needed)**, 2026-06-16: SAXPY, grid-stride for-each, `@Device` buffer-param helpers, POD-by-value args, `Buffer.slice`, relaxed atomics, scoped memory fences, static+dynamic workgroup-shared reductions, **real CUDA streams + async copies**, **events/fences (cross-stream)**, **managed (`cuMemAllocManaged`) + pinned (`cuMemHostAlloc`) zero-copy memory**, **bindless `Buffer<T>[]`**, and **host spec-constant override** (constant-memory `cuModuleGetGlobal`). Tests: `XpuCudaDispatchDeviceTests` (17), `XpuCudaSpecProbeTests`, plus the C++-driver `XpuSaxpy/Shared/Loop/HostLaunchDeviceTests` — 23/23 green in one process. **Now also on-device verified (2026-06-16):** the **texture+surface runtime** (`cuArrayCreate`/`cuTexObjectCreate`/`cuSurfObjectCreate` — closes the AMD/Vulkan parity gap), the full **`@Wave`/subgroup** family (shuffle/ballot/reduceSum/reduce-family/laneId/width/rotate/prefix-scan via `shfl`/`vote.ballot`/`redux.sync`/sregs), **ray-query** over the portable software BVH (`NvptxTarget.accelImpl() == SoftwareBvh` + a CUDA noun provider that uploads the BVH to a device buffer — AABB/triangle/nearest/barycentrics/front-face all match the CPU path), and **cooperative-matrix** on BOTH the portable flat-tile tier AND the **native tensor-core (`wmma`) tier** — f16/f16→f32 16×16×16 bit-exact on the RTX 4090's tensor cores via the NVVM `wmma.load`/`wmma.mma`/`wmma.store` intrinsics (warp-collective; the opaque fragment layout is handled by the intrinsics, unlike AMD's hand-marshalled RDNA3 layout). Tests: `XpuCudaDispatchDeviceTests.{texture,image}*`, `XpuWaveDeviceTests.nvptx*` (7), `ToffeeSpatialIndexDeviceTests.*OnNvptxSoftwareBvh` (5), `XpuCooperativeMatrixDeviceTests.{portable,native}MatmulOnNvptxDevice` + `nvptxCoopMatrixLowersToWmma`. **Future on NVPTX:** native RT-core ray-query (the software BVH runs today), int8/bf16-only and non-16×16×16 / column-major tensor-core configs (v1 native wmma is row-major f16→f32), bounded device-dispatch tables. |
+| **NVIDIA** | **Measured** — live backend, on-device (the **compute substrate**) | NVPTX → cubin (`ptxas`) → `cuLaunchKernel` via the dlopen'd `nvcuda`. **On-device verified on an RTX 4090 (sm_89, native Windows CUDA — no WSL2/B5 needed)**, 2026-06-16: SAXPY, grid-stride for-each, `@Device` buffer-param helpers, POD-by-value args, `Buffer.slice`, relaxed atomics, scoped memory fences, static+dynamic workgroup-shared reductions, **real CUDA streams + async copies**, **events/fences (cross-stream)**, **managed (`cuMemAllocManaged`) + pinned (`cuMemHostAlloc`) zero-copy memory**, **bindless `Buffer<T>[]`**, and **host spec-constant override** (constant-memory `cuModuleGetGlobal`). Tests: `XpuCudaDispatchDeviceTests` (17), `XpuCudaSpecProbeTests`, plus the C++-driver `XpuSaxpy/Shared/Loop/HostLaunchDeviceTests` — 23/23 green in one process. **Now also on-device verified (2026-06-16):** the **texture+surface runtime** (`cuArrayCreate`/`cuTexObjectCreate`/`cuSurfObjectCreate` — closes the AMD/Vulkan parity gap), the full **`@Wave`/subgroup** family (shuffle/ballot/reduceSum/reduce-family/laneId/width/rotate/prefix-scan via `shfl`/`vote.ballot`/`redux.sync`/sregs), **ray-query** over the portable software BVH (`NvptxTarget.accelImpl() == SoftwareBvh` + a CUDA noun provider that uploads the BVH to a device buffer — AABB/triangle/nearest/barycentrics/front-face all match the CPU path), and **cooperative-matrix** on BOTH the portable flat-tile tier AND the **native tensor-core (`wmma`) tier** — f16/f16→f32 16×16×16 bit-exact on the RTX 4090's tensor cores via the NVVM `wmma.load`/`wmma.mma`/`wmma.store` intrinsics (warp-collective; the opaque fragment layout is handled by the intrinsics, unlike AMD's hand-marshalled RDNA3 layout). Tests: `XpuCudaDispatchDeviceTests.{texture,image}*`, `XpuWaveDeviceTests.nvptx*` (7), `ToffeeSpatialIndexDeviceTests.*OnNvptxSoftwareBvh` (5), `XpuCooperativeMatrixDeviceTests.{portable,native}MatmulOnNvptxDevice` + `nvptxCoopMatrixLowersToWmma`. **Now also on-device verified (2026-06-17):** the **OptiX RT-core ray-query verb** — a `RayQuery` `@Kernel` against an OptiX-impl AS (opt-in `CAJETA_GPU_AS_IMPL=optix`) lowers to a separate OptiX program-PTX module (`NvptxOptixRayQuery` + `NvptxRegistration`, the `_optix_*` asm bypasses the cubin) dispatched by `optixLaunch`; three canonical shapes (AABB candidate-count, triangle nearest-hit, triangle candidate getters) match the software oracle (777) on the 4090, with `Device.supports(Capability.RayQueryRtCore)` reporting the path. Tests: `XpuNvptxOptixEmitTests` (4), `ToffeeSpatialIndexDeviceTests.{aabbCount,nearestHit,candidateGetters}RayQueryOnOptixDevice`, `OptiXRayQueryProbe` (6). **Future on NVPTX:** AUTO→OptiX flip (deferred — opt-in today) + broader OptiX shapes (front-face, non-const rays), int8/bf16-only and non-16×16×16 / column-major tensor-core configs (v1 native wmma is row-major f16→f32), bounded device-dispatch tables. |
 | **AMD** | **Measured** — live backend, on-device | AMDGPU → hsaco, runs on gfx1151 (Strix Halo) via HIP. Emit + on-device tests green. |
 | **Vulkan** | **Measured** — live backend, on-device | SPIR-V (descriptor-set SSBOs) → `vkCmdDispatch`. Built 2026-05-30; SAXPY + static-shared tree reduction run on the Strix Halo APU via the radeon (RADV) ICD, and the emitted modules pass strict `spirv-val`. One build-discovered finding shaped the design: **BDA is unavailable**, so the buffer model is descriptor sets (§3). (LLVM 23's barrier emits Vulkan-invalid semantics; a post-emit fixup corrects it — §1.) |
 
@@ -348,9 +348,9 @@ and spec-valid.
 Both delivered on-device on the RADV / STRIX_HALO (Radeon 8060S) box (2026-06-04),
 through the fork's `cajeta-spirv` branch. The native matrix-core path is now wired
 on all three GPU backends (Vulkan `OpCooperativeMatrix`, AMD RDNA3 WMMA, **NVIDIA
-tensor-core `wmma`**, 2026-06-16); the native RT-core ray-query seam is
-Vulkan-only and now on-device-validated on both RADV (Linux) and the RTX 4090
-(Windows) — the NVPTX/AMDGPU backends use the portable software BVH.
+tensor-core `wmma`**, 2026-06-16); the native RT-core ray-query seam is on-device-
+validated on RADV (Linux) + the RTX 4090 (Windows) via Vulkan, **and on NVIDIA CUDA
+via OptiX (2026-06-17)** — only the AMDGPU backend stays software-BVH-only.
 **NVIDIA now runs both via the portable/software tiers on-device (RTX 4090,
 2026-06-16):** cooperative-matrix on the portable flat-tile tier (f16/f16→f32
 bit-exact), and ray-query over the portable software BVH (the same
@@ -364,8 +364,15 @@ cooperative-matrix path (Vulkan `OpCooperativeMatrix`, AMD RDNA3 WMMA, NVIDIA
 tensor-core wmma). **The native RT-core ray-query path is now on-device-validated
 on the RTX 4090's Windows Vulkan backend** (2026-06-16): AABB + triangle BLAS/TLAS
 traced via `OpRayQuery` on the RT cores, results matching the software-BVH oracle,
-with AUTO resolving to native and `AsImpl.Software`/`AsImpl.Native` selectable. The
-software BVH stays the portable floor (CPU/NVPTX/AMD, and non-RT Vulkan devices).
+with AUTO resolving to native and `AsImpl.Software`/`AsImpl.Native` selectable.
+**NVIDIA CUDA also reaches its RT cores via OptiX (2026-06-17):** a `RayQuery`
+`@Kernel` against an OptiX-impl AS lowers to a separate OptiX program-PTX module
+(`NvptxOptixRayQuery`) dispatched by `optixLaunch` — three canonical shapes (AABB
+candidate-count, triangle nearest-hit, triangle candidate getters) match the software
+oracle (777) on the 4090. OptiX is OPT-IN on CUDA (`CAJETA_GPU_AS_IMPL=optix`,
+`Device.supports(Capability.RayQueryRtCore)`); AUTO stays software (the flip is
+deferred — see `docs/gpu/RayQuery.md` §6 / Inc 5). The
+software BVH stays the portable floor (CPU/AMD, CUDA-under-AUTO, and non-RT Vulkan devices).
 **AMD gets
 the symmetric ray-query software-BVH path** (`AmdgpuTarget.accelImpl() == SoftwareBvh`
 + a HIP noun provider) — code-complete + compile-verified, on-device-PENDING the
@@ -392,6 +399,17 @@ native inline ray-query seam) AUTO resolves to the software BVH floor. The impl 
 selectable per AS: `AccelerationStructure.of(.., AsImpl.Native | AsImpl.Software)`
 or the process-wide `CAJETA_GPU_AS_IMPL=native|software` override; the chosen impl
 is recorded on the noun (`AccelerationStructure.implTag()`) and the verb follows it.
+
+**CUDA gets a third impl — OptiX (`implTag` 2, 2026-06-17).** NVIDIA has no *inline*
+ray-query seam, so its RT cores are reached through an OptiX **pipeline** that the
+compiler emits as a lowering of the same inline `RayQuery` verb (`NvptxOptixRayQuery`).
+Unlike the Vulkan native path, OptiX is **opt-in** (`CAJETA_GPU_AS_IMPL=optix`) and AUTO
+on CUDA stays on the software floor — the AS impl is resolved before the consumer kernel
+is known, and only three canonical ray-query shapes (AABB candidate-count, triangle
+nearest-hit, triangle candidate getters) are OptiX-supported, so auto-routing any other
+shape onto an OptiX AS would fault. `Device.supports(Capability.RayQueryRtCore)` reports
+the OptiX path per device (distinct from `RayQueryNative`, which stays false on CUDA).
+The AUTO→OptiX flip is deferred (see `docs/gpu/RayQuery.md` §6 / Inc 5).
 
 **On-device (RTX 4090, Windows, 2026-06-16):** native AABB + triangle ray query —
 hits/primitive-index/T/barycentrics/front-face/nearest-hit — all match the software
