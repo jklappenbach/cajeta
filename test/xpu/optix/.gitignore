@@ -3,3 +3,12 @@
 # *.ptx ignore so they stay tracked and regeneration via the sibling .cu is visible.
 !optix_progs.ptx
 !optix_tri.ptx
+# M2 Phase-1 spike: PTX emitted from the hand-authored .ll by the fork's NVPTX llc
+# (gen_optix_ll.py -> optix_progs_ll.ll -> llc -> this). Checked in so the LLVM->PTX
+# OptiX-acceptance test fixture is reproducible without a fork-llc run.
+!optix_progs_ll.ptx
+# the .ll is the source of truth (gen_optix_ll.py writes it; llc consumes it);
+# override the global *.ll ignore so it stays tracked alongside its PTX.
+!optix_progs_ll.ll
+# the standalone spike harness builds to an exe — never track it
+spike_optix_ll.exe

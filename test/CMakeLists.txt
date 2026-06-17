@@ -7,6 +7,11 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS LIST_DIRECTORIES false *.h *.cp
 # default glob above only matches .h / .cpp.
 file(GLOB_RECURSE TEST_C_SOURCES CONFIGURE_DEPENDS LIST_DIRECTORIES false *.c)
 list(APPEND TEST_SOURCES ${TEST_C_SOURCES})
+# spike_optix_ll.cpp is a SELF-CONTAINED standalone harness (its own main() + the
+# OptiX function-table definition) for the M2 Phase-1 spike — built by hand, not part
+# of the gtest binary (which would multiply-define main / g_optixFunctionTable). Keep
+# it in-tree for reproducibility but exclude it from the auto-glob.
+list(FILTER TEST_SOURCES EXCLUDE REGEX "xpu/optix/spike_optix_ll\\.cpp$")
 message(STATUS "TEST_SOURCES: ${TEST_SOURCES}")
 
 cmake_policy(SET CMP0135 NEW)

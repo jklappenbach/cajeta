@@ -135,14 +135,13 @@ TEST(OptiXRayQueryProbe, glueBuildsAndFreesAabbAs) {
     }
 }
 
-// AABB candidate count on the RT cores == the software oracle's {1,0,1,1}.
-TEST(OptiXRayQueryProbe, aabbCandidateCountMatchesSoftwareOracle) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    std::string ptx = readPtx("optix_progs.ptx");
-    ASSERT_FALSE(ptx.empty()) << "test/xpu/optix/optix_progs.ptx not found";
-
+// The AABB candidate-count pipeline: build a custom-prim AS, create the OptiX
+// module/program-groups/pipeline from `ptx`, launch over the 4 oracle queries, and
+// return the per-query candidate counts. Shared by the nvcc-PTX fixture and the
+// LLVM-emitted-PTX fixture (M2 Phase 1) so both exercise the identical machinery and
+// differ ONLY in the PTX producer. ASSERT_* on fatal failures (gtest aborts the
+// caller). `out[4]` receives the counts.
+void runAabbCountPipeline(const std::string& ptx, unsigned out[4]) {
     OptixDeviceContext octx = glueContext();
     ASSERT_NE(octx, nullptr) << "OptiX/CUDA context unavailable from the runtime glue";
 
@@ -227,8 +226,40 @@ TEST(OptiXRayQueryProbe, aabbCandidateCountMatchesSoftwareOracle) {
     ASSERT_EQ(optixLaunch(pipeline, stream, d_params, sizeof(Params), &sbt, n, 1, 1), OPTIX_SUCCESS);
     p_cuStreamSynchronize(stream);
 
-    unsigned counts[n] = {99,99,99,99};
-    p_cuMemcpyDtoH(counts, d_counts, sizeof(counts));
+    p_cuMemcpyDtoH(out, d_counts, n * sizeof(unsigned));
+}
+
+// AABB candidate count on the RT cores == the software oracle's {1,0,1,1}.
+TEST(OptiXRayQueryProbe, aabbCandidateCountMatchesSoftwareOracle) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    std::string ptx = readPtx("optix_progs.ptx");
+    ASSERT_FALSE(ptx.empty()) << "test/xpu/optix/optix_progs.ptx not found";
+
+    unsigned counts[4] = {99,99,99,99};
+    runAabbCountPipeline(ptx, counts);
+    EXPECT_EQ(counts[0], 1u); EXPECT_EQ(counts[1], 0u);
+    EXPECT_EQ(counts[2], 1u); EXPECT_EQ(counts[3], 1u);
+}
+
+// M2 Phase-1 feasibility spike, formalized: the SAME count pipeline driven by PTX
+// the fork's NVPTX backend emitted from a hand-authored .ll (the representative path
+// — cajeta lowers to LLVM IR, never via clang-CUDA). Proves optixModuleCreate +
+// optixPipelineCreate accept LLVM-emitted PTX (recognizing the `_optix_trace_typed_32`
+// inline-asm call) and that it runs on the RT cores matching the oracle. The fixture
+// optix_progs_ll.ptx is checked in (regen: test/xpu/optix/gen_optix_ll.py -> .ll ->
+// the fork's llc -mcpu=sm_60). See documents/gpu-rayquery-optix/rayquery-optix-m2-*.
+TEST(OptiXRayQueryProbe, aabbCandidateCountFromLlvmEmittedPtx) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    std::string ptx = readPtx("optix_progs_ll.ptx");
+    ASSERT_FALSE(ptx.empty()) << "test/xpu/optix/optix_progs_ll.ptx not found "
+                                 "(regen via gen_optix_ll.py + the fork's llc)";
+
+    unsigned counts[4] = {99,99,99,99};
+    runAabbCountPipeline(ptx, counts);
     EXPECT_EQ(counts[0], 1u); EXPECT_EQ(counts[1], 0u);
     EXPECT_EQ(counts[2], 1u); EXPECT_EQ(counts[3], 1u);
 }
