@@ -30,14 +30,17 @@ built and cross-checked against the Vulkan native path (§8); what remains is th
 > now lands the **verb through the full compiler**: a `RayQuery` `@Kernel` against an
 > OptiX-impl AS is lowered (NvptxRegistration + `NvptxOptixRayQuery`) into a SEPARATE
 > OptiX program-PTX module (`_optix_*` asm ptxas rejects, so it never goes through the
-> cubin) and dispatched via `optixLaunch`, not `cuLaunchKernel`. Three canonical shapes
+> cubin) and dispatched via `optixLaunch`, not `cuLaunchKernel`. Four canonical shapes
 > run on the RT cores end-to-end, each matching the software oracle (777) on the 4090:
 > **AABB candidate-count** (raygen + custom-prim intersection + anyhit-counts-and-ignores
 > + miss; `aabbCountRayQueryOnOptixDevice`), **triangle nearest-hit** (built-in triangle,
-> raygen + closesthit commits T/type/prim; `nearestHitRayQueryOnOptixDevice`), and
+> raygen + closesthit commits T/type/prim; `nearestHitRayQueryOnOptixDevice`),
 > **triangle candidate getters** (built-in triangle, anyhit reads `optixGetRayTmax` +
-> `optixGetTriangleBarycentrics` then ignores; `candidateGettersRayQueryOnOptixDevice`).
-> A ray-query kernel outside these canonical shapes throws XPU-N04 at registration and
+> `optixGetTriangleBarycentrics` then ignores; `candidateGettersRayQueryOnOptixDevice`),
+> and **committed-triangle per-launch** (a per-launch dynamic ray resolved from
+> `initialize()` as constants or `buffer[i]` loads, + closesthit writing a hit-flag or
+> front-face; `{triangleCount,frontFace}RayQueryOnOptixDevice`). A ray-query kernel
+> outside these canonical shapes throws XPU-N04 at registration and
 > keeps its software cubin — never a silent miscompile. **AS-impl policy:** AUTO on CUDA
 > stays on the software-BVH floor; OptiX is **opt-in** via `CAJETA_GPU_AS_IMPL=optix`
 > (the AUTO→OptiX flip is deferred — the impl is resolved before the consumer kernel is
@@ -361,21 +364,26 @@ verb (the pipeline is internal, never user-authored; cf. §9). See
       (`NvptxOptixRayQuery` + `NvptxRegistration`) to a SEPARATE OptiX program-PTX module
       (the `_optix_*` asm ptxas rejects, so it bypasses the cubin) registered by kernel
       name + a shape tag, and the CUDA launch path dispatches `optixLaunch` instead of
-      `cuLaunchKernel`. Three canonical shapes, each matching the software oracle (777) on
+      `cuLaunchKernel`. Four canonical shapes, each matching the software oracle (777) on
       the 4090: **AABB candidate-count** (custom-prim intersection + anyhit-counts-ignores),
       **triangle nearest-hit** (built-in triangle + closesthit commits T/type/prim),
       **triangle candidate getters** (built-in triangle + anyhit reads `optixGetRayTmax` +
-      `optixGetTriangleBarycentrics` then ignores). Tests: `XpuNvptxOptixEmitTests` (PTX
-      emission, GPU-free) + `{aabbCount,nearestHit,candidateGetters}RayQueryOnOptixDevice`.
-      Any non-canonical shape → XPU-N04 at registration → keeps its software cubin (no
-      silent miscompile).
+      `optixGetTriangleBarycentrics` then ignores), and **committed-triangle per-launch**
+      (a per-launch dynamic ray — each component resolved from `initialize()` as a constant
+      or a `buffer[i]` load — + closesthit writing a hit-flag or front-face via
+      `optixIsFrontFaceHit`; covers the triangle-count + front-face kernels). Tests:
+      `XpuNvptxOptixEmitTests` (PTX emission, GPU-free) + `{aabbCount,nearestHit,
+      candidateGetters,triangleCount,frontFace}RayQueryOnOptixDevice`. Any non-canonical
+      shape → XPU-N04 at registration → keeps its software cubin (no silent miscompile).
 - [x] **AS-impl policy + capability** — `Device.supports(Capability.RayQueryRtCore)`
       (true iff CUDA + OptiX engine); AUTO on CUDA stays software (`autoRecordsSoftware
       ImplOnNvptxDevice`), OptiX opt-in via `CAJETA_GPU_AS_IMPL=optix`. The AUTO→OptiX
       flip is deferred (the impl is resolved before the consumer kernel is known, so
       auto-routing an Unsupported shape would fault its software cubin on an OptiX handle).
-- [ ] Front-face committed getter on OptiX (`optixIsFrontFaceHit`) + broader shapes; then
-      the AUTO→OptiX flip (or a per-compilation-unit "all-supported → flip" gate).
+- [ ] Broader OptiX shapes (non-const-ray getters, AABB generate-intersection, multi-ray
+      committed getters) + then the AUTO→OptiX flip (or a per-compilation-unit
+      "all-supported → flip" gate). *Front-face + per-launch dynamic rays now done (the
+      committed-triangle shape); front-face winding matches cajeta's det>0 convention.*
 
 **Quality follow-up (not gating "core"):**
 - [ ] binned-SAH builder behind the same noun seam.
