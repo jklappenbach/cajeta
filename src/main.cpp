@@ -81,6 +81,9 @@ void printUsage(const char* progname) {
               << "\n"
               << "Output:\n"
               << "  --emit=ir|obj|cja|uber|exe           Output mode. Default ir.\n"
+              << "  --link-mode=lean|full                Linker/DCE policy. full (default) keeps every\n"
+              << "                                       class; lean strips classes outside the keep-set\n"
+              << "                                       (--keep-all = --link-mode=full).\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
@@ -367,6 +370,23 @@ int main(int argc, const char* argv[]) {
             compiler.getMutableFlags().debugPrefixMap = value;
         } else if (match(arg, "seed", value)) {
             compiler.getMutableFlags().seed = value;
+        } else if (match(arg, "link-mode", value)) {
+            // Lean linker / DCE policy (plans/compiler/lean-linker-dce.md).
+            // full = keep every class's reflection registration ctor (today's
+            // behavior); lean = emit registration only for keep-set classes so
+            // --gc-sections strips the rest. Intended default for --emit=exe is
+            // lean (set from emitMode in 0b); `--link-mode=full` / `--keep-all`
+            // is the opt-out.
+            LinkMode lm;
+            if (!setEnumFlag<LinkMode>("link-mode", value,
+                    { {"full", LinkMode::Full},
+                      {"lean", LinkMode::Lean} }, lm)) {
+                printUsage(argv[0]); return 1;
+            }
+            compiler.getMutableFlags().linkMode = lm;
+        } else if (arg == "--keep-all") {
+            // Alias for --link-mode=full (keep every class; no stripping).
+            compiler.getMutableFlags().linkMode = LinkMode::Full;
         } else if (match(arg, "xpu-backend", value)) {
             // Comma-separated list — a binary can bundle several targets
             // (e.g. vulkan,cpu); the runtime dispatcher picks the best

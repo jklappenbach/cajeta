@@ -745,7 +745,14 @@ namespace cajeta {
             // those accessors, so a null-vtable entry must not be discoverable.
             // Class.of never returns these (such classes are never reflected on
             // in v1), which is why earlier phases never tripped over them.
-            if (!llvm::isa<llvm::ConstantPointerNull>(classVtableRef)) {
+            //
+            // DCE (lean linker): under LinkMode::Lean, emit the registration
+            // ctor ONLY when this class is in the keep-set. An unkept class loses
+            // its llvm.global_ctors anchor, so --gc-sections strips its
+            // #ClassObject / RTTI / vtable / methods. keepsClass() keeps
+            // everything in Full mode (and pre-0b), so this is inert today.
+            if (!llvm::isa<llvm::ConstantPointerNull>(classVtableRef)
+                    && module->keepsClass(structure->toCanonical())) {
                 llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
                 llvm::FunctionType* regTy =
                     llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);

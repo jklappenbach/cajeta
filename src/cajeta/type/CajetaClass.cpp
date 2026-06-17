@@ -3079,24 +3079,32 @@ namespace cajeta {
 
         // Deferred registration (mirrors StructureMetadata::populate's REFL-8
         // block). These names were not emitted at populate time for this class
-        // (its slot 0 was null), so there is no collision.
-        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
-        llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
-        llvm::FunctionType* regTy =
-            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
-        llvm::FunctionCallee regFn =
-            lmod->getOrInsertFunction("__cajeta_register_class", regTy);
+        // (its slot 0 was null), so there is no collision. The slot-0 patch
+        // above is unconditional (reflective-dispatch correctness for any class
+        // reached by reference); only the registration ctor — the
+        // llvm.global_ctors anchor that defeats --gc-sections — is DCE-gated.
+        // Under LinkMode::Lean an unkept class skips registration and its
+        // #ClassObject is stripped if otherwise unreferenced. keepsClass() keeps
+        // everything in Full mode / pre-0b, so this is inert today.
         std::string canon = toCanonical();
-        llvm::Function* regCtor = llvm::Function::Create(
-            llvm::FunctionType::get(voidTy, false),
-            llvm::GlobalValue::InternalLinkage,
-            "__cajeta_class_reg_ctor." + canon, lmod);
-        llvm::IRBuilder<> rb(llvm::BasicBlock::Create(ctx, "entry", regCtor));
-        llvm::Constant* nameStr =
-            rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
-        rb.CreateCall(regFn, {nameStr, co});
-        rb.CreateRetVoid();
-        llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+        if (module->keepsClass(canon)) {
+            llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+            llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+            llvm::FunctionType* regTy =
+                llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
+            llvm::FunctionCallee regFn =
+                lmod->getOrInsertFunction("__cajeta_register_class", regTy);
+            llvm::Function* regCtor = llvm::Function::Create(
+                llvm::FunctionType::get(voidTy, false),
+                llvm::GlobalValue::InternalLinkage,
+                "__cajeta_class_reg_ctor." + canon, lmod);
+            llvm::IRBuilder<> rb(llvm::BasicBlock::Create(ctx, "entry", regCtor));
+            llvm::Constant* nameStr =
+                rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
+            rb.CreateCall(regFn, {nameStr, co});
+            rb.CreateRetVoid();
+            llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
+        }
     }
 
     void CajetaClass::ensureClassWildcardInstantiated() {
