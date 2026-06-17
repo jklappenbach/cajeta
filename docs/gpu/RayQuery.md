@@ -231,6 +231,19 @@ the available impls are whatever is on the classpath, with **software always bui
 native AS at large query radius / extreme density — the exact RT-vs-grid tradeoff the
 override exists for).
 
+**M3 evolution — the multi-impl noun + launch-time selection (CUDA/OptiX).** The
+"chosen once at build" coupling above is the *single-impl degenerate case*. On CUDA the
+OptiX RT-core path needed a stronger model: whether a kernel can traverse a given impl is
+a property of the *(kernel-shape, impl)* pair, known only at **launch**, not at build. So
+an `AccelerationStructure` is now a **multi-impl noun** — it always retains the software
+BVH as a floor and may additionally carry the device-native rep (OptiX `OptixAs` on CUDA),
+and impl **selection moved to launch time**: the runtime picks, per consuming kernel, the
+best impl that kernel can actually use (a registered OptiX program + the AS carrying the
+OptiX rep → `optixLaunch`; otherwise the software cubin over the retained floor). No kernel
+ever receives a rep it cannot traverse. Vulkan rides the same model as the degenerate case
+(one rep per AS, the launch picks the `$sw` vs native variant by the recorded impl — §3,
+`CajetaXPU-Matrix.md` §3). See `documents/gpu-rayquery-optix/rayquery-optix-m3-multiimpl-{spec,plan}.md`.
+
 ---
 
 ## 6. Selection heuristic + `Device.supports`
@@ -247,11 +260,17 @@ override exists for).
 - Heuristic inputs: device support, geometry kind, primitive count, expected query
   count / radius (build cost amortization). Native when advertised and the workload
   suits it; software otherwise — and software is always a *valid* answer, never a
-  failure. **On CUDA the OptiX RT-core tier is opt-in** (`CAJETA_GPU_AS_IMPL=optix`):
-  AUTO stays on the software floor because the AS impl is resolved before the consumer
-  kernel is known, so auto-routing a ray-query shape that has no OptiX program would
-  fault. The AUTO→OptiX flip is deferred until the supported-shape set is broad enough
-  (or a per-compilation-unit "all-supported → flip" gate exists).
+  failure.
+- **On CUDA, AUTO now prefers the OptiX RT-core tier (M3).** The build records the
+  software floor as the primary and the OptiX rep is built **lazily** on the first
+  supported-shape launch (an AS consumed only by software kernels never pays for OptiX);
+  a supported-shape kernel then runs on the RT cores, while an Unsupported-shape kernel
+  transparently falls back to the retained software floor (the launch-time selection in
+  §5 — no fault, no opt-in). The earlier opt-in-only policy (AUTO-stays-software, deferred
+  flip) is **superseded**: launch-time selection eliminated the fault that made it unsafe.
+  `CAJETA_GPU_AS_IMPL` still forces a tier: `=software` (floor only), `=optix` (eager OptiX
+  primary + retained floor). Verified on the 4090: all four canonical OptiX shapes run on
+  RT cores under AUTO and match the software oracle.
 
 This is the first concrete use of `Device.supports` + the capability heuristic from the
 foundation plan §1; ray query is what makes them real rather than speculative.

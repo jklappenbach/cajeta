@@ -367,12 +367,14 @@ traced via `OpRayQuery` on the RT cores, results matching the software-BVH oracl
 with AUTO resolving to native and `AsImpl.Software`/`AsImpl.Native` selectable.
 **NVIDIA CUDA also reaches its RT cores via OptiX (2026-06-17):** a `RayQuery`
 `@Kernel` against an OptiX-impl AS lowers to a separate OptiX program-PTX module
-(`NvptxOptixRayQuery`) dispatched by `optixLaunch` — three canonical shapes (AABB
-candidate-count, triangle nearest-hit, triangle candidate getters) match the software
-oracle (777) on the 4090. OptiX is OPT-IN on CUDA (`CAJETA_GPU_AS_IMPL=optix`,
-`Device.supports(Capability.RayQueryRtCore)`); AUTO stays software (the flip is
-deferred — see `docs/gpu/RayQuery.md` §6 / Inc 5). The
-software BVH stays the portable floor (CPU/AMD, CUDA-under-AUTO, and non-RT Vulkan devices).
+(`NvptxOptixRayQuery`) dispatched by `optixLaunch` — four canonical shapes (AABB
+candidate-count, triangle nearest-hit, triangle candidate getters, committed-triangle /
+front-face) match the software oracle (777) on the 4090. **Under M3, AUTO on CUDA prefers
+the RT cores** (`Device.supports(Capability.RayQueryRtCore)`): the AS is a multi-impl noun
+that retains the software floor and builds the OptiX rep lazily on the first supported-shape
+launch, with launch-time selection routing Unsupported shapes back to the floor (no fault,
+no opt-in — see `docs/gpu/RayQuery.md` §5–§6). The software BVH stays the portable floor
+(CPU/AMD, non-RT Vulkan, and any Unsupported-shape kernel).
 **AMD gets
 the symmetric ray-query software-BVH path** (`AmdgpuTarget.accelImpl() == SoftwareBvh`
 + a HIP noun provider) — code-complete + compile-verified, on-device-PENDING the
@@ -403,13 +405,18 @@ is recorded on the noun (`AccelerationStructure.implTag()`) and the verb follows
 **CUDA gets a third impl — OptiX (`implTag` 2, 2026-06-17).** NVIDIA has no *inline*
 ray-query seam, so its RT cores are reached through an OptiX **pipeline** that the
 compiler emits as a lowering of the same inline `RayQuery` verb (`NvptxOptixRayQuery`).
-Unlike the Vulkan native path, OptiX is **opt-in** (`CAJETA_GPU_AS_IMPL=optix`) and AUTO
-on CUDA stays on the software floor — the AS impl is resolved before the consumer kernel
-is known, and only three canonical ray-query shapes (AABB candidate-count, triangle
-nearest-hit, triangle candidate getters) are OptiX-supported, so auto-routing any other
-shape onto an OptiX AS would fault. `Device.supports(Capability.RayQueryRtCore)` reports
-the OptiX path per device (distinct from `RayQueryNative`, which stays false on CUDA).
-The AUTO→OptiX flip is deferred (see `docs/gpu/RayQuery.md` §6 / Inc 5).
+**M3 made AUTO prefer OptiX safely** via a multi-impl noun + launch-time selection: an
+`AccelerationStructure` always retains the software-BVH floor and (on CUDA, under AUTO)
+builds the OptiX rep **lazily** on the first supported-shape launch — `implSet()` reports
+the live set (`1<<impl` per rep; e.g. `Software|OptiX = 5`), while `implTag()` keeps the
+single-primary read. At launch the runtime picks, per consuming kernel, the best impl it
+can traverse (a registered OptiX program + the AS carrying OptiX → `optixLaunch`; else the
+software cubin over the floor — an Unsupported shape can no longer be handed an `OptixAs*`
+to misread). `=optix` forces eager OptiX (+ retained floor); `=software` forces the floor.
+`Device.supports(Capability.RayQueryRtCore)` reports the OptiX path per device (distinct
+from `RayQueryNative`, false on CUDA). This supersedes the earlier opt-in-only / deferred-
+flip policy (the fault that made it unsafe is gone). See `documents/gpu-rayquery-optix/
+rayquery-optix-m3-multiimpl-{spec,plan}.md`.
 
 **On-device (RTX 4090, Windows, 2026-06-16):** native AABB + triangle ray query —
 hits/primitive-index/T/barycentrics/front-face/nearest-hit — all match the software
