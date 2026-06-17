@@ -396,10 +396,16 @@ namespace cajeta {
 
         // DCE Tier-0b reflection-usage accumulator (lean-linker-dce.md §3.2).
         // Reset per compile via resetReflectionKeep (stdlib-prime cache reuses
-        // the process). forcesAll ⇒ keep-all; names ⇒ narrow sites (0b-2b).
+        // the process). forcesAll ⇒ keep-all; sites ⇒ narrow contributions the
+        // Compiler resolves against the full canonicalMap after quiescence.
+        struct ReflSite {
+            enum Kind { BoundClosure, ForNameLiteral, PackageLiteral, Annotated };
+            Kind kind;
+            std::string selector;  // T canonical / class name / package / anno short
+        };
         struct ReflectionKeep {
             bool forcesAll = false;
-            std::set<std::string> names;
+            std::vector<ReflSite> sites;
         };
         static ReflectionKeep& reflectionKeep() {
             static ReflectionKeep instance;

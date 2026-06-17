@@ -197,25 +197,25 @@ public final class Class<T> {
     // this only because wildcard `Class<?>` element-drops are suppressed. The
     // right fix is to mark `Class<T>` non-droppable (a process-lifetime borrow)
     // so owning containers never free it — the same ownership gap tracked for
-    // collections. Until then, bounded reflection ships via `newInstance<T>`
+    // collections. Until then, bounded reflection ships via `heapInstance<T>`
     // (below), whose held value genuinely IS owned, so its drop is correct.
 
     /**
-     * REFL-12 — **bounded** allocation. `Class.newInstance<Shape>(name)` resolves
-     * `name`, verifies `leaf <: Shape`, then constructs it via its no-argument
-     * constructor and hands back an `Optional<Shape>` — type-checked, no unchecked
-     * downcast. Empty when the name is unknown OR resolves to a non-`Shape` (a
-     * normal not-found, not a throw). The bound argument (`Shape.class`) is
+     * REFL-12 — **bounded** by-name allocation. `Class.heapInstance<Shape>(name)`
+     * resolves `name`, verifies `leaf <: Shape`, then constructs it via its
+     * no-argument constructor and hands back an `Optional<Shape>` — type-checked,
+     * no unchecked downcast. Empty when the name is unknown OR resolves to a
+     * non-`Shape` (a normal not-found, not a throw). The bound (`Shape.class`) is
      * injected by the compiler from the `<Shape>` token. The subtype check makes
-     * the `(T)` cast on the freshly-built object sound. This is the primary
-     * bounded-reflection entry point and the DCE keep-token source.
+     * the `(T)` cast sound. Primary bounded-reflection entry point + DCE keep
+     * token; overloads the by-index `heapInstance(int32)` primitive below.
      *
      * ```cajeta
-     * Optional<Shape> s = Class.newInstance<Shape>(name);
+     * Optional<Shape> s = Class.heapInstance<Shape>(name);
      * if (s.isPresent()) { s.get().draw(); }
      * ```
      */
-    public static Optional<T> newInstance<T>(String name, Class<?> bound) {
+    public static Optional<T> heapInstance<T>(String name, Class<?> bound) {
         Class<?> c = forNameNative(name.bytes);
         if (c == null) {
             return stack Optional<T>(false, #null);

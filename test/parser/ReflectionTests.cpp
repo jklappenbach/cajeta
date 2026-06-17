@@ -285,7 +285,7 @@ TEST(ReflectionTests, parameterIntrospection) {
 }
 
 // REFL-4 object model: construct via a Constructor object, verify validity.
-TEST(ReflectionTests, constructorObjectNewInstance) {
+TEST(ReflectionTests, constructorObjectHeapInstance) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Constructor ctor = Class.of(seed).getConstructor(0);\n"
@@ -383,7 +383,7 @@ TEST(ReflectionTests, methodInvokeStackArgsMulti) {
 
 // REFL-4 marshalling: construct via the 1-arg User(int32 startId) through a
 // Constructor object; the new instance's id is the passed argument (99).
-TEST(ReflectionTests, constructorNewInstanceWithArg) {
+TEST(ReflectionTests, constructorHeapInstanceWithArg) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Class<?> c = Class.of(seed);\n"
@@ -406,7 +406,7 @@ TEST(ReflectionTests, constructorNewInstanceWithArg) {
 // REFL-2C: reflectively construct a User via the synthesized heapInstance
 // adapter, then confirm the result is a valid, fully-formed instance — its
 // vtable->classObject->rtti chain resolves and reports the right field count.
-TEST(ReflectionTests, newInstanceProducesValidObject) {
+TEST(ReflectionTests, heapInstanceProducesValidObject) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Class<?> c = Class.of(seed);\n"
@@ -416,7 +416,7 @@ TEST(ReflectionTests, newInstanceProducesValidObject) {
 
 // REFL-2C: a heapInstance'd object is functional — reflectively invoking the
 // no-arg bump() on it returns 1 (its id was zero-initialized by construction).
-TEST(ReflectionTests, newInstanceObjectIsFunctional) {
+TEST(ReflectionTests, heapInstanceObjectIsFunctional) {
     EXPECT_EQ(runI32(
         "User seed = heap User();\n"
         "Class<?> c = Class.of(seed);\n"
@@ -1774,7 +1774,7 @@ TEST(ReflectionTests, forNameStdlibClass) {
         "}\n"), 1);
 }
 
-// ---- REFL-12: bounded reflection (Class.newInstance<T> / Class.forName<T>) --
+// ---- REFL-12: bounded reflection (Class.heapInstance<T> / Class.forName<T>) --
 
 // A reusable Shape hierarchy + an unrelated Animal for the subtype boundary.
 #define REFL12_HIERARCHY \
@@ -1795,28 +1795,28 @@ TEST(ReflectionTests, forNameStdlibClass) {
     "    public Animal() { this.legs = 4; return; }\n" \
     "}\n"
 
-// Bounded newInstance: a subtype name resolves, constructs, and the result is
+// Bounded heapInstance: a subtype name resolves, constructs, and the result is
 // statically a Shape (no cast) — sideCount() dispatches to Circle's state (7).
-TEST(ReflectionTests, boundedNewInstanceSubtypeResolves) {
+TEST(ReflectionTests, boundedHeapInstanceSubtypeResolves) {
     EXPECT_EQ(runCustomI32(
         REFL12_HIERARCHY
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Optional<Shape> s = Class.newInstance<Shape>(\"test.Circle\");\n"
+        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Circle\");\n"
         "        if (s.isEmpty()) { return 11; }\n"
         "        return s.get().sideCount();\n"
         "    }\n"
         "}\n"), 7);
 }
 
-// The exact-type bound is the degenerate case: newInstance<Shape> of Shape
+// The exact-type bound is the degenerate case: heapInstance<Shape> of Shape
 // itself resolves (identity counts as subtype) and runs Shape's ctor (sides=0).
-TEST(ReflectionTests, boundedNewInstanceExactTypeResolves) {
+TEST(ReflectionTests, boundedHeapInstanceExactTypeResolves) {
     EXPECT_EQ(runCustomI32(
         REFL12_HIERARCHY
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Optional<Shape> s = Class.newInstance<Shape>(\"test.Shape\");\n"
+        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Shape\");\n"
         "        return s.isPresent() ? 100 : 0;\n"
         "    }\n"
         "}\n"), 100);
@@ -1824,24 +1824,24 @@ TEST(ReflectionTests, boundedNewInstanceExactTypeResolves) {
 
 // Boundary check: a name that resolves to a NON-subtype (Animal is not a Shape)
 // yields empty — a clean not-found, not a bad cast / crash.
-TEST(ReflectionTests, boundedNewInstanceNonSubtypeEmpty) {
+TEST(ReflectionTests, boundedHeapInstanceNonSubtypeEmpty) {
     EXPECT_EQ(runCustomI32(
         REFL12_HIERARCHY
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Optional<Shape> s = Class.newInstance<Shape>(\"test.Animal\");\n"
+        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Animal\");\n"
         "        return s.isPresent() ? 1 : 0;\n"
         "    }\n"
         "}\n"), 0);
 }
 
 // An unknown name also yields empty (same path as unbounded forName).
-TEST(ReflectionTests, boundedNewInstanceUnknownEmpty) {
+TEST(ReflectionTests, boundedHeapInstanceUnknownEmpty) {
     EXPECT_EQ(runCustomI32(
         REFL12_HIERARCHY
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Optional<Shape> s = Class.newInstance<Shape>(\"test.NoSuch\");\n"
+        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.NoSuch\");\n"
         "        return s.isPresent() ? 1 : 0;\n"
         "    }\n"
         "}\n"), 0);

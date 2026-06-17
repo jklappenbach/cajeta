@@ -846,10 +846,54 @@ namespace cajeta {
         if (flags.linkMode == LinkMode::Lean
                 && !CajetaModule::reflectionKeep().forcesAll) {
             auto keep = std::make_shared<std::set<std::string>>();
+            std::vector<std::pair<std::string, CajetaClassPtr>> classes;
             for (auto& [canon, type] : CajetaType::getCanonicalMap()) {
-                auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
-                if (klass && klass->getModifiers().count(REFLECT_RETAINED) > 0) {
-                    keep->insert(canon);
+                if (auto k = std::dynamic_pointer_cast<CajetaClass>(type)) {
+                    classes.emplace_back(canon, k);
+                    if (k->getModifiers().count(REFLECT_RETAINED) > 0) {
+                        keep->insert(canon);
+                    }
+                }
+            }
+            std::function<bool(const CajetaClassPtr&, const std::string&)>
+                derivesFrom = [&](const CajetaClassPtr& c,
+                                  const std::string& t) -> bool {
+                    if (!c) return false;
+                    if (c->toCanonical() == t) return true;
+                    for (auto& p : c->getSuperClasses()) {
+                        if (derivesFrom(p, t)) return true;
+                    }
+                    return false;
+                };
+            for (auto& site : CajetaModule::reflectionKeep().sites) {
+                using RS = CajetaModule::ReflSite;
+                switch (site.kind) {
+                    case RS::BoundClosure:
+                        for (auto& [canon, k] : classes) {
+                            if (derivesFrom(k, site.selector)) keep->insert(canon);
+                        }
+                        break;
+                    case RS::ForNameLiteral:
+                        if (CajetaType::getCanonicalMap().count(site.selector)) {
+                            keep->insert(site.selector);
+                        }
+                        break;
+                    case RS::PackageLiteral:
+                        for (auto& [canon, k] : classes) {
+                            auto p = canon.rfind('.');
+                            if (p != std::string::npos
+                                    && canon.substr(0, p) == site.selector) {
+                                keep->insert(canon);
+                            }
+                        }
+                        break;
+                    case RS::Annotated:
+                        for (auto& [canon, k] : classes) {
+                            if (k->findAnnotation(site.selector)) {
+                                keep->insert(canon);
+                            }
+                        }
+                        break;
                 }
             }
             for (auto& module : modules) {

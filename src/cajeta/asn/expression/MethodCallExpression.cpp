@@ -415,7 +415,7 @@ namespace cajeta {
 
         // ----- REFL-12: bounded reflection lowering -----
         // The bounded reflection entry points carry the bound `Shape` as an
-        // explicit method type argument: `Class.newInstance<Shape>(name)` and
+        // explicit method type argument: `Class.heapInstance<Shape>(name)` and
         // `Class.subtypes<Shape>()`. The bound is the supertype the developer
         // already needs to use the result; surfacing it as `<Shape>` makes the
         // result type-checked / closure-scoped and hands the lean linker a
@@ -425,8 +425,8 @@ namespace cajeta {
         // stdlib overload taking `Class<?> bound`, which runs the runtime
         // `leaf <: T` check via __cajeta_is_subtype. They differ only in whether
         // the `<Shape>` token survives the rewrite:
-        //   - newInstance<Shape>(name) -> newInstance(name, Shape.class): KEEP the
-        //     token — it binds the `Optional<T>` return type natively.
+        //   - heapInstance<Shape>(name) -> heapInstance(name, Shape.class): KEEP
+        //     the token — it binds the `Optional<T>` return type natively.
         //   - subtypes<Shape>()        -> subtypes(Shape.class):          DROP the
         //     token — the return is the wildcard `#Class<?>[]` (T is purely the
         //     keep-token + filter), and a concrete element type would re-trip the
@@ -436,49 +436,68 @@ namespace cajeta {
                 && explicitMethodTypeArgs.size() == 1
                 && explicitMethodTypeArgs[0]
                 && !children.empty()) {
-            bool isBoundedNewInstance =
-                methodCallName == "newInstance" && parameters.size() == 1;
+            // bounded by-name heapInstance<T>(name); the <T> token distinguishes
+            // it from the by-index heapInstance(int32) primitive (no type arg).
+            bool isBoundedHeapInstance =
+                methodCallName == "heapInstance" && parameters.size() == 1;
             bool isBoundedSubtypes =
                 methodCallName == "subtypes" && parameters.empty();
-            if (isBoundedNewInstance || isBoundedSubtypes) {
+            // classesAnnotated<@A>(): inject A's canonical name as the String arg
+            // and keep only @A-bearing classes.
+            bool isAnnotatedToken =
+                methodCallName == "classesAnnotated" && parameters.empty();
+            if (isBoundedHeapInstance || isBoundedSubtypes || isAnnotatedToken) {
                 if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
                         children[0])) {
                     auto rt = CajetaType::of(recvId->getTextValue());
                     if (rt && rt->toCanonical() == "cajeta.reflect.Class") {
-                        MethodCallParameter boundArg;
-                        boundArg.expression =
-                            std::make_shared<ClassLiteralExpression>(
-                                explicitMethodTypeArgs[0]->toCanonical(),
-                                nullptr);
-                        parameters.push_back(boundArg);
+                        std::string tok =
+                            explicitMethodTypeArgs[0]->toCanonical();
+                        MethodCallParameter arg;
+                        if (isAnnotatedToken) {
+                            arg.expression =
+                                std::make_shared<TextLiteralExpression>(
+                                    "\"" + tok + "\"", LITERAL_TYPE_STRING);
+                        } else {
+                            arg.expression =
+                                std::make_shared<ClassLiteralExpression>(
+                                    tok, nullptr);
+                        }
+                        parameters.push_back(arg);
                         boundedReflInjected = true;
-                        // (REFL-12.3) `explicitMethodTypeArgs[0]` is the
-                        // reflective keep-token; record it for the lean-linker
-                        // keep-set generator here once that pass lands.
-                        if (isBoundedSubtypes) {
-                            // subtypes' return is wildcard — the bound rides only
-                            // as the injected value arg; clear the token so the
-                            // call resolves to the non-templated overload.
+                        auto& keep = CajetaModule::reflectionKeep();
+                        using RS = CajetaModule::ReflSite;
+                        if (isAnnotatedToken) {
+                            auto p = tok.rfind('.');
+                            keep.sites.push_back({RS::Annotated,
+                                p == std::string::npos ? tok : tok.substr(p + 1)});
                             explicitMethodTypeArgs.clear();
+                        } else {
+                            // REFL-12.3: bound = lean keep-token (subtype closure).
+                            keep.sites.push_back({RS::BoundClosure, tok});
+                            // subtypes' return is wildcard — drop the token so the
+                            // call resolves to the non-templated overload.
+                            if (isBoundedSubtypes) explicitMethodTypeArgs.clear();
                         }
                     }
                 }
             }
         }
 
-        // DCE Tier-0b: note registry-consuming reflection from non-reflect code
-        // (forces keep-all for 0b-2a). Must be complete — a missed site lets the
-        // linker strip a class a later forName needs. See lean-linker-dce.md §3.2.
+        // DCE Tier-0b: classify registry-consuming reflection from non-reflect
+        // code (lean-linker-dce.md §3.2). Resolvable sites record a narrow site
+        // descriptor; open ones set forcesAll. Must be complete — a missed site
+        // lets the linker strip a class a later forName needs.
         if (!children.empty()) {
             static const std::set<std::string> kClassReflEntry = {
                 "forName", "allClasses", "classesInPackage",
-                "classesAnnotated", "subtypes", "newInstance"};
-            bool isReflEntry = false;
+                "classesAnnotated", "subtypes", "heapInstance"};
+            bool isClassEntry = false, isGetType = false;
             if (kClassReflEntry.count(methodCallName)) {
                 if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
                         children[0])) {
                     auto rt = CajetaType::of(recvId->getTextValue());
-                    isReflEntry =
+                    isClassEntry =
                         rt && rt->toCanonical() == "cajeta.reflect.Class";
                 }
             } else if (methodCallName == "getType") {
@@ -488,21 +507,62 @@ namespace cajeta {
                         recvExpr->resolveTypes(module);
                     }
                     auto rt = recvExpr->getResolvedType();
-                    isReflEntry = rt &&
+                    isGetType = rt &&
                         rt->toCanonical() == "cajeta.reflect.TemplateArgument";
                 }
             }
-            if (isReflEntry) {
-                // skip the API's own plumbing (e.g. getType → forName)
-                bool callerInReflect = false;
-                if (auto cm = module->getCurrentMethod()) {
-                    if (auto owner = cm->getParent()) {
-                        callerInReflect =
-                            owner->toCanonical().rfind("cajeta.reflect.", 0) == 0;
-                    }
+            bool callerInReflect = false;
+            if (auto cm = module->getCurrentMethod()) {
+                if (auto owner = cm->getParent()) {
+                    callerInReflect =
+                        owner->toCanonical().rfind("cajeta.reflect.", 0) == 0;
                 }
-                if (!callerInReflect) {
-                    CajetaModule::reflectionKeep().forcesAll = true;
+            }
+            if ((isClassEntry || isGetType) && !callerInReflect) {
+                auto& keep = CajetaModule::reflectionKeep();
+                // a constant-folded String arg → narrow; else open
+                auto stringLiteralArg = [&](int i) -> std::string {
+                    if (i >= (int) parameters.size()) return "";
+                    auto lit = std::dynamic_pointer_cast<TextLiteralExpression>(
+                        parameters[i].expression);
+                    if (!lit ||
+                            lit->getLiteralType() != LITERAL_TYPE_STRING) {
+                        return "";
+                    }
+                    std::string v = lit->getRawValue();  // includes quotes
+                    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') {
+                        return v.substr(1, v.size() - 2);
+                    }
+                    return "";
+                };
+                auto shortName = [](const std::string& canon) {
+                    auto p = canon.rfind('.');
+                    return p == std::string::npos ? canon : canon.substr(p + 1);
+                };
+                using RS = CajetaModule::ReflSite;
+                if (isGetType) {
+                    keep.forcesAll = true;
+                } else if (methodCallName == "forName") {
+                    std::string s = stringLiteralArg(0);
+                    if (!s.empty()) keep.sites.push_back({RS::ForNameLiteral, s});
+                    else keep.forcesAll = true;
+                } else if (methodCallName == "classesInPackage") {
+                    std::string s = stringLiteralArg(0);
+                    if (!s.empty()) keep.sites.push_back({RS::PackageLiteral, s});
+                    else keep.forcesAll = true;
+                } else if (methodCallName == "classesAnnotated") {
+                    std::string s = stringLiteralArg(0);
+                    if (!s.empty())
+                        keep.sites.push_back({RS::Annotated, shortName(s)});
+                    else keep.forcesAll = true;
+                } else if (methodCallName == "heapInstance"
+                        || methodCallName == "subtypes") {
+                    // bounded form already recorded BoundClosure above; the
+                    // by-index heapInstance(int32) isn't a Class-static call so
+                    // it never reaches here
+                    if (!boundedReflInjected) keep.forcesAll = true;
+                } else {  // allClasses + any other enumerator
+                    keep.forcesAll = true;
                 }
             }
         }
