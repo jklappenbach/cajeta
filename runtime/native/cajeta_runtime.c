@@ -13187,6 +13187,63 @@ extern int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, uint32_t c
 extern int64_t cajeta_xpu_optix_accel_build_triangles(const float* verts,
                                                       uint32_t triCount, uint32_t stride);
 extern void    cajeta_xpu_optix_accel_free(int64_t handle);
+extern uint64_t cajeta_xpu_optix_traversable(int64_t handle);
+extern uint64_t cajeta_xpu_optix_accel_boxes(int64_t handle);
+extern int      cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
+                                        const char* raygenName, const char* isName,
+                                        const char* anyhitName, const char* missName,
+                                        const void* paramsHost, uint64_t paramsLen,
+                                        uint32_t width);
+
+// --- OptiX ray-query program registry (M2 Phase 3-C-ii) ---------------------
+// A ray-query @Kernel whose AccelerationStructure resolves to the OptiX impl can
+// NOT run as a single cuLaunchKernel kernel — OptiX has no inline ray query; the
+// RT cores are reached only through a program PIPELINE (raygen / intersection /
+// anyhit / miss) launched via optixLaunch. NvptxRegistration emits that program
+// set as a SEPARATE PTX module (the `_optix_*` asm ptxas rejects) and registers it
+// here via __cajeta_xpu_register_optix_rayquery, keyed by the same name as the
+// kernel's ordinary software-BVH cubin. The CUDA launch path (cajeta_xpu_launch_cuda)
+// dispatches here when the active AS impl is OptiX; otherwise the software cubin runs.
+struct cajeta_optix_rq {
+    char name[256];
+    const void* ptx;     // OptiX program PTX text (an embedded host constant)
+    uint64_t ptxLen;
+    char raygen[256];
+    char is[256];
+    char anyhit[256];
+    char miss[256];
+};
+#define CAJETA_XPU_MAX_OPTIX_RQ 32
+static struct cajeta_optix_rq g_optix_rq[CAJETA_XPU_MAX_OPTIX_RQ];
+static int g_optix_rq_count;
+
+// Registration ctor entry point (NvptxRegistration emits the call at module init).
+void __cajeta_xpu_register_optix_rayquery(const char* name, const void* ptx,
+                                          uint64_t ptxLen, const char* raygen,
+                                          const char* is, const char* anyhit,
+                                          const char* miss) {
+    if (!name || !ptx || ptxLen == 0) return;
+    struct cajeta_optix_rq* e = NULL;
+    for (int i = 0; i < g_optix_rq_count; ++i)
+        if (strcmp(g_optix_rq[i].name, name) == 0) { e = &g_optix_rq[i]; break; }
+    if (!e) {
+        if (g_optix_rq_count >= CAJETA_XPU_MAX_OPTIX_RQ) return;  // last-writer-wins on overflow drop
+        e = &g_optix_rq[g_optix_rq_count++];
+    }
+    snprintf(e->name,   sizeof(e->name),   "%s", name);
+    e->ptx = ptx; e->ptxLen = ptxLen;
+    snprintf(e->raygen, sizeof(e->raygen), "%s", raygen ? raygen : "");
+    snprintf(e->is,     sizeof(e->is),     "%s", is ? is : "");
+    snprintf(e->anyhit, sizeof(e->anyhit), "%s", anyhit ? anyhit : "");
+    snprintf(e->miss,   sizeof(e->miss),   "%s", miss ? miss : "");
+}
+
+static struct cajeta_optix_rq* cajeta_xpu_find_optix_rq(const char* name) {
+    if (!name) return NULL;
+    for (int i = 0; i < g_optix_rq_count; ++i)
+        if (strcmp(g_optix_rq[i].name, name) == 0) return &g_optix_rq[i];
+    return NULL;
+}
 
 // Native inline ray query available on the active device? (Same condition as
 // __cajeta_xpu_device_supports(RayQueryNative).) The native-vs-software input.
@@ -13878,12 +13935,62 @@ caj_v4f __cajeta_xpu_cpu_texcube_sample_rgba(void* texp, int32_t filterMode,
 // runtime; this is the not-yet-wired no-op so the symbol resolves and host
 // codegen of a launch site links.
 // CUDA launch: lazily load the module + resolve the function, then 1-D launch.
+// Marshal the canonical count-shape argv into the OptiX launch params (the layout
+// contract in NvptxOptixRayQuery.h) and run the RT-core pipeline. argv slots, in
+// signature order: [0] &AS handle, [1..3] &originX/Y/Z device ptr, [4] &out device
+// ptr, [5] &n. The packed params struct mirrors LLVM {i64×5, i32, i64} exactly
+// (handle@0, origins@8/16/24, out@32, n@40, boxes@48; size 56) — the same struct
+// the 3-C-i device probe launched with. `boxes` is the AS's AABB data (NOT a kernel
+// arg); the glue retained it at build time (cajeta_xpu_optix_accel_boxes).
+static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv) {
+    void** av = (void**) argv;
+    if (!av) return;
+    int64_t asHandle = *(int64_t*) av[0];
+    struct {
+        uint64_t handle, originX, originY, originZ, out;
+        uint32_t n;
+        uint64_t boxes;
+    } p;
+    p.handle  = cajeta_xpu_optix_traversable(asHandle);
+    p.originX = *(uint64_t*) av[1];
+    p.originY = *(uint64_t*) av[2];
+    p.originZ = *(uint64_t*) av[3];
+    p.out     = *(uint64_t*) av[4];
+    p.n       = *(uint32_t*) av[5];
+    p.boxes   = cajeta_xpu_optix_accel_boxes(asHandle);
+    if (!p.handle || !p.boxes) {
+        fprintf(stderr, "cajeta.xpu: OptiX ray-query launch '%s' missing "
+                "traversable/boxes for AS handle %lld; not launching\n",
+                rq->name, (long long) asHandle);
+        return;
+    }
+    int rc = cajeta_xpu_optix_launch(rq->ptx, rq->ptxLen, rq->raygen, rq->is,
+                                     rq->anyhit, rq->miss, &p, sizeof(p), p.n);
+    if (rc != 0)
+        fprintf(stderr, "cajeta.xpu: OptiX ray-query launch '%s' failed (%d)\n",
+                rq->name, rc);
+}
+
 static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    int32_t gridX, int32_t gridY, int32_t gridZ,
                                    int32_t blockX, int32_t blockY, int32_t blockZ,
                                    uint32_t sharedBytes, void* argv,
                                    int64_t streamHandle,
                                    int32_t specCount, const int32_t* specValues) {
+    // M2 Phase 3-C-ii: OptiX RT-core dispatch. If this kernel emitted an OptiX
+    // program set (NvptxRegistration) and the active AS impl resolves to OptiX, run
+    // the optixLaunch pipeline instead of cuLaunchKernel — the software-BVH cubin
+    // would read the OptixAs handle as a device buffer and fault. The impl is
+    // deterministic per device (env > pref > default), so resolving it here matches
+    // the impl the AS was built with (caj_cuda_resolve_as_impl, used by the builder).
+    {
+        struct cajeta_optix_rq* rq = cajeta_xpu_find_optix_rq(kernelName);
+        if (rq && cajeta_xpu_optix_available() &&
+            caj_cuda_resolve_as_impl(CAJ_AS_PREF_AUTO) == CAJ_AS_IMPL_OPTIX) {
+            cajeta_xpu_launch_cuda_optix(rq, argv);
+            return;
+        }
+    }
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {

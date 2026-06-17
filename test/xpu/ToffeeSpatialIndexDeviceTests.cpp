@@ -1102,6 +1102,33 @@ TEST(ToffeeSpatialIndexDeviceTests, optixRecordsImplOnNvptxDevice) {
                          "CUDA OptiX noun arm didn't take, or OptiX unavailable on-device)";
 }
 
+// M2 Phase 3-D — the OptiX RT-core VERB end to end through the full compiler. The
+// SAME kRqMinDriver as the software/native legs, but with CAJETA_GPU_AS_IMPL=optix:
+// the AS builds on the OptiX tier, NvptxRegistration emits the kernel's OptiX program
+// set (raygen/intersection/anyhit/miss PTX) alongside its software cubin, and the
+// CUDA launch path dispatches countHits.launch to optixLaunch (RT cores) instead of
+// cuLaunchKernel. Its 777 must equal the AUTO-software (minimalRayQueryOnNvptxSoftwareBvh),
+// native (minimalRayQueryOnDevice), and CPU (minimalRayQueryOnCpuSoftwareBvh) legs —
+// the verb following the noun onto a fifth path. On a box without the OptiX runtime
+// the AS records software and this still returns 777 via the software cubin (the
+// launch's impl branch falls through); on the 4090 it runs on the RT cores.
+TEST(ToffeeSpatialIndexDeviceTests, aabbCountRayQueryOnOptixDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    AsImplEnvGuard forceOptix("optix");   // CUDA: optix -> the OptiX RT-core verb
+    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (OptiX RT-core AABB ray query via the compiler != CPU)";
+}
+
 // ===========================================================================
 // AMD (AMDGPU → hsaco, HipDriver) software-BVH ray query — the symmetric twin of
 // the NVPTX arm. AMD has no cajeta native inline ray-query seam either, so

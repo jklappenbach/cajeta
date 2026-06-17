@@ -5,6 +5,7 @@
 #include "NvptxRegistration.h"
 #include "NvptxBackend.h"
 #include "NvptxKernelLowering.h"
+#include "NvptxOptixRayQuery.h"
 
 #include "../lowering/KernelLowering.h"
 #include "cajeta/method/Method.h"
@@ -62,6 +63,17 @@ namespace nvidia {
             voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false);
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_params", kpTy);
+
+        // void __cajeta_xpu_register_optix_rayquery(i8* name, i8* ptx, i64 len,
+        //     i8* raygen, i8* is, i8* anyhit, i8* miss)
+        // For a ray-query kernel against an OptiX-impl AS the launch is an
+        // optixLaunch pipeline, not cuLaunchKernel; this registers the OptiX
+        // program PTX (a separate module) keyed by the same kernel name. The launch
+        // path picks optixLaunch when the AS impl is OptiX, the cubin otherwise.
+        llvm::FunctionType* rqTy = llvm::FunctionType::get(
+            voidTy, {ptrTy, ptrTy, i64Ty, ptrTy, ptrTy, ptrTy, ptrTy}, false);
+        llvm::FunctionCallee rqFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_optix_rayquery", rqTy);
 
         int emitted = 0;
         for (auto& method : kernels) {
@@ -141,6 +153,47 @@ namespace nvidia {
                                     llvm::ConstantInt::get(i32Ty,
                                                            (uint32_t) info.size()),
                                     kindGV, szGV});
+            }
+
+            // OptiX ray-query program set: a ray-query kernel against an OptiX-impl
+            // AS runs as an optixLaunch pipeline, not cuLaunchKernel. Emit its
+            // program PTX into a SEPARATE module (ptxas rejects the `_optix_*` asm,
+            // so it never goes through assembleCubin) and register it keyed by the
+            // same name. Only the canonical count shape is supported — a ray-query
+            // kernel of any other signature throws XPU-N04 here and simply keeps its
+            // software cubin (the launch then never selects the OptiX path).
+            if (nvptxKernelUsesRayQuery(method)) {
+                try {
+                    llvm::LLVMContext oCtx;
+                    llvm::Module oMod("xpu.optix." + entryName, oCtx);
+                    configureDeviceModule(oMod, *tm);
+                    std::string raygen = emitOptixCountModule(method, oMod);
+                    std::string optixPtx = emitPtx(oMod, *tm);
+                    if (!optixPtx.empty()) {
+                        // PTX text as a NUL-terminated host constant; len excludes NUL.
+                        llvm::Constant* pInit = llvm::ConstantDataArray::getString(
+                            ctx, optixPtx, /*AddNull=*/true);
+                        auto* ptxGV = new llvm::GlobalVariable(
+                            hostModule, pInit->getType(), /*isConstant=*/true,
+                            llvm::GlobalValue::PrivateLinkage, pInit,
+                            "xpu.optixptx." + entryName);
+                        ptxGV->setAlignment(llvm::MaybeAlign(1));
+                        // Program names follow emitOptixCountModule: __<stage>__<k>.
+                        llvm::Value* rg = b.CreateGlobalString(raygen,
+                            "xpu.orgn." + entryName);
+                        llvm::Value* is = b.CreateGlobalString(
+                            "__intersection__" + entryName, "xpu.ois." + entryName);
+                        llvm::Value* ah = b.CreateGlobalString(
+                            "__anyhit__" + entryName, "xpu.oah." + entryName);
+                        llvm::Value* ms = b.CreateGlobalString(
+                            "__miss__" + entryName, "xpu.oms." + entryName);
+                        b.CreateCall(rqFn, {nameStr, ptxGV,
+                            llvm::ConstantInt::get(i64Ty, optixPtx.size()),
+                            rg, is, ah, ms});
+                    }
+                } catch (cajeta::Exception&) {
+                    // Non-canonical ray-query signature (XPU-N04) — software cubin only.
+                }
             }
             b.CreateRetVoid();
 

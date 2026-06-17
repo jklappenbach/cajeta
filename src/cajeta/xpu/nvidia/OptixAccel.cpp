@@ -54,6 +54,7 @@ DRV(cuCtxPopCurrent, CUresult, CUcontext*)
 DRV(cuMemAlloc, CUresult, CUdeviceptr*, size_t)
 DRV(cuMemFree, CUresult, CUdeviceptr)
 DRV(cuMemcpyHtoD, CUresult, CUdeviceptr, const void*, size_t)
+DRV(cuStreamSynchronize, CUresult, CUstream)
 #undef DRV
 
 bool loadCudaDriver() {
@@ -76,6 +77,7 @@ bool loadCudaDriver() {
     BIND(cuMemAlloc, "cuMemAlloc_v2")
     BIND(cuMemFree, "cuMemFree_v2")
     BIND(cuMemcpyHtoD, "cuMemcpyHtoD_v2")
+    BIND(cuStreamSynchronize, "cuStreamSynchronize")
 #undef BIND
     return true;
 }
@@ -136,6 +138,9 @@ struct ScopedPrimary {
 struct OptixAs {
     OptixTraversableHandle trav = 0;
     CUdeviceptr output = 0;   // the AS storage; freed on accel_free
+    CUdeviceptr boxes = 0;    // (AABB AS only) the count*6 raw box floats, kept on
+                              // device for the M2 count intersection program's
+                              // point-in-box test (params.boxes); 0 for triangle AS.
 };
 
 // Shared accel-build core for one OptixBuildInput. Returns a heap OptixAs* (as
@@ -212,7 +217,11 @@ int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, uint32_t count) {
     bi.customPrimitiveArray.flags = flags;
     bi.customPrimitiveArray.numSbtRecords = 1;
     int64_t h = buildAccel(s, bi);
-    p_cuMemFree(d_aabbs);   // build copies into the AS storage; the input is transient
+    // OptixAabb IS the count*6-float box layout the M2 count intersection program
+    // reads (params.boxes), so KEEP d_aabbs as the AS's boxes buffer rather than
+    // freeing it; accel_free releases it. (Only on success — else it would leak.)
+    if (h) ((OptixAs*) (intptr_t) h)->boxes = d_aabbs;
+    else   p_cuMemFree(d_aabbs);
     return h;
 }
 
@@ -249,13 +258,113 @@ uint64_t cajeta_xpu_optix_traversable(int64_t handle) {
     return (uint64_t) ((OptixAs*) (intptr_t) handle)->trav;
 }
 
-// Free an OptiX AS handle (its device storage + the bookkeeping struct).
+// The AS's boxes buffer (count*6 floats) as a device pointer (u64), for the M2 count
+// intersection program's params.boxes. 0 for a triangle AS or a null handle.
+uint64_t cajeta_xpu_optix_accel_boxes(int64_t handle) {
+    if (!handle) return 0;
+    return (uint64_t) ((OptixAs*) (intptr_t) handle)->boxes;
+}
+
+// Free an OptiX AS handle (its device storage + boxes + the bookkeeping struct).
 void cajeta_xpu_optix_accel_free(int64_t handle) {
     if (!handle) return;
     OptixAs* as = (OptixAs*) (intptr_t) handle;
     ScopedPrimary sp(ensureInit().cuCtx);   // free on the OptiX context, restore caller's
     if (as->output && p_cuMemFree) p_cuMemFree(as->output);
+    if (as->boxes && p_cuMemFree) p_cuMemFree(as->boxes);
     delete as;
+}
+
+// Build the OptiX count pipeline from emitted PTX and optixLaunch it. The PTX is the
+// cajeta NVPTX-emitted OptiX program module (NvptxOptixRayQuery::emitOptixCountModule);
+// `paramsHost`/`paramsLen` is the already-marshalled `params` launch block (the
+// {handle,originX,originY,originZ,out,n,boxes} contract). `width` is the launch grid
+// (one thread per query). Runs on the shared (primary) context. Returns 0 on success,
+// nonzero on any failure (caller may fall back to the software path). v1 builds the
+// module/pipeline/SBT per call (no caching yet — a noted follow-up) and is the COUNT
+// shape only (payload=1, attributes=2, custom-primitive AABB).
+int cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
+                            const char* raygenName, const char* isName,
+                            const char* anyhitName, const char* missName,
+                            const void* paramsHost, uint64_t paramsLen,
+                            uint32_t width) {
+    OptixState& s = ensureInit();
+    if (!s.ok || !ptx || !ptxLen || !paramsHost || !paramsLen || width == 0) return -1;
+    ScopedPrimary sp(s.cuCtx);   // build + launch on the OptiX (primary) context
+
+    char log[4096]; size_t logSize = sizeof(log);
+    OptixModuleCompileOptions mco = {};
+    OptixPipelineCompileOptions pco = {};
+    pco.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
+    pco.numPayloadValues = 1;            // the candidate counter
+    pco.numAttributeValues = 2;          // OptiX custom-prim minimum
+    pco.pipelineLaunchParamsVariableName = "params";
+    pco.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_CUSTOM;
+
+    OptixModule mod = nullptr;
+    OptixProgramGroup rg = nullptr, ms = nullptr, hg = nullptr;
+    OptixPipeline pipeline = nullptr;
+    auto cleanup = [&]() {
+        if (pipeline) optixPipelineDestroy(pipeline);
+        if (hg) optixProgramGroupDestroy(hg);
+        if (ms) optixProgramGroupDestroy(ms);
+        if (rg) optixProgramGroupDestroy(rg);
+        if (mod) optixModuleDestroy(mod);
+    };
+
+    if (optixModuleCreate(s.ctx, &mco, &pco, ptx, (size_t) ptxLen, log, &logSize, &mod)
+            != OPTIX_SUCCESS) { cleanup(); return -2; }
+
+    OptixProgramGroupOptions pgo = {};
+    OptixProgramGroupDesc rgD = {}; rgD.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
+    rgD.raygen.module = mod; rgD.raygen.entryFunctionName = raygenName;
+    OptixProgramGroupDesc msD = {}; msD.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
+    msD.miss.module = mod; msD.miss.entryFunctionName = missName;
+    OptixProgramGroupDesc hgD = {}; hgD.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    hgD.hitgroup.moduleIS = mod; hgD.hitgroup.entryFunctionNameIS = isName;
+    hgD.hitgroup.moduleAH = mod; hgD.hitgroup.entryFunctionNameAH = anyhitName;
+    logSize = sizeof(log);
+    if (optixProgramGroupCreate(s.ctx, &rgD, 1, &pgo, log, &logSize, &rg) != OPTIX_SUCCESS) { cleanup(); return -3; }
+    logSize = sizeof(log);
+    if (optixProgramGroupCreate(s.ctx, &msD, 1, &pgo, log, &logSize, &ms) != OPTIX_SUCCESS) { cleanup(); return -3; }
+    logSize = sizeof(log);
+    if (optixProgramGroupCreate(s.ctx, &hgD, 1, &pgo, log, &logSize, &hg) != OPTIX_SUCCESS) { cleanup(); return -3; }
+
+    OptixProgramGroup groups[] = {rg, ms, hg};
+    OptixPipelineLinkOptions plo = {}; plo.maxTraceDepth = 1;
+    logSize = sizeof(log);
+    if (optixPipelineCreate(s.ctx, &pco, &plo, groups, 3, log, &logSize, &pipeline)
+            != OPTIX_SUCCESS) { cleanup(); return -4; }
+
+    // SBT: a header-only record per group (no per-record data).
+    struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) Rec { char h[OPTIX_SBT_RECORD_HEADER_SIZE]; };
+    Rec rgR, msR, hgR;
+    optixSbtRecordPackHeader(rg, &rgR);
+    optixSbtRecordPackHeader(ms, &msR);
+    optixSbtRecordPackHeader(hg, &hgR);
+    CUdeviceptr d_rg = 0, d_ms = 0, d_hg = 0, d_params = 0;
+    auto up = [&](CUdeviceptr* d, const void* src, size_t n) -> bool {
+        if (p_cuMemAlloc(d, n) != 0) return false;
+        return p_cuMemcpyHtoD(*d, src, n) == 0;
+    };
+    int rc = -5;
+    if (up(&d_rg, &rgR, sizeof(Rec)) && up(&d_ms, &msR, sizeof(Rec)) &&
+        up(&d_hg, &hgR, sizeof(Rec)) && up(&d_params, paramsHost, (size_t) paramsLen)) {
+        OptixShaderBindingTable sbt = {};
+        sbt.raygenRecord = d_rg;
+        sbt.missRecordBase = d_ms; sbt.missRecordStrideInBytes = sizeof(Rec); sbt.missRecordCount = 1;
+        sbt.hitgroupRecordBase = d_hg; sbt.hitgroupRecordStrideInBytes = sizeof(Rec); sbt.hitgroupRecordCount = 1;
+        if (optixLaunch(pipeline, /*stream=*/0, d_params, (size_t) paramsLen, &sbt,
+                        width, 1, 1) == OPTIX_SUCCESS &&
+            p_cuStreamSynchronize(0) == 0)
+            rc = 0;
+    }
+    if (d_rg) p_cuMemFree(d_rg);
+    if (d_ms) p_cuMemFree(d_ms);
+    if (d_hg) p_cuMemFree(d_hg);
+    if (d_params) p_cuMemFree(d_params);
+    cleanup();
+    return rc;
 }
 
 } // extern "C"
@@ -269,7 +378,11 @@ void*    cajeta_xpu_optix_cuda_context(void) { return nullptr; }
 int64_t  cajeta_xpu_optix_accel_build_aabbs(const float*, uint32_t) { return 0; }
 int64_t  cajeta_xpu_optix_accel_build_triangles(const float*, uint32_t, uint32_t) { return 0; }
 uint64_t cajeta_xpu_optix_traversable(int64_t) { return 0; }
+uint64_t cajeta_xpu_optix_accel_boxes(int64_t) { return 0; }
 void     cajeta_xpu_optix_accel_free(int64_t) {}
+int      cajeta_xpu_optix_launch(const char*, uint64_t, const char*, const char*,
+                                 const char*, const char*, const void*, uint64_t,
+                                 uint32_t) { return -1; }
 }
 
 #endif // CAJETA_HAS_OPTIX

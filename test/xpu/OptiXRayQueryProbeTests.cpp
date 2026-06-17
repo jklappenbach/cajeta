@@ -28,14 +28,39 @@
 #include "gtest/gtest.h"
 
 #include "cajeta/xpu/nvidia/CudaDriver.h"
+#include "cajeta/xpu/nvidia/NvptxOptixRayQuery.h"  // emitOptixCountModule (M2 Phase 3)
+#include "cajeta/xpu/nvidia/NvptxBackend.h"        // createNvptxTargetMachine/emitPtx
+#include "cajeta/compile/Compiler.h"
+#include "cajeta/compile/CajetaModule.h"
+#include "cajeta/type/CajetaClass.h"
+#include "cajeta/method/Method.h"
+
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Target/TargetMachine.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <random>
 #include <string>
 #include <fstream>
 #include <sstream>
+
+// windows.h comes LAST, after every cajeta/LLVM header. Two collisions force
+// this ordering + the guards:
+//   * WIN32_LEAN_AND_MEAN drops the OLE/COM headers (rpcndr.h, objidl.h,
+//     wtypes.h) that declare a global `byte`, which otherwise becomes ambiguous
+//     against std::byte (the cajeta headers do `using namespace std`).
+//   * NOMINMAX drops the min/max macros.
+//   * Including it AFTER the ANTLR-generated CajetaLexer.h (pulled in via
+//     Compiler.h) avoids windows.h's `CONST` macro mangling that header's
+//     `CONST = 8` token enumerator.
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
 #include <optix.h>
@@ -54,6 +79,14 @@ extern "C" void     cajeta_xpu_optix_accel_free(int64_t handle);
 // equal, proving the AS build / pipeline / launch share ONE context.
 extern "C" void*    cajeta_xpu_optix_cuda_context(void);
 extern "C" void*    cajeta_xpu_cuda_context(void);
+// M2 Phase 3-C: the AS's boxes (device ptr) for the count intersection program, and
+// the OptiX count-pipeline launch from emitted PTX (see NvptxOptixRayQuery.h contract).
+extern "C" uint64_t cajeta_xpu_optix_accel_boxes(int64_t handle);
+extern "C" int      cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
+                                            const char* raygenName, const char* isName,
+                                            const char* anyhitName, const char* missName,
+                                            const void* paramsHost, uint64_t paramsLen,
+                                            uint32_t width);
 
 namespace {
 
@@ -113,6 +146,78 @@ OptixDeviceContext glueContext() {
     if (!loadCuda()) return nullptr;
     return (OptixDeviceContext) cajeta_xpu_optix_context();
 }
+
+// Parse + resolve a cajeta source to a resolved @Kernel method (no codegen), so the
+// M2 OptiX emitter can lower it. Same pattern as the XPU inspection tests.
+cajeta::CajetaModulePtr compileForInspection(cajeta::Compiler& compiler,
+                                             const std::string& source,
+                                             const std::string& fqClassName) {
+    static std::mt19937_64 rng(std::random_device{}());
+    auto base = std::filesystem::temp_directory_path()
+              / ("cajeta_optix_dev_" + std::to_string(rng()));
+    std::filesystem::create_directories(base);
+    std::filesystem::path rel;
+    size_t start = 0;
+    for (size_t i = 0; i <= fqClassName.size(); ++i) {
+        if (i == fqClassName.size() || fqClassName[i] == '.') {
+            rel /= fqClassName.substr(start, i - start);
+            start = i + 1;
+        }
+    }
+    rel += ".cajeta";
+    auto full = base / rel;
+    std::filesystem::create_directories(full.parent_path());
+    std::ofstream out(full); out << source; out.close();
+    auto archive = std::filesystem::temp_directory_path()
+                 / ("cajeta_optix_dev_arch_" + std::to_string(rng()));
+    std::filesystem::create_directories(archive);
+    auto m = compiler.createModule(full.string(), base.string(), archive.string());
+    compiler.compile(m);
+    return m;
+}
+
+cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass, const std::string& name) {
+    for (auto& [k, mth] : klass->getMethods())
+        if (mth && mth->getName() == name) return mth;
+    return nullptr;
+}
+
+// The canonical AABB candidate-count kernel (the kRqMinDriver shape).
+const char* kCountKernelSrc =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqCount {\n"
+    "    @Kernel\n"
+    "    public static void countHits(AccelerationStructure scene,\n"
+    "                                 Buffer<float32> qx, Buffer<float32> qy,\n"
+    "                                 Buffer<float32> qz, Buffer<uint32> out,\n"
+    "                                 uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255, qx[i], qy[i], qz[i], 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+// The compiler ↔ runtime launch-params layout (NvptxOptixRayQuery.h contract):
+// { handle, originX, originY, originZ, out, n, boxes }. Natural alignment matches the
+// emitted LLVM struct {i64,i64,i64,i64,i64,i32,i64} (n at +40, boxes at +48, size 56).
+struct RqCountParams {
+    uint64_t handle;
+    uint64_t ox, oy, oz, out;
+    uint32_t n;
+    uint64_t boxes;
+};
 
 } // namespace
 
@@ -414,6 +519,80 @@ TEST(OptiXRayQueryProbe, triangleNearestHitMatchesSoftwareOracle) {
     EXPECT_EQ(hp, 1u);
     EXPECT_NEAR(hu, 0.25f, 1e-3f);
     EXPECT_NEAR(hv, 0.25f, 1e-3f);
+}
+
+// M2 Phase 3-C — the emitted-PTX count pipeline runs on the RT cores via the glue.
+// End-to-end through the NEW path: the cajeta count @Kernel → NvptxOptixRayQuery
+// emitter → PTX → cajeta_xpu_optix_launch (module/pipeline/SBT + optixLaunch) against
+// a provider-built AS, with the params marshalled per the layout contract. This is the
+// compiler-emitted analogue of aabbCandidateCountFromLlvmEmittedPtx (which used a
+// hand-authored .ll), and the precursor to the full JIT launch wiring (3-D). → {1,0,1,1}.
+TEST(OptiXRayQueryProbe, aabbCountFromEmittedPtxRunsOnDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    if (!cajeta_xpu_optix_available()) {
+        GTEST_SKIP() << "OptiX runtime unavailable (SDK built in but nvoptix/CUDA absent)";
+    }
+
+    // cajeta count kernel → OptiX program PTX (the compiler emitter).
+    cajeta::Compiler compiler;
+    auto module = compileForInspection(compiler, kCountKernelSrc, "test.RqCount");
+    auto klass = module->getStructures()["test.RqCount"];
+    ASSERT_NE(klass, nullptr);
+    auto countHits = findMethod(klass, "countHits");
+    ASSERT_NE(countHits, nullptr);
+
+    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext dctx;
+    llvm::Module optixModule("rq_count_optix_dev", dctx);
+    cajeta::xpu::nvidia::configureDeviceModule(optixModule, *tm);
+    std::string raygen = cajeta::xpu::nvidia::emitOptixCountModule(countHits, optixModule);
+    ASSERT_EQ(raygen, "__raygen__countHits");
+    std::string ptx = cajeta::xpu::nvidia::emitPtx(optixModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+
+    OptixDeviceContext octx = glueContext();   // makes the (primary) context current
+    ASSERT_NE(octx, nullptr);
+
+    // AS via the provider — same scene/queries as the M0/M1 count oracle.
+    float boxes[18] = {
+        -0.5f,-0.5f,-0.5f,  0.5f, 0.5f, 0.5f,
+         9.5f,-0.5f,-0.5f, 10.5f, 0.5f, 0.5f,
+        19.5f,-0.5f,-0.5f, 20.5f, 0.5f, 0.5f,
+    };
+    int64_t h = cajeta_xpu_optix_accel_build_aabbs(boxes, 3);
+    ASSERT_NE(h, 0);
+    uint64_t trav = cajeta_xpu_optix_traversable(h);
+    uint64_t d_boxes = cajeta_xpu_optix_accel_boxes(h);
+    ASSERT_NE(trav, 0ull);
+    ASSERT_NE(d_boxes, 0ull);
+
+    const unsigned n = 4;
+    float qx[n] = {0.0f, 5.0f, 10.0f, 19.7f};
+    float qy[n] = {0,0,0,0};
+    float qz[n] = {0,0,0,0};
+    CUdeviceptr d_qx = upload(qx, sizeof(qx)), d_qy = upload(qy, sizeof(qy)),
+                d_qz = upload(qz, sizeof(qz));
+    CUdeviceptr d_out = 0; p_cuMemAlloc(&d_out, n * sizeof(unsigned));
+
+    RqCountParams p = {};
+    p.handle = trav;
+    p.ox = d_qx; p.oy = d_qy; p.oz = d_qz; p.out = d_out;
+    p.n = n; p.boxes = d_boxes;
+
+    int rc = cajeta_xpu_optix_launch(
+        ptx.c_str(), ptx.size(), raygen.c_str(), "__intersection__countHits",
+        "__anyhit__countHits", "__miss__countHits", &p, sizeof(p), n);
+    EXPECT_EQ(rc, 0) << "cajeta_xpu_optix_launch failed (rc=" << rc << ")";
+
+    unsigned out[n] = {99,99,99,99};
+    p_cuMemcpyDtoH(out, d_out, sizeof(out));
+    EXPECT_EQ(out[0], 1u); EXPECT_EQ(out[1], 0u);
+    EXPECT_EQ(out[2], 1u); EXPECT_EQ(out[3], 1u);
+
+    cajeta_xpu_optix_accel_free(h);
 }
 
 #endif // CAJETA_TEST_HAS_OPTIX
