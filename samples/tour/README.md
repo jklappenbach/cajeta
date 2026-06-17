@@ -6,7 +6,7 @@ A walkthrough of every load-bearing language feature, one class per feature. Eac
 > tour. The **XPU tour** — portable `@Kernel` programs run through the runtime
 > backend dispatcher (GPU or CPU fallback) — lives in its own subfolder
 > [`xpu/`](xpu/README.md), because XPU programs need the `--xpu-backend` flag
-> and a device-or-CPU-fallback to run. Build + run it with `xpu/run-xpu.sh`.
+> and a device-or-CPU-fallback to run. Build + run it with `xpu/run-gpu.sh`.
 
 This is a standard cajeta project: a `cajeta.json` manifest at the root and
 sources under `src/main/cajeta/<package>/` (see
@@ -22,7 +22,7 @@ samples/tour/
 ├── run.sh   / run.cmd    ← `cajeta run`   → build + execute
 ├── xpu/                  ← the XPU tour (@Kernel + the runtime dispatcher)
 │   ├── README.md
-│   ├── run-xpu.sh        ← compile + run for any backend (default cpu)
+│   ├── run-gpu.sh        ← compile + run for any backend (default cpu)
 │   └── src/tourxpu/XpuTour.cajeta
 └── src/main/cajeta/tour/
     │  Demos are grouped into topic subpackages that mirror the stdlib

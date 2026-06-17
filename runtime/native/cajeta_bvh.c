@@ -3,7 +3,7 @@
 // The software acceleration-structure noun: a flat, pointer-free BVH packed into
 // one contiguous block of float32 words, so it binds/reads like any Buffer<float32>
 // on every backend (here it is host memory; on a GPU it would be an uploaded
-// buffer). The portable cajeta traversal (cajeta.gpu.core.SoftwareRayQuery) walks
+// buffer). The portable cajeta traversal (cajeta.gpu.SoftwareRayQuery) walks
 // it; this builder is the build-from-description side. See
 // cajeta-docs/gpu/RayQuery.md §3 for the layout contract — frozen here as v1.
 //

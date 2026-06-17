@@ -1,0 +1,29 @@
+package cajeta.gpu;
+
+/**
+ * XpuKernelError — surfaced when a kernel signals a per-launch
+ * fault via `xpu.kernel.fail(code)`. Per CajetaXPU.md §3.7, every
+ * launch implicitly allocates a small status buffer; if the
+ * device-side `fail(code)` writes to it, the next `Stream.sync()`
+ * on the host throws this exception with the recorded code.
+ *
+ * The error-code namespace is shared across backends. Codes 0..63
+ * are reserved for runtime-detected faults (bounds checks, debug-
+ * mode invariants). Codes 64.. are available for user code via
+ * `xpu.kernel.fail(myCode)`.
+ *
+ * v1 carries the raw integer code only; richer fault context
+ * (faulting thread/block, file/line) is a follow-on once the
+ * status buffer's wire format is finalized.
+ */
+public final class XpuKernelError {
+    int32 code;
+
+    public XpuKernelError(int32 code) {
+        this.code = code;
+    }
+
+    public int32 errorCode() {
+        return this.code;
+    }
+}

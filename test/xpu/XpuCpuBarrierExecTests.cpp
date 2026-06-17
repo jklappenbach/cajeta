@@ -68,10 +68,10 @@ std::string compileToIr(const char* source, const std::string& entry) {
 // and returns a success sentinel, or 100+i / 1000+i on the first wrong lane.
 const char* kTwoStageSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Barrier;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Barrier;
 public class M {
     @Kernel
     public static void twostage(Buffer<uint32> a, Buffer<uint32> b) {
@@ -109,11 +109,11 @@ public class M {
 // buffer work. out[t] == in[255-t] == 255-t.
 const char* kSharedStageSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void stageback(Buffer<uint32> out, Buffer<uint32> in) {
@@ -151,12 +151,12 @@ public class M {
 // in[i]=i over a 256 block ⇒ out[0] = 0+1+…+255 = 32640.
 const char* kReduceSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Workgroup;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Workgroup;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void reduce(Buffer<int32> out, Buffer<int32> in, uint32 n) {
@@ -222,11 +222,11 @@ public class M {
 // computes the same recurrence on the host and compares every lane.
 const char* kPingPongSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void pingpong(Buffer<int32> out, Buffer<int32> in, uint32 k) {
@@ -279,11 +279,11 @@ public class M {
 // values that cross a barrier *inside* a loop, not just the straight-line case.
 const char* kLocalCarrySource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void localcarry(Buffer<int32> out, Buffer<int32> in, uint32 k) {
@@ -336,11 +336,11 @@ public class M {
 // i in [0,k) of tile[(t+i)&255], with tile[j]=in[j]=j.
 const char* kAccumSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void accum(Buffer<int32> out, Buffer<int32> in, uint32 k) {
@@ -392,11 +392,11 @@ public class M {
 // times for every lane.
 const char* kNestedSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void nested(Buffer<int32> out, Buffer<int32> in,
@@ -452,11 +452,11 @@ public class M {
 // Recurrence R(tile)[t] = tile[t] + tile[(t+1)&255] applied ki*(kj+1) times.
 const char* kNested2Source = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void nested2(Buffer<int32> out, Buffer<int32> in,
@@ -519,12 +519,12 @@ public class M {
 // barrier coexist (the wave op vectorizes each fission region at W).
 const char* kBlockReduceSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Wave;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Wave;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void blockReduce(Buffer<int32> out, Buffer<int32> in) {
@@ -568,12 +568,12 @@ public class M {
 // at 16/8/4 without hardcoding.
 const char* kWaveBarMembershipSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Wave;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Wave;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void widthk(Buffer<uint32> out) {
@@ -627,12 +627,12 @@ public class M {
 // sharedBytes = 256*4 ⇒ out[0] = 32640.
 const char* kDynSharedSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Workgroup;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Workgroup;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void dynreduce(Buffer<int32> out, Buffer<int32> in, uint32 n) {
@@ -674,11 +674,11 @@ public class M {
 // 3-D work-item nest (tid.x AND tid.y) inside the barrier regions.
 const char* kTranspose2dSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Barrier;
-import cajeta.gpu.core.Shared;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Barrier;
+import cajeta.gpu.Shared;
 public class M {
     @Kernel
     public static void transpose2d(Buffer<int32> out, Buffer<int32> in) {
@@ -764,9 +764,9 @@ TEST(XpuCpuBarrierExecTests, multiBlockReductionNoSharedAliasing) {
 TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Thread;\n"
-        "import cajeta.gpu.core.Barrier;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.Barrier;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void divergent(Buffer<uint32> a) {\n"
@@ -787,10 +787,10 @@ TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
 TEST(XpuCpuBarrierExecTests, nestedTidDependentTripCountFallsBack) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Thread;\n"
-        "import cajeta.gpu.core.Barrier;\n"
-        "import cajeta.gpu.core.Shared;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Thread;\n"
+        "import cajeta.gpu.Barrier;\n"
+        "import cajeta.gpu.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void nesttid(Buffer<int32> out, Buffer<int32> in,\n"

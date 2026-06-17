@@ -46,9 +46,9 @@ namespace {
 
 const char* kWaveSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
-    "import cajeta.gpu.core.Wave;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavetest(Buffer<uint32> out) {\n"
@@ -97,9 +97,9 @@ constexpr unsigned kVerify = 32;    // verify the first wave window
 // size" instead of comparing against width().
 const char* kReduceSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
-    "import cajeta.gpu.core.Wave;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavereduce(Buffer<uint32> in, Buffer<uint32> out) {\n"
@@ -115,9 +115,9 @@ constexpr unsigned kReduceBlock = 64;  // multiple of 32 and 64 ⇒ full occupan
 // wave-size-agnostic check.
 const char* kLaneSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
-    "import cajeta.gpu.core.Wave;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavelane(Buffer<uint32> out) {\n"
@@ -134,9 +134,9 @@ const char* kLaneSource =
 // is no longer used) — so Wave.width() now runs natively on Vulkan.
 const char* kWidthSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
-    "import cajeta.gpu.core.Wave;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavewidth(Buffer<uint32> out) {\n"
@@ -153,9 +153,9 @@ const char* kWidthSource =
 // must agree on the (laneId + delta) mod width direction.
 const char* kRotateSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
-    "import cajeta.gpu.core.Wave;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void waverot(Buffer<uint32> out) {\n"
@@ -182,9 +182,9 @@ void expectRotatedLaneId(const std::vector<uint32_t>& out) {
 //   reduceXor(t) over lanes 0..W-1 = 0      (XOR of 0..31 and of 0..63 are both 0)
 const char* kReduceOpsSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
-    "import cajeta.gpu.core.Wave;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavereduceops(Buffer<uint32> out, uint32 n) {\n"
@@ -217,9 +217,9 @@ void expectReduceFamily(const std::vector<uint32_t>& out, unsigned n) {
 // wave-width-agnostic over the first wave (lanes 0..31; 2^i fits uint32 there).
 const char* kScanSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
-    "import cajeta.gpu.core.Wave;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.Wave;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void wavescan(Buffer<uint32> out, uint32 n) {\n"

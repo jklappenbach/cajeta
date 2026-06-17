@@ -60,37 +60,37 @@ namespace xpu {
     // agree on exactly which arguments take the by-value struct path.
     bool isPodStructType(const CajetaTypePtr& type);
 
-    // Is `type` the cajeta.gpu.core.Texture2D resp. Sampler type (Item 8)?
+    // Is `type` the cajeta.gpu.Texture2D resp. Sampler type (Item 8)?
     // Matched by canonical name. Shared by the admissibility check, the
     // launch-site marshaller, and the kernel-param classifier so all agree on
     // which arguments take the texture-image resp. sampler-descriptor path
     // (rather than the by-value POD-struct path Sampler would otherwise match).
     bool isTextureType(const CajetaTypePtr& type);
-    // Is `type` the cajeta.gpu.core.Texture3D<T> type — the volumetric sibling of
+    // Is `type` the cajeta.gpu.Texture3D<T> type — the volumetric sibling of
     // Texture2D? Matched by canonical name; takes the same texture-image path as
     // Texture2D but with a 3-D image and 3-coord sample/fetch.
     bool isTexture3DType(const CajetaTypePtr& type);
-    // Is `type` the cajeta.gpu.core.Texture1D<T> type — the linear sibling of
+    // Is `type` the cajeta.gpu.Texture1D<T> type — the linear sibling of
     // Texture2D? Matched by canonical name; takes the same texture-image path as
     // Texture2D but with a 1-D image and 1-coord sample/fetch (no lod).
     bool isTexture1DType(const CajetaTypePtr& type);
-    // Is `type` the cajeta.gpu.core.Texture2DArray<T> type — the layered sibling
+    // Is `type` the cajeta.gpu.Texture2DArray<T> type — the layered sibling
     // of Texture2D (N 2-D planes)? Matched by canonical name; takes the texture-
     // image path with an Arrayed image and a (u,v,layer)/(x,y,layer) coord.
     bool isTexture2DArrayType(const CajetaTypePtr& type);
-    // Is `type` the cajeta.gpu.core.TextureCube<T> type — the cube-map sibling (6
+    // Is `type` the cajeta.gpu.TextureCube<T> type — the cube-map sibling (6
     // faces, sampled by a direction vector, no fetch)? Matched by canonical name.
     bool isTextureCubeType(const CajetaTypePtr& type);
     bool isSamplerType(const CajetaTypePtr& type);
 
-    // Is `type` the cajeta.gpu.core.Image2D type (writable images)? Matched by
+    // Is `type` the cajeta.gpu.Image2D type (writable images)? Matched by
     // canonical name — the writable twin of Texture2D, bound as a STORAGE_IMAGE
     // descriptor and written in a kernel via `img.store(x, y, value)`. Shared by
     // the admissibility check, the launch-site marshaller, and the kernel-param
     // classifier so all agree it takes the storage-image path.
     bool isImageType(const CajetaTypePtr& type);
 
-    // Is `type` the cajeta.gpu.core.AccelerationStructure resp. RayQuery type
+    // Is `type` the cajeta.gpu.AccelerationStructure resp. RayQuery type
     // (cajeta-gpu Part C ray query)? Matched by canonical name.
     // AccelerationStructure is an admissible kernel arg (a descriptor-bound BVH);
     // RayQuery is a device-only kernel-body local (never a kernel arg), recognized

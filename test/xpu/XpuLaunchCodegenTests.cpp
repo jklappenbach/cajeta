@@ -87,8 +87,8 @@ std::string moduleIR(const CajetaModulePtr& m) {
 TEST(XpuLaunchCodegenTests, launchLowersToRuntimeCall) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Stream;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void k(Buffer<float32> y, float32 a, uint32 n) { }\n"
@@ -112,8 +112,8 @@ TEST(XpuLaunchCodegenTests, launchLowersToRuntimeCall) {
 TEST(XpuLaunchCodegenTests, sharedConfigLowersByteCount) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Stream;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Stream;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void k(Buffer<int32> out, uint32 n) { }\n"

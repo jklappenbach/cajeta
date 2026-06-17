@@ -1,0 +1,36 @@
+package cajeta.gpu;
+
+/**
+ * Workgroup — per-workgroup coordinate builtins. Only meaningful
+ * inside @Kernel / @Device functions. See CajetaXPU.md §3.2.
+ *
+ * `x()/y()/z()` is the workgroup's position within the grid;
+ * `dimX()/dimY()/dimZ()` is the workgroup's size in threads (the
+ * `block` argument passed to launch). Both are constant across all
+ * threads in the workgroup.
+ *
+ *   NVPTX:  llvm.nvvm.read.ptx.sreg.ctaid.{x,y,z}
+ *           llvm.nvvm.read.ptx.sreg.ntid.{x,y,z}
+ *   AMDGPU: llvm.amdgcn.workgroup.id.{x,y,z}
+ *   SPIR-V: OpLoad WorkgroupId / WorkgroupSize
+ */
+public final class Workgroup {
+
+    @Native("__cajeta_xpu_workgroup_x")
+    public static uint32 x();
+
+    @Native("__cajeta_xpu_workgroup_y")
+    public static uint32 y();
+
+    @Native("__cajeta_xpu_workgroup_z")
+    public static uint32 z();
+
+    @Native("__cajeta_xpu_workgroup_dim_x")
+    public static uint32 dimX();
+
+    @Native("__cajeta_xpu_workgroup_dim_y")
+    public static uint32 dimY();
+
+    @Native("__cajeta_xpu_workgroup_dim_z")
+    public static uint32 dimZ();
+}

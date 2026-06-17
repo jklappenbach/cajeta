@@ -70,7 +70,7 @@ are always order-independent.
 `atomicMin`, `atomicMax` of `(index, value)`, returning the old value. They are
 **device-only** (inside an `@Kernel`) and require a *writable* buffer. On Vulkan
 they need `SPV_EXT_shader_atomic_float_add` / `_min_max` (RADV exposes both for
-f32). Runnable end to end in `samples/tour/xpu` (the `float atomics` section).
+f32). Runnable end to end in `samples/tour/gpu` (the `float atomics` section).
 See `CajetaXPU.md` for the kernel surface. Integer atomics
 (`atomicAdd/Sub/Min/Max/And/Or/Xor/Exchange/CompareExchange`) and shared-memory
 (LDS) atomics have since shipped — see [`IntegerAtomics.md`](IntegerAtomics.md);

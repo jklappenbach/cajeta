@@ -62,6 +62,6 @@ frontend that would emit such an intrinsic.
 **Rules.** `Thread.clock()` returns a `uint64` device tick, device-only (inside
 an `@Kernel`). Diff two reads for an elapsed-cycle count; the value is for
 relative measurement, not seconds, and is non-deterministic. Runnable in
-`samples/tour/xpu` (the `shader clock` section). See `CajetaXPU.md` for the kernel
+`samples/tour/gpu` (the `shader clock` section). See `CajetaXPU.md` for the kernel
 surface. (Implementation note: the Vulkan reach is a `cajeta-spirv` fork
 intrinsic, `llvm.spv.read.clock` — fork-carried, not upstreamed.)

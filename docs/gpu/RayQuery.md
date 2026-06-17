@@ -3,7 +3,7 @@
 **Status: software path (Inc 1–3) SHIPPED; native Vulkan RT-core path on-device-validated
 (RADV + RTX 4090); NVIDIA OptiX RT-core verb (Inc 5, M0–M2) validated end-to-end on the
 RTX 4090; Inc 4 auto-selection heuristic the remaining open item.**
-This is the design for making *inline ray query* a genuine `cajeta.gpu.core` feature —
+This is the design for making *inline ray query* a genuine `cajeta.gpu` feature —
 one that runs on **every** backend, not just Vulkan. The portable software BVH +
 stackless traversal (AABBs, triangles, full candidate/committed getters + commit) is
 built and cross-checked against the Vulkan native path (§8); what remains is the
@@ -374,7 +374,7 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
 
 **Inc 5 — NVIDIA CUDA OptiX RT-core tier (the verb on a third silicon path). ✅ M0–M2 DONE.**
 NVIDIA has no inline-RQ intrinsic, so the CUDA RT cores are reached through an OptiX
-*pipeline* — but as an IMPLEMENTATION of the same `cajeta.gpu.core` inline `RayQuery`
+*pipeline* — but as an IMPLEMENTATION of the same `cajeta.gpu` inline `RayQuery`
 verb (the pipeline is internal, never user-authored; cf. §9). See
 `documents/gpu-rayquery-optix/` for the spec/plan; on-device proof on the RTX 4090.
 - [x] **M0/M1** — OptiX RT-core ↔ software parity (`OptiXRayQueryProbe`) + the runtime AS
@@ -426,7 +426,7 @@ verb (the pipeline is internal, never user-authored; cf. §9). See
 
 ## 10. Rules
 
-`cajeta.gpu.core` inline ray query runs on **every** backend: native `OpRayQuery*KHR`
+`cajeta.gpu` inline ray query runs on **every** backend: native `OpRayQuery*KHR`
 over a Vulkan BLAS where the device advertises it, a portable stackless BVH walk over a
 `Buffer<T>`-packed BVH (Möller-Trumbore for triangles, slab for AABBs) everywhere else —
 the **Software default**, mirroring `CooperativeMatrix`. The noun impl is chosen once at

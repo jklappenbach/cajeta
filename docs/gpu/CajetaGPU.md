@@ -6,11 +6,18 @@ portable device capability. Compute (`cajeta-xpu`) and graphics (`cajeta-gfx`) a
 **siblings** built on it — gfx does not depend on xpu; both target the contract here.
 
 ```
-cajeta-gpu        (foundation — the portable contract; "core")
-   ▲                       ▲
-cajeta-xpu             cajeta-gfx
-(compute, Tensor)      (rendering pipeline)
+cajeta.gpu                     (foundation — the shared portable contract)
+   ▲                              ▲
+cajeta.gpu.xpu             cajeta.gpu.gfx
+(compute, Tensor)          (rendering pipeline)
 ```
+
+All three are **stdlib**, nested in one namespace the way `java.nio` holds its buffers while
+`java.nio.{channels,file,charset}` build on them: `cajeta.gpu` holds the shared core (the
+classes both facets use), and `cajeta.gpu.xpu` / `cajeta.gpu.gfx` are the compute and graphics
+facets that import it. The nesting groups the GPU tier and aids discovery; the "builds on"
+relationship is carried by imports, not by the dots (a child never depends on its parent
+*by virtue of* nesting — `gpu.xpu` depends on `gpu` because it imports it).
 
 The GPU↔GFX seam is concrete, not stylistic: **GPU owns inline ray query — over meshes *and*
 bounding volumes; GFX owns the ray-tracing pipeline** (hit/miss shaders + SBT). (§4.)
@@ -23,18 +30,37 @@ bounding volumes; GFX owns the ray-tracing pipeline** (hit/miss shaders + SBT). 
 
 ## 1. The model
 
-### 1.1 Core is the only GPU surface in stdlib
+### 1.1 The GPU package tree — and what stays out of it
 
-`cajeta.gpu.core` is **write-once-run-everywhere**, and it is the *only* GPU package in the
-standard library. There are no `cajeta.gpu.nvidia` / `.amd` / `.metal` / `.vulkan` packages
-in stdlib. Vendor-exclusive silicon (NV cooperative vector / TMA, AMD MFMA, Metal
-simdgroup-matrix, CUDA/ROCm/MPS interop) lives in **external vendor libraries** — authored
-by vendors or interest groups, distributed as signed dependencies from `olla.cajeta.dev`,
-added to a project explicitly. Importing one *is* the lock-in declaration.
+The stdlib GPU tier is three nested, **write-once-run-everywhere** packages:
 
-Write to core and you get more than you asked for: it already selects the best available
-silicon path under the hood and falls back where a backend lacks one. Want vendor-specific
-peak or exclusive features — import a vendor library and accept its reach.
+- **`cajeta.gpu`** — the shared foundation: value types & math, the memory/buffer model,
+  textures & images, `@Kernel`, inline `RayQuery`, `CooperativeMatrix`, waves/atomics. The
+  classes *both* facets need.
+- **`cajeta.gpu.xpu`** — the compute facet: the `Tensor` (the n-d array) + basic numerical
+  algorithms, built on `cajeta.gpu`.
+- **`cajeta.gpu.gfx`** — the graphics facet: rasterization, the render graph, the ray-tracing
+  pipeline + basic graphics algorithms — the **primitives an engine dev composes, not an
+  engine** — built on `cajeta.gpu`.
+
+**The boundary (deliberate):** stdlib carries *primitives that tightly wrap GPU capabilities
+plus basic algorithms* — a framework-neutral starting point. It does **not** carry framework
+opinions. Opinionated ML frameworks (a `torch`/`keras` surface, with autograd-by-default, the
+`nn` module set, optimizers) and applications (a spatial-index engine like Toffee) are
+**separate libraries** that build on `cajeta.gpu.xpu` — keeping cajeta from taking a framework
+stance in its own stdlib. (The `Tensor` lives in stdlib because it is the generic n-d array
+every framework wraps; the *opinions layered on it* do not.)
+
+There are no `cajeta.gpu.nvidia` / `.amd` / `.metal` / `.vulkan` packages in stdlib either.
+Vendor-exclusive silicon (NV cooperative vector / TMA, AMD MFMA, Metal simdgroup-matrix,
+CUDA/ROCm/MPS interop) lives in **external vendor libraries** — distributed as signed
+dependencies from `olla.cajeta.dev`, added explicitly. Importing one *is* the lock-in
+declaration.
+
+Write to `cajeta.gpu` (+ `.xpu`/`.gfx`) and you get more than you asked for: it already
+selects the best available silicon path under the hood and falls back where a backend lacks
+one. Want vendor-specific peak or exclusive features — import a vendor library and accept its
+reach.
 
 ### 1.2 Two seams — verbs *and* nouns
 
@@ -128,12 +154,12 @@ writing a core branch beside a guarded vendor branch:
 if (Device.supports(Capability.X)) {
     // vendor-library fast path on its silicon
 } else {
-    // cajeta.gpu.core — portable; floors to CPU when no GPU is present
+    // cajeta.gpu — portable; floors to CPU when no GPU is present
 }
 ```
 
 > **Status.** This is the design contract; it drives the plans. The portable surface ships
-> as **`cajeta.gpu.core`** (renamed from `cajeta.xpu.core`); `Device.supports(...)` is built;
+> as **`cajeta.gpu`** (renamed from `cajeta.xpu.core`); `Device.supports(...)` is built;
 > the noun seam is now first-class (`CajetaNounProvider`, dogfooded on `AccelerationStructure`
 > whose built impl is a recorded property the verb follows — §4.4); the **explicit override +
 > execution mechanism** are built (an `AsImpl` enum + `AccelerationStructure.of(...)` + a
@@ -327,7 +353,7 @@ match this document:
 
 - **Core plan** — done: ray query genuinely core (software BVH + traversal over triangles
   *and* AABBs, full getters + confirm/generate + nearest-hit, native + software);
-  `Device.supports(...)`; the `cajeta.xpu.core → cajeta.gpu.core` rename; the noun seam as a
+  `Device.supports(...)`; the `cajeta.xpu.core → cajeta.gpu` rename; the noun seam as a
   first-class SPI (`CajetaNounProvider`, dogfooded on `AccelerationStructure` with a recorded
   impl tag); the capability **override + execution mechanism** (`AsImpl`/`.of` + `CAJETA_GPU_AS_IMPL`
   + the `$sw` software-on-Vulkan kernel variant — one backend, either impl, cross-checked

@@ -63,5 +63,5 @@ Native `OpGroupNonUniformRotateKHR` on Vulkan (a `cajeta-spirv` fork intrinsic,
 `llvm.spv.subgroup.rotate` — fork-carried, not upstreamed); `ds_bpermute` /
 `shfl` / software-shuffle elsewhere. Device-verified bit-identical on RADV
 (native) and gfx1151 (ds_bpermute) (`XpuWaveDeviceTests.*RotateRunsOnDevice`).
-Runnable in `samples/tour/xpu` (the `waveRotate` section). See `Wave`
+Runnable in `samples/tour/gpu` (the `waveRotate` section). See `Wave`
 (`runtime/.../core/Wave.cajeta`) for the rest of the wave surface.

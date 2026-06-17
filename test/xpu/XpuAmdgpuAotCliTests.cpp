@@ -32,8 +32,8 @@ namespace fs = std::filesystem;
 
 const char* kKernelSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"

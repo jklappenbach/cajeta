@@ -1,0 +1,38 @@
+package cajeta.gpu;
+
+/**
+ * Memory ordering for a kernel-side atomic operation or scoped memory fence —
+ * how strongly the op orders surrounding memory accesses. An optional, **compile-
+ * time-constant** trailing argument; omitting it keeps the safe default (the
+ * backend's release/acquire ordering — `AcqRel` on Vulkan, the native default
+ * elsewhere). LLVM bakes the ordering into the atomic instruction at IR-build
+ * time, so the value must be a literal `MemoryOrder.X`, not a runtime variable.
+ *
+ * Like {@link MemoryKind}, the **ordinal is the contract**: the kernel lowerer
+ * maps it to an `llvm::AtomicOrdering`. Do not reorder.
+ *
+ * The orderings (weakest → strongest):
+ *   - {@link #Relaxed} — no ordering, only atomicity (LLVM `monotonic`). The right
+ *     choice for pure counters / histograms / reductions where only the final
+ *     value matters; the cheapest. (A `Relaxed` *fence* is a no-op.)
+ *   - {@link #Acquire} — no later access can move before this load/RMW; pairs with
+ *     a `Release` to consume published data.
+ *   - {@link #Release} — no earlier access can move after this store/RMW; pairs
+ *     with an `Acquire` to publish data.
+ *   - {@link #AcqRel} — both Acquire and Release. The default for read-modify-write.
+ *   - {@link #SeqCst} — a single total order across all `SeqCst` ops. The strongest
+ *     and most expensive.
+ *
+ * BACKENDS. CPU / AMD / NVPTX honour all five. Vulkan's memory model constrains
+ * what `OpAtomic*`/`OpMemoryBarrier` accept: a device-scope atomic must carry
+ * storage-class acquire/release semantics, so a `Relaxed` (or `SeqCst`) atomic is
+ * raised to `AcqRel` to stay `spirv-val`-clean. This clamp applies to BOTH integer
+ * and float atomics on Vulkan (see `vkClamp` in SpirvKernelLowering).
+ */
+public enum MemoryOrder {
+    Relaxed,   // 0 — atomicity only, no ordering (monotonic)
+    Acquire,   // 1 — acquire; later accesses can't hoist above
+    Release,   // 2 — release; earlier accesses can't sink below
+    AcqRel,    // 3 — acquire + release (the RMW/fence default)
+    SeqCst     // 4 — sequentially consistent (single total order)
+}

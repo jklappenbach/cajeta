@@ -19,7 +19,7 @@ cajeta-xpu  (compute)            cajeta-gfx  (rendering)
   tomography / RBF P2G             relightable material splats
 ```
 
-`cajeta.gpu.splat` is a foundation library layered on **`cajeta.gpu.core`**. Its device
+`cajeta.gpu.splat` is a foundation library layered on **`cajeta.gpu`**. Its device
 operations register through core's **two seams** (§1.3) and obey core's
 native/portable/degrade discipline — exactly like the `AccelerationStructure` noun +
 `RayQuery` verb. See [`CajetaGPU.md`](CajetaGPU.md) §4 (which already names "3-D-Gaussian

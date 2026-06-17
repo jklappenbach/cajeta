@@ -48,9 +48,9 @@ CajetaJit::Options amdOptions() {
 // (override); the kernel's compile-time default (7) is shadowed.
 const char* kOneSpecFill =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Stream;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Stream;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class SO {\n"
     "    @Kernel\n"
     "    public static void fill(Buffer<int32> out, uint32 n) {\n"
@@ -81,9 +81,9 @@ const char* kOneSpecFill =
 // that an unset trailing slot keeps its compile-time default.
 const char* kPartialSpecFill =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Stream;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Stream;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class SOP {\n"
     "    @Kernel\n"
     "    public static void fill(Buffer<int32> out, uint32 n) {\n"
@@ -118,9 +118,9 @@ const char* kPartialSpecFill =
 // consumer). All values are small integers-over-2 → float-exact, so == is safe.
 const char* kFloatSpecFill =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Stream;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Stream;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class SF {\n"
     "    @Kernel\n"
     "    public static void fill(Buffer<float32> out, uint32 n) {\n"
@@ -243,9 +243,9 @@ TEST(XpuSpecOverrideDeviceTests, noOverrideReadsDefaultOnAmd) {
     }
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Stream;\n"
-        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Stream;\n"
+        "import cajeta.gpu.Thread;\n"
         "public class SDA {\n"
         "    @Kernel\n"
         "    public static void fill(Buffer<int32> out, uint32 n) {\n"
@@ -308,9 +308,9 @@ TEST(XpuSpecOverrideTests, floatSpecOverrideMatchesDeviceOnCpu) {
 TEST(XpuSpecOverrideTests, noOverrideReadsDefaultOnCpu) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Stream;\n"
-        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Stream;\n"
+        "import cajeta.gpu.Thread;\n"
         "public class SD {\n"
         "    @Kernel\n"
         "    public static void fill(Buffer<int32> out, uint32 n) {\n"

@@ -61,6 +61,6 @@ uint32` are device-only, wave-cooperative **exclusive** scans (lane 0 = identity
 Native `OpGroupNonUniform … ExclusiveScan` on Vulkan (a `cajeta-spirv` fork
 intrinsic); a `ds_bpermute` / `shfl` Hillis-Steele scan on AMD/NVIDIA; a VFABI
 scan on CPU. Device-verified bit-exact on RADV (native) + gfx1151 (ds_bpermute)
-(`XpuWaveDeviceTests.*PrefixScan*`); CPU exercised in `samples/tour/xpu`
+(`XpuWaveDeviceTests.*PrefixScan*`); CPU exercised in `samples/tour/gpu`
 (`wavePrefix`). See `WaveReductions.md` for the reduce family and `Wave`
 (`runtime/.../core/Wave.cajeta`) for the rest of the surface.

@@ -50,8 +50,8 @@ namespace fs = std::filesystem;
 // A spec-using kernel: out[i] = Spec.geti(0, 7) (+ a float slot for the f32 path).
 const char* kSpecKernelSrc =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class SC {\n"
     "    @Kernel\n"
     "    public static void fill(Buffer<int32> out, Buffer<float32> outf,\n"

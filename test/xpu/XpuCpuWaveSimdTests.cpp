@@ -49,10 +49,10 @@ namespace fs = std::filesystem;
 // cross-lane math is correct at the real width".
 const char* kWaveSource = R"CJ(
 package test;
-import cajeta.gpu.core.Buffer;
-import cajeta.gpu.core.Stream;
-import cajeta.gpu.core.Thread;
-import cajeta.gpu.core.Wave;
+import cajeta.gpu.Buffer;
+import cajeta.gpu.Stream;
+import cajeta.gpu.Thread;
+import cajeta.gpu.Wave;
 public class M {
     @Kernel
     public static void widthk(Buffer<uint32> out) {

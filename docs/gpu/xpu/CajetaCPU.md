@@ -536,7 +536,7 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
     GPU through the dispatcher; `vulkan,cpu` + `CAJETA_XPU_BACKEND=cpu` falls to CPU. Full
     Xpu suite: 108 passed, 0 failed.
 - **Two compiler bugs fixed via the AOT tour — 2026-05-31.** Building the first AOT
-  (`--emit=obj`) `@Kernel` program (`samples/tour/xpu/`, run by `run-xpu.sh`) surfaced two
+  (`--emit=obj`) `@Kernel` program (`samples/tour/gpu/`, run by `run-gpu.sh`) surfaced two
   pre-existing compiler defects that the JIT-only test path had masked:
   - **`UseInitArray` — AOT global constructors never ran.** `Compiler::rebuildTargetMachine`
     left `TargetOptions::UseInitArray` at its `false` default, so the AsmPrinter emitted the
@@ -558,10 +558,10 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
 
 ## 4. Runnable demo
 
-`samples/tour/xpu/` is the XPU tour — a portable `@Kernel` SAXPY + vecAdd program with a
-`run-xpu.sh` that compiles for any backend and runs it (default `--xpu-backend=cpu`, so it
-runs anywhere with no GPU). `./run-xpu.sh amdgpu,cpu` / `vulkan,cpu` target a device with
-CPU fallback; `CAJETA_XPU_BACKEND=cpu ./run-xpu.sh amdgpu,cpu` forces the fall-to-CPU path
+`samples/tour/gpu/` is the XPU tour — a portable `@Kernel` SAXPY + vecAdd program with a
+`run-gpu.sh` that compiles for any backend and runs it (default `--xpu-backend=cpu`, so it
+runs anywhere with no GPU). `./run-gpu.sh amdgpu,cpu` / `vulkan,cpu` target a device with
+CPU fallback; `CAJETA_XPU_BACKEND=cpu ./run-gpu.sh amdgpu,cpu` forces the fall-to-CPU path
 on a box that has the GPU. It sits beside the stdlib/language tour in `samples/tour/`.
 
 ## 5. `Buffer<T>` is RAII (2026-05-31)

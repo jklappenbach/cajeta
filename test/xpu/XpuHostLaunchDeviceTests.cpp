@@ -54,9 +54,9 @@ TEST(XpuHostLaunchDeviceTests, saxpyHostSourceOnDevice) {
 
     auto src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Stream;\n"
-        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Stream;\n"
+        "import cajeta.gpu.Thread;\n"
         "public class Saxpy {\n"
         "    @Kernel\n"
         "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"

@@ -41,8 +41,8 @@ namespace {
 //   s = ij.dot(k) + r.y + q.length() = 1 + 1 + 1 = 3 ;  out[i] = 3 + i
 const char* kQuatSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class Q {\n"
     "    @Kernel\n"
     "    public static void quatk(Buffer<float32> out, uint32 n) {\n"
@@ -68,8 +68,8 @@ float quatExpectedAt(uint32_t i) { return 3.0f + (float) i; }
 // slerp(id, q90, 1) -> (0,1,0).  out[i] = r.x + r.y + r1.y ~ 0.707+0.707+1 = 2.414
 const char* kSlerpSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class S {\n"
     "    @Kernel\n"
     "    public static void slerpk(Buffer<float32> out, uint32 n) {\n"

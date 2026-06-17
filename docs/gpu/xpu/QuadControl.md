@@ -74,12 +74,12 @@ for free, and the portable result is **bit-identical** to the Vulkan native op
 
 ---
 
-**Rules.** `cajeta.gpu.core.Quad` ops are device-only (inside an `@Kernel`),
+**Rules.** `cajeta.gpu.Quad` ops are device-only (inside an `@Kernel`),
 quad-cooperative over the four lanes `laneId & ~3 .. +3`. Native
 `OpGroupNonUniformQuad{Broadcast,Swap}` (core) and `…Quad{All,Any}KHR`
 (`SPV_KHR_quad_control`) on Vulkan via `cajeta-spirv` fork intrinsics
 (`llvm.spv.quad.*` — fork-carried, not upstreamed); the portable shuffle/ballot
 form elsewhere. Device-verified bit-identical on RADV (native) and gfx1151
 (portable) (`XpuQuadDeviceTests.{amdgpu,vulkan}QuadOpsRunOnDevice`). Runnable in
-`samples/tour/xpu` (the `quad` section). See `Wave`
+`samples/tour/gpu` (the `quad` section). See `Wave`
 (`runtime/.../core/Wave.cajeta`) for the subgroup-wide surface.

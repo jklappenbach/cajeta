@@ -1,0 +1,97 @@
+package cajeta.gpu;
+
+/**
+ * Stream — ordered queue of XPU work.
+ *
+ * A backend-tagged handle to an in-order command stream. Kernel
+ * launches submitted to the same Stream complete in submission
+ * order; launches on different Streams run in parallel (subject to
+ * cross-stream synchronization the user requests via Event/Fence).
+ *
+ * Stream is the borrow-scope anchor for launched buffers: a buffer
+ * passed as a kernel argument is borrowed for the lifetime of the
+ * launch, with the borrow released at the next `sync()` ordered
+ * after the launch on this stream. See CajetaXPU.md §3.5.
+ *
+ * v1 storage is a single opaque handle; the backend resolves it
+ * (CUstream / hipStream / VkQueue) via the runtime layer. Step 7
+ * (CPU emulation) treats the handle as a host-side sequence number;
+ * later steps map it to the real driver object.
+ *
+ * Per the spec, `Stream.default()` returns the per-thread default
+ * stream — but `default` is a Cajeta keyword, so the spelling here
+ * is `Stream.current()`. To be reconciled in CajetaXPU.md.
+ */
+public final class Stream {
+    int64 handle;
+
+    Stream(int64 handle) {
+        this.handle = handle;
+    }
+
+    /**
+     * The per-thread default stream (handle 0). Always returns the same
+     * stream for the same thread; safe to retain across launches.
+     */
+    public static #Stream current() {
+        Stream s = heap Stream(nativeCurrent());
+        return #s;                                 // move out; source dtor no-ops
+    }
+
+    /**
+     * Create a fresh stream — a real backend stream object (CUstream /
+     * hipStream) on CUDA/HIP, the default stream elsewhere. Async copies and
+     * launches submitted to it queue independently of other streams; the caller
+     * owns it and must `destroy()` it when done.
+     */
+    public static #Stream create() {
+        Stream s = heap Stream(nativeCreate());
+        return #s;                                 // move out; source dtor no-ops
+    }
+
+    /**
+     * Block until every operation submitted to this stream — async copies AND
+     * kernel launches — has completed. Releases all deferred-borrow tokens held
+     * by launches ordered before this point. The default stream (handle 0)
+     * drains the whole context.
+     */
+    public void sync() {
+        this.nativeSync(this.handle);
+    }
+
+    /**
+     * Insert a wait on `e` into this stream. Future launches on
+     * this stream will not start until `e` has been recorded on its
+     * source stream and signaled.
+     */
+    public void waitFor(Event e) {
+        int64 eh = e.handle;
+        this.nativeWaitFor(this.handle, eh);
+    }
+
+    /**
+     * Destroy this stream's backend object. No-op for the default stream
+     * (handle 0). Idempotent via the runtime's null guard.
+     */
+    public void destroy() {
+        this.nativeDestroy(this.handle);
+    }
+
+    // Native stream primitives. The handle (int64) IS the backend stream object
+    // (0 = the default stream); current()/create() return it wrapped in a Stream
+    // and the instance ops pass `this.handle` so the C side speaks only handles.
+    @Native("__cajeta_xpu_stream_current")
+    private static int64 nativeCurrent();
+
+    @Native("__cajeta_xpu_stream_create")
+    private static int64 nativeCreate();
+
+    @Native("__cajeta_xpu_stream_sync")
+    private void nativeSync(int64 handle);
+
+    @Native("__cajeta_xpu_stream_destroy")
+    private void nativeDestroy(int64 handle);
+
+    @Native("__cajeta_xpu_stream_wait_for")
+    private void nativeWaitFor(int64 streamHandle, int64 eventHandle);
+}

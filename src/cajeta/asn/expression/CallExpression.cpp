@@ -186,7 +186,7 @@ namespace cajeta {
             if (!streamExpr->getResolvedType()) streamExpr->resolveTypes(module);
             auto sklass = std::dynamic_pointer_cast<CajetaClass>(
                 streamExpr->getResolvedType());
-            if (sklass && sklass->toCanonical() == "cajeta.gpu.core.Stream") {
+            if (sklass && sklass->toCanonical() == "cajeta.gpu.Stream") {
                 auto& sprops = sklass->getProperties();
                 auto it = sprops.find("handle");
                 if (it != sprops.end()) {
@@ -217,15 +217,15 @@ namespace cajeta {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(
                 argExpr->getResolvedType());
             bool isBuffer = klass &&
-                klass->toCanonical().rfind("cajeta.gpu.core.Buffer", 0) == 0;
+                klass->toCanonical().rfind("cajeta.gpu.Buffer", 0) == 0;
             // Texture2D (Item 8): marshalled exactly like a Buffer — its
             // deviceHandle (the runtime texture-object pointer / image handle)
             // flows through the kernelParams slot, and the launch borrows it.
             bool isTexture = klass &&
-                (klass->toCanonical().rfind("cajeta.gpu.core.Texture2D", 0) == 0 ||
-                 klass->toCanonical().rfind("cajeta.gpu.core.Texture3D", 0) == 0 ||
-                 klass->toCanonical().rfind("cajeta.gpu.core.Texture1D", 0) == 0 ||
-                 klass->toCanonical().rfind("cajeta.gpu.core.TextureCube", 0) == 0);
+                (klass->toCanonical().rfind("cajeta.gpu.Texture2D", 0) == 0 ||
+                 klass->toCanonical().rfind("cajeta.gpu.Texture3D", 0) == 0 ||
+                 klass->toCanonical().rfind("cajeta.gpu.Texture1D", 0) == 0 ||
+                 klass->toCanonical().rfind("cajeta.gpu.TextureCube", 0) == 0);
             // NB: the Texture2D prefix above already matches Texture2DArray.
             // AccelerationStructure (Part C): a descriptor-bound device BVH. It
             // marshals via the POD-by-value path below (its deviceHandle is the
@@ -242,7 +242,7 @@ namespace cajeta {
                                             arrTy->getElementType())
                                       : nullptr;
             bool isBufferArray = bufElemKlass &&
-                bufElemKlass->toCanonical().rfind("cajeta.gpu.core.Buffer", 0) == 0;
+                bufElemKlass->toCanonical().rfind("cajeta.gpu.Buffer", 0) == 0;
 
             // Launch borrow scope (CajetaXPU §3.5/§11): a launch borrows each
             // device-resource arg (Buffer / Texture2D / AccelerationStructure)

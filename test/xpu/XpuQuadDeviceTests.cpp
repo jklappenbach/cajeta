@@ -52,9 +52,9 @@ namespace {
 // all=false / any=true. (`&` binds looser than `<`, hence the parentheses.)
 const char* kQuadSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
-    "import cajeta.gpu.core.Quad;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
+    "import cajeta.gpu.Quad;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void quadops(Buffer<uint32> out, uint32 n) {\n"

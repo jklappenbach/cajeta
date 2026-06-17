@@ -143,8 +143,8 @@ std::unique_ptr<llvm::orc::LLJIT> registerKernel(Compiler& compiler,
 // SAXPY, 3 params (y, x, a) — the buffer + scalar unpack shape.
 const char* kSaxpySource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
@@ -159,8 +159,8 @@ const char* kSaxpySource =
 // general, not SAXPY-3-shaped.
 const char* kSaxpyGuardedSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
@@ -177,8 +177,8 @@ const char* kSaxpyGuardedSource =
 // is what makes the dangling-key regression below reproducible in isolation.
 const char* kSaxpyTeardownSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void saxpy_teardown_probe(Buffer<float32> y,\n"

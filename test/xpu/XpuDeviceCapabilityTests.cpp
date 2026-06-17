@@ -27,10 +27,10 @@ namespace {
 // — and its presence bundles the backend (so the runtime selects the device).
 const char* kSupportsDriver =
     "package test;\n"
-    "import cajeta.gpu.core.Device;\n"
-    "import cajeta.gpu.core.Capability;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Device;\n"
+    "import cajeta.gpu.Capability;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class DevCap {\n"
     "    @Kernel\n"
     "    public static void touch(Buffer<uint32> b) {\n"
@@ -47,10 +47,10 @@ const char* kSupportsDriver =
 // pipeline-based CUDA path, distinct from the inline RayQueryNative above.
 const char* kRtCoreDriver =
     "package test;\n"
-    "import cajeta.gpu.core.Device;\n"
-    "import cajeta.gpu.core.Capability;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Device;\n"
+    "import cajeta.gpu.Capability;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class DevRt {\n"
     "    @Kernel\n"
     "    public static void touch(Buffer<uint32> b) {\n"

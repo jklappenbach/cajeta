@@ -1,0 +1,46 @@
+package cajeta.gpu;
+
+/**
+ * Barrier — portable synchronization within a workgroup or wave.
+ * Only meaningful inside @Kernel / @Device functions. See
+ * CajetaXPU.md §3.4.
+ *
+ *   workgroup():  every thread in the workgroup waits here before
+ *                 any proceeds. Lowers to bar.sync 0 (NVPTX),
+ *                 s_barrier (AMDGPU), OpControlBarrier(Workgroup,
+ *                 Workgroup, AcquireRelease) (SPIR-V).
+ *
+ *   wave():       wave-level barrier. No-op on most targets because
+ *                 waves are lock-stepped, but mandatory on Volta+
+ *                 (independent thread scheduling) and required
+ *                 before any wave.shuffleSync op.
+ *
+ *   workgroupMemory() / deviceMemory():
+ *                 scoped MEMORY fences — order and make memory writes
+ *                 visible at workgroup or device scope, with NO thread
+ *                 rendezvous (a barrier minus the wait). Use to publish
+ *                 data before an atomic flag store, etc. Lowers to
+ *                 OpMemoryBarrier (SPIR-V), a scoped acq_rel fence
+ *                 (AMDGPU), membar.cta/.gl (NVPTX); a system acq_rel
+ *                 fence on CPU. AcquireRelease ordering.
+ */
+public final class Barrier {
+
+    @Native("__cajeta_xpu_barrier_workgroup")
+    public static void workgroup();
+
+    @Native("__cajeta_xpu_barrier_wave")
+    public static void wave();
+
+    @Native("__cajeta_xpu_barrier_workgroup_memory")
+    public static void workgroupMemory();
+
+    @Native("__cajeta_xpu_barrier_workgroup_memory_ord")
+    public static void workgroupMemory(MemoryOrder order);
+
+    @Native("__cajeta_xpu_barrier_device_memory")
+    public static void deviceMemory();
+
+    @Native("__cajeta_xpu_barrier_device_memory_ord")
+    public static void deviceMemory(MemoryOrder order);
+}

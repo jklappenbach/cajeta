@@ -19,9 +19,9 @@ namespace cajeta_test_probes {
 inline const char* kNumericsBroadcastReduce() {
     return
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Stream;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Stream;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class NumProbe {\n"
     "    @Kernel\n"
     "    public static void broadcastReduce(Buffer<float32> acc,\n"
@@ -94,9 +94,9 @@ inline const char* kNumericsBroadcastReduce() {
 inline const char* kTorchMatmulScatter() {
     return
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Stream;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Stream;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class TorchProbe {\n"
     "    @Kernel\n"
     "    public static void matmul(Buffer<float32> C, Buffer<float32> A,\n"
@@ -199,9 +199,9 @@ inline const char* kTorchMatmulScatter() {
 inline const char* kSpelaFusedLayer() {
     return
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Stream;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Stream;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class SpelaProbe {\n"
     "    @Kernel\n"
     "    public static void fusedLayer(Buffer<float32> W, Buffer<float32> x,\n"

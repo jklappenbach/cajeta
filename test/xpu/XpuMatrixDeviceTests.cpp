@@ -93,8 +93,8 @@ using MatFn = void (*)(float*, uint32_t,
 //   out[i] = c[0][0] + c[1][1] + s[0][0] + i = 19 + 50 + 100 + i = 169 + i
 const char* kMatSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void matk(Buffer<float32> out, uint32 n) {\n"
@@ -117,8 +117,8 @@ float expectedAt(uint32_t i) { return 169.0f + (float) i; }
 //   out[i] = d + p[0][0] + p[1][1] + i = 10 + 1 + 1 + i = 12 + i
 const char* kDetInvSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void detinv(Buffer<float32> out, uint32 n) {\n"
@@ -147,8 +147,8 @@ float detInvExpectedAt(uint32_t i) { return 12.0f + (float) i; }
 //   out[i] = 2 + 1 + 3 + 5 + 36 + i = 47 + i
 const char* kMatMethodSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void methk(Buffer<float32> out, uint32 n) {\n"
@@ -173,8 +173,8 @@ float methodExpectedAt(uint32_t i) { return 47.0f + (float) i; }
 //   a = [10 20; 30 40]   out[i] = a[0][0] + a[1][1] + i = 10 + 40 + i = 50 + i
 const char* kMatParamSource =
     "package test;\n"
-    "import cajeta.gpu.core.Buffer;\n"
-    "import cajeta.gpu.core.Thread;\n"
+    "import cajeta.gpu.Buffer;\n"
+    "import cajeta.gpu.Thread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void mpk(Matrix<float32,2,2> a, Buffer<float32> out, uint32 n) {\n"
@@ -267,8 +267,8 @@ TEST(XpuMatrixDeviceTests, runsOnCpu) {
 TEST(XpuMatrixDeviceTests, matrixVectorRunsOnCpu) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Thread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void mvk(Buffer<float32> out, uint32 n) {\n"

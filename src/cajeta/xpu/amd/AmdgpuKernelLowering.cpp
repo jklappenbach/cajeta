@@ -28,7 +28,7 @@ public:
     // No native inline ray query (cajeta has no AMDGPU RT seam — that path is
     // Vulkan/SPIR-V's OpRayQuery, or a vendor RT extension), so the Acceleration-
     // Structure noun is built as the portable software BVH and the RayQuery verb
-    // follows to the cajeta.gpu.core.SoftwareRayQuery walk — the same Portable tier
+    // follows to the cajeta.gpu.SoftwareRayQuery walk — the same Portable tier
     // the CPU and NVPTX backends use. Without this the base default (VulkanNative)
     // routes RayQuery to rayQueryType(), which throws on AMDGPU. softwareRayQuery()
     // derives from this in the base; the HIP noun provider uploads the BVH to a

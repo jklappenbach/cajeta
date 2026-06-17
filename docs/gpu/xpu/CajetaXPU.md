@@ -19,7 +19,7 @@ today and is named to admit more tomorrow without renaming the prefix.
 > for compiled programs. This realizes Goal 1.1.2's "change a target flag" promise
 > and extends it to a *runtime* choice. Design, decisions, and the staged bring-up
 > log: **[`CajetaCPU.md`](CajetaCPU.md)**. Runnable demo:
-> **`samples/tour/xpu/`**.
+> **`samples/tour/gpu/`**.
 
 > **Reading note — design spec vs. shipped surface.** This document is the
 > original *design/vision* spec; it predates the implementation and uses an
@@ -32,7 +32,7 @@ today and is named to admit more tomorrow without renaming the prefix.
 > `@PushConstant`); thread/wave intrinsics are class statics
 > (`Thread.globalIdX()`, `Thread.x()`, `Workgroup.dimX()`, `Wave.width()`,
 > `Wave.laneId()`); the portable types (`Buffer<T>`, `Stream`, `Thread`, `Wave`,
-> `Barrier`, `Texture2D`, `Sampler`) live in package **`cajeta.gpu.core`**; and there
+> `Barrier`, `Texture2D`, `Sampler`) live in package **`cajeta.gpu`**; and there
 > are **four** backends (NVIDIA/NVPTX, AMD/AMDGPU, Vulkan/SPIR-V, CPU). Treat the
 > code blocks below as design intent, not copy-pasteable surface syntax.
 
@@ -70,13 +70,13 @@ Intel FPGA, AMD XDNA) become Cajeta backends, they slot in alongside
 code references — the address-space types, the capability traits, the
 `Buffer<T>` / `Stream` / `Event` interfaces, the `@kernel` attribute.
 New backends bring new capability traits and possibly new sub-
-namespaces; existing code that touches only `cajeta.gpu.core.*` keeps
+namespaces; existing code that touches only `cajeta.gpu.*` keeps
 working on the new silicon at the cost of a recompile.
 
 So `xpu` reads as "this prefix is for accelerators in general; today
 it covers GPUs; tomorrow it covers more." A GPU kernel written in 2026
 spends most of its time inside `cajeta.xpu.nvidia`, `cajeta.xpu.amd`,
-or `cajeta.gpu.core` — the umbrella prefix is just forward-compatible
+or `cajeta.gpu` — the umbrella prefix is just forward-compatible
 naming.
 
 ---
@@ -180,7 +180,7 @@ dynamic typing.
                             |
                             v
           +--------------------------------+
-          |  cajeta.gpu.core               |
+          |  cajeta.gpu               |
           |  - XPU MIR (mid IR)            |
           |  - capability traits           |
           |  - launch / dispatch nodes     |
@@ -220,7 +220,7 @@ see §6.2).
 
 ---
 
-## 3. Shared layer — `cajeta.gpu.core`
+## 3. Shared layer — `cajeta.gpu`
 
 The portable surface — what every XPU program imports first, and what
 every backend supports. Sized intentionally narrow: anything in
@@ -260,7 +260,7 @@ new divergences.
 
 - Return `void`.
 - Take only parameters of types that satisfy the `KernelArg` trait
-  (`cajeta.gpu.core`; v1 simulates it via the `@KernelArg` marker) —
+  (`cajeta.gpu`; v1 simulates it via the `@KernelArg` marker) —
   primitives, POD structs, `Buffer<T>`, `Texture2D`/`Sampler`, and
   `@PushConstant` structs (Vulkan only).
 - Cannot throw. Errors are reported through a per-launch status
@@ -503,12 +503,12 @@ Where each cell stands, per backend.
 | Graph capture                    | yes (CUDA graphs)    | yes (HIP graphs)         | n/a (use secondary cmd buffers)        |
 | Ray-tracing acceleration         | OptiX (external)     | HIP-RT (external)        | `VK_KHR_ray_tracing_pipeline`          |
 
-The shared subset of `cajeta.gpu.core` is the rows where all three
+The shared subset of `cajeta.gpu` is the rows where all three
 columns say "yes" or an equivalent extension. Code that stays inside
 that subset compiles for any backend with a target-flag change.
 
 Rows where multiple backends say "yes" — even with different native
-instructions — map to a single portable API in `cajeta.gpu.core.*`
+instructions — map to a single portable API in `cajeta.gpu.*`
 whose lowering picks the right intrinsic per target. Rows where only
 one backend says "yes" live in that backend's namespace
 (`cajeta.xpu.nvidia.*`, `cajeta.xpu.amd.*`, `cajeta.xpu.vulkan.*`) —
@@ -727,7 +727,7 @@ metadata.
 `xpu.wave.*` lowers to `GroupNonUniform*` SPIR-V opcodes under
 `SPV_KHR_shader_subgroup`. Where SPIR-V exposes things CUDA / HIP do
 not (e.g. `GroupNonUniformQuadBroadcast` for shader quads), those
-live in `cajeta.xpu.vulkan.wave` only — not in `cajeta.gpu.core`.
+live in `cajeta.xpu.vulkan.wave` only — not in `cajeta.gpu`.
 
 `xpu.tensor.*` lowers to `OpCooperativeMatrix*KHR` under
 `SPV_KHR_cooperative_matrix`. The fragment shape is queried from
@@ -793,14 +793,14 @@ import cajeta.xpu.amd.rocfft;       // rocFFT
 import cajeta.xpu.amd.rccl;         // RCCL collectives
 ```
 
-A small set of "obviously portable" wrappers lives in `cajeta.gpu.core`
+A small set of "obviously portable" wrappers lives in `cajeta.gpu`
 and dispatches at runtime to whichever vendor lib is loaded:
 
 ```cajeta
-cajeta.gpu.core.blas        // matmul, gemv, axpy, ...
-cajeta.gpu.core.dnn         // conv, pooling, batch norm, attention
-cajeta.gpu.core.fft         // 1D/2D/3D real and complex
-cajeta.gpu.core.collective  // all-reduce, all-gather, reduce-scatter
+cajeta.gpu.blas        // matmul, gemv, axpy, ...
+cajeta.gpu.dnn         // conv, pooling, batch norm, attention
+cajeta.gpu.fft         // 1D/2D/3D real and complex
+cajeta.gpu.collective  // all-reduce, all-gather, reduce-scatter
 ```
 
 The portable wrappers are the layer `cajeta.math.*`, `cajeta.toffee`,
@@ -1042,7 +1042,7 @@ A reasonable order of implementation. Each phase is independently
 useful; do not start a later phase until its predecessor has shipped
 a working sample.
 
-1. **`cajeta.gpu.core` MIR + capability traits.** No codegen yet —
+1. **`cajeta.gpu` MIR + capability traits.** No codegen yet —
    just types and the launch-site syntax that the borrow checker can
    reason about. Lower MIR to a CPU-emulation backend so kernels
    compile and run (slowly) on the host. Unblocks frontend work and
@@ -1087,7 +1087,7 @@ Graphics phases (raster, ray tracing, mesh shaders) are tracked in
   as `cajeta.xpu.webgpu` alongside the others.
 - **NPU integration.** Hexagon / Neural Engine / Meteor Lake NPU /
   XDNA. Each has its own runtime and execution model; they share
-  `cajeta.gpu.core`'s `Buffer<T>` / `Stream` / `Event` shape but
+  `cajeta.gpu`'s `Buffer<T>` / `Stream` / `Event` shape but
   diverge sharply on the kernel surface (most NPUs don't have wave-
   tiered execution — they're VLIW or systolic). Likely lands as
   separate sibling namespaces (`cajeta.xpu.hexagon`,
@@ -1102,7 +1102,7 @@ Graphics phases (raster, ray tracing, mesh shaders) are tracked in
 
 `cajeta.xpu` is one library with three peer backends — NVIDIA via
 NVPTX, AMD via AMDGPU, Vulkan via SPIR-V — under a single namespace
-(`cajeta.gpu.core`) shared across all of them. Vendor extensions live
+(`cajeta.gpu`) shared across all of them. Vendor extensions live
 in `cajeta.xpu.nvidia`, `cajeta.xpu.amd`, and `cajeta.xpu.vulkan`,
 each named for what they actually are. The library ships as one `.so`
 and `dlopen`s drivers on demand; binaries pay only for the backends

@@ -1,0 +1,48 @@
+package cajeta.gpu;
+
+/**
+ * AsImpl — an app's preference for how an {@link AccelerationStructure} is built:
+ * the portable software BVH or the device's native acceleration structure. Passed
+ * to {@link AccelerationStructure#of}; the default constructor uses {@link #Auto}.
+ *
+ * This is the model's **capability heuristic with explicit override**
+ * (cajeta-docs/gpu/CajetaGPU.md §1.5): `Auto` takes the hardware fast path when
+ * the active device advertises native inline ray query (see {@link Device#supports})
+ * and the portable software floor otherwise; `Software` / `Native` force the choice.
+ * Hardware ray tracing can LOSE to a software BVH at large query radius / extreme
+ * density, so an app that knows its query pattern can force `Software` even on a
+ * ray-query-capable GPU — and the verb follows the noun (the kernel runs the
+ * software BVH walk).
+ *
+ *     // auto (native if the device has it, else software):
+ *     AccelerationStructure scene = heap AccelerationStructure(boxes, n);
+ *     // force the software BVH on whatever device is active:
+ *     AccelerationStructure soft = AccelerationStructure.of(boxes, n, AsImpl.Software);
+ *
+ * A global `CAJETA_GPU_AS_IMPL=software|native` environment variable overrides this
+ * per process (env wins), mirroring `CAJETA_XPU_BACKEND`.
+ *
+ * DROP THE SOFTWARE FLOOR (`NativeNoFloor`). On CUDA the multi-impl model normally
+ * keeps the portable software BVH as a FLOOR alongside the native (OptiX) rep, so an
+ * Unsupported-shape kernel can fall back to it instead of faulting. `NativeNoFloor` is
+ * the caller's assertion that EVERY consuming kernel is a supported native shape, so the
+ * floor is omitted — trading the safety net for the memory + build time of the second
+ * representation. If a kernel that cannot traverse the native rep is then launched, the
+ * runtime diagnoses and skips that launch (it never reads the native handle as a BVH
+ * blob). Behaves exactly like `Native` where there is no separate floor to drop (Vulkan
+ * native, or any device that falls back to the software BVH as its only rep).
+ *
+ *     // OptiX RT cores only, no software floor (all consumers are supported shapes):
+ *     AccelerationStructure rt = AccelerationStructure.of(boxes, n, AsImpl.NativeNoFloor);
+ *
+ * The ordinal is the **stable native contract** — it MUST match `CajetaAsPref` in
+ * runtime/native/cajeta_noun_impl.h (the runtime resolver switches on it). Do not
+ * reorder; append only.
+ */
+public enum AsImpl {
+    Auto,           // 0 — heuristic default (native if supported, else software)
+    Software,       // 1 — force the portable software BVH
+    Native,         // 2 — prefer native (falls back to software if unsupported)
+    NativeNoFloor   // 3 — prefer native AND drop the software floor (all consumers
+                    //     are supported native shapes; trades the fallback for memory)
+}

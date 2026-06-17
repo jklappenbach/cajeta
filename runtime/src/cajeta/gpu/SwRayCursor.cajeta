@@ -1,0 +1,79 @@
+package cajeta.gpu;
+
+/**
+ * SwRayCursor — the by-value state of a software {@link RayQuery} (cajeta-gpu
+ * ray-query-to-core, inc 1). A flat `@ValueType` POD: the ray, the resumable
+ * traversal position, and the current candidate, carried through the
+ * {@link SoftwareRayQuery} `@Device` helpers by value (the value-type-cursor +
+ * writeback realization — see SoftwareRayQuery for how a `RayQuery` op lowers to
+ * a `cursor = SoftwareRayQuery.<op>(cursor, ...)` call on a software backend).
+ *
+ * This is the Software-tier counterpart of the opaque `OpTypeRayQueryKHR` the
+ * native Vulkan path allocates: same role (kernel-local query state), concrete
+ * struct instead of a driver opaque. It is device-only — never a host value.
+ *
+ * Value types are immutable inside a kernel (no field stores), so the traversal
+ * never mutates a cursor — it CONSTRUCTS a new one each step. The canonical
+ * all-fields constructor (positional, in declaration order) is what device-code
+ * `new SwRayCursor(...)` lowers to (an `insertvalue` chain).
+ */
+@ValueType public final class SwRayCursor {
+    // The ray (origin, direction, parametric extent).
+    public float32 ox;
+    public float32 oy;
+    public float32 oz;
+    public float32 dx;
+    public float32 dy;
+    public float32 dz;
+    public float32 tMin;
+    public float32 tMax;
+
+    // Resumable traversal + current candidate.
+    public uint32 nextNode;      // node index `step` resumes from
+    public uint32 hasCandidate;  // 1 while the current candidate is valid
+    public uint32 candPrim;      // caller primitive index of the candidate
+    public uint32 candKind;      // 0 = triangle, 1 = AABB candidate
+    public uint32 committed;     // committed intersection type (v1: 0)
+    // Current-candidate geometry (inc 3): the Möller-Trumbore hit distance and
+    // barycentrics for a triangle candidate (candU/candV the weights of v1/v2;
+    // v0's weight is 1 - candU - candV). Zero for AABB candidates.
+    public float32 candT;
+    public float32 candU;
+    public float32 candV;
+    public uint32 candFront;     // 1 if the candidate triangle is front-facing
+    // Committed (nearest) hit (inc 3b): set by confirmIntersection (triangle) /
+    // generateIntersection (AABB), which also shrink `tMax` to committedT so the
+    // remaining walk only finds closer hits — the last commit is the nearest.
+    public float32 committedT;
+    public uint32 committedPrim;
+    public float32 committedU;
+    public float32 committedV;
+    public uint32 committedFront;
+
+    public SwRayCursor(float32 ox, float32 oy, float32 oz,
+                       float32 dx, float32 dy, float32 dz,
+                       float32 tMin, float32 tMax,
+                       uint32 nextNode, uint32 hasCandidate,
+                       uint32 candPrim, uint32 candKind, uint32 committed,
+                       float32 candT, float32 candU, float32 candV, uint32 candFront,
+                       float32 committedT, uint32 committedPrim,
+                       float32 committedU, float32 committedV, uint32 committedFront) {
+        this.ox = ox; this.oy = oy; this.oz = oz;
+        this.dx = dx; this.dy = dy; this.dz = dz;
+        this.tMin = tMin; this.tMax = tMax;
+        this.nextNode = nextNode;
+        this.hasCandidate = hasCandidate;
+        this.candPrim = candPrim;
+        this.candKind = candKind;
+        this.committed = committed;
+        this.candT = candT;
+        this.candU = candU;
+        this.candV = candV;
+        this.candFront = candFront;
+        this.committedT = committedT;
+        this.committedPrim = committedPrim;
+        this.committedU = committedU;
+        this.committedV = committedV;
+        this.committedFront = committedFront;
+    }
+}

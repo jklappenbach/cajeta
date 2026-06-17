@@ -2,7 +2,7 @@
 
 This is the working register for where `cajeta.xpu.nvidia`,
 `cajeta.xpu.amd`, and `cajeta.xpu.vulkan` diverge — and the discipline
-that keeps those divergences from leaking into `cajeta.gpu.core` as
+that keeps those divergences from leaking into `cajeta.gpu` as
 NVIDIA-shaped assumptions during the NVIDIA-first implementation
 phase.
 

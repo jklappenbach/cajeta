@@ -67,7 +67,7 @@ opaque; core never transcodes between representations.
 - An app composes graceful fallback explicitly: a guarded vendor branch beside a core branch.
   ```cajeta
   if (Device.supports(Capability.X)) { /* extension fast path */ }
-  else { /* cajeta.gpu.core — floors to CPU */ }
+  else { /* cajeta.gpu — floors to CPU */ }
   ```
 - **Selection** is a capability heuristic with **explicit override** (default ≠ law).
 
@@ -108,7 +108,7 @@ From the foundation plan §1:
   declaration syntax (verb + lowering + degrade), AOT/JIT impl-layer packaging, and signing/sandbox
   remain the seed (below). Honest boundary: Native and Portable are different realizations, so an
   arithmetic feature's tiers are each validated against the reference, not against each other,
-- ✅ the `cajeta.xpu.core → cajeta.gpu.core` rename.
+- ✅ the `cajeta.xpu.core → cajeta.gpu` rename.
 
 When the remaining pieces land and core has used them, this seed becomes the SDK's real spec.
 

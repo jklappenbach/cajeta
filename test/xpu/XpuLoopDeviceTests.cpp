@@ -80,8 +80,8 @@ TEST(XpuLoopDeviceTests, singleThreadReductionRunsOnDevice) {
     // Thread 0 sums in[0..n) into result[0]; every other thread is idle.
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.core.Buffer;\n"
-        "import cajeta.gpu.core.Thread;\n"
+        "import cajeta.gpu.Buffer;\n"
+        "import cajeta.gpu.Thread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void reduceSum(Buffer<int32> result, Buffer<int32> in,\n"

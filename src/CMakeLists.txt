@@ -650,7 +650,7 @@ set(CAJETA_STDLIB_DIRS
         # io.file so its dependencies (BPlusTree shape, Encoder, File) are
         # already in the prelude when these parse.
         ${CAJETA_STDLIB_ROOT}/cajeta/collection/ltm
-        ${CAJETA_STDLIB_ROOT}/cajeta/gpu/core
+        ${CAJETA_STDLIB_ROOT}/cajeta/gpu
         # Linear-algebra value types (B1). Matrix references resolve to the flat
         # CajetaMatrix representation; the declared class supplies the operator
         # surface. Depends only on Vector (synthesized) and Object (lang), both
