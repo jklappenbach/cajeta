@@ -1,0 +1,327 @@
+package cajeta.collection;
+
+/**
+ * The general-purpose host sorting facility — the missing stdlib sort
+ * (`documents/cajeta-sorting/sorting-spec.md` §4a) and the shared comparison/
+ * search **seam** (§4c) that the `Tensor` numeric sort (§4b) reuses rather than
+ * forking.
+ *
+ * ## The comparator seam
+ * A comparator is a **function value** `(T, T) -> int32` returning negative if
+ * the first argument orders before the second, zero if equal, positive if after
+ * — the same total/transitive/sign-symmetric contract as
+ * {@link cajeta.lang.Comparable}. Function values are first-class in cajeta
+ * (`Stream.filter`, `Collector`), so the seam is a function type rather than an
+ * interface (templated-interface vtable dispatch is still maturing — see
+ * `Comparable`'s toolchain note). Every algorithm here is implemented **once**
+ * against a comparator; the natural-order entry points are thin wrappers that
+ * pass a `<`/`>`-based comparator, so primitive `T` works today and class `T`
+ * works once operator overloading flows through template specialization (the
+ * same v1 limitation `Heap` / `RedBlackTree` note).
+ *
+ * ## `kind` (numpy parity)
+ * - `sort` — **unstable**, fast: an in-place quicksort (middle-element pivot,
+ *   insertion-sort cutoff for small runs, an explicit O(log n)-bounded range
+ *   stack — no recursion). numpy `kind='quicksort'` (the default).
+ * - `sortStable` — **stable**: a bottom-up (iterative) merge sort, O(n) aux.
+ *   numpy `kind='stable'`/`'mergesort'`. Preserves input order of equal keys.
+ *
+ * ## Search
+ * `lowerBound` / `upperBound` / `binarySearch` over a sorted `T[]`, parameterized
+ * by the same comparator seam. This is also the engine for the Tensor
+ * `searchsorted` (`side='left'`→`lowerBound`, `'right'`→`upperBound`) and for
+ * histogram-edge lookup — one implementation, no duplication (§4c).
+ *
+ * ```cajeta
+ * int32[] a = { 5, 3, 8, 1, 9, 2, 7 };
+ * Sort.sort<int32>(a, 7);                 // [1,2,3,5,7,8,9] ascending
+ * int32 at = Sort.binarySearch<int32>(a, 7, 8);   // 5
+ * // descending via a comparator:
+ * Sort.sort<int32>(a, 7, (x, y) -> { if (x > y) { return -1; } if (x < y) { return 1; } return 0; });
+ * ```
+ *
+ * @See cajeta.lang.Comparable
+ * @See cajeta.collection.Heap
+ */
+public class Sort {
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Comparator-based core (the seam every other entry point routes through)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Unstable in-place sort of `a[0..n)` by `cmp` (numpy `kind='quicksort'`).
+     * Iterative: a manual range stack, recursing the smaller partition and
+     * looping the larger, so the stack depth is O(log n) — no recursion, no
+     * stack-overflow on adversarial input. Middle-element pivot + an
+     * insertion-sort cutoff for runs under 16.
+     */
+    public static void sort<T>(T[] a, int32 n, (T, T) -> int32 cmp) {
+        if (n < 2) {
+            return;
+        }
+        int32[] ranges = heap int32[128];
+        int32 sp = 0;
+        int32 lo = 0;
+        int32 hi = n - 1;
+        boolean run = true;
+        while (run) {
+            if (hi - lo < 16) {
+                // Insertion-sort a[lo..hi] inline (the small-run engine). Kept
+                // inline rather than a helper so the comparator function value
+                // isn't threaded through a second templated-static call.
+                int32 ii = lo + 1;
+                while (ii <= hi) {
+                    T key = a[ii];
+                    int32 jj = ii;
+                    boolean moving = true;
+                    while (moving) {
+                        if (jj > lo) {
+                            T prev = a[jj - 1];
+                            if (cmp(key, prev) < 0) {
+                                a[jj] = prev;
+                                jj = jj - 1;
+                            } else {
+                                moving = false;
+                            }
+                        } else {
+                            moving = false;
+                        }
+                    }
+                    a[jj] = key;
+                    ii = ii + 1;
+                }
+                if (sp == 0) {
+                    run = false;
+                } else {
+                    sp = sp - 1;
+                    hi = ranges[sp];
+                    sp = sp - 1;
+                    lo = ranges[sp];
+                }
+            } else {
+                // Middle element as pivot (robust on already-sorted input);
+                // park it at a[hi] for a Lomuto partition.
+                int32 mid = lo + (hi - lo) / 2;
+                T pm = a[mid];
+                T ph = a[hi];
+                a[mid] = ph;
+                a[hi] = pm;
+                T pivot = a[hi];
+                int32 i = lo - 1;
+                int32 j = lo;
+                while (j < hi) {
+                    T aj = a[j];
+                    if (cmp(aj, pivot) < 0) {
+                        i = i + 1;
+                        T ai = a[i];
+                        a[i] = aj;
+                        a[j] = ai;
+                    }
+                    j = j + 1;
+                }
+                int32 p = i + 1;
+                T ap = a[p];
+                a[p] = pivot;
+                a[hi] = ap;
+                int32 leftSize = p - 1 - lo;
+                int32 rightSize = hi - p - 1;
+                if (leftSize > rightSize) {
+                    // Defer the larger (left) range, loop the smaller (right).
+                    ranges[sp] = lo;
+                    sp = sp + 1;
+                    ranges[sp] = p - 1;
+                    sp = sp + 1;
+                    lo = p + 1;
+                } else {
+                    ranges[sp] = p + 1;
+                    sp = sp + 1;
+                    ranges[sp] = hi;
+                    sp = sp + 1;
+                    hi = p - 1;
+                }
+            }
+        }
+    }
+
+    /**
+     * Stable sort of `a[0..n)` by `cmp` (numpy `kind='stable'`/`'mergesort'`).
+     * Bottom-up merge sort: O(n log n), O(n) auxiliary, equal keys keep their
+     * input order (the merge takes the left run on ties).
+     */
+    public static void sortStable<T>(T[] a, int32 n, (T, T) -> int32 cmp) {
+        if (n < 2) {
+            return;
+        }
+        T[] buf = heap T[n];
+        int32 width = 1;
+        while (width < n) {
+            int32 i = 0;
+            while (i < n) {
+                int32 left = i;
+                int32 mid = i + width;
+                if (mid > n) {
+                    mid = n;
+                }
+                int32 right = i + width + width;
+                if (right > n) {
+                    right = n;
+                }
+                int32 li = left;
+                int32 ri = mid;
+                int32 k = left;
+                while (li < mid && ri < right) {
+                    T lv = a[li];
+                    T rv = a[ri];
+                    // Stable: take the right run only when it strictly orders
+                    // before the left; ties keep the left element first.
+                    if (cmp(rv, lv) < 0) {
+                        buf[k] = rv;
+                        ri = ri + 1;
+                    } else {
+                        buf[k] = lv;
+                        li = li + 1;
+                    }
+                    k = k + 1;
+                }
+                while (li < mid) {
+                    T lv = a[li];
+                    buf[k] = lv;
+                    li = li + 1;
+                    k = k + 1;
+                }
+                while (ri < right) {
+                    T rv = a[ri];
+                    buf[k] = rv;
+                    ri = ri + 1;
+                    k = k + 1;
+                }
+                i = i + width + width;
+            }
+            int32 c = 0;
+            while (c < n) {
+                T v = buf[c];
+                a[c] = v;
+                c = c + 1;
+            }
+            width = width + width;
+        }
+    }
+
+    /** First index in sorted `a[0..n)` whose element does not order before `key`
+     *  (numpy `searchsorted` `side='left'`). In `[0, n]`. */
+    public static int32 lowerBound<T>(T[] a, int32 n, T key, (T, T) -> int32 cmp) {
+        int32 lo = 0;
+        int32 hi = n;
+        while (lo < hi) {
+            int32 mid = lo + (hi - lo) / 2;
+            T m = a[mid];
+            if (cmp(m, key) < 0) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
+    /** First index in sorted `a[0..n)` whose element orders after `key`
+     *  (numpy `searchsorted` `side='right'`). In `[0, n]`. */
+    public static int32 upperBound<T>(T[] a, int32 n, T key, (T, T) -> int32 cmp) {
+        int32 lo = 0;
+        int32 hi = n;
+        while (lo < hi) {
+            int32 mid = lo + (hi - lo) / 2;
+            T m = a[mid];
+            if (cmp(key, m) < 0) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        return lo;
+    }
+
+    /** Index of `key` in sorted `a[0..n)`, or `-1` if absent (first match on
+     *  duplicates). */
+    public static int32 binarySearch<T>(T[] a, int32 n, T key, (T, T) -> int32 cmp) {
+        int32 idx = lowerBound<T>(a, n, key, cmp);
+        if (idx < n) {
+            T m = a[idx];
+            if (cmp(m, key) == 0) {
+                return idx;
+            }
+        }
+        return -1;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Natural-order entry points (by `<` / `>` on T) — thin seam wrappers
+    // ─────────────────────────────────────────────────────────────────────
+
+    public static void sort<T>(T[] a, int32 n) {
+        sort<T>(a, n, (x, y) -> {
+            if (x < y) {
+                return -1;
+            }
+            if (x > y) {
+                return 1;
+            }
+            return 0;
+        });
+    }
+
+    public static void sortStable<T>(T[] a, int32 n) {
+        sortStable<T>(a, n, (x, y) -> {
+            if (x < y) {
+                return -1;
+            }
+            if (x > y) {
+                return 1;
+            }
+            return 0;
+        });
+    }
+
+    public static int32 lowerBound<T>(T[] a, int32 n, T key) {
+        return lowerBound<T>(a, n, key, (x, y) -> {
+            if (x < y) {
+                return -1;
+            }
+            if (x > y) {
+                return 1;
+            }
+            return 0;
+        });
+    }
+
+    public static int32 upperBound<T>(T[] a, int32 n, T key) {
+        return upperBound<T>(a, n, key, (x, y) -> {
+            if (x < y) {
+                return -1;
+            }
+            if (x > y) {
+                return 1;
+            }
+            return 0;
+        });
+    }
+
+    public static int32 binarySearch<T>(T[] a, int32 n, T key) {
+        return binarySearch<T>(a, n, key, (x, y) -> {
+            if (x < y) {
+                return -1;
+            }
+            if (x > y) {
+                return 1;
+            }
+            return 0;
+        });
+    }
+
+    // ArrayList sorting is exposed as the instance methods `ArrayList.sort()` /
+    // `ArrayList.sortStable()` (which sort the backing array in place via the
+    // (T[], int32) entry points above) — not as static overloads here, since
+    // same-named templated `sort` overloads across `(T[], int32)` and
+    // `(ArrayList<T>, …)` don't resolve reliably.
+}

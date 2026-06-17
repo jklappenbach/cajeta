@@ -150,4 +150,31 @@ public class ArrayList<T> {
     public #ArrayStream<T> stream() {
         return heap ArrayStream<T>(this.data, this.sizeCount);
     }
+
+    /**
+     * Sort the live elements in place into ascending natural order (`<` on
+     * `T`) — unstable/fast (quicksort). Sorts the backing array directly (no
+     * copy); the trailing spare capacity is untouched. Delegates to
+     * {@link cajeta.collection.Sort}.
+     *
+     * ```cajeta
+     * ArrayList<int32> xs = heap ArrayList<int32>();
+     * xs.add(3);
+     * xs.add(1);
+     * xs.add(2);
+     * xs.sort();                    // [1, 2, 3]
+     * ```
+     */
+    public void sort() {
+        Sort.sort<T>(this.data, this.sizeCount);
+    }
+
+    /**
+     * Sort the live elements in place into ascending natural order, **stable**
+     * (merge sort — equal elements keep their input order). See
+     * {@link cajeta.collection.Sort}.
+     */
+    public void sortStable() {
+        Sort.sortStable<T>(this.data, this.sizeCount);
+    }
 }
