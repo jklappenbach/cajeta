@@ -1102,6 +1102,34 @@ TEST(ToffeeSpatialIndexDeviceTests, optixRecordsImplOnNvptxDevice) {
                          "CUDA OptiX noun arm didn't take, or OptiX unavailable on-device)";
 }
 
+// M2 Phase 4-C policy — on CUDA, AUTO (no CAJETA_GPU_AS_IMPL) records SOFTWARE, even
+// when OptiX is available. The portable software BVH is the v1 default floor; OptiX
+// RT cores are strictly OPT-IN (=optix), because the AS impl is resolved before the
+// consumer kernel is known and only 3 canonical ray-query shapes are OptiX-supported —
+// auto-routing any other shape onto an OptiX AS would fault the software cubin that
+// reads it. The SAME kOptixImplDriver as optixRecordsImplOnNvptxDevice, no env: 700
+// (software), NOT 702. Guards against an accidental AUTO→OptiX flip. See the OptiX
+// AUTO-policy note + the M2 codegen plan (4-C).
+TEST(ToffeeSpatialIndexDeviceTests, autoRecordsSoftwareImplOnNvptxDevice) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    // No AsImplEnvGuard — exercise AUTO. (unset defensively in case the env leaked.)
+    unsetenv("CAJETA_GPU_AS_IMPL");
+    std::map<std::string, std::string> sources = {{"test.RqOptix", kOptixImplDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqOptix", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 700) << "fail code " << r
+                      << " (702: AUTO routed to OptiX on CUDA — the software floor is the "
+                         "v1 AUTO default; OptiX RT cores must stay opt-in via "
+                         "CAJETA_GPU_AS_IMPL=optix)";
+}
+
 // M2 Phase 3-D — the OptiX RT-core VERB end to end through the full compiler. The
 // SAME kRqMinDriver as the software/native legs, but with CAJETA_GPU_AS_IMPL=optix:
 // the AS builds on the OptiX tier, NvptxRegistration emits the kernel's OptiX program

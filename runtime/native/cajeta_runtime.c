@@ -10998,6 +10998,9 @@ static int cajeta_xpu_active_backend(void) {
     return r;
 }
 
+// Forward decl (the OptiX glue's full extern block is below, near the launch path).
+extern int cajeta_xpu_optix_available(void);
+
 // Device.supports(Capability) — does the active device advertise the capability
 // natively? The capability heuristic's runtime input (cajeta.gpu.core.Device).
 // `cap` is the Capability ordinal (the stable contract in Capability.cajeta).
@@ -11005,17 +11008,26 @@ static int cajeta_xpu_active_backend(void) {
 int32_t __cajeta_xpu_device_supports(int32_t cap) {
     int be = cajeta_xpu_active_backend();
     switch (cap) {
-        case 0:  // RayQueryNative — hardware inline ray query
+        case 0:  // RayQueryNative — hardware INLINE ray query
             // g_xpu_vk.rayQuery is detected in the main (Windows-included) Vulkan
             // device init, so this reports the real device capability on Windows
             // too (the RTX 4090's Vulkan driver advertises VK_KHR_ray_query). The
             // old `&& !defined(_WIN32)` hard-zeroed it on Windows — wrong now that
             // the Vulkan ray-query path is exercised there.
+            // NOTE: CUDA is intentionally false here — OptiX has NO inline ray
+            // query (RT cores are reached only through a pipeline), so the CUDA RT
+            // core path is the SEPARATE RayQueryRtCore capability below, not this.
 #if defined(CAJETA_RT_HAS_VULKAN)
             return (be == CAJ_XPU_VULKAN && g_xpu_vk.rayQuery) ? 1 : 0;
 #else
             (void) be; return 0;
 #endif
+        case 1:  // RayQueryRtCore — pipeline-based RT-core ray query (NVIDIA OptiX)
+            // Distinct from RayQueryNative: this is the CUDA RT-core path reached via
+            // the OptiX pipeline (raygen/anyhit/closesthit/intersection/miss + SBT),
+            // opt-in at AS-build time with CAJETA_GPU_AS_IMPL=optix. True iff the
+            // active device is CUDA and the OptiX engine (nvoptix.dll) loaded.
+            return (be == CAJ_XPU_CUDA && cajeta_xpu_optix_available()) ? 1 : 0;
         default: return 0;
     }
 }

@@ -21,11 +21,12 @@ package cajeta.gpu.core;
  * The ordinal is the **stable native contract** — `__cajeta_xpu_device_supports`
  * (runtime/native/cajeta_runtime.c) switches on it. Do not reorder; append only.
  *
- * v1 surfaces the one capability with a crisp per-device answer and an immediate
- * consumer (the ray-query native-vs-software choice). More land as the runtime
- * grows the probes (cooperative matrix, unified memory, the wave/atomic feature
- * tiers) — append to the end so the ordinals stay stable.
+ * v1 surfaces the capabilities with a crisp per-device answer and an immediate
+ * consumer (the ray-query path choice). More land as the runtime grows the probes
+ * (cooperative matrix, unified memory, the wave/atomic feature tiers) — append to
+ * the end so the ordinals stay stable.
  */
 public enum Capability {
-    RayQueryNative   // 0 — hardware inline ray query (VK_KHR_ray_query / equivalent)
+    RayQueryNative,  // 0 — hardware INLINE ray query (VK_KHR_ray_query / equivalent)
+    RayQueryRtCore   // 1 — pipeline-based RT-core ray query (NVIDIA OptiX on CUDA)
 }
