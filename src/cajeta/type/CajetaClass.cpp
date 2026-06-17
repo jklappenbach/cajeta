@@ -3043,22 +3043,10 @@ namespace cajeta {
     }
 
     void CajetaClass::finalizeClassObject() {
-        // See header. A #ClassObject is { ptr Class#VTable, ptr rtti }. Slot 0
-        // is NULL only for classes parsed before cajeta.reflect.Class (the
-        // lookup in StructureMetadata::populate couldn't find Class's vtable
-        // yet); for every other class populate already set slot 0 to the
-        // resolved Class#VTable.
-        //
-        // DCE Tier-0b: this is now the SOLE class-registration site. populate no
-        // longer emits the reg ctor (it runs mid-codegen-loop, before the
-        // reachability keep-set can be computed over the quiesced canonicalMap).
-        // This post-loop pass runs once per class after the keep-set is fixed,
-        // so we: (1) patch slot 0 for deferred (null-vtable) classes now that
-        // Class is built, then (2) emit the keepsClass-gated registration ctor
-        // for ANY class whose slot 0 is non-null. The two cases that previously
-        // split between populate (non-null slot 0 → registered there) and here
-        // (null slot 0 → registered here) now both register here, yielding the
-        // identical keep-all set when keepsClass() is true for everyone.
+        // Sole class-registration site (DCE Tier-0b; lean-linker-dce.md §3.2).
+        // #ClassObject = { ptr Class#VTable, ptr rtti }; slot 0 is null for
+        // classes parsed before cajeta.reflect.Class. Patch slot 0 for those,
+        // then emit the keepsClass-gated reg ctor for any non-null-slot-0 class.
         llvm::GlobalVariable* co = getClassObjectGlobal();
         if (!co || !co->hasInitializer()) return;
         auto* init = llvm::dyn_cast<llvm::ConstantStruct>(co->getInitializer());
@@ -3068,12 +3056,8 @@ namespace cajeta {
         auto* lmod = module->getLlvmModule();
 
         if (init->getOperand(0)->isNullValue()) {
-            // Deferred class (parsed before Class<?> existed). REFL-1.7: embed
-            // the canonical Class<?> instantiation's vtable (the bare
-            // "cajeta.reflect.Class" now names the never-built template). If
-            // Class<?> still isn't resolvable, this class is not reflectively
-            // dispatchable (slot 0 stays null) — leave it unregistered, exactly
-            // as before (its accessors would crash through a null slot 0).
+            // Deferred class (parsed before Class<?>); patch slot 0 with the
+            // Class<?> vtable. If unresolvable, leave null + unregistered.
             auto& s2m = CajetaModule::getStructureToModule();
             auto mit = s2m.find("cajeta.reflect.Class<?>");
             if (mit == s2m.end() || !mit->second) return;
@@ -3089,23 +3073,10 @@ namespace cajeta {
                 coTy, {classVtableRef, init->getOperand(1)}));
         }
 
-        // Registration (REFL-8). Only register a reflectively-dispatchable class
-        // (non-null slot 0); slot-0 patching above is unconditional but a class
-        // whose vtable is still null is never discoverable. The registration
-        // ctor — the llvm.global_ctors anchor that defeats --gc-sections — is
-        // DCE-gated: under LinkMode::Lean an unkept class skips registration and
-        // its #ClassObject / RTTI / vtable / methods strip if otherwise
-        // unreferenced. keepsClass() keeps everything in Full mode (and while
-        // the keep-set is null), so the keep-all set is unchanged.
+        // REFL-8 registration, keepsClass-gated. Only non-null-slot-0 classes are
+        // discoverable. Dedup by name: the canonicalMap can reach a canon >1×.
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
         std::string canon = toCanonical();
-        // Idempotency: a canonical name can be reached more than once here — the
-        // post-loop pass iterates the whole canonicalMap, which keys the same
-        // class under more than one entry (and re-instantiations share a canon).
-        // The old split was idempotent implicitly (populate's writeVirtualTable
-        // guard + finalize's non-null-slot early return); now that finalize is
-        // the sole site we dedup explicitly so we emit exactly one reg ctor per
-        // canon per module (a second would land as "...reg_ctor.<canon>.NN").
         std::string regCtorName = "__cajeta_class_reg_ctor." + canon;
         if (!co->getInitializer()->getAggregateElement(0u)->isNullValue()
                 && module->keepsClass(canon)

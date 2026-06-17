@@ -466,6 +466,47 @@ namespace cajeta {
             }
         }
 
+        // DCE Tier-0b: note registry-consuming reflection from non-reflect code
+        // (forces keep-all for 0b-2a). Must be complete — a missed site lets the
+        // linker strip a class a later forName needs. See lean-linker-dce.md §3.2.
+        if (!children.empty()) {
+            static const std::set<std::string> kClassReflEntry = {
+                "forName", "allClasses", "classesInPackage",
+                "classesAnnotated", "subtypes", "newInstance"};
+            bool isReflEntry = false;
+            if (kClassReflEntry.count(methodCallName)) {
+                if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        children[0])) {
+                    auto rt = CajetaType::of(recvId->getTextValue());
+                    isReflEntry =
+                        rt && rt->toCanonical() == "cajeta.reflect.Class";
+                }
+            } else if (methodCallName == "getType") {
+                if (auto recvExpr =
+                        std::dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!recvExpr->getResolvedType()) {
+                        recvExpr->resolveTypes(module);
+                    }
+                    auto rt = recvExpr->getResolvedType();
+                    isReflEntry = rt &&
+                        rt->toCanonical() == "cajeta.reflect.TemplateArgument";
+                }
+            }
+            if (isReflEntry) {
+                // skip the API's own plumbing (e.g. getType → forName)
+                bool callerInReflect = false;
+                if (auto cm = module->getCurrentMethod()) {
+                    if (auto owner = cm->getParent()) {
+                        callerInReflect =
+                            owner->toCanonical().rfind("cajeta.reflect.", 0) == 0;
+                    }
+                }
+                if (!callerInReflect) {
+                    CajetaModule::reflectionKeep().forcesAll = true;
+                }
+            }
+        }
+
         // ----- Buffer<T>.elementBytes() intrinsic -----
         // Cajeta has no source-level sizeof, but the Buffer<T> device methods
         // (alloc/upload/download) need n*sizeof(T) byte counts. This call is

@@ -701,6 +701,12 @@ namespace cajeta {
         // see what the user passed without threading it through Phase 1/2.
         this->entryMethod = entryMethod;
 
+        // DCE Tier-0b: clear the compile-scoped reflection-usage accumulator.
+        // The compiler process is reused across compiles (the stdlib-prime
+        // cache), so a flag left set by a prior reflection-using build would
+        // wrongly force keep-all here. Repopulated during the codegen loop.
+        CajetaModule::resetReflectionKeep();
+
         if (sourceRootPath[sourceRootPath.size() - 1] != '/') {
             sourceRootPath.append("/");
         }
@@ -833,6 +839,24 @@ namespace cajeta {
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
+        // DCE Tier-0b-2a — keep-set (see lean-linker-dce.md §3.2). Codegen has
+        // quiesced (reflectionKeep() is final) and finalizeClassObject below
+        // reads keepsClass(). No non-reflect reflection ⇒ keep only @Retained;
+        // forcesAll ⇒ leave NULL (keep-all). 0b-2b unions narrow per-site sets.
+        if (flags.linkMode == LinkMode::Lean
+                && !CajetaModule::reflectionKeep().forcesAll) {
+            auto keep = std::make_shared<std::set<std::string>>();
+            for (auto& [canon, type] : CajetaType::getCanonicalMap()) {
+                auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+                if (klass && klass->getModifiers().count(REFLECT_RETAINED) > 0) {
+                    keep->insert(canon);
+                }
+            }
+            for (auto& module : modules) {
+                module->setKeepSet(keep);
+            }
+        }
+
         // REFL-2 — emit the reflective adapter bodies now that Phase 1/2 has
         // quiesced and every method's LLVM function exists. Each class that had
         // an invoke adapter forward-declared into its #Rtti (during prototype

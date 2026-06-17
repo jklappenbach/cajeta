@@ -746,18 +746,9 @@ namespace cajeta {
             // Class.of never returns these (such classes are never reflected on
             // in v1), which is why earlier phases never tripped over them.
             //
-            // DCE Tier-0b (lean linker): registration is NO LONGER emitted here.
-            // populate() runs DURING the Phase 1/2 codegen loop — it fires for
-            // late template instantiations created mid-codegen, BEFORE the
-            // reachability keep-set can exist (the set needs the full, quiesced
-            // canonicalMap). Emitting the reg ctor here would pin classes the
-            // keep-set hasn't been computed for yet. So ALL registration is
-            // centralized into CajetaClass::finalizeClassObject, which runs once
-            // per class in the post-loop pass (Compiler.cpp ~841) after the
-            // keep-set is fixed. We still set the #ClassObject initializer above
-            // (slot 0 = Class#VTable when resolvable); finalizeClassObject reads
-            // that slot, patches it for deferred classes, and emits the gated
-            // registration ctor. See finalizeClassObject for the keepsClass gate.
+            // DCE Tier-0b: reg ctor is emitted in finalizeClassObject, not here —
+            // populate runs mid-codegen-loop, before the keep-set exists. We only
+            // set the #ClassObject initializer above.
         }
     }
 

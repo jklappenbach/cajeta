@@ -394,6 +394,19 @@ namespace cajeta {
             return strutureToModule;
         }
 
+        // DCE Tier-0b reflection-usage accumulator (lean-linker-dce.md §3.2).
+        // Reset per compile via resetReflectionKeep (stdlib-prime cache reuses
+        // the process). forcesAll ⇒ keep-all; names ⇒ narrow sites (0b-2b).
+        struct ReflectionKeep {
+            bool forcesAll = false;
+            std::set<std::string> names;
+        };
+        static ReflectionKeep& reflectionKeep() {
+            static ReflectionKeep instance;
+            return instance;
+        }
+        static void resetReflectionKeep() { reflectionKeep() = ReflectionKeep(); }
+
         // Aspect registry — see the aspectClasses field. Callers that
         // walk it (A3 pointcut matching) take the list as it stands at
         // codegen time; aspect declarations all land during the parse
