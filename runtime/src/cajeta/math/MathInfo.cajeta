@@ -1,0 +1,26 @@
+package cajeta.math;
+
+/**
+ * MathInfo — a trivial anchor type for the {@code cajeta.math} package (the
+ * numpy-equivalent; see documents/cajeta-math/numpy-porting-spec.md and the
+ * Tensor keystone in tensor-spec.md).
+ *
+ * {@code cajeta.math} is parsed ON DEMAND by the compiler's lazy stdlib loader
+ * (numpy-porting-plan.md Phase 1): a program that never imports it pays nothing
+ * at compile time — the compile-time analogue of the link-time DCE that already
+ * keeps an unused stdlib free in the output. An {@code import cajeta.math.X}
+ * (or a reference to a hardcoded {@code cajeta.math} type such as Matrix)
+ * triggers the package's parse.
+ *
+ * This type exists so the package has a clean, non-intercepted real member to
+ * import (Matrix resolves via compiler interception, so it isn't a faithful
+ * probe of the generic on-demand-parse path) and a home for package-level
+ * metadata as the numpy surface grows.
+ */
+public final class MathInfo {
+    // Identifies this build's cajeta.math surface revision. Bumped as the
+    // numpy-equivalent lands (Tensor, the op library, the nested submodules).
+    public static int32 version() {
+        return 1;
+    }
+}

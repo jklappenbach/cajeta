@@ -32,6 +32,7 @@ namespace cajeta {
     llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
     uint64_t CajetaModule::reuseEpoch = 0;
     CajetaModulePtr CajetaModule::stdlibModule;
+    std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     vector<CajetaClassPtr> CajetaModule::aspectClasses;
     vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
@@ -255,6 +256,12 @@ namespace cajeta {
     void CajetaModule::onImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) {
         auto qName = QualifiedName::fromContext(ctx->qualifiedName());
         imports[qName->getTypeName()][qName->getPackageName()] = qName;
+        // Lazy stdlib: an import of an on-demand package (e.g. cajeta.math)
+        // triggers that package's prescan + enqueue so its types resolve
+        // during this parse and are fully parsed at the next drain point.
+        if (stdlibImportHook) {
+            stdlibImportHook(qName->getPackageName());
+        }
     }
 
     void CajetaModule::onStructureDeclaration(std::any any) {

@@ -41,6 +41,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sys/stat.h>
 
 #ifdef CAJETA_HAS_LLD
@@ -433,6 +434,139 @@ namespace cajeta {
         CajetaModule::setActiveModule(prevActive);
     }
 
+    // ───────────────────────────────────────────────────────────────────
+    // Lazy stdlib package loading.
+    //
+    // The embedded stdlib is eagerly prescanned + parsed at Compiler startup
+    // (parseStdlibInto). A designated set of packages is instead parsed ON
+    // DEMAND — the first time a compile references one (an `import`, or a
+    // hardcoded type such as Matrix) — so an unused heavy package (the
+    // numpy-equivalent cajeta.math) costs nothing at compile time, the
+    // compile-time analogue of the link-time DCE that already makes it free
+    // in the output. Mechanism:
+    //   - parseStdlibInto skips lazy packages (neither prescanned nor parsed).
+    //   - The import hook (CajetaModule::stdlibImportHook, body
+    //     noteStdlibImportImpl) prescans a lazy package immediately — so its
+    //     class names land in the archive and references in the current parse
+    //     resolve to placeholders — and enqueues it.
+    //   - drainLazyStdlib(), called after each user-source parse, fully parses
+    //     the enqueued packages into the stdlib module and lays them out
+    //     (buildPendingPrototypes), filling those placeholders. The
+    //     prescan-then-full-parse split mirrors the eager two-phase path.
+    // The bookkeeping is process-global (the stdlib statics are too);
+    // parseStdlibInto resets it for the fresh-Compiler path, and
+    // Compiler::resetLazyStdlibState() lets the reuse harness clear it.
+
+    // dotted package -> indices into cajeta::stdlib::g_files. Built once;
+    // g_files is constant for the process, so this survives resetGlobals.
+    static const std::map<std::string, std::vector<size_t>>& stdlibPackageIndex() {
+        static std::map<std::string, std::vector<size_t>> index;
+        static bool built = false;
+        if (!built) {
+            for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
+                std::string rel = cajeta::stdlib::g_files[i].relativePath;
+                auto slash = rel.find_last_of('/');
+                std::string pkg = (slash == std::string::npos)
+                    ? std::string() : rel.substr(0, slash);
+                std::replace(pkg.begin(), pkg.end(), '/', '.');
+                index[pkg].push_back(i);
+            }
+            built = true;
+        }
+        return index;
+    }
+
+    static bool isLazyStdlibPackage(const std::string& pkg) {
+        // cajeta.math — the numpy-equivalent, including its nested submodules
+        // (cajeta.math.linalg / fft / random / stats) — is parsed on demand.
+        return pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0;
+    }
+
+    // Instrumentation + lazy bookkeeping (process-global).
+    static std::set<std::string> g_stdlibParsedPackages;  // every pkg parsed (eager + lazy)
+    static std::set<std::string> g_lazyPrescanned;        // lazy pkgs prescanned into the archive
+    static std::set<std::string> g_lazyParsed;            // lazy pkgs fully parsed
+    static std::vector<std::string> g_lazyQueue;          // lazy pkgs awaiting full parse
+
+    static void resetLazyStdlibStateImpl() {
+        g_stdlibParsedPackages.clear();
+        g_lazyPrescanned.clear();
+        g_lazyParsed.clear();
+        g_lazyQueue.clear();
+    }
+
+    static void prescanStdlibPackage(const std::string& pkg) {
+        if (g_lazyPrescanned.count(pkg)) return;
+        auto it = stdlibPackageIndex().find(pkg);
+        if (it != stdlibPackageIndex().end()) {
+            for (size_t idx : it->second) {
+                const auto& f = cajeta::stdlib::g_files[idx];
+                antlr4::ANTLRInputStream in(
+                    std::string(f.content, f.contentBytes));
+                prescanSource(in);
+            }
+        }
+        g_lazyPrescanned.insert(pkg);
+    }
+
+    // Import-hook body: prescan + enqueue a lazy stdlib package. No-op for
+    // eager packages and for packages already fully parsed.
+    static void noteStdlibImportImpl(const std::string& pkg) {
+        if (!isLazyStdlibPackage(pkg)) return;
+        if (g_lazyParsed.count(pkg)) return;
+        prescanStdlibPackage(pkg);
+        if (std::find(g_lazyQueue.begin(), g_lazyQueue.end(), pkg)
+                == g_lazyQueue.end()) {
+            g_lazyQueue.push_back(pkg);
+        }
+    }
+
+    // Fully parse every enqueued lazy package into the stdlib module, then
+    // lay them out. Queue-guarded and idempotent; safe to call after every
+    // parse (a cheap no-op when the queue is empty).
+    static void drainLazyStdlib() {
+        if (g_lazyQueue.empty()) return;
+        auto stdlib = CajetaModule::getStdlibModule();
+        if (!stdlib) { g_lazyQueue.clear(); return; }
+        auto prevActive = CajetaModule::getActiveModule();
+        CajetaModule::setActiveModule(stdlib);
+        QualifiedNamePtr originalQName = stdlib->getQName();
+        bool parsedAny = false;
+        while (!g_lazyQueue.empty()) {
+            std::string pkg = g_lazyQueue.back();
+            g_lazyQueue.pop_back();
+            if (g_lazyParsed.count(pkg)) continue;
+            // Mark parsed BEFORE walking the package's files: a body within the
+            // package that references one of its own lazy types (e.g.
+            // Matrix.transpose returns Matrix<T,C,R>) re-fires the import hook;
+            // the guard above then dedupes rather than re-enqueueing mid-parse.
+            g_lazyParsed.insert(pkg);
+            prescanStdlibPackage(pkg);   // whole-package archive (idempotent)
+            auto it = stdlibPackageIndex().find(pkg);
+            if (it == stdlibPackageIndex().end()) continue;
+            for (size_t idx : it->second) {
+                const auto& f = cajeta::stdlib::g_files[idx];
+                std::string rel = f.relativePath;
+                auto slash = rel.find_last_of('/');
+                std::string fileName = (slash == std::string::npos)
+                    ? rel : rel.substr(slash + 1);
+                auto dot = fileName.find_last_of('.');
+                if (dot != std::string::npos) fileName = fileName.substr(0, dot);
+                stdlib->setQName(QualifiedName::getOrInsert(fileName, pkg));
+                antlr4::ANTLRInputStream in(
+                    std::string(f.content, f.contentBytes));
+                parseSource(stdlib, in, /*label=*/"");
+            }
+            g_stdlibParsedPackages.insert(pkg);
+            parsedAny = true;
+        }
+        stdlib->setQName(originalQName);
+        if (parsedAny) {
+            CajetaModule::buildPendingPrototypes();
+        }
+        CajetaModule::setActiveModule(prevActive);
+    }
+
     // Parse every embedded stdlib file into `module`. Called exactly
     // once per Compiler instance, against the Compiler's dedicated
     // stdlib module. Two-step:
@@ -452,7 +586,23 @@ namespace cajeta {
     // User modules pick up the runtime through module-local extern
     // declarations that resolve to these definitions at merge time.
     void parseStdlibInto(CajetaModulePtr module) {
+        // Lazy-load bookkeeping is process-global; a fresh Compiler re-runs
+        // this function, so reset it here. (The reuse harness calls
+        // Compiler::resetLazyStdlibState when it restores its baseline.)
+        resetLazyStdlibStateImpl();
+
+        // Package (dotted) of stdlib file i, from its embedded relative path.
+        auto packageOf = [](size_t i) {
+            std::string rel = cajeta::stdlib::g_files[i].relativePath;
+            auto slash = rel.find_last_of('/');
+            std::string pkg = (slash == std::string::npos)
+                ? std::string() : rel.substr(0, slash);
+            std::replace(pkg.begin(), pkg.end(), '/', '.');
+            return pkg;
+        };
+
         for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
+            if (isLazyStdlibPackage(packageOf(i))) continue;  // on-demand only
             const auto& f = cajeta::stdlib::g_files[i];
             antlr4::ANTLRInputStream prescanIn(
                 std::string(f.content, f.contentBytes));
@@ -461,13 +611,11 @@ namespace cajeta {
 
         QualifiedNamePtr originalQName = module->getQName();
         for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
+            std::string pkg = packageOf(i);
+            if (isLazyStdlibPackage(pkg)) continue;           // on-demand only
             const auto& f = cajeta::stdlib::g_files[i];
             std::string relPath = f.relativePath;
             auto lastSlash = relPath.find_last_of('/');
-            std::string pkg = (lastSlash == std::string::npos)
-                ? std::string()
-                : relPath.substr(0, lastSlash);
-            std::replace(pkg.begin(), pkg.end(), '/', '.');
             std::string fileName = (lastSlash == std::string::npos)
                 ? relPath
                 : relPath.substr(lastSlash + 1);
@@ -479,6 +627,7 @@ namespace cajeta {
             antlr4::ANTLRInputStream stdlibInput(
                 std::string(f.content, f.contentBytes));
             parseSource(module, stdlibInput, /*label=*/"");
+            g_stdlibParsedPackages.insert(pkg);
         }
         module->setQName(originalQName);
 
@@ -502,6 +651,10 @@ namespace cajeta {
         stream.seekg(0);
         antlr4::ANTLRInputStream userInput(stream);
         parseSource(module, userInput, /*label=*/"user");
+        // Fully parse any on-demand stdlib packages this source pulled in
+        // (via an import or a hardcoded type like Matrix) before the caller's
+        // prototype sweep / placeholder validation runs.
+        drainLazyStdlib();
     }
 
     // Error-model #210: publish UnrecoverableException's vtable address
@@ -680,6 +833,13 @@ namespace cajeta {
     }
 
     CajetaModulePtr Compiler::ensureStdlibModule() {
+        // Lazy stdlib: install the on-demand import hook (idempotent). Set
+        // unconditionally so the reuse path — where the stdlib module already
+        // exists and we early-return below — still has it bound.
+        CajetaModule::stdlibImportHook = [](const std::string& pkg) {
+            noteStdlibImportImpl(pkg);
+        };
+
         auto existing = CajetaModule::getStdlibModule();
         if (existing) return existing;
 
@@ -718,6 +878,18 @@ namespace cajeta {
 
         emitUnrecoverableMarker(stdlib);
         return stdlib;
+    }
+
+    bool Compiler::stdlibPackageParsed(const std::string& pkg) {
+        return g_stdlibParsedPackages.count(pkg) != 0;
+    }
+
+    const std::set<std::string>& Compiler::stdlibParsedPackages() {
+        return g_stdlibParsedPackages;
+    }
+
+    void Compiler::resetLazyStdlibState() {
+        resetLazyStdlibStateImpl();
     }
 
     void Compiler::compile(CajetaModulePtr module) {

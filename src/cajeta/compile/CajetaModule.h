@@ -15,6 +15,7 @@
 #include <string>
 #include <fstream>
 #include <filesystem>
+#include <functional>
 #include <queue>
 #include <set>
 #include <llvm/Support/raw_os_ostream.h>
@@ -108,6 +109,15 @@ namespace cajeta {
             // site). Nullptr until the inject helper's first emit.
             llvm::GlobalVariable* singletonGlobal = nullptr;
         };
+
+        // Lazy-stdlib import hook. Installed by the Compiler so that an
+        // `import cajeta.math.X` (or a bare reference to a hardcoded
+        // cajeta.math type such as Matrix) seen during a parse triggers
+        // that stdlib package's on-demand parse. Null until installed; the
+        // installed hook is a no-op for non-lazy packages. Lives here (not
+        // on Compiler) so the resolver / onImportDeclaration can fire it
+        // without a Compiler dependency. See Compiler's lazy stdlib loader.
+        static std::function<void(const std::string&)> stdlibImportHook;
     private:
         static vector<ComponentDescriptorPtr> componentClasses;
 

@@ -955,6 +955,17 @@ namespace cajeta {
                     type = CajetaVector::validateAndCreate(module, elemT, n);
                 } else if (qName->getTypeName() == "Matrix"
                         && targs->typeArgument().size() == 3) {
+                    // Lazy stdlib: cajeta.math is parsed on demand. The flat
+                    // CajetaMatrix type resolves below without the parsed class,
+                    // but Matrix's operator/method surface (a+b, .transpose(),
+                    // .determinant(), ...) lives in cajeta.math.Matrix and is
+                    // resolved later at codegen — so a bare `Matrix<...>` (no
+                    // explicit import) must still pull cajeta.math in. Fire the
+                    // import hook here; the package is prescanned now and fully
+                    // parsed at the next drain, before operator codegen runs.
+                    if (CajetaModule::stdlibImportHook) {
+                        CajetaModule::stdlibImportHook("cajeta.math");
+                    }
                     // Built-in Matrix<T, R, C> (B1) — the HYBRID value type. The
                     // declared cajeta.math.Matrix class supplies the operator/
                     // method surface (and was already resolved into `type` by the

@@ -20,6 +20,7 @@
 #include "CajetaParser.h"
 #include "CompilerMode.h"
 #include <string>
+#include <set>
 #include "../error/Exception.h"
 
 using namespace std;
@@ -285,6 +286,17 @@ namespace cajeta {
         // point (compile(module), compile(entryMethod, ...)) so any
         // caller order works.
         CajetaModulePtr ensureStdlibModule();
+
+        // Lazy stdlib instrumentation / control. The set of stdlib packages
+        // actually parsed (eager + on-demand) and the lazy bookkeeping are
+        // process-global. stdlibPackageParsed / stdlibParsedPackages are the
+        // test probes for the on-demand-parse behavior; resetLazyStdlibState
+        // lets the stdlib-reuse harness clear the bookkeeping when it restores
+        // its per-test baseline (the fresh-Compiler path resets it itself in
+        // parseStdlibInto). See the lazy stdlib loader in Compiler.cpp.
+        static bool stdlibPackageParsed(const std::string& pkg);
+        static const std::set<std::string>& stdlibParsedPackages();
+        static void resetLazyStdlibState();
 
         const string& getCpu() const {
             return cpu;

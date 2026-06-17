@@ -359,6 +359,11 @@ struct StdlibReuseCache {
         cajeta::CajetaType::restoreBaseline();
         cajeta::CajetaModule::restoreBaseline();   // re-pins the stdlib singleton
         stdlibModule->getStructures() = baselineStructures;
+        // Lazy stdlib: the baseline was captured before any on-demand package
+        // (cajeta.math) was parsed, and the restore above drops those types.
+        // Clear the lazy bookkeeping too, so a later test importing the package
+        // re-parses it instead of skipping it as "already parsed".
+        cajeta::Compiler::resetLazyStdlibState();
         // Drop every method-template instantiation a PRIOR test registered on a
         // persistent stdlib class (e.g. ParallelDriver::forEachWorker<test.M>,
         // forEachParallelChain<test.M>). Such a class outlives the per-test user
