@@ -331,3 +331,49 @@ TEST(StaticFieldTests, clinitSurvivesStaticArgFromInstanceMethod) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// Regression: a BARE (unqualified) static String field used as a METHOD
+// RECEIVER — `TAG.equals(...)` inside an instance method. IdentifierExpression
+// returns the field's GlobalVariable slot (its address); the l-value coercion
+// must load through it to materialize the String pointer used as `this`.
+// Pre-fix the global's ADDRESS was passed as the receiver (and the vtable load
+// read the String pointer instead of its vtable) → garbage dispatch / SIGSEGV.
+// The IdentifierExpression analogue of the DotExpression `Class.STATIC.method()`
+// fix (a49714dc).
+TEST(StaticFieldTests, bareUnqualifiedStaticFieldAsReceiver) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "public final class D {\n"
+        "    static final String TAG = \"hi\";\n"
+        "    public int32 f() {\n"
+        "        if (TAG.equals(\"hi\")) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        D d = heap D();\n"
+        "        return d.f();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// And the negative branch: the receiver's VALUE must drive the comparison
+// (not a garbage pointer), so a non-matching arg returns 0.
+TEST(StaticFieldTests, bareUnqualifiedStaticFieldReceiverNegative) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "public final class D {\n"
+        "    static final String TAG = \"hi\";\n"
+        "    public int32 f() {\n"
+        "        if (TAG.equals(\"bye\")) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        D d = heap D();\n"
+        "        return d.f();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}

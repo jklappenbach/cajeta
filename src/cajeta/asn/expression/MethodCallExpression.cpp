@@ -3589,16 +3589,19 @@ namespace cajeta {
                 } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
                     receiver = builder->CreateLoad(
                         llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
-                } else if (dynamic_pointer_cast<DotExpression>(exprChild)
+                } else if ((dynamic_pointer_cast<DotExpression>(exprChild)
+                            || dynamic_pointer_cast<IdentifierExpression>(exprChild))
                         && (llvm::isa<llvm::GetElementPtrInst>(receiver)
                             || llvm::isa<llvm::GlobalVariable>(receiver))
                         && receiverType
                         && dynamic_pointer_cast<CajetaClass>(receiverType)
                         && !dynamic_pointer_cast<CajetaView>(receiverType)) {
                     // Chained field access `a.b.method()` where `b` is a
-                    // class-ref OR array field, OR a STATIC field receiver
-                    // `Class.STATIC.method()`. DotExpression returned the
-                    // field's slot pointer — a GEP for an instance field, or
+                    // class-ref OR array field, OR a STATIC field receiver —
+                    // qualified `Class.STATIC.method()` (DotExpression) or bare
+                    // `STATIC.method()` (IdentifierExpression, same-class static
+                    // shorthand / implicit-this instance field). The receiver is
+                    // the field's slot pointer — a GEP for an instance field, or
                     // the static-field GlobalVariable (its address) for a
                     // static field. Either way the slot stores a `ptr` to the
                     // referent instance / array header (per
