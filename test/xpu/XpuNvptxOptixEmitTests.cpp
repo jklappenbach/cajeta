@@ -207,6 +207,37 @@ const char* kNonCanonicalKernel =
     "    }\n"
     "}\n";
 
+// A kernel that genuinely USES the ray query (a proceed loop + committed getters) but
+// with a non-canonical arity — (AS, one Buffer, count) is neither the nearest-hit
+// (AS, 2 Buffer) nor the committed-triangle (AS, 3 Buffer, count) shape. It is the
+// "unsupported general-loop case" (cuda-plan 4a): classifyRayQueryShape returns
+// Unsupported, so NvptxRegistration emits NO OptiX program and the kernel runs on the
+// software floor (the M3 graceful fallback — no fault). Distinct from
+// kNonCanonicalKernel, which is not a ray query at all and drives the emit-level guard.
+const char* kUnsupportedRqKernel =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqUnsupShape {\n"
+    "    @Kernel\n"
+    "    public static void odd(AccelerationStructure scene,\n"
+    "                           Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          0.25f, 0.25f, 10.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, -1.0f, 100.0f);\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 0) { rq.confirmIntersection(); }\n"
+    "            }\n"
+    "            out[i] = rq.committedDistance();\n"   // committed family, but arity (1 buf) is non-canonical
+    "        }\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // The canonical count kernel emits the full OptiX program set + the `params` block.
@@ -388,4 +419,21 @@ TEST(XpuNvptxOptixEmitTests, nonCanonicalSignatureThrowsN04) {
     } catch (cajeta::Exception& e) {
         EXPECT_EQ(e.getErrorId(), "XPU-N04") << "wrong diagnostic: " << e.getMessage();
     }
+}
+
+// A real RayQuery kernel that is not one of the four canonical shapes (committed
+// getters + a non-canonical arity) classifies as Unsupported — the cuda-plan 4a
+// "unsupported general-loop case." Registration emits no OptiX program for it, so it
+// runs on the retained software floor (the M3 graceful fallback), never miscompiled.
+TEST(XpuNvptxOptixEmitTests, unsupportedRayQueryShapeClassifiesUnsupported) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kUnsupportedRqKernel, "test.RqUnsupShape");
+    auto klass = module->getStructures()["test.RqUnsupShape"];
+    ASSERT_NE(klass, nullptr);
+    auto odd = findMethod(klass, "odd");
+    ASSERT_NE(odd, nullptr);
+    // It IS a ray query (so it is not simply skipped as a non-RQ kernel)...
+    EXPECT_TRUE(nvptxKernelUsesRayQuery(odd));
+    // ...but its (AS, 1 Buffer, count) arity matches no canonical shape -> Unsupported.
+    EXPECT_EQ((int) classifyRayQueryShape(odd), (int) OptixRqShape::Unsupported);
 }
