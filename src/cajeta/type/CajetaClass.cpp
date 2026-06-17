@@ -3918,6 +3918,28 @@ namespace cajeta {
             if (declIsPrimitive) return -1;
             return 1000;
         }
+        // int32 <-> enum compatibility for overload resolution. An enum
+        // constant (`MyEnum.NAME`) resolves to int32 (the ordinal's type, kept
+        // int32 deliberately — see DotExpression). Enums are i32-backed, so an
+        // int32 arg is a valid match for an enum-typed formal (and vice versa).
+        // Without this an enum-constant argument fails to match an enum
+        // parameter and the call resolves to NO overload — which, for a
+        // constructor, silently emits an uninitialized object (SIGSEGV at first
+        // use). Nonzero distance so an exact int32/enum formal still wins.
+        {
+            auto isEnumT = [](const CajetaTypePtr& t) {
+                return t->getQName()
+                    && CajetaType::isArchiveEnum(t->getQName()->toCanonical());
+            };
+            auto isInt32T = [](const CajetaTypePtr& t) {
+                return t->getQName()
+                    && t->getQName()->toCanonical() == "int32";
+            };
+            if ((isEnumT(declaredType) && isInt32T(argType))
+                    || (isInt32T(declaredType) && isEnumT(argType))) {
+                return 1;
+            }
+        }
         auto argClass = dynamic_pointer_cast<CajetaClass>(argType);
         auto declaredClass = dynamic_pointer_cast<CajetaClass>(declaredType);
         if (!argClass || !declaredClass) return -1;
@@ -4514,6 +4536,12 @@ namespace cajeta {
 
         MethodPtr method = resolveMethod(methodName, parameters, isConstructor, floatingParams, explicitMethodTypeArgs);
         if (!method) {
+            // NOTE: a hard "no matching constructor" error here (to catch the
+            // silent-uninitialized-object footgun) is too aggressive — the
+            // stdlib legitimately builds `Optional<int32>(false, null)` for the
+            // empty case, where `null` (pointer) doesn't match the `int32` value
+            // param and the call relies on memset-zero. A proper safety net must
+            // first make null→primitive ctor args resolve; tracked separately.
             return nullptr;
         }
         // Visibility enforcement. Caller's class is the top of the

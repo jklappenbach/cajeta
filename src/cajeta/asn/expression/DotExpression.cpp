@@ -45,6 +45,13 @@ namespace cajeta {
         if (auto id = dynamic_pointer_cast<IdentifierExpression>(lhs)) {
             const string& ns = id->getTextValue();
             if (CajetaType::lookupEnumConstant(ns, identifier).has_value()) {
+                // Enum constant `MyEnum.NAME` — resolvedType is int32 (the
+                // ordinal's type, which generateCode emits). NOTE: keeping this
+                // int32 (rather than the enum type) is deliberate — resolving it
+                // to the enum type broke enum `==`/codegen across the stdlib.
+                // The int32↔enum overload-resolution gap (an enum-constant arg
+                // failing to match an enum-typed parameter) is closed in
+                // CajetaClass::subtypeDistance instead.
                 resolvedType = CajetaType::of("int32");
                 return;
             }

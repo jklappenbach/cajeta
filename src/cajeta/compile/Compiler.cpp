@@ -1436,6 +1436,32 @@ namespace cajeta {
                          (std::streamsize) cajeta_tls_o_len);
         }
 
+        // OptiX AS stubs for the AOT link. The runtime (cajeta_runtime.c)
+        // references `cajeta_xpu_optix_*`; the JIT resolves those to the real
+        // impl (OptixAccel.cpp) via the process-symbol generator, but an
+        // `--emit=exe` executable has no such generator, so they'd be undefined
+        // at link on a build without the OptiX SDK / a non-NVIDIA host. Mirrors
+        // the TLS object: a tiny generated translation unit linked into every
+        // exe (the link's own `cc` compiles the `.c`). Weak, so a future
+        // GPU-enabled AOT link can override them; here `available()` returns 0
+        // and the runtime falls back to the software-BVH path (hardware-gated).
+        std::string optixStubPath = archiveRootPath + "__cajeta_xpu_optix_stub.c";
+        {
+            std::ofstream s(optixStubPath, std::ios::binary);
+            s << "#include <stdint.h>\n"
+                 "#define W __attribute__((weak))\n"
+                 "W int      cajeta_xpu_optix_available(void){return 0;}\n"
+                 "W void*    cajeta_xpu_optix_context(void){return 0;}\n"
+                 "W void*    cajeta_xpu_optix_cuda_context(void){return 0;}\n"
+                 "W int64_t  cajeta_xpu_optix_accel_build_aabbs(const float*a,uint32_t b){(void)a;(void)b;return 0;}\n"
+                 "W int64_t  cajeta_xpu_optix_accel_build_triangles(const float*a,uint32_t b,uint32_t c){(void)a;(void)b;(void)c;return 0;}\n"
+                 "W uint64_t cajeta_xpu_optix_traversable(int64_t a){(void)a;return 0;}\n"
+                 "W uint64_t cajeta_xpu_optix_accel_boxes(int64_t a){(void)a;return 0;}\n"
+                 "W void     cajeta_xpu_optix_accel_free(int64_t a){(void)a;}\n"
+                 "W int      cajeta_xpu_optix_launch(const char*a,uint64_t b,const char*c,const char*d,const char*e,const char*f,const void*g,uint64_t h,uint32_t i){(void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return -1;}\n"
+                 "W int      cajeta_xpu_optix_launch_tri(const char*a,uint64_t b,const char*c,const char*d,const char*e,const char*f,const void*g,uint64_t h,uint32_t i){(void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return -1;}\n";
+        }
+
         buildtool::SubprocessResult res;
         bool launched = false;
         std::string usedDriver;
@@ -1448,6 +1474,10 @@ namespace cajeta {
             // always referenced by the stdlib). Linked on every platform; the
             // matching OpenSSL libs are added per-OS below.
             opt.argv.push_back(tlsObjPath);
+            // OptiX AS stubs (resolves `cajeta_xpu_optix_*`, referenced by the
+            // runtime's CUDA ray-query provider). `--gc-sections` drops them
+            // when the entry never reaches GPU AS code.
+            opt.argv.push_back(optixStubPath);
             opt.argv.push_back("-o");
             opt.argv.push_back(outPath);
             // Dead-strip unreferenced sections. The codegen emits one section
