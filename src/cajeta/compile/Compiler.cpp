@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sys/stat.h>
 
 #ifdef CAJETA_HAS_LLD
@@ -52,6 +53,46 @@ using namespace antlr4;
 using namespace std;
 
 namespace cajeta {
+
+    // 0c diagnostic: serialize the lean keep-set + per-class provenance to JSON.
+    // Generated artifact (banner says do-not-edit); the leanness feedback surface.
+    static void writeKeepsetJson(const std::string& path,
+                                 const std::map<std::string, std::string>& keptBy,
+                                 bool forcesAll) {
+        auto esc = [](const std::string& s) {
+            std::string o;
+            for (char c : s) {
+                if (c == '"' || c == '\\') { o += '\\'; o += c; }
+                else o += c;
+            }
+            return o;
+        };
+        std::ofstream out(path);
+        if (!out) {
+            std::cerr << "warning: could not write keepset JSON to " << path << "\n";
+            return;
+        }
+        out << "{\n";
+        out << "  \"_comment\": \"GENERATED — DO NOT EDIT. cajeta lean keep-set "
+               "(--link-mode=lean).\",\n";
+        out << "  \"linkMode\": \"lean\",\n";
+        out << "  \"forcesAll\": " << (forcesAll ? "true" : "false") << ",\n";
+        if (forcesAll) {
+            out << "  \"count\": null,\n";
+            out << "  \"classes\": []\n";
+        } else {
+            out << "  \"count\": " << keptBy.size() << ",\n";
+            out << "  \"classes\": [\n";
+            size_t i = 0;
+            for (auto& [canon, reason] : keptBy) {
+                out << "    {\"class\": \"" << esc(canon)
+                    << "\", \"keptBy\": \"" << esc(reason) << "\"}"
+                    << (++i < keptBy.size() ? "," : "") << "\n";
+            }
+            out << "  ]\n";
+        }
+        out << "}\n";
+    }
 
     // Null in production: every Compiler owns its context and resets globals.
     // The test StdlibCache installs a shared context here so a primed stdlib
@@ -843,61 +884,107 @@ namespace cajeta {
         // quiesced (reflectionKeep() is final) and finalizeClassObject below
         // reads keepsClass(). No non-reflect reflection ⇒ keep only @Retained;
         // forcesAll ⇒ leave NULL (keep-all). 0b-2b unions narrow per-site sets.
-        if (flags.linkMode == LinkMode::Lean
-                && !CajetaModule::reflectionKeep().forcesAll) {
-            auto keep = std::make_shared<std::set<std::string>>();
-            std::vector<std::pair<std::string, CajetaClassPtr>> classes;
-            for (auto& [canon, type] : CajetaType::getCanonicalMap()) {
-                if (auto k = std::dynamic_pointer_cast<CajetaClass>(type)) {
-                    classes.emplace_back(canon, k);
-                    if (k->getModifiers().count(REFLECT_RETAINED) > 0) {
-                        keep->insert(canon);
-                    }
-                }
+        if (flags.linkMode == LinkMode::Lean) {
+            auto& rk = CajetaModule::reflectionKeep();
+            // 0c classifier: warn on every forces-ALL site. The build still
+            // succeeds and is sound (conservative keep-all); the warning just
+            // points at the selector to tighten.
+            for (auto& reason : rk.forceAllReasons) {
+                std::cerr << "warning: [reflection-forces-keep-all] " << reason
+                          << " — the lean linker retains the whole class registry"
+                             " for this build.\n";
             }
-            std::function<bool(const CajetaClassPtr&, const std::string&)>
-                derivesFrom = [&](const CajetaClassPtr& c,
-                                  const std::string& t) -> bool {
-                    if (!c) return false;
-                    if (c->toCanonical() == t) return true;
-                    for (auto& p : c->getSuperClasses()) {
-                        if (derivesFrom(p, t)) return true;
-                    }
-                    return false;
+            if (!rk.forcesAll) {
+                auto keep = std::make_shared<std::set<std::string>>();
+                // canon -> first reason it was kept (provenance for --why-kept
+                // and cajeta.keepset.json).
+                std::map<std::string, std::string> keptBy;
+                auto addKeep = [&](const std::string& canon,
+                                   const std::string& reason) {
+                    keep->insert(canon);
+                    keptBy.emplace(canon, reason);
                 };
-            for (auto& site : CajetaModule::reflectionKeep().sites) {
-                using RS = CajetaModule::ReflSite;
-                switch (site.kind) {
-                    case RS::BoundClosure:
-                        for (auto& [canon, k] : classes) {
-                            if (derivesFrom(k, site.selector)) keep->insert(canon);
+                // Key by toCanonical(): the canonicalMap reaches a class via both
+                // its short-name alias and its FQ name, but keepsClass() (and the
+                // reg-ctor) only ever uses toCanonical() — so dedup to that, or the
+                // keep-set/keepset.json over-report aliases that never register.
+                std::vector<std::pair<std::string, CajetaClassPtr>> classes;
+                for (auto& [mapKey, type] : CajetaType::getCanonicalMap()) {
+                    if (auto k = std::dynamic_pointer_cast<CajetaClass>(type)) {
+                        std::string canon = k->toCanonical();
+                        classes.emplace_back(canon, k);
+                        if (k->getModifiers().count(REFLECT_RETAINED) > 0) {
+                            addKeep(canon, "@Retained keep-pin");
                         }
-                        break;
-                    case RS::ForNameLiteral:
-                        if (CajetaType::getCanonicalMap().count(site.selector)) {
-                            keep->insert(site.selector);
-                        }
-                        break;
-                    case RS::PackageLiteral:
-                        for (auto& [canon, k] : classes) {
-                            auto p = canon.rfind('.');
-                            if (p != std::string::npos
-                                    && canon.substr(0, p) == site.selector) {
-                                keep->insert(canon);
-                            }
-                        }
-                        break;
-                    case RS::Annotated:
-                        for (auto& [canon, k] : classes) {
-                            if (k->findAnnotation(site.selector)) {
-                                keep->insert(canon);
-                            }
-                        }
-                        break;
+                    }
                 }
-            }
-            for (auto& module : modules) {
-                module->setKeepSet(keep);
+                std::function<bool(const CajetaClassPtr&, const std::string&)>
+                    derivesFrom = [&](const CajetaClassPtr& c,
+                                      const std::string& t) -> bool {
+                        if (!c) return false;
+                        if (c->toCanonical() == t) return true;
+                        for (auto& p : c->getSuperClasses()) {
+                            if (derivesFrom(p, t)) return true;
+                        }
+                        return false;
+                    };
+                for (auto& site : rk.sites) {
+                    using RS = CajetaModule::ReflSite;
+                    switch (site.kind) {
+                        case RS::BoundClosure:
+                            for (auto& [canon, k] : classes) {
+                                if (derivesFrom(k, site.selector))
+                                    addKeep(canon,
+                                        "subtype closure of " + site.selector);
+                            }
+                            break;
+                        case RS::ForNameLiteral:
+                            if (CajetaType::getCanonicalMap().count(site.selector))
+                                addKeep(site.selector,
+                                    "forName(\"" + site.selector + "\")");
+                            break;
+                        case RS::PackageLiteral:
+                            for (auto& [canon, k] : classes) {
+                                auto p = canon.rfind('.');
+                                if (p != std::string::npos
+                                        && canon.substr(0, p) == site.selector) {
+                                    addKeep(canon,
+                                        "classesInPackage(\"" + site.selector + "\")");
+                                }
+                            }
+                            break;
+                        case RS::Annotated:
+                            for (auto& [canon, k] : classes) {
+                                if (k->findAnnotation(site.selector)) {
+                                    addKeep(canon,
+                                        "classesAnnotated(@" + site.selector + ")");
+                                }
+                            }
+                            break;
+                    }
+                }
+                for (auto& module : modules) {
+                    module->setKeepSet(keep);
+                }
+                if (!flags.whyKept.empty()) {
+                    auto it = keptBy.find(flags.whyKept);
+                    if (it != keptBy.end())
+                        std::cout << "why-kept: " << flags.whyKept
+                                  << " — kept by " << it->second << "\n";
+                    else
+                        std::cout << "why-kept: " << flags.whyKept
+                                  << " — STRIPPED (no reflection site keeps it)\n";
+                }
+                if (!flags.keepsetJson.empty()) {
+                    writeKeepsetJson(flags.keepsetJson, keptBy, /*forcesAll=*/false);
+                }
+            } else {
+                if (!flags.whyKept.empty())
+                    std::cout << "why-kept: " << flags.whyKept
+                              << " — kept: this build uses forces-ALL reflection"
+                                 " (whole registry retained)\n";
+                if (!flags.keepsetJson.empty())
+                    writeKeepsetJson(flags.keepsetJson, {}, /*forcesAll=*/true);
             }
         }
 

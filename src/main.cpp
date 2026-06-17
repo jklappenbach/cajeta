@@ -84,6 +84,10 @@ void printUsage(const char* progname) {
               << "  --link-mode=lean|full                Linker/DCE policy. lean (default for --emit=exe)\n"
               << "                                       strips classes outside the keep-set; full keeps\n"
               << "                                       every class (default elsewhere; --keep-all alias).\n"
+              << "  --why-kept=<class>                   Lean DCE: report which reflection site kept the\n"
+              << "                                       named (canonical) class in the keep-set.\n"
+              << "  --keepset-json=<path>                Lean DCE: write the generated keep-set + provenance\n"
+              << "                                       to <path> as JSON.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
@@ -392,6 +396,14 @@ int main(int argc, const char* argv[]) {
             // Alias for --link-mode=full (keep every class; no stripping).
             compiler.getMutableFlags().linkMode = LinkMode::Full;
             linkModeExplicit = true;
+        } else if (match(arg, "why-kept", value)) {
+            // Lean DCE diagnostic: report which reflection site/root kept the
+            // named class (canonical name) in the keep-set.
+            compiler.getMutableFlags().whyKept = value;
+        } else if (match(arg, "keepset-json", value)) {
+            // Lean DCE diagnostic: write the generated keep-set + provenance to
+            // this path as JSON (lean builds only).
+            compiler.getMutableFlags().keepsetJson = value;
         } else if (match(arg, "xpu-backend", value)) {
             // Comma-separated list — a binary can bundle several targets
             // (e.g. vulkan,cpu); the runtime dispatcher picks the best

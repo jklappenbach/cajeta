@@ -540,29 +540,38 @@ namespace cajeta {
                     return p == std::string::npos ? canon : canon.substr(p + 1);
                 };
                 using RS = CajetaModule::ReflSite;
+                using M = CajetaModule;
                 if (isGetType) {
-                    keep.forcesAll = true;
+                    M::noteForceAll("TemplateArgument.getType() — resolves any "
+                        "template-argument type by name; bound it with a concrete "
+                        "Class<T> instead");
                 } else if (methodCallName == "forName") {
                     std::string s = stringLiteralArg(0);
                     if (!s.empty()) keep.sites.push_back({RS::ForNameLiteral, s});
-                    else keep.forcesAll = true;
+                    else M::noteForceAll("forName(<non-literal>) — pass a string "
+                        "literal, or use Class.subtypes<Base>() for a bounded set");
                 } else if (methodCallName == "classesInPackage") {
                     std::string s = stringLiteralArg(0);
                     if (!s.empty()) keep.sites.push_back({RS::PackageLiteral, s});
-                    else keep.forcesAll = true;
+                    else M::noteForceAll("classesInPackage(<non-literal>) — pass a "
+                        "package-name string literal");
                 } else if (methodCallName == "classesAnnotated") {
                     std::string s = stringLiteralArg(0);
                     if (!s.empty())
                         keep.sites.push_back({RS::Annotated, shortName(s)});
-                    else keep.forcesAll = true;
+                    else M::noteForceAll("classesAnnotated(<non-literal>) — pass an "
+                        "annotation token classesAnnotated<@A>() or a name literal");
                 } else if (methodCallName == "heapInstance"
                         || methodCallName == "subtypes") {
                     // bounded form already recorded BoundClosure above; the
                     // by-index heapInstance(int32) isn't a Class-static call so
                     // it never reaches here
-                    if (!boundedReflInjected) keep.forcesAll = true;
+                    if (!boundedReflInjected)
+                        M::noteForceAll(methodCallName + "(...) without a <T> bound "
+                            "— add a type bound, e.g. subtypes<Base>()");
                 } else {  // allClasses + any other enumerator
-                    keep.forcesAll = true;
+                    M::noteForceAll(methodCallName + "() — enumerates the whole "
+                        "registry; use Class.subtypes<Base>() for a bounded set");
                 }
             }
         }

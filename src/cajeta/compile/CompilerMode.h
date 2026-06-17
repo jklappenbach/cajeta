@@ -107,6 +107,12 @@ namespace cajeta {
         // flips it to Lean for --emit=exe unless the user opts out. Mode-
         // independent, so defaultsForMode leaves it Full for every CompilerMode.
         LinkMode        linkMode            = LinkMode::Full;
+        // --why-kept=<canonical class>: print which reflection site/root kept the
+        // named class in the lean keep-set (empty = off). Diagnostic only.
+        std::string     whyKept             = "";
+        // --keepset-json=<path>: write the generated keep-set + provenance to this
+        // JSON file (empty = off; lean builds only).
+        std::string     keepsetJson         = "";
 
         // ----- debugging -----
         // Emit __cajeta_dbg_safepoint(loc_id) at each statement boundary so the

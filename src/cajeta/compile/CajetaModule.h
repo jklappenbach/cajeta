@@ -406,12 +406,20 @@ namespace cajeta {
         struct ReflectionKeep {
             bool forcesAll = false;
             std::vector<ReflSite> sites;
+            // 0c classifier: human-readable reason for each forces-ALL site, so a
+            // lean build can warn and suggest a tighter selector.
+            std::vector<std::string> forceAllReasons;
         };
         static ReflectionKeep& reflectionKeep() {
             static ReflectionKeep instance;
             return instance;
         }
         static void resetReflectionKeep() { reflectionKeep() = ReflectionKeep(); }
+        static void noteForceAll(const std::string& reason) {
+            auto& k = reflectionKeep();
+            k.forcesAll = true;
+            k.forceAllReasons.push_back(reason);
+        }
 
         // Aspect registry — see the aspectClasses field. Callers that
         // walk it (A3 pointcut matching) take the list as it stands at
