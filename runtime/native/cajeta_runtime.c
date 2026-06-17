@@ -13467,12 +13467,72 @@ static int64_t caj_cuda_accel_upload_blob(int64_t blob) {
     free((void*) (intptr_t) blob);
     return (int64_t) dev;
 }
+// --- M3 Phase 1: multi-impl AS secondary-representation registry ------------
+// An AccelerationStructure may carry a SECONDARY representation alongside its
+// primary (the POD's deviceHandle). Under CAJETA_GPU_AS_IMPL=optix the primary is
+// the OptiX AS and the secondary is the portable software-BVH FLOOR (uploaded to a
+// device buffer), so M3's launch-time selection can fall back to software for an
+// Unsupported-shape kernel instead of faulting on the OptiX handle. Keyed by the
+// primary handle; entries are removed on free. (CUDA-only for now; the model
+// generalizes in M3 Phase 5.) Guarded by a dedicated lock — registration runs on
+// the build thread, lookup on launch/free.
+struct caj_as_secondary { int64_t primary; int32_t secImpl; int64_t secHandle; };
+#define CAJ_AS_SEC_MAX 256
+static struct caj_as_secondary g_as_sec[CAJ_AS_SEC_MAX];
+static int g_as_sec_count;
+static pthread_mutex_t g_as_sec_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void caj_as_sec_register(int64_t primary, int32_t secImpl, int64_t secHandle) {
+    if (!primary || !secHandle) return;
+    pthread_mutex_lock(&g_as_sec_lock);
+    if (g_as_sec_count < CAJ_AS_SEC_MAX) {
+        g_as_sec[g_as_sec_count].primary   = primary;
+        g_as_sec[g_as_sec_count].secImpl   = secImpl;
+        g_as_sec[g_as_sec_count].secHandle = secHandle;
+        g_as_sec_count++;
+    }
+    pthread_mutex_unlock(&g_as_sec_lock);
+}
+static int caj_as_sec_lookup(int64_t primary, int32_t* secImpl, int64_t* secHandle) {
+    int found = 0;
+    pthread_mutex_lock(&g_as_sec_lock);
+    for (int i = 0; i < g_as_sec_count; i++)
+        if (g_as_sec[i].primary == primary) {
+            if (secImpl)   *secImpl   = g_as_sec[i].secImpl;
+            if (secHandle) *secHandle = g_as_sec[i].secHandle;
+            found = 1; break;
+        }
+    pthread_mutex_unlock(&g_as_sec_lock);
+    return found;
+}
+static int caj_as_sec_remove(int64_t primary, int32_t* secImpl, int64_t* secHandle) {
+    int found = 0;
+    pthread_mutex_lock(&g_as_sec_lock);
+    for (int i = 0; i < g_as_sec_count; i++)
+        if (g_as_sec[i].primary == primary) {
+            if (secImpl)   *secImpl   = g_as_sec[i].secImpl;
+            if (secHandle) *secHandle = g_as_sec[i].secHandle;
+            g_as_sec[i] = g_as_sec[--g_as_sec_count];   // swap-remove
+            found = 1; break;
+        }
+    pthread_mutex_unlock(&g_as_sec_lock);
+    return found;
+}
+
 static int64_t caj_cuda_accel_build_aabbs(const float* boxes, uint32_t count,
                                           int32_t pref, CajetaAsImpl* out_impl) {
     CajetaAsImpl impl = caj_cuda_resolve_as_impl(pref);
     if (impl == CAJ_AS_IMPL_OPTIX) {
         int64_t h = cajeta_xpu_optix_accel_build_aabbs(boxes, count);
-        if (h) { if (out_impl) *out_impl = CAJ_AS_IMPL_OPTIX; return h; }
+        if (h) {
+            if (out_impl) *out_impl = CAJ_AS_IMPL_OPTIX;
+            // M3: build the portable software FLOOR as a secondary rep (uploaded to
+            // device) so the verb can fall back for an Unsupported-shape kernel.
+            int64_t floor = caj_cuda_accel_upload_blob(
+                cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
+            if (floor) caj_as_sec_register(h, CAJ_AS_IMPL_SOFTWARE_BVH, floor);
+            return h;
+        }
         // OptiX build failed (or SDK absent at runtime) -> the software floor.
     }
     if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
@@ -13483,7 +13543,13 @@ static int64_t caj_cuda_accel_build_triangles(const float* verts, uint32_t triCo
     CajetaAsImpl impl = caj_cuda_resolve_as_impl(CAJ_AS_PREF_AUTO);
     if (impl == CAJ_AS_IMPL_OPTIX) {
         int64_t h = cajeta_xpu_optix_accel_build_triangles(verts, triCount, stride);
-        if (h) { if (out_impl) *out_impl = CAJ_AS_IMPL_OPTIX; return h; }
+        if (h) {
+            if (out_impl) *out_impl = CAJ_AS_IMPL_OPTIX;
+            int64_t floor = caj_cuda_accel_upload_blob(
+                cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride));
+            if (floor) caj_as_sec_register(h, CAJ_AS_IMPL_SOFTWARE_BVH, floor);
+            return h;
+        }
     }
     if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
     return caj_cuda_accel_upload_blob(
@@ -13491,6 +13557,13 @@ static int64_t caj_cuda_accel_build_triangles(const float* verts, uint32_t triCo
 }
 static void caj_cuda_accel_free(int64_t handle, CajetaAsImpl impl) {
     if (!handle) return;
+    // M3: release any registered secondary (the software floor) first.
+    int32_t secImpl; int64_t secHandle;
+    if (caj_as_sec_remove(handle, &secImpl, &secHandle) && secHandle) {
+        if (secImpl == CAJ_AS_IMPL_OPTIX) cajeta_xpu_optix_accel_free(secHandle);
+        else if (g_xpu_cuda.cuMemFree)
+            g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) secHandle);
+    }
     if (impl == CAJ_AS_IMPL_OPTIX) { cajeta_xpu_optix_accel_free(handle); return; }
     if (g_xpu_cuda.cuMemFree)
         g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle);
@@ -13640,6 +13713,20 @@ void __cajeta_xpu_accel_free(void* self, int64_t handle, int32_t impl) {
     if (!handle) return;
     const CajetaNounProvider* p = cajeta_xpu_noun_provider();
     if (p && p->accel_free) p->accel_free(handle, (CajetaAsImpl) impl);
+}
+
+// __cajeta_xpu_accel_impl_set(this, handle, primaryImpl) -> a bitmask of the
+// representations this AS carries, one bit per CajetaAsImpl ordinal (1u<<impl).
+// M3 Phase 1: the primary impl bit, OR'd with any registered SECONDARY rep (the
+// software floor built alongside an OptiX primary). `implTag()` still reports the
+// single primary; this exposes the full set the launch-time selector may choose.
+int32_t __cajeta_xpu_accel_impl_set(void* self, int64_t handle, int32_t primaryImpl) {
+    (void) self;
+    int32_t set = (int32_t) (1u << (unsigned) primaryImpl);
+    int32_t secImpl;
+    if (handle && caj_as_sec_lookup(handle, &secImpl, NULL))
+        set |= (int32_t) (1u << (unsigned) secImpl);
+    return set;
 }
 
 // Address one axis: clamp-to-edge (addressMode 0) or repeat/wrap (1). `n` > 0.

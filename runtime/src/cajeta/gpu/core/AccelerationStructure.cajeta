@@ -137,6 +137,20 @@ public final class AccelerationStructure {
         return this.impl;
     }
 
+    /**
+     * The SET of built representations this structure carries — a bitmask with one
+     * bit per {@link AsImpl} ordinal (`1 << impl`). Where {@link #implTag} reports
+     * the single primary impl, this reports every representation available to the
+     * launch-time selector: e.g. an OptiX-primary AS that also retains the portable
+     * software-BVH floor reads as `(1 << Optix) | (1 << Software)`. The verb picks,
+     * per consuming kernel, the best impl in this set that the kernel can traverse —
+     * so an Unsupported-shape kernel falls back to the software floor instead of
+     * faulting on a native handle (the M3 multi-impl model).
+     */
+    public int32 implSet() {
+        return this.deviceImplSet(this.deviceHandle, this.impl);
+    }
+
     // Device-BVH primitives. Instance @Native methods (the Buffer/Texture2D
     // convention): pointer-shaped at the ABI boundary, so one C symbol per name
     // serves the type. The leading `this` the forwarder passes is ignored by the
@@ -153,6 +167,11 @@ public final class AccelerationStructure {
     // recorded onto the noun so the verb follows the noun, not the active backend.
     @Native("__cajeta_xpu_accel_impl")
     private int32 deviceAccelImpl();
+
+    // The bitmask of representations this AS carries (1 << CajetaAsImpl), incl. any
+    // registered secondary (the software floor alongside an OptiX primary). See implSet().
+    @Native("__cajeta_xpu_accel_impl_set")
+    private int32 deviceImplSet(int64 handle, int32 primaryImpl);
 
     // Free dispatches on the recorded impl, so a moved/cross-backend free still
     // releases the right representation.

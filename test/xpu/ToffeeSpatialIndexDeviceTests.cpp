@@ -1102,6 +1102,75 @@ TEST(ToffeeSpatialIndexDeviceTests, optixRecordsImplOnNvptxDevice) {
                          "CUDA OptiX noun arm didn't take, or OptiX unavailable on-device)";
 }
 
+// M3 Phase 1 — the multi-impl noun: an OptiX-primary AS also retains the portable
+// software-BVH FLOOR as a secondary representation, so implSet() reports BOTH
+// (1<<Optix=4 | 1<<Software=1 = 5). implTag() still reports the single primary
+// (Optix=2). The floor is what the M3 launch-time selector falls back to for an
+// Unsupported-shape kernel. Build-only driver (no kernel launch needed).
+const char* kImplSetDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqSet {\n"
+    "    @Kernel\n"
+    "    public static void noop(Buffer<uint32> b) {\n"
+    "        uint32 i = Thread.globalIdX(); if (i == 0) { b[0] = 1; }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = heap AccelerationStructure(boxes, np);\n"
+    "        return scene.implSet();\n"   // bitmask: Optix(4) | Software-floor(1) = 5
+    "    }\n"
+    "}\n";
+
+TEST(ToffeeSpatialIndexDeviceTests, multiImplAsRecordsSoftwareAndOptix) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    AsImplEnvGuard forceOptix("optix");
+    std::map<std::string, std::string> sources = {{"test.RqSet", kImplSetDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqSet", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int set = fn();
+    // OptiX bit (1<<2 = 4) present only if OptiX actually built on-device; skip if not.
+    if (!(set & 4)) {
+        GTEST_SKIP() << "CUDA device present but OptiX AS not built (engine absent); "
+                        "set=" << set;
+    }
+    EXPECT_TRUE(set & 1) << "OptiX-primary AS did not retain the software-BVH floor "
+                            "(implSet=" << set << ", expected the Software bit 1 set)";
+    EXPECT_EQ(set, 5) << "implSet=" << set << " (expected Optix|Software = 5)";
+}
+
+// M3 Phase 1 — implSet() on an AUTO (software-primary) AS reports software-only
+// (bit 1), and implTag() still returns the single primary tag. Backward-compat:
+// AUTO on CUDA stays software (the M2 4-C policy holds until M3 Phase 4 flips it).
+TEST(ToffeeSpatialIndexDeviceTests, multiImplAsSoftwareOnlyUnderAuto) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    unsetenv("CAJETA_GPU_AS_IMPL");   // AUTO
+    std::map<std::string, std::string> sources = {{"test.RqSet", kImplSetDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqSet", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int set = fn();
+    EXPECT_EQ(set, 1) << "implSet=" << set
+                      << " (AUTO on CUDA must be software-only [bit 1] until the M3 flip)";
+}
+
 // M2 Phase 4-C policy — on CUDA, AUTO (no CAJETA_GPU_AS_IMPL) records SOFTWARE, even
 // when OptiX is available. The portable software BVH is the v1 default floor; OptiX
 // RT cores are strictly OPT-IN (=optix), because the AS impl is resolved before the
