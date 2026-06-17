@@ -10010,7 +10010,17 @@ static int64_t cajeta_xpu_vk_accel_build_triangles(const float* verts,
              scratchBuf = VK_NULL_HANDLE;
     VkDeviceMemory vmem = VK_NULL_HANDLE, asMem = VK_NULL_HANDLE,
                    scratchMem = VK_NULL_HANDLE;
-    VkAccelerationStructureKHR accel = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR accel = VK_NULL_HANDLE;   // the BLAS
+    // TLAS over one instance referencing the BLAS. Ray query traces the TOP-LEVEL
+    // AS — a BLAS alone is NOT traceable (NVIDIA returns no hits; RADV happened to
+    // tolerate it, which is why the BLAS-only path passed there). Built in a
+    // second submit once the BLAS is complete (mirrors the AABB path's TLAS).
+    VkBuffer instBuf = VK_NULL_HANDLE, tlasBuf = VK_NULL_HANDLE,
+             tlScratch = VK_NULL_HANDLE;
+    VkDeviceMemory instMem = VK_NULL_HANDLE, tlasMem = VK_NULL_HANDLE,
+                   tlScratchMem = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
+    void* instMapped = NULL;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     int64_t result = 0;
 
@@ -10126,7 +10136,132 @@ static int64_t cajeta_xpu_vk_accel_build_triangles(const float* verts,
         goto tri_done;
     g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
 
-    // 7. Record the AS (asBuf/asMem/accel survive).
+    // 7. The BLAS is built (cmd held it). Free that cmd and build the TLAS over one
+    //    instance referencing the BLAS, in a SECOND submit — the BLAS wait above
+    //    fully synchronizes, so no intra-buffer barrier is needed before the build.
+    g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1, &cmd);
+    cmd = VK_NULL_HANDLE;
+
+    VkAccelerationStructureDeviceAddressInfoKHR blAddrInfo;
+    memset(&blAddrInfo, 0, sizeof(blAddrInfo));
+    blAddrInfo.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    blAddrInfo.accelerationStructure = accel;   // the BLAS
+    VkDeviceAddress blasAddr =
+        g_xpu_vk.vkGetAccelerationStructureDeviceAddressKHR(g_xpu_vk.device,
+                                                            &blAddrInfo);
+
+    VkAccelerationStructureInstanceKHR inst;
+    memset(&inst, 0, sizeof(inst));
+    inst.transform.matrix[0][0] = 1.0f;        // identity 3x4 (row-major)
+    inst.transform.matrix[1][1] = 1.0f;
+    inst.transform.matrix[2][2] = 1.0f;
+    inst.mask = 0xFF;                          // matches the kernel's cullMask
+    inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    inst.accelerationStructureReference = (uint64_t) blasAddr;
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            sizeof(inst),
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &instBuf, &instMem, &instMapped))
+        goto tri_done;
+    memcpy(instMapped, &inst, sizeof(inst));
+
+    VkAccelerationStructureGeometryKHR tlGeom;
+    memset(&tlGeom, 0, sizeof(tlGeom));
+    tlGeom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    tlGeom.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    tlGeom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    tlGeom.geometry.instances.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    tlGeom.geometry.instances.arrayOfPointers = VK_FALSE;
+    tlGeom.geometry.instances.data.deviceAddress = cajeta_xpu_vk_buf_addr(instBuf);
+
+    VkAccelerationStructureBuildGeometryInfoKHR tlBgi;
+    memset(&tlBgi, 0, sizeof(tlBgi));
+    tlBgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    tlBgi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    tlBgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    tlBgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    tlBgi.geometryCount = 1;
+    tlBgi.pGeometries = &tlGeom;
+
+    uint32_t tlPrim = 1;
+    VkAccelerationStructureBuildSizesInfoKHR tlSizes;
+    memset(&tlSizes, 0, sizeof(tlSizes));
+    tlSizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    g_xpu_vk.vkGetAccelerationStructureBuildSizesKHR(
+        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tlBgi,
+        &tlPrim, &tlSizes);
+    if (tlSizes.accelerationStructureSize == 0 || tlSizes.buildScratchSize == 0)
+        goto tri_done;
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            tlSizes.accelerationStructureSize,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &tlasBuf, &tlasMem, NULL))
+        goto tri_done;
+    VkAccelerationStructureCreateInfoKHR tlAci;
+    memset(&tlAci, 0, sizeof(tlAci));
+    tlAci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    tlAci.buffer = tlasBuf;
+    tlAci.size = tlSizes.accelerationStructureSize;
+    tlAci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &tlAci, NULL,
+                                                  &tlas) != VK_SUCCESS)
+        goto tri_done;
+    if (!cajeta_xpu_vk_make_addr_buffer(tlSizes.buildScratchSize + scratchAlign - 1,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                        &tlScratch, &tlScratchMem, NULL))
+        goto tri_done;
+    tlBgi.dstAccelerationStructure = tlas;
+    {
+        VkDeviceAddress s = cajeta_xpu_vk_buf_addr(tlScratch);
+        s = (s + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
+        tlBgi.scratchData.deviceAddress = s;
+    }
+    VkAccelerationStructureBuildRangeInfoKHR tlRange;
+    memset(&tlRange, 0, sizeof(tlRange));
+    tlRange.primitiveCount = 1;
+    const VkAccelerationStructureBuildRangeInfoKHR* tlRanges = &tlRange;
+
+    VkCommandBufferAllocateInfo tcbai;
+    memset(&tcbai, 0, sizeof(tcbai));
+    tcbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    tcbai.commandPool = g_xpu_vk.cmdPool;
+    tcbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    tcbai.commandBufferCount = 1;
+    if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &tcbai, &cmd)
+            != VK_SUCCESS)
+        goto tri_done;
+    VkCommandBufferBeginInfo tcbbi;
+    memset(&tcbbi, 0, sizeof(tcbbi));
+    tcbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    tcbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    g_xpu_vk.vkBeginCommandBuffer(cmd, &tcbbi);
+    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &tlBgi, &tlRanges);
+    {   // TLAS write -> ray-query (compute) read availability/visibility.
+        VkMemoryBarrier b;
+        memset(&b, 0, sizeof(b));
+        b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        b.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        b.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        g_xpu_vk.vkCmdPipelineBarrier(
+            cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &b, 0, NULL, 0, NULL);
+    }
+    g_xpu_vk.vkEndCommandBuffer(cmd);
+    VkSubmitInfo tsi;
+    memset(&tsi, 0, sizeof(tsi));
+    tsi.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    tsi.commandBufferCount = 1;
+    tsi.pCommandBuffers = &cmd;
+    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &tsi, VK_NULL_HANDLE) != VK_SUCCESS)
+        goto tri_done;
+    g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
+
+    // 8. Record the AS: the TLAS is bound for ray query; the BLAS it references is
+    //    kept alive (asBuf/asMem back the BLAS, tlasBuf/tlasMem the TLAS).
     {
         int slot = -1;
         for (int i = 0; i < g_vk_accel_count; ++i)
@@ -10135,11 +10270,15 @@ static int64_t cajeta_xpu_vk_accel_build_triangles(const float* verts,
             if (g_vk_accel_count >= CAJETA_VK_MAX_ACCELS) goto tri_done;
             slot = g_vk_accel_count++;
         }
-        g_vk_accels[slot].accel = accel;
-        g_vk_accels[slot].asBuf = asBuf;
-        g_vk_accels[slot].asMem = asMem;
+        g_vk_accels[slot].accel = tlas;
+        g_vk_accels[slot].asBuf = tlasBuf;
+        g_vk_accels[slot].asMem = tlasMem;
+        g_vk_accels[slot].blas = accel;
+        g_vk_accels[slot].blasBuf = asBuf;
+        g_vk_accels[slot].blasMem = asMem;
         g_vk_accels[slot].live = 1;
         result = (int64_t) (slot + 1);
+        tlas = VK_NULL_HANDLE; tlasBuf = VK_NULL_HANDLE; tlasMem = VK_NULL_HANDLE;
         accel = VK_NULL_HANDLE; asBuf = VK_NULL_HANDLE; asMem = VK_NULL_HANDLE;
     }
 
@@ -10147,9 +10286,18 @@ tri_done:
     if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1, &cmd);
     if (scratchBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, scratchBuf, NULL);
     if (scratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, scratchMem, NULL);
+    if (tlScratch) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, tlScratch, NULL);
+    if (tlScratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, tlScratchMem, NULL);
     if (vMapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, vmem);
     if (vbuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, vbuf, NULL);
     if (vmem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, vmem, NULL);
+    if (instMapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, instMem);
+    if (instBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, instBuf, NULL);
+    if (instMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, instMem, NULL);
+    // On failure these survive (success cleared them); tear them down.
+    if (tlas) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, tlas, NULL);
+    if (tlasBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, tlasBuf, NULL);
+    if (tlasMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, tlasMem, NULL);
     if (accel) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, accel, NULL);
     if (asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, asBuf, NULL);
     if (asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, asMem, NULL);
@@ -13106,10 +13254,31 @@ static int64_t caj_vk_accel_build_aabbs(const float* boxes, uint32_t count,
 }
 static int64_t caj_vk_accel_build_triangles(const float* verts, uint32_t triCount,
                                             uint32_t stride, CajetaAsImpl* out_impl) {
-    // Triangle forced-software-on-Vulkan is deferred (AABB-only this brick); the
-    // Vulkan triangle path is the native BLAS.
-    if (out_impl) *out_impl = CAJ_AS_IMPL_VULKAN_NATIVE;
-    return cajeta_xpu_vk_accel_build_triangles(verts, triCount, stride);
+    // Follow the resolved impl, exactly like the AABB path: software → build the
+    // portable host BVH and upload it to a storage buffer the "$sw" kernel reads;
+    // native → the VK_GEOMETRY_TYPE_TRIANGLES_KHR BLAS+TLAS. On Windows AUTO
+    // resolves to software (caj_native_rayquery_available is Win32-gated), matching
+    // the AABB path — so triangle ray query runs the proven SoftwareRayQuery walk
+    // there instead of the native OpRayQuery path (which is not wired for native on
+    // Windows). On a ray-query Linux device AUTO stays native. (The triangle ctor
+    // carries no pref override, so AUTO — same default the noun records.)
+    CajetaAsImpl impl = caj_resolve_as_impl(CAJ_AS_PREF_AUTO);
+    if (out_impl) *out_impl = impl;
+    if (impl == CAJ_AS_IMPL_SOFTWARE_BVH) {
+        int64_t blob = cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride);
+        if (!blob) return 0;
+        const float* hdr = (const float*) (intptr_t) blob;
+        uint64_t bytes = (uint64_t) caj_bvh_block_words(hdr) * 4u;
+        int64_t buf = cajeta_xpu_vk_alloc(bytes);
+        if (buf) {
+            void* m = cajeta_xpu_vk_mapped(buf);
+            if (m) memcpy(m, hdr, (size_t) bytes);
+            else { cajeta_xpu_vk_free(buf); buf = 0; }
+        }
+        free((void*) (intptr_t) blob);
+        return buf;
+    }
+    return cajeta_xpu_vk_accel_build_triangles(verts, triCount, stride);  // native
 }
 static void caj_vk_accel_free(int64_t handle, CajetaAsImpl impl) {
     // Free follows the recorded impl: a software BVH is a storage buffer; a native
