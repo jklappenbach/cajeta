@@ -7728,7 +7728,10 @@ struct cajeta_cuda_api {
     int (*cuInit)(unsigned);
     int (*cuDeviceGetCount)(int*);
     int (*cuDeviceGet)(int*, int);
-    int (*cuCtxCreate)(void**, unsigned, int);
+    int (*cuDevicePrimaryCtxRetain)(void**, int);  // R4: share the per-device PRIMARY
+                                     // ctx (a process-wide singleton) so the runtime,
+                                     // the JIT-embedded runtime, and the OptiX glue
+                                     // all resolve to ONE CUcontext (RT-core interop).
     int (*cuCtxSetCurrent)(void*);   // H9: bind the ctx to the launching thread
     int (*cuModuleLoadData)(void**, const void*);
     int (*cuModuleGetFunction)(void**, void*, const char*);
@@ -7820,7 +7823,7 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuInit, "cuInit");
     CAJ_BIND(cuDeviceGetCount, "cuDeviceGetCount");
     CAJ_BIND(cuDeviceGet, "cuDeviceGet");
-    CAJ_BIND(cuCtxCreate, "cuCtxCreate_v2");
+    CAJ_BIND(cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");  // NO _v2 suffix
     CAJ_BIND(cuCtxSetCurrent, "cuCtxSetCurrent");
     CAJ_BIND(cuModuleLoadData, "cuModuleLoadData");
     CAJ_BIND(cuModuleGetFunction, "cuModuleGetFunction");
@@ -7898,7 +7901,17 @@ static int cajeta_xpu_cuda_init_locked(void) {
     int count = 0;
     if (g_xpu_cuda.cuDeviceGetCount(&count) != 0 || count <= 0) return 0;
     if (g_xpu_cuda.cuDeviceGet(&g_xpu_cuda.device, 0) != 0) return 0;
-    if (g_xpu_cuda.cuCtxCreate(&g_xpu_cuda.ctx, 0, g_xpu_cuda.device) != 0) return 0;
+    // R4 (OptiX RT-core interop): retain the per-device PRIMARY context instead of
+    // creating a private one. The primary context is a process-wide singleton, so the
+    // host runtime object, the JIT-embedded runtime, and the OptiX glue (which also
+    // cuDevicePrimaryCtxRetains) all resolve to the SAME CUcontext — the AS build, the
+    // OptiX pipeline, and the kernel launch share one context (the M1 split, where the
+    // runtime used its own cuCtxCreate ctx, is resolved). Unlike cuCtxCreate,
+    // cuDevicePrimaryCtxRetain does NOT make the context current, so set it current
+    // here to preserve the prior init-thread-current behavior (per-launch SetCurrent
+    // at the launch site, H9, still re-asserts it on worker/fiber threads).
+    if (g_xpu_cuda.cuDevicePrimaryCtxRetain(&g_xpu_cuda.ctx, g_xpu_cuda.device) != 0) return 0;
+    if (g_xpu_cuda.cuCtxSetCurrent) g_xpu_cuda.cuCtxSetCurrent(g_xpu_cuda.ctx);
     g_xpu_cuda.loaded = 1;
     return 1;
 }
@@ -7912,6 +7925,15 @@ static int cajeta_xpu_cuda_ready(void) {
     ok = cajeta_xpu_cuda_init_locked();
     pthread_mutex_unlock(&g_xpu_cuda_lock);
     return ok;
+}
+
+// The runtime's CUDA context (post-R4: the per-device PRIMARY context) as a void*, or
+// NULL if CUDA is unavailable. Exposed so the OptiX glue + host probes can confirm the
+// AS build / pipeline / launch all share ONE context (M2 Phase 2). Ensures the backend
+// is initialized so the primary context is retained + current on the calling thread.
+void* cajeta_xpu_cuda_context(void) {
+    if (!cajeta_xpu_cuda_ready()) return NULL;
+    return g_xpu_cuda.ctx;
 }
 
 // ============================================================================

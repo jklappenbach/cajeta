@@ -49,6 +49,11 @@ extern "C" int      cajeta_xpu_optix_available(void);
 extern "C" int64_t  cajeta_xpu_optix_accel_build_aabbs(const float* boxes, unsigned count);
 extern "C" uint64_t cajeta_xpu_optix_traversable(int64_t handle);
 extern "C" void     cajeta_xpu_optix_accel_free(int64_t handle);
+// M2 Phase 2 (R4): the underlying CUDA context behind the OptiX device context, and the
+// cajeta runtime's CUDA context. Post-R4 both are the per-device primary — they must be
+// equal, proving the AS build / pipeline / launch share ONE context.
+extern "C" void*    cajeta_xpu_optix_cuda_context(void);
+extern "C" void*    cajeta_xpu_cuda_context(void);
 
 namespace {
 
@@ -135,46 +140,14 @@ TEST(OptiXRayQueryProbe, glueBuildsAndFreesAabbAs) {
     }
 }
 
-// The AABB candidate-count pipeline: build a custom-prim AS, create the OptiX
-// module/program-groups/pipeline from `ptx`, launch over the 4 oracle queries, and
-// return the per-query candidate counts. Shared by the nvcc-PTX fixture and the
-// LLVM-emitted-PTX fixture (M2 Phase 1) so both exercise the identical machinery and
-// differ ONLY in the PTX producer. ASSERT_* on fatal failures (gtest aborts the
-// caller). `out[4]` receives the counts.
-void runAabbCountPipeline(const std::string& ptx, unsigned out[4]) {
-    OptixDeviceContext octx = glueContext();
-    ASSERT_NE(octx, nullptr) << "OptiX/CUDA context unavailable from the runtime glue";
-
-    const unsigned np = 3;
-    float boxes[np * 6] = {
-        -0.5f,-0.5f,-0.5f,  0.5f, 0.5f, 0.5f,
-         9.5f,-0.5f,-0.5f, 10.5f, 0.5f, 0.5f,
-        19.5f,-0.5f,-0.5f, 20.5f, 0.5f, 0.5f,
-    };
-    OptixAabb aabbs[np];
-    for (unsigned i = 0; i < np; i++)
-        aabbs[i] = { boxes[i*6+0],boxes[i*6+1],boxes[i*6+2],boxes[i*6+3],boxes[i*6+4],boxes[i*6+5] };
-    CUdeviceptr d_aabbs = upload(aabbs, sizeof(aabbs));
-    CUdeviceptr d_boxes = upload(boxes, sizeof(boxes));
-
-    unsigned int geomFlags[1] = { OPTIX_GEOMETRY_FLAG_NONE };
-    OptixBuildInput bi = {};
-    bi.type = OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES;
-    bi.customPrimitiveArray.aabbBuffers = &d_aabbs;
-    bi.customPrimitiveArray.numPrimitives = np;
-    bi.customPrimitiveArray.flags = geomFlags;
-    bi.customPrimitiveArray.numSbtRecords = 1;
-    OptixAccelBuildOptions ao = {};
-    ao.buildFlags = OPTIX_BUILD_FLAG_NONE; ao.operation = OPTIX_BUILD_OPERATION_BUILD;
-    OptixAccelBufferSizes sizes;
-    ASSERT_EQ(optixAccelComputeMemoryUsage(octx, &ao, &bi, 1, &sizes), OPTIX_SUCCESS);
-    CUdeviceptr d_temp = 0, d_out = 0;
-    p_cuMemAlloc(&d_temp, sizes.tempSizeInBytes);
-    p_cuMemAlloc(&d_out, sizes.outputSizeInBytes);
-    OptixTraversableHandle gas = 0;
-    ASSERT_EQ(optixAccelBuild(octx, 0, &ao, &bi, 1, d_temp, sizes.tempSizeInBytes,
-                              d_out, sizes.outputSizeInBytes, &gas, nullptr, 0), OPTIX_SUCCESS);
-
+// Module + program-groups + pipeline + SBT + launch of the count programs in `ptx`
+// against an already-built traversable `gas` (the boxes live in `d_boxes` for the
+// intersection point-in-box test), filling out[4] with the per-query candidate counts.
+// Split out so the AS can come from EITHER an inline optixAccelBuild (the M0/M1 PTX
+// fixtures) OR the runtime glue provider (the M2 Phase-2 unification probe) — the
+// launch path is identical. ASSERT_* on fatal failures (gtest aborts the caller).
+void launchCountAgainst(OptixDeviceContext octx, const std::string& ptx,
+                        OptixTraversableHandle gas, CUdeviceptr d_boxes, unsigned out[4]) {
     OptixModuleCompileOptions mco = {};
     OptixPipelineCompileOptions pco = {};
     pco.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
@@ -229,6 +202,46 @@ void runAabbCountPipeline(const std::string& ptx, unsigned out[4]) {
     p_cuMemcpyDtoH(out, d_counts, n * sizeof(unsigned));
 }
 
+// The full AABB candidate-count pipeline with the AS built INLINE (optixAccelBuild) on
+// the glue's context. Shared by the nvcc-PTX fixture and the LLVM-emitted-PTX fixture
+// (M2 Phase 1) — both differ ONLY in the PTX producer. `out[4]` receives the counts.
+void runAabbCountPipeline(const std::string& ptx, unsigned out[4]) {
+    OptixDeviceContext octx = glueContext();
+    ASSERT_NE(octx, nullptr) << "OptiX/CUDA context unavailable from the runtime glue";
+
+    const unsigned np = 3;
+    float boxes[np * 6] = {
+        -0.5f,-0.5f,-0.5f,  0.5f, 0.5f, 0.5f,
+         9.5f,-0.5f,-0.5f, 10.5f, 0.5f, 0.5f,
+        19.5f,-0.5f,-0.5f, 20.5f, 0.5f, 0.5f,
+    };
+    OptixAabb aabbs[np];
+    for (unsigned i = 0; i < np; i++)
+        aabbs[i] = { boxes[i*6+0],boxes[i*6+1],boxes[i*6+2],boxes[i*6+3],boxes[i*6+4],boxes[i*6+5] };
+    CUdeviceptr d_aabbs = upload(aabbs, sizeof(aabbs));
+    CUdeviceptr d_boxes = upload(boxes, sizeof(boxes));
+
+    unsigned int geomFlags[1] = { OPTIX_GEOMETRY_FLAG_NONE };
+    OptixBuildInput bi = {};
+    bi.type = OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES;
+    bi.customPrimitiveArray.aabbBuffers = &d_aabbs;
+    bi.customPrimitiveArray.numPrimitives = np;
+    bi.customPrimitiveArray.flags = geomFlags;
+    bi.customPrimitiveArray.numSbtRecords = 1;
+    OptixAccelBuildOptions ao = {};
+    ao.buildFlags = OPTIX_BUILD_FLAG_NONE; ao.operation = OPTIX_BUILD_OPERATION_BUILD;
+    OptixAccelBufferSizes sizes;
+    ASSERT_EQ(optixAccelComputeMemoryUsage(octx, &ao, &bi, 1, &sizes), OPTIX_SUCCESS);
+    CUdeviceptr d_temp = 0, d_out = 0;
+    p_cuMemAlloc(&d_temp, sizes.tempSizeInBytes);
+    p_cuMemAlloc(&d_out, sizes.outputSizeInBytes);
+    OptixTraversableHandle gas = 0;
+    ASSERT_EQ(optixAccelBuild(octx, 0, &ao, &bi, 1, d_temp, sizes.tempSizeInBytes,
+                              d_out, sizes.outputSizeInBytes, &gas, nullptr, 0), OPTIX_SUCCESS);
+
+    launchCountAgainst(octx, ptx, gas, d_boxes, out);
+}
+
 // AABB candidate count on the RT cores == the software oracle's {1,0,1,1}.
 TEST(OptiXRayQueryProbe, aabbCandidateCountMatchesSoftwareOracle) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
@@ -262,6 +275,57 @@ TEST(OptiXRayQueryProbe, aabbCandidateCountFromLlvmEmittedPtx) {
     runAabbCountPipeline(ptx, counts);
     EXPECT_EQ(counts[0], 1u); EXPECT_EQ(counts[1], 0u);
     EXPECT_EQ(counts[2], 1u); EXPECT_EQ(counts[3], 1u);
+}
+
+// M2 Phase 2 — context unification (R4). Two things, together: (1) an OptiX AS built by
+// the runtime GLUE PROVIDER (cajeta_xpu_optix_accel_build_aabbs — the exact call the
+// CUDA noun provider makes, vs. the inline optixAccelBuild the fixtures above use) is
+// traversable by a launch and matches the oracle; (2) the runtime's CUDA context, the
+// glue's CUDA context, and that launch all coincide. Post-R4 the runtime retains the
+// per-device PRIMARY context — the same singleton the glue retains — so
+// cajeta_xpu_cuda_context() == cajeta_xpu_optix_cuda_context(). This resolves the M1
+// split (glue=primary, runtime=its own cuCtxCreate ctx) that blocked traversal, and is
+// the precondition for the Phase-3 verb to optixLaunch on the runtime's context.
+TEST(OptiXRayQueryProbe, glueBuiltAsTraversableOnUnifiedContext) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    if (!cajeta_xpu_optix_available()) {
+        GTEST_SKIP() << "OptiX runtime unavailable (SDK built in but nvoptix/CUDA absent)";
+    }
+    std::string ptx = readPtx("optix_progs_ll.ptx");
+    ASSERT_FALSE(ptx.empty()) << "test/xpu/optix/optix_progs_ll.ptx not found";
+
+    OptixDeviceContext octx = glueContext();   // also makes the (primary) context current
+    ASSERT_NE(octx, nullptr) << "OptiX/CUDA context unavailable from the runtime glue";
+
+    // ONE context: the runtime's CUDA context == the OptiX glue's CUDA context (both the
+    // per-device primary). The R4 unification the M1 split lacked.
+    void* runtimeCtx = cajeta_xpu_cuda_context();
+    void* glueCtx = cajeta_xpu_optix_cuda_context();
+    ASSERT_NE(runtimeCtx, nullptr) << "runtime CUDA context unavailable";
+    EXPECT_EQ(runtimeCtx, glueCtx) << "runtime and OptiX glue must share ONE CUDA context";
+
+    // Build the AS via the GLUE PROVIDER (not an inline optixAccelBuild).
+    float boxes[18] = {
+        -0.5f,-0.5f,-0.5f,  0.5f, 0.5f, 0.5f,
+         9.5f,-0.5f,-0.5f, 10.5f, 0.5f, 0.5f,
+        19.5f,-0.5f,-0.5f, 20.5f, 0.5f, 0.5f,
+    };
+    int64_t h = cajeta_xpu_optix_accel_build_aabbs(boxes, 3);
+    ASSERT_NE(h, 0) << "glue optixAccelBuild (custom prim) returned no handle";
+    OptixTraversableHandle gas = (OptixTraversableHandle) cajeta_xpu_optix_traversable(h);
+    ASSERT_NE(gas, 0ull) << "null traversable from the glue-built AS";
+
+    // glueContext() left the primary current; the glue build pushes/pops the primary
+    // (net no change), so this launch runs on the same context the AS was built on.
+    CUdeviceptr d_boxes = upload(boxes, sizeof(boxes));
+    unsigned counts[4] = {99,99,99,99};
+    launchCountAgainst(octx, ptx, gas, d_boxes, counts);
+    EXPECT_EQ(counts[0], 1u); EXPECT_EQ(counts[1], 0u);
+    EXPECT_EQ(counts[2], 1u); EXPECT_EQ(counts[3], 1u);
+
+    cajeta_xpu_optix_accel_free(h);
 }
 
 // Triangle nearest hit on the RT cores == the software oracle (t=6/prim=1/u=v=0.25).

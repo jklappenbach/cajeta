@@ -80,9 +80,10 @@ bool loadCudaDriver() {
     return true;
 }
 
-// Lazily-initialized OptiX state. The primary CUDA context is retained + made
-// current so AS builds share it (M2's launch must use the same context — a noted
-// follow-up if the runtime's kernel context differs from the primary).
+// Lazily-initialized OptiX state. The per-device PRIMARY CUDA context is retained;
+// post-M2-Phase-2 (R4) the cajeta runtime ALSO retains the primary (instead of its
+// own cuCtxCreate ctx), so the glue's AS build, the OptiX pipeline, and the runtime's
+// kernel launch all share this one context — the M1 split is resolved.
 struct OptixState {
     bool tried = false;
     bool ok = false;
@@ -183,6 +184,15 @@ void* cajeta_xpu_optix_context(void) {
     return (void*) s.ctx;
 }
 
+// The underlying CUDA context (the per-device PRIMARY) the OptiX device context was
+// created over, as a void*. Post-R4 the cajeta runtime retains the SAME primary, so
+// this equals cajeta_xpu_cuda_context() — the M2 Phase-2 probe asserts that to prove
+// the AS build / pipeline / launch share ONE context. NULL when unavailable.
+void* cajeta_xpu_optix_cuda_context(void) {
+    OptixState& s = ensureInit();
+    return s.ok ? (void*) s.cuCtx : nullptr;
+}
+
 // Build a custom-primitive (AABB) OptiX AS. `boxes` is count*6 floats
 // (minX,minY,minZ,maxX,maxY,maxZ). Returns an int64 handle (OptixAs*) or 0.
 int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, uint32_t count) {
@@ -255,6 +265,7 @@ void cajeta_xpu_optix_accel_free(int64_t handle) {
 extern "C" {
 int      cajeta_xpu_optix_available(void) { return 0; }
 void*    cajeta_xpu_optix_context(void) { return nullptr; }
+void*    cajeta_xpu_optix_cuda_context(void) { return nullptr; }
 int64_t  cajeta_xpu_optix_accel_build_aabbs(const float*, uint32_t) { return 0; }
 int64_t  cajeta_xpu_optix_accel_build_triangles(const float*, uint32_t, uint32_t) { return 0; }
 uint64_t cajeta_xpu_optix_traversable(int64_t) { return 0; }
