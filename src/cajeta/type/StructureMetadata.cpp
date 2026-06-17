@@ -746,32 +746,18 @@ namespace cajeta {
             // Class.of never returns these (such classes are never reflected on
             // in v1), which is why earlier phases never tripped over them.
             //
-            // DCE (lean linker): under LinkMode::Lean, emit the registration
-            // ctor ONLY when this class is in the keep-set. An unkept class loses
-            // its llvm.global_ctors anchor, so --gc-sections strips its
-            // #ClassObject / RTTI / vtable / methods. keepsClass() keeps
-            // everything in Full mode (and pre-0b), so this is inert today.
-            if (!llvm::isa<llvm::ConstantPointerNull>(classVtableRef)
-                    && module->keepsClass(structure->toCanonical())) {
-                llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
-                llvm::FunctionType* regTy =
-                    llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
-                llvm::FunctionCallee regFn =
-                    lmod->getOrInsertFunction("__cajeta_register_class", regTy);
-                std::string canon = structure->toCanonical();
-                llvm::Function* regCtor = llvm::Function::Create(
-                    llvm::FunctionType::get(voidTy, false),
-                    llvm::GlobalValue::InternalLinkage,
-                    "__cajeta_class_reg_ctor." + canon, lmod);
-                llvm::IRBuilder<> rb(
-                    llvm::BasicBlock::Create(ctx, "entry", regCtor));
-                llvm::Constant* nameStr =
-                    rb.CreateGlobalString(canon, "cajeta.class.name." + canon);
-                rb.CreateCall(regFn,
-                    {nameStr, structure->getClassObjectGlobal()});
-                rb.CreateRetVoid();
-                llvm::appendToGlobalCtors(*lmod, regCtor, /*Priority=*/65535);
-            }
+            // DCE Tier-0b (lean linker): registration is NO LONGER emitted here.
+            // populate() runs DURING the Phase 1/2 codegen loop — it fires for
+            // late template instantiations created mid-codegen, BEFORE the
+            // reachability keep-set can exist (the set needs the full, quiesced
+            // canonicalMap). Emitting the reg ctor here would pin classes the
+            // keep-set hasn't been computed for yet. So ALL registration is
+            // centralized into CajetaClass::finalizeClassObject, which runs once
+            // per class in the post-loop pass (Compiler.cpp ~841) after the
+            // keep-set is fixed. We still set the #ClassObject initializer above
+            // (slot 0 = Class#VTable when resolvable); finalizeClassObject reads
+            // that slot, patches it for deferred classes, and emits the gated
+            // registration ctor. See finalizeClassObject for the keepsClass gate.
         }
     }
 
