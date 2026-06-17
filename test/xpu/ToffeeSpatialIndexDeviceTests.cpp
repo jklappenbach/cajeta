@@ -966,12 +966,26 @@ TEST(ToffeeSpatialIndexDeviceTests, forcedNativeOfApiOnDevice) {
 // — the whole NVPTX kernel is the software walk). The SAME driver sources as the
 // CPU software-BVH legs above, so each NVPTX 777 must equal the CPU 777 — the verb
 // following the noun across a third backend. Skips cleanly without a CUDA device.
+//
+// M3 Phase 3: these five drivers are all SUPPORTED OptiX shapes, so under AUTO on a
+// 4090 the launch now lazily builds + prefers the OptiX rep (RT cores) — which would
+// keep them green (still 777) but stop exercising the NVPTX SOFTWARE walk they exist
+// to cover. Each forces CAJETA_GPU_AS_IMPL=software so it keeps testing the software
+// path after the AUTO→OptiX flip; the AUTO/RT-core path is covered by the OptiX device
+// suite + the M3 lazy/selection tests.
 // ---------------------------------------------------------------------------
+
+// RAII env guard (CAJETA_GPU_AS_IMPL for the scope), restored on destruction.
+namespace { struct AsImplEnvGuard {
+    AsImplEnvGuard(const char* v) { setenv("CAJETA_GPU_AS_IMPL", v, 1); }
+    ~AsImplEnvGuard() { unsetenv("CAJETA_GPU_AS_IMPL"); }
+}; }
 
 TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
+    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
     std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
@@ -988,6 +1002,7 @@ TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
+    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
     std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
@@ -1004,6 +1019,7 @@ TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
+    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
     std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
@@ -1020,6 +1036,7 @@ TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
+    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
     std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
@@ -1036,6 +1053,7 @@ TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
+    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
     std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
@@ -1049,11 +1067,7 @@ TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
 }
 
 // ── NVIDIA OptiX RT-core AS tier (Milestone 1) ──────────────────────────────
-// RAII env guard (CAJETA_GPU_AS_IMPL for the scope), restored on destruction.
-namespace { struct AsImplEnvGuard {
-    AsImplEnvGuard(const char* v) { setenv("CAJETA_GPU_AS_IMPL", v, 1); }
-    ~AsImplEnvGuard() { unsetenv("CAJETA_GPU_AS_IMPL"); }
-}; }
+// (AsImplEnvGuard is defined above, before the software-BVH section.)
 
 // Build-only driver (no kernel launch): the OptiX *verb* (traversal via optixTrace)
 // is M2, so M1 validates that the CUDA noun provider BUILDS + RECORDS the OptiX AS
@@ -1383,9 +1397,177 @@ TEST(ToffeeSpatialIndexDeviceTests, autoRecordsSoftwareImplOnNvptxDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 700) << "fail code " << r
-                      << " (702: AUTO routed to OptiX on CUDA — the software floor is the "
-                         "v1 AUTO default; OptiX RT cores must stay opt-in via "
-                         "CAJETA_GPU_AS_IMPL=optix)";
+                      << " (702: AUTO BUILD recorded OptiX — under M3 the AUTO build still "
+                         "records the software floor as the primary; OptiX is built LAZILY "
+                         "at the first supported-shape launch, not at build time)";
+}
+
+// ── M3 Phase 3 — lazy / elidable native build ───────────────────────────────
+// Under AUTO the build records the software-BVH floor as the primary and does NOT build
+// the OptiX rep; that is deferred to the first SUPPORTED-shape launch (R4 cost control —
+// an AS consumed only by software kernels never pays for OptiX). implSet() observes the
+// transition: software-only (1) right after build, software|OptiX (5) after a supported
+// launch lazily builds the OptiX rep. (The drop-software-floor hint of 3c is deferred —
+// a spec-level MAY; the floor is always retained for now.)
+
+// 3a — a software-only consumer never triggers the lazy OptiX build. Under AUTO, build an
+// AABB AS and launch an UNSUPPORTED-shape kernel (AS, 2 Buffer, 1 scalar → software cubin
+// over the floor); implSet() must stay software-only (1) afterwards. run() returns
+// 700 + implSet() → expect 701.
+const char* kLazySoftOnlyDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqLazySoft {\n"
+    "    @Kernel\n"   // Unsupported shape -> software cubin, no OptiX program
+    "    public static void countOne(AccelerationStructure scene,\n"
+    "                                Buffer<float32> qx, Buffer<uint32> out,\n"
+    "                                uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          qx[i], 0.0f, 0.0f, 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = heap AccelerationStructure(boxes, np);\n"
+    "        uint32 n = 4;\n"
+    "        float32[] hqx = heap float32[n]; uint32[] hout = heap uint32[n];\n"
+    "        hqx[0]=0.0f; hqx[1]=5.0f; hqx[2]=10.0f; hqx[3]=19.7f;\n"
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9;\n"
+    "        Buffer<float32> qx = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        qx.upload(hqx); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        countOne.launch(s, grid: [1], block: [64])(scene, qx, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"
+    "        if (hout[1] != 0) { return 101; }\n"
+    "        if (hout[2] != 1) { return 102; }\n"
+    "        if (hout[3] != 1) { return 103; }\n"
+    "        return 700 + scene.implSet();\n"   // expect 701: OptiX NEVER built
+    "    }\n"
+    "}\n";
+
+TEST(ToffeeSpatialIndexDeviceTests, softwareOnlyConsumerSkipsOptixBuild) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    unsetenv("CAJETA_GPU_AS_IMPL");   // AUTO
+    std::map<std::string, std::string> sources = {{"test.RqLazySoft", kLazySoftOnlyDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqLazySoft", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 701) << "fail code " << r
+                      << " (1xx: wrong counts; 705: OptiX was built for a software-only "
+                         "consumer — the lazy build fired when it must not)";
+}
+
+// 3b — the OptiX rep is absent right after build (implSet()==1) and present after the
+// first SUPPORTED-shape launch (implSet()==5): the lazy build fires on demand. Under
+// AUTO; run() checks the pre-launch set, launches the canonical AABB-count shape, then
+// returns 700 + post-launch implSet() (705 = lazy OptiX built; 701 = OptiX engine absent
+// on this box → skip).
+const char* kLazyBuildDriver =
+    "package test;\n"
+    "import cajeta.gpu.core.AccelerationStructure;\n"
+    "import cajeta.gpu.core.Buffer;\n"
+    "import cajeta.gpu.core.RayQuery;\n"
+    "import cajeta.gpu.core.Stream;\n"
+    "import cajeta.gpu.core.Thread;\n"
+    "public class RqLazyBuild {\n"
+    "    @Kernel\n"   // SUPPORTED canonical AABB candidate-count -> lazy OptiX at launch
+    "    public static void countHits(AccelerationStructure scene,\n"
+    "                                 Buffer<float32> qx, Buffer<float32> qy,\n"
+    "                                 Buffer<float32> qz, Buffer<uint32> out,\n"
+    "                                 uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            RayQuery rq;\n"
+    "            rq.initialize(scene, 0, 255,\n"
+    "                          qx[i], qy[i], qz[i], 0.0f,\n"
+    "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+    "            uint32 c = 0;\n"
+    "            while (rq.proceed()) {\n"
+    "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+    "            }\n"
+    "            out[i] = c;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] boxes = heap float32[np * 6];\n"
+    "        boxes[0]=-0.5f;  boxes[1]=-0.5f; boxes[2]=-0.5f;  boxes[3]=0.5f;  boxes[4]=0.5f; boxes[5]=0.5f;\n"
+    "        boxes[6]=9.5f;   boxes[7]=-0.5f; boxes[8]=-0.5f;  boxes[9]=10.5f; boxes[10]=0.5f; boxes[11]=0.5f;\n"
+    "        boxes[12]=19.5f; boxes[13]=-0.5f; boxes[14]=-0.5f; boxes[15]=20.5f; boxes[16]=0.5f; boxes[17]=0.5f;\n"
+    "        AccelerationStructure scene = heap AccelerationStructure(boxes, np);\n"
+    "        int32 pre = scene.implSet();\n"          // expect 1 (software-only, no OptiX yet)
+    "        uint32 n = 4;\n"
+    "        float32[] hqx = heap float32[n]; float32[] hqy = heap float32[n]; float32[] hqz = heap float32[n];\n"
+    "        uint32[] hout = heap uint32[n];\n"
+    "        hqx[0]=0.0f;  hqy[0]=0.0f; hqz[0]=0.0f;\n"
+    "        hqx[1]=5.0f;  hqy[1]=0.0f; hqz[1]=0.0f;\n"
+    "        hqx[2]=10.0f; hqy[2]=0.0f; hqz[2]=0.0f;\n"
+    "        hqx[3]=19.7f; hqy[3]=0.0f; hqz[3]=0.0f;\n"
+    "        hout[0]=9; hout[1]=9; hout[2]=9; hout[3]=9;\n"
+    "        Buffer<float32> qx = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qy = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> qz = heap Buffer<float32>(n);\n"
+    "        Buffer<uint32> out = heap Buffer<uint32>(n);\n"
+    "        qx.upload(hqx); qy.upload(hqy); qz.upload(hqz); out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        countHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != 1) { return 100; }\n"
+    "        if (hout[1] != 0) { return 101; }\n"
+    "        if (hout[2] != 1) { return 102; }\n"
+    "        if (hout[3] != 1) { return 103; }\n"
+    "        if (pre != 1) { return 110; }\n"          // OptiX must NOT exist before launch
+    "        return 700 + scene.implSet();\n"          // 705 = OptiX built lazily; 701 = engine absent
+    "    }\n"
+    "}\n";
+
+TEST(ToffeeSpatialIndexDeviceTests, lazyOptixBuiltOnFirstNativeLaunch) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    unsetenv("CAJETA_GPU_AS_IMPL");   // AUTO
+    std::map<std::string, std::string> sources = {{"test.RqLazyBuild", kLazyBuildDriver}};
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(sources, "test.RqLazyBuild", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    if (r == 701) {
+        GTEST_SKIP() << "CUDA present but OptiX engine absent — lazy build cannot fire";
+    }
+    EXPECT_EQ(r, 705) << "fail code " << r
+                      << " (1xx: wrong counts; 110: OptiX existed before launch (not "
+                         "lazy); 705 expected = pre-launch software-only then OptiX built "
+                         "on the first supported-shape launch)";
 }
 
 // M2 Phase 3-D — the OptiX RT-core VERB end to end through the full compiler. The

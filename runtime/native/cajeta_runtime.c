@@ -13519,6 +13519,104 @@ static int caj_as_sec_remove(int64_t primary, int32_t* secImpl, int64_t* secHand
     return found;
 }
 
+// --- M3 Phase 3: lazy native build — retained geometry + lazy OptiX resolver ----
+// Under AUTO the build records the portable software BVH as the PRIMARY and does NOT
+// build the (expensive) OptiX rep — that is deferred to the first supported-shape
+// launch against this AS (R4: only pay for OptiX if a native consumer actually runs).
+// To rebuild OptiX on demand we must retain the source geometry; this registry holds a
+// host COPY keyed by the primary (software) handle. kind 0 = AABBs (count*6 floats),
+// 1 = triangle soup (triCount*3*stride floats). Freed when the OptiX rep is built (no
+// longer needed) or at AS free. Forced =optix builds OptiX eagerly and never retains
+// here; forced =software is ineligible and never retains (no lazy OptiX).
+struct caj_as_geom { int64_t primary; int32_t kind; uint32_t count; uint32_t stride;
+                     float* data; uint64_t nfloats; };
+#define CAJ_AS_GEOM_MAX 256
+static struct caj_as_geom g_as_geom[CAJ_AS_GEOM_MAX];
+static int g_as_geom_count;
+static pthread_mutex_t g_as_geom_lock = PTHREAD_MUTEX_INITIALIZER;
+// Serializes lazy OptiX builds so concurrent launches against one AS build it once.
+static pthread_mutex_t g_as_lazy_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void caj_as_geom_register(int64_t primary, int32_t kind, const float* data,
+                                 uint64_t nfloats, uint32_t count, uint32_t stride) {
+    if (!primary || !data || !nfloats) return;
+    float* copy = (float*) malloc((size_t) nfloats * sizeof(float));
+    if (!copy) return;
+    memcpy(copy, data, (size_t) nfloats * sizeof(float));
+    pthread_mutex_lock(&g_as_geom_lock);
+    if (g_as_geom_count < CAJ_AS_GEOM_MAX) {
+        g_as_geom[g_as_geom_count].primary = primary;
+        g_as_geom[g_as_geom_count].kind    = kind;
+        g_as_geom[g_as_geom_count].count   = count;
+        g_as_geom[g_as_geom_count].stride  = stride;
+        g_as_geom[g_as_geom_count].data    = copy;
+        g_as_geom[g_as_geom_count].nfloats = nfloats;
+        g_as_geom_count++;
+        copy = NULL;
+    }
+    pthread_mutex_unlock(&g_as_geom_lock);
+    free(copy);   // registry full: drop the copy (lazy build just won't fire)
+}
+// Copy out the metadata + data pointer for `primary` (data still owned by the registry).
+static int caj_as_geom_get(int64_t primary, struct caj_as_geom* out) {
+    int found = 0;
+    pthread_mutex_lock(&g_as_geom_lock);
+    for (int i = 0; i < g_as_geom_count; i++)
+        if (g_as_geom[i].primary == primary) { *out = g_as_geom[i]; found = 1; break; }
+    pthread_mutex_unlock(&g_as_geom_lock);
+    return found;
+}
+static void caj_as_geom_remove(int64_t primary) {
+    float* data = NULL;
+    pthread_mutex_lock(&g_as_geom_lock);
+    for (int i = 0; i < g_as_geom_count; i++)
+        if (g_as_geom[i].primary == primary) {
+            data = g_as_geom[i].data;
+            g_as_geom[i] = g_as_geom[--g_as_geom_count];   // swap-remove
+            break;
+        }
+    pthread_mutex_unlock(&g_as_geom_lock);
+    free(data);
+}
+
+// Lazy OptiX is eligible when the runtime has OptiX AND the policy is not forced
+// software (AUTO, or anything other than =software). Forced =optix takes the eager
+// build branch and never reaches the retention path; forced =software returns 0 here.
+static int caj_cuda_lazy_optix_eligible(void) {
+    if (!cajeta_xpu_optix_available()) return 0;
+    const char* env = getenv("CAJETA_GPU_AS_IMPL");
+    if (env && strcmp(env, "software") == 0) return 0;
+    return 1;
+}
+
+// Resolve (build-once) the OptiX representation for an AUTO AS whose primary is the
+// software BVH `primary`. Returns the OptiX handle, or 0 if none can be built (no
+// retained geometry → forced software, or the OptiX build failed). Registers the built
+// rep as the secondary so implSet() reports it and free releases it. Thread-safe.
+static int64_t caj_cuda_as_resolve_optix(int64_t primary) {
+    int32_t sImpl = 0; int64_t sH = 0;
+    if (caj_as_sec_lookup(primary, &sImpl, &sH) && sImpl == CAJ_AS_IMPL_OPTIX && sH)
+        return sH;                                   // already built
+    pthread_mutex_lock(&g_as_lazy_lock);
+    if (caj_as_sec_lookup(primary, &sImpl, &sH) && sImpl == CAJ_AS_IMPL_OPTIX && sH) {
+        pthread_mutex_unlock(&g_as_lazy_lock);       // built by a racing launch
+        return sH;
+    }
+    struct caj_as_geom g;
+    int64_t h = 0;
+    if (caj_as_geom_get(primary, &g) && g.data) {
+        h = (g.kind == 0) ? cajeta_xpu_optix_accel_build_aabbs(g.data, g.count)
+                          : cajeta_xpu_optix_accel_build_triangles(g.data, g.count,
+                                                                   g.stride);
+        if (h) {
+            caj_as_sec_register(primary, CAJ_AS_IMPL_OPTIX, h);
+            caj_as_geom_remove(primary);             // geometry no longer needed
+        }
+    }
+    pthread_mutex_unlock(&g_as_lazy_lock);
+    return h;
+}
+
 static int64_t caj_cuda_accel_build_aabbs(const float* boxes, uint32_t count,
                                           int32_t pref, CajetaAsImpl* out_impl) {
     CajetaAsImpl impl = caj_cuda_resolve_as_impl(pref);
@@ -13536,7 +13634,12 @@ static int64_t caj_cuda_accel_build_aabbs(const float* boxes, uint32_t count,
         // OptiX build failed (or SDK absent at runtime) -> the software floor.
     }
     if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
-    return caj_cuda_accel_upload_blob(cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
+    int64_t h = caj_cuda_accel_upload_blob(cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
+    // M3 Phase 3: AUTO lazy path — retain geometry so a supported-shape launch can build
+    // the OptiX rep on demand (the primary stays the software floor until then).
+    if (h && caj_cuda_lazy_optix_eligible())
+        caj_as_geom_register(h, /*kind=aabbs*/0, boxes, (uint64_t) count * 6u, count, 0);
+    return h;
 }
 static int64_t caj_cuda_accel_build_triangles(const float* verts, uint32_t triCount,
                                               uint32_t stride, CajetaAsImpl* out_impl) {
@@ -13552,18 +13655,26 @@ static int64_t caj_cuda_accel_build_triangles(const float* verts, uint32_t triCo
         }
     }
     if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
-    return caj_cuda_accel_upload_blob(
+    int64_t h = caj_cuda_accel_upload_blob(
         cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride));
+    // M3 Phase 3: AUTO lazy path — retain the vertex soup (triCount*3 verts, `stride`
+    // floats each) so a supported-shape launch can build the OptiX rep on demand.
+    if (h && caj_cuda_lazy_optix_eligible())
+        caj_as_geom_register(h, /*kind=triangles*/1, verts,
+                             (uint64_t) triCount * 3u * stride, triCount, stride);
+    return h;
 }
 static void caj_cuda_accel_free(int64_t handle, CajetaAsImpl impl) {
     if (!handle) return;
-    // M3: release any registered secondary (the software floor) first.
+    // M3: release any registered secondary (the software floor under =optix, or the
+    // lazily-built OptiX rep under AUTO) first, then any retained lazy geometry.
     int32_t secImpl; int64_t secHandle;
     if (caj_as_sec_remove(handle, &secImpl, &secHandle) && secHandle) {
         if (secImpl == CAJ_AS_IMPL_OPTIX) cajeta_xpu_optix_accel_free(secHandle);
         else if (g_xpu_cuda.cuMemFree)
             g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) secHandle);
     }
+    caj_as_geom_remove(handle);   // no-op if the lazy OptiX rep was already built/freed
     if (impl == CAJ_AS_IMPL_OPTIX) { cajeta_xpu_optix_accel_free(handle); return; }
     if (g_xpu_cuda.cuMemFree)
         g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle);
@@ -14054,10 +14165,15 @@ caj_v4f __cajeta_xpu_cpu_texcube_sample_rgba(void* texp, int32_t filterMode,
 // (handle@0, origins@8/16/24, out@32, n@40, boxes@48; size 56) — the same struct
 // the 3-C-i device probe launched with. `boxes` is the AS's AABB data (NOT a kernel
 // arg); the glue retained it at build time (cajeta_xpu_optix_accel_boxes).
-static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv) {
+// optixHandle is the OptiX AS rep resolved at launch (M3 Phase 2/3): the AS POD's
+// primary handle under eager =optix, or the lazily-built OptiX secondary under AUTO.
+// It keys the traversable/boxes lookups instead of av[0], so the AUTO path (whose POD
+// primary is the software floor) reaches the right OptiX rep.
+static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
+                                         int64_t optixHandle) {
     void** av = (void**) argv;
     if (!av) return;
-    int64_t asHandle = *(int64_t*) av[0];
+    int64_t asHandle = optixHandle;
     uint64_t trav = cajeta_xpu_optix_traversable(asHandle);
     if (!trav) {
         fprintf(stderr, "cajeta.xpu: OptiX ray-query launch '%s' missing "
@@ -14144,17 +14260,30 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         void** av0 = (void**) argv;
         struct cajeta_kparams* kpx = cajeta_xpu_find_kparams(kernelName);
         int32_t asArgImpl = -1;            // this launch's AS arg impl (-1 = no AS arg)
+        int64_t asPrimary = 0;             // its POD handle (offset 0)
         if (kpx && av0) {
             for (int i = 0; i < kpx->count; ++i)
                 if (kpx->kind[i] == CAJETA_KP_ACCEL && av0[i]) {
                     asArgImpl = ((const int32_t*) av0[i])[3];
+                    asPrimary = *(int64_t*) av0[i];
                     break;
                 }
         }
         struct cajeta_optix_rq* rq = cajeta_xpu_find_optix_rq(kernelName);
-        if (rq && cajeta_xpu_optix_available() && asArgImpl == CAJ_AS_IMPL_OPTIX) {
-            cajeta_xpu_launch_cuda_optix(rq, argv);
-            return;
+        if (rq && cajeta_xpu_optix_available() && asPrimary) {
+            // Resolve the OptiX rep for this AS: under eager =optix the POD primary IS
+            // the OptiX AS; under AUTO the primary is the software floor and we build
+            // (or reuse) the OptiX rep lazily on this first supported-shape launch (R4).
+            // Forced =software retains no geometry → resolve returns 0 → software path.
+            int64_t optixHandle = 0;
+            if (asArgImpl == CAJ_AS_IMPL_OPTIX)
+                optixHandle = asPrimary;
+            else if (asArgImpl == CAJ_AS_IMPL_SOFTWARE_BVH)
+                optixHandle = caj_cuda_as_resolve_optix(asPrimary);
+            if (optixHandle) {
+                cajeta_xpu_launch_cuda_optix(rq, argv, optixHandle);
+                return;
+            }
         }
     }
     pthread_mutex_lock(&g_xpu_cuda_lock);
