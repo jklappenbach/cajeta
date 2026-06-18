@@ -646,4 +646,247 @@ public class Tensor<T> {
         }
         return this.makeView(this.offsetVal, ns, nst);
     }
+
+    // ────────────────────────────── indexing (Phase 5) ───────────────────────
+
+    /**
+     * **Basic** integer index along `axis` (negative wraps): a **view** with that
+     * axis removed (`ndim - 1`). A 1-D tensor indexes to a 1-element 1-D view
+     * (cajeta has no 0-d scalar tensor in v1). Shares `Storage`.
+     */
+    public #Tensor<T> index(int32 axis, int64 i) {
+        int32 nd = (int32) this.shapeDims.count();
+        int64 ni = i;
+        if (ni < 0) {
+            ni = ni + this.shapeDims[axis];
+        }
+        int64 newOff = this.offsetVal + ni * this.strideDims[axis];
+        if (nd == 1) {
+            int64[] os = heap int64[1];
+            int64[] ot = heap int64[1];
+            os[0] = 1;
+            ot[0] = 1;
+            return this.makeView(newOff, os, ot);
+        }
+        int32 outNd = nd - 1;
+        int64[] ns = heap int64[outNd];
+        int64[] nst = heap int64[outNd];
+        int32 w = 0;
+        int32 r = 0;
+        while (r < nd) {
+            if (r != axis) {
+                ns[w] = this.shapeDims[r];
+                nst[w] = this.strideDims[r];
+                w = w + 1;
+            }
+            r = r + 1;
+        }
+        return this.makeView(newOff, ns, nst);
+    }
+
+    /**
+     * **Basic** slice `[start, stop)` along `axis` with a positive `step` (negative
+     * start/stop wrap): a **view**. For full-axis reversal use {@link #reverseAxis}
+     * (negative step is deferred). Shares `Storage`.
+     */
+    public #Tensor<T> sliceAxis(int32 axis, int64 start, int64 stop, int64 step) {
+        int64 dim = this.shapeDims[axis];
+        int64 s = start;
+        int64 e = stop;
+        if (s < 0) {
+            s = s + dim;
+        }
+        if (e < 0) {
+            e = e + dim;
+        }
+        if (s < 0) {
+            s = 0;
+        }
+        if (e > dim) {
+            e = dim;
+        }
+        int64 cnt = 0;
+        if (e > s) {
+            cnt = (e - s + step - 1) / step;
+        }
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            ns[k] = this.shapeDims[k];
+            nst[k] = this.strideDims[k];
+            k = k + 1;
+        }
+        ns[axis] = cnt;
+        nst[axis] = this.strideDims[axis] * step;
+        int64 newOff = this.offsetVal + s * this.strideDims[axis];
+        return this.makeView(newOff, ns, nst);
+    }
+
+    /**
+     * Reverse `axis` (the `[::-1]` case): a **view** with that axis's stride
+     * negated and the offset moved to its last element. Shares `Storage`.
+     */
+    public #Tensor<T> reverseAxis(int32 axis) {
+        int64 dim = this.shapeDims[axis];
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            ns[k] = this.shapeDims[k];
+            nst[k] = this.strideDims[k];
+            k = k + 1;
+        }
+        nst[axis] = -this.strideDims[axis];
+        int64 newOff = this.offsetVal + (dim - 1) * this.strideDims[axis];
+        return this.makeView(newOff, ns, nst);
+    }
+
+    /**
+     * **Boolean** indexing (read): a 1-D **copy** of the elements where `mask`
+     * (same shape) is true, in logical C-order. Independent storage (numpy's
+     * boolean-index-read-is-a-copy rule).
+     */
+    public #Tensor<T> maskedSelect(Tensor<boolean> mask) {
+        int64 n = this.size();
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) {
+            idx[z] = 0;
+            z = z + 1;
+        }
+        int64 cntTrue = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            boolean m = mask.getAt(idx);
+            if (m) {
+                cntTrue = cntTrue + 1;
+            }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= this.shapeDims[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        Storage<T> st = heap Storage<T>(cntTrue);
+        z = 0;
+        while (z < nd) {
+            idx[z] = 0;
+            z = z + 1;
+        }
+        int64 w = 0;
+        lin = 0;
+        while (lin < n) {
+            boolean m = mask.getAt(idx);
+            if (m) {
+                T v = this.getAt(idx);
+                st.set(w, v);
+                w = w + 1;
+            }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= this.shapeDims[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] shp = heap int64[1];
+        shp[0] = cntTrue;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<T>(#st, 0, shp, strides);
+    }
+
+    /**
+     * **Boolean** indexing (write / scatter): set every element where `mask`
+     * (same shape) is true to `value`, in place.
+     */
+    public void maskedAssign(Tensor<boolean> mask, T value) {
+        int64 n = this.size();
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) {
+            idx[z] = 0;
+            z = z + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean m = mask.getAt(idx);
+            if (m) {
+                this.setAt(idx, value);
+            }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= this.shapeDims[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+    }
+
+    /**
+     * **Fancy** indexing (read / gather): a 1-D **copy** holding `this[indices[k]]`
+     * (negative wraps) along axis 0. Independent storage. (v1 is 1-axis;
+     * multi-axis / `take_along_axis` are a later refinement.)
+     */
+    public #Tensor<T> take(int64[] indices) {
+        int32 m = (int32) indices.count();
+        Storage<T> st = heap Storage<T>((int64) m);
+        int32 i = 0;
+        while (i < m) {
+            int64 ix = indices[i];
+            if (ix < 0) {
+                ix = ix + this.shapeDims[0];
+            }
+            T v = this.get1(ix);
+            st.set((int64) i, v);
+            i = i + 1;
+        }
+        int64[] shp = heap int64[1];
+        shp[0] = (int64) m;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<T>(#st, 0, shp, strides);
+    }
+
+    /**
+     * **Fancy** indexing (write / scatter): assign `this[indices[k]] = values[k]`
+     * (negative wraps) along axis 0, in place.
+     */
+    public void put(int64[] indices, T[] values) {
+        int32 m = (int32) indices.count();
+        int32 i = 0;
+        while (i < m) {
+            int64 ix = indices[i];
+            if (ix < 0) {
+                ix = ix + this.shapeDims[0];
+            }
+            T v = values[i];
+            this.set1(ix, v);
+            i = i + 1;
+        }
+    }
 }

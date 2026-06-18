@@ -354,3 +354,102 @@ TEST(TensorTests, broadcastIsZeroCopyView) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 5a — basic indexing: integer index (removes axis), slice with step + negative
+// indices, reverseAxis — all VIEWS sharing storage.
+TEST(TensorTests, basicIndexingViews) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] data = { 0, 1, 2, 3, 4, 5 };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        // integer index row 1 → [3,4,5], view
+        "        Tensor<int32> row = a.index(0, 1);\n"
+        "        if (!row.isView()) { return -1; }\n"
+        "        if (row.ndim() != 1 || row.shapeAt(0) != 3) { return -2; }\n"
+        "        if (row.get1(0) != 3 || row.get1(2) != 5) { return -3; }\n"
+        "        row.set1(0, 99);\n"                                 // a[1,0]
+        "        if (a.get2(1, 0) != 99) { return -4; }\n"
+        // negative integer index → last row [99,4,5]
+        "        Tensor<int32> last = a.index(0, -1);\n"
+        "        if (last.get1(0) != 99) { return -5; }\n"
+        // slice with step on a 1-D arange(6): [0,2,4]
+        "        Tensor<int32> r = Tensor.arange<int32>(6);\n"
+        "        Tensor<int32> ev = r.sliceAxis(0, 0, 6, 2);\n"
+        "        if (!ev.isView()) { return -6; }\n"
+        "        if (ev.shapeAt(0) != 3) { return -7; }\n"
+        "        if (ev.get1(0) != 0 || ev.get1(1) != 2 || ev.get1(2) != 4) { return -8; }\n"
+        // negative-index slice [-3, 6) step 1 → [3,4,5]
+        "        Tensor<int32> tail = r.sliceAxis(0, -3, 6, 1);\n"
+        "        if (tail.shapeAt(0) != 3 || tail.get1(0) != 3 || tail.get1(2) != 5) { return -9; }\n"
+        // reverse
+        "        Tensor<int32> rev = r.reverseAxis(0);\n"
+        "        if (!rev.isView()) { return -10; }\n"
+        "        if (rev.get1(0) != 5 || rev.get1(5) != 0) { return -11; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 5b — boolean indexing: masked read is an independent 1-D copy; masked write
+// scatters into the source.
+TEST(TensorTests, booleanIndexing) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] data = { 0, 1, 2, 3, 4, 5 };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        "        boolean[] md = heap boolean[6];\n"
+        "        md[0] = true; md[1] = false; md[2] = true;\n"       // even-value mask
+        "        md[3] = false; md[4] = true; md[5] = false;\n"
+        "        Tensor<boolean> mask = Tensor.of<boolean>(md, shp);\n"
+        "        Tensor<int32> sel = a.maskedSelect(mask);\n"
+        "        if (sel.ndim() != 1 || sel.shapeAt(0) != 3) { return -1; }\n"
+        "        if (sel.get1(0) != 0 || sel.get1(1) != 2 || sel.get1(2) != 4) { return -2; }\n"
+        // masked read is a copy (independent)
+        "        sel.set1(0, 100);\n"
+        "        if (a.get2(0, 0) == 100) { return -3; }\n"
+        // masked write scatters into a
+        "        a.maskedAssign(mask, 7);\n"
+        "        if (a.get2(0, 0) != 7 || a.get2(0, 2) != 7 || a.get2(1, 1) != 7) { return -4; }\n"
+        "        if (a.get2(0, 1) != 1 || a.get2(1, 0) != 3) { return -5; }\n"   // unmasked intact
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 5c — fancy indexing: take (gather, independent copy, negative wraps); put
+// (scatter into the source).
+TEST(TensorTests, fancyIndexing) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tensor<int32> r = Tensor.arange<int32>(10);\n"      // [0..9]
+        "        int64[] idx = heap int64[4];\n"
+        "        idx[0] = 2; idx[1] = 5; idx[2] = 8; idx[3] = -1;\n" // -1 → 9
+        "        Tensor<int32> g = r.take(idx);\n"
+        "        if (g.ndim() != 1 || g.shapeAt(0) != 4) { return -1; }\n"
+        "        if (g.get1(0) != 2 || g.get1(1) != 5 || g.get1(2) != 8 || g.get1(3) != 9) { return -2; }\n"
+        // gather is a copy
+        "        g.set1(0, 50);\n"
+        "        if (r.get1(2) == 50) { return -3; }\n"
+        // put scatters
+        "        int64[] pidx = heap int64[3];\n"
+        "        pidx[0] = 0; pidx[1] = 3; pidx[2] = 9;\n"
+        "        int32[] pvals = { 100, 200, 300 };\n"
+        "        r.put(pidx, pvals);\n"
+        "        if (r.get1(0) != 100 || r.get1(3) != 200 || r.get1(9) != 300) { return -4; }\n"
+        "        if (r.get1(1) != 1) { return -5; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
