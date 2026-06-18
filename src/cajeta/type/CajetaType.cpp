@@ -670,7 +670,22 @@ namespace cajeta {
             }
             if (!type) {
                 auto it = canonicalMap.find(qName->toCanonical());
+                // An annotation type (canonicalized under package "code") must
+                // NOT satisfy a plain type reference. A bare `Foo var` resolves
+                // its qName to "code.Foo" here; once @Foo exists that lookup
+                // hits the layout-less annotation and shadows a real class Foo
+                // (→ null-llvmType SIGSEGV at allocation). Treat an annotation
+                // hit as a miss so the import-aware / short-name resolution
+                // below binds the class. Annotation APPLICATIONS (`@Foo`)
+                // resolve through AnnotationParser, and classesAnnotated<@Foo>()
+                // passes the "code.Foo" canonical as a string — neither needs an
+                // annotation returned from here. (task #65)
+                bool annHit = false;
                 if (it != canonicalMap.end()) {
+                    auto kc = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                    annHit = kc && kc->isAnnotation();
+                }
+                if (it != canonicalMap.end() && !annHit) {
                     type = it->second;
                 } else if (module && qName->getPackageName().empty()) {
                     // Import-aware short-name resolution. The user
@@ -712,6 +727,15 @@ namespace cajeta {
                     if (nativeIt != canonicalMap.end()) {
                         type = nativeIt->second;
                     }
+                }
+                // Annotation fallback. The branches above try a
+                // same-named real CLASS first (so @Foo never shadows a
+                // class Foo). If none resolved and the only hit was the
+                // annotation, the bare name refers to the annotation
+                // itself — e.g. classesAnnotated<Audited>() naming the
+                // annotation in type position with no `@`. (task #65)
+                if (!type && annHit) {
+                    type = it->second;
                 }
                 // Placeholder synthesis. The four lookup tiers
                 // above couldn't find a defined type, but the

@@ -475,6 +475,18 @@ namespace cajeta {
                 auto ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 base = module->getBuilder()->CreateLoad(ptrTy, base);
             }
+        } else if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(base)) {
+            // Static-field receiver (`log.name` where `log` is a static field):
+            // Identifier returns the field's GlobalVariable. A reference-type
+            // static field's global holds a `ptr` to the instance, so load
+            // through to the object before GEP'ing its field — the field-access
+            // twin of the static-field method-receiver load. A value-type static
+            // field stores its aggregate inline, so the global's address IS the
+            // object: GEP it directly.
+            if (gv->getValueType()->isPointerTy()) {
+                base = module->getBuilder()->CreateLoad(
+                    llvm::PointerType::get(*module->getLlvmContext(), 0), gv);
+            }
         }
         StructurePropertyPtr property = lookedUpProperty;
         // Set our own resolvedType so callers can load-through with the right
