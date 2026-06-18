@@ -4072,6 +4072,35 @@ void* __cajeta_object_get_class(void* obj) {
     return *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
 }
 
+// Reified template capture (reified-capture-spec.md): does object `obj`'s runtime
+// instantiation match — or descend one declared level from — the canonical type
+// name `targetName`? Because cajeta monomorphizes, each instantiation
+// (`Tensor<float32>` vs `Tensor<int32>`) carries a distinct RTTI whose typeName
+// IS its full canonical name, so an exact instantiation test is a string compare;
+// a one-level is-a also matches a direct parent name. Walks
+// obj -> vtable(slot 0) -> classObject(+CAJETA_VTABLE_CLASSOBJECT_OFFSET) ->
+// rtti(classObject+8). Returns 1 on match, 0 otherwise. Null-safe — the backbone
+// of `instanceof Tensor<float32>` and the `(Tensor<float32>) w` capture cast.
+int32_t __cajeta_instanceof_named(void* obj, const char* targetName) {
+    if (!obj || !targetName) return 0;
+    void* vtable = *(void**) obj;                 // header slot 0
+    if ((uintptr_t) vtable < 4096) return 0;      // not a real vtable pointer
+    void* classObject =
+        *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return 0;
+    void* rtti = *(void**) ((char*) classObject + 8);
+    if (!rtti) return 0;
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (r->typeName && strcmp(r->typeName, targetName) == 0) return 1;
+    for (int32_t i = 0; i < r->parentCount; ++i) {
+        if (r->parentNames && r->parentNames[i]
+                && strcmp(r->parentNames[i], targetName) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // --- cajeta.reflect class registry (REFL-8) --------------------------------
 // Maps a class's canonical name -> its cached #ClassObject (the reflect Class
 // instance), so Class.forName(name) can resolve a class from a string with no

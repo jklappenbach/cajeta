@@ -3214,24 +3214,31 @@ namespace cajeta {
         resolvedType = CajetaType::of("boolean");
     }
 
+    // Erased base of a canonical template name: everything before the first '<'
+    // (`cajeta.math.Tensor<cajeta.float32>` -> `cajeta.math.Tensor`). For a
+    // non-template name it is the name itself.
+    static std::string erasedBaseOf(const std::string& canonical) {
+        auto lt = canonical.find('<');
+        return lt == std::string::npos ? canonical : canonical.substr(0, lt);
+    }
+
     llvm::Value* InstanceOfExpression::generateCode(CajetaModulePtr module) {
-        // Static dispatch only: take the lhs's compile-time resolvedType and ask whether
-        // it matches `type` (or one of its bases, when we can walk the chain). When the
-        // lhs type is unknown at compile time, we fall back to `false` — wrong for the
-        // dynamic-dispatch case but safe (never falsely reports a match).
+        // cajeta monomorphizes, so a value widened to a template wildcard
+        // (`Tensor<?>`) is, at runtime, still its concrete instantiation. When the
+        // static lhs type already pins the answer we fold it at compile time; when
+        // the lhs is a wildcard (or a different instantiation of the same base —
+        // i.e. a genuine reified downcast question) we emit a runtime RTTI check
+        // (`__cajeta_instanceof_named`, reified-capture-spec.md §1–2).
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvm::Type* i1 = llvm::Type::getInt1Ty(ctx);
 
-        // Always evaluate the lhs so side-effects fire even in the static case.
-        if (!children.empty()) {
-            children[0]->generateCode(module);
-        }
-
         if (!type || children.empty()) {
+            if (!children.empty()) children[0]->generateCode(module);
             return llvm::ConstantInt::getFalse(i1);
         }
         auto lhsExpr = dynamic_pointer_cast<Expression>(children[0]);
         if (!lhsExpr) {
+            children[0]->generateCode(module);
             return llvm::ConstantInt::getFalse(i1);
         }
         // The pre-pass resolver runs before LocalVariableDeclaration populates the scope,
@@ -3241,12 +3248,46 @@ namespace cajeta {
             lhsExpr->resolveTypes(module);
         }
         CajetaTypePtr lhsType = lhsExpr->getResolvedType();
+
+        std::string targetCanon = type->toCanonical();
+        std::string lhsCanon = lhsType ? lhsType->toCanonical() : std::string();
+        bool lhsIsWildcard = lhsCanon.find('?') != std::string::npos;
+        bool targetConcrete = targetCanon.find('?') == std::string::npos;
+        bool sameBase = lhsType && erasedBaseOf(lhsCanon) == erasedBaseOf(targetCanon);
+        // A reified runtime check is warranted (and sound) when the lhs is a
+        // wildcard, or a different instantiation of the same generic base, and the
+        // target is a concrete class instantiation we can name.
+        auto targetClass = dynamic_pointer_cast<CajetaClass>(type);
+        bool wantRuntime = targetClass && targetConcrete && lhsType
+            && lhsCanon != targetCanon && (lhsIsWildcard || sameBase);
+
+        if (wantRuntime) {
+            llvm::Value* raw = children[0]->generateCode(module);
+            llvm::Value* objPtr = loadIfLValue(module, raw, lhsExpr);
+            if (objPtr && objPtr->getType()->isPointerTy()) {
+                if (llvm::Function* fn =
+                        module->getRuntimeFunction("__cajeta_instanceof_named")) {
+                    llvm::Value* namePtr =
+                        module->getBuilder()->CreateGlobalString(
+                            targetCanon, "instanceof.target");
+                    llvm::Value* r = module->getBuilder()->CreateCall(
+                        fn, {objPtr, namePtr}, "instanceof.match");
+                    return module->getBuilder()->CreateICmpNE(
+                        r, llvm::ConstantInt::get(r->getType(), 0));
+                }
+            }
+            // Couldn't emit the runtime check — fall through to the static answer.
+            bool isMatch = (lhsCanon == targetCanon);
+            return isMatch ? llvm::ConstantInt::getTrue(i1)
+                           : llvm::ConstantInt::getFalse(i1);
+        }
+
+        // Static path: evaluate lhs for side-effects, fold the compile-time answer.
+        children[0]->generateCode(module);
         if (!lhsType) {
             return llvm::ConstantInt::getFalse(i1);
         }
-        // Exact match. A full implementation would walk lhsType's parent chain; for
-        // primitive/non-class types the compile-time check is sufficient.
-        bool isMatch = (lhsType->toCanonical() == type->toCanonical());
+        bool isMatch = (lhsCanon == targetCanon);
         return isMatch ? llvm::ConstantInt::getTrue(i1) : llvm::ConstantInt::getFalse(i1);
     }
 
