@@ -6,6 +6,7 @@
 
 #include "antlr4-runtime.h"
 #include "CajetaParserVisitor.h"
+#include "CajetaLexer.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaView.h"
@@ -37,6 +38,58 @@ namespace cajeta {
 
         CajetaModulePtr getCajetaModule() const {
             return pModule;
+        }
+
+        // @Logged (Cajeta's @Slf4j): synthesize `static Logger log =
+        // Log.defaultFor("<canonical>")` into a class carrying @Logged, so a
+        // ready-to-use `log` is available with no boilerplate. We PARSE a
+        // class-body fragment rather than hand-build the AST — the call's
+        // MethodCallExpression / String-literal nodes only have parser-context
+        // constructors — so the field flows through the normal pipeline:
+        // FieldDeclaration -> StructureProperty (with a real call initializer)
+        // -> generateStaticInitializers emits the clinit. Fully-qualified names
+        // dodge the user class's (absent) imports. The ANTLR pipeline is leaked
+        // on purpose: the produced AST holds token pointers into it that the
+        // later clinit codegen dereferences.
+        void synthesizeLoggerField(CajetaClassPtr structure) {
+            // Respect a user-declared `log` — don't clobber or double-add.
+            for (auto& prop : structure->getPropertyList()) {
+                if (prop && prop->getName() == "log") return;
+            }
+            std::string canonical = structure->getQName()->toCanonical();
+            // The initializer uses SHORT names (`Logger`/`Log`), so inject the
+            // matching imports into the module — a fully-qualified static call
+            // (`org.cajeta.logging.Log.defaultFor(...)`) silently resolves to
+            // null in expression position. Inject only when the short name is
+            // otherwise unbound, so a user's own `Log`/`Logger` import wins.
+            auto& imports = pModule->getImports();
+            if (imports.find("Logger") == imports.end()) {
+                imports["Logger"]["org.cajeta.logging"] =
+                    QualifiedName::getOrInsert("Logger", "org.cajeta.logging");
+            }
+            if (imports.find("Log") == imports.end()) {
+                imports["Log"]["org.cajeta.logging"] =
+                    QualifiedName::getOrInsert("Log", "org.cajeta.logging");
+            }
+            std::string src = "{ static Logger log = "
+                "Log.defaultFor(\"" + canonical + "\"); }";
+            auto* input = new antlr4::ANTLRInputStream(src);
+            auto* lexer = new CajetaLexer(input);
+            auto* tokens = new antlr4::CommonTokenStream(lexer);
+            tokens->fill();
+            auto* parser = new CajetaParser(tokens);
+            auto* body = parser->classBody();
+            for (auto* cbd : body->classBodyDeclaration()) {
+                MemberDeclarationPtr mem;
+                try {
+                    mem = std::any_cast<MemberDeclarationPtr>(
+                        visitClassBodyDeclaration(cbd));
+                } catch (...) { continue; }
+                if (auto fieldDecl =
+                        std::dynamic_pointer_cast<FieldDeclaration>(mem)) {
+                    fieldDecl->updateParent(structure);
+                }
+            }
         }
 
         virtual std::any visitCompilationUnit(CajetaParser::CompilationUnitContext* ctx) override {
@@ -449,6 +502,13 @@ namespace cajeta {
                                  "OperatorOverloading.md §7. "
                                  "[CAJETA_WARN_HASH_EQUALS_MISMATCH]\n";
                 }
+            }
+            // @Logged: synthesize the auto-logger static field BEFORE the
+            // prototype is built, so the new `log` is laid out and resolves as a
+            // bare identifier inside the class's method bodies. Templates re-run
+            // visitClassDeclaration per instantiation, so they synthesize then.
+            if (!structure->isTemplate() && structure->findAnnotation("Logged")) {
+                synthesizeLoggerField(structure);
             }
             // tryGeneratePrototype is the deferred-aware variant: if any
             // superclass / implemented interface is still a placeholder
@@ -1696,8 +1756,15 @@ namespace cajeta {
             auto ann = make_shared<CajetaClass>(pModule, qName, none, none);
             ann->setIsAnnotation(true);
             auto& canon = CajetaType::getCanonicalMap();
+            // Register ONLY under the canonical "code.<Name>" key. A bare `@Foo`
+            // usage and classesAnnotated<@Foo>() both canonicalize to "code.Foo"
+            // (QualifiedName::fromContext), and findAnnotation/advice match by
+            // short name against per-class instances — none need a bare short-name
+            // canonicalMap entry. Registering the short name here would CLOBBER a
+            // real class of the same short name, making that class in type
+            // position resolve to the layout-less annotation → SIGSEGV at
+            // allocation (task #65).
             canon[qName->toCanonical()] = static_pointer_cast<CajetaType>(ann);
-            canon[qName->getTypeName()] = static_pointer_cast<CajetaType>(ann);
             return std::any(nullptr);
         }
 

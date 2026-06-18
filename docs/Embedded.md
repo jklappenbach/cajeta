@@ -384,6 +384,7 @@ Items that need a design pass before the related phase ships:
 |---|---|---|
 | Baseline (T1) | **shipped** | HelloWorld 36 KB; full feature surface |
 | Lean linker (DCE Tier-0) | **shipped** | `--link-mode=lean` default for `--emit=exe`; bounded reflection keep-set; `--why-kept` / `--keepset-json` / forces-keep-all warning. HelloWorld 2.51 MB→370 KB |
+| Clinit-level DCE (Tier 1.5) | designed | Strip `llvm.global_ctors` registration for provably-dead classes' static initializers. Whole-program external-purity + dead-static analysis; depends on Tier-1 RTA. **Naive `keepsClass`/static-only gate reintroduces task #68 (`@Logged` reflection-only `log` → null) — see `plans/compiler/lean-linker-dce.md` §3.6.** |
 | E1 — `--mode=embedded-linux` | proposed | Half a session; mostly `CompilerMode.h` |
 | E2 — Configurable live-set | proposed | First cut easy; free-list refactor multi-session |
 | E3 — Threading abstraction | proposed | One to two sessions |
