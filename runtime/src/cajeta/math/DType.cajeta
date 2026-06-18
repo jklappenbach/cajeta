@@ -106,6 +106,33 @@ public class DType {
     public static #DType f4e2m1()     { return heap DType(DType.KIND_FLOAT, 4, DType.VAR_F4E2M1); }
 
     /**
+     * Compiler intrinsic: the packed dtype code of the type parameter `T`,
+     * `(kind << 16) | (bits << 4) | variant`. Intercepted at codegen and folded
+     * to a constant from `T`'s reified type (the body is a never-executed
+     * placeholder, like Matrix's operators). Use {@link #of}, not this.
+     */
+    public static int32 codeOf<T>() {
+        return 0;
+    }
+
+    /**
+     * The `DType` descriptor of the static type parameter `T` — the type → DType
+     * bridge `Tensor<T>.dtype()` is built on. Reified: `DType.of<float32>()`
+     * recovers `f32()`. Folds to a constant `codeOf<T>()` then decodes it.
+     *
+     * ```cajeta
+     * #DType dt = DType.of<float32>();   // == DType.f32()
+     * ```
+     */
+    public static #DType of<T>() {
+        int32 c = DType.codeOf<T>();
+        int32 v = c & 15;            // variant   (low 4 bits)
+        int32 b = (c >> 4) & 4095;   // bit width (next 12 bits)
+        int32 k = (c >> 16) & 255;   // kind code (next 8 bits)
+        return heap DType(k, b, v);
+    }
+
+    /**
      * **NEP-50 type-based promotion**: the result dtype of a binary op on
      * operands of dtypes `a` and `b`, from the *types* (never the values). For
      * the numpy-standard dtypes (bool, int8-64, uint8-64, float16/32/64) this

@@ -3667,6 +3667,57 @@ namespace cajeta {
             }
         }
 
+        // ----- cajeta.math.DType.codeOf<T>() intrinsic -----
+        // Fold T's reified dtype to a constant i32 packing its descriptor:
+        //   code = (kind << 16) | (bits << 4) | variant
+        // (kind: BOOL=0, INT=1, UINT=2, FLOAT=3; variant distinguishes
+        // same-width floats — bf16 / the fp8 / fp6 / fp4 encodings). The
+        // cajeta-side DType.of<T>() decodes this into a DType — the type→DType
+        // bridge Tensor<T>.dtype() rides. Mirrors the Matrix/Vector intercepts:
+        // detect by receiver FQN + method name, emit custom IR, early-return.
+        if (receiverType && methodCallName == "codeOf"
+                && receiverType->toCanonical() == "cajeta.math.DType"
+                && explicitMethodTypeArgs.size() == 1
+                && explicitMethodTypeArgs[0]) {
+            CajetaTypePtr dtypeT = explicitMethodTypeArgs[0];
+            CajetaTypeFlags f = dtypeT->getTypeFlags();
+            uint64_t typeId = (uint64_t) (f & TYPE_ID_MASK);
+            int32_t kind = 0;
+            int32_t bits = 0;
+            int32_t variant = 0;
+            if (typeId == (uint64_t) BOOLEAN_ID) {
+                kind = 0;           // KIND_BOOL
+                bits = 8;
+            } else {
+                if (f & BIT_4_FLAG) bits = 4;
+                else if (f & BIT_6_FLAG) bits = 6;
+                else if (f & BIT_8_FLAG) bits = 8;
+                else if (f & BIT_16_FLAG) bits = 16;
+                else if (f & BIT_32_FLAG) bits = 32;
+                else if (f & BIT_64_FLAG) bits = 64;
+                else if (f & BIT_128_FLAG) bits = 128;
+                if (f & FLOAT_FLAG) {
+                    kind = 3;       // KIND_FLOAT
+                    if (typeId == (uint64_t) BFLOAT16_ID) variant = 1;
+                    else if (typeId == (uint64_t) FLOAT8E4M3_ID) variant = 2;
+                    else if (typeId == (uint64_t) FLOAT8E5M2_ID) variant = 3;
+                    else if (typeId == (uint64_t) FLOAT8E4M3FNUZ_ID) variant = 4;
+                    else if (typeId == (uint64_t) FLOAT8E5M2FNUZ_ID) variant = 5;
+                    else if (typeId == (uint64_t) FLOAT6E2M3_ID) variant = 6;
+                    else if (typeId == (uint64_t) FLOAT6E3M2_ID) variant = 7;
+                    else if (typeId == (uint64_t) FLOAT4E2M1_ID) variant = 8;
+                    // else standard f16/f32/f64/f128 → variant 0
+                } else if (f & INT_FLAG) {
+                    kind = (f & SIGNED_FLAG) ? 1 : 2;   // KIND_INT / KIND_UINT
+                }
+                // else: not a numeric primitive → best-effort (kind 0).
+            }
+            int32_t code = (kind << 16) | (bits << 4) | variant;
+            resolvedType = CajetaType::of("int32");
+            return llvm::ConstantInt::get(
+                llvm::Type::getInt32Ty(llvmCtx), (uint64_t) (uint32_t) code);
+        }
+
         // Function-typed field invocation: `recv.fieldName(args)` where
         // fieldName is a CajetaFunctionType-typed property on recv's
         // class. Same closure layout as the bare-name local-lambda
