@@ -360,7 +360,7 @@ public class Tensor<T> {
         this.store.set(this.offsetVal + r * this.strideDims[0] + c * this.strideDims[1], v);
     }
 
-    // ────────────────────────────── view (Phase-3 preview) ───────────────────
+    // ────────────────────────────── views (Phase 3) ──────────────────────────
 
     void markView(Tensor<T> base) {
         this.viewFlag = true;
@@ -368,14 +368,195 @@ public class Tensor<T> {
     }
 
     /**
-     * A whole-array view sharing this tensor's `Storage` (no copy). Phase 3 adds
-     * the structural view ops (reshape/transpose/slice); this minimal alias
-     * exists to exercise the refcount drop-chain — both tensors see each other's
-     * writes, and the buffer frees only when the last drops.
+     * Build a view of this tensor: a new `Tensor` sharing this tensor's `Storage`
+     * (no copy, borrowed) with the given offset/shape/strides. `base()` of the
+     * result is the owning root (this, or this's base if this is itself a view).
+     * Internal — the structural ops below use it.
+     */
+    #Tensor<T> makeView(int64 newOffset, int64[] newShape, int64[] newStrides) {
+        Tensor<T> v = heap Tensor<T>(this.store, newOffset, newShape, newStrides);
+        if (this.viewFlag) {
+            v.markView(this.baseTensor);
+        } else {
+            v.markView(this);
+        }
+        return #v;
+    }
+
+    /**
+     * A whole-array view sharing this tensor's `Storage` (no copy) — the simplest
+     * view, used to exercise the shared-storage drop-chain. The structural ops
+     * (`reshape`/`transpose`/`slice`/`squeeze`/`expandDims`) produce views too.
      */
     public #Tensor<T> alias() {
-        Tensor<T> v = heap Tensor<T>(this.store, this.offsetVal, this.shapeDims, this.strideDims);
-        v.markView(this);
-        return #v;
+        return this.makeView(this.offsetVal, this.shapeDims, this.strideDims);
+    }
+
+    /**
+     * Materialize this tensor's logical elements (C-order) into a fresh, owning,
+     * contiguous tensor of `outShape` (which must have the same element count).
+     * The backing `Storage` is independent — the source for `copy()` and the
+     * non-contiguous `reshape` copy path.
+     */
+    #Tensor<T> materialize(int64[] outShape) {
+        int64 n = this.size();
+        Storage<T> st = heap Storage<T>(n);
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            int64 off = this.offsetVal;
+            int32 a = 0;
+            while (a < nd) {
+                off = off + idx[a] * this.strideDims[a];
+                a = a + 1;
+            }
+            T val = this.store.get(off);
+            st.set(lin, val);
+            lin = lin + 1;
+            // increment the multi-index, C-order (last axis varies fastest)
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= this.shapeDims[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<T>(#st, 0, outShape, outStrides);
+    }
+
+    /**
+     * An independent, contiguous (C-order) copy of this tensor — own `Storage`,
+     * not a view (mutations do not show through to the source).
+     */
+    public #Tensor<T> copy() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] shp = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            shp[i] = this.shapeDims[i];
+            i = i + 1;
+        }
+        return this.materialize(shp);
+    }
+
+    /**
+     * Same data, new shape (same element count). **View** when this tensor is
+     * C-contiguous (shares `Storage`); a **copy** otherwise (materialized in
+     * logical order) — the documented view/copy contract (tensor-spec.md §4).
+     */
+    public #Tensor<T> reshape(int64[] newShape) {
+        if (this.isContiguous()) {
+            int64[] ns = Tensor.contigStrides(newShape, MemoryOrder.C);
+            return this.makeView(this.offsetVal, newShape, ns);
+        }
+        return this.materialize(newShape);
+    }
+
+    /**
+     * Reverse the axes (full transpose): a **view** with shape and strides
+     * reversed. For a 2-D tensor this is the matrix transpose. Shares `Storage`.
+     */
+    public #Tensor<T> transpose() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            ns[i] = this.shapeDims[nd - 1 - i];
+            nst[i] = this.strideDims[nd - 1 - i];
+            i = i + 1;
+        }
+        return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    /**
+     * A **view** of the half-open range `[start, stop)` along `axis` (step 1).
+     * Shares `Storage`; the offset advances by `start * stride[axis]` and the
+     * axis extent becomes `stop - start`. (Negative indices / step land in the
+     * full indexing surface, Phase 5.)
+     */
+    public #Tensor<T> slice(int32 axis, int64 start, int64 stop) {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            ns[i] = this.shapeDims[i];
+            nst[i] = this.strideDims[i];
+            i = i + 1;
+        }
+        ns[axis] = stop - start;
+        int64 newOff = this.offsetVal + start * this.strideDims[axis];
+        return this.makeView(newOff, ns, nst);
+    }
+
+    /**
+     * A **view** with every size-1 axis removed (an all-ones tensor squeezes to
+     * 1-D `[1]`). Shares `Storage`.
+     */
+    public #Tensor<T> squeeze() {
+        int32 nd = (int32) this.shapeDims.count();
+        int32 cnt = 0;
+        int32 i = 0;
+        while (i < nd) {
+            if (this.shapeDims[i] != 1) {
+                cnt = cnt + 1;
+            }
+            i = i + 1;
+        }
+        if (cnt == 0) {
+            cnt = 1;
+        }
+        int64[] ns = heap int64[cnt];
+        int64[] nst = heap int64[cnt];
+        ns[0] = 1;
+        nst[0] = 1;
+        int32 j = 0;
+        i = 0;
+        while (i < nd) {
+            if (this.shapeDims[i] != 1) {
+                ns[j] = this.shapeDims[i];
+                nst[j] = this.strideDims[i];
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    /**
+     * A **view** with a new size-1 axis inserted at position `axis`. Shares
+     * `Storage` (the new axis carries stride 1 — irrelevant for an extent of 1).
+     */
+    public #Tensor<T> expandDims(int32 axis) {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd + 1];
+        int64[] nst = heap int64[nd + 1];
+        int32 r = 0;
+        int32 w = 0;
+        while (w < nd + 1) {
+            if (w == axis) {
+                ns[w] = 1;
+                nst[w] = 1;
+            } else {
+                ns[w] = this.shapeDims[r];
+                nst[w] = this.strideDims[r];
+                r = r + 1;
+            }
+            w = w + 1;
+        }
+        return this.makeView(this.offsetVal, ns, nst);
     }
 }

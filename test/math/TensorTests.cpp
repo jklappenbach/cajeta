@@ -142,3 +142,124 @@ TEST(TensorTests, tensorAccessors) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 3a — reshape(contiguous)/transpose/slice/squeeze/expandDims are VIEWS: share
+// the base (writes show through; base() is the source).
+TEST(TensorTests, structuralOpsAreViews) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] data = { 0, 1, 2, 3, 4, 5 };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        // reshape (contiguous → view)
+        "        int64[] rs = heap int64[2];\n"
+        "        rs[0] = 3;\n"
+        "        rs[1] = 2;\n"
+        "        Tensor<int32> r = a.reshape(rs);\n"
+        "        if (!r.isView()) { return -1; }\n"
+        "        if (r.base() == null) { return -2; }\n"
+        "        if (r.shapeAt(0) != 3 || r.shapeAt(1) != 2) { return -3; }\n"
+        "        r.set2(0, 0, 100);\n"                                // shares a
+        "        if (a.get2(0, 0) != 100) { return -4; }\n"
+        // transpose → view
+        "        Tensor<int32> t = a.transpose();\n"                 // shape [3,2], strides [1,3]
+        "        if (!t.isView()) { return -5; }\n"
+        "        if (t.shapeAt(0) != 3 || t.shapeAt(1) != 2) { return -6; }\n"
+        "        if (t.get2(0, 1) != 3) { return -7; }\n"            // a[1,0] = 3
+        "        t.set2(0, 1, 99);\n"                                // sets a[1,0]
+        "        if (a.get2(1, 0) != 99) { return -8; }\n"
+        // slice axis 0 rows [1,2) → shape [1,3]
+        "        Tensor<int32> sl = a.slice(0, 1, 2);\n"
+        "        if (!sl.isView()) { return -9; }\n"
+        "        if (sl.shapeAt(0) != 1 || sl.shapeAt(1) != 3) { return -10; }\n"
+        "        if (sl.get2(0, 0) != 99) { return -11; }\n"        // a[1,0] = 99
+        // expandDims at 0 → [1,2,3]; squeeze → [2,3]
+        "        Tensor<int32> e = a.expandDims(0);\n"
+        "        if (!e.isView()) { return -12; }\n"
+        "        if (e.ndim() != 3 || e.shapeAt(0) != 1) { return -13; }\n"
+        "        Tensor<int32> sq = e.squeeze();\n"
+        "        if (!sq.isView()) { return -14; }\n"
+        "        if (sq.ndim() != 2 || sq.shapeAt(0) != 2 || sq.shapeAt(1) != 3) { return -15; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 3b — copy() and a non-contiguous reshape produce INDEPENDENT storage
+// (mutation does not show through).
+TEST(TensorTests, copyIsIndependent) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] data = { 0, 1, 2, 3, 4, 5 };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"
+        "        Tensor<int32> c = a.copy();\n"
+        "        if (c.isView()) { return -1; }\n"
+        "        if (c.base() != null) { return -2; }\n"
+        "        c.set2(0, 0, 500);\n"
+        "        if (a.get2(0, 0) == 500) { return -3; }\n"          // independent
+        "        if (c.get2(1, 2) != 5) { return -4; }\n"            // copied the data
+        // non-contiguous reshape → copy
+        "        Tensor<int32> t = a.transpose();\n"                 // non-contiguous
+        "        if (t.isContiguous()) { return -5; }\n"
+        "        int64[] rs = heap int64[1];\n"
+        "        rs[0] = 6;\n"
+        "        Tensor<int32> r = t.reshape(rs);\n"                 // non-contig → copy
+        "        if (r.isView()) { return -6; }\n"
+        // t is transpose of a: logical C-order of t is a[0,0],a[1,0],a[0,1],a[1,1],a[0,2],a[1,2]
+        "        if (r.get1(0) != 0 || r.get1(1) != 3 || r.get1(2) != 1) { return -7; }\n"
+        "        r.set1(0, 777);\n"
+        "        if (a.get2(0, 0) == 777) { return -8; }\n"          // copy independent of a
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 3c — in-place writes through a (non-overlapping) structural view are
+// well-defined: each element maps to a distinct storage cell, no corruption.
+TEST(TensorTests, aliasingDefined) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] data = { 0, 1, 2, 3, 4, 5 };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"
+        "        Tensor<int32> t = a.transpose();\n"                 // [3,2]
+        "        int64 i = 0;\n"
+        "        while (i < 3) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 2) {\n"
+        "                t.set2(i, j, (int32) (i * 10 + j));\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // read back through t: consistent
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 2) {\n"
+        "                if (t.get2(i, j) != (int32) (i * 10 + j)) { return -1; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // and a reflects t (a[j,i] == t[i,j]): t[0,1]=1 → a[1,0]; t[2,0]=20 → a[0,2]
+        "        if (a.get2(1, 0) != 1) { return -2; }\n"
+        "        if (a.get2(0, 2) != 20) { return -3; }\n"
+        "        if (a.get2(0, 0) != 0) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
