@@ -20,7 +20,12 @@
 #include "CajetaParser.h"
 #include "CompilerMode.h"
 #include <string>
+#include <vector>
+#include <unordered_set>
+#include <unordered_map>
 #include "../error/Exception.h"
+
+namespace llvm { class Module; class GlobalValue; }
 
 using namespace std;
 namespace cajeta {
@@ -233,12 +238,23 @@ namespace cajeta {
         // doesn't resolve.
         void emitCMainShim(const std::string& entryMethod);
 
-        // Tier-1 RTA Phase A (plans/compiler/stdlib-tree-shaking.md): compute
-        // IR-level reachability across all emitted modules from the entry +
-        // ABI/ctor roots, diff against the full defined-function set, and print
-        // what Phase B would strip. Analysis only — emits nothing, mutates no IR.
-        // Runs after the main shim + all ctors exist; --emit=exe + --tree-shake=report.
+        // Tier-1 RTA (plans/compiler/stdlib-tree-shaking.md). Shared reachability
+        // engine: collect every module in the final link, then BFS the by-name
+        // reference graph from the entry + ctor/ABI roots (incl. EH personality +
+        // prefix/prologue data). Conservative over-approximation (a referenced
+        // vtable keeps all its slots) — the sound direction for gating emission.
+        void collectLinkModules(std::vector<llvm::Module*>& lmods);
+        std::unordered_set<std::string> computeReachableSymbols(
+            const std::vector<llvm::Module*>& lmods,
+            std::unordered_map<std::string, llvm::GlobalValue*>& defs);
+
+        // Phase A: diff reachable vs all defined functions and print what Phase B
+        // would strip. Analysis only — emits nothing, mutates no IR.
         void reportTreeShake();
+        // Phase B: deleteBody() unreachable cajeta method bodies (--tree-shake=on)
+        // so their native references vanish and the linker never pulls them.
+        // Runs after the main shim + all ctors exist, before per-module emit.
+        void pruneUnreachable();
 
     public:
         Compiler(int argc, const char* argv[]) : Compiler() { }

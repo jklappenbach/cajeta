@@ -77,8 +77,9 @@ namespace cajeta {
     enum class LinkMode { Full, Lean };
 
     // --tree-shake (Tier-1 RTA; plans/compiler/stdlib-tree-shaking.md). Report is
-    // Phase A: analysis only, no change to emission.
-    enum class TreeShake { Off, Report };
+    // Phase A (analysis only); On is Phase B (prune unreachable cajeta method
+    // bodies so the linker drops their native deps, e.g. OpenSSL). Default Off.
+    enum class TreeShake { Off, Report, On };
 
     struct CompilerFlags {
         // ----- safety nets (runtime checks) -----

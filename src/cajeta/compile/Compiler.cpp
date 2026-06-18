@@ -1072,10 +1072,12 @@ namespace cajeta {
             emitCMainShim(entryMethod);
         }
 
-        // Tier-1 RTA Phase A — report-only reachability analysis (no emission
-        // change). After the main shim + all ctors exist, before per-module emit.
-        if (flags.treeShake == TreeShake::Report && emitMode == EmitMode::Exe) {
-            reportTreeShake();
+        // Tier-1 RTA — after the main shim + all ctors exist, before per-module
+        // emit. Report (Phase A) only prints; On (Phase B) prunes unreachable
+        // cajeta method bodies so their native deps are never linked.
+        if (emitMode == EmitMode::Exe) {
+            if (flags.treeShake == TreeShake::Report) reportTreeShake();
+            else if (flags.treeShake == TreeShake::On) pruneUnreachable();
         }
 
         // Archive emit bundles every parsed module's bitcode into one
@@ -1811,12 +1813,9 @@ namespace cajeta {
         }
     }
 
-    void Compiler::reportTreeShake() {
-        using namespace llvm;
-
+    void Compiler::collectLinkModules(std::vector<llvm::Module*>& lmods) {
         // Every llvm::Module that participates in the final link: user modules,
         // re-driven classpath deps, and the always-linked stdlib.
-        std::vector<Module*> lmods;
         auto addMod = [&](const CajetaModulePtr& m) {
             if (m && m->getLlvmModule()) lmods.push_back(m->getLlvmModule());
         };
@@ -1825,11 +1824,16 @@ namespace cajeta {
         if (auto stdlib = CajetaModule::getStdlibModule()) addMod(stdlib);
         std::sort(lmods.begin(), lmods.end());
         lmods.erase(std::unique(lmods.begin(), lmods.end()), lmods.end());
+    }
+
+    std::unordered_set<std::string> Compiler::computeReachableSymbols(
+            const std::vector<llvm::Module*>& lmods,
+            std::unordered_map<std::string, llvm::GlobalValue*>& defs) {
+        using namespace llvm;
 
         // Reachability is by SYMBOL NAME, not pointer: a callee is an extern decl
         // in the caller's module but a definition in another. Map each name to its
         // defining GlobalValue (function with a body / global with an initializer).
-        std::unordered_map<std::string, GlobalValue*> defs;
         for (auto* lm : lmods) {
             for (auto& f : lm->functions())
                 if (!f.isDeclaration()) defs.emplace(f.getName().str(), &f);
@@ -1890,6 +1894,19 @@ namespace cajeta {
             GlobalValue* gv = defs[name];
             std::vector<std::string> refs;
             if (auto* f = dyn_cast<Function>(gv)) {
+                // Soundness edges NOT carried as instruction operands: the EH
+                // personality function and prefix/prologue data. Missing these
+                // would let pruning drop a function the ABI still calls.
+                if (f->hasPersonalityFn())
+                    if (auto* p = dyn_cast<GlobalValue>(
+                            f->getPersonalityFn()->stripPointerCasts()))
+                        refs.push_back(p->getName().str());
+                if (f->hasPrefixData())
+                    if (auto* c = dyn_cast<Constant>(f->getPrefixData()))
+                        collectConst(c, refs);
+                if (f->hasPrologueData())
+                    if (auto* c = dyn_cast<Constant>(f->getPrologueData()))
+                        collectConst(c, refs);
                 for (auto& bb : *f)
                     for (auto& inst : bb)
                         for (auto& op : inst.operands()) {
@@ -1904,6 +1921,15 @@ namespace cajeta {
             }
             for (auto& r : refs) enqueue(r);
         }
+        return reached;
+    }
+
+    void Compiler::reportTreeShake() {
+        using namespace llvm;
+        std::vector<Module*> lmods;
+        collectLinkModules(lmods);
+        std::unordered_map<std::string, GlobalValue*> defs;
+        std::unordered_set<std::string> reached = computeReachableSymbols(lmods, defs);
 
         // Subsystem bucket for a per-area breakdown — strip the leading
         // `__cajeta_cajeta_` mangling and take the package head (e.g. net, gpu).
@@ -1972,6 +1998,44 @@ namespace cajeta {
                 std::cout << "  ... and " << (netStrip.size() - cap) << " more\n";
         }
         std::cout << "=== end tree-shake report ===\n\n";
+    }
+
+    void Compiler::pruneUnreachable() {
+        using namespace llvm;
+        std::vector<Module*> lmods;
+        collectLinkModules(lmods);
+        std::unordered_map<std::string, GlobalValue*> defs;
+        std::unordered_set<std::string> reached = computeReachableSymbols(lmods, defs);
+
+        // Conservative Phase-B prune: drop the BODY of unreachable cajeta
+        // class-method / reflect-adapter functions only (the `__cajeta_cajeta_`
+        // mangling). deleteBody turns each into an extern declaration — it emits
+        // no code, and (critically) its references to native symbols vanish, so a
+        // non-TLS program no longer references `__cajeta_tls_*` and the linker
+        // never pulls cajeta_tls.o / OpenSSL (the win --gc-sections can't get on
+        // its own; see stdlib-tree-shaking.md). We deliberately do NOT touch
+        // runtime/ABI helpers, natives, or non-prefixed symbols — those stay as
+        // emitted and are left to --gc-sections. By BFS soundness an unreachable
+        // method is referenced only by other unreachable entities (a reachable
+        // vtable keeps all its slots), so dropping its body strands no live ref.
+        // Set ExternalLinkage so an internal/private function stays valid IR once
+        // it becomes a bodyless declaration; unreferenced, it emits nothing.
+        const StringRef PFX = "__cajeta_cajeta_";
+        size_t pruned = 0, keptFns = 0, totalFns = 0;
+        for (auto* lm : lmods) {
+            for (auto& f : lm->functions()) {
+                if (f.isDeclaration()) continue;
+                if (!f.getName().starts_with(PFX)) continue;
+                totalFns++;
+                if (reached.count(f.getName().str())) { keptFns++; continue; }
+                f.deleteBody();
+                f.setLinkage(GlobalValue::ExternalLinkage);
+                pruned++;
+            }
+        }
+        std::cout << "tree-shake (--tree-shake=on): pruned " << pruned
+                  << " of " << totalFns
+                  << " unreachable cajeta method bodies (kept " << keptFns << ")\n";
     }
 
     void Compiler::emitArchive(const std::string& archiveRootPath, bool uber) {

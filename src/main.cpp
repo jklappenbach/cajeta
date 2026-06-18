@@ -88,8 +88,9 @@ void printUsage(const char* progname) {
               << "                                       named (canonical) class in the keep-set.\n"
               << "  --keepset-json=<path>                Lean DCE: write the generated keep-set + provenance\n"
               << "                                       to <path> as JSON.\n"
-              << "  --tree-shake=off|report              Tier-1 RTA. report: print the IR-reachability strip\n"
-              << "                                       analysis for --emit=exe (analysis only). Default off.\n"
+              << "  --tree-shake=off|report|on           Tier-1 RTA (--emit=exe). report: print the IR-\n"
+              << "                                       reachability strip analysis. on: prune unreachable\n"
+              << "                                       method bodies (drops e.g. OpenSSL). Default off.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
@@ -413,7 +414,8 @@ int main(int argc, const char* argv[]) {
             TreeShake ts;
             if (!setEnumFlag<TreeShake>("tree-shake", value,
                     { {"off", TreeShake::Off},
-                      {"report", TreeShake::Report} }, ts)) {
+                      {"report", TreeShake::Report},
+                      {"on", TreeShake::On} }, ts)) {
                 printUsage(argv[0]); return 1;
             }
             compiler.getMutableFlags().treeShake = ts;
