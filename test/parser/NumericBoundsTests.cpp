@@ -117,6 +117,56 @@ TEST(NumericBoundsTests, classBoundNumericAdmits) {
     EXPECT_EQ(runI32(src), 5);
 }
 
+// Nominal conformance: a user class that `implements Numeric` satisfies the
+// `<T extends Numeric>` bound (the predicate's nominal branch — resolve
+// cajeta.lang.Numeric, isParentOrKind), alongside the intrinsic primitive path.
+TEST(NumericBoundsTests, classBoundNumericAdmitsNominalImpl) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.lang.Numeric;\n"
+        "public class MyNum implements Numeric {\n"
+        "    int32 v;\n"
+        "    public MyNum(int32 v) { this.v = v; }\n"
+        "    public int32 val() { return this.v; }\n"
+        "}\n"
+        "public class Cell<T extends Numeric> {\n"
+        "    T item;\n"
+        "    public Cell(T item) { this.item = item; }\n"
+        "    public T get() { return this.item; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        MyNum n = heap MyNum(13);\n"
+        "        Cell<MyNum> c = heap Cell<MyNum>(#n);\n"
+        "        return c.get().val();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 13);
+}
+
+// ...and a class that does NOT implement Numeric is rejected for the bound.
+TEST(NumericBoundsTests, classBoundNumericRejectsNonImpl) {
+    std::string src =
+        "package test;\n"
+        "public class Plain {\n"
+        "    int32 v;\n"
+        "    public Plain(int32 v) { this.v = v; }\n"
+        "}\n"
+        "public class Cell<T extends Numeric> {\n"
+        "    T item;\n"
+        "    public Cell(T item) { this.item = item; }\n"
+        "    public T get() { return this.item; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Plain p = heap Plain(13);\n"
+        "        Cell<Plain> c = heap Cell<Plain>(#p);\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_TRUE(rejected(src));
+}
+
 // ...and rejects bool (boolean is not Numeric, despite carrying integer flags).
 TEST(NumericBoundsTests, classBoundNumericRejectsBool) {
     std::string src =

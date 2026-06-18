@@ -161,7 +161,28 @@ namespace cajeta {
                 if (n != cmap.end()) markerType = n->second;
             }
             auto markerClass = dynamic_pointer_cast<CajetaClass>(markerType);
-            if (markerClass && cls->isParentOrKind(markerClass)) return true;
+            if (markerClass) {
+                // isParentOrKind walks the `extends` (superClasses) chain only,
+                // so a class that *implements* the marker interface would be
+                // missed. Walk the implemented-interface closure too (and the
+                // marker's own extends-chain — Floating/Integral/Complex extend
+                // Numeric — is covered by calling isParentOrKind on each iface).
+                if (cls->isParentOrKind(markerClass)) return true;
+                std::function<bool(CajetaClassPtr)> implWalk =
+                    [&](CajetaClassPtr c) -> bool {
+                        if (!c) return false;
+                        for (auto& iface : c->getImplementedInterfaces()) {
+                            if (!iface) continue;
+                            if (iface->isParentOrKind(markerClass)) return true;
+                            if (implWalk(iface)) return true;
+                        }
+                        for (auto& sup : c->getSuperClasses()) {
+                            if (implWalk(sup)) return true;
+                        }
+                        return false;
+                    };
+                if (implWalk(cls)) return true;
+            }
         }
         return false;
     }

@@ -282,48 +282,35 @@ namespace cajeta {
                 // it carries INT_FLAG | NUMBER_FLAG (its flags are for
                 // legacy zero/one storage, not arithmetic).
                 const std::string& bname = bound->getTypeName();
-                if (bname == "Numeric" || bname == "Integral" || bname == "Floating") {
-                    if (!args[i]) {
-                        throw Exception(
-                            "template " + qName->toCanonical() + ": parameter '"
-                                + param.name + "' bound " + bname
-                                + " requires a primitive numeric type argument",
-                            "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
-                    }
-                    int aflags = args[i]->getTypeFlags();
-                    bool isPrim = (aflags & PRIMITIVE_FLAG) != 0;
-                    bool isBool = args[i]->getQName()
-                        && args[i]->getQName()->getTypeName() == "boolean";
-                    bool satisfies = false;
-                    if (bname == "Numeric") {
-                        satisfies = isPrim && (aflags & NUMBER_FLAG) && !isBool;
-                    } else if (bname == "Integral") {
-                        satisfies = isPrim && (aflags & INT_FLAG) && !isBool;
-                    } else {
-                        // Floating
-                        satisfies = isPrim && (aflags & FLOAT_FLAG);
-                    }
-                    if (!satisfies) {
-                        std::string argName = args[i]->getQName()
+                // Numerics for Bounded Templates. `T extends Numeric/Integral/
+                // Floating/Complex` are built-in marker bounds with **dual**
+                // conformance: a primitive satisfies intrinsically (the type-flag
+                // lattice) and a class satisfies nominally (`implements`). Both go
+                // through the single predicate so the class-template site agrees
+                // with the method-template + wildcard sites.
+                if (CajetaClass::isNumericMarkerName(bname)) {
+                    if (!CajetaClass::satisfiesNumericMarker(args[i], bname)) {
+                        std::string argName = (args[i] && args[i]->getQName())
                             ? args[i]->getQName()->toCanonical()
                             : std::string("?");
                         throw Exception(
                             "template " + qName->toCanonical() + ": argument '"
                                 + argName + "' does not satisfy bound "
                                 + bname + " on parameter '" + param.name
-                                + "' — " + bname + " admits only primitive "
+                                + "' — " + bname + " admits a primitive "
                                 + (bname == "Floating"
-                                    ? "floating-point (float16, bfloat16, "
-                                      "float32, float64, float128, and the "
-                                      "low-precision float8/float6/float4 formats)"
+                                    ? "floating-point type (float16, bfloat16, "
+                                      "float32, float64, float128, or a "
+                                      "low-precision float8/float6/float4 format)"
                                     : (bname == "Integral"
-                                        ? "integer (int8..int128, uint8..uint128)"
-                                        : "numeric (any integer or floating-point "
-                                          "primitive)"))
-                                + " arguments",
+                                        ? "integer type (int8..int128, "
+                                          "uint8..uint128)"
+                                        : "numeric type (any integer or "
+                                          "floating-point primitive)"))
+                                + ", or a class implementing cajeta.lang." + bname,
                             "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
                     }
-                    continue;  // bound satisfied — skip class-resolve path
+                    continue;  // bound satisfied (intrinsic or nominal)
                 }
                 // Resolve the bound: try the bound's full canonical first,
                 // then fall back to its short name (matches how `extends`
