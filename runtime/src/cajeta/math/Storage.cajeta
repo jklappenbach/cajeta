@@ -1,28 +1,37 @@
 package cajeta.math;
 
+import cajeta.gpu.GpuBuffer;
+
 /**
- * `Storage<T>` — the owning, reference-counted host backing of a `Tensor<T>`
- * (tensor-spec.md §4). One contiguous `T[]` buffer that one *or more* `Tensor`
- * views share; per cajeta's "one axis, one model" (stack = copy / heap = ref),
- * a `heap Storage<T>` is refcounted automatically, so the buffer is released
- * exactly when the last view referencing it drops (the scope-exit drop chain) —
- * no manual refcount field is needed.
+ * `Storage<T>` — the owning host backing of a `Tensor<T>` (tensor-spec.md §4).
+ * One contiguous `T[]` buffer that one *or more* `Tensor` views share; per
+ * cajeta's "one axis, one model" (stack = copy / heap = ref), a `heap Storage<T>`
+ * is auto-dropped and the global live-set claim frees the buffer exactly once
+ * (even when several views share it) — no manual refcount field is needed.
  *
- * v1 is host-only. The optional device rep (a `cajeta.gpu` `GpuBuffer<T>`) and
- * the `to`/`cpu`/`gpu` placement land in Phase 6 (tensor-plan.md §6); a slot for
- * it is intentionally absent until then so the host path carries no GPU cost.
+ * ## Device residency (Phase 6)
+ * A `Storage` also carries an optional **device mirror** — a `cajeta.gpu`
+ * `GpuBuffer<T>` (null until first placed on a device). {@link #toDevice} mirrors
+ * the host buffer onto the device and flips `onDevice`; {@link #toHost} brings it
+ * back. This is the host side of the op-dispatch seam: an op reads
+ * {@link #isOnDevice}/{@link #deviceBuffer} to pick its CPU vs GPU path. v1 policy
+ * is **eager** (explicit `to`/`cpu`/`gpu`); a no-GPU build still works — the
+ * `cajeta.gpu` CPU backend backs the buffer.
  *
- * This is an internal building block — user code constructs tensors through the
- * `Tensor` factories (`zeros`/`ones`/`of`/…), which own the `Storage` they make.
+ * Internal — user code constructs tensors through the `Tensor` factories.
  */
 public class Storage<T> {
     T[] host;
     int64 length;
+    GpuBuffer<T> dev;       // device mirror; null until placed on a device
+    boolean onDevice;       // true when the live data is on the device
 
-    /** Allocate a zero-initialized host buffer of `length` elements. */
+    /** Allocate a zero-initialized host buffer of `length` elements (host-resident). */
     public Storage(int64 length) {
         this.length = length;
         this.host = heap T[(int32) length];
+        this.dev = null;
+        this.onDevice = false;
     }
 
     /** Element count of the backing buffer. */
@@ -38,5 +47,39 @@ public class Storage<T> {
     /** Write `v` to linear buffer index `i`. */
     public void set(int64 i, T v) {
         this.host[(int32) i] = v;
+    }
+
+    /**
+     * Mirror the host buffer onto the device (allocating the `GpuBuffer` on first
+     * call) and mark the data device-resident. Idempotent. Eager-transfer (v1).
+     */
+    public void toDevice() {
+        if (this.onDevice) {
+            return;
+        }
+        if (this.dev == null) {
+            this.dev = heap GpuBuffer<T>((uint64) this.length);
+        }
+        this.dev.upload(this.host);
+        this.onDevice = true;
+    }
+
+    /** Bring the device buffer's contents back to the host and mark host-resident. */
+    public void toHost() {
+        if (!this.onDevice) {
+            return;
+        }
+        this.dev.download(this.host);
+        this.onDevice = false;
+    }
+
+    /** `true` when the live data currently resides on the device. */
+    public boolean isOnDevice() {
+        return this.onDevice;
+    }
+
+    /** The device buffer (null until {@link #toDevice}) — for the op-dispatch seam. */
+    public GpuBuffer<T> deviceBuffer() {
+        return this.dev;
     }
 }

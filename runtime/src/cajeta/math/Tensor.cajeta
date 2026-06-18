@@ -1,5 +1,7 @@
 package cajeta.math;
 
+import cajeta.gpu.GpuBuffer;
+
 /**
  * `Tensor<T>` — the keystone n-dimensional array (tensor-spec.md). A **strided
  * view** over a shared, refcounted {@link Storage}: `{ Storage<T> data; int64
@@ -358,6 +360,53 @@ public class Tensor<T> {
     /** 2-D element write. */
     public void set2(int64 r, int64 c, T v) {
         this.store.set(this.offsetVal + r * this.strideDims[0] + c * this.strideDims[1], v);
+    }
+
+    /**
+     * Linear (flat) read by storage index — valid for a contiguous tensor (maps
+     * `i` to logical C-order). The op-dispatch seam's CPU path reads through this.
+     */
+    public T flatGet(int64 i) {
+        return this.store.get(this.offsetVal + i);
+    }
+
+    /** Linear (flat) write by storage index — contiguous-tensor companion of {@link #flatGet}. */
+    public void flatSet(int64 i, T v) {
+        this.store.set(this.offsetVal + i, v);
+    }
+
+    // ────────────────────────────── device placement (Phase 6) ───────────────
+
+    /** Mirror this tensor's storage onto the device (eager). See {@link Storage#toDevice}. */
+    public void gpu() {
+        this.store.toDevice();
+    }
+
+    /** Bring this tensor's storage back to the host. See {@link Storage#toHost}. */
+    public void cpu() {
+        this.store.toHost();
+    }
+
+    /** `true` when this tensor's storage currently resides on the device. */
+    public boolean isOnGpu() {
+        return this.store.isOnDevice();
+    }
+
+    /** Placement code: `0` = host (CPU), `1` = device (GPU). */
+    public int32 device() {
+        if (this.store.isOnDevice()) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /**
+     * The device buffer backing this tensor's storage (null until {@link #gpu}) —
+     * the handle an op's GPU path binds into a `cajeta.gpu` kernel launch. The
+     * host side of the op-dispatch seam.
+     */
+    public GpuBuffer<T> deviceBuffer() {
+        return this.store.deviceBuffer();
     }
 
     // ────────────────────────────── views (Phase 3) ──────────────────────────

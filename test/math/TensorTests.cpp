@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "../jit/JitTestHelper.h"
+#include "cajeta/xpu/XpuTarget.h"
 
 #include <cstdint>
 #include <string>
@@ -25,6 +26,19 @@ namespace {
 
 int32_t runI32(const std::string& src) {
     auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+
+// Phase 6 device tests need the XPU backend enabled so @Kernel lowers + launches
+// (on the portable CPU backend in-process — the same discipline as
+// XpuComputeProbeTests; on-device Vulkan/CUDA validation rides separate device
+// gates). The seam routes on placement; the kernel runs through the real launch
+// FFI either way.
+int32_t runI32Xpu(const std::string& src) {
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(src, "test.D", o);
     auto fn = jit->lookup<int32_t (*)()>("run");
     return fn();
 }
@@ -452,4 +466,97 @@ TEST(TensorTests, fancyIndexing) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 1);
+}
+
+// 6a — device placement: to-gpu / to-cpu move storage; device()/isOnGpu() report
+// it; data survives a host→device→host round-trip; a no-GPU build still works
+// (the cajeta.gpu CPU backend backs the buffer).
+TEST(TensorTests, devicePlacement) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float32[] da = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64[] shp = heap int64[1];\n"
+        "        shp[0] = 4;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, shp);\n"
+        "        if (a.device() != 0) { return -1; }\n"        // starts on host
+        "        if (a.isOnGpu()) { return -2; }\n"
+        "        a.gpu();\n"
+        "        if (a.device() != 1) { return -3; }\n"        // now device-resident
+        "        if (!a.isOnGpu()) { return -4; }\n"
+        "        a.cpu();\n"
+        "        if (a.device() != 0) { return -5; }\n"        // back on host
+        "        if (a.get1(0) != 1.0f || a.get1(3) != 4.0f) { return -6; }\n"  // data survived
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
+// 6b — the op-dispatch seam, proven with one elementwise op (add). The op routes
+// on operand placement: both-on-device → a cajeta.gpu @Kernel over the device
+// buffers; host operands → the CPU loop. The two paths agree (cross-check). The
+// op + kernel live in the test program (the op library is numpy-porting-plan
+// Phase 3); the Tensor type supplies the seam: placement + deviceBuffer + flat
+// access.
+TEST(TensorTests, seamElementwiseCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.GpuStream;\n"
+        "import cajeta.gpu.GpuThread;\n"
+        "public final class D {\n"
+        "    @Kernel\n"
+        "    public static void addF32(GpuBuffer<float32> out, GpuBuffer<float32> a,\n"
+        "                              GpuBuffer<float32> b, uint32 n) {\n"
+        "        uint32 i = GpuThread.globalIdX();\n"
+        "        if (i < n) { out[i] = a[i] + b[i]; }\n"
+        "    }\n"
+        // the elementwise-add op, routed through the placement seam
+        "    public static #Tensor<float32> add(Tensor<float32> a, Tensor<float32> b) {\n"
+        "        Tensor<float32> out = Tensor.zerosLike<float32>(a);\n"
+        "        int64 n = a.size();\n"
+        "        if (a.isOnGpu() && b.isOnGpu()) {\n"
+        "            out.gpu();\n"
+        "            uint32 un = (uint32) n;\n"
+        "            GpuStream s = GpuStream.current();\n"
+        "            addF32.launch(s, grid: [(un + 63) / 64], block: [64])"
+        "(out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un);\n"
+        "            s.sync();\n"
+        "        } else {\n"
+        "            int64 i = 0;\n"
+        "            while (i < n) {\n"
+        "                float32 v = a.flatGet(i) + b.flatGet(i);\n"
+        "                out.flatSet(i, v);\n"
+        "                i = i + 1;\n"
+        "            }\n"
+        "        }\n"
+        "        return #out;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float32[] da = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };\n"
+        "        float32[] db = { 10.0f, 20.0f, 30.0f, 40.0f, 50.0f, 60.0f, 70.0f, 80.0f };\n"
+        "        int64[] shp = heap int64[1];\n"
+        "        shp[0] = 8;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, shp);\n"
+        "        Tensor<float32> b = Tensor.of<float32>(db, shp);\n"
+        "        Tensor<float32> cCpu = D.add(a, b);\n"           // both host → CPU path
+        "        a.gpu();\n"
+        "        b.gpu();\n"
+        "        Tensor<float32> cGpu = D.add(a, b);\n"           // both device → GPU path
+        "        cGpu.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 8) {\n"
+        "            float32 want = da[(int32) i] + db[(int32) i];\n"
+        "            if (cCpu.get1(i) != want) { return -1; }\n"
+        "            if (cGpu.get1(i) != want) { return -2; }\n"  // GPU agrees with CPU + oracle
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
 }
