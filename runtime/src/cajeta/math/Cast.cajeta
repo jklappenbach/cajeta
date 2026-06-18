@@ -1,0 +1,89 @@
+package cajeta.math;
+
+/**
+ * RoundingMode-aware numeric conversion (tensor-spec.md §3, tensor-plan.md §1g).
+ *
+ * The bare language cast `(U) value` is the default conversion brick — it lowers
+ * to the hardware op (e.g. `fptrunc` round-nearest-even for float narrowing,
+ * `fptosi` truncate-toward-zero for float→int) and is what `Tensor.astype`'s
+ * default path uses. This class adds the cases where the rounding *policy*
+ * matters and isn't the hardware default:
+ *
+ *   - {@link #roundToInt} — float → integer under an explicit {@link RoundingMode}.
+ *
+ * Float → narrower-float rounding (e.g. float32 → bfloat16 / fp8 under a chosen
+ * mode) and `STOCHASTIC` are **deferred**: narrowing uses the hardware default
+ * (nearest-even) via `(U) value`, and stochastic rounding needs the counter-based
+ * RNG (cajeta.math.random). They land with those phases.
+ */
+public class Cast {
+
+    /** Largest whole value ≤ x (floor), computed via truncate-toward-zero. */
+    private static float64 floorD(float64 x) {
+        int64 t = (int64) x;
+        float64 ft = (float64) t;
+        if (ft > x) {
+            return ft - 1.0;
+        }
+        return ft;
+    }
+
+    /** Smallest whole value ≥ x (ceil), computed via truncate-toward-zero. */
+    private static float64 ceilD(float64 x) {
+        int64 t = (int64) x;
+        float64 ft = (float64) t;
+        if (ft < x) {
+            return ft + 1.0;
+        }
+        return ft;
+    }
+
+    /**
+     * Convert a float64 to the integer dtype `I`, applying `mode` to the
+     * fractional part. The value is rounded to a whole number in float64 first,
+     * then narrowed to `I` (exact — the value is already integral). For float32
+     * inputs, widen losslessly first: `Cast.roundToInt<I>((float64) f, mode)`.
+     *
+     * ```cajeta
+     * int64 a = Cast.roundToInt<int64>(2.5, RoundingMode.NEAREST_EVEN);  // 2 (tie→even)
+     * int64 b = Cast.roundToInt<int64>(2.5, RoundingMode.NEAREST_AWAY);  // 3
+     * int64 c = Cast.roundToInt<int64>(-2.5, RoundingMode.FLOOR);        // -3
+     * ```
+     */
+    public static I roundToInt<I>(float64 x, RoundingMode mode) {
+        float64 r = 0.0;
+        if (mode == RoundingMode.TRUNCATE) {
+            int64 t = (int64) x;
+            r = (float64) t;
+        } else if (mode == RoundingMode.FLOOR) {
+            r = Cast.floorD(x);
+        } else if (mode == RoundingMode.CEIL) {
+            r = Cast.ceilD(x);
+        } else if (mode == RoundingMode.NEAREST_AWAY) {
+            if (x >= 0.0) {
+                r = Cast.floorD(x + 0.5);
+            } else {
+                r = Cast.ceilD(x - 0.5);
+            }
+        } else {
+            // NEAREST_EVEN (the IEEE default) — and the STOCHASTIC fallback
+            // until the RNG lands.
+            float64 f = Cast.floorD(x);
+            float64 diff = x - f;
+            if (diff < 0.5) {
+                r = f;
+            } else if (diff > 0.5) {
+                r = f + 1.0;
+            } else {
+                // Exactly halfway → round to the even neighbor.
+                int64 fi = (int64) f;
+                if (fi % 2 == 0) {
+                    r = f;
+                } else {
+                    r = f + 1.0;
+                }
+            }
+        }
+        return (I) r;
+    }
+}

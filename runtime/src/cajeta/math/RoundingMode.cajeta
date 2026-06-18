@@ -1,0 +1,24 @@
+package cajeta.math;
+
+/**
+ * Rounding policy for a narrowing numeric conversion (docs/CajetaMath.md). The
+ * ordinal is the contract (mirrors the other GPU/IR enums) so it can ride as a
+ * compile-time-constant cast argument later.
+ *
+ *   - {@link #TRUNCATE}     — toward zero (the bare int-cast default).
+ *   - {@link #FLOOR}        — toward −∞.
+ *   - {@link #CEIL}         — toward +∞.
+ *   - {@link #NEAREST_EVEN} — round to nearest, ties to even (IEEE-754 default).
+ *   - {@link #NEAREST_AWAY} — round to nearest, ties away from zero.
+ *   - {@link #STOCHASTIC}   — probabilistic, weighted by distance (for fp8
+ *     training). Deferred — needs the counter-based RNG (cajeta.math.random);
+ *     until then a `STOCHASTIC` request falls back to `NEAREST_EVEN`.
+ */
+public enum RoundingMode {
+    TRUNCATE,      // 0
+    FLOOR,         // 1
+    CEIL,          // 2
+    NEAREST_EVEN,  // 3
+    NEAREST_AWAY,  // 4
+    STOCHASTIC     // 5 (deferred → NEAREST_EVEN until RNG lands)
+}
