@@ -559,4 +559,91 @@ public class Tensor<T> {
         }
         return this.makeView(this.offsetVal, ns, nst);
     }
+
+    // ────────────────────────────── broadcasting (Phase 4) ───────────────────
+
+    /**
+     * The broadcast result-shape of `a` and `b` under the standard right-aligned
+     * rule (tensor-spec.md §5): aligning from the trailing axis, each pair must be
+     * equal or one must be 1 (or absent), and the result takes the larger. Throws
+     * {@link BroadcastException} if any pair is incompatible. The shared primitive
+     * every binary op reuses.
+     */
+    public static #int64[] broadcastShape<E>(int64[] a, int64[] b) {
+        int32 na = (int32) a.count();
+        int32 nb = (int32) b.count();
+        int32 nr = na;
+        if (nb > nr) {
+            nr = nb;
+        }
+        int64[] out = heap int64[nr];
+        int32 i = 0;
+        while (i < nr) {
+            int32 ia = na - 1 - i;
+            int32 ib = nb - 1 - i;
+            int64 da = 1;
+            int64 db = 1;
+            if (ia >= 0) {
+                da = a[ia];
+            }
+            if (ib >= 0) {
+                db = b[ib];
+            }
+            int64 d = da;
+            if (da == db) {
+                d = da;
+            } else if (da == 1) {
+                d = db;
+            } else if (db == 1) {
+                d = da;
+            } else {
+                throw heap BroadcastException("incompatible shapes for broadcast");
+            }
+            out[nr - 1 - i] = d;
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * A zero-copy **view** of this tensor stretched to `targetShape` (tensor-spec.md
+     * §5): right-aligned, each stretched axis (source extent 1, or a missing leading
+     * axis) is given **stride 0** so every index along it reads the same element.
+     * Shares `Storage`. Throws {@link BroadcastException} if `targetShape` has fewer
+     * dims than this tensor or an axis is incompatible (source extent ≠ target and
+     * ≠ 1). Self-overlapping (the stride-0 axes alias) — reads are well-defined;
+     * in-place writes through it are not, per the §4 aliasing contract.
+     */
+    public #Tensor<T> broadcastTo(int64[] targetShape) {
+        int32 tnd = (int32) targetShape.count();
+        int32 nd = (int32) this.shapeDims.count();
+        if (nd > tnd) {
+            throw heap BroadcastException("cannot broadcast to fewer dimensions");
+        }
+        int32 lead = tnd - nd;
+        int64[] ns = heap int64[tnd];
+        int64[] nst = heap int64[tnd];
+        int32 i = 0;
+        while (i < tnd) {
+            int64 tdim = targetShape[i];
+            int32 srcAxis = i - lead;
+            if (srcAxis < 0) {
+                ns[i] = tdim;
+                nst[i] = 0;
+            } else {
+                int64 sdim = this.shapeDims[srcAxis];
+                if (sdim == tdim) {
+                    ns[i] = tdim;
+                    nst[i] = this.strideDims[srcAxis];
+                } else if (sdim == 1) {
+                    ns[i] = tdim;
+                    nst[i] = 0;
+                } else {
+                    throw heap BroadcastException("incompatible broadcast dimension");
+                }
+            }
+            i = i + 1;
+        }
+        return this.makeView(this.offsetVal, ns, nst);
+    }
 }

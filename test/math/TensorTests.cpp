@@ -33,7 +33,8 @@ const char* PRE =
     "package test;\n"
     "import cajeta.math.Tensor;\n"
     "import cajeta.math.DType;\n"
-    "import cajeta.math.MemoryOrder;\n";
+    "import cajeta.math.MemoryOrder;\n"
+    "import cajeta.math.BroadcastException;\n";
 
 } // namespace
 
@@ -258,6 +259,96 @@ TEST(TensorTests, aliasingDefined) {
         "        if (a.get2(1, 0) != 1) { return -2; }\n"
         "        if (a.get2(0, 2) != 20) { return -3; }\n"
         "        if (a.get2(0, 0) != 0) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 4a — broadcastShape matches numpy's right-aligned rule across compatible cases
+// and throws BroadcastException on the incompatible ones.
+TEST(TensorTests, broadcastShapeRules) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // [2,1,3] vs [4,3] → [2,4,3]
+        "        int64[] a = heap int64[3];\n"
+        "        a[0] = 2; a[1] = 1; a[2] = 3;\n"
+        "        int64[] b = heap int64[2];\n"
+        "        b[0] = 4; b[1] = 3;\n"
+        "        int64[] r = Tensor.broadcastShape<int32>(a, b);\n"
+        "        if (r.count() != 3) { return -1; }\n"
+        "        if (r[0] != 2 || r[1] != 4 || r[2] != 3) { return -2; }\n"
+        // [5] vs [1] → [5]
+        "        int64[] c = heap int64[1];\n"
+        "        c[0] = 5;\n"
+        "        int64[] d = heap int64[1];\n"
+        "        d[0] = 1;\n"
+        "        int64[] r2 = Tensor.broadcastShape<int32>(c, d);\n"
+        "        if (r2[0] != 5) { return -3; }\n"
+        // incompatible: [3] vs [4] → throws
+        "        int64[] e = heap int64[1];\n"
+        "        e[0] = 3;\n"
+        "        int64[] f = heap int64[1];\n"
+        "        f[0] = 4;\n"
+        "        boolean threw = false;\n"
+        "        try {\n"
+        "            int64[] bad = Tensor.broadcastShape<int32>(e, f);\n"
+        "        } catch (BroadcastException ex) {\n"
+        "            threw = true;\n"
+        "        }\n"
+        "        if (!threw) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 4b — broadcastTo yields a stride-0 view (no copy); reads return the stretched
+// values; an incompatible target throws.
+TEST(TensorTests, broadcastIsZeroCopyView) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // a = [[10],[20],[30]] shape [3,1]; broadcast to [3,4]
+        "        int32[] data = { 10, 20, 30 };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 3; shp[1] = 1;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"
+        "        int64[] tgt = heap int64[2];\n"
+        "        tgt[0] = 3; tgt[1] = 4;\n"
+        "        Tensor<int32> bc = a.broadcastTo(tgt);\n"
+        "        if (!bc.isView()) { return -1; }\n"
+        "        if (bc.shapeAt(0) != 3 || bc.shapeAt(1) != 4) { return -2; }\n"
+        "        if (bc.strideAt(1) != 0) { return -3; }\n"          // stretched axis stride 0
+        // every column reads the row value
+        "        if (bc.get2(0, 0) != 10 || bc.get2(0, 3) != 10) { return -4; }\n"
+        "        if (bc.get2(2, 1) != 30 || bc.get2(2, 3) != 30) { return -5; }\n"
+        // it shares storage: mutating the source row shows through all columns
+        "        a.set2(1, 0, 99);\n"
+        "        if (bc.get2(1, 0) != 99 || bc.get2(1, 3) != 99) { return -6; }\n"
+        // broadcast a 1-D [4] up to [2,4] (missing leading axis → stride 0)
+        "        int32[] row = { 1, 2, 3, 4 };\n"
+        "        int64[] rshp = heap int64[1];\n"
+        "        rshp[0] = 4;\n"
+        "        Tensor<int32> v = Tensor.of<int32>(row, rshp);\n"
+        "        int64[] t2 = heap int64[2];\n"
+        "        t2[0] = 2; t2[1] = 4;\n"
+        "        Tensor<int32> vb = v.broadcastTo(t2);\n"
+        "        if (vb.strideAt(0) != 0) { return -7; }\n"
+        "        if (vb.get2(0, 2) != 3 || vb.get2(1, 2) != 3) { return -8; }\n"
+        // incompatible target throws
+        "        boolean threw = false;\n"
+        "        int64[] bad = heap int64[2];\n"
+        "        bad[0] = 3; bad[1] = 5;\n"                          // a is [3,1] → col ok, but try [3,1]→[2,4]
+        "        int64[] bad2 = heap int64[2];\n"
+        "        bad2[0] = 2; bad2[1] = 4;\n"
+        "        try {\n"
+        "            Tensor<int32> x = a.broadcastTo(bad2);\n"        // a[3,1] vs [2,4]: 3 vs 2 incompatible
+        "        } catch (BroadcastException ex) {\n"
+        "            threw = true;\n"
+        "        }\n"
+        "        if (!threw) { return -9; }\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
