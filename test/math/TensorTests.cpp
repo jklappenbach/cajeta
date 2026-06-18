@@ -468,6 +468,31 @@ TEST(TensorTests, fancyIndexing) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 7c (capture) — the Tensor<?> airlock: a Tensor<float32> widened to Tensor<?>
+// captures back to Tensor<float32> via a reified instanceof guard + cast, sharing
+// storage (a write through the captured handle shows through the original); a
+// wrong-dtype instanceof is false. Sound because cajeta monomorphizes (see
+// documents/cajeta-templates/reified-capture-spec.md).
+TEST(TensorTests, wildcardAirlock) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> t = Tensor.arange<float32>(4);\n"   // [0,1,2,3]
+        "        Tensor<?> w = t;\n"                                  // widen to the airlock
+        "        if (!(w instanceof Tensor<float32>)) { return -1; }\n"
+        "        if (w instanceof Tensor<int32>) { return -2; }\n"   // wrong dtype rejected
+        "        Tensor<float32> cap = (Tensor<float32>) w;\n"        // capture
+        "        cap.set1(0, 9.0f);\n"
+        "        if (t.get1(0) != 9.0f) { return -3; }\n"            // shares storage
+        "        if (cap.get1(3) != 3.0f) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 6a — device placement: to-gpu / to-cpu move storage; device()/isOnGpu() report
 // it; data survives a host→device→host round-trip; a no-GPU build still works
 // (the cajeta.gpu CPU backend backs the buffer).
