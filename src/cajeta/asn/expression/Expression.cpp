@@ -9,6 +9,7 @@
 #include "cajeta/type/FormalParameter.h"
 #include "cajeta/field/StackField.h"
 #include "cajeta/field/ParameterField.h"
+#include "cajeta/field/HeapField.h"
 #include "cajeta/util/LiteralUtils.h"
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/asn/expression/Identifier.h"
@@ -354,12 +355,23 @@ namespace cajeta {
             // `detach expr` — run inner call now, discard the resulting Task.
             result = make_shared<DetachExpression>(token);
         } else if (ctx->INSTANCEOF()) {
-            // `expr instanceof Type` — target type comes from typeType (the pattern form
-            // of instanceof, which binds a name, is treated as the same shape for now).
-            CajetaTypePtr targetType = ctx->typeType().empty()
-                ? CajetaTypePtr()
-                : CajetaType::fromContext(ctx->typeType(0), nullptr);
-            string patternName = ctx->pattern() ? ctx->pattern()->getText() : string();
+            // `expr instanceof Type` (plain) or `expr instanceof Type id` (the
+            // pattern form, which binds `id : Type` in the matched region —
+            // reified-capture §4). In the pattern form the type + identifier
+            // live inside `pattern` (the top-level typeType list is empty).
+            CajetaTypePtr targetType;
+            string patternName;
+            if (!ctx->typeType().empty()) {
+                targetType = CajetaType::fromContext(ctx->typeType(0), nullptr);
+            } else if (ctx->pattern()) {
+                auto* pat = ctx->pattern();
+                if (pat->typeType()) {
+                    targetType = CajetaType::fromContext(pat->typeType(), nullptr);
+                }
+                if (pat->identifier()) {
+                    patternName = pat->identifier()->getText();
+                }
+            }
             result = make_shared<InstanceOfExpression>(targetType, patternName, token);
         }
 
@@ -3261,34 +3273,71 @@ namespace cajeta {
         bool wantRuntime = targetClass && targetConcrete && lhsType
             && lhsCanon != targetCanon && (lhsIsWildcard || sameBase);
 
-        if (wantRuntime) {
+        auto* builder = module->getBuilder();
+
+        // We need the lhs object pointer for the runtime match and/or the
+        // pattern binding; otherwise we only evaluate it for side-effects.
+        bool needObj = wantRuntime || !pattern.empty();
+        llvm::Value* objPtr = nullptr;
+        if (needObj) {
             llvm::Value* raw = children[0]->generateCode(module);
-            llvm::Value* objPtr = loadIfLValue(module, raw, lhsExpr);
-            if (objPtr && objPtr->getType()->isPointerTy()) {
-                if (llvm::Function* fn =
-                        module->getRuntimeFunction("__cajeta_instanceof_named")) {
-                    llvm::Value* namePtr =
-                        module->getBuilder()->CreateGlobalString(
-                            targetCanon, "instanceof.target");
-                    llvm::Value* r = module->getBuilder()->CreateCall(
-                        fn, {objPtr, namePtr}, "instanceof.match");
-                    return module->getBuilder()->CreateICmpNE(
-                        r, llvm::ConstantInt::get(r->getType(), 0));
-                }
-            }
-            // Couldn't emit the runtime check — fall through to the static answer.
-            bool isMatch = (lhsCanon == targetCanon);
-            return isMatch ? llvm::ConstantInt::getTrue(i1)
-                           : llvm::ConstantInt::getFalse(i1);
+            objPtr = loadIfLValue(module, raw, lhsExpr);
+        } else {
+            children[0]->generateCode(module);
         }
 
-        // Static path: evaluate lhs for side-effects, fold the compile-time answer.
-        children[0]->generateCode(module);
-        if (!lhsType) {
-            return llvm::ConstantInt::getFalse(i1);
+        // Compute the match bit. Runtime reified check when the static type
+        // doesn't pin the answer; otherwise the folded compile-time constant.
+        llvm::Value* matchBit;
+        if (wantRuntime && objPtr && objPtr->getType()->isPointerTy()) {
+            llvm::Function* fn =
+                module->getRuntimeFunction("__cajeta_instanceof_named");
+            if (fn) {
+                llvm::Value* namePtr = builder->CreateGlobalString(
+                    targetCanon, "instanceof.target");
+                llvm::Value* r = builder->CreateCall(
+                    fn, {objPtr, namePtr}, "instanceof.match");
+                matchBit = builder->CreateICmpNE(
+                    r, llvm::ConstantInt::get(r->getType(), 0));
+            } else {
+                matchBit = (lhsCanon == targetCanon)
+                    ? llvm::ConstantInt::getTrue(i1)
+                    : llvm::ConstantInt::getFalse(i1);
+            }
+        } else {
+            bool isMatch = lhsType && (lhsCanon == targetCanon);
+            matchBit = isMatch ? llvm::ConstantInt::getTrue(i1)
+                               : llvm::ConstantInt::getFalse(i1);
         }
-        bool isMatch = (lhsCanon == targetCanon);
-        return isMatch ? llvm::ConstantInt::getTrue(i1) : llvm::ConstantInt::getFalse(i1);
+
+        // Pattern binding (`w instanceof Foo<int32> f`): introduce `f : Foo<int32>`
+        // bound to the captured pointer — representation-identical because cajeta
+        // monomorphizes. Sound by construction: bind the object on a match, null
+        // otherwise, so a use outside the matched region NPEs rather than reading a
+        // mis-typed object. The binding aliases an existing object (no creator /
+        // drop_push), so it is a borrow and never double-frees. The `if` evaluates
+        // its condition before the then-block, so registering the field in the
+        // current scope makes it visible to the guarded body.
+        if (!pattern.empty() && type && objPtr && objPtr->getType()->isPointerTy()) {
+            llvm::PointerType* ptrTy =
+                llvm::PointerType::get(*module->getLlvmContext(), 0);
+            llvm::Value* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
+            llvm::Value* bound =
+                builder->CreateSelect(matchBit, objPtr, nullPtr, "bind.val");
+            llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+            llvm::IRBuilder<> entry(&parentFn->getEntryBlock(),
+                                    parentFn->getEntryBlock().begin());
+            llvm::AllocaInst* slot = entry.CreateAlloca(ptrTy, nullptr, pattern);
+            builder->CreateStore(bound, slot);
+            auto scope = module->getScopeStack().peek();
+            if (scope) {
+                auto field = make_shared<HeapField>(module, pattern, type);
+                field->setAllocation(slot);
+                scope->putField(field);
+            }
+        }
+
+        return matchBit;
     }
 
     // Resolve a bracketed ancestor name (`this<Base>` / `super<Base>`)
