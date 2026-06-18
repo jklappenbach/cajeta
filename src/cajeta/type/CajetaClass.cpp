@@ -126,6 +126,46 @@ namespace cajeta {
         return false;
     }
 
+    bool CajetaClass::isNumericMarkerName(const string& name) {
+        return name == "Numeric" || name == "Floating"
+            || name == "Integral" || name == "Complex";
+    }
+
+    bool CajetaClass::satisfiesNumericMarker(CajetaTypePtr arg,
+                                             const string& marker) {
+        if (!arg) return false;
+        // Intrinsic: a primitive satisfies the marker via the type-flag lattice.
+        // (NUMBER_FLAG tags boolean too, so Numeric/Integral exclude it by name.)
+        int flags = arg->getTypeFlags();
+        bool isPrim = (flags & PRIMITIVE_FLAG) != 0;
+        if (isPrim) {
+            bool isBool = arg->getQName()
+                && arg->getQName()->getTypeName() == "boolean";
+            if (marker == "Numeric")  return (flags & NUMBER_FLAG) != 0 && !isBool;
+            if (marker == "Integral") return (flags & INT_FLAG) != 0 && !isBool;
+            if (marker == "Floating") return (flags & FLOAT_FLAG) != 0;
+            if (marker == "Complex")  return false;  // reserved — no complex primitive yet
+            return false;
+        }
+        // Nominal: a class/interface that implements the cajeta.lang marker
+        // (transitively — Floating/Integral/Complex extend Numeric).
+        auto cls = dynamic_pointer_cast<CajetaClass>(arg);
+        if (cls) {
+            auto& cmap = CajetaType::getCanonicalMap();
+            CajetaTypePtr markerType;
+            auto it = cmap.find(string("cajeta.lang.") + marker);
+            if (it != cmap.end()) {
+                markerType = it->second;
+            } else {
+                auto n = cmap.find(marker);
+                if (n != cmap.end()) markerType = n->second;
+            }
+            auto markerClass = dynamic_pointer_cast<CajetaClass>(markerType);
+            if (markerClass && cls->isParentOrKind(markerClass)) return true;
+        }
+        return false;
+    }
+
     bool CajetaClass::isAssignableToWildcard(
             CajetaClassPtr from, CajetaClassPtr wildcardInst) {
         if (!from || !wildcardInst) return false;
@@ -153,6 +193,19 @@ namespace cajeta {
             if (kind == CajetaType::WildcardKind::Unbounded) continue;
             auto bound = destArg->wildcardBound();
             if (!bound) return false;
+            // Numeric marker bound (`? extends Floating`): a primitive arg may
+            // satisfy it intrinsically (the type-flag lattice) even though it is
+            // not a CajetaClass. Dual conformance via satisfiesNumericMarker.
+            string boundName =
+                bound->getQName() ? bound->getQName()->getTypeName() : string();
+            if (isNumericMarkerName(boundName)) {
+                if (kind == CajetaType::WildcardKind::Extends) {
+                    if (!satisfiesNumericMarker(fromArg, boundName)) return false;
+                    continue;
+                }
+                // `? super <numeric marker>` is not a v1 form.
+                return false;
+            }
             auto fromArgClass = dynamic_pointer_cast<CajetaClass>(fromArg);
             auto boundClass = dynamic_pointer_cast<CajetaClass>(bound);
             if (!fromArgClass || !boundClass) {

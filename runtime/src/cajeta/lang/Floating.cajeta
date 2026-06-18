@@ -1,0 +1,12 @@
+package cajeta.lang;
+
+/**
+ * Marker for **floating-point** types ({@link Numeric} sub-marker). The
+ * primitives `float16`, `float32`, `float64`, `float128`, `bfloat16`, and the
+ * low-precision `float8`/`float6`/`float4` formats satisfy it intrinsically (the
+ * compiler's `FLOAT_FLAG` lattice); a class may satisfy it nominally via
+ * `implements Floating`. Used as a bound: `<T extends Floating>`,
+ * `Tensor<? extends Floating>`.
+ */
+public interface Floating extends Numeric {
+}

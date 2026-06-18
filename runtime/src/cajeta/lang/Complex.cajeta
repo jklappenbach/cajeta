@@ -1,0 +1,11 @@
+package cajeta.lang;
+
+/**
+ * Marker for **complex** types ({@link Numeric} sub-marker). **Reserved** — cajeta
+ * has no concrete complex primitive yet, so no primitive satisfies it intrinsically
+ * today; the bound exists so `Tensor<? extends Numeric>` code and a future
+ * `complex64`/`complex128` (or a class `implements Complex`) compose. Used as a
+ * bound: `<T extends Complex>`.
+ */
+public interface Complex extends Numeric {
+}

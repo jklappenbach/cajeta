@@ -111,6 +111,24 @@ namespace cajeta {
             if (param.bounds.empty()) continue;
             auto argClass = std::dynamic_pointer_cast<CajetaClass>(args[i]);
             for (auto& bound : param.bounds) {
+                // Numeric marker bound (Numeric/Floating/Integral/Complex): a
+                // primitive type argument satisfies it intrinsically via the
+                // type-flag lattice (boolean excluded), a class nominally —
+                // the shared dual-conformance predicate (numeric-bounds-spec.md).
+                const std::string& bname = bound->getTypeName();
+                if (CajetaClass::isNumericMarkerName(bname)) {
+                    if (!CajetaClass::satisfiesNumericMarker(args[i], bname)) {
+                        throw Exception(
+                            "method template '" + name + "': argument '"
+                                + (args[i] && args[i]->getQName()
+                                    ? args[i]->getQName()->toCanonical()
+                                    : std::string("?"))
+                                + "' does not satisfy numeric bound '" + bname
+                                + "' on parameter '" + param.name + "'",
+                            "CAJETA_ERROR_METHOD_TEMPLATE_BOUND");
+                    }
+                    continue;
+                }
                 auto& cmap = CajetaType::getCanonicalMap();
                 CajetaTypePtr boundType;
                 auto it = cmap.find(bound->toCanonical());

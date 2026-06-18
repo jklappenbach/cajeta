@@ -1,0 +1,11 @@
+package cajeta.lang;
+
+/**
+ * Marker for **integer** types ({@link Numeric} sub-marker). The primitives
+ * `int8/16/32/64/128` and `uint8/16/32/64/128` satisfy it intrinsically (the
+ * compiler's `INT_FLAG` lattice); a class may satisfy it nominally via
+ * `implements Integral`. `boolean` is excluded (it is not numeric). Used as a
+ * bound: `<T extends Integral>`, `Tensor<? extends Integral>`.
+ */
+public interface Integral extends Numeric {
+}

@@ -1,0 +1,136 @@
+//
+// NumericBoundsTests — numeric-bounds-plan.md: the Numeric/Floating/Integral
+// markers that PRIMITIVES satisfy intrinsically (the type-flag lattice), usable
+// as template-parameter bounds (`<T extends Floating>`) and wildcard bounds
+// (`Tensor<? extends Floating>`). Floats admitted, int/bool rejected — at compile
+// time, zero runtime cost. Trait-style conformance, not Java boxing.
+//
+
+#include <gtest/gtest.h>
+
+#include "../jit/JitTestHelper.h"
+
+#include <cstdint>
+#include <string>
+
+using cajeta_test::CajetaJit;
+
+namespace {
+
+int32_t runI32(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+
+// True if the source fails to compile (rejected) — for bound-admission negatives.
+bool rejected(const std::string& src) {
+    try {
+        auto jit = CajetaJit::compile(src, "test.D");
+        if (!jit) return true;
+        auto fn = jit->lookup<int32_t (*)()>("run");
+        return fn == nullptr;
+    } catch (...) {
+        return true;
+    }
+}
+
+} // namespace
+
+// `<T extends Floating>` parameter bound admits a float primitive and runs.
+TEST(NumericBoundsTests, boundedParamFloatingAdmitsFloat) {
+    std::string src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static T pick<T extends Floating>(T a, T b) { return a; }\n"
+        "    public static int32 run() {\n"
+        "        float32 r = D.pick<float32>(2.5f, 1.0f);\n"
+        "        if (r != 2.5f) { return -1; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// `<T extends Floating>` rejects an integer type argument.
+TEST(NumericBoundsTests, boundedParamFloatingRejectsInt) {
+    std::string src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static T pick<T extends Floating>(T a, T b) { return a; }\n"
+        "    public static int32 run() {\n"
+        "        int32 r = D.pick<int32>(2, 1);\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_TRUE(rejected(src));
+}
+
+// The sound dtype-generic mechanism: a routine `<T extends Floating>(Tensor<T> t)`
+// admits any float tensor (monomorphized per concrete dtype — no variance hazard).
+TEST(NumericBoundsTests, dtypeGenericTensorRoutineAdmitsFloat) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "public final class D {\n"
+        "    public static int64 elems<T extends Floating>(Tensor<T> t) { return t.size(); }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> t = Tensor.arange<float32>(4);\n"
+        "        if (D.elems<float32>(t) != 4) { return -1; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// The same routine rejects an integer tensor (int32 ⊭ Floating) at compile time.
+TEST(NumericBoundsTests, dtypeGenericTensorRoutineRejectsInt) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "public final class D {\n"
+        "    public static int64 elems<T extends Floating>(Tensor<T> t) { return t.size(); }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<int32> t = Tensor.arange<int32>(4);\n"
+        "        int64 n = D.elems<int32>(t);\n"
+        "        return (int32) n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_TRUE(rejected(src));
+}
+
+// Class-template bound: `class C<T extends Numeric>` admits a numeric primitive.
+TEST(NumericBoundsTests, classBoundNumericAdmits) {
+    std::string src =
+        "package test;\n"
+        "public class Cell<T extends Numeric> {\n"
+        "    T v;\n"
+        "    public Cell(T v) { this.v = v; }\n"
+        "    public T get() { return this.v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell<int32> c = heap Cell<int32>(5);\n"
+        "        return c.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// ...and rejects bool (boolean is not Numeric, despite carrying integer flags).
+TEST(NumericBoundsTests, classBoundNumericRejectsBool) {
+    std::string src =
+        "package test;\n"
+        "public class Cell<T extends Numeric> {\n"
+        "    T v;\n"
+        "    public Cell(T v) { this.v = v; }\n"
+        "    public T get() { return this.v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell<boolean> c = heap Cell<boolean>(true);\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_TRUE(rejected(src));
+}

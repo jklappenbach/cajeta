@@ -804,6 +804,17 @@ namespace cajeta {
         static bool isAssignableToWildcard(
             CajetaClassPtr from, CajetaClassPtr wildcardInst);
 
+        // Numeric template-bound markers (numeric-bounds-spec.md). The single
+        // source of truth for "does type `arg` satisfy numeric marker `marker`"
+        // (Numeric/Floating/Integral/Complex), used by both the `<T extends M>`
+        // parameter-bound check (TemplateInstantiator) and the
+        // `Tensor<? extends M>` wildcard-admission check (isAssignableToWildcard).
+        // Dual conformance: a primitive satisfies it intrinsically via the
+        // type-flag lattice (boolean excluded); a class satisfies it nominally by
+        // implementing the cajeta.lang marker.
+        static bool isNumericMarkerName(const string& name);
+        static bool satisfiesNumericMarker(CajetaTypePtr arg, const string& marker);
+
         // Materialize a concrete class from this template under the given
         // arguments. Idempotent: a second call with the same args returns
         // the cached instantiation. No-op if this class is not a template
