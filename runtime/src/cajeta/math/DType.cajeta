@@ -1,0 +1,221 @@
+package cajeta.math;
+
+/**
+ * A numeric **dtype descriptor** — the runtime value that identifies an element
+ * type's kind, bit width, and signedness (tensor-spec.md §3). A `Tensor<T>`
+ * carries its dtype in `T` (reified), but a `DType` value is what the
+ * **NEP-50 type promotion** table (`promote`) and the dtype-generic /
+ * runtime-dtype paths reason over.
+ *
+ * ## The dtype-bound hierarchy (what `Tensor<? extends …>` binds on)
+ *   `Numeric` ⊃ `Floating` / `Integral` / `Complex`;  `bool` stands alone.
+ * Exposed here as the `isNumeric()` / `isFloating()` / `isIntegral()` /
+ * `isComplex()` predicates.
+ *
+ * ## Native dtype set (v1)
+ * `bool`; `int8/16/32/64/128`; `uint8/16/32/64/128`; `float16/32/64/128`;
+ * `bfloat16`; the `float8` variants (`e4m3`, `e5m2`, `e4m3fnuz`, `e5m2fnuz`)
+ * and `float6`/`float4`. **`complex64/128` are reserved** — the `Complex` bound
+ * exists but cajeta has no concrete complex primitive yet (deferred).
+ *
+ * Identity is `(kind, bits, variant)`; `variant` distinguishes same-width floats
+ * (e.g. `float16` vs `bfloat16`, the four `float8` encodings).
+ */
+public class DType {
+    // ── kind codes ──
+    public static final int32 KIND_BOOL    = 0;
+    public static final int32 KIND_INT     = 1;   // signed integer
+    public static final int32 KIND_UINT    = 2;   // unsigned integer
+    public static final int32 KIND_FLOAT   = 3;   // floating point (incl. bf16/fp8/fp6/fp4)
+    public static final int32 KIND_COMPLEX = 4;   // reserved — no concrete complex type yet
+
+    // ── float variant codes (only meaningful when kind == KIND_FLOAT) ──
+    public static final int32 VAR_STD      = 0;   // standard IEEE (f16/f32/f64/f128, by width)
+    public static final int32 VAR_BF16     = 1;   // bfloat16 (16-bit, 8-bit exponent)
+    public static final int32 VAR_F8E4M3   = 2;
+    public static final int32 VAR_F8E5M2   = 3;
+    public static final int32 VAR_F8E4M3FNUZ = 4;
+    public static final int32 VAR_F8E5M2FNUZ = 5;
+    public static final int32 VAR_F6E2M3   = 6;
+    public static final int32 VAR_F6E3M2   = 7;
+    public static final int32 VAR_F4E2M1   = 8;
+
+    int32 kindCode;
+    int32 bitWidth;
+    int32 variantCode;
+
+    public DType(int32 kindCode, int32 bitWidth, int32 variantCode) {
+        this.kindCode = kindCode;
+        this.bitWidth = bitWidth;
+        this.variantCode = variantCode;
+    }
+
+    public int32 kind()    { return this.kindCode; }
+    public int32 bits()    { return this.bitWidth; }
+    public int32 variant() { return this.variantCode; }
+    public int32 bytes()   { return (this.bitWidth + 7) / 8; }
+
+    // ── the dtype-bound hierarchy ──
+    public boolean isBool()        { return this.kindCode == DType.KIND_BOOL; }
+    public boolean isSignedInt()   { return this.kindCode == DType.KIND_INT; }
+    public boolean isUnsignedInt() { return this.kindCode == DType.KIND_UINT; }
+    public boolean isIntegral()    { return this.kindCode == DType.KIND_INT || this.kindCode == DType.KIND_UINT; }
+    public boolean isFloating()    { return this.kindCode == DType.KIND_FLOAT; }
+    public boolean isComplex()     { return this.kindCode == DType.KIND_COMPLEX; }
+    public boolean isNumeric()     { return this.isIntegral() || this.isFloating() || this.isComplex(); }
+    /** Signed in the sign-bit sense: signed ints, floats, complex (not bool, not uint). */
+    public boolean isSigned()      { return this.kindCode == DType.KIND_INT
+                                         || this.kindCode == DType.KIND_FLOAT
+                                         || this.kindCode == DType.KIND_COMPLEX; }
+
+    public boolean equals(DType other) {
+        return this.kindCode == other.kindCode
+            && this.bitWidth == other.bitWidth
+            && this.variantCode == other.variantCode;
+    }
+
+    // ── named factories: the native dtype set ──
+    // Short names (i32/f32/u8/…) because the full primitive names (int32,
+    // float32, float8e5m2, …) are reserved keywords and can't name a method.
+    public static #DType boolType() { return heap DType(DType.KIND_BOOL, 8, 0); }
+
+    public static #DType i8()   { return heap DType(DType.KIND_INT, 8, 0); }
+    public static #DType i16()  { return heap DType(DType.KIND_INT, 16, 0); }
+    public static #DType i32()  { return heap DType(DType.KIND_INT, 32, 0); }
+    public static #DType i64()  { return heap DType(DType.KIND_INT, 64, 0); }
+    public static #DType i128() { return heap DType(DType.KIND_INT, 128, 0); }
+
+    public static #DType u8()   { return heap DType(DType.KIND_UINT, 8, 0); }
+    public static #DType u16()  { return heap DType(DType.KIND_UINT, 16, 0); }
+    public static #DType u32()  { return heap DType(DType.KIND_UINT, 32, 0); }
+    public static #DType u64()  { return heap DType(DType.KIND_UINT, 64, 0); }
+    public static #DType u128() { return heap DType(DType.KIND_UINT, 128, 0); }
+
+    public static #DType f16()  { return heap DType(DType.KIND_FLOAT, 16, DType.VAR_STD); }
+    public static #DType f32()  { return heap DType(DType.KIND_FLOAT, 32, DType.VAR_STD); }
+    public static #DType f64()  { return heap DType(DType.KIND_FLOAT, 64, DType.VAR_STD); }
+    public static #DType f128() { return heap DType(DType.KIND_FLOAT, 128, DType.VAR_STD); }
+    public static #DType bf16() { return heap DType(DType.KIND_FLOAT, 16, DType.VAR_BF16); }
+
+    public static #DType f8e4m3()     { return heap DType(DType.KIND_FLOAT, 8, DType.VAR_F8E4M3); }
+    public static #DType f8e5m2()     { return heap DType(DType.KIND_FLOAT, 8, DType.VAR_F8E5M2); }
+    public static #DType f8e4m3fnuz() { return heap DType(DType.KIND_FLOAT, 8, DType.VAR_F8E4M3FNUZ); }
+    public static #DType f8e5m2fnuz() { return heap DType(DType.KIND_FLOAT, 8, DType.VAR_F8E5M2FNUZ); }
+    public static #DType f6e2m3()     { return heap DType(DType.KIND_FLOAT, 6, DType.VAR_F6E2M3); }
+    public static #DType f6e3m2()     { return heap DType(DType.KIND_FLOAT, 6, DType.VAR_F6E3M2); }
+    public static #DType f4e2m1()     { return heap DType(DType.KIND_FLOAT, 4, DType.VAR_F4E2M1); }
+
+    /**
+     * **NEP-50 type-based promotion**: the result dtype of a binary op on
+     * operands of dtypes `a` and `b`, from the *types* (never the values). For
+     * the numpy-standard dtypes (bool, int8-64, uint8-64, float16/32/64) this
+     * matches `numpy.result_type` under NEP-50; the cajeta-extension dtypes
+     * (int128/uint128, bfloat16, the fp8/fp6/fp4 variants) follow the documented
+     * extension rules below (numpy has no opinion on them).
+     *
+     * Rules:
+     *  - identical → itself.
+     *  - bool with X → X (bool is absorbed).
+     *  - int with float → the **float** (NEP-50 keeps the float's width — it does
+     *    NOT upcast float16+int64 to float64).
+     *  - two floats → the wider; same width + different variant → the next
+     *    standard float up (extension).
+     *  - two ints, same signedness → the wider.
+     *  - signed + unsigned → a signed int wide enough to hold both: if the signed
+     *    width already exceeds the unsigned width, the signed type; else width
+     *    `2 × unsignedWidth`, and if that exceeds 64 → `float64` (numpy's
+     *    int64+uint64 → float64).
+     *  - complex with X → complex of the wider width (reserved; unreachable until
+     *    complex primitives land).
+     */
+    public static #DType promote(DType a, DType b) {
+        int32 ak = a.kindCode;
+        int32 bk = b.kindCode;
+        int32 aw = a.bitWidth;
+        int32 bw = b.bitWidth;
+
+        if (ak == bk && aw == bw && a.variantCode == b.variantCode) {
+            return heap DType(ak, aw, a.variantCode);
+        }
+        if (ak == DType.KIND_BOOL) {
+            return heap DType(bk, bw, b.variantCode);
+        }
+        if (bk == DType.KIND_BOOL) {
+            return heap DType(ak, aw, a.variantCode);
+        }
+
+        boolean aComplex = ak == DType.KIND_COMPLEX;
+        boolean bComplex = bk == DType.KIND_COMPLEX;
+        boolean aFloat = ak == DType.KIND_FLOAT;
+        boolean bFloat = bk == DType.KIND_FLOAT;
+
+        if (aComplex || bComplex) {
+            int32 cw = aw;
+            if (bw > cw) {
+                cw = bw;
+            }
+            return heap DType(DType.KIND_COMPLEX, cw, DType.VAR_STD);
+        }
+
+        if (aFloat || bFloat) {
+            if (aFloat && bFloat) {
+                // Two floats.
+                if (aw > bw) {
+                    return heap DType(DType.KIND_FLOAT, aw, a.variantCode);
+                }
+                if (bw > aw) {
+                    return heap DType(DType.KIND_FLOAT, bw, b.variantCode);
+                }
+                // Same width, different variant → next standard float up.
+                int32 nextW = aw;
+                if (nextW < 16) {
+                    nextW = 16;
+                } else {
+                    nextW = aw * 2;
+                    if (nextW > 128) {
+                        nextW = 128;
+                    }
+                }
+                return heap DType(DType.KIND_FLOAT, nextW, DType.VAR_STD);
+            }
+            // One float, one int → NEP-50 keeps the float.
+            if (aFloat) {
+                return heap DType(DType.KIND_FLOAT, aw, a.variantCode);
+            }
+            return heap DType(DType.KIND_FLOAT, bw, b.variantCode);
+        }
+
+        // Both integers.
+        boolean aSigned = ak == DType.KIND_INT;
+        boolean bSigned = bk == DType.KIND_INT;
+        if (aSigned == bSigned) {
+            // Same signedness → wider.
+            int32 w = aw;
+            if (bw > w) {
+                w = bw;
+            }
+            return heap DType(ak, w, 0);
+        }
+
+        // Mixed signed / unsigned.
+        int32 sw = aw;
+        int32 uw = bw;
+        if (aSigned) {
+            sw = aw;
+            uw = bw;
+        } else {
+            sw = bw;
+            uw = aw;
+        }
+        if (sw > uw) {
+            // The signed type already covers the unsigned range.
+            return heap DType(DType.KIND_INT, sw, 0);
+        }
+        int32 rw = uw * 2;
+        if (rw > 64) {
+            // No standard signed int wide enough → float64 (numpy's rule).
+            return heap DType(DType.KIND_FLOAT, 64, DType.VAR_STD);
+        }
+        return heap DType(DType.KIND_INT, rw, 0);
+    }
+}
