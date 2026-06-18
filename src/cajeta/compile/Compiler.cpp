@@ -2007,32 +2007,40 @@ namespace cajeta {
         std::unordered_map<std::string, GlobalValue*> defs;
         std::unordered_set<std::string> reached = computeReachableSymbols(lmods, defs);
 
-        // Conservative Phase-B prune: drop the BODY of unreachable cajeta
-        // class-method / reflect-adapter functions only (the `__cajeta_cajeta_`
-        // mangling). deleteBody turns each into an extern declaration — it emits
-        // no code, and (critically) its references to native symbols vanish, so a
-        // non-TLS program no longer references `__cajeta_tls_*` and the linker
-        // never pulls cajeta_tls.o / OpenSSL (the win --gc-sections can't get on
-        // its own; see stdlib-tree-shaking.md). We deliberately do NOT touch
-        // runtime/ABI helpers, natives, or non-prefixed symbols — those stay as
-        // emitted and are left to --gc-sections. By BFS soundness an unreachable
-        // method is referenced only by other unreachable entities (a reachable
-        // vtable keeps all its slots), so dropping its body strands no live ref.
-        // Set ExternalLinkage so an internal/private function stays valid IR once
-        // it becomes a bodyless declaration; unreferenced, it emits nothing.
-        const StringRef PFX = "__cajeta_cajeta_";
+        // The precise set of prunable functions = every cajeta METHOD body,
+        // taken from Method->llvm::Function (NOT a name prefix). This covers all
+        // packages (user + stdlib) and can never touch runtime/ABI helpers,
+        // natives, ctors, clinits, or reflect adapters — none of those are
+        // Methods. deleteBody turns an unreachable method into an extern
+        // declaration: it emits no code, and (critically) its references to
+        // native symbols vanish, so a non-TLS program no longer references
+        // `__cajeta_tls_*` and the linker never pulls cajeta_tls.o / OpenSSL (the
+        // win --gc-sections can't get on its own; see stdlib-tree-shaking.md). By
+        // BFS soundness an unreachable method is referenced only by other
+        // unreachable entities (a reachable vtable keeps all its slots), so
+        // dropping its body strands no live ref; an unsound prune would fail loud
+        // as an undefined symbol at link, not silently miscompile. ExternalLinkage
+        // keeps an internal/private function valid IR once it is bodyless;
+        // unreferenced, it emits nothing.
         size_t pruned = 0, keptFns = 0, totalFns = 0;
-        for (auto* lm : lmods) {
-            for (auto& f : lm->functions()) {
-                if (f.isDeclaration()) continue;
-                if (!f.getName().starts_with(PFX)) continue;
+        std::unordered_set<llvm::Function*> seen;
+        auto consider = [&](const CajetaModulePtr& mod) {
+            if (!mod) return;
+            for (auto& method : mod->getAllMethods()) {
+                if (!method) continue;
+                Function* f = method->getLlvmFunction();
+                if (!f || f->isDeclaration()) continue;
+                if (!seen.insert(f).second) continue;   // a method appears once
                 totalFns++;
-                if (reached.count(f.getName().str())) { keptFns++; continue; }
-                f.deleteBody();
-                f.setLinkage(GlobalValue::ExternalLinkage);
+                if (reached.count(f->getName().str())) { keptFns++; continue; }
+                f->deleteBody();
+                f->setLinkage(GlobalValue::ExternalLinkage);
                 pruned++;
             }
-        }
+        };
+        for (auto& m : modules) consider(m);
+        for (auto& m : externalModules) consider(m);
+        if (auto stdlib = CajetaModule::getStdlibModule()) consider(stdlib);
         std::cout << "tree-shake (--tree-shake=on): pruned " << pruned
                   << " of " << totalFns
                   << " unreachable cajeta method bodies (kept " << keptFns << ")\n";
