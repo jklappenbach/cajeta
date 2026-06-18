@@ -88,6 +88,8 @@ void printUsage(const char* progname) {
               << "                                       named (canonical) class in the keep-set.\n"
               << "  --keepset-json=<path>                Lean DCE: write the generated keep-set + provenance\n"
               << "                                       to <path> as JSON.\n"
+              << "  --tree-shake=off|report              Tier-1 RTA. report: print the IR-reachability strip\n"
+              << "                                       analysis for --emit=exe (analysis only). Default off.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
@@ -404,6 +406,17 @@ int main(int argc, const char* argv[]) {
             // Lean DCE diagnostic: write the generated keep-set + provenance to
             // this path as JSON (lean builds only).
             compiler.getMutableFlags().keepsetJson = value;
+        } else if (match(arg, "tree-shake", value)) {
+            // Tier-1 RTA (plans/compiler/stdlib-tree-shaking.md). `report`
+            // (Phase A) computes IR reachability from the entry + roots and
+            // prints what would be stripped — analysis only, no emission change.
+            TreeShake ts;
+            if (!setEnumFlag<TreeShake>("tree-shake", value,
+                    { {"off", TreeShake::Off},
+                      {"report", TreeShake::Report} }, ts)) {
+                printUsage(argv[0]); return 1;
+            }
+            compiler.getMutableFlags().treeShake = ts;
         } else if (match(arg, "xpu-backend", value)) {
             // Comma-separated list — a binary can bundle several targets
             // (e.g. vulkan,cpu); the runtime dispatcher picks the best

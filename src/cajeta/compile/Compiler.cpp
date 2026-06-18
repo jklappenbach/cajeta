@@ -37,11 +37,18 @@
 #include "../method/Method.h"
 #include "cajeta/buildtool/Subprocess.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <sys/stat.h>
+#include <unordered_map>
+#include <unordered_set>
 
 #ifdef CAJETA_HAS_LLD
 #include "lld/Common/Driver.h"
@@ -1065,6 +1072,12 @@ namespace cajeta {
             emitCMainShim(entryMethod);
         }
 
+        // Tier-1 RTA Phase A — report-only reachability analysis (no emission
+        // change). After the main shim + all ctors exist, before per-module emit.
+        if (flags.treeShake == TreeShake::Report && emitMode == EmitMode::Exe) {
+            reportTreeShake();
+        }
+
         // Archive emit bundles every parsed module's bitcode into one
         // `.cja` file. The exploded per-module loop below is skipped —
         // a single artifact is the whole point.
@@ -1796,6 +1809,169 @@ namespace cajeta {
         } else {
             b.CreateRet(llvm::ConstantInt::get(i32Ty, 0));
         }
+    }
+
+    void Compiler::reportTreeShake() {
+        using namespace llvm;
+
+        // Every llvm::Module that participates in the final link: user modules,
+        // re-driven classpath deps, and the always-linked stdlib.
+        std::vector<Module*> lmods;
+        auto addMod = [&](const CajetaModulePtr& m) {
+            if (m && m->getLlvmModule()) lmods.push_back(m->getLlvmModule());
+        };
+        for (auto& m : modules) addMod(m);
+        for (auto& m : externalModules) addMod(m);
+        if (auto stdlib = CajetaModule::getStdlibModule()) addMod(stdlib);
+        std::sort(lmods.begin(), lmods.end());
+        lmods.erase(std::unique(lmods.begin(), lmods.end()), lmods.end());
+
+        // Reachability is by SYMBOL NAME, not pointer: a callee is an extern decl
+        // in the caller's module but a definition in another. Map each name to its
+        // defining GlobalValue (function with a body / global with an initializer).
+        std::unordered_map<std::string, GlobalValue*> defs;
+        for (auto* lm : lmods) {
+            for (auto& f : lm->functions())
+                if (!f.isDeclaration()) defs.emplace(f.getName().str(), &f);
+            for (auto& g : lm->globals())
+                if (g.hasInitializer()) defs.emplace(g.getName().str(), &g);
+        }
+
+        // Pull every GlobalValue name referenced inside a constant (initializers:
+        // vtable slots, #ClassObject -> vtable, global_ctors array, constexpr
+        // wrappers around a global).
+        std::function<void(const Constant*, std::vector<std::string>&)> collectConst =
+            [&](const Constant* c, std::vector<std::string>& out) {
+                if (!c) return;
+                if (auto* gv = dyn_cast<GlobalValue>(c)) {
+                    out.push_back(gv->getName().str());
+                    return;
+                }
+                for (auto& op : c->operands())
+                    if (auto* sub = dyn_cast<Constant>(op.get())) collectConst(sub, out);
+            };
+
+        // Roots = what --gc-sections cannot drop for a final exe: the C `main`
+        // shim, every llvm.global_ctors entry (run at startup), and llvm.used pins.
+        std::vector<std::string> rootNames;
+        for (auto* lm : lmods) {
+            if (auto* mainFn = lm->getFunction("main"))
+                if (!mainFn->isDeclaration()) rootNames.push_back("main");
+            if (auto* gc = lm->getGlobalVariable("llvm.global_ctors")) {
+                if (gc->hasInitializer())
+                    if (auto* arr = dyn_cast<ConstantArray>(gc->getInitializer()))
+                        for (auto& op : arr->operands())
+                            if (auto* e = dyn_cast<ConstantStruct>(op.get()))
+                                if (e->getNumOperands() >= 2)
+                                    if (auto* fn = dyn_cast<Function>(
+                                            e->getOperand(1)->stripPointerCasts()))
+                                        rootNames.push_back(fn->getName().str());
+            }
+            for (const char* un : {"llvm.used", "llvm.compiler.used"})
+                if (auto* u = lm->getGlobalVariable(un))
+                    if (u->hasInitializer())
+                        collectConst(u->getInitializer(), rootNames);
+        }
+
+        // BFS the by-name reference graph. A function references the globals used
+        // in its instructions (direct calls, function-pointer refs, global loads);
+        // a global references the globals in its initializer. Conservative and
+        // matches section-GC: referencing a vtable keeps all its slot functions.
+        std::unordered_set<std::string> reached;
+        std::vector<std::string> work;
+        auto enqueue = [&](const std::string& n) {
+            if (defs.count(n) && reached.insert(n).second) work.push_back(n);
+        };
+        for (auto& r : rootNames) enqueue(r);
+
+        while (!work.empty()) {
+            std::string name = std::move(work.back());
+            work.pop_back();
+            GlobalValue* gv = defs[name];
+            std::vector<std::string> refs;
+            if (auto* f = dyn_cast<Function>(gv)) {
+                for (auto& bb : *f)
+                    for (auto& inst : bb)
+                        for (auto& op : inst.operands()) {
+                            Value* v = op.get();
+                            if (auto* g = dyn_cast<GlobalValue>(v->stripPointerCasts()))
+                                refs.push_back(g->getName().str());
+                            else if (auto* c = dyn_cast<Constant>(v))
+                                collectConst(c, refs);
+                        }
+            } else if (auto* g = dyn_cast<GlobalVariable>(gv)) {
+                if (g->hasInitializer()) collectConst(g->getInitializer(), refs);
+            }
+            for (auto& r : refs) enqueue(r);
+        }
+
+        // Subsystem bucket for a per-area breakdown — strip the leading
+        // `__cajeta_cajeta_` mangling and take the package head (e.g. net, gpu).
+        auto subsystemOf = [](const std::string& s) -> std::string {
+            static const char* P = "__cajeta_cajeta_";
+            size_t i = (s.rfind(P, 0) == 0) ? std::strlen(P) : 0;
+            size_t j = s.find('_', i);
+            return (j == std::string::npos) ? std::string("<other>")
+                                            : s.substr(i, j - i);
+        };
+        // The headline net/TLS/OpenSSL tail (incl. template instantiations over
+        // net types). Used for the soundness signal (none should be reachable).
+        auto looksNet = [](const std::string& s) {
+            auto has = [&](const char* k){ return s.find(k) != std::string::npos; };
+            return has("_net_") || has("Tls") || has("tls") || has("Ssl")
+                || has("ssl") || has("crypto") || has("Crypto")
+                || has("socket") || has("Socket");
+        };
+
+        // Diff: defined functions not reached are Phase-B strip candidates.
+        size_t totalFns = 0, reachedFns = 0, netReached = 0;
+        std::vector<std::string> strip, netStrip;
+        std::map<std::string, size_t> stripBySubsystem;
+        for (auto& [n, g] : defs) {
+            if (!isa<Function>(g)) continue;
+            totalFns++;
+            bool net = looksNet(n);
+            if (reached.count(n)) {
+                reachedFns++;
+                if (net) netReached++;
+            } else {
+                strip.push_back(n);
+                stripBySubsystem[subsystemOf(n)]++;
+                if (net) netStrip.push_back(n);
+            }
+        }
+        std::sort(netStrip.begin(), netStrip.end());
+
+        std::cout << "\n=== tree-shake (Tier-1 RTA Phase A — report only, no emission change) ===\n";
+        std::cout << "modules analyzed   : " << lmods.size() << "\n";
+        std::cout << "defined functions  : " << totalFns << "\n";
+        std::cout << "  reachable        : " << reachedFns << "\n";
+        std::cout << "  strippable       : " << strip.size();
+        if (totalFns)
+            std::cout << "  (" << (strip.size() * 100 / totalFns) << "%)";
+        std::cout << "\n";
+        // Soundness signal: in a non-net program no net/TLS symbol may be
+        // reachable. A nonzero here means an unexpected edge kept the net tail.
+        std::cout << "net/TLS reachable  : " << netReached
+                  << "  (strippable: " << netStrip.size() << ")\n";
+
+        std::cout << "strippable by subsystem (top 12):\n";
+        std::vector<std::pair<std::string, size_t>> bySub(
+            stripBySubsystem.begin(), stripBySubsystem.end());
+        std::sort(bySub.begin(), bySub.end(),
+            [](auto& a, auto& b){ return a.second > b.second; });
+        for (size_t i = 0; i < bySub.size() && i < 12; ++i)
+            std::cout << "  " << bySub[i].first << " : " << bySub[i].second << "\n";
+
+        if (!netStrip.empty()) {
+            std::cout << "net/TLS strippable sample (Phase B would not emit these):\n";
+            size_t cap = std::min<size_t>(netStrip.size(), 12);
+            for (size_t i = 0; i < cap; ++i)
+                std::cout << "  " << netStrip[i] << "\n";
+            if (netStrip.size() > cap)
+                std::cout << "  ... and " << (netStrip.size() - cap) << " more\n";
+        }
+        std::cout << "=== end tree-shake report ===\n\n";
     }
 
     void Compiler::emitArchive(const std::string& archiveRootPath, bool uber) {

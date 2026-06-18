@@ -233,6 +233,13 @@ namespace cajeta {
         // doesn't resolve.
         void emitCMainShim(const std::string& entryMethod);
 
+        // Tier-1 RTA Phase A (plans/compiler/stdlib-tree-shaking.md): compute
+        // IR-level reachability across all emitted modules from the entry +
+        // ABI/ctor roots, diff against the full defined-function set, and print
+        // what Phase B would strip. Analysis only — emits nothing, mutates no IR.
+        // Runs after the main shim + all ctors exist; --emit=exe + --tree-shake=report.
+        void reportTreeShake();
+
     public:
         Compiler(int argc, const char* argv[]) : Compiler() { }
 
