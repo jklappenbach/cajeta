@@ -1,0 +1,381 @@
+package cajeta.math;
+
+/**
+ * `Tensor<T>` — the keystone n-dimensional array (tensor-spec.md). A **strided
+ * view** over a shared, refcounted {@link Storage}: `{ Storage<T> data; int64
+ * offset; int64[] shape; int64[] strides; }`. The element type is the static,
+ * reified type parameter `T` (the dtype lives in `T`; see {@link DType}); the
+ * rank and shape are **runtime** (numpy's model — `ndim`/`shape`/`strides` are
+ * fields, so `reshape`/variable dims are expressible).
+ *
+ * This is the Phase 2 core: the type itself + host storage + the construction
+ * surface + accessors + RAII ownership. Views/broadcasting/indexing/device are
+ * later phases; the only view here is {@link #alias} (a whole-array share, used
+ * to exercise the refcount drop-chain). The op library (elementwise/reductions/
+ * linalg) is layered on this in `numpy-porting-plan.md`, not here.
+ *
+ * ## Construction
+ * `zeros`/`ones`/`full`/`empty`/`arange`/`of` (+ the `_like` forms) are
+ * **method-templated statics** — call them with an explicit element type:
+ *
+ * ```cajeta
+ * int64[] shape = heap int64[2];
+ * shape[0] = 2;
+ * shape[1] = 3;
+ * Tensor<float32> a = Tensor.zeros<float32>(shape);   // 2x3, C-order
+ * Tensor<int32>   r = Tensor.arange<int32>(6);        // [0,1,2,3,4,5]
+ * ```
+ *
+ * ## Ownership (RAII)
+ * A `Tensor` value is an ordinary handle over its `Storage`. The factories
+ * return an owned `#Tensor<T>`; multiple tensors over one `Storage` (an
+ * {@link #alias}) share the buffer by refcount, and it frees only when the last
+ * drops. C-order is the layout default; {@link #emptyOrdered} builds F-order.
+ */
+public class Tensor<T> {
+    Storage<T> store;
+    int64 offsetVal;
+    int64[] shapeDims;
+    int64[] strideDims;
+    boolean viewFlag;
+    Tensor<T> baseTensor;
+
+    /**
+     * Wrap a `Storage` with an offset + shape + strides. Copies `shape`/`strides`
+     * into freshly-owned arrays (so the caller's locals drop cleanly). Takes
+     * ownership of `store` (the factories `#`-move it in); a view shares an
+     * existing tensor's `store` as a borrow (see {@link #alias}). Internal — use
+     * the factories.
+     */
+    public Tensor(Storage<T> store, int64 offset, int64[] shape, int64[] strides) {
+        this.store = store;
+        this.offsetVal = offset;
+        int32 nd = (int32) shape.count();
+        this.shapeDims = heap int64[nd];
+        this.strideDims = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            this.shapeDims[i] = shape[i];
+            this.strideDims[i] = strides[i];
+            i = i + 1;
+        }
+        this.viewFlag = false;
+        this.baseTensor = null;
+    }
+
+    // ────────────────────────────── helpers (non-templated) ──────────────────
+
+    /** Product of the dims — the element count of a tensor with this shape. */
+    public static int64 productOf(int64[] shape) {
+        int64 n = 1;
+        int32 nd = (int32) shape.count();
+        int32 i = 0;
+        while (i < nd) {
+            n = n * shape[i];
+            i = i + 1;
+        }
+        return n;
+    }
+
+    /**
+     * Contiguous strides (in elements) for `shape`: C-order (row-major, the last
+     * axis varies fastest) or F-order (column-major, the first axis fastest).
+     */
+    public static #int64[] contigStrides(int64[] shape, MemoryOrder order) {
+        int32 nd = (int32) shape.count();
+        int64[] s = heap int64[nd];
+        int64 acc = 1;
+        if (order == MemoryOrder.F) {
+            int32 j = 0;
+            while (j < nd) {
+                s[j] = acc;
+                acc = acc * shape[j];
+                j = j + 1;
+            }
+        } else {
+            int32 j = nd - 1;
+            while (j >= 0) {
+                s[j] = acc;
+                acc = acc * shape[j];
+                j = j - 1;
+            }
+        }
+        return #s;
+    }
+
+    // ────────────────────────────── factories ────────────────────────────────
+
+    /** Uninitialized tensor of `shape` (C-order). Host buffer is zero-filled. */
+    public static #Tensor<E> empty<E>(int64[] shape) {
+        int64 n = Tensor.productOf(shape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] strides = Tensor.contigStrides(shape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /** Tensor of `shape` in the given {@link MemoryOrder} (`C`/`F`). */
+    public static #Tensor<E> emptyOrdered<E>(int64[] shape, MemoryOrder order) {
+        int64 n = Tensor.productOf(shape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] strides = Tensor.contigStrides(shape, order);
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /** Tensor of `shape` filled with the element zero (C-order). */
+    public static #Tensor<E> zeros<E>(int64[] shape) {
+        int64 n = Tensor.productOf(shape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] strides = Tensor.contigStrides(shape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /** Tensor of `shape` filled with the element one (C-order). */
+    public static #Tensor<E> ones<E>(int64[] shape) {
+        int64 n = Tensor.productOf(shape);
+        Storage<E> st = heap Storage<E>(n);
+        E one = (E) 1;
+        int64 i = 0;
+        while (i < n) {
+            st.set(i, one);
+            i = i + 1;
+        }
+        int64[] strides = Tensor.contigStrides(shape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /** Tensor of `shape` filled with `value` (C-order). */
+    public static #Tensor<E> full<E>(int64[] shape, E value) {
+        int64 n = Tensor.productOf(shape);
+        Storage<E> st = heap Storage<E>(n);
+        int64 i = 0;
+        while (i < n) {
+            st.set(i, value);
+            i = i + 1;
+        }
+        int64[] strides = Tensor.contigStrides(shape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /** 1-D tensor `[0, 1, …, n-1]` cast to `E`. */
+    public static #Tensor<E> arange<E>(int64 n) {
+        Storage<E> st = heap Storage<E>(n);
+        int64 i = 0;
+        while (i < n) {
+            E v = (E) i;
+            st.set(i, v);
+            i = i + 1;
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = n;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /** Tensor of `shape` (C-order) holding a copy of the first `size` of `data`. */
+    public static #Tensor<E> of<E>(E[] data, int64[] shape) {
+        int64 n = Tensor.productOf(shape);
+        Storage<E> st = heap Storage<E>(n);
+        int64 i = 0;
+        while (i < n) {
+            E v = data[(int32) i];
+            st.set(i, v);
+            i = i + 1;
+        }
+        int64[] strides = Tensor.contigStrides(shape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    // `_like` forms — a fresh tensor matching the shape of `src` (C-order).
+
+    public static #int64[] shapeOf<E>(Tensor<E> src) {
+        int32 nd = src.ndim();
+        int64[] shp = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            shp[i] = src.shapeAt(i);
+            i = i + 1;
+        }
+        return #shp;
+    }
+
+    public static #Tensor<E> zerosLike<E>(Tensor<E> src) {
+        int64[] shp = Tensor.shapeOf<E>(src);
+        int64 n = Tensor.productOf(shp);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] strides = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strides);
+    }
+
+    public static #Tensor<E> onesLike<E>(Tensor<E> src) {
+        int64[] shp = Tensor.shapeOf<E>(src);
+        int64 n = Tensor.productOf(shp);
+        Storage<E> st = heap Storage<E>(n);
+        E one = (E) 1;
+        int64 i = 0;
+        while (i < n) {
+            st.set(i, one);
+            i = i + 1;
+        }
+        int64[] strides = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strides);
+    }
+
+    public static #Tensor<E> fullLike<E>(Tensor<E> src, E value) {
+        int64[] shp = Tensor.shapeOf<E>(src);
+        int64 n = Tensor.productOf(shp);
+        Storage<E> st = heap Storage<E>(n);
+        int64 i = 0;
+        while (i < n) {
+            st.set(i, value);
+            i = i + 1;
+        }
+        int64[] strides = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strides);
+    }
+
+    // ────────────────────────────── accessors ────────────────────────────────
+
+    /** Number of dimensions. */
+    public int32 ndim() {
+        return (int32) this.shapeDims.count();
+    }
+
+    /** Total element count (product of the shape). */
+    public int64 size() {
+        return Tensor.productOf(this.shapeDims);
+    }
+
+    /** Extent of axis `axis`. */
+    public int64 shapeAt(int32 axis) {
+        return this.shapeDims[axis];
+    }
+
+    /** Stride (in elements) of axis `axis`. */
+    public int64 strideAt(int32 axis) {
+        return this.strideDims[axis];
+    }
+
+    /** Element offset of this tensor into its `Storage`. */
+    public int64 offset() {
+        return this.offsetVal;
+    }
+
+    /** A fresh, owned copy of the shape vector. */
+    public #int64[] shape() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] out = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            out[i] = this.shapeDims[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** The dtype descriptor of `T` (reified, via {@link DType#of}). */
+    public #DType dtype() {
+        return DType.of<T>();
+    }
+
+    /** Bytes per element. */
+    public int32 itemsize() {
+        DType d = DType.of<T>();
+        return d.bytes();
+    }
+
+    /** Total bytes of the elements (`size * itemsize`). */
+    public int64 nbytes() {
+        return this.size() * (int64) this.itemsize();
+    }
+
+    /** `true` if this is a view sharing another tensor's `Storage`. */
+    public boolean isView() {
+        return this.viewFlag;
+    }
+
+    /** The tensor this view shares storage with, or `null` if it owns its storage. */
+    public Tensor<T> base() {
+        return this.baseTensor;
+    }
+
+    /** `true` if the strides are C-contiguous (row-major, no gaps). */
+    public boolean isContiguous() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64 acc = 1;
+        int32 j = nd - 1;
+        while (j >= 0) {
+            if (this.strideDims[j] != acc) {
+                return false;
+            }
+            acc = acc * this.shapeDims[j];
+            j = j - 1;
+        }
+        return true;
+    }
+
+    // ────────────────────────────── element access ───────────────────────────
+
+    /** Read the element at multi-index `idx` (length must equal `ndim`). */
+    public T getAt(int64[] idx) {
+        int64 off = this.offsetVal;
+        int32 nd = (int32) this.shapeDims.count();
+        int32 i = 0;
+        while (i < nd) {
+            off = off + idx[i] * this.strideDims[i];
+            i = i + 1;
+        }
+        return this.store.get(off);
+    }
+
+    /** Write `v` to the element at multi-index `idx`. */
+    public void setAt(int64[] idx, T v) {
+        int64 off = this.offsetVal;
+        int32 nd = (int32) this.shapeDims.count();
+        int32 i = 0;
+        while (i < nd) {
+            off = off + idx[i] * this.strideDims[i];
+            i = i + 1;
+        }
+        this.store.set(off, v);
+    }
+
+    /** 1-D element read. */
+    public T get1(int64 i) {
+        return this.store.get(this.offsetVal + i * this.strideDims[0]);
+    }
+
+    /** 1-D element write. */
+    public void set1(int64 i, T v) {
+        this.store.set(this.offsetVal + i * this.strideDims[0], v);
+    }
+
+    /** 2-D element read. */
+    public T get2(int64 r, int64 c) {
+        return this.store.get(this.offsetVal + r * this.strideDims[0] + c * this.strideDims[1]);
+    }
+
+    /** 2-D element write. */
+    public void set2(int64 r, int64 c, T v) {
+        this.store.set(this.offsetVal + r * this.strideDims[0] + c * this.strideDims[1], v);
+    }
+
+    // ────────────────────────────── view (Phase-3 preview) ───────────────────
+
+    void markView(Tensor<T> base) {
+        this.viewFlag = true;
+        this.baseTensor = base;
+    }
+
+    /**
+     * A whole-array view sharing this tensor's `Storage` (no copy). Phase 3 adds
+     * the structural view ops (reshape/transpose/slice); this minimal alias
+     * exists to exercise the refcount drop-chain — both tensors see each other's
+     * writes, and the buffer frees only when the last drops.
+     */
+    public #Tensor<T> alias() {
+        Tensor<T> v = heap Tensor<T>(this.store, this.offsetVal, this.shapeDims, this.strideDims);
+        v.markView(this);
+        return #v;
+    }
+}

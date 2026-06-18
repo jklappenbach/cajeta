@@ -1,0 +1,42 @@
+package cajeta.math;
+
+/**
+ * `Storage<T>` — the owning, reference-counted host backing of a `Tensor<T>`
+ * (tensor-spec.md §4). One contiguous `T[]` buffer that one *or more* `Tensor`
+ * views share; per cajeta's "one axis, one model" (stack = copy / heap = ref),
+ * a `heap Storage<T>` is refcounted automatically, so the buffer is released
+ * exactly when the last view referencing it drops (the scope-exit drop chain) —
+ * no manual refcount field is needed.
+ *
+ * v1 is host-only. The optional device rep (a `cajeta.gpu` `GpuBuffer<T>`) and
+ * the `to`/`cpu`/`gpu` placement land in Phase 6 (tensor-plan.md §6); a slot for
+ * it is intentionally absent until then so the host path carries no GPU cost.
+ *
+ * This is an internal building block — user code constructs tensors through the
+ * `Tensor` factories (`zeros`/`ones`/`of`/…), which own the `Storage` they make.
+ */
+public class Storage<T> {
+    T[] host;
+    int64 length;
+
+    /** Allocate a zero-initialized host buffer of `length` elements. */
+    public Storage(int64 length) {
+        this.length = length;
+        this.host = heap T[(int32) length];
+    }
+
+    /** Element count of the backing buffer. */
+    public int64 size() {
+        return this.length;
+    }
+
+    /** Read the element at linear buffer index `i`. */
+    public T get(int64 i) {
+        return this.host[(int32) i];
+    }
+
+    /** Write `v` to linear buffer index `i`. */
+    public void set(int64 i, T v) {
+        this.host[(int32) i] = v;
+    }
+}

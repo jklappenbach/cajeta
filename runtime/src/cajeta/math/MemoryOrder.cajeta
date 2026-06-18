@@ -1,0 +1,16 @@
+package cajeta.math;
+
+/**
+ * Memory layout order for a {@link Tensor} (tensor-spec.md §4): how a
+ * multi-dimensional shape maps to a flat, contiguous buffer.
+ *
+ *  - `C` — row-major (C / numpy default): the **last** axis varies fastest.
+ *  - `F` — column-major (Fortran / MATLAB): the **first** axis varies fastest.
+ *
+ * `C` is the default for every `Tensor` factory; pass `F` to
+ * {@link Tensor#emptyOrdered} for column-major strides.
+ */
+public enum MemoryOrder {
+    C,
+    F
+}

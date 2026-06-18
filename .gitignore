@@ -46,8 +46,11 @@ __pycache__/
 
 .DS_Store
 
-# Build/test run logs (transient diagnostics, never source)
+# Build/test run logs (transient diagnostics, never source). All log output
+# belongs under logs/ — the dir is kept (.gitkeep), its contents ignored.
 *.log
+logs/*
+!logs/.gitkeep
 
 # Stray build artifacts that appear when cmake is accidentally invoked
 # from the repo root or a source subdirectory (instead of /build).
