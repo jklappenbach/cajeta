@@ -120,10 +120,11 @@ namespace cajeta {
         std::string     keepsetJson         = "";
 
         // ----- tree-shaking (Tier-1 RTA; plans/compiler/stdlib-tree-shaking.md) -----
-        // --tree-shake=off|report. Report (Phase A) computes IR-level reachability
-        // from the entry + ABI/ctor roots, diffs it against the full emitted method
-        // set, and prints what Phase B would strip (e.g. cajeta.net.tls.* in a
-        // non-TLS program) — with NO change to emission. Default Off.
+        // --tree-shake=off|report|on. On (Phase B/C + Tier-1.5) prunes unreachable
+        // method bodies + dead clinits; Report (Phase A) just prints the analysis.
+        // This field defaults Off, but main.cpp flips it to On for --emit=exe unless
+        // the user passed --tree-shake (mirrors the lean-linker default). Sound by
+        // construction (conservative reachability; Class<Object> keeps every class).
         TreeShake       treeShake           = TreeShake::Off;
 
         // ----- debugging -----

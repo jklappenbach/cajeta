@@ -88,9 +88,9 @@ void printUsage(const char* progname) {
               << "                                       named (canonical) class in the keep-set.\n"
               << "  --keepset-json=<path>                Lean DCE: write the generated keep-set + provenance\n"
               << "                                       to <path> as JSON.\n"
-              << "  --tree-shake=off|report|on           Tier-1 RTA (--emit=exe). report: print the IR-\n"
-              << "                                       reachability strip analysis. on: prune unreachable\n"
-              << "                                       method bodies (drops e.g. OpenSSL). Default off.\n"
+              << "  --tree-shake=off|report|on           Tier-1 RTA (--emit=exe). on (DEFAULT): prune\n"
+              << "                                       unreachable method bodies + dead clinits (drops e.g.\n"
+              << "                                       OpenSSL). report: print the strip analysis. off: opt out.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
@@ -243,6 +243,7 @@ int main(int argc, const char* argv[]) {
     // Track an explicit --link-mode / --keep-all so the default flip to Lean
     // for --emit=exe (below) only applies when the user didn't pin a mode.
     bool linkModeExplicit = false;
+    bool treeShakeExplicit = false;
 
     auto parseModeName = [&](const std::string& name) -> bool {
         if (name == "debug")            { compiler.setMode(CompilerMode::Debug); return true; }
@@ -419,6 +420,7 @@ int main(int argc, const char* argv[]) {
                 printUsage(argv[0]); return 1;
             }
             compiler.getMutableFlags().treeShake = ts;
+            treeShakeExplicit = true;
         } else if (match(arg, "xpu-backend", value)) {
             // Comma-separated list — a binary can bundle several targets
             // (e.g. vulkan,cpu); the runtime dispatcher picks the best
@@ -491,6 +493,16 @@ int main(int argc, const char* argv[]) {
     // modes (ir/obj/cja/uber) and an explicit --link-mode/--keep-all keep Full.
     if (compiler.getEmitMode() == EmitMode::Exe && !linkModeExplicit) {
         compiler.getMutableFlags().linkMode = LinkMode::Lean;
+    }
+
+    // Tree-shaking is ON by default for --emit=exe (Tier-1 RTA). Sound by
+    // construction: the reachability set is a conservative over-approximation
+    // (it only ever keeps too much; a wrong strip fails loud at link, never a
+    // silent miscompile), and reflection keeps a class's bound's subtype closure
+    // — `Class<Object>` keeps every class. Devs get the optimized binary without
+    // opting in; `--tree-shake=off` is the escape hatch.
+    if (compiler.getEmitMode() == EmitMode::Exe && !treeShakeExplicit) {
+        compiler.getMutableFlags().treeShake = TreeShake::On;
     }
 
     try {
