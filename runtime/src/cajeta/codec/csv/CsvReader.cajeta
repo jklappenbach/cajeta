@@ -1,0 +1,132 @@
+package cajeta.codec.csv;
+
+/**
+ * Streaming RFC-4180 CSV reader over a `CsvIndex`. Constructs the structural
+ * index once, then walks it row by row: `nextRow()` advances to the next record
+ * (false at EOF), `fieldCount()` gives the current row's field count, and
+ * `field(i)` returns the i-th field's *value* bytes — outer quotes stripped, a
+ * doubled `""` collapsed to one `"`, and a trailing `\r` (from a CRLF record
+ * terminator) trimmed. A trailing record terminator does not yield a phantom
+ * empty row.
+ *
+ * The index already excluded delimiters inside quoted fields, so row/field
+ * slicing is pure offset arithmetic; only the per-field unquote walks bytes, and
+ * only for fields that are actually quoted. Pairs with `CsvIndex`; the typed
+ * `Csv.parse<T>` bind (Phase 1.2b) layers on top of this reader.
+ */
+public final class CsvReader {
+    int8[] buf;
+    int64 n;
+    int32[] idx;
+    int32 cnt;
+    int32 di;          // next index entry to consume
+    int64 pos;         // byte offset where the next field/row starts
+
+    int64[] fStart;    // current row: field start offsets
+    int64[] fEnd;      // current row: field end offsets (exclusive, \r-trimmed)
+    int32 fc;          // current row: field count
+
+    public CsvReader(int8[] buf, int64 n) {
+        this.buf = buf;
+        this.n = n;
+        int64 cap = n + 16;
+        this.idx = heap int32[cap];
+        this.cnt = CsvIndex.build(buf, n, this.idx);
+        this.di = 0;
+        this.pos = 0;
+        this.fStart = heap int64[cap];
+        this.fEnd = heap int64[cap];
+        this.fc = 0;
+    }
+
+    /**
+     * Advance to the next record, populating the current-row field spans.
+     * Returns false once every byte and delimiter is consumed (a trailing
+     * record terminator does not produce an extra empty row).
+     */
+    public boolean nextRow() {
+        int32 cnt = this.cnt;
+        int32 di = this.di;
+        int64 pos = this.pos;
+        int64 nn = this.n;
+        int32[] idx = this.idx;
+        int8[] b = this.buf;
+        int64[] fs = this.fStart;
+        int64[] fe = this.fEnd;
+        if (di >= cnt && pos >= nn) { return false; }
+        int32 fc = 0;
+        int64 fieldStart = pos;
+        boolean rowDone = false;
+        while (!rowDone) {
+            if (di < cnt) {
+                int64 dpos = (int64) idx[di];
+                int8 dc = b[dpos];
+                int64 fend = dpos;
+                if (dc == (int8)10) {
+                    if (dpos > fieldStart && b[dpos - 1] == (int8)13) { fend = dpos - 1; }
+                }
+                fs[fc] = fieldStart;
+                fe[fc] = fend;
+                fc = fc + 1;
+                di = di + 1;
+                fieldStart = dpos + 1;
+                if (dc == (int8)10) { rowDone = true; }
+            } else {
+                fs[fc] = fieldStart;
+                fe[fc] = nn;
+                fc = fc + 1;
+                fieldStart = nn;
+                rowDone = true;
+            }
+        }
+        this.di = di;
+        this.pos = fieldStart;
+        this.fc = fc;
+        return true;
+    }
+
+    /** Field count of the current row (valid after a `nextRow()` returning true). */
+    public int32 fieldCount() {
+        return this.fc;
+    }
+
+    /**
+     * Value bytes of the i-th field of the current row: outer quotes stripped
+     * and a doubled `""` collapsed to one `"` if the field is quoted, otherwise
+     * the raw span. Caller owns the returned buffer.
+     */
+    public #int8[] field(int32 i) {
+        int8[] b = this.buf;
+        int64 s = this.fStart[i];
+        int64 e = this.fEnd[i];
+        boolean quoted = false;
+        if (e - s >= 2) {
+            if (b[s] == (int8)34 && b[e - 1] == (int8)34) { quoted = true; }
+        }
+        if (!quoted) {
+            int32 len = (int32)(e - s);
+            int8[] raw = heap int8[len];
+            int32 k = 0;
+            while (k < len) { raw[k] = b[s + (int64)k]; k = k + 1; }
+            return raw;
+        }
+        int64 qs = s + 1;
+        int64 qe = e - 1;
+        int32 outLen = 0;
+        int64 j = qs;
+        while (j < qe) {
+            int8 c = b[j];
+            if (c == (int8)34 && j + 1 < qe && b[j + 1] == (int8)34) { outLen = outLen + 1; j = j + 2; }
+            else { outLen = outLen + 1; j = j + 1; }
+        }
+        int8[] out = heap int8[outLen];
+        int32 w = 0;
+        j = qs;
+        while (j < qe) {
+            int8 c = b[j];
+            if (c == (int8)34 && j + 1 < qe && b[j + 1] == (int8)34) { out[w] = (int8)34; w = w + 1; j = j + 2; }
+            else { out[w] = c; w = w + 1; j = j + 1; }
+        }
+        return out;
+    }
+}
