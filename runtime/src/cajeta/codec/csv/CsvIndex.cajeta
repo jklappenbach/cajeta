@@ -1,0 +1,69 @@
+package cajeta.codec.csv;
+
+/**
+ * CSV stage-1 structural index. A SIMD scan (`Vector<int8,16>`) that appends the
+ * byte positions of *structural* delimiters — field separators (`,`) and record
+ * separators (`\n`) that are NOT inside a quoted field — to a caller-supplied
+ * `int32[]` (which must hold at least `n` entries). The row reader drives this
+ * index to slice fields and records without re-scanning the bytes.
+ *
+ * Quotes (`"`) toggle quoted-field state. Per RFC-4180 a doubled quote (`""`)
+ * inside a quoted field is a literal quote; a pure quote-parity scan handles it
+ * correctly — the two quotes of a `""` toggle out-and-back with no structural
+ * byte in the one-byte gap between them, so no `,`/`\n` is ever misclassified.
+ * That is why, unlike `cajeta.codec.json.JsonIndex` (which falls back to scalar
+ * on `\`-escape blocks), CSV needs no escape fallback: every full 16-byte block
+ * takes the SIMD path and only the `<16` tail is scalar. The in-quote mask is
+ * the same carry-propagated quote-prefix-xor JsonIndex uses for strings.
+ */
+public final class CsvIndex {
+
+    // Scalar tail for the final <16 bytes. `inq` is the carried quoted-field
+    // state at `from`; the tail is the last work, so its exit state is unused.
+    static int32 tailAppend(int8[] b, int64 from, int64 to,
+                            boolean inq, int32[] idx, int32 cnt) {
+        int64 i = from;
+        while (i < to) {
+            int8 c = b[i];
+            if (c == (int8)34) { inq = !inq; }
+            else if (!inq && (c == (int8)44 || c == (int8)10)) {
+                idx[cnt] = (int32)i; cnt = cnt + 1;
+            }
+            i = i + 1;
+        }
+        return cnt;
+    }
+
+    /**
+     * Stage 1 — build the structural index. Returns the number of significant
+     * positions appended to `idx`. Hot scanner state (`inq`, `cnt`, `p`) stays
+     * in stack locals; the in-quote mask is computed per block from the quote
+     * positions with a single carry bit threaded across blocks.
+     */
+    public static int32 build(int8[] b, int64 n, int32[] idx) {
+        int32 cnt = 0;
+        boolean inq = false;
+        int64 p = 0;
+        while (p + 16 <= n) {
+            Vector<int8,16> v = Cajeta.vload16(b, p);
+            int32 qm = v.eqMask((int8)34);
+            int32 cm = v.eqMask((int8)44);
+            int32 nm = v.eqMask((int8)10);
+            int32 carry = 0; if (inq) { carry = 65535; }
+            int32 pf = qm; pf=pf^(pf<<1); pf=pf^(pf<<2); pf=pf^(pf<<4); pf=pf^(pf<<8); pf=pf&65535;
+            int32 inStr = (carry ^ (pf << 1)) & 65535;
+            int32 sig = (cm | nm) & (~inStr) & 65535;
+            int32 m = sig;
+            while (m != 0) {
+                int64 pos = Cajeta.ctz64((int64)(m & 65535));
+                idx[cnt] = (int32)(p + pos); cnt = cnt + 1;
+                m = m & (m - 1);
+            }
+            int32 par = (pf >> 15) & 1;
+            inq = ((((carry & 1) ^ par) & 1) != 0);
+            p = p + 16;
+        }
+        cnt = CsvIndex.tailAppend(b, p, n, inq, idx, cnt);
+        return cnt;
+    }
+}
