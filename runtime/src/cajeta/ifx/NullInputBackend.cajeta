@@ -1,0 +1,21 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * NullInputBackend — the empty input floor. Always registered at lowest priority; enumerates no
+ * gamepads, so input code runs with no backend present.
+ */
+public final class NullInputBackend implements InputBackend {
+    public NullInputBackend() { }
+
+    public boolean probe()    { return true; }
+    public int32   priority() { return -1000; }
+    public String  name()     { return "null"; }
+    public boolean supports(Feature feature) { return false; }
+
+    public int32 gamepadCount() { return 0; }
+    public InputDevice gamepad(int32 index) { return null; }
+    public boolean buttonDown(InputDevice d, int32 button) { return false; }
+    public float32 axis(InputDevice d, int32 axis) { return 0.0f; }
+}

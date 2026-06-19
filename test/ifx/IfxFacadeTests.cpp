@@ -169,3 +169,50 @@ TEST(IfxFacadeTests, audioStreamConstructsAndReportsRate) {
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 48000);
 }
+
+// Backend SPI: the three null floors implement their per-domain interfaces (which extend Backend),
+// reachable through interface dispatch — each reports the floor priority -1000 (sum -3000).
+TEST(IfxFacadeTests, nullFloorsImplementAllThreeBackendInterfaces) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.WindowBackend;\n"
+        "import cajeta.ifx.AudioBackend;\n"
+        "import cajeta.ifx.InputBackend;\n"
+        "import cajeta.ifx.NullWindowBackend;\n"
+        "import cajeta.ifx.NullAudioBackend;\n"
+        "import cajeta.ifx.NullInputBackend;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WindowBackend wb = heap NullWindowBackend();\n"
+        "        AudioBackend  ab = heap NullAudioBackend();\n"
+        "        InputBackend  ib = heap NullInputBackend();\n"
+        "        return wb.priority() + ab.priority() + ib.priority();\n"   // -3000
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), -3000);
+}
+
+// The null floor probes viable but supports no optional Feature (via the Backend base methods).
+TEST(IfxFacadeTests, nullFloorProbesViableButSupportsNothing) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.WindowBackend;\n"
+        "import cajeta.ifx.NullWindowBackend;\n"
+        "import cajeta.ifx.Feature;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WindowBackend wb = heap NullWindowBackend();\n"
+        "        int32 p = 0;\n"
+        "        if (wb.probe()) { p = p + 1; }\n"                      // +1
+        "        if (wb.supports(Feature.Touch)) { p = p + 100; }\n"   // +0 (floor supports nothing)
+        "        return p;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1);
+}

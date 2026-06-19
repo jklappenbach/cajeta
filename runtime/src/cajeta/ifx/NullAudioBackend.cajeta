@@ -1,0 +1,20 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * NullAudioBackend — the silent audio floor. Always registered at lowest priority; opens no device
+ * and sinks submitted PCM to nowhere, so audio code runs with no backend present.
+ */
+public final class NullAudioBackend implements AudioBackend {
+    public NullAudioBackend() { }
+
+    public boolean probe()    { return true; }
+    public int32   priority() { return -1000; }
+    public String  name()     { return "null"; }
+    public boolean supports(Feature feature) { return false; }
+
+    public AudioStream openOutput(uint32 sampleRate, uint32 channels) { return null; }
+    public void submit(AudioStream s, float32[] frames) { }
+    public void close(AudioStream s) { }
+}
