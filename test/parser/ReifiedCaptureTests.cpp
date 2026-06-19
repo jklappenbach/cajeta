@@ -158,6 +158,112 @@ TEST(ReifiedCaptureTests, unguardedCastSucceedsOnMatch) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// --- item 1: nested + supertype capture targets (capture plan 5a) ---------
+
+// NESTED target — `Box<Box<int32>>` widened to `Box<?>`. The reified match is
+// recursive: instanceof the exact nested instantiation is true, instanceof a
+// nested instantiation that differs only in the INNER arg is false.
+TEST(ReifiedCaptureTests, instanceofMatchesNestedInstantiation) {
+    std::string src = std::string(BOX) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Box<int32>> bbi = heap Box<Box<int32>>(heap Box<int32>(7));\n"
+        "        Box<?> w = bbi;\n"
+        "        int32 r = 0;\n"
+        "        if (w instanceof Box<Box<int32>>) { r = r + 1; }\n"
+        "        if (w instanceof Box<Box<float32>>) { r = r + 10; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// NESTED capture cast — recover `Box<Box<int32>>` from `Box<?>` and read both
+// levels through the captured handle (same pointer, no copy).
+TEST(ReifiedCaptureTests, capturedCastReadsNested) {
+    std::string src = std::string(BOX) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Box<int32>> bbi = heap Box<Box<int32>>(heap Box<int32>(42));\n"
+        "        Box<?> w = bbi;\n"
+        "        Box<Box<int32>> cap = (Box<Box<int32>>) w;\n"
+        "        return cap.get().get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// SUPERTYPE target — `List<T> extends Container<T>`. A `List<int32>` value held
+// as `Container<?>` matches BOTH its exact instantiation (`List<int32>`) and its
+// template SUPERtype instantiation (`Container<int32>`), but not a wrong arg
+// (`Container<float32>`). The is-a check walks the reified parent chain.
+TEST(ReifiedCaptureTests, instanceofMatchesTemplateSupertype) {
+    std::string src =
+        "package test;\n"
+        "public class Container<U> {\n"
+        "    public int32 count() { return 41; }\n"
+        "}\n"
+        "public class List<T> extends Container<T> {\n"
+        "    public int32 listMark() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> l = heap List<int32>();\n"
+        "        Container<?> w = l;\n"
+        "        int32 r = 0;\n"
+        "        if (w instanceof Container<int32>) { r = r + 1; }\n"
+        "        if (w instanceof List<int32>) { r = r + 100; }\n"
+        "        if (w instanceof Container<float32>) { r = r + 10; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 101);
+}
+
+// SUPERTYPE capture cast — recover the concrete supertype instantiation
+// `Container<int32>` from `Container<?>` and dispatch the inherited method.
+TEST(ReifiedCaptureTests, capturedCastToTemplateSupertype) {
+    std::string src =
+        "package test;\n"
+        "public class Container<U> {\n"
+        "    public int32 count() { return 41; }\n"
+        "}\n"
+        "public class List<T> extends Container<T> {\n"
+        "    public int32 listMark() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> l = heap List<int32>();\n"
+        "        Container<?> w = l;\n"
+        "        Container<int32> cap = (Container<int32>) w;\n"
+        "        return cap.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 41);
+}
+
+// SUPERTYPE capture down to the EXACT subtype — `Container<?>` that is really a
+// `List<int32>` recovers to `List<int32>` and reaches the subtype-only method.
+TEST(ReifiedCaptureTests, capturedCastToExactSubtypeThroughSupertypeWildcard) {
+    std::string src =
+        "package test;\n"
+        "public class Container<U> {\n"
+        "    public int32 count() { return 41; }\n"
+        "}\n"
+        "public class List<T> extends Container<T> {\n"
+        "    public int32 listMark() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> l = heap List<int32>();\n"
+        "        Container<?> w = l;\n"
+        "        List<int32> cap = (List<int32>) w;\n"
+        "        return cap.listMark();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
 // unguarded capture cast on a MISMATCH: throws cajeta.error.ClassCastException
 // (catchable) rather than handing back a mis-typed pointer (UB).
 TEST(ReifiedCaptureTests, unguardedCastThrowsClassCastException) {
