@@ -385,8 +385,8 @@ or were decoded into fixed-layout.*
 
 ## 6. SIMD / GPU acceleration policy
 
-Drawn from `agents/plans/research/compression/SIMD-ParallelCompression-Analysis.md`
-and the SIMD research. The governing rule (owner's): *if SIMD prevents
+Drawn from the project's SIMD × multi-fiber compression research and the SIMD
+work. The governing rule (owner's): *if SIMD prevents
 multi-fiber parallelism or is slower, it is not a win; if it boosts multi-fiber
 or beats a 32-core scalar baseline, apply it.*
 
