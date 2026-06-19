@@ -13,11 +13,6 @@ Design sources: `agents/documents/cajeta-templates/reified-capture-spec.md`,
 
 ## Capture — extended targets (toward `Tensor<T>` / `Tensor<? extends ...>`)
 
-- name→RTTI registry (precursor for class-bounded-wildcard capture) — a runtime
-  registry mapping a type's canonical name → its RTTI, so a capture site can
-  resolve the element type's hierarchy at runtime. The container RTTI stores only
-  the element's NAME string, not its RTTI pointer, so checking "element is-a
-  Animal" needs this. Also strengthens reflection.
 - class-bounded-wildcard capture (capture plan 5b) — `(Foo<? extends Animal>) w`
   succeeds for `Foo<Dog>`, fails for `Foo<Cat>`. Depends on the name→RTTI
   registry above. NOTE: `isAssignableToWildcard`'s class-bound check uses

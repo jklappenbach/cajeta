@@ -2,6 +2,15 @@
 
 Newest on top. Items popped off `STACK.md` once green + committed.
 
+- name→RTTI registry (class-bounded-wildcard precursor) — added
+  `__cajeta_rtti_for_name(const char*)` to the runtime: resolves a type's
+  canonical name → its `CajetaRtti*` over the existing REFL-8 name→#ClassObject
+  table (rtti at offset 8). The capture-site lowering (item 3) will call it with
+  the container's stored element-name string, then bound-check via the existing
+  `__cajeta_is_subtype`. Unit-tested at the contract level against the PROCESS
+  registry (host C++ shares the statically-linked runtime copy); the real-RTTI
+  data path runs inside the JIT (which embeds its OWN runtime copy — host C++
+  can't see JIT-local statics) and is covered end-to-end by item 3.
 - nested + supertype capture targets (capture plan 5a) — `Box<Box<int32>>` and
   `List<int32> extends Container<int32>` capture targets, exact + supertype +
   nested, with discriminating negative arms. **No production change needed** —

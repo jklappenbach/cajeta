@@ -291,3 +291,38 @@ TEST(ReifiedCaptureTests, unguardedCastThrowsClassCastException) {
         "}\n";
     EXPECT_EQ(runI32(src), 7);
 }
+
+// --- item 2: name -> RTTI registry (class-bounded-wildcard precursor) ------
+
+// `__cajeta_rtti_for_name` maps a type's canonical name -> its CajetaRtti* over
+// the REFL-8 registry (#ClassObject = { vtable, rtti }, rtti at offset 8), so the
+// capture-site lowering for `(Foo<? extends Animal>) w` can recover the element
+// type's hierarchy from the NAME the container RTTI stores. This is the lookup
+// CONTRACT, unit-tested against the PROCESS registry — host C++ and
+// __cajeta_register_class share the same statically-linked runtime copy, whereas
+// the JIT embeds its OWN runtime copy ([[nvidia-on-device-validation]]: host C++
+// can't see JIT-local statics). The real-data path (JIT ctors populate the
+// embedded registry; the capture site reads it) is covered end-to-end by the
+// class-bounded-wildcard capture tests (item 3), which run inside the JIT.
+extern "C" {
+    void* __cajeta_rtti_for_name(const char* name);
+    void __cajeta_register_class(const char* name, void* classObject);
+}
+
+TEST(ReifiedCaptureTests, rttiForNameResolvesRegisteredCanonicalName) {
+    // #ClassObject layout the registry stores: { ptr Class#VTable, ptr rtti }.
+    // Static storage so the registry's borrowed pointer stays valid for the
+    // process lifetime (the table is never freed). A sentinel rtti value lets us
+    // prove the helper returns the offset-8 slot, not merely non-null.
+    static void* sentinelRtti = reinterpret_cast<void*>(0xCAFEF00D);
+    static void* fakeClassObject[2] = { /*vtable*/ nullptr, /*rtti*/ sentinelRtti };
+    __cajeta_register_class("test.FakeWidgetForNameLookup", fakeClassObject);
+
+    // hit: returns exactly the rtti pointer at offset 8 of the registered object.
+    EXPECT_EQ(__cajeta_rtti_for_name("test.FakeWidgetForNameLookup"), sentinelRtti);
+    // miss: an unregistered canonical name resolves to NULL — the capture site
+    // treats this as "cannot prove the bound" and fails the capture safely.
+    EXPECT_EQ(__cajeta_rtti_for_name("test.UnregisteredZzzName"), nullptr);
+    // null arg is tolerated (no crash) and returns NULL.
+    EXPECT_EQ(__cajeta_rtti_for_name(nullptr), nullptr);
+}

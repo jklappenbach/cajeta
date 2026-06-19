@@ -4158,6 +4158,32 @@ void* __cajeta_class_for_name(void* nameBytes) {
     return NULL;
 }
 
+// name -> RTTI lookup (reified-capture: class-bounded-wildcard precursor).
+// Resolves a type's canonical name (a plain C string — the form a capture-site
+// lowering holds for a container's element type) to that type's CajetaRtti*,
+// so `(Foo<? extends Animal>) w` can recover the element type's hierarchy at
+// runtime and bound-check it (the container RTTI stores only the element's NAME
+// string, not its RTTI pointer). Reuses the REFL-8 name->#ClassObject table:
+// #ClassObject = { ptr Class#VTable, ptr rtti }, so the rtti is at offset 8 (the
+// same hop __cajeta_instanceof_named makes). Returns a borrow of a
+// process-lifetime static, or NULL when no class with that canonical name is
+// registered (e.g. DCE'd under Lean, or never compiled) — callers must treat a
+// NULL as "cannot prove the bound" and fail the capture safely. Also strengthens
+// reflection (a name->rtti primitive for the reflective layer).
+#define CAJETA_CLASSOBJECT_RTTI_OFFSET 8
+void* __cajeta_rtti_for_name(const char* name) {
+    if (!name) return NULL;
+    for (int i = 0; i < g_cajeta_class_count; ++i) {
+        const char* n = g_cajeta_classes[i].name;
+        if (n && strcmp(n, name) == 0) {
+            void* classObject = g_cajeta_classes[i].classObject;
+            if (!classObject) return NULL;
+            return *(void**) ((char*) classObject + CAJETA_CLASSOBJECT_RTTI_OFFSET);
+        }
+    }
+    return NULL;
+}
+
 // REFL-10: registry enumeration for Class.allClasses / classesInPackage /
 // classesAnnotated. The filtering (package match, annotation match) is done in
 // cajeta over getName()/hasAnnotation(); these two primitives just expose the
