@@ -944,6 +944,119 @@ namespace cajeta {
         return nullptr;
     }
 
+    // Erased base of a canonical template name (defined later in this TU);
+    // forward-declared so the capture-cast guard below can use it.
+    static std::string erasedBaseOf(const std::string& canonical);
+
+    // Materialize a compile-time std::string as a static cajeta.lang.String
+    // (view-mode) instance, returning the instance global. Mirrors the
+    // LITERAL_TYPE_TEXT_BLOCK path in LiteralExpression so synthesized codegen
+    // sites (the throwing capture cast) can build a String message without
+    // re-running the parser. Falls back to a bare C-string global before class
+    // String is registered (bootstrap).
+    static llvm::Value* materializeStringConstant(CajetaModulePtr module,
+                                                  const std::string& text) {
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        CajetaTypePtr stringTy = CajetaType::of("String");
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
+        if (!klass || !klass->getLlvmType()
+                || !llvm::isa<llvm::StructType>(klass->getLlvmType())) {
+            return module->getBuilder()->CreateGlobalString(text, "str");
+        }
+        auto* structTy = llvm::cast<llvm::StructType>(klass->getLlvmType());
+        auto* mod = module->emitTargetLlvmModule();
+        auto* i8Ty = llvm::Type::getInt8Ty(ctx);
+        auto* i32Ty = llvm::Type::getInt32Ty(ctx);
+        auto* i64Ty = llvm::Type::getInt64Ty(ctx);
+        auto* ptrTy = llvm::PointerType::get(ctx, 0);
+        int64_t len = (int64_t) text.size();
+        auto* dataArrTy = llvm::ArrayType::get(i8Ty, (uint64_t) len + 1);
+        auto* dataInit = llvm::ConstantDataArray::getString(ctx, text, true);
+        auto* arrStructTy = llvm::StructType::get(ctx,
+            llvm::ArrayRef<llvm::Type*>{i64Ty, dataArrTy});
+        auto* arrInit = llvm::ConstantStruct::get(arrStructTy,
+            llvm::ArrayRef<llvm::Constant*>{
+                llvm::ConstantInt::get(i64Ty,
+                    llvm::APInt(64, (uint64_t) len, false)),
+                dataInit});
+        auto* bytesGv = new llvm::GlobalVariable(*mod, arrStructTy,
+            /*isConst=*/true, llvm::GlobalValue::PrivateLinkage, arrInit,
+            ".str.bytes");
+        llvm::Constant* vtableRef = llvm::ConstantPointerNull::get(ptrTy);
+        if (auto* vt = klass->getVirtualTableGlobal()) {
+            vtableRef = CajetaModule::ensureGlobalInModule(mod, vt);
+        }
+        auto* instInit = llvm::ConstantStruct::get(structTy,
+            llvm::ArrayRef<llvm::Constant*>{
+                vtableRef, bytesGv,
+                llvm::ConstantInt::get(i32Ty,
+                    llvm::APInt(32, (uint64_t) len, true)),
+                llvm::ConstantInt::get(i32Ty, llvm::APInt(32, 1, true)),
+                llvm::ConstantInt::get(i32Ty,
+                    llvm::APInt(32, (uint64_t) -1, true))});
+        auto* instGv = new llvm::GlobalVariable(*mod, structTy,
+            /*isConst=*/false, llvm::GlobalValue::PrivateLinkage, instInit,
+            ".str.inst");
+        return instGv;
+    }
+
+    // Reified guard for a capture downcast `(Foo<A...>) w`: if w's runtime
+    // instantiation isn't `targetCanon`, throw cajeta.error.ClassCastException
+    // instead of handing back a mis-typed pointer (reified-capture-spec.md §3).
+    // Leaves the builder positioned in the match-true block, so the caller
+    // returns the reused pointer there.
+    static void emitCaptureCastGuard(CajetaModulePtr module, llvm::Value* objPtr,
+                                     const std::string& targetCanon) {
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        llvm::Function* checkFn =
+            module->getRuntimeFunction("__cajeta_instanceof_named");
+        if (!checkFn) return;  // no runtime check — fall through (legacy cast)
+        llvm::Value* namePtr =
+            builder->CreateGlobalString(targetCanon, "cast.target");
+        llvm::Value* r =
+            builder->CreateCall(checkFn, {objPtr, namePtr}, "cast.match");
+        llvm::Value* matchBit = builder->CreateICmpNE(
+            r, llvm::ConstantInt::get(r->getType(), 0));
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::BasicBlock* okBB =
+            llvm::BasicBlock::Create(ctx, "cast_ok", parentFn);
+        llvm::BasicBlock* failBB =
+            llvm::BasicBlock::Create(ctx, "cast_fail", parentFn);
+        builder->CreateCondBr(matchBit, okBB, failBB);
+
+        // Fail: throw heap ClassCastException("..."). Built via the shared
+        // construction helper; thrown via the same __cajeta_throw path as a
+        // user `throw` (so owned-local unwinding behaves identically).
+        builder->SetInsertPoint(failBB);
+        bool threw = false;
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto it = cmap.find("cajeta.error.ClassCastException");
+        if (it != cmap.end()) {
+            if (auto cce = std::dynamic_pointer_cast<CajetaClass>(it->second)) {
+                llvm::Value* msg = materializeStringConstant(module,
+                    "capture cast failed: value is not a " + targetCanon);
+                std::vector<ParameterEntry> entries;
+                entries.push_back(
+                    ParameterEntry(CajetaType::of("String"), "", msg));
+                llvm::Value* exc = cce->heapConstruct(module, entries);
+                if (llvm::Function* throwFn =
+                        module->getRuntimeFunction("__cajeta_throw")) {
+                    builder->CreateCall(throwFn, {exc});
+                    builder->CreateUnreachable();
+                    threw = true;
+                }
+            }
+        }
+        if (!threw) {
+            // ClassCastException is eager (cajeta.error) so this is unreached;
+            // terminate the block regardless to keep the IR well-formed.
+            builder->CreateUnreachable();
+        }
+
+        builder->SetInsertPoint(okBB);
+    }
+
     llvm::Value* CastExpression::generateCode(CajetaModulePtr module) {
         if (children.empty() || !destType) return nullptr;
         auto* builder = module->getBuilder();
@@ -1004,6 +1117,28 @@ namespace cajeta {
                 && (dstIsArr || !dstIsPrim)
                 && !dstIsIface;
             if (dstStoresAsPointer) {
+                // Reified capture-downcast guard. When the source is a wildcard
+                // (`Foo<?>`) or a different instantiation of the same generic
+                // base, and the destination is a concrete instantiation, this
+                // is a genuine reified downcast: verify w's runtime
+                // instantiation matches and throw ClassCastException on
+                // mismatch (the guarded `instanceof` / pattern-binding forms
+                // skip the throw by branching first). Plain upcasts and
+                // same-type casts don't qualify, so they're untouched.
+                CajetaTypePtr srcType = childAst ? childAst->getResolvedType()
+                                                 : nullptr;
+                std::string dstCanon = destType->toCanonical();
+                std::string srcCanon = srcType ? srcType->toCanonical()
+                                               : std::string();
+                bool srcIsWildcard = srcCanon.find('?') != std::string::npos;
+                bool dstConcrete = dstCanon.find('?') == std::string::npos;
+                bool sameBase = srcType
+                    && erasedBaseOf(srcCanon) == erasedBaseOf(dstCanon);
+                bool captureDowncast = dstClass && dstConcrete && srcType
+                    && srcCanon != dstCanon && (srcIsWildcard || sameBase);
+                if (captureDowncast && val->getType()->isPointerTy()) {
+                    emitCaptureCastGuard(module, val, dstCanon);
+                }
                 return val;
             }
         }

@@ -98,3 +98,46 @@ TEST(ReifiedCaptureTests, capturedCastReadsConcrete) {
         "}\n";
     EXPECT_EQ(runI32(src), 42);
 }
+
+// unguarded capture cast on a MATCH: no instanceof guard, the reified check
+// passes, the concrete handle is recovered and read.
+TEST(ReifiedCaptureTests, unguardedCastSucceedsOnMatch) {
+    std::string src = std::string(BOX) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> bi = heap Box<int32>(42);\n"
+        "        Box<?> w = bi;\n"
+        "        Box<int32> cap = (Box<int32>) w;\n"
+        "        return cap.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// unguarded capture cast on a MISMATCH: throws cajeta.error.ClassCastException
+// (catchable) rather than handing back a mis-typed pointer (UB).
+TEST(ReifiedCaptureTests, unguardedCastThrowsClassCastException) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.error.ClassCastException;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "    public T get() { return this.value; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> bi = heap Box<int32>(7);\n"
+        "        Box<?> w = bi;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<float32> bad = (Box<float32>) w;\n"
+        "            result = 100;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 7;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
