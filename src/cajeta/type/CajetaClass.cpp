@@ -127,6 +127,16 @@ namespace cajeta {
         return false;
     }
 
+    bool CajetaClass::isBoundedWildcardInstantiation() const {
+        for (auto& a : typeArguments) {
+            if (a && a->isWildcard()
+                    && a->wildcardKind() != CajetaType::WildcardKind::Unbounded) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool CajetaClass::isNumericMarkerName(const string& name) {
         return name == "Numeric" || name == "Floating"
             || name == "Integral" || name == "Complex";

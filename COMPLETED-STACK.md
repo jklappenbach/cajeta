@@ -2,6 +2,26 @@
 
 Newest on top. Items popped off `STACK.md` once green + committed.
 
+- bare `Tensor<? extends Floating>` variable/field over a mutable primitive
+  container (numeric plan 5a/5b/5c/6) — the bare bounded-wildcard var form now
+  compiles, assigns, and round-trips via capture. Design: a bounded-wildcard
+  instantiation (`Holder<? extends Floating>`, `Tensor<? extends Floating>`) is an
+  ABSTRACT pointer handle — `Method::generateCode` emits a TRAP STUB for its
+  methods instead of the real body (no concrete primitive element layout to lower;
+  the own-`T` internal `this.store.set(v)` would trip PECS). New predicate
+  `CajetaClass::isBoundedWildcardInstantiation()` (any `? extends`/`? super` arg;
+  EXCLUDES unbounded `?` so `Class<?>` reflection still gets real bodies).
+  Operations go through capturing back to a concrete instantiation (item 3):
+  `(Tensor<float32>) w` then call. **4.3 (capture-aware PECS exemption) proved
+  unnecessary** — the trap stub sidesteps the internal-write site, and genuine
+  EXTERNAL mutator writes through a `? extends` handle stay PECS-rejected at the
+  call site (verified). Tests: `NumericBoundsTests.bareWildcard*` (var-form,
+  operate-via-capture, external-write-rejected) + `bareWildcardRealTensorOperate
+  ViaCapture` on the real `cajeta.math.Tensor`. Regression: 29/29 NumericBounds +
+  ReifiedCapture green; `Method::generateCode` change is a no-op for all
+  non-bounded-wildcard methods (and stdlib has zero bounded-wildcard
+  instantiations). Pre-push full sweep still pending. Flips numeric-bounds-plan
+  5a/5b/5c/6c from `[~]` to done.
 - class-bounded-wildcard capture (capture plan 5b) — `(Box<? extends Animal>) w`
   and `w instanceof Box<? extends Animal>` succeed for `Box<Dog>`, fail/throw for
   `Box<Cat>`. Added runtime `__cajeta_instanceof_bounded(obj, baseName, argIndex,
