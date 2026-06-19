@@ -9,6 +9,7 @@
 #include "../error/Diagnostics.h"
 #include "../field/Field.h"
 #include "../method/Method.h"
+#include "../util/MemoryManager.h"
 #include "../asn/ClassBodyDeclaration.h"
 #include "../method/DefaultConstructorMethod.h"
 #include "../method/SynthesizedHashMethod.h"
@@ -185,6 +186,86 @@ namespace cajeta {
             }
         }
         return false;
+    }
+
+    void CajetaClass::initInstanceLayout(CajetaModulePtr module,
+                                         llvm::Value* instance,
+                                         llvm::Type* structTy, bool stackAlloc) {
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
+        const llvm::DataLayout& dataLayout =
+            module->getLlvmModule()->getDataLayout();
+        llvm::Constant* allocSize = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(llvmCtx),
+            dataLayout.getTypeAllocSize(structTy));
+
+        // S7.2 — zero-init the instance block. The vtable slot below is
+        // overwritten and the ctor writes most fields, but fields the ctor
+        // leaves untouched must read as null/zero (load-bearing for the
+        // class-drop recursion's null guard; matches JVM/.NET defaults).
+        builder->CreateMemSet(instance,
+            llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0),
+            allocSize, llvm::MaybeAlign(8));
+
+        // @ValueType PODs have no slot-0 vtable — a vtable store would clobber
+        // the user field at index 0. Skip all vtable work (and the drop patch).
+        if (!hasVtablePointerAtSlotZero()) return;
+
+        // Primary vtable at slot 0 (dynamic dispatch reads it; without this the
+        // first virtual call segfaults on the zeroed slot).
+        if (llvm::GlobalVariable* vtable = getVirtualTableGlobal()) {
+            llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
+                module->getLlvmModule(), vtable);
+            llvm::Value* vtablePtrSlot = builder->CreateStructGEP(
+                structTy, instance, /*idx=*/0, "vtable_slot");
+            builder->CreateStore(vtableRef, vtablePtrSlot);
+        }
+        // Polymorphic-MI: a secondary vtable per non-first-parent sub-object,
+        // so dispatch through a non-first-parent-typed binding finds this
+        // class's overrides.
+        for (const auto& sub : getNonFirstSubObjects()) {
+            llvm::GlobalVariable* secVT = getOrCreateSecondaryVTable(sub.ancestor);
+            if (!secVT) continue;
+            llvm::Constant* secRef = CajetaModule::ensureGlobalInModule(
+                module->getLlvmModule(), secVT);
+            llvm::Value* secSlot = builder->CreateStructGEP(
+                structTy, instance, (unsigned) sub.slot,
+                std::string("sec_vtable_slot_")
+                    + sub.ancestor->getQName()->getTypeName());
+            builder->CreateStore(secRef, secSlot);
+        }
+        // Gap 1: route scope-exit virtual drop to this class's destructor
+        // (the instance carries this class's vtable regardless of the binding's
+        // declared type). Stack allocations register a static stack-drop fn
+        // instead, so they skip the patch.
+        if (!stackAlloc) {
+            patchVirtualTableDropFn();
+        }
+    }
+
+    llvm::Value* CajetaClass::heapConstruct(CajetaModulePtr module,
+                                            vector<ParameterEntry>& entries) {
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
+        llvm::Type* structTy = getLlvmType();
+        const llvm::DataLayout& dataLayout =
+            module->getLlvmModule()->getDataLayout();
+        llvm::Constant* allocSize = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(llvmCtx),
+            dataLayout.getTypeAllocSize(structTy));
+        llvm::Value* instance = MemoryManager::createMallocInstruction(
+            module, allocSize, builder->GetInsertBlock());
+        initInstanceLayout(module, instance, structTy, /*stackAlloc=*/false);
+        // Constructor name = simple type name; for a template instantiation use
+        // the origin's name (the source-parsed ctor was named after the
+        // unparameterized template). Mirrors ClassCreatorRest.
+        std::string ctorName = getQName()->getTypeName();
+        if (getTemplateOrigin()) {
+            ctorName = getTemplateOrigin()->getQName()->getTypeName();
+        }
+        invokeMethod(ctorName, entries, /*isConstructor=*/true, instance,
+                     /*callerModule=*/module);
+        return instance;
     }
 
     bool CajetaClass::isAssignableToWildcard(

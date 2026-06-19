@@ -63,84 +63,21 @@ namespace cajeta {
                 module, allocSize, builder->GetInsertBlock());
         }
 
-        // S7.2 — zero-init the instance block. malloc returns uninitialized
-        // bytes; alloca's contents are also unspecified. The vtable slot
-        // below gets overwritten, and most fields get written by the
-        // user's constructor body. But fields the ctor doesn't explicitly
-        // initialize stay at whatever the allocator gave us — garbage.
-        // That's load-bearing for class-drop recursion into embedded
-        // struct fields (S7.2): the recursive struct drop reads class-ref
-        // slots inside the embedded struct, and a non-null garbage pointer
-        // slips past the Tracer-drop null guard and crashes on free().
-        // Zero-init matches JVM / .NET defaults too; class-ref fields read
-        // as null until the ctor writes them.
-        builder->CreateMemSet(instance,
-            llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0),
-            allocSize, llvm::MaybeAlign(8));
-
-        // Initialize the vtable pointer at instance slot 0. Required for
-        // dynamic dispatch — `dog.speak()` reads slot 0 to find Dog's vtable
-        // before binary-searching for `speak`'s hash. Without this write the
-        // instance's vtable pointer is zero from the memset above, and the
-        // first virtual call segfaults.
+        // Zero-init + vtable install (primary slot-0, secondary sub-object
+        // vtables, and the heap drop-fn patch). Factored into
+        // CajetaClass::initInstanceLayout so synthesized construction sites
+        // (throwing capture cast, tryAs, ...) share the exact same logic. The
+        // S7.2 zero-init rationale + the Polymorphic-MI + Gap-1 drop-dispatch
+        // details live there.
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
-          // @ValueType PODs have no slot 0 vtable — skip every vtable store
-          // (primary + secondary) and the drop-fn patch. The flat layout has
-          // a user field at index 0, so a vtable store would clobber it.
-          if (klass->hasVtablePointerAtSlotZero()) {
-            if (llvm::GlobalVariable* vtable = klass->getVirtualTableGlobal()) {
-                // Cross-module: when targetType lives in a different
-                // llvm::Module than where the `new` is being emitted
-                // (multi-source compile), substitute a module-local
-                // extern decl so the merge can reconcile it.
-                llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
-                    module->getLlvmModule(), vtable);
-                llvm::Value* vtablePtrSlot = builder->CreateStructGEP(
-                    structTy, instance, /*idx=*/0, "vtable_slot");
-                builder->CreateStore(vtableRef, vtablePtrSlot);
-            }
-
-            // Polymorphic-MI: secondary vtable per non-first-parent
-            // sub-object. The primary vtable above lives at slot 0 and
-            // is read when dispatching through this class's own type;
-            // dispatching through a non-first-parent-typed binding
-            // reads the vptr at the start of that parent's sub-object,
-            // which is one of the slots enumerated by
-            // klass->getNonFirstSubObjects(). Each such slot gets a
-            // dedicated secondary vtable (built lazily and cached on
-            // klass), structurally compatible with the parent's
-            // standalone vtable but carrying this class's overrides
-            // (via offset thunks where the impl lives elsewhere).
-            for (const auto& sub : klass->getNonFirstSubObjects()) {
-                llvm::GlobalVariable* secVT =
-                    klass->getOrCreateSecondaryVTable(sub.ancestor);
-                if (!secVT) continue;
-                llvm::Constant* secRef = CajetaModule::ensureGlobalInModule(
-                    module->getLlvmModule(), secVT);
-                llvm::Value* secSlot = builder->CreateStructGEP(
-                    structTy, instance, (unsigned) sub.slot,
-                    std::string("sec_vtable_slot_")
-                        + sub.ancestor->getQName()->getTypeName());
-                builder->CreateStore(secRef, secSlot);
-            }
-            // Gap 1 (virtual dispatch on drop). The instance carries this
-            // class's vtable regardless of the declared type of the
-            // binding (`Animal a = heap Dog()` stores Dog's vtable). At
-            // scope exit __cajeta_class_virtual_drop loads vtable.drop_fn
-            // — patch this class's vtable slot now so dispatch routes to
-            // ~Dog() rather than ~Animal(). Stack allocations skip this
-            // path (no malloc, vtable still set for method dispatch, but
-            // the drop chain registers a static stack-drop fn — see
-            // LocalVariableDeclaration::generateCode).
-            //
-            // Custom-layout classes (CajetaTask<T>'s { fn, arg, done,
-            // ... } body has no vtable pointer at slot 0) skip the
-            // patch — their drop registration site falls back to
-            // static dispatch.
-            if (!stackAlloc && klass->hasVtablePointerAtSlotZero()) {
-                klass->patchVirtualTableDropFn();
-            }
-          }
+            klass->initInstanceLayout(module, instance, structTy, stackAlloc);
+        } else {
+            // Non-class target (no vtable) — just zero the block. Unreached in
+            // practice (ClassCreatorRest always builds a CajetaClass), kept to
+            // preserve the prior unconditional memset behavior exactly.
+            builder->CreateMemSet(instance,
+                llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0),
+                allocSize, llvm::MaybeAlign(8));
         }
 
         // Lambda-as-ctor-arg expectedType propagation. Mirror the

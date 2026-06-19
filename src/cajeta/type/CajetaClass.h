@@ -857,6 +857,24 @@ namespace cajeta {
                                    const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
                                    llvm::Value* sretTarget = nullptr);
 
+        // Construction helpers, factored out of ClassCreatorRest::generateCode
+        // so synthesized codegen sites (a throwing capture cast, tryAs, ...)
+        // can build a class instance without re-implementing the malloc /
+        // vtable / ctor subtleties.
+        //
+        // initInstanceLayout: zero-init `instance` (LLVM type `structTy`) and
+        // install the slot-0 primary vtable, any secondary sub-object vtables,
+        // and — for heap instances (stackAlloc == false) — the virtual drop-fn
+        // patch. @ValueType PODs (no slot-0 vtable) get only the zero-init.
+        void initInstanceLayout(CajetaModulePtr module, llvm::Value* instance,
+                                llvm::Type* structTy, bool stackAlloc);
+        // heapConstruct: malloc + initInstanceLayout + invoke the matching
+        // constructor with `entries`. Returns the new instance pointer. No
+        // scope drop is registered — the caller owns the lifecycle (e.g.
+        // throws it, or transfers it into an Optional).
+        llvm::Value* heapConstruct(CajetaModulePtr module,
+                                   vector<ParameterEntry>& entries);
+
         // Look up a method on this class or any of its ancestors. Each class
         // indexes methods under keys that embed its own class name, so the
         // recursion re-keys at each level. Returns nullptr if not found.
