@@ -1,0 +1,25 @@
+package cajeta.ifx;
+
+/**
+ * AudioStream — a portable audio output (or capture) stream handle. ONE API across every OS; the
+ * concrete device is a backend (WASAPI / CoreAudio / PipeWire / AAudio / harness / null) selected by
+ * the backend registry. Fully orthogonal to graphics.
+ *
+ * This slice defines the type + its intrinsic accessors. The registry-delegating factory
+ * ({@code openOutput}) and {@code submit}/{@code close} land with the BackendRegistry item, since
+ * they dispatch through the active {@code AudioBackend}.
+ */
+public final class AudioStream {
+    int64  backendHandle;
+    uint32 sampleRate;
+    uint32 channels;
+
+    public AudioStream(int64 backendHandle, uint32 sampleRate, uint32 channels) {
+        this.backendHandle = backendHandle;
+        this.sampleRate = sampleRate;
+        this.channels = channels;
+    }
+
+    public uint32 streamSampleRate() { return this.sampleRate; }
+    public uint32 streamChannels()   { return this.channels; }
+}

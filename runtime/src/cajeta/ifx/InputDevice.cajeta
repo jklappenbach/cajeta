@@ -1,0 +1,21 @@
+package cajeta.ifx;
+
+/**
+ * InputDevice — a gamepad / extended-input device handle. Keyboard & mouse arrive as
+ * {@link WindowEvent}s through the window's event queue; gamepads come from a SEPARATE OS API
+ * (XInput / GameInput / evdev / GameController / Paddleboat), hence a distinct contract.
+ *
+ * This slice defines the type + its intrinsic accessor. Enumeration and per-device state
+ * (buttons/axes/rumble) dispatch through the active {@code InputBackend} and land with the
+ * BackendRegistry item; on a backend with no devices the enumeration is simply empty.
+ */
+public final class InputDevice {
+    int32 index;
+
+    public InputDevice(int32 index) {
+        this.index = index;
+    }
+
+    /** This device's index within the active backend's enumeration. */
+    public int32 deviceIndex() { return this.index; }
+}

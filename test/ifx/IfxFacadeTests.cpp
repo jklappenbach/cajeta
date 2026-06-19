@@ -136,3 +136,36 @@ TEST(IfxFacadeTests, lifecyclePhaseEnumOrdinals) {
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 3);
 }
+
+// Input + audio domain contract value types (siblings of the window-domain types).
+TEST(IfxFacadeTests, inputDeviceConstructsAndReportsIndex) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.InputDevice;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        InputDevice d = heap InputDevice(3);\n"
+        "        return d.deviceIndex();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 3);
+}
+
+TEST(IfxFacadeTests, audioStreamConstructsAndReportsRate) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.AudioStream;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        AudioStream s = heap AudioStream(0, 48000, 2);\n"
+        "        return (int32) s.streamSampleRate();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 48000);
+}
