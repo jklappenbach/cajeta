@@ -1,0 +1,89 @@
+package cajeta.codec.csv;
+
+/**
+ * RFC-4180 CSV writer. Accumulates fields into a growable byte buffer:
+ * `writeField(value)` appends a field (prefixed with a `,` unless it is the
+ * first in the row), `endRow()` terminates the record with `\n`, and
+ * `toBytes()` returns the accumulated output (caller-owned).
+ *
+ * A field is quoted iff its value contains a `,`, `"`, `\n`, or `\r`; an inner
+ * `"` is escaped by doubling (`""`). This is the exact inverse of `CsvReader`'s
+ * field decode, so `CsvReader` over `CsvWriter` output round-trips.
+ *
+ * NOTE: buffer growth reassigns the `buf` field, which leaks the old array
+ * under the current drop-on-reassign gap; immaterial for bounded output and
+ * parked as a follow-up. The initial capacity covers small records without a
+ * grow.
+ */
+public final class CsvWriter {
+    int8[] buf;
+    int32 len;
+    boolean atRowStart;
+
+    public CsvWriter() {
+        this.buf = heap int8[64];
+        this.len = 0;
+        this.atRowStart = true;
+    }
+
+    void ensure(int32 extra) {
+        int32 need = this.len + extra;
+        int32 cap = (int32) this.buf.count();
+        if (need <= cap) { return; }
+        int32 newCap = cap * 2;
+        while (newCap < need) { newCap = newCap * 2; }
+        int8[] nb = heap int8[newCap];
+        int32 i = 0;
+        while (i < this.len) { nb[i] = this.buf[i]; i = i + 1; }
+        this.buf = nb;
+    }
+
+    void put(int8 c) {
+        this.ensure(1);
+        this.buf[this.len] = c;
+        this.len = this.len + 1;
+    }
+
+    /** Append one field, quoting + escaping per RFC-4180 only when required. */
+    public void writeField(int8[] value) {
+        if (!this.atRowStart) { this.put((int8)44); }
+        this.atRowStart = false;
+        int32 vn = (int32) value.count();
+        boolean needQ = false;
+        int32 i = 0;
+        while (i < vn) {
+            int8 c = value[i];
+            if (c == (int8)44 || c == (int8)34 || c == (int8)10 || c == (int8)13) { needQ = true; }
+            i = i + 1;
+        }
+        if (!needQ) {
+            i = 0;
+            while (i < vn) { int8 c = value[i]; this.put(c); i = i + 1; }
+        } else {
+            this.put((int8)34);
+            i = 0;
+            while (i < vn) {
+                int8 c = value[i];
+                if (c == (int8)34) { this.put((int8)34); this.put((int8)34); }
+                else { this.put(c); }
+                i = i + 1;
+            }
+            this.put((int8)34);
+        }
+    }
+
+    /** Terminate the current record with a `\n` line ending. */
+    public void endRow() {
+        this.put((int8)10);
+        this.atRowStart = true;
+    }
+
+    /** The accumulated CSV bytes so far (caller-owned copy). */
+    public #int8[] toBytes() {
+        int32 ln = this.len;
+        int8[] out = heap int8[ln];
+        int32 i = 0;
+        while (i < ln) { out[i] = this.buf[i]; i = i + 1; }
+        return out;
+    }
+}

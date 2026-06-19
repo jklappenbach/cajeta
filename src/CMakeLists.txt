@@ -646,6 +646,7 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/wire
         ${CAJETA_STDLIB_ROOT}/cajeta/codec        # Base64 (NET-11.3)
         ${CAJETA_STDLIB_ROOT}/cajeta/codec/json
+        ${CAJETA_STDLIB_ROOT}/cajeta/codec/csv    # CSV structural index + reader/writer (codec Phase 1)
         # Larger-than-memory collections. Listed after collection/wire/
         # io.file so its dependencies (BPlusTree shape, Encoder, File) are
         # already in the prelude when these parse.
