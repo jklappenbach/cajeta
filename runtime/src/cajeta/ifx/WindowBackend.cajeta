@@ -1,0 +1,16 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * WindowBackend — the window/surface/event provider. Produces the opaque {@link Surface} the gfx
+ * swapchain consumes, and drains {@link WindowEvent}s. Implemented per-OS (Win32 / Wayland+X11 /
+ * Cocoa / UIKit / ANativeWindow) and by the capture/replay harness; the {@link NullWindowBackend}
+ * is the always-present headless floor.
+ */
+public interface WindowBackend extends Backend {
+    public Window createWindow(String title, uint32 width, uint32 height);
+    public Surface surfaceOf(Window w);
+    public WindowEvent[] poll(Window w);
+    public void destroy(Window w);
+}
