@@ -1,0 +1,16 @@
+package cajeta.ifx;
+
+/**
+ * IfxInfo — anchor type for the {@code cajeta.ifx} package (the interface-framework facade for
+ * window / input / audio). Parsed on demand by the lazy stdlib loader, like
+ * {@link cajeta.math.MathInfo}: a program that never touches windowing pays nothing at compile time.
+ *
+ * cajeta.ifx is a PORTABLE CONTRACT only — no FFI, no OS code. OS backends (cajeta-ifx-*) and the
+ * capture/replay harness are external libraries that implement the contracts here and register
+ * through the backend registry. See documents/cajeta-gfx/cajeta-gfx-spec.md §9.
+ */
+public final class IfxInfo {
+    public static int32 version() {
+        return 1;   // v0.1 — facade surface revision
+    }
+}

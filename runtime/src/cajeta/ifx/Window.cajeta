@@ -1,0 +1,21 @@
+package cajeta.ifx;
+
+/**
+ * Window — the portable window contract. ONE API across every OS; the concrete behaviour is a
+ * backend (cajeta-ifx-*) selected by the backend registry. On platforms without desktop windows
+ * (iOS/Android) a "window" is the single fullscreen surface.
+ *
+ * This slice defines the type + its intrinsic accessors. The registry-delegating factory
+ * ({@code create}) and event {@code poll} land with the BackendRegistry item (next on the stack),
+ * since they dispatch through the active {@code WindowBackend}.
+ */
+public final class Window {
+    int64 backendHandle;
+
+    public Window(int64 backendHandle) {
+        this.backendHandle = backendHandle;
+    }
+
+    /** The opaque per-backend handle (the backend interprets it). */
+    public int64 handle() { return this.backendHandle; }
+}
