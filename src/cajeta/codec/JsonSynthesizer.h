@@ -10,7 +10,7 @@
 // synthesizer entry points, the returned string replaces the captured
 // methodSource and the existing parse pipeline takes it from there.
 //
-// See docs/stdlib/codec/Json.md § Tier 1.
+// See docs/specification/codec/json/Json.md § Tier 1.
 
 #pragma once
 

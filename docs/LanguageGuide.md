@@ -85,10 +85,10 @@ null          // the null reference
 There is no unsigned-literal suffix (`2u` is a parse error); write the value and
 let the target type carry the signedness.
 
-See [`stdlib/Primitives.md`](stdlib/Primitives.md),
-[`stdlib/FloatingPointModel.md`](stdlib/FloatingPointModel.md),
-[`stdlib/lang/String.md`](stdlib/lang/String.md) (`char` semantics), and
-[`stdlib/lang/EncodingPrefixedLiterals.md`](stdlib/lang/EncodingPrefixedLiterals.md).
+See [`specification/lang/Primitives.md`](specification/lang/Primitives.md),
+[`specification/lang/FloatingPointModel.md`](specification/lang/FloatingPointModel.md),
+[`specification/lang/String.md`](specification/lang/String.md) (`char` semantics), and
+[`specification/lang/EncodingPrefixedLiterals.md`](specification/lang/EncodingPrefixedLiterals.md).
 
 ---
 
@@ -155,8 +155,8 @@ mode is a property of the *value*, not the type, and the borrow checker tracks
 the lifetime. Class instances always pass and return by pointer (no slicing).
 
 `shared` is the third placement, used inside GPU kernels for workgroup-shared
-memory (§16). See [`stdlib/UnifiedClasses.md`](stdlib/UnifiedClasses.md) and
-[`stdlib/MemoryModel.md`](stdlib/MemoryModel.md).
+memory (§16). See [`specification/lang/UnifiedClasses.md`](specification/lang/UnifiedClasses.md) and
+[`specification/lang/MemoryModel.md`](specification/lang/MemoryModel.md).
 
 ---
 
@@ -181,10 +181,10 @@ Reclamation is automatic at scope exit via a per-thread drop chain (entries fire
 in reverse declaration order, and the throw path unwinds them so drops run on the
 exceptional path too). To release a value early, **reassign or null it** (`x =
 null`) — there is no `delete`/`free`. See
-[`stdlib/MemoryModel.md`](stdlib/MemoryModel.md),
-[`stdlib/FieldOwnership.md`](stdlib/FieldOwnership.md),
-[`stdlib/OwnershipTransfer.md`](stdlib/OwnershipTransfer.md), and
-[`stdlib/BorrowSoundness.md`](stdlib/BorrowSoundness.md).
+[`specification/lang/MemoryModel.md`](specification/lang/MemoryModel.md),
+[`specification/lang/FieldOwnership.md`](specification/lang/FieldOwnership.md),
+[`specification/lang/OwnershipTransfer.md`](specification/lang/OwnershipTransfer.md), and
+[`specification/lang/BorrowSoundness.md`](specification/lang/BorrowSoundness.md).
 
 ---
 
@@ -245,8 +245,8 @@ Stream<String> names = people.stream().map<String>(Person::getName);  // method 
 - Method references: `Class::staticMethod`, `instance::method`,
   `Class::instanceMethod`, `Class::heap` (constructor).
 
-See [`stdlib/Lambdas.md`](stdlib/Lambdas.md) and
-[`stdlib/MethodLevelTemplate.md`](stdlib/MethodLevelTemplate.md).
+See [`specification/lang/Lambdas.md`](specification/lang/Lambdas.md) and
+[`specification/lang/MethodLevelTemplate.md`](specification/lang/MethodLevelTemplate.md).
 
 ### Named arguments
 
@@ -306,8 +306,8 @@ Shape s = heap Square(5);   // 25 via vtable
 ```
 
 Diamond inheritance resolves through a hash-based vtable lookup. See
-[`stdlib/UnifiedClasses.md`](stdlib/UnifiedClasses.md) and
-[`stdlib/MultiClassing.md`](stdlib/MultiClassing.md).
+[`specification/lang/UnifiedClasses.md`](specification/lang/UnifiedClasses.md) and
+[`specification/lang/MultiClassing.md`](specification/lang/MultiClassing.md).
 
 ### Interfaces
 
@@ -344,7 +344,7 @@ PacketHeader h = stack PacketHeader(buf);   // borrow over buf; no copy
 ```
 
 Supports `@BigEndian`/`@LittleEndian`/`@HostEndian`/`@Align`, nested views, and
-borrow vs ownership-transfer construction. See [`stdlib/Views.md`](stdlib/Views.md).
+borrow vs ownership-transfer construction. See [`specification/lang/Views.md`](specification/lang/Views.md).
 
 > `structure` and `record` are reserved words but are **not** implemented type
 > forms today — use `class`, `view`, or `@ValueType`.
@@ -374,7 +374,7 @@ Bounded templates (`<T extends Bound>`), wildcards (`?`, `? extends Bound`, `?
 super Bound`), capture conversion, and PECS reads/writes are all supported, with
 at-least-Java-strength inference. See [`TemplateWildcard.md`](TemplateWildcard.md),
 [`CaptureConversion.md`](CaptureConversion.md), and
-[`stdlib/NumericBoundedTemplates.md`](stdlib/NumericBoundedTemplates.md).
+[`specification/lang/NumericBoundedTemplates.md`](specification/lang/NumericBoundedTemplates.md).
 
 ---
 
@@ -395,9 +395,9 @@ int32 m = list.count();
 ```
 
 (`Vector.length()` is the geometric magnitude of a SIMD vector — a different
-operation.) See [`stdlib/Collections.md`](stdlib/Collections.md),
-[`stdlib/lang/String.md`](stdlib/lang/String.md), and
-[`stdlib/Hashing.md`](stdlib/Hashing.md).
+operation.) See [`specification/collection/Collections.md`](specification/collection/Collections.md),
+[`specification/lang/String.md`](specification/lang/String.md), and
+[`specification/hash/Hashing.md`](specification/hash/Hashing.md).
 
 ---
 
@@ -416,7 +416,7 @@ try {
 }
 ```
 
-See [`stdlib/ErrorModel.md`](stdlib/ErrorModel.md).
+See [`specification/error/ErrorModel.md`](specification/error/ErrorModel.md).
 
 ---
 
@@ -443,9 +443,9 @@ public static async int32 fetchAll(String[] urls) {
 The runtime schedules fibers over a work-stealing carrier pool — by default
 `min(cpus, 4)` OS-thread carriers, so spawned tasks run in parallel (set
 `CAJETA_CARRIERS=1` for deterministic single-carrier runs). See
-[`stdlib/Concurrency.md`](stdlib/Concurrency.md),
-[`stdlib/AsyncStatus.md`](stdlib/AsyncStatus.md), and the threading primitives in
-[`stdlib/Concurrency.md`](stdlib/Concurrency.md).
+[`specification/concurrent/Concurrency.md`](specification/concurrent/Concurrency.md),
+[`specification/concurrent/AsyncStatus.md`](specification/concurrent/AsyncStatus.md), and the threading primitives in
+[`specification/concurrent/Concurrency.md`](specification/concurrent/Concurrency.md).
 
 ---
 
@@ -464,8 +464,8 @@ int32 total = xs.stream()
 ```
 
 `.parallel()` runs the chain across a `scope`/`spawn` worker fan-out over a
-splittable root. See [`stdlib/Streams.md`](stdlib/Streams.md) and
-[`stdlib/StreamParallelism.md`](stdlib/StreamParallelism.md).
+splittable root. See [`specification/lang/stream/Streams.md`](specification/lang/stream/Streams.md) and
+[`specification/lang/stream/StreamParallelism.md`](specification/lang/stream/StreamParallelism.md).
 
 ---
 
@@ -475,9 +475,9 @@ A Lombok-style annotation system over the language's reflection: `@Getter`/
 `@Setter`, `@Builder`, `@ToString`, `@EqualsAndHashCode`, `@Data`/`@Value`,
 `@With`, `@NonNull`, view-layout annotations (`@LittleEndian`, …), `@Encoding`,
 and the aspect/DI set (`@Aspect`, `@Component`, `@Inject`, `@Around`/`@Before`/
-`@After`). See [`stdlib/Annotations.md`](stdlib/Annotations.md),
-[`stdlib/AspectModel.md`](stdlib/AspectModel.md), and
-[`stdlib/Reflection.md`](stdlib/Reflection.md).
+`@After`). See [`specification/reflect/Annotations.md`](specification/reflect/Annotations.md),
+[`specification/lang/AspectModel.md`](specification/lang/AspectModel.md), and
+[`specification/reflect/Reflection.md`](specification/reflect/Reflection.md).
 
 ---
 
@@ -524,18 +524,18 @@ See [`gpu/xpu/CajetaXPU.md`](gpu/xpu/CajetaXPU.md),
 
 | Topic | Doc |
 |-------|-----|
-| Class model + allocation | [`stdlib/UnifiedClasses.md`](stdlib/UnifiedClasses.md) |
-| Memory + ownership | [`stdlib/MemoryModel.md`](stdlib/MemoryModel.md), [`stdlib/FieldOwnership.md`](stdlib/FieldOwnership.md) |
-| Primitives + floats | [`stdlib/Primitives.md`](stdlib/Primitives.md), [`stdlib/FloatingPointModel.md`](stdlib/FloatingPointModel.md) |
+| Class model + allocation | [`specification/lang/UnifiedClasses.md`](specification/lang/UnifiedClasses.md) |
+| Memory + ownership | [`specification/lang/MemoryModel.md`](specification/lang/MemoryModel.md), [`specification/lang/FieldOwnership.md`](specification/lang/FieldOwnership.md) |
+| Primitives + floats | [`specification/lang/Primitives.md`](specification/lang/Primitives.md), [`specification/lang/FloatingPointModel.md`](specification/lang/FloatingPointModel.md) |
 | Templates + wildcards | [`TemplateWildcard.md`](TemplateWildcard.md), [`CaptureConversion.md`](CaptureConversion.md) |
-| Lambdas + function types | [`stdlib/Lambdas.md`](stdlib/Lambdas.md) |
+| Lambdas + function types | [`specification/lang/Lambdas.md`](specification/lang/Lambdas.md) |
 | Operator overloading | [`OperatorOverloading.md`](OperatorOverloading.md) |
-| Strings + collections | [`stdlib/lang/String.md`](stdlib/lang/String.md), [`stdlib/Collections.md`](stdlib/Collections.md) |
-| Streams | [`stdlib/Streams.md`](stdlib/Streams.md), [`stdlib/StreamParallelism.md`](stdlib/StreamParallelism.md) |
-| Annotations + aspects | [`stdlib/Annotations.md`](stdlib/Annotations.md), [`stdlib/AspectModel.md`](stdlib/AspectModel.md) |
-| Views / wire formats | [`stdlib/Views.md`](stdlib/Views.md) |
-| Concurrency | [`stdlib/Concurrency.md`](stdlib/Concurrency.md) |
-| Errors | [`stdlib/ErrorModel.md`](stdlib/ErrorModel.md) |
+| Strings + collections | [`specification/lang/String.md`](specification/lang/String.md), [`specification/collection/Collections.md`](specification/collection/Collections.md) |
+| Streams | [`specification/lang/stream/Streams.md`](specification/lang/stream/Streams.md), [`specification/lang/stream/StreamParallelism.md`](specification/lang/stream/StreamParallelism.md) |
+| Annotations + aspects | [`specification/reflect/Annotations.md`](specification/reflect/Annotations.md), [`specification/lang/AspectModel.md`](specification/lang/AspectModel.md) |
+| Views / wire formats | [`specification/lang/Views.md`](specification/lang/Views.md) |
+| Concurrency | [`specification/concurrent/Concurrency.md`](specification/concurrent/Concurrency.md) |
+| Errors | [`specification/error/ErrorModel.md`](specification/error/ErrorModel.md) |
 | GPU / compute | [`gpu/xpu/CajetaXPU.md`](gpu/xpu/CajetaXPU.md), [`gpu/CajetaGPU.md`](gpu/CajetaGPU.md) |
 | Compiler modes + flags | [`CompilerModes.md`](CompilerModes.md) |
 | Lint rules | [`LintRules.md`](LintRules.md) |

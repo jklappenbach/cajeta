@@ -151,7 +151,7 @@ elides the check.
 - Cost: one CMP + conditional branch per index access. Branch
   predictor handles in-bounds (the overwhelming common case)
   near-free.
-- Per `docs/stdlib/MemoryModel.md` § Bounds, the static analyzer
+- Per `docs/specification/lang/MemoryModel.md` § Bounds, the static analyzer
   can elide the check when the index is provably in-range
   (constant, prior compare); both modes use this.
 
@@ -205,7 +205,7 @@ dump.
 
 ### `--live-set=strict|bounded|off`
 
-The per-thread live-allocation set from `docs/stdlib/FieldOwnership.md`
+The per-thread live-allocation set from `docs/specification/lang/FieldOwnership.md`
 § Solution B. Three states:
 
 - `strict` (debug): unbounded growth + rehash when load passes
@@ -221,7 +221,7 @@ The per-thread live-allocation set from `docs/stdlib/FieldOwnership.md`
   in production).
 - Cost (strict / bounded): one `pthread_mutex_lock` + hash op +
   unlock per alloc and free. Single global bottleneck — see
-  `docs/stdlib/FieldOwnership.md` § Cost. Strict additionally
+  `docs/specification/lang/FieldOwnership.md` § Cost. Strict additionally
   pays rehash cost amortized across allocations.
 - Cost (off): zero. But you'd better know what you're doing.
 

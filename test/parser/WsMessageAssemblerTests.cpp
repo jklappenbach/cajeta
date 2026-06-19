@@ -1,4 +1,4 @@
-// NET-10.4 — cajeta.net.ws message fragmentation tests (RFC 6455 §5.4).
+// NET-10.4 — cajeta.io.net.ws message fragmentation tests (RFC 6455 §5.4).
 //
 // The fragmentation reassembler (WsMessageAssembler) is a pure-logic state
 // machine over decoded WsFrames — no I/O — so it tests directly over the
@@ -33,13 +33,13 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.ws.WsOpcode;\n"
-        "import cajeta.net.ws.WsFrame;\n"
-        "import cajeta.net.ws.WsMessage;\n"
-        "import cajeta.net.ws.WsMessageAssembler;\n"
-        "import cajeta.net.ws.WsFrameDecoder;\n"
-        "import cajeta.net.ws.ProtocolViolationException;\n"
-        "import cajeta.net.ws.MessageTooLargeException;\n"
+        "import cajeta.io.net.ws.WsOpcode;\n"
+        "import cajeta.io.net.ws.WsFrame;\n"
+        "import cajeta.io.net.ws.WsMessage;\n"
+        "import cajeta.io.net.ws.WsMessageAssembler;\n"
+        "import cajeta.io.net.ws.WsFrameDecoder;\n"
+        "import cajeta.io.net.ws.ProtocolViolationException;\n"
+        "import cajeta.io.net.ws.MessageTooLargeException;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

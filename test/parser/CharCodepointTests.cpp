@@ -5,7 +5,7 @@
 //   - Escape sequences (\uXXXX) decode as written.
 //   - `char` typed locals hold int32 widths (assignment + return).
 //
-// See docs/stdlib/lang/String.md § `char` is a 32-bit Unicode codepoint.
+// See docs/specification/lang/String.md § `char` is a 32-bit Unicode codepoint.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"

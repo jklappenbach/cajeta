@@ -2228,7 +2228,7 @@ the mocked-deps tests). Coverage instrumentation is not a flavor
 ### Profile names are arbitrary
 
 The compiler accepts any string as a profile name. The
-[`@Profile` source annotation](stdlib/AspectModel.md#selecting-a-context-profile)
+[`@Profile` source annotation](specification/lang/AspectModel.md#selecting-a-context-profile)
 already says "Profile names are arbitrary strings; there's no
 fixed enumeration"; the build-tool side mirrors that. Project
 teams pick names that match their actual environments:
@@ -2270,7 +2270,7 @@ distinct binaries.
 
 `@TestComponent` continues to handle per-class test overrides
 under whichever profile the test task uses (typically `test`);
-see [AspectModel.md](stdlib/AspectModel.md#testcomponent).
+see [AspectModel.md](specification/lang/AspectModel.md#testcomponent).
 
 ### Why per-task and not an activated overlay
 

@@ -1,5 +1,5 @@
 // Tests for the constructor Lombok-mirror synthesizers
-// (docs/stdlib/Annotations.md § Constructors):
+// (docs/specification/reflect/Annotations.md § Constructors):
 //   - @NoArgsConstructor
 //   - @AllArgsConstructor
 //   - @RequiredArgsConstructor (currently selects `final` fields only;

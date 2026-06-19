@@ -1,4 +1,4 @@
-// Tests for cajeta.net.uri.Uri reference resolution + builder +
+// Tests for cajeta.io.net.uri.Uri reference resolution + builder +
 // recomposition — plan item NET-6.4 (RFC 3986 §5 reference resolution,
 // §5.3 recomposition, and the fluent Uri/UriBuilder).
 //
@@ -54,9 +54,9 @@ std::string lit(const std::string& s) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.uri.Uri;\n"
-           "import cajeta.net.uri.UriBuilder;\n"
-           "import cajeta.net.uri.MalformedUriException;\n"
+           "import cajeta.io.net.uri.Uri;\n"
+           "import cajeta.io.net.uri.UriBuilder;\n"
+           "import cajeta.io.net.uri.MalformedUriException;\n"
            "public final class U {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"
@@ -106,7 +106,7 @@ TEST(UriResolveTests, rfc3986ReferenceResolutionVectors) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.uri.Uri;\n"
+        "import cajeta.io.net.uri.Uri;\n"
         "public final class U {\n"
         + methods +
         "    public static int32 run() {\n"

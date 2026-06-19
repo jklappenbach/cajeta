@@ -10,7 +10,7 @@ import cajeta.error.RecoverableException;
  * stream has the SAME length as the input.
  *
  * `UnrecoverableException` is NOT caught; it propagates. See
- * `docs/stdlib/StreamParallelism.ErrorHandling.md` § 3.3.
+ * `docs/specification/lang/stream/StreamParallelism.ErrorHandling.md` § 3.3.
  *
  * The fallback is captured at stream-construction time and reused on
  * every failure — design intent is a fixed sentinel

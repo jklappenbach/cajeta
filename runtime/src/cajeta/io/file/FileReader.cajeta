@@ -4,7 +4,7 @@ import cajeta.lang.String;
 
 /**
  * Streaming byte reader. See
- * `docs/stdlib/io/file/FileReader.md`.
+ * `docs/specification/io/file/FileReader.md`.
  *
  * Returned by `File.openRead(p)` (see `File`). The caller drives
  * the byte loop: call `read(buf, max)` repeatedly until it returns
@@ -16,7 +16,7 @@ import cajeta.lang.String;
  * zero-or-positive means the underlying fd is live.
  *
  * Call `close()` when done — there is no auto-close-on-drop destructor
- * yet (planned; see `docs/stdlib/io/file/FileReader.md`).
+ * yet (planned; see `docs/specification/io/file/FileReader.md`).
  *
  * ## Usage
  *

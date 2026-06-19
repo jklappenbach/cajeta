@@ -73,5 +73,5 @@ cajeta-unit's `org.cajeta.unit.TestContext` is the cajeta-level front door:
 runtime-overridable is what lets *any* framework or test harness intercept it
 (cazo's container can use the same hook). The alternative — a parallel
 library-level service locator — wouldn't override `@Inject`-annotated code at
-all. See `docs/stdlib/AspectModel.md` (the framework moved to cazo) and the cazo
+all. See `docs/specification/lang/AspectModel.md` (the framework moved to cazo) and the cazo
 roadmap.

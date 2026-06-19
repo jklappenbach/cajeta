@@ -1,4 +1,4 @@
-// NET-9.3 — cajeta.net.http.Router tests (minimal HTTP router, path params).
+// NET-9.3 — cajeta.io.net.http.Router tests (minimal HTTP router, path params).
 //
 // The router is PURE LOGIC over the HttpRequest / HttpResponse data types
 // (NET-7.1) — no socket, no native — so it tests directly over the JIT with
@@ -37,9 +37,9 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.http.Router;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
+        "import cajeta.io.net.http.Router;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
         "public final class M {\n"
         "    // A bare request with an explicit method + target.\n"
         "    static #HttpRequest req(String method, String target) {\n"

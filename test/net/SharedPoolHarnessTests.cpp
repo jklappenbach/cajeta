@@ -2,7 +2,7 @@
 // SharedPoolHarnessTests.cpp — NET-4.3 Model-B (event-driven shared-pool).
 //
 // Pins the pure-dispatch contract of the NET-4.3 shared-pool server
-// (runtime/src/cajeta/net/SharedPoolServer.cajeta), modeled one level down
+// (runtime/src/cajeta/io/net/SharedPoolServer.cajeta), modeled one level down
 // via SharedPoolHarness.h (a std::mutex+condvar BoundedQueue standing in for
 // cajeta.concurrent.Channel<TcpStream>, std::atomic for AtomicInt32, and
 // std::thread for the worker fibers), in the deterministic, scheduler-free

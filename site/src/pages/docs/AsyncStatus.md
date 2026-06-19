@@ -7,7 +7,7 @@ description: 'Tracks the R1–R5 rollout of the async runtime described in Threa
 
 Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `ImplementationStatus.md` (which covers the MemoryModel rollout).
 
-<!-- SYNC NOTE: this is the published-site mirror of docs/stdlib/AsyncStatus.md
+<!-- SYNC NOTE: this is the published-site mirror of docs/specification/concurrent/AsyncStatus.md
      (the in-repo source of truth). Keep the body content of the two in sync when
      editing either; this copy adds the Astro frontmatter above and uses bare doc names. -->
 

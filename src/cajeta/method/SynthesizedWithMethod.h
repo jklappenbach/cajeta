@@ -1,6 +1,6 @@
 // Compiler-synthesized `withFieldName(T newValue)` per-field copy-with
 // mutators for classes annotated `@With`
-// (docs/stdlib/Annotations.md § Immutability friend).
+// (docs/specification/reflect/Annotations.md § Immutability friend).
 //
 // Naming follows Lombok's `withCamelCase` convention rather than Cajeta's
 // size()-style: the with for field `x` is `withX(T v)`. Using the field

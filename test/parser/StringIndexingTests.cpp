@@ -3,7 +3,7 @@
 //   - byteAt(int32)       — raw byte at byte index (byte-indexed)
 //   - codepointAt(int32)  — codepoint at codepoint index (O(N) walk)
 //
-// Per docs/stdlib/lang/String.md § Indexing.
+// Per docs/specification/lang/String.md § Indexing.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -31,7 +31,7 @@ constexpr const char* PRELUDE =
 // vtable byte and returns the wrong answer. The class-method form
 // lands once the intrinsic gate distinguishes class-typed receivers
 // from the primitive-alias path (blocked on Phase 2b-β's literal
-// codegen flip — see docs/stdlib/lang/String.md).
+// codegen flip — see docs/specification/lang/String.md).
 
 // byteAt returns the raw byte at the given byte index.
 TEST(StringIndexingTests, byteAtAsciiIndex) {

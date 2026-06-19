@@ -1,6 +1,6 @@
 // Tests for the DNS exception taxonomy — plan item NET-2.5
 // (`UnknownHostException` / `ResolutionFailedException` under
-// `cajeta.net.NetException`, plus the `ResolveErrors.fromResolveErrno`
+// `cajeta.io.net.NetException`, plus the `ResolveErrors.fromResolveErrno`
 // ordinal → subtype mapper).
 //
 // NET-2.2 raised the *base* NetException on a failed lookup, carrying
@@ -52,12 +52,12 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.SocketAddress;\n"
-           "import cajeta.net.NetException;\n"
-           "import cajeta.net.dns.Dns;\n"
-           "import cajeta.net.dns.ResolveErrors;\n"
-           "import cajeta.net.dns.UnknownHostException;\n"
-           "import cajeta.net.dns.ResolutionFailedException;\n"
+           "import cajeta.io.net.SocketAddress;\n"
+           "import cajeta.io.net.NetException;\n"
+           "import cajeta.io.net.dns.Dns;\n"
+           "import cajeta.io.net.dns.ResolveErrors;\n"
+           "import cajeta.io.net.dns.UnknownHostException;\n"
+           "import cajeta.io.net.dns.ResolutionFailedException;\n"
            "public final class D {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

@@ -1,7 +1,7 @@
 # Net.md
 
 The cajeta standard library ships a networking subsystem rooted at
-**`cajeta.net`**: sockets, name resolution, an async I/O reactor
+**`cajeta.io.net`**: sockets, name resolution, an async I/O reactor
 wired into the fiber scheduler, TLS, URI parsing, an HTTP/1.1
 client + server, and a WebSocket library. One import root, one
 async model (fibers, not callbacks), consistent error semantics
@@ -54,7 +54,7 @@ shape should be*.
   Windows IOCP are hidden behind one native reactor engine. The
   Cajeta surface is identical on every platform; the
   readiness-vs-completion divergence is contained in the C runtime.
-- **`cajeta.net` is a peer of `cajeta.io`, not a child.** File I/O
+- **`cajeta.io.net` is a peer of `cajeta.io`, not a child.** File I/O
   and network I/O share the fiber model but nothing else — the
   network layer has its own error hierarchy, its own event engine,
   and a far larger surface (HTTP/WS/TLS/URI). Matches Rust
@@ -74,13 +74,13 @@ shape should be*.
 
 | Package | Contents |
 |---|---|
-| `cajeta.net` | `TcpStream`, `TcpListener`, `UdpSocket`, `IpAddress`, `SocketAddress`, socket options, `NetException` + subtypes |
-| `cajeta.net.dns` | `Dns`, `AddressFamily`, DNS cache |
-| `cajeta.net.reactor` | internal — the async engine; no public surface beyond the park/wake hooks the socket types call |
-| `cajeta.net.tls` | `TlsStream` (client/server factories), `TlsListener`, `TlsConnection`, cert validation, SNI/ALPN |
-| `cajeta.net.uri` | `Uri`, percent-encoding, query params |
-| `cajeta.net.http` | `HttpRequest`/`HttpResponse`, `Headers`, parser/serializer, `HttpClient`, `HttpServer`, router |
-| `cajeta.net.ws` | `WebSocket`, frame codec, handshake |
+| `cajeta.io.net` | `TcpStream`, `TcpListener`, `UdpSocket`, `IpAddress`, `SocketAddress`, socket options, `NetException` + subtypes |
+| `cajeta.io.net.dns` | `Dns`, `AddressFamily`, DNS cache |
+| `cajeta.io.net.reactor` | internal — the async engine; no public surface beyond the park/wake hooks the socket types call |
+| `cajeta.io.net.tls` | `TlsStream` (client/server factories), `TlsListener`, `TlsConnection`, cert validation, SNI/ALPN |
+| `cajeta.io.net.uri` | `Uri`, percent-encoding, query params |
+| `cajeta.io.net.http` | `HttpRequest`/`HttpResponse`, `Headers`, parser/serializer, `HttpClient`, `HttpServer`, router |
+| `cajeta.io.net.ws` | `WebSocket`, frame codec, handshake |
 
 Supporting primitives live in their existing roots (they are
 networking *blockers* but not networking *types*):
@@ -92,7 +92,7 @@ networking *blockers* but not networking *types*):
 | `Base64` | `cajeta.codec` (new) |
 | `Cache<K,V>` | `cajeta.collection` (exists — reused for the DNS + connection caches) |
 
-`cajeta.net` is a **built-in stdlib root** alongside codec,
+`cajeta.io.net` is a **built-in stdlib root** alongside codec,
 collection, concurrent, error, gpu, hash, io, lang, math, reflect,
 time, wire — it compiles into the toolchain and is DCE-linked like the
 others. (The concurrency primitives this stack builds on — `Task`,
@@ -211,7 +211,7 @@ Phase 14 (NET-14) for the build plan.
 
 > **Cluster membership (gossip) is a separate library.** SWIM-style
 > cluster membership / failure detection built on UDP + multicast is an
-> **external sibling library**, not part of `cajeta.net` — see
+> **external sibling library**, not part of `cajeta.io.net` — see
 > [`cajeta-gossip`](https://github.com/jklappenbach/cajeta-gossip) (spec
 > and plan live in that repo). Stdlib owns the transport primitives;
 > opinionated higher-level protocols like gossip ride on top as libraries.
@@ -374,7 +374,7 @@ ownership: the Cajeta layer pumps ciphertext between the socket
 and the TLS engine). An internal `TlsBackend` interface keeps an
 mbedTLS swap mechanical.
 
-The shipped client is **`cajeta.net.tls.TlsStream`** (implements
+The shipped client is **`cajeta.io.net.tls.TlsStream`** (implements
 `ByteChannel`), wrapping an already-connected `TcpStream`. There is no
 `TlsConfig` / `TlsClient` builder — configuration is the factory's
 arguments (`TlsStream.client(...)` pins an explicit trust anchor;
@@ -401,8 +401,8 @@ tls.close();
   protocol (`http/1.1` for HTTPS; the surface is ready for `h2`).
 - **Server-side** (`TlsListener` / `TlsStream.server(...)`): load cert
   + key (PEM), terminate TLS on accepted connections, ALPN selection.
-  Built ([`tls/TlsListener.cajeta`](../runtime/src/cajeta/net/tls/TlsListener.cajeta),
-  [`tls/TlsStream.cajeta`](../runtime/src/cajeta/net/tls/TlsStream.cajeta)).
+  Built ([`tls/TlsListener.cajeta`](../runtime/src/cajeta/io/net/tls/TlsListener.cajeta),
+  [`tls/TlsStream.cajeta`](../runtime/src/cajeta/io/net/tls/TlsStream.cajeta)).
 
 The handshake parks on the reactor — a slow handshake never blocks
 a carrier.
@@ -554,7 +554,7 @@ server.serve();
 
 RFC 6455 — client + server.
 
-The shipped `WebSocket` (`cajeta.net.ws.WebSocket`) wraps an
+The shipped `WebSocket` (`cajeta.io.net.ws.WebSocket`) wraps an
 `AsyncReader` / `AsyncWriter` pair over an already-upgraded transport —
 `forClient(reader, writer)` / `forServer(reader, writer)`. The handshake
 (`WsClientHandshake` / `WsServerHandshake` + `WsUpgrade`) runs first; a
@@ -610,7 +610,7 @@ These are networking blockers that live in their existing roots:
   padding handling. **Built**
   ([`Base64.cajeta`](../runtime/src/cajeta/codec/Base64.cajeta)).
   Needed by the WS handshake + HTTP auth.
-- **Buffer pool** (`cajeta.net`, internal) — pooled byte buffers
+- **Buffer pool** (`cajeta.io.net`, internal) — pooled byte buffers
   reused across connections, a ring/rope buffer for the
   incremental parsers, and high/low-watermark backpressure
   signalling.
@@ -619,7 +619,7 @@ These are networking blockers that live in their existing roots:
 
 ## Error model
 
-`cajeta.net.NetException extends cajeta.error.RecoverableException`
+`cajeta.io.net.NetException extends cajeta.error.RecoverableException`
 — the root, mirroring `cajeta.io.file.IoException`. Callers either
 catch a specific subtype or declare it in their throws clause. A
 `cajeta_net_errno` shim maps platform error codes (POSIX `errno` /
@@ -643,7 +643,7 @@ exception subtype.
 | `MalformedMessage` / `HeadersTooLarge` / `InvalidChunkEncoding` / `UnexpectedEof` | HTTP parse failures |
 | `HandshakeRejected` / `ProtocolViolation` / `MessageTooLarge` / `ConnectionClosed` | WebSocket failures (`ConnectionClosed` carries the close code) |
 
-A companion `docs/stdlib/net/Errors.md` chart (errno →
+A companion `docs/specification/io/net/Errors.md` chart (errno →
 exception) lands with the error hierarchy, matching the
 `cajeta.io.file` `Errors.md` precedent.
 
@@ -682,7 +682,7 @@ cajeta error space.
 | Choice | Source | Why |
 |---|---|---|
 | Fibers + blocking-looking async I/O | Go goroutines, our own fiber scheduler | No callback hell; linear code; reuses the existing park/wake path |
-| `cajeta.net` peer of `cajeta.io` | Rust `std::net`, Go `net` | Network I/O is its own subsystem, not "another stream" |
+| `cajeta.io.net` peer of `cajeta.io` | Rust `std::net`, Go `net` | Network I/O is its own subsystem, not "another stream" |
 | Bundled BoringSSL over native TLS stacks | rustls/BoringSSL ecosystems | One code path; clean async memory-BIO integration; avoids SChannel's async pain |
 | Reactor abstraction over epoll/kqueue/IOCP | libuv, tokio | Hide the readiness-vs-completion split in the native engine |
 | Both accept models shipped | nginx (event pool) + Go (goroutine-per-conn) | Different workloads want different shapes; let the user pick |

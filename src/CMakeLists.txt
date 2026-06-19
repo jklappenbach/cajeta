@@ -532,7 +532,7 @@ list(APPEND GENERATED_SOURCES ${CAJETA_RT_EMBED})
 set_source_files_properties(${CAJETA_RT_SRC} PROPERTIES LANGUAGE C)
 list(APPEND GENERATED_SOURCES ${CAJETA_RT_SRC})
 
-# cajeta.net TLS engine (NET-5.1). Compiled as a STANDALONE native C object —
+# cajeta.io.net TLS engine (NET-5.1). Compiled as a STANDALONE native C object —
 # NOT #included into cajeta_runtime.c — so OpenSSL's headers stay out of the
 # embedded JIT bitcode (which is loaded into every JIT test). The `__cajeta_tls_*`
 # symbols land in libcajeta_lib, so the test binary calls them directly and the
@@ -618,31 +618,31 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
-        # ── cajeta.net (cajeta-net branch, NET-* plan) — PURE-LOGIC SLICE.
+        # ── cajeta.io.net (cajeta-net branch, NET-* plan) — PURE-LOGIC SLICE.
         # Only directories whose .cajeta sources are pure logic (no socket /
         # reactor intrinsic calls) are eagerly compiled here. The socket-backed
         # files call compiler receiver-dispatch lowering that isn't implemented
         # yet (NET-1.3 / MethodCallExpression.cpp); eager-compiling them crashes
         # the stdlib build. Those are isolated under gated subdirs and are NOT
-        # listed: cajeta/net/socket, cajeta/net/reactor, cajeta/net/dns, and the
+        # listed: cajeta/io/net/socket, cajeta/io/net/reactor, cajeta/io/net/dns, and the
         # socket-backed files of net/http + net/ws (see net/http/socket,
         # net/ws/socket). The embed glob is non-recursive, so listing net/http
         # picks up only its pure message-model files, not net/http/socket.
-        # cajeta.net core: NetException + exception hierarchy + Headers +
+        # cajeta.io.net core: NetException + exception hierarchy + Headers +
         # TcpStream/TcpListener/UdpSocket (sync surface, b1/b2) + the async
         # buffered-stream trio AsyncReader/AsyncWriter/RingBuffer (NET-3.5, b3).
-        # The async trio declares `package cajeta.net` and lives here (NOT under
+        # The async trio declares `package cajeta.io.net` and lives here (NOT under
         # net/socket): the JIT compile path enforces package==dir, so a file
-        # under net/socket would have to declare `package cajeta.net.socket`.
+        # under net/socket would have to declare `package cajeta.io.net.socket`.
         # The b5 server stack (Server/SharedPoolServer/ConnectionLimiter/...)
         # is isolated under net/socket/server (NOT listed) so it stays gated.
-        ${CAJETA_STDLIB_ROOT}/cajeta/net
-        ${CAJETA_STDLIB_ROOT}/cajeta/net/reactor  # async I/O reactor (NET-3.1 @Native bridges, b3)
-        ${CAJETA_STDLIB_ROOT}/cajeta/net/dns      # DNS (NET-2, b4) — diagnostic un-gate
-        ${CAJETA_STDLIB_ROOT}/cajeta/net/tls      # TLS engine surface (NET-5, b6)
-        ${CAJETA_STDLIB_ROOT}/cajeta/net/uri      # RFC 3986 URI parse/build (NET-6)
-        ${CAJETA_STDLIB_ROOT}/cajeta/net/http     # HTTP/1.1 message model (NET-7) — pure files; net/http/socket gated
-        ${CAJETA_STDLIB_ROOT}/cajeta/net/ws       # WebSocket frame codec + protocol (NET-10) — pure files; net/ws/socket gated
+        ${CAJETA_STDLIB_ROOT}/cajeta/io/net
+        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/reactor  # async I/O reactor (NET-3.1 @Native bridges, b3)
+        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/dns      # DNS (NET-2, b4) — diagnostic un-gate
+        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/tls      # TLS engine surface (NET-5, b6)
+        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/uri      # RFC 3986 URI parse/build (NET-6)
+        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/http     # HTTP/1.1 message model (NET-7) — pure files; net/http/socket gated
+        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/ws       # WebSocket frame codec + protocol (NET-10) — pure files; net/ws/socket gated
         ${CAJETA_STDLIB_ROOT}/cajeta/wire
         ${CAJETA_STDLIB_ROOT}/cajeta/codec        # Base64 (NET-11.3)
         ${CAJETA_STDLIB_ROOT}/cajeta/codec/json
@@ -873,7 +873,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
 # Only the test binary actually pulls the native runtime object; on
 # cajeta.exe this is a harmless unused import.
 if(WIN32)
-    # bcrypt: __cajeta_alloc/random helpers. ws2_32: the cajeta.net native
+    # bcrypt: __cajeta_alloc/random helpers. ws2_32: the cajeta.io.net native
     # runtime (cajeta_net_*.c, #included into cajeta_runtime.c) calls Winsock —
     # WSAStartup/socket/bind/getaddrinfo/select/etc. crypt32: the OS trust-store
     # shim in cajeta_tls.c (CertOpenSystemStore / CertEnumCertificatesInStore,

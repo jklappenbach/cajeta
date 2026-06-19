@@ -3,7 +3,7 @@ package cajeta.concurrent;
 import cajeta.lang.Optional;
 
 /**
- * Bounded MPMC queue — docs/stdlib/Concurrency.md § `Channel<T>`. A
+ * Bounded MPMC queue — docs/specification/concurrent/Concurrency.md § `Channel<T>`. A
  * fixed-capacity ring buffer guarded by the lock + condition-variable
  * intrinsics (the same primitives `Mutex`/`Semaphore` use). `send` blocks
  * when full; `receive` blocks when empty. `close()` is one-way and

@@ -1,4 +1,4 @@
-// NET-10.6 — cajeta.net.ws WebSocket read-side protocol engine (WsProtocol).
+// NET-10.6 — cajeta.io.net.ws WebSocket read-side protocol engine (WsProtocol).
 //
 // The WebSocket facade (WebSocket.cajeta) does live socket I/O over an
 // AsyncReader/AsyncWriter with a fiber-aware write Lock — not golden-vector
@@ -32,16 +32,16 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.ws.WsOpcode;\n"
-        "import cajeta.net.ws.WsFrame;\n"
-        "import cajeta.net.ws.WsMessage;\n"
-        "import cajeta.net.ws.WsCloseCode;\n"
-        "import cajeta.net.ws.WsCloseReason;\n"
-        "import cajeta.net.ws.WsControlFrames;\n"
-        "import cajeta.net.ws.WsReadAction;\n"
-        "import cajeta.net.ws.WsProtocol;\n"
-        "import cajeta.net.ws.ProtocolViolationException;\n"
-        "import cajeta.net.ws.MessageTooLargeException;\n"
+        "import cajeta.io.net.ws.WsOpcode;\n"
+        "import cajeta.io.net.ws.WsFrame;\n"
+        "import cajeta.io.net.ws.WsMessage;\n"
+        "import cajeta.io.net.ws.WsCloseCode;\n"
+        "import cajeta.io.net.ws.WsCloseReason;\n"
+        "import cajeta.io.net.ws.WsControlFrames;\n"
+        "import cajeta.io.net.ws.WsReadAction;\n"
+        "import cajeta.io.net.ws.WsProtocol;\n"
+        "import cajeta.io.net.ws.ProtocolViolationException;\n"
+        "import cajeta.io.net.ws.MessageTooLargeException;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

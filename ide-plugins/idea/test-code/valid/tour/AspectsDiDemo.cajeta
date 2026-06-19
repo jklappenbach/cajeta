@@ -20,7 +20,7 @@ package tour;
 //                    populates with the corresponding singleton
 //                    before any user code observes the receiver.
 //
-// See docs/stdlib/AspectModel.md for the full surface
+// See docs/specification/lang/AspectModel.md for the full surface
 // (@AfterReturning, @AfterThrowing, @Order, name-qualified
 // injection, allocation lifespans, @Profile, @PostConstruct, ...).
 

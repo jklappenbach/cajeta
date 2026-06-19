@@ -1,7 +1,7 @@
 import { getPermalink } from './utils/permalinks';
 
 // Doc links use the lowercase, path-based slugs the `docs` content collection
-// produces (e.g. docs/stdlib/MemoryModel.md -> /docs/stdlib/memorymodel).
+// produces (e.g. docs/specification/lang/MemoryModel.md -> /docs/specification/memorymodel).
 
 export const headerData = {
   links: [
@@ -21,12 +21,12 @@ export const headerData = {
       text: 'Language',
       links: [
         { text: 'Language Guide', href: getPermalink('/docs/languageguide') },
-        { text: 'Memory Model', href: getPermalink('/docs/stdlib/memorymodel') },
-        { text: 'Ownership Transfer', href: getPermalink('/docs/stdlib/ownershiptransfer') },
-        { text: 'Error Model', href: getPermalink('/docs/stdlib/errormodel') },
-        { text: 'Concurrency', href: getPermalink('/docs/stdlib/concurrency') },
-        { text: 'Views', href: getPermalink('/docs/stdlib/views') },
-        { text: 'Lambdas', href: getPermalink('/docs/stdlib/lambdas') },
+        { text: 'Memory Model', href: getPermalink('/docs/specification/memorymodel') },
+        { text: 'Ownership Transfer', href: getPermalink('/docs/specification/ownershiptransfer') },
+        { text: 'Error Model', href: getPermalink('/docs/specification/errormodel') },
+        { text: 'Concurrency', href: getPermalink('/docs/specification/concurrency') },
+        { text: 'Views', href: getPermalink('/docs/specification/views') },
+        { text: 'Lambdas', href: getPermalink('/docs/specification/lambdas') },
         { text: 'Templates & Wildcards', href: getPermalink('/docs/templatewildcard') },
         { text: 'Operator Overloading', href: getPermalink('/docs/operatoroverloading') },
       ],
@@ -34,12 +34,12 @@ export const headerData = {
     {
       text: 'Stdlib',
       links: [
-        { text: 'Lang', href: getPermalink('/docs/stdlib/lang') },
-        { text: 'Collections', href: getPermalink('/docs/stdlib/collections') },
-        { text: 'Streams', href: getPermalink('/docs/stdlib/streams') },
-        { text: 'String', href: getPermalink('/docs/stdlib/lang/string') },
-        { text: 'Annotations', href: getPermalink('/docs/stdlib/annotations') },
-        { text: 'Reflection', href: getPermalink('/docs/stdlib/reflection') },
+        { text: 'Lang', href: getPermalink('/docs/specification/lang') },
+        { text: 'Collections', href: getPermalink('/docs/specification/collections') },
+        { text: 'Streams', href: getPermalink('/docs/specification/streams') },
+        { text: 'String', href: getPermalink('/docs/specification/lang/string') },
+        { text: 'Annotations', href: getPermalink('/docs/specification/annotations') },
+        { text: 'Reflection', href: getPermalink('/docs/specification/reflection') },
         { text: 'Networking', href: getPermalink('/docs/net') },
       ],
     },
@@ -70,24 +70,24 @@ export const footerData = {
       title: 'Language',
       links: [
         { text: 'Language Guide', href: getPermalink('/docs/languageguide') },
-        { text: 'Memory Model', href: getPermalink('/docs/stdlib/memorymodel') },
-        { text: 'Ownership Transfer', href: getPermalink('/docs/stdlib/ownershiptransfer') },
-        { text: 'Error Model', href: getPermalink('/docs/stdlib/errormodel') },
-        { text: 'Concurrency', href: getPermalink('/docs/stdlib/concurrency') },
-        { text: 'Views', href: getPermalink('/docs/stdlib/views') },
-        { text: 'Lambdas', href: getPermalink('/docs/stdlib/lambdas') },
+        { text: 'Memory Model', href: getPermalink('/docs/specification/memorymodel') },
+        { text: 'Ownership Transfer', href: getPermalink('/docs/specification/ownershiptransfer') },
+        { text: 'Error Model', href: getPermalink('/docs/specification/errormodel') },
+        { text: 'Concurrency', href: getPermalink('/docs/specification/concurrency') },
+        { text: 'Views', href: getPermalink('/docs/specification/views') },
+        { text: 'Lambdas', href: getPermalink('/docs/specification/lambdas') },
       ],
     },
     {
       title: 'Standard library',
       links: [
-        { text: 'Lang', href: getPermalink('/docs/stdlib/lang') },
-        { text: 'Collections', href: getPermalink('/docs/stdlib/collections') },
-        { text: 'Streams', href: getPermalink('/docs/stdlib/streams') },
-        { text: 'Annotations', href: getPermalink('/docs/stdlib/annotations') },
-        { text: 'Reflection', href: getPermalink('/docs/stdlib/reflection') },
+        { text: 'Lang', href: getPermalink('/docs/specification/lang') },
+        { text: 'Collections', href: getPermalink('/docs/specification/collections') },
+        { text: 'Streams', href: getPermalink('/docs/specification/streams') },
+        { text: 'Annotations', href: getPermalink('/docs/specification/annotations') },
+        { text: 'Reflection', href: getPermalink('/docs/specification/reflection') },
         { text: 'Networking', href: getPermalink('/docs/net') },
-        { text: 'JSON codec', href: getPermalink('/docs/stdlib/codec/json') },
+        { text: 'JSON codec', href: getPermalink('/docs/specification/codec/json') },
       ],
     },
     {

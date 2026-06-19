@@ -7,7 +7,7 @@ and the binary / archive targets supported.
 
 This document is the contract between the cajeta toolchain and its
 users. Behaviors named here are stable across point releases; design
-docs in `docs/` (stdlib/* and stdlib/Reflection.md, etc.)
+docs in `docs/` (stdlib/* and specification/reflect/Reflection.md, etc.)
 describe what the *content* of those artifacts is — this one
 describes the *machinery*.
 

@@ -13,8 +13,8 @@ package cajeta.collection;
  * pair — required by `Collector` so `.parallel().collect(...)`
  * has a way to merge per-worker partials. For toList<T> the combiner
  * appends right onto left via `ArrayList`'s `appendAll`; identity is
- * the empty list. See docs/stdlib/MethodLevelTemplate.md for the
- * dispatch model and docs/stdlib/Streams.md § collect for the
+ * the empty list. See docs/specification/lang/MethodLevelTemplate.md for the
+ * dispatch model and docs/specification/lang/stream/Streams.md § collect for the
  * user-facing pipeline shape.
  *
  * ## Example

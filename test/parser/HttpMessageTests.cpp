@@ -1,4 +1,4 @@
-// NET-7.1 — cajeta.net.http.HttpRequest / HttpResponse tests.
+// NET-7.1 — cajeta.io.net.http.HttpRequest / HttpResponse tests.
 //
 // The HTTP message types are pure data (request-line / status-line
 // triple + a Headers map + an in-memory body handle), no I/O, so they
@@ -28,10 +28,10 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.Headers;\n"
-        "import cajeta.net.uri.Uri;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
+        "import cajeta.io.net.Headers;\n"
+        "import cajeta.io.net.uri.Uri;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

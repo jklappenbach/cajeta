@@ -1,4 +1,4 @@
-// cajeta.net TLS engine — NET-5.1.
+// cajeta.io.net TLS engine — NET-5.1.
 //
 // Memory-BIO TLS over a portable backend (OpenSSL's libssl here; the same
 // SSL_*/BIO_* surface BoringSSL forked from, so a later static-BoringSSL swap

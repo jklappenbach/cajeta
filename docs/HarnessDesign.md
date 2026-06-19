@@ -191,11 +191,11 @@ unaligned-access cost on ARM (negligible on x86).
 
 ## Sequence
 
-Following docs/stdlib/'s implementation order:
+Following docs/specification/'s implementation order:
 
 1. **Externalize stdlib + parse-once refactor.** Unblocks everything else.
 2. **`Fiber.sleep` + timer reactor + `nanoTime` intrinsic.** The
-   long-pole work. docs/stdlib/Concurrency.md grows a "Reactor" section; the carrier
+   long-pole work. docs/specification/concurrent/Concurrency.md grows a "Reactor" section; the carrier
    loop gains a `next_deadline = timer_wheel.peek(); poll_or_sleep_until(next_deadline)`
    shape. This is where most of the engineering effort lives.
 3. **Stack-size CLI flag on the cajeta binary.** Passed through to
@@ -217,7 +217,7 @@ plumbing.
 
 1. **Reactor design.** Timer wheel granularity (1 ms? 10 ms?), how the
    carrier blocks when no fiber is ready (epoll? blocking-sleep on next
-   deadline?), how spurious wakeups are handled. Goes in docs/stdlib/Concurrency.md
+   deadline?), how spurious wakeups are handled. Goes in docs/specification/concurrent/Concurrency.md
    as that work lands.
 2. **Closed-loop benchmark fallback.** The open-loop model is the right
    one but harder to interpret. Do we also run a classic closed-loop

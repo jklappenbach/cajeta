@@ -1,0 +1,70 @@
+package cajeta.io.net;
+
+import cajeta.io.net.SocketAddress;
+
+/**
+ * The outcome of a datagram receive — the byte count read **and** the
+ * peer [`SocketAddress`](SocketAddress.cajeta) the datagram came from
+ * (plan item **NET-1.5**, returned by
+ * [`UdpSocket.recvFrom`](UdpSocket.cajeta#recvFrom) /
+ * `recvFromAsync`).
+ *
+ * UDP is connectionless: every datagram can originate from a
+ * different peer, so a bare byte count (as TCP `recv` returns) is not
+ * enough — the receiver must learn *who* sent each datagram to reply.
+ * `recvFrom` therefore returns this small immutable pair rather than
+ * an `int32`, mirroring Go's `(n, addr, err)` `ReadFrom` and Rust's
+ * `(usize, SocketAddr)` `recv_from`.
+ *
+ * ## Fields
+ *
+ *   - [`count`](#count) — the number of payload bytes written into
+ *     the caller's buffer (`0` is a legal empty datagram, **not**
+ *     end-of-stream — UDP has no stream and no orderly close).
+ *   - [`from`](#from) — the sender's address, reconstructed from the
+ *     `sockaddr` the kernel reported via
+ *     [`__cajeta_net_sockaddr_unpack`](../../../native/cajeta_net_sockaddr.c).
+ *
+ * The buffer itself is the caller-supplied array passed to
+ * `recvFrom`; `RecvResult` does not own or copy it — it carries only
+ * the count and the peer, so a hot receive loop allocates just this
+ * tiny pair per datagram.
+ */
+public class RecvResult {
+    /** Payload byte count written to the caller's buffer. Field 0. */
+    public int32 count;
+
+    /** The sender's address. Field 1. */
+    public SocketAddress from;
+
+    /**
+     * Field-pinning no-arg constructor: zero bytes from the IPv4
+     * wildcard. The receive intrinsics build a populated instance;
+     * this keeps the layout constructible and free of dangling state.
+     */
+    public RecvResult() {
+        this.count = 0;
+        this.from = heap SocketAddress();
+    }
+
+    /**
+     * Build a result from a byte count and the peer address. Takes
+     * ownership of `from`.
+     */
+    public static #RecvResult of(int32 count, #SocketAddress from) {
+        RecvResult r = heap RecvResult();
+        r.count = count;
+        r.from = from;
+        return #r;
+    }
+
+    /** The payload byte count. */
+    public int32 getCount() {
+        return this.count;
+    }
+
+    /** The sender's address. */
+    public SocketAddress getFrom() {
+        return this.from;
+    }
+}

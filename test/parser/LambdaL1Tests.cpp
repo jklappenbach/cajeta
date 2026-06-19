@@ -1,6 +1,6 @@
 //
 // L1 lambda tests — the first slice of the lambdas/threading rollout
-// (see docs/stdlib/Lambdas.md).
+// (see docs/specification/lang/Lambdas.md).
 //
 // In scope for L1:
 //   - Function types `(T1, T2) -> R` as variable types

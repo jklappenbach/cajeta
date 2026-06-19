@@ -1,7 +1,7 @@
 package cajeta.concurrent;
 
 /**
- * Atomic 32-bit signed integer — docs/stdlib/Concurrency.md § Atomics.
+ * Atomic 32-bit signed integer — docs/specification/concurrent/Concurrency.md § Atomics.
  *
  * The class owns a heap-allocated `int32` cell that the compiler emits inline
  * LLVM atomic instructions against (`load atomic`, `store atomic`, `atomicrmw

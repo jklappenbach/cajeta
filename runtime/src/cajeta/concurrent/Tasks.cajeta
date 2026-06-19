@@ -27,7 +27,7 @@ import cajeta.time.Duration;
  * code should prefer the templated form.
  *
  * A lambda-taking sibling shape — `withTimeout(d, () -> compute())` per
- * docs/stdlib/Concurrency.md § withTimeout — works via spawn-of-lambda
+ * docs/specification/concurrent/Concurrency.md § withTimeout — works via spawn-of-lambda
  * (the caller wraps the call in a lambda and spawns it; the timeout
  * machinery layers on top, same as the pre-spawned-Task form).
  *

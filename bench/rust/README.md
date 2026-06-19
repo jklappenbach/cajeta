@@ -12,4 +12,4 @@ Methodology mirrors `bench/src/bench/BindBench.cajeta`: peak-of-batches MB/s, an
 a copy-only baseline is subtracted for `simd-json` (it mutates its input in
 place). The apples-to-apples row for Cajeta's skip-all `parse<BBEmpty>` is
 serde_json's `IgnoredAny` (structural skip-all). Results table:
-[`docs/stdlib/codec/Json.md`](../../docs/stdlib/codec/Json.md).
+[`docs/specification/codec/json/Json.md`](../../docs/specification/codec/json/Json.md).

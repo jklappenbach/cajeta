@@ -1,4 +1,4 @@
-// NET-10.5 — cajeta.net.ws control frames (ping / pong / close).
+// NET-10.5 — cajeta.io.net.ws control frames (ping / pong / close).
 //
 // The control-frame layer is pure protocol logic over WsFrame + int8[]
 // (no I/O): build a ping/pong/close frame, auto-pong a received ping by
@@ -30,14 +30,14 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.ws.WsOpcode;\n"
-        "import cajeta.net.ws.WsFrame;\n"
-        "import cajeta.net.ws.WsFrameDecoder;\n"
-        "import cajeta.net.ws.WsFrameEncoder;\n"
-        "import cajeta.net.ws.WsCloseCode;\n"
-        "import cajeta.net.ws.WsCloseReason;\n"
-        "import cajeta.net.ws.WsControlFrames;\n"
-        "import cajeta.net.ws.ProtocolViolationException;\n"
+        "import cajeta.io.net.ws.WsOpcode;\n"
+        "import cajeta.io.net.ws.WsFrame;\n"
+        "import cajeta.io.net.ws.WsFrameDecoder;\n"
+        "import cajeta.io.net.ws.WsFrameEncoder;\n"
+        "import cajeta.io.net.ws.WsCloseCode;\n"
+        "import cajeta.io.net.ws.WsCloseReason;\n"
+        "import cajeta.io.net.ws.WsControlFrames;\n"
+        "import cajeta.io.net.ws.ProtocolViolationException;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

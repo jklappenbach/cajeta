@@ -19,7 +19,7 @@
 //     (`__cajeta_net_is_in_progress`) so a non-blocking connect's "now in
 //     flight" is told apart from a hard connect failure.
 //
-// As with every NET-1.x item, the `cajeta.net` Cajeta surface (TcpStream /
+// As with every NET-1.x item, the `cajeta.io.net` Cajeta surface (TcpStream /
 // TcpListener / UdpSocket) is intrinsic-lowered by a compiler net-receiver
 // dispatch that is NOT yet built, so these golden vectors pin NET-1.7 at the
 // native layer — the same discipline NetSocketTests / NetListenerTests /

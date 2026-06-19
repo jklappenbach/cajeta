@@ -394,7 +394,7 @@ namespace cajeta {
     // L4-1 implements only the static-method form
     // (`Type::staticMethod`); bound instance refs, unbound instance
     // refs, and constructor refs throw NOT_IMPLEMENTED until the
-    // matching sub-slices land. See docs/stdlib/Lambdas.md § Method
+    // matching sub-slices land. See docs/specification/lang/Lambdas.md § Method
     // references.
     class MethodReferenceExpression : public Expression {
     public:
@@ -434,7 +434,7 @@ namespace cajeta {
         // the underlying method's natural ABI is borrow (non-sret, non-#),
         // setting expectedType lets resolveTypes pick the sret-form fnType
         // and generateCode synthesize the borrow→sret adapter thunk
-        // (docs/stdlib/ValueReturns.md — M5(b) adapter).
+        // (docs/specification/lang/ValueReturns.md — M5(b) adapter).
         CajetaTypePtr expectedType;
     public:
         bool getHasBorrowCaptures() const { return _hasBorrowCaptures; }
@@ -491,7 +491,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // Structured-concurrency expressions (docs/stdlib/Concurrency.md). All three wrap a
+    // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a
     // single inner expression in children[0]. In the sync-lowering MVP:
     //   - AwaitExpression: takes a Task<T> value, returns the inner T.
     //   - SpawnExpression: takes a method-call invocation, runs it immediately,
@@ -521,7 +521,7 @@ namespace cajeta {
         // Detach mode skips scope_register (so scope_exit won't wait for
         // this task) and skips drop_push (no scope owns the Task; its
         // heap allocation leaks for the process lifetime per
-        // docs/stdlib/Concurrency.md § detach semantics). Set by DetachExpression
+        // docs/specification/concurrent/Concurrency.md § detach semantics). Set by DetachExpression
         // before calling generateCode through this same trampoline path
         // — single source of truth for the spawn/detach lowering.
         bool detachMode = false;

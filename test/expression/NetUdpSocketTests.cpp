@@ -9,7 +9,7 @@
 // filters inbound datagrams to that peer and (b) accepts the address-less
 // send()/recv() forms. These golden vectors pin that behaviour at the
 // native intrinsic layer, exactly the way NetSocketTests pins the blocking
-// TCP/UDP primitives before the `cajeta.net` surface (UdpSocket) is wired
+// TCP/UDP primitives before the `cajeta.io.net` surface (UdpSocket) is wired
 // by the compiler's net-receiver lowering (shared with NET-1.3 / NET-1.4).
 //
 // The test binary links the C runtime natively and cajeta_runtime.c

@@ -1,4 +1,4 @@
-// Tests for cajeta.net.uri.Uri — plan item NET-6.1 (RFC 3986 parse).
+// Tests for cajeta.io.net.uri.Uri — plan item NET-6.1 (RFC 3986 parse).
 //
 // Scope here is the component decomposition only: scheme / userinfo /
 // host / port / path / query / fragment, IPv6 literal hosts, default
@@ -33,8 +33,8 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.uri.Uri;\n"
-           "import cajeta.net.uri.MalformedUriException;\n"
+           "import cajeta.io.net.uri.Uri;\n"
+           "import cajeta.io.net.uri.MalformedUriException;\n"
            "public final class U {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

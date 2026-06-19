@@ -2,7 +2,7 @@
 // call sites resolve to a method-templated candidate, monomorphization
 // produces a concrete Method with the placeholder T-vars substituted,
 // LLVM emits a direct call to the specialized symbol. See
-// docs/stdlib/MethodLevelTemplate.md.
+// docs/specification/lang/MethodLevelTemplate.md.
 //
 // Phase 2 scope: static method templates only. Instance method
 // templates land separately (Stream<T>.fold<R> in the stdlib

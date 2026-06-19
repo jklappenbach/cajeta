@@ -1,4 +1,4 @@
-// NET-7.5 — cajeta.net.http.HttpSerializer tests.
+// NET-7.5 — cajeta.io.net.http.HttpSerializer tests.
 //
 // The serializer is a pure codec over byte buffers (no I/O — the
 // AsyncWriter target is a later Phase-3 shim), so it tests directly
@@ -36,11 +36,11 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.Headers;\n"
-        "import cajeta.net.uri.Uri;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
-        "import cajeta.net.http.HttpSerializer;\n"
+        "import cajeta.io.net.Headers;\n"
+        "import cajeta.io.net.uri.Uri;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
+        "import cajeta.io.net.http.HttpSerializer;\n"
         "public final class M {\n"
         "    // Compare produced[0..n) against expect's bytes; return 1 on\n"
         "    // an exact match (same length + same bytes), else the negated\n"

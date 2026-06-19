@@ -15,7 +15,7 @@ import cajeta.codec.json.Json;
 // public fields is JSON-compatible by construction. Field-level
 // annotations (`@JsonProperty("wire_name")`, `@JsonIgnore`,
 // `@JsonRequired`, `@JsonInclude(NON_NULL)`, ...) steer the mapping
-// when defaults aren't enough. See docs/stdlib/codec/Json.md.
+// when defaults aren't enough. See docs/specification/codec/json/Json.md.
 //
 // Two other tiers exist for adjacent use cases — Tier 2 is the
 // `JsonReader` / `JsonWriter` pull tokenizer (streaming, no

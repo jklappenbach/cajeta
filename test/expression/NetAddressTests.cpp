@@ -1,4 +1,4 @@
-// Tests for cajeta.net.IpAddress + cajeta.net.SocketAddress —
+// Tests for cajeta.io.net.IpAddress + cajeta.io.net.SocketAddress —
 // plan item NET-1.2 (address types: parse + canonical format).
 //
 // Scope: IPv4 dotted-quad + IPv6 literal parsing (incl. "::" zero-run
@@ -34,10 +34,10 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.IpAddress;\n"
-           "import cajeta.net.SocketAddress;\n"
-           "import cajeta.net.AddressFamily;\n"
-           "import cajeta.net.MalformedAddressException;\n"
+           "import cajeta.io.net.IpAddress;\n"
+           "import cajeta.io.net.SocketAddress;\n"
+           "import cajeta.io.net.AddressFamily;\n"
+           "import cajeta.io.net.MalformedAddressException;\n"
            "public final class A {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

@@ -48,7 +48,7 @@ namespace cajeta {
         // moved out. Read paths through DotExpression check this set with
         // prefix semantics — see DotExpression.cpp.
         set<string> movedPaths;
-        // P3 — definite-assignment analysis (docs/stdlib/UnifiedClasses.md § Definite
+        // P3 — definite-assignment analysis (docs/specification/lang/UnifiedClasses.md § Definite
         // assignment). Names that were declared in this scope without an
         // initializer and have not yet been assigned. Read paths check this
         // set and reject. Variables with initializers, parameters, and

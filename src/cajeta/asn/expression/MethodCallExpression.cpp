@@ -232,7 +232,7 @@ namespace cajeta {
     //
     // The optional `<typeList>` between name and '(' is Form C explicit
     // call-site type args for method-templated callees (see
-    // docs/stdlib/MethodLevelTemplate.md). Inference is the
+    // docs/specification/lang/MethodLevelTemplate.md). Inference is the
     // common case; explicit args are required only when inference
     // can't bind every type parameter (e.g. T appears only in the
     // return type).
@@ -923,7 +923,7 @@ namespace cajeta {
         // both fields, and indirect-dispatch with captures prepended to the
         // user args. Matches when the call is bare (no receiver) AND a
         // scope lookup of methodCallName yields a function-typed field.
-        // See docs/stdlib/Lambdas.md.
+        // See docs/specification/lang/Lambdas.md.
         if (children.empty() && !module->getScopeStack().isEmpty()) {
             auto scope = module->getScopeStack().peek();
             FieldPtr field = scope ? scope->getField(methodCallName) : nullptr;
@@ -1119,7 +1119,7 @@ namespace cajeta {
             }
         }
 
-        // ----- Bare class-construction syntax rejected (docs/stdlib/UnifiedClasses.md P1b) -----
+        // ----- Bare class-construction syntax rejected (docs/specification/lang/UnifiedClasses.md P1b) -----
         // `MyClass(args)` without an explicit `heap` / `stack` / `new`
         // prefix is ambiguous (parses as a methodCall) and now rejected in
         // v2. Catches the case where the "method name" resolves to a class
@@ -1863,9 +1863,9 @@ namespace cajeta {
             bool wantUdp      = (netName == "UdpSocket");
             if (wantStream || wantListener || wantUdp) {
                 auto& cmapN = CajetaType::getCanonicalMap();
-                std::string canonKey = wantStream ? "cajeta.net.TcpStream"
-                                     : wantListener ? "cajeta.net.TcpListener"
-                                                    : "cajeta.net.UdpSocket";
+                std::string canonKey = wantStream ? "cajeta.io.net.TcpStream"
+                                     : wantListener ? "cajeta.io.net.TcpListener"
+                                                    : "cajeta.io.net.UdpSocket";
                 auto itN = cmapN.find(netName);
                 if (itN == cmapN.end()) itN = cmapN.find(canonKey);
                 CajetaClassPtr netCls;
@@ -1914,11 +1914,11 @@ namespace cajeta {
                     CajetaClassPtr saCls;
                     CajetaClassPtr ipCls;
                     {
-                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        auto sIt = cmapN.find("cajeta.io.net.SocketAddress");
                         if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
                         if (sIt != cmapN.end())
                             saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
-                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        auto iIt = cmapN.find("cajeta.io.net.IpAddress");
                         if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
                         if (iIt != cmapN.end())
                             ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
@@ -2356,7 +2356,7 @@ namespace cajeta {
                 // `acquire()` that returns a RAII guard) will wrap them
                 // once user-defined-drop-on-class machinery lands. For
                 // now Cajeta source can use them directly. See
-                // docs/stdlib/Concurrency.md § Synchronization primitives.
+                // docs/specification/concurrent/Concurrency.md § Synchronization primitives.
                 if (ns == "Cajeta" && methodCallName == "lockNew" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_new");
                     return builder->CreateCall(fn, {});
@@ -2381,7 +2381,7 @@ namespace cajeta {
                     llvm::Value* h = loadValue(0);
                     return builder->CreateCall(fn, {h});
                 }
-                // FiberLocal intrinsics (docs/stdlib/FiberLocal.md). Ambient
+                // FiberLocal intrinsics (docs/specification/concurrent/FiberLocal.md). Ambient
                 // per-request state, fiber-keyed and scope-restored. The key is a
                 // FiberLocal<T> object identity; values are reference-typed (a
                 // ptr), so the surface restricts T to a reference type in v1. All
@@ -2479,7 +2479,7 @@ namespace cajeta {
                 // condvarWait(cv, lock) atomically releases `lock`, parks the
                 // fiber (or cond_waits on the main thread), and reacquires
                 // `lock` on wake. condvarNotifyAll wakes every waiter (which
-                // re-checks its own predicate). See docs/stdlib/Concurrency.md.
+                // re-checks its own predicate). See docs/specification/concurrent/Concurrency.md.
                 if (ns == "Cajeta" && methodCallName == "condvarNew" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_new");
                     return builder->CreateCall(fn, {});
@@ -2533,7 +2533,7 @@ namespace cajeta {
                 // defeat atomicity's whole purpose and block the optimizer
                 // from reasoning about ordering. All seq_cst for v1;
                 // memory-order parameterization is R8 Slice 1b.
-                // See docs/stdlib/Concurrency.md and the AtomicInt32 /
+                // See docs/specification/concurrent/Concurrency.md and the AtomicInt32 /
                 // AtomicInt64 wrapper classes in cajeta.concurrent.
                 if (ns == "Cajeta" && methodCallName == "atomicI32New" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_new");
@@ -4758,7 +4758,7 @@ namespace cajeta {
         }
         bool isSuperCall = (superLhs != nullptr);
 
-        // MultiClassing Phase 3 v3 (docs/stdlib/MultiClassing.md
+        // MultiClassing Phase 3 v3 (docs/specification/lang/MultiClassing.md
         // § P-4): inherited-method re-adjustment for diamond. When the
         // user writes `super<C>.method()` and `method` is INHERITED from
         // an ancestor A (not declared on C itself), the dispatch lands
@@ -5017,7 +5017,7 @@ namespace cajeta {
         //
         // The cajeta-side bodies are stubs; we lower calls to direct
         // runtime helpers via the receiver's `fd` field. Matches the
-        // spec in docs/stdlib/io/file/{FileReader,FileWriter,
+        // spec in docs/specification/io/file/{FileReader,FileWriter,
         // File}.md.
         if (thisValue && targetClass && targetClass->getQName()) {
             const std::string canonical = targetClass->getQName()->toCanonical();
@@ -5517,10 +5517,10 @@ namespace cajeta {
         // 8-byte count header then add the caller offset (`&buf[8 + off]`).
         if (thisValue && targetClass && targetClass->getQName()) {
             const std::string netCanonical = targetClass->getQName()->toCanonical();
-            bool isTcpStream   = netCanonical == "cajeta.net.TcpStream";
-            bool isTcpListener = netCanonical == "cajeta.net.TcpListener";
+            bool isTcpStream   = netCanonical == "cajeta.io.net.TcpStream";
+            bool isTcpListener = netCanonical == "cajeta.io.net.TcpListener";
             // ----- UdpSocket / socket-option intrinsic (b2) -----
-            bool isUdpSocket   = netCanonical == "cajeta.net.UdpSocket";
+            bool isUdpSocket   = netCanonical == "cajeta.io.net.UdpSocket";
             if (isTcpStream || isTcpListener || isUdpSocket) {
                 auto* netStructTy =
                     llvm::cast<llvm::StructType>(targetClass->getLlvmType());
@@ -5879,11 +5879,11 @@ namespace cajeta {
                             llvm::Value*& addrlenOut) -> bool {
                         auto& cmapN = CajetaType::getCanonicalMap();
                         CajetaClassPtr saCls, ipCls;
-                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        auto sIt = cmapN.find("cajeta.io.net.SocketAddress");
                         if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
                         if (sIt != cmapN.end())
                             saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
-                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        auto iIt = cmapN.find("cajeta.io.net.IpAddress");
                         if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
                         if (iIt != cmapN.end())
                             ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
@@ -5935,11 +5935,11 @@ namespace cajeta {
                             llvm::Value* familyV) -> llvm::Value* {
                         auto& cmapN = CajetaType::getCanonicalMap();
                         CajetaClassPtr saCls, ipCls;
-                        auto sIt = cmapN.find("cajeta.net.SocketAddress");
+                        auto sIt = cmapN.find("cajeta.io.net.SocketAddress");
                         if (sIt == cmapN.end()) sIt = cmapN.find("SocketAddress");
                         if (sIt != cmapN.end())
                             saCls = std::dynamic_pointer_cast<CajetaClass>(sIt->second);
-                        auto iIt = cmapN.find("cajeta.net.IpAddress");
+                        auto iIt = cmapN.find("cajeta.io.net.IpAddress");
                         if (iIt == cmapN.end()) iIt = cmapN.find("IpAddress");
                         if (iIt != cmapN.end())
                             ipCls = std::dynamic_pointer_cast<CajetaClass>(iIt->second);
@@ -6027,7 +6027,7 @@ namespace cajeta {
                         llvm::Function* unpackFn = module->getRuntimeFunction(
                             "__cajeta_net_sockaddr_unpack");
                         auto& cmapN = CajetaType::getCanonicalMap();
-                        auto rrIt = cmapN.find("cajeta.net.RecvResult");
+                        auto rrIt = cmapN.find("cajeta.io.net.RecvResult");
                         if (rrIt == cmapN.end()) rrIt = cmapN.find("RecvResult");
                         CajetaClassPtr rrCls = rrIt != cmapN.end()
                             ? std::dynamic_pointer_cast<CajetaClass>(rrIt->second)
@@ -6201,7 +6201,7 @@ namespace cajeta {
                                 buildSockAddr(octets, portV, famClamped);
                             if (sa) {
                                 auto& cmapN2 = CajetaType::getCanonicalMap();
-                                auto sIt = cmapN2.find("cajeta.net.SocketAddress");
+                                auto sIt = cmapN2.find("cajeta.io.net.SocketAddress");
                                 if (sIt == cmapN2.end())
                                     sIt = cmapN2.find("SocketAddress");
                                 if (sIt != cmapN2.end())
@@ -6363,7 +6363,7 @@ namespace cajeta {
             // IdentifierExpression of a class-typed local whose Field
             // carries an active drop entry. Primitives, fresh ctors,
             // null literals, and locals without drop entries naturally
-            // pass through. See docs/stdlib/OwnershipTransfer.md.
+            // pass through. See docs/specification/lang/OwnershipTransfer.md.
             bool callFloatingX = true;
             for (auto& e : entries) {
                 if (e.label.empty()) { callFloatingX = false; break; }
@@ -6402,7 +6402,7 @@ namespace cajeta {
                             "write `#" + idExpr->getTextValue() + "` at the call site "
                             "to surrender ownership of the source local, or pass a "
                             "fresh `heap T(...)` / `stack T(...)` construction. "
-                            "See docs/stdlib/OwnershipTransfer.md.",
+                            "See docs/specification/lang/OwnershipTransfer.md.",
                         "CAJETA_ERROR_TRANSFER_REQUIRED");
                 }
             }

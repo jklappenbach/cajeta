@@ -1,0 +1,106 @@
+package cajeta.io.net;
+
+import cajeta.lang.String;
+
+/**
+ * The `cajeta_net_errno` → [`NetException`](NetException.cajeta)
+ * subtype mapping table (plan item **NET-1.8**).
+ *
+ * ## Where this sits in the stack
+ *
+ * The NET-1.1 native shim
+ * ([`runtime/native/cajeta_net_socket.c`](../../../../native/cajeta_net_socket.c))
+ * already collapses the platform's raw error code (POSIX `errno` /
+ * Winsock `WSAGetLastError`) into a **stable cross-platform ordinal**
+ * (`enum cajeta_net_err`) returned by `__cajeta_net_last_error()`.
+ * That is the *first* half of the funnel — one ordinal on all three
+ * OSes. This class is the *second* half: it turns that ordinal into
+ * the typed `NetException` subtype a caller catches.
+ *
+ * Splitting the funnel this way keeps the platform `#if`s entirely in
+ * C (where `EAGAIN`/`WSAEWOULDBLOCK` etc. are defined) and keeps the
+ * exception taxonomy entirely in cajeta (where the class hierarchy
+ * lives) — neither side needs to know the other's spelling, only the
+ * shared ordinal contract.
+ *
+ * ## Usage (from the socket layer, NET-1.3+)
+ *
+ * After an intrinsic returns its failure sentinel, the socket wrapper
+ * reads the normalized ordinal and raises the mapped subtype, citing
+ * the operation + address it built into `detail`:
+ *
+ * ```cajeta
+ * int32 r = Net.connect(this.fd, packed, len);
+ * if (r < 0) {
+ *     throw NetErrors.fromErrno(Net.lastError(), "connect to " + peer);
+ * }
+ * ```
+ *
+ * `WouldBlock` (ordinal 1) is a special case: on the reactor /
+ * non-blocking hot path it is surfaced as a *value*, never thrown
+ * (see [`WouldBlockException`](WouldBlockException.cajeta) and
+ * [`docs/Net.md`](../../../../../docs/Net.md) §Sockets).
+ * `fromErrno` still maps it to its subtype for the rare explicit
+ * throwing path, so the table is total.
+ *
+ * The full chart lives in
+ * [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
+ */
+public class NetErrors {
+    /**
+     * Map a normalized `cajeta_net_err` ordinal (the value
+     * `__cajeta_net_last_error()` returns, i.e. `NetException.KIND_*`)
+     * to the matching [`NetException`](NetException.cajeta) subtype,
+     * carrying `detail` as the message.
+     *
+     * `OK` (0) is **not** a failure; passing it is a caller bug, so it
+     * maps to a generic `NetException` rather than silently returning
+     * `null` (the caller should never have asked for an exception on
+     * success — surfacing it loudly beats a null-deref later).
+     *
+     * Unrecognized / unmapped ordinals (`OTHER`, `INTERRUPTED`,
+     * `INVALID`, `ACCESS`, `IN_PROGRESS`) fall through to the base
+     * `NetException`, preserving the `kind` ordinal so a caller can
+     * still discriminate on `e.kind`.
+     *
+     * Returns a freshly heap-allocated, unthrown exception object —
+     * the caller decides whether to `throw` it (the throwing socket
+     * path) or inspect it (rarely). Total over the ordinal space.
+     */
+    public static #NetException fromErrno(int32 netErrno, String detail) {
+        if (netErrno == 2) {            // KIND_CONNECTION_REFUSED
+            return heap ConnectionRefusedException(detail);
+        }
+        if (netErrno == 3) {            // KIND_CONNECTION_RESET
+            return heap ConnectionResetException(detail);
+        }
+        if (netErrno == 4) {            // KIND_CONNECTION_ABORTED
+            return heap ConnectionAbortedException(detail);
+        }
+        if (netErrno == 5) {            // KIND_ADDRESS_IN_USE
+            return heap AddressInUseException(detail);
+        }
+        if (netErrno == 6) {            // KIND_ADDRESS_NOT_AVAIL
+            return heap AddressNotAvailableException(detail);
+        }
+        if (netErrno == 7) {            // KIND_HOST_UNREACHABLE
+            return heap HostUnreachableException(detail);
+        }
+        if (netErrno == 8) {            // KIND_NETWORK_UNREACHABLE
+            return heap NetworkUnreachableException(detail);
+        }
+        if (netErrno == 9) {            // KIND_BROKEN_PIPE
+            return heap BrokenPipeException(detail);
+        }
+        if (netErrno == 10) {           // KIND_TIMED_OUT
+            return heap TimedOutException(detail);
+        }
+        if (netErrno == 1) {            // KIND_WOULD_BLOCK
+            return heap WouldBlockException(detail);
+        }
+        // OK (0) and every unmapped ordinal (INTERRUPTED 11, INVALID
+        // 12, ACCESS 13, IN_PROGRESS 14, OTHER 99) → base NetException,
+        // which records the ordinal in `kind` for later discrimination.
+        return heap NetException(detail, netErrno);
+    }
+}

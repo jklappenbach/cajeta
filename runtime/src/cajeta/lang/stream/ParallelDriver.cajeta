@@ -40,7 +40,7 @@ import cajeta.concurrent.AtomicInt32;
  * single-element results as `Optional`, and coordinates short-circuit
  * workers through a shared `AtomicInt32` cancel flag.
  *
- * See docs/stdlib/StreamParallelism.md.
+ * See docs/specification/lang/stream/StreamParallelism.md.
  */
 public class ParallelDriver {
     /**

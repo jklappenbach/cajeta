@@ -19,7 +19,7 @@ namespace cajeta {
         STATIC = 0x10,
         FINAL = 0x20,
         SYNCHRONIZED = 0x40,
-        // docs/stdlib/Concurrency.md — method whose body is a suspendable state machine.
+        // docs/specification/concurrent/Concurrency.md — method whose body is a suspendable state machine.
         // In the sync-lowering MVP, only the modifier bit is recorded; codegen
         // ignores it. The real scheduler / state-machine lowering keys off this
         // bit to pick the async ABI.

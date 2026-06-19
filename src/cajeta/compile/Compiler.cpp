@@ -1700,7 +1700,7 @@ namespace cajeta {
             opt.argv.push_back("-static");    // libgcc / libstdc++ / winpthread
             opt.argv.push_back("-lssl");      // TLS engine (__cajeta_tls_*, cajeta_tls.o)
             opt.argv.push_back("-lcrypto");
-            opt.argv.push_back("-lws2_32");   // Winsock (cajeta.net natives in the bitcode)
+            opt.argv.push_back("-lws2_32");   // Winsock (cajeta.io.net natives in the bitcode)
             opt.argv.push_back("-lcrypt32");  // OS trust-store shim (cajeta_tls.c)
             opt.argv.push_back("-lbcrypt");   // BCryptGenRandom (runtime RNG)
             opt.argv.push_back("-ladvapi32"); // OpenSSL CryptoAPI dependencies

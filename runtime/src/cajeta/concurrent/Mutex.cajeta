@@ -1,7 +1,7 @@
 package cajeta.concurrent;
 
 /**
- * Fused mutual-exclusion + protected data — docs/stdlib/Concurrency.md
+ * Fused mutual-exclusion + protected data — docs/specification/concurrent/Concurrency.md
  * § `Mutex<T>`. The mutex is a pure exclusion marker; it *owns* a single
  * piece of data `T`, and the only way to touch that data is to hold the
  * lock. There is no `value` handle that escapes the locked region —
@@ -14,7 +14,7 @@ package cajeta.concurrent;
  * unwinds — see below). The protected value is handed to the closure and
  * the closure's result is stored back.
  *
- * Async behaviour (docs/stdlib/AsyncStatus.md): acquiring a held lock from
+ * Async behaviour (docs/specification/concurrent/AsyncStatus.md): acquiring a held lock from
  * a fiber parks the fiber and yields to its carrier rather than blocking the
  * OS thread. The scheduler is a multi-carrier work-stealing pool by default
  * (`CAJETA_CARRIERS`, default min(nproc, 4)); a fiber is pinned to its home

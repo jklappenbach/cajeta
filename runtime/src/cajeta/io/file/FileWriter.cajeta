@@ -4,7 +4,7 @@ import cajeta.lang.String;
 
 /**
  * Streaming byte writer. See
- * `docs/stdlib/io/file/FileWriter.md`.
+ * `docs/specification/io/file/FileWriter.md`.
  *
  * Returned by `File``.openWrite(p, mode)`. The caller hands in
  * `(data, len)` per call; the native write loops past OS-level short
@@ -13,7 +13,7 @@ import cajeta.lang.String;
  * with `writeString`, raw bytes with `write`.
  *
  * Call `close()` when done — there is no auto-close-on-drop destructor
- * yet (planned; see `docs/stdlib/io/file/FileWriter.md`).
+ * yet (planned; see `docs/specification/io/file/FileWriter.md`).
  *
  * ```cajeta
  * stack w = File.openWrite(path, mode);

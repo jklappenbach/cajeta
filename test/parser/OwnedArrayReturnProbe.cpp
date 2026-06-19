@@ -59,7 +59,7 @@ TEST(OwnedArrayReturnProbe, multiParamOwnedClassArrayReturn) {
 TEST(OwnedArrayReturnProbe, multiParamOwnedSocketAddressArrayReturn) {
     auto src =
         "package test;\n"
-        "import cajeta.net.SocketAddress;\n"
+        "import cajeta.io.net.SocketAddress;\n"
         "public final class T {\n"
         "    public static #SocketAddress[] make(String host, int32 port) {\n"
         "        SocketAddress[] r = heap SocketAddress[1];\n"

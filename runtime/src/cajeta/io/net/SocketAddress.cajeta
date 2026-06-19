@@ -1,0 +1,312 @@
+package cajeta.io.net;
+
+import cajeta.lang.String;
+import cajeta.io.net.AddressFamily;
+import cajeta.io.net.IpAddress;
+import cajeta.io.net.MalformedAddressException;
+
+/**
+ * An immutable **socket address** — an [`IpAddress`](IpAddress.cajeta)
+ * paired with a TCP/UDP **port** (plan item **NET-1.2**).
+ *
+ * ## Text form
+ *
+ * [`parse`](#parse) accepts the two canonical `host:port` spellings:
+ *
+ *   - **IPv4** — `"127.0.0.1:8080"` (a single colon separates the
+ *     dotted-quad host from the port).
+ *   - **IPv6** — `"[::1]:8080"` (the IPv6 literal is **bracketed** so
+ *     its internal colons are unambiguous; the port follows the `]`).
+ *
+ * [`toString`](#toString) reproduces exactly that form — an IPv4
+ * address prints `ip:port`, an IPv6 address prints `[ip]:port` — so
+ * `SocketAddress.parse(s).toString()` round-trips a canonical input
+ * **byte-identically** (the property
+ * `NetAddressTests.v4AndV6ParseRoundTrip` pins for both families).
+ *
+ * The port is a `0..65535` value held in an `int32` (16-bit on the
+ * wire; the wider field avoids sign games at the boundary). A bare
+ * host with no `:port` is **not** accepted by `parse` — use
+ * [`of`](#of) to build one programmatically.
+ */
+public class SocketAddress {
+    /** The IP endpoint. Field index 0 (stable). */
+    public IpAddress ip;
+
+    /** TCP/UDP port, `0..65535`. */
+    public int32 port;
+
+    /**
+     * Field-pinning no-arg constructor: the IPv4 wildcard `0.0.0.0:0`.
+     * `parse` / `of` are the real entry points; this keeps the layout
+     * constructible and free of dangling state.
+     */
+    public SocketAddress() {
+        this.ip = heap IpAddress();
+        this.port = 0;
+    }
+
+    /**
+     * Build a `SocketAddress` from an existing `IpAddress` and a port.
+     * Takes ownership of `addr`. A port outside `0..65535` raises a
+     * citing exception.
+     */
+    public static #SocketAddress of(#IpAddress addr, int32 port) {
+        if (port < 0 || port > 65535) {
+            throw heap MalformedAddressException(
+                "port out of range (0..65535)", (int64) -1);
+        }
+        SocketAddress s = heap SocketAddress();
+        s.ip = addr;
+        s.port = port;
+        return #s;
+    }
+
+    // -- accessors ----------------------------------------------------------
+
+    /** The IP endpoint. */
+    public IpAddress getIp() {
+        return this.ip;
+    }
+
+    /** The port (`0..65535`). */
+    public int32 getPort() {
+        return this.port;
+    }
+
+    /** The address family of the contained IP (`V4` or `V6`). */
+    public AddressFamily getFamily() {
+        return this.ip.getFamily();
+    }
+
+    // -- equality -----------------------------------------------------------
+
+    /** Two socket addresses are equal iff their IPs and ports match. */
+    public boolean equals(SocketAddress other) {
+        if (other == null) {
+            return false;
+        }
+        if (this.port != other.port) {
+            return false;
+        }
+        return this.ip.equals(other.ip);
+    }
+
+    // -- helpers ------------------------------------------------------------
+
+    /** Read byte `i` of `b` as an unsigned 0..255 int32. */
+    private static int32 byteAt(int8[] b, int32 i) {
+        return ((int32) b[i]) & 0xff;
+    }
+
+    /** Slice `[begin, end)` of `b` into a fresh owned String. */
+    private static #String slice(int8[] b, int32 begin, int32 end) {
+        int32 len = end - begin;
+        if (len < 0) {
+            len = 0;
+        }
+        int8[] out = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            out[i] = b[begin + i];
+            i = i + 1;
+        }
+        return heap String(#out, len);
+    }
+
+    /**
+     * Parse the port digits in `b[start, end)` (must be 1..5 decimal
+     * digits, value 0..65535). Throws a citing exception on a missing,
+     * non-numeric, or out-of-range port.
+     */
+    private static int32 parsePort(int8[] b, int32 start, int32 end) {
+        if (start >= end) {
+            throw heap MalformedAddressException(
+                "missing port after ':'", (int64) start);
+        }
+        int32 value = 0;
+        int32 i = start;
+        while (i < end) {
+            int32 c = SocketAddress.byteAt(b, i);
+            if (c < 48 || c > 57) {
+                throw heap MalformedAddressException(
+                    "non-numeric port", (int64) i);
+            }
+            value = value * 10 + (c - 48);
+            if (value > 65535) {
+                throw heap MalformedAddressException(
+                    "port out of range (> 65535)", (int64) start);
+            }
+            i = i + 1;
+        }
+        return value;
+    }
+
+    // -- parse --------------------------------------------------------------
+
+    /**
+     * Parse `input` into a `SocketAddress`. Accepts `host:port`
+     * (IPv4) and `[v6]:port` (bracketed IPv6). Throws a citing
+     * [`MalformedAddressException`](MalformedAddressException.cajeta)
+     * on bad input — an unbracketed IPv6 host (ambiguous colons), a
+     * missing/extra bracket, a missing port, or a host the
+     * [`IpAddress`](IpAddress.cajeta) parser rejects.
+     */
+    public static #SocketAddress parse(String input) {
+        if (input == null) {
+            throw heap MalformedAddressException(
+                "null socket address input", (int64) -1);
+        }
+        int32 n = input.byteLength;
+        if (n == 0) {
+            throw heap MalformedAddressException(
+                "empty socket address", (int64) -1);
+        }
+        int8[] b = input.bytes;
+
+        if (SocketAddress.byteAt(b, 0) == 91) {     // '[' → bracketed IPv6
+            // Find the closing ']'.
+            int32 close = 1;
+            boolean found = false;
+            while (close < n && !found) {
+                if (SocketAddress.byteAt(b, close) == 93) {   // ']'
+                    found = true;
+                } else {
+                    close = close + 1;
+                }
+            }
+            if (!found) {
+                throw heap MalformedAddressException(
+                    "unterminated IPv6 literal '[' (no closing ']')",
+                    (int64) 0);
+            }
+            // After ']' must come ":port".
+            int32 afterBracket = close + 1;
+            if (afterBracket >= n
+                    || SocketAddress.byteAt(b, afterBracket) != 58) {  // ':'
+                throw heap MalformedAddressException(
+                    "expected ':port' after IPv6 ']'", (int64) afterBracket);
+            }
+            String hostStr = SocketAddress.slice(b, 1, close);
+            IpAddress addr = IpAddress.parse(hostStr);
+            if (!addr.isV6()) {
+                throw heap MalformedAddressException(
+                    "bracketed host is not an IPv6 literal", (int64) 1);
+            }
+            int32 port = SocketAddress.parsePort(b, afterBracket + 1, n);
+
+            SocketAddress s = heap SocketAddress();
+            s.ip = #addr;
+            s.port = port;
+            return #s;
+        }
+
+        // Unbracketed: IPv4 "host:port". The single ':' separates host
+        // from port. An unbracketed host containing more than one ':' is
+        // an IPv6 literal that must be bracketed — reject it.
+        int32 colonIdx = -1;
+        int32 colonCount = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (SocketAddress.byteAt(b, i) == 58) {     // ':'
+                colonIdx = i;
+                colonCount = colonCount + 1;
+            }
+            i = i + 1;
+        }
+        if (colonCount == 0) {
+            throw heap MalformedAddressException(
+                "socket address needs a ':port' suffix", (int64) n);
+        }
+        if (colonCount > 1) {
+            throw heap MalformedAddressException(
+                "IPv6 socket address must bracket the host: [v6]:port",
+                (int64) 0);
+        }
+        String hostStr2 = SocketAddress.slice(b, 0, colonIdx);
+        IpAddress addr2 = IpAddress.parse(hostStr2);
+        if (!addr2.isV4()) {
+            throw heap MalformedAddressException(
+                "unbracketed host must be IPv4", (int64) 0);
+        }
+        int32 port2 = SocketAddress.parsePort(b, colonIdx + 1, n);
+
+        SocketAddress s2 = heap SocketAddress();
+        s2.ip = #addr2;
+        s2.port = port2;
+        return #s2;
+    }
+
+    // -- format -------------------------------------------------------------
+
+    /** Append the decimal form of a `0..65535` port to `out` at `pos`,
+     *  returning the new position. */
+    private static int32 writePort(int8[] out, int32 pos, int32 value) {
+        if (value == 0) {
+            out[pos] = (int8) 48;                   // '0'
+            return pos + 1;
+        }
+        // Collect digits least-significant first, then reverse.
+        int8[] tmp = heap int8[5];
+        int32 count = 0;
+        int32 v = value;
+        while (v > 0) {
+            tmp[count] = (int8) (48 + (v % 10));
+            count = count + 1;
+            v = v / 10;
+        }
+        int32 j = count - 1;
+        while (j >= 0) {
+            out[pos] = tmp[j];
+            pos = pos + 1;
+            j = j - 1;
+        }
+        return pos;
+    }
+
+    /**
+     * Canonical text form: `ip:port` for IPv4, `[ip]:port` for IPv6 —
+     * the exact inverse of [`parse`](#parse).
+     */
+    public #String toString() {
+        String ipStr = this.ip.toString();
+        int32 ipLen = ipStr.byteLength;
+        int8[] ipBytes = ipStr.bytes;
+        boolean v6 = this.ip.isV6();
+
+        // Size the output: ip text, optional 2 brackets, ':' + up to 5
+        // port digits.
+        int32 cap = ipLen + 1 + 5;
+        if (v6) {
+            cap = cap + 2;
+        }
+        int8[] out = heap int8[cap];
+        int32 pos = 0;
+
+        if (v6) {
+            out[pos] = (int8) 91;                   // '['
+            pos = pos + 1;
+        }
+        int32 i = 0;
+        while (i < ipLen) {
+            out[pos] = ipBytes[i];
+            pos = pos + 1;
+            i = i + 1;
+        }
+        if (v6) {
+            out[pos] = (int8) 93;                   // ']'
+            pos = pos + 1;
+        }
+        out[pos] = (int8) 58;                       // ':'
+        pos = pos + 1;
+        pos = SocketAddress.writePort(out, pos, this.port);
+
+        int8[] exact = heap int8[pos];
+        i = 0;
+        while (i < pos) {
+            exact[i] = out[i];
+            i = i + 1;
+        }
+        return heap String(#exact, pos);
+    }
+}

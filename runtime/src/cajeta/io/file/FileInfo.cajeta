@@ -28,7 +28,7 @@ package cajeta.io.file;
  *
  * `Instant`-typed timestamps (`created`, `modified`, `accessed`)
  * are commented out until the `Instant` class lands
- * (see docs/stdlib/Time.md). For now we expose
+ * (see docs/specification/time/Time.md). For now we expose
  * `createdNanos` / `modifiedNanos` / `accessedNanos` as `int64`
  * Unix nanoseconds — flippable to `Instant` accessors without
  * breaking callers.

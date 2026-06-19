@@ -1,0 +1,274 @@
+package cajeta.io.net.tls;
+
+/**
+ * A single TLS connection's engine state — the Cajeta surface over the
+ * [`__cajeta_tls_*`](../../../../native/cajeta_tls.c) memory-BIO intrinsics
+ * (**NET-5.1/5.2**). It owns **no socket**: a connection is the TLS engine
+ * wired to two in-memory byte queues, and all I/O is the caller shuttling
+ * ciphertext between this object and the network.
+ *
+ * ### The pump
+ *
+ * Driving a handshake (and, after it, reads/writes) is the same loop both
+ * peers run:
+ *
+ * 1. call [`handshakeStep`](#handshakeStep) (or [`write`](#write) /
+ *    [`read`](#read));
+ * 2. [`pull`](#pull) any ciphertext the engine queued and send it to the peer;
+ * 3. when the step reports [`WANT_IO`](#WANT_IO), [`feed`](#feed) ciphertext
+ *    received from the peer and retry.
+ *
+ * Step returns `0` when the handshake is **complete**. This decoupling is what
+ * lets TLS sit on the async reactor: [`TlsClient`](TlsClient.cajeta) runs this
+ * pump over an [`AsyncReader`](../AsyncReader.cajeta) /
+ * [`AsyncWriter`](../AsyncWriter.cajeta), parking the fiber on the socket
+ * between steps — the engine itself never blocks.
+ *
+ * Buffer arguments are `int8[]` with an explicit length; the engine reads/
+ * writes the array's element bytes (the `@Native` header ABI is handled in C).
+ */
+public class TlsConnection {
+    /** Handshake/read/write completed (or no more ciphertext queued). */
+    public static int32 OK = 0;
+    /** More ciphertext must be exchanged — pull + send, feed peer bytes, retry. */
+    public static int32 WANT_IO = -1;
+    /** The peer sent a clean `close_notify` (read EOF). */
+    public static int32 CLOSED = -2;
+    /** A fatal protocol/library error. */
+    public static int32 FAILED = -3;
+
+    /** [`verifyResult`](#verifyResult): the peer chain verified cleanly. */
+    public static int32 CERT_OK = 0;
+    /** The peer cert is expired (or not yet valid). */
+    public static int32 CERT_EXPIRED = 1;
+    /** The peer cert does not match the expected hostname. */
+    public static int32 CERT_HOSTNAME = 2;
+    /** The peer chain does not lead to a trusted root (self-signed / unknown). */
+    public static int32 CERT_UNTRUSTED = 3;
+    /** Some other certificate fault. */
+    public static int32 CERT_OTHER = 4;
+
+    /** Backend SSL_CTX handle (shared config). Owned iff `ownsCtx`. */
+    pointer ctx;
+    /** Backend SSL connection handle (per-handshake state + the two BIOs). */
+    pointer conn;
+    /** Whether `drop` should free `ctx` (false when a ctx is shared). */
+    boolean ownsCtx;
+
+    // --- @Native bridges to the NET-5.1 engine intrinsics -------------------
+
+    @Native("__cajeta_tls_ctx_new")
+    private static #pointer ctxNew(int32 isServer);
+
+    @Native("__cajeta_tls_ctx_use_cert_key_pem")
+    private static int32 ctxUseCertKey(pointer ctx, int8[] certPem, int32 certLen,
+                                       int8[] keyPem, int32 keyLen);
+
+    @Native("__cajeta_tls_ctx_free")
+    private static void ctxFree(pointer ctx);
+
+    @Native("__cajeta_tls_ctx_set_verify")
+    private static int32 ctxSetVerify(pointer ctx, int32 mode);
+
+    @Native("__cajeta_tls_ctx_add_trust_pem")
+    private static int32 ctxAddTrust(pointer ctx, int8[] pem, int32 len);
+
+    @Native("__cajeta_tls_ctx_use_system_trust")
+    private static int32 useSystemTrustNative(pointer ctx);
+
+    @Native("__cajeta_tls_conn_new")
+    private static #pointer connNew(pointer ctx, int32 isServer);
+
+    @Native("__cajeta_tls_set_verify_host")
+    private static int32 setVerifyHostNative(pointer conn, int8[] host, int32 len);
+
+    @Native("__cajeta_tls_verify_result")
+    private static int32 verifyResultNative(pointer conn);
+
+    @Native("__cajeta_tls_set_sni")
+    private static int32 setSniNative(pointer conn, int8[] host, int32 hostLen);
+
+    @Native("__cajeta_tls_set_alpn")
+    private static int32 setAlpnNative(pointer conn, int8[] protos, int32 len);
+
+    @Native("__cajeta_tls_get_alpn")
+    private static int32 getAlpnNative(pointer conn, int8[] out, int32 max);
+
+    @Native("__cajeta_tls_ctx_set_alpn_select")
+    private static int32 setServerAlpnNative(pointer ctx, int8[] protos, int32 len);
+
+    @Native("__cajeta_tls_feed_ciphertext")
+    private static int32 feedNative(pointer conn, int8[] buf, int32 len);
+
+    @Native("__cajeta_tls_pull_ciphertext")
+    private static int32 pullNative(pointer conn, int8[] out, int32 max);
+
+    @Native("__cajeta_tls_pending_ciphertext")
+    private static int32 pendingNative(pointer conn);
+
+    @Native("__cajeta_tls_handshake_step")
+    private static int32 handshakeNative(pointer conn);
+
+    @Native("__cajeta_tls_write_plaintext")
+    private static int32 writeNative(pointer conn, int8[] buf, int32 len);
+
+    @Native("__cajeta_tls_read_plaintext")
+    private static int32 readNative(pointer conn, int8[] out, int32 max);
+
+    @Native("__cajeta_tls_shutdown")
+    private static int32 shutdownNative(pointer conn);
+
+    @Native("__cajeta_tls_free")
+    private static void connFree(pointer conn);
+
+    // --- construction -------------------------------------------------------
+
+    private TlsConnection(pointer ctx, pointer conn, boolean ownsCtx) {
+        this.ctx = ctx;
+        this.conn = conn;
+        this.ownsCtx = ownsCtx;
+    }
+
+    /**
+     * A fresh **client** connection (its own context). SNI/ALPN, if wanted,
+     * are set before the first [`handshakeStep`](#handshakeStep).
+     */
+    public static #TlsConnection client() {
+        pointer ctx = TlsConnection.ctxNew(0);
+        pointer conn = TlsConnection.connNew(ctx, 0);
+        return heap TlsConnection(ctx, conn, true);
+    }
+
+    /**
+     * A **verifying** client: the peer certificate chain is required and
+     * validated, so the handshake fails (and [`verifyResult`](#verifyResult)
+     * reports why) on an expired / untrusted / hostname-mismatched cert. Add
+     * trust anchors with [`addTrust`](#addTrust) and the expected name with
+     * [`setVerifyHost`](#setVerifyHost) before the first handshake step. The
+     * verify mode is fixed on the context here, before the connection is made.
+     */
+    public static #TlsConnection verifyingClient() {
+        pointer ctx = TlsConnection.ctxNew(0);
+        TlsConnection.ctxSetVerify(ctx, 1);
+        pointer conn = TlsConnection.connNew(ctx, 0);
+        return heap TlsConnection(ctx, conn, true);
+    }
+
+    /**
+     * A fresh **server** connection presenting `certPem` (chain) + `keyPem`
+     * (PEM bytes). Used by [`TlsListener`](TlsListener.cajeta) (NET-5.5).
+     */
+    public static #TlsConnection server(int8[] certPem, int32 certLen,
+                                        int8[] keyPem, int32 keyLen) {
+        pointer ctx = TlsConnection.ctxNew(1);
+        TlsConnection.ctxUseCertKey(ctx, certPem, certLen, keyPem, keyLen);
+        pointer conn = TlsConnection.connNew(ctx, 1);
+        return heap TlsConnection(ctx, conn, true);
+    }
+
+    // --- configuration (before the handshake) -------------------------------
+
+    /** Client SNI: the server name to request (`host` bytes, `len` of them). */
+    public void setSni(int8[] host, int32 len) {
+        TlsConnection.setSniNative(this.conn, host, len);
+    }
+
+    /** Add a trust-anchor (CA / root) from PEM bytes to this context's store. */
+    public int32 addTrust(int8[] pem, int32 len) {
+        return TlsConnection.ctxAddTrust(this.ctx, pem, len);
+    }
+
+    /**
+     * Trust the **operating-system** default CA store, so a real public cert
+     * validates without a caller-supplied anchor (NET-5.3). On POSIX this is
+     * OpenSSL's default verify paths (the distro CA bundle / `$SSL_CERT_*`); on
+     * Windows the system "ROOT" store. Returns 0 on success. Combine with a
+     * [`verifyingClient`](#verifyingClient) and [`setVerifyHost`](#setVerifyHost).
+     */
+    public int32 useSystemTrust() {
+        return TlsConnection.useSystemTrustNative(this.ctx);
+    }
+
+    /** Require the peer cert to match `host` (SAN, CN fallback, wildcards). */
+    public void setVerifyHost(int8[] host, int32 len) {
+        TlsConnection.setVerifyHostNative(this.conn, host, len);
+    }
+
+    /** Post-handshake verification verdict — one of the `CERT_*` ordinals. */
+    public int32 verifyResult() {
+        return TlsConnection.verifyResultNative(this.conn);
+    }
+
+    /** Offer an ALPN protocol list (wire format: 1-byte length + bytes each). */
+    public void setAlpn(int8[] protos, int32 len) {
+        TlsConnection.setAlpnNative(this.conn, protos, len);
+    }
+
+    /** The negotiated ALPN protocol bytes into `out`; returns the length. */
+    public int32 negotiatedAlpn(int8[] out, int32 max) {
+        return TlsConnection.getAlpnNative(this.conn, out, max);
+    }
+
+    /**
+     * Server-side: install the ALPN-select callback offering `protos` (wire
+     * format: 1-byte length + bytes each) as the supported list. During the
+     * handshake the engine picks the first of these the client also offered
+     * (server preference); a client with no overlap simply negotiates no ALPN.
+     * Set on the context, so it takes effect for this connection's handshake.
+     */
+    public void setServerAlpn(int8[] protos, int32 len) {
+        TlsConnection.setServerAlpnNative(this.ctx, protos, len);
+    }
+
+    // --- the pump -----------------------------------------------------------
+
+    /** One handshake step: `OK` (complete), `WANT_IO`, or `FAILED`. */
+    public int32 handshakeStep() {
+        return TlsConnection.handshakeNative(this.conn);
+    }
+
+    /** Feed `len` ciphertext bytes received from the network. Bytes consumed. */
+    public int32 feed(int8[] buf, int32 len) {
+        return TlsConnection.feedNative(this.conn, buf, len);
+    }
+
+    /** Pull queued ciphertext to send to the network into `out`; bytes copied. */
+    public int32 pull(int8[] out, int32 max) {
+        return TlsConnection.pullNative(this.conn, out, max);
+    }
+
+    /** Bytes of ciphertext currently queued to send. */
+    public int32 pending() {
+        return TlsConnection.pendingNative(this.conn);
+    }
+
+    /** Encrypt + queue `len` plaintext bytes; bytes accepted, or `WANT_IO`. */
+    public int32 write(int8[] buf, int32 len) {
+        return TlsConnection.writeNative(this.conn, buf, len);
+    }
+
+    /** Decrypt available app data into `out`; bytes, `WANT_IO`, `CLOSED`. */
+    public int32 read(int8[] out, int32 max) {
+        return TlsConnection.readNative(this.conn, out, max);
+    }
+
+    /** Queue a clean `close_notify`. */
+    public int32 shutdown() {
+        return TlsConnection.shutdownNative(this.conn);
+    }
+
+    // --- teardown -----------------------------------------------------------
+
+    /**
+     * Release the engine handles. Both native frees are NULL-safe, so this is
+     * also safe on a half-constructed connection.
+     */
+    public void drop() {
+        TlsConnection.connFree(this.conn);
+        this.conn = null;
+        if (this.ownsCtx) {
+            TlsConnection.ctxFree(this.ctx);
+            this.ctx = null;
+        }
+    }
+}

@@ -1,0 +1,428 @@
+package cajeta.io.net;
+
+import cajeta.lang.Optional;
+import cajeta.io.net.TcpStream;
+import cajeta.io.net.ByteChannel;
+import cajeta.io.net.RingBuffer;
+import cajeta.io.net.NetException;
+import cajeta.concurrent.AsyncIterator;
+
+/**
+ * Buffered **async byte-stream reader** over a [`TcpStream`](TcpStream.cajeta)
+ * — plan item **NET-3.5**. The layer the HTTP/1.1 and WebSocket codecs
+ * read *through*: it turns the raw socket's would-block-driven
+ * [`readAsync`](TcpStream.cajeta#readAsync) into a small buffered API
+ * (`read`, `readExact`, `readUntil`) and an
+ * [`AsyncIterator`](../concurrent/AsyncIterator.cajeta) of chunks for the
+ * `for (chunk in reader)` consumption the spec
+ * ([`docs/Net.md`](../../../../docs/Net.md) §The async
+ * model) calls "streaming by default."
+ *
+ * ## Why a buffer in front of the socket
+ *
+ * The codecs above this layer want to read *tokens* — a CRLF-terminated
+ * header line, an exact `Content-Length` body, a fixed-size WebSocket
+ * frame header — but a socket read returns *whatever bytes happen to be
+ * ready*, which may straddle or undershoot a token boundary. A small
+ * owned [`RingBuffer`](RingBuffer.cajeta) bridges the gap: a single
+ * socket read can satisfy several `readUntil` calls (no syscall per
+ * line), and a `readExact` that wants more than is buffered loops the
+ * socket read under the hood. Exactly the
+ * `bufio.Reader` (Go) / `BufReader` (Rust) shape.
+ *
+ * ## Fiber-parking, never carrier-blocking
+ *
+ * Every refill goes through [`TcpStream.readAsync`](TcpStream.cajeta#readAsync),
+ * which **parks the fiber** (not the carrier) on the reactor until the
+ * socket is readable — so a reader blocked on a slow peer yields its
+ * carrier to other fibers (the no-carrier-blocks invariant). This type
+ * adds no I/O of its own; it is pure buffering over that one async
+ * primitive.
+ *
+ * ## EOF
+ *
+ * A socket [`readAsync`](TcpStream.cajeta#readAsync) of `0` is an
+ * orderly peer close. Once the buffer is drained *and* the socket has
+ * reported EOF, this reader is at end-of-stream:
+ * [`read`](#read) returns `0`, [`readExact`](#readExact) raises if it
+ * could not fill the whole request, [`readUntil`](#readUntil) returns
+ * what it had, and [`next`](#next) returns an empty
+ * [`Optional`](../lang/Optional.cajeta) (terminal, mirroring
+ * `Channel<T>.receive` post-close).
+ *
+ * ## Ownership
+ *
+ * The reader **borrows** the [`TcpStream`](TcpStream.cajeta) (it does
+ * not own / close it — the caller that opened the socket closes it). The
+ * internal [`RingBuffer`](RingBuffer.cajeta) and the scratch fill buffer
+ * are owned and array-dropped on drop. Single-fiber ownership: one
+ * reader drives one connection, so no locking.
+ */
+public class AsyncReader implements AsyncIterator<int8[]> {
+    /** Default staging-ring capacity (bytes) when the caller doesn't pick one. */
+    public static final int32 DEFAULT_BUFFER = 8192;
+
+    /**
+     * The channel this reader pulls from — a plaintext
+     * [`TcpStream`](TcpStream.cajeta) or a [`TlsStream`](tls/TlsStream.cajeta),
+     * via the [`ByteChannel`](ByteChannel.cajeta) seam (NET-8.1 / NET-9.5).
+     * **Borrowed** — not owned, not closed here. Field index after the vtable
+     * slot.
+     */
+    ByteChannel stream;
+
+    /**
+     * Staging ring: bytes pulled from the socket but not yet handed to a
+     * caller. Owned. A single socket read fills it; `read`/`readExact`/
+     * `readUntil` drain it, refilling from the socket only when it runs
+     * dry. Watermarks are unused at this layer (the codec drives the
+     * cadence), so it is built fully open: low `0`, high `capacity`.
+     */
+    RingBuffer buf;
+
+    /**
+     * Scratch buffer the socket read fills before the bytes are copied
+     * into the ring. Owned; sized to the ring capacity so one refill can
+     * top the ring up in a single [`readAsync`](TcpStream.cajeta#readAsync).
+     */
+    int8[] fill;
+
+    /** Ring + scratch capacity in bytes. */
+    int32 cap;
+
+    /**
+     * True once a socket read returned `0` (orderly peer EOF). Sticky:
+     * after the buffer drains, the reader is terminally at end-of-stream.
+     */
+    boolean eof;
+
+    /**
+     * Chunk size [`next`](#next) yields. A plain `read` into a fresh
+     * `chunkSize`-byte array — the AsyncIterator granularity.
+     */
+    int32 chunkSize;
+
+    /**
+     * Wrap `stream` with a default-capacity ([`DEFAULT_BUFFER`](#DEFAULT_BUFFER))
+     * staging ring. The stream is **borrowed**; the caller still owns and
+     * closes it.
+     */
+    public AsyncReader(ByteChannel stream) {
+        // Bind the static-final to a local before using it as an array
+        // dimension / ctor arg: a direct `heap int8[AsyncReader.DEFAULT_BUFFER]`
+        // mis-lowers the static-field read as the global's *address* (`ptr`),
+        // which the array-size path `sext`s to i64 — an invalid-IR verify
+        // failure ("SExt only operates on integer"). A named int32 local pins
+        // the value load. (Compiler-gap workaround, same class as the
+        // documented `heap T[this.field]` mistype.)
+        int32 c = AsyncReader.DEFAULT_BUFFER;
+        this.stream = stream;
+        this.cap = c;
+        this.buf = heap RingBuffer(c, 0, c);
+        this.fill = heap int8[c];
+        this.eof = false;
+        this.chunkSize = c;
+    }
+
+    /**
+     * Wrap `stream` with a `capacity`-byte staging ring (and matching
+     * iterator chunk size). `capacity` must be `> 0`; a small value is
+     * fine for a line-oriented protocol, a large one amortizes syscalls
+     * on a bulk download.
+     */
+    public AsyncReader(ByteChannel stream, int32 capacity) {
+        int32 c = capacity;
+        if (c < 1) {
+            c = 1;
+        }
+        this.stream = stream;
+        this.cap = c;
+        this.buf = heap RingBuffer(c, 0, c);
+        this.fill = heap int8[c];
+        this.eof = false;
+        this.chunkSize = c;
+    }
+
+    /** Bytes currently staged in the ring (available without a socket read). */
+    public int32 buffered() {
+        return this.buf.size();
+    }
+
+    // ----- Test / pre-staging seam -----
+    //
+    // The buffer-draining logic (`read` / `readExact` / `readUntil` / `next`)
+    // is **pure** over the staging ring + the sticky [`eof`](#eof) flag: it only
+    // calls [`fillFromSocket`](#fillFromSocket) when the ring is empty, and that
+    // returns immediately (no socket touch) once `eof` is set. So a caller can
+    // pre-stage bytes + assert EOF and exercise every drain path with **no live
+    // socket** — the same feed-then-drain discipline
+    // [`BodyReader`](http/BodyReader.cajeta) uses for its golden-vector tests.
+    // The HTTP/WS codecs also use [`stage`](#stage) to push back bytes that a
+    // peer read returned beyond a message boundary (the next pipelined message).
+
+    /**
+     * Push `src[0 .. len)` directly into the staging ring (ahead of the
+     * socket), returning the count actually staged — `min(len, free())`,
+     * a short stage when the ring is full. The bytes become immediately
+     * readable by [`read`](#read) / [`readUntil`](#readUntil) without a
+     * socket round-trip. Used by the codecs to un-read pipelined bytes,
+     * and by tests to pre-seed the reader.
+     */
+    public int32 stage(int8[] src, int32 len) {
+        return this.buf.write(src, 0, len);
+    }
+
+    /**
+     * Assert the underlying stream is at end-of-input (peer closed) so
+     * the drain methods stop refilling and report end-of-stream once the
+     * staging ring drains — without an actual socket EOF read. The sticky
+     * counterpart a test (or a caller that already saw the peer close
+     * out-of-band) sets to make [`atEnd`](#atEnd) reachable.
+     */
+    public void markEof() {
+        this.eof = true;
+    }
+
+    /**
+     * `true` once the socket has reported EOF **and** the staging ring is
+     * drained — the terminal end-of-stream condition the read methods and
+     * [`next`](#next) test.
+     */
+    public boolean atEnd() {
+        return this.eof && this.buf.size() == 0;
+    }
+
+    /**
+     * Pull one socket read worth of bytes into the staging ring, parking
+     * the fiber until data arrives. Returns the count staged; `0` means
+     * the socket reported EOF (the [`eof`](#eof) flag is set). A no-op
+     * returning `0` once EOF was already seen. The amount requested is
+     * the current ring free space (so the ring never overflows), capped
+     * by the scratch buffer.
+     */
+    int32 fillFromSocket() {
+        if (this.eof) {
+            return 0;
+        }
+        int32 room = this.buf.free();
+        if (room == 0) {
+            return 0;          // ring full; caller must drain first
+        }
+        int32 want = room;
+        if (want > this.cap) {
+            want = this.cap;
+        }
+        int64 n = this.stream.readAsync(this.fill, (int64) 0, (int64) want);
+        int32 got = (int32) n;
+        if (got <= 0) {
+            this.eof = true;
+            return 0;
+        }
+        this.buf.write(this.fill, 0, got);
+        return got;
+    }
+
+    /**
+     * Read up to `length` bytes into `dst[offset .. offset+length)`,
+     * **parking the fiber** if nothing is staged. Returns the count
+     * actually filled (`>= 0`); `0` is end-of-stream (buffer drained and
+     * the socket closed) — the same terminate-on-`0` contract as
+     * [`TcpStream.readAsync`](TcpStream.cajeta#readAsync), so a copy loop
+     * over `read` ends on `0` identically.
+     *
+     * Serves from the staging ring first (no syscall when bytes are
+     * already buffered); only an empty ring triggers a
+     * [`fillFromSocket`](#fillFromSocket).
+     */
+    public int32 read(int8[] dst, int32 offset, int32 length) {
+        if (length <= 0) {
+            return 0;
+        }
+        if (this.buf.size() == 0) {
+            this.fillFromSocket();
+            if (this.buf.size() == 0) {
+                return 0;       // EOF: nothing staged, socket closed
+            }
+        }
+        return this.buf.read(dst, offset, length);
+    }
+
+    /**
+     * Pull one **deadline-bounded** socket read worth of bytes into the
+     * staging ring, parking the fiber until data arrives **or** `timeoutMs`
+     * milliseconds elapse. The slowloris-mitigation twin of
+     * [`fillFromSocket`](#fillFromSocket) (NET-9.6): it routes the refill
+     * through [`TcpStream.readWithin`](TcpStream.cajeta#readWithin), which
+     * raises [`TimedOutException`](TimedOutException.cajeta) when the
+     * deadline elapses with the peer still idle (and drops the reactor
+     * registration — no leak). A non-positive `timeoutMs` degenerates to the
+     * unbounded [`fillFromSocket`](#fillFromSocket). Returns the count staged;
+     * `0` means the socket reported EOF (the [`eof`](#eof) flag is set).
+     */
+    int32 fillFromSocketWithin(int32 timeoutMs) {
+        if (timeoutMs <= 0) {
+            return this.fillFromSocket();
+        }
+        if (this.eof) {
+            return 0;
+        }
+        int32 room = this.buf.free();
+        if (room == 0) {
+            return 0;          // ring full; caller must drain first
+        }
+        int32 want = room;
+        if (want > this.cap) {
+            want = this.cap;
+        }
+        int64 n = this.stream.readWithin(this.fill, (int64) 0, (int64) want, timeoutMs);
+        int32 got = (int32) n;
+        if (got <= 0) {
+            this.eof = true;
+            return 0;
+        }
+        this.buf.write(this.fill, 0, got);
+        return got;
+    }
+
+    /**
+     * Deadline-bounded [`read`](#read) (**NET-9.6** slowloris mitigation):
+     * read up to `length` bytes into `dst[offset .. offset+length)`,
+     * serving from the staging ring first (no socket touch, no deadline
+     * consumed, when bytes are already buffered) and otherwise refilling via
+     * [`fillFromSocketWithin`](#fillFromSocketWithin) — which raises
+     * [`TimedOutException`](TimedOutException.cajeta) if the peer delivers
+     * nothing within `timeoutMs`. Returns the count filled (`>= 0`); `0` is
+     * end-of-stream, the same terminate-on-`0` contract as [`read`](#read).
+     * A non-positive `timeoutMs` is the unbounded [`read`](#read).
+     *
+     * The [`HttpServer`](http/HttpServer.cajeta) head-read loop drives this
+     * per byte under a per-request wall-clock budget so a client that
+     * dribbles a partial head is evicted instead of pinning a worker.
+     */
+    public int32 readWithin(int8[] dst, int32 offset, int32 length, int32 timeoutMs) {
+        if (length <= 0) {
+            return 0;
+        }
+        if (this.buf.size() == 0) {
+            this.fillFromSocketWithin(timeoutMs);
+            if (this.buf.size() == 0) {
+                return 0;       // EOF: nothing staged, socket closed
+            }
+        }
+        return this.buf.read(dst, offset, length);
+    }
+
+    /**
+     * Read **exactly** `length` bytes into `dst[offset .. offset+length)`,
+     * parking the fiber across as many socket reads as it takes. Raises a
+     * [`NetException`](NetException.cajeta) if the stream reaches EOF
+     * before `length` bytes were read (a truncated frame/body) — the
+     * "exact" contract the WS frame-header and `Content-Length` body
+     * readers rely on. On success the whole region is filled and `length`
+     * bytes were consumed.
+     */
+    public void readExact(int8[] dst, int32 offset, int32 length) {
+        int32 done = 0;
+        while (done < length) {
+            int32 n = this.read(dst, offset + done, length - done);
+            if (n == 0) {
+                throw heap NetException(
+                    "readExact: stream ended before the requested bytes arrived");
+            }
+            done = done + n;
+        }
+    }
+
+    /**
+     * Read bytes up to **and including** the first occurrence of
+     * `delimiter`, returning a fresh owned `int8[]` of exactly those
+     * bytes (delimiter included). Parks the fiber across socket reads
+     * until the delimiter is seen or EOF is hit. The line/record reader
+     * the HTTP head parser drives off (e.g. `readUntil((int8) 10)` for an
+     * LF-terminated line).
+     *
+     * On EOF **before** the delimiter, returns whatever bytes were read
+     * (the delimiter absent) — a possibly-empty array when the stream was
+     * already at end. The caller distinguishes "found" from "EOF" by
+     * inspecting the last byte against `delimiter` (or by checking
+     * [`atEnd`](#atEnd)). A `maxBytes` cap guards against an unbounded
+     * line: once that many bytes accumulate without the delimiter, the
+     * accumulated bytes are returned so the caller can enforce its own
+     * over-limit policy (the HTTP parser's `HeadersTooLarge` discipline).
+     */
+    public #int8[] readUntil(int8 delimiter, int32 maxBytes) {
+        int8[] acc = heap int8[64];
+        int32 accLen = 0;
+        int32 accCap = 64;
+        int8[] one = heap int8[1];
+        while (true) {
+            int32 n = this.read(one, 0, 1);
+            if (n == 0) {
+                return AsyncReader.copyExact(acc, accLen);   // EOF, delimiter not found
+            }
+            if (accLen >= accCap) {
+                int32 newCap = accCap * 2;
+                int8[] grown = heap int8[newCap];
+                int32 i = 0;
+                while (i < accLen) {
+                    grown[i] = acc[i];
+                    i = i + 1;
+                }
+                acc = #grown;
+                accCap = newCap;
+            }
+            acc[accLen] = one[0];
+            accLen = accLen + 1;
+            if (one[0] == delimiter) {
+                return AsyncReader.copyExact(acc, accLen);   // delimiter included
+            }
+            if (maxBytes > 0 && accLen >= maxBytes) {
+                return AsyncReader.copyExact(acc, accLen);   // over the cap
+            }
+        }
+        // Unreachable — the loop returns on delimiter / EOF / cap.
+        return AsyncReader.copyExact(acc, accLen);
+    }
+
+    /** Trim a working buffer to exactly `len` bytes in a fresh owned array. */
+    static #int8[] copyExact(int8[] src, int32 len) {
+        int8[] out = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            out[i] = src[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // ----- AsyncIterator<int8[]> (chunked consumption) -----
+
+    /**
+     * Yield the next chunk of up to [`chunkSize`](#chunkSize) bytes as a
+     * present [`Optional`](../lang/Optional.cajeta), parking the fiber
+     * until bytes arrive — or an **empty** `Optional` once the stream is
+     * exhausted (buffer drained + socket closed). After the first empty
+     * result every subsequent call stays empty (terminal), satisfying the
+     * [`AsyncIterator`](../concurrent/AsyncIterator.cajeta) contract, so a
+     * `while (opt.isPresent())` drain loop terminates cleanly on peer
+     * close. Each present chunk is a fresh owned array sized to the bytes
+     * actually read (`<= chunkSize`).
+     */
+    public Optional<int8[]> next() {
+        // `heap int8[this.chunkSize]` mis-lowers the field read as a pointer
+        // (the `heap T[this.field]` mistype) → bind to a local int32 first.
+        int32 sz = this.chunkSize;
+        int8[] chunk = heap int8[sz];
+        int32 n = this.read(chunk, 0, sz);
+        if (n == 0) {
+            // `stack` (not `heap`) Optional: the AsyncIterator.next() contract
+            // returns a *borrow* (no `#` on the interface signature), exactly
+            // as ArrayStream/Channel do — a `heap` allocation here would need a
+            // `#`-marked return the interface doesn't have
+            // (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
+            return stack Optional<int8[]>(false, null);   // terminal: stream exhausted
+        }
+        int8[] piece = AsyncReader.copyExact(chunk, n);
+        return stack Optional<int8[]>(true, #piece);
+    }
+}

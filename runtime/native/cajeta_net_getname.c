@@ -1,4 +1,4 @@
-// cajeta.net — NET-1.3 native socket-name query intrinsics
+// cajeta.io.net — NET-1.3 native socket-name query intrinsics
 // (`getsockname` / `getpeername`).
 //
 // This translation unit is **#included once** at the bottom of

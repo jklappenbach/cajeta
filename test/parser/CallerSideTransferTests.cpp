@@ -1,5 +1,5 @@
 //
-// Phase 1 of #68 (docs/stdlib/OwnershipTransfer.md): caller-side
+// Phase 1 of #68 (docs/specification/lang/OwnershipTransfer.md): caller-side
 // `#x` syntax. The caller can now explicitly mark an argument as a
 // transfer at the call site, independent of whether the callee's formal
 // is `#T`-marked. The codegen-side rule:

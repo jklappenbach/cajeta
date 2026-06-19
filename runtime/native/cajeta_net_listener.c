@@ -1,4 +1,4 @@
-// cajeta.net — NET-1.4 native `TcpListener` support intrinsics.
+// cajeta.io.net — NET-1.4 native `TcpListener` support intrinsics.
 //
 // This translation unit is **#included once** at the bottom of
 // `cajeta_runtime.c` (the same single-TU → bitcode → embed build path the

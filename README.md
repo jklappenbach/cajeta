@@ -245,7 +245,7 @@ MyClass e = stack MyClass();                    // default ctor
 MyClass f;                                       // null reference; rejected on read until assigned
 ```
 
-`MyClass` is one type whether the instance lives on the stack or the heap — the borrow checker tracks lifetime, not the type system. Class instances always pass and return by pointer, never by value (no slicing). See [`UnifiedClasses.md`](docs/stdlib/UnifiedClasses.md).
+`MyClass` is one type whether the instance lives on the stack or the heap — the borrow checker tracks lifetime, not the type system. Class instances always pass and return by pointer, never by value (no slicing). See [`UnifiedClasses.md`](docs/specification/lang/UnifiedClasses.md).
 
 ### Ownership and `#`-transfer
 
@@ -269,7 +269,7 @@ CAJETA_ERROR_VARIABLE_NOT_ASSIGNED
 CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM
 ```
 
-The drop chain is a per-thread linked list of stack-allocated entries; entries fire in reverse declaration order at scope exit, and the throw path unwinds the chain to a try-frame's watermark so drops fire on the exceptional path too. See [`MemoryModel.md`](docs/stdlib/MemoryModel.md) and [`FieldOwnership.md`](docs/stdlib/FieldOwnership.md).
+The drop chain is a per-thread linked list of stack-allocated entries; entries fire in reverse declaration order at scope exit, and the throw path unwinds the chain to a try-frame's watermark so drops fire on the exceptional path too. See [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) and [`FieldOwnership.md`](docs/specification/lang/FieldOwnership.md).
 
 ### Classes, inheritance, and dispatch
 
@@ -287,7 +287,7 @@ public class Event extends Timestamped, Labeled { public Event() { return; } }
 
 When two parents declare the same method (same signature), the child resolves
 the collision by overriding it and selecting a parent with `super<Base>.method()`
-(`@Override(from=Base)` names the choice). See [`MultiClassing.md`](docs/stdlib/MultiClassing.md)
+(`@Override(from=Base)` names the choice). See [`MultiClassing.md`](docs/specification/lang/MultiClassing.md)
 and the multiple-inheritance tour demo. Templates and multiple inheritance
 compose: a generic type can inherit reusable behavior mixins via MI, so the
 mixins are written once and shared across every instantiation.
@@ -362,7 +362,7 @@ public void parse(byte[] buf) {
 }
 ```
 
-Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views, fixed-size and variable-size trailing fields, and ownership-transferred (`stack View(#buf)`) and borrow (`stack View(buf)`) construction forms. Views participate in interface dispatch via fat-pointer kind tags. See [`Views.md`](docs/stdlib/Views.md) and a runnable end-to-end walk through all three endianness flavors plus nested views in [`samples/tour/src/main/cajeta/tour/wire/ViewsDemo.cajeta`](samples/tour/src/main/cajeta/tour/wire/ViewsDemo.cajeta).
+Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views, fixed-size and variable-size trailing fields, and ownership-transferred (`stack View(#buf)`) and borrow (`stack View(buf)`) construction forms. Views participate in interface dispatch via fat-pointer kind tags. See [`Views.md`](docs/specification/lang/Views.md) and a runnable end-to-end walk through all three endianness flavors plus nested views in [`samples/tour/src/main/cajeta/tour/wire/ViewsDemo.cajeta`](samples/tour/src/main/cajeta/tour/wire/ViewsDemo.cajeta).
 
 ### Lambdas and method references
 
@@ -378,7 +378,7 @@ xs.forEach((x) -> { total = total + x; });   // total captured by reference
 Stream<String> names = ps.stream().map<String>(Person::getName);
 ```
 
-Block-body lambdas, return-type inference, capture-by-borrow with lifetime tracking, and parameter-type inference from method-template formals are all working. See [`Lambdas.md`](docs/stdlib/Lambdas.md).
+Block-body lambdas, return-type inference, capture-by-borrow with lifetime tracking, and parameter-type inference from method-template formals are all working. See [`Lambdas.md`](docs/specification/lang/Lambdas.md).
 
 ### Streams and parallel terminals
 
@@ -400,7 +400,7 @@ int64 sum = xs.stream().parallel()
         (a, b)   -> a + b);
 ```
 
-See [`Streams.md`](docs/stdlib/Streams.md) and [`StreamParallelism.md`](docs/stdlib/StreamParallelism.md). A runnable walk through `reduce`, fold-with-combiner, the predicate terminals, `findFirst`→`findAny`, and `forEach` accumulation under `.parallel()` lives in [`samples/tour/src/main/cajeta/tour/concurrent/ParallelStreamsDemo.cajeta`](samples/tour/src/main/cajeta/tour/concurrent/ParallelStreamsDemo.cajeta).
+See [`Streams.md`](docs/specification/lang/stream/Streams.md) and [`StreamParallelism.md`](docs/specification/lang/stream/StreamParallelism.md). A runnable walk through `reduce`, fold-with-combiner, the predicate terminals, `findFirst`→`findAny`, and `forEach` accumulation under `.parallel()` lives in [`samples/tour/src/main/cajeta/tour/concurrent/ParallelStreamsDemo.cajeta`](samples/tour/src/main/cajeta/tour/concurrent/ParallelStreamsDemo.cajeta).
 
 ### Annotations
 
@@ -421,7 +421,7 @@ A Lombok-style annotation system layered over the language's reflection. Highlig
 | `@SuppressLint("rule-id")`                  | ✅      | Per-decl lint suppression. |
 | `@Aspect` / `@Inject` / `@Component` / `@Around` / `@Before` / `@After` | ✅ | DI + aspect weaving. |
 
-See [`Annotations.md`](docs/stdlib/Annotations.md) for the full catalog.
+See [`Annotations.md`](docs/specification/reflect/Annotations.md) for the full catalog.
 
 ```cajeta
 @Builder
@@ -440,7 +440,7 @@ Connection c = Connection.builder()
 
 ### Aspects, DI, advice
 
-Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](docs/stdlib/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta).
+Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](docs/specification/lang/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta).
 
 ```cajeta
 @Aspect
@@ -457,7 +457,7 @@ public class TimingAspect {
 
 ### Concurrency (`async`, `scope`, `spawn`)
 
-Structured concurrency in the style of Rust's `tokio::scope` / Kotlin's `coroutineScope`. `async fn` declares a suspendable function; `scope { ... }` is a join-on-exit block; `spawn` launches a child fiber inside a scope. The runtime schedules fibers over a work-stealing carrier pool — `min(cpus, 4)` OS-thread carriers by default, so spawned tasks run with real wall-clock parallelism (`CAJETA_CARRIERS=1` forces deterministic single-carrier execution for debugging). A fiber is pinned to the carrier that first ran it (cross-carrier resume isn't solved yet), so parallelism comes from fan-out across spawned tasks rather than migrating a single task. See [`Concurrency.md`](docs/stdlib/Concurrency.md).
+Structured concurrency in the style of Rust's `tokio::scope` / Kotlin's `coroutineScope`. `async fn` declares a suspendable function; `scope { ... }` is a join-on-exit block; `spawn` launches a child fiber inside a scope. The runtime schedules fibers over a work-stealing carrier pool — `min(cpus, 4)` OS-thread carriers by default, so spawned tasks run with real wall-clock parallelism (`CAJETA_CARRIERS=1` forces deterministic single-carrier execution for debugging). A fiber is pinned to the carrier that first ran it (cross-carrier resume isn't solved yet), so parallelism comes from fan-out across spawned tasks rather than migrating a single task. See [`Concurrency.md`](docs/specification/concurrent/Concurrency.md).
 
 ```cajeta
 public static async int32 fetchAll(String[] urls) {
@@ -489,7 +489,7 @@ try {
 }
 ```
 
-The error model is in [`ErrorModel.md`](docs/stdlib/ErrorModel.md).
+The error model is in [`ErrorModel.md`](docs/specification/error/ErrorModel.md).
 
 ### JSON codec
 
@@ -507,7 +507,7 @@ User u = Json.parse<User>(bytes, bytes.length);   // {7, "alice", true}
 byte[] out = Json.toBytes<User>(u);               // round-trip
 ```
 
-Tier-3 `Json.toBytes(JsonValue)` for ad-hoc tree manipulation. See [`Json.md`](docs/stdlib/codec/Json.md) and the runnable parse + round-trip + nested-class walk in [`samples/tour/src/main/cajeta/tour/codec/JsonDemo.cajeta`](samples/tour/src/main/cajeta/tour/codec/JsonDemo.cajeta).
+Tier-3 `Json.toBytes(JsonValue)` for ad-hoc tree manipulation. See [`Json.md`](docs/specification/codec/json/Json.md) and the runnable parse + round-trip + nested-class walk in [`samples/tour/src/main/cajeta/tour/codec/JsonDemo.cajeta`](samples/tour/src/main/cajeta/tour/codec/JsonDemo.cajeta).
 
 ---
 
@@ -549,7 +549,7 @@ boolean   char (a 32-bit Unicode codepoint)
 
 There is no `byte` type — the canonical byte buffer is `int8[]` (or `uint8[]`). `pointer` is a low-level raw address; `uchar` is a deprecated alias for `uint8`.
 
-Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/LanguageGuide.md), [`Primitives.md`](docs/stdlib/Primitives.md), and [`FloatingPointModel.md`](docs/stdlib/FloatingPointModel.md).
+Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/LanguageGuide.md), [`Primitives.md`](docs/specification/lang/Primitives.md), and [`FloatingPointModel.md`](docs/specification/lang/FloatingPointModel.md).
 
 ---
 
@@ -562,28 +562,28 @@ The deep-dive specs live in `docs/`:
 | Topic                       | Doc |
 |-----------------------------|-----|
 | **Language guide (start here)** | [`LanguageGuide.md`](docs/LanguageGuide.md) |
-| Class model + allocation    | [`UnifiedClasses.md`](docs/stdlib/UnifiedClasses.md) |
-| System I/O + env + properties | [`lang/System.md`](docs/stdlib/lang/System.md) |
-| Memory + ownership          | [`MemoryModel.md`](docs/stdlib/MemoryModel.md) |
-| Field ownership / auto-drop | [`FieldOwnership.md`](docs/stdlib/FieldOwnership.md) |
+| Class model + allocation    | [`UnifiedClasses.md`](docs/specification/lang/UnifiedClasses.md) |
+| System I/O + env + properties | [`lang/System.md`](docs/specification/lang/System.md) |
+| Memory + ownership          | [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) |
+| Field ownership / auto-drop | [`FieldOwnership.md`](docs/specification/lang/FieldOwnership.md) |
 | Templates + wildcards       | [`TemplateWildcard.md`](docs/TemplateWildcard.md), [`CaptureConversion.md`](docs/CaptureConversion.md) |
-| Lambdas + method refs       | [`Lambdas.md`](docs/stdlib/Lambdas.md) |
-| Streams                     | [`Streams.md`](docs/stdlib/Streams.md), [`StreamParallelism.md`](docs/stdlib/StreamParallelism.md) |
-| Annotations (Lombok-style)  | [`Annotations.md`](docs/stdlib/Annotations.md) |
-| Views / wire formats        | [`Views.md`](docs/stdlib/Views.md) |
-| Aspects + DI                | [`AspectModel.md`](docs/stdlib/AspectModel.md) |
-| Concurrency                 | [`Concurrency.md`](docs/stdlib/Concurrency.md), [`AsyncStatus.md`](docs/stdlib/AsyncStatus.md) |
-| Errors                      | [`ErrorModel.md`](docs/stdlib/ErrorModel.md) |
+| Lambdas + method refs       | [`Lambdas.md`](docs/specification/lang/Lambdas.md) |
+| Streams                     | [`Streams.md`](docs/specification/lang/stream/Streams.md), [`StreamParallelism.md`](docs/specification/lang/stream/StreamParallelism.md) |
+| Annotations (Lombok-style)  | [`Annotations.md`](docs/specification/reflect/Annotations.md) |
+| Views / wire formats        | [`Views.md`](docs/specification/lang/Views.md) |
+| Aspects + DI                | [`AspectModel.md`](docs/specification/lang/AspectModel.md) |
+| Concurrency                 | [`Concurrency.md`](docs/specification/concurrent/Concurrency.md), [`AsyncStatus.md`](docs/specification/concurrent/AsyncStatus.md) |
+| Errors                      | [`ErrorModel.md`](docs/specification/error/ErrorModel.md) |
 | Lints                       | [`LintRules.md`](docs/LintRules.md) |
 | Compiler modes              | [`CompilerModes.md`](docs/CompilerModes.md) |
 | Embedded targets (roadmap)  | [`Embedded.md`](docs/Embedded.md) |
-| JSON codec                  | [`stdlib/codec/Json.md`](docs/stdlib/codec/Json.md) |
-| Method-level templates      | [`MethodLevelTemplate.md`](docs/stdlib/MethodLevelTemplate.md) |
-| Multi-classing              | [`MultiClassing.md`](docs/stdlib/MultiClassing.md) |
-| Reflection                  | [`Reflection.md`](docs/stdlib/Reflection.md) |
-| Hashing                     | [`Hashing.md`](docs/stdlib/Hashing.md) |
-| I/O                         | [`stdlib/io/`](docs/stdlib/io/) |
-| Time                        | [`Time.md`](docs/stdlib/Time.md) |
+| JSON codec                  | [`specification/codec/json/Json.md`](docs/specification/codec/json/Json.md) |
+| Method-level templates      | [`MethodLevelTemplate.md`](docs/specification/lang/MethodLevelTemplate.md) |
+| Multi-classing              | [`MultiClassing.md`](docs/specification/lang/MultiClassing.md) |
+| Reflection                  | [`Reflection.md`](docs/specification/reflect/Reflection.md) |
+| Hashing                     | [`Hashing.md`](docs/specification/hash/Hashing.md) |
+| I/O                         | [`stdlib/io/`](docs/specification/io/) |
+| Time                        | [`Time.md`](docs/specification/time/Time.md) |
 
 Open work is tracked in [`todo.md`](todo.md). Historical implementation milestones are under [`docs/history/`](docs/history/).
 

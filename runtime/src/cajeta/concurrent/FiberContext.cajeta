@@ -3,7 +3,7 @@ package cajeta.concurrent;
 /**
  * An immutable snapshot of the current fiber's `FiberLocal` bindings, for an
  * explicit handoff across an unstructured boundary — a request pushed onto a
- * `Channel` for a worker pool, or `detach`ed. See docs/stdlib/FiberLocal.md § 3
+ * `Channel` for a worker pool, or `detach`ed. See docs/specification/concurrent/FiberLocal.md § 3
  * (Layer 3).
  *
  * The ambient binding chain deliberately does NOT auto-follow such a boundary

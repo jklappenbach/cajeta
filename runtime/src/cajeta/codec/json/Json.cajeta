@@ -116,7 +116,7 @@ import cajeta.lang.String;
  * the just-read token. Symmetric writer surface is `JsonWriter`
  * (`beginObject()` / `key(bytes, len)` / `writeNumber(...)`).
  *
- * See `docs/stdlib/codec/Json.md` for the full design notes.
+ * See `docs/specification/codec/json/Json.md` for the full design notes.
  */
 public final class Json {
 
@@ -188,7 +188,7 @@ public final class Json {
      *
      * Throws `JsonParseException` if the synthesizer fails to engage.
      *
-     * See docs/stdlib/codec/Json.md § Tier 1.
+     * See docs/specification/codec/json/Json.md § Tier 1.
      */
     // Tier-1 templated parse. Coexists with the Tier-3 `parse(int8[],
     // int64)` above — the resolver distinguishes by the call site's
@@ -243,7 +243,7 @@ public final class Json {
      * pointer so the recursive instantiation stays codegen-stable. Public
      * so the synthesizer can emit cross-class recursive calls.
      *
-     * See docs/stdlib/codec/Json.md § Tier 1 and plans/Json-fast-path.md.
+     * See docs/specification/codec/json/Json.md § Tier 1 and plans/Json-fast-path.md.
      */
     public static T walkValue<T>(JsonCursor jc) {
         throw heap JsonParseException(

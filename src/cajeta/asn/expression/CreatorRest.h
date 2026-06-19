@@ -18,7 +18,7 @@ namespace cajeta {
         // NRVO target: when set, ClassCreatorRest constructs the instance
         // directly into this caller-provided slot (the sret return pointer)
         // instead of allocating its own — zero-copy value returns. See
-        // docs/stdlib/ValueReturns.md.
+        // docs/specification/lang/ValueReturns.md.
         llvm::Value* nrvoTarget = nullptr;
     public:
         CreatorRest(antlr4::Token* token) : AbstractSyntaxNode(token) { }

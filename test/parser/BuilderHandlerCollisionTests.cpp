@@ -59,11 +59,11 @@ TEST(BuilderHandlerCollisionTests, fieldAndMethodSameNameDispatchesToMethod) {
 TEST(BuilderHandlerCollisionTests, fluentBareParamLambdaInfers) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ServerModel;\n"
-        "import cajeta.net.http.HttpServer;\n"
-        "import cajeta.net.http.HttpServerBuilder;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
+        "import cajeta.io.net.ServerModel;\n"
+        "import cajeta.io.net.http.HttpServer;\n"
+        "import cajeta.io.net.http.HttpServerBuilder;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        HttpServerBuilder b = HttpServer.builder()\n"

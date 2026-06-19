@@ -1,4 +1,4 @@
-// cajeta.net — NET-1.6 native socket-option surface.
+// cajeta.io.net — NET-1.6 native socket-option surface.
 //
 // This translation unit is **#included once** at the bottom of
 // `cajeta_runtime.c` (the same single-TU -> bitcode -> embed build path the

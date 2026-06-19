@@ -1,4 +1,4 @@
-// Tests for cajeta.net.dns.Dns + cajeta.net.dns.ResolveFamily —
+// Tests for cajeta.io.net.dns.Dns + cajeta.io.net.dns.ResolveFamily —
 // plan item NET-2.2 (blocking name resolution).
 //
 // Scope: the pure-Cajeta `Dns.resolve` wrapper over the NET-2.1
@@ -47,12 +47,12 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.IpAddress;\n"
-           "import cajeta.net.SocketAddress;\n"
-           "import cajeta.net.AddressFamily;\n"
-           "import cajeta.net.NetException;\n"
-           "import cajeta.net.dns.Dns;\n"
-           "import cajeta.net.dns.ResolveFamily;\n"
+           "import cajeta.io.net.IpAddress;\n"
+           "import cajeta.io.net.SocketAddress;\n"
+           "import cajeta.io.net.AddressFamily;\n"
+           "import cajeta.io.net.NetException;\n"
+           "import cajeta.io.net.dns.Dns;\n"
+           "import cajeta.io.net.dns.ResolveFamily;\n"
            "public final class A {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

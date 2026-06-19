@@ -3,7 +3,7 @@
 //
 // Pins the pure-logic contract of the NET-4.2 dispatch model — the
 // Server.dispatch / Server.serveConnection seam in
-// runtime/src/cajeta/net/Server.cajeta, running inside Server.serve's
+// runtime/src/cajeta/io/net/Server.cajeta, running inside Server.serve's
 // owning scope — modeled one level down via FiberPerConnHarness.h
 // (std::thread standing in for a connection fiber, composing the NET-4.1
 // DrainCounter / ServerLifecycle verbatim) in the deterministic,

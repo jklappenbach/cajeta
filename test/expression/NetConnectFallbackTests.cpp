@@ -1,4 +1,4 @@
-// Tests for cajeta.net.TcpStream's sequential v4/v6 connect fallback —
+// Tests for cajeta.io.net.TcpStream's sequential v4/v6 connect fallback —
 // plan item NET-2.6 (`TcpStream.connect(host, port)` resolves via the
 // blocking NET-2.2 resolver, then tries the resolved addresses in
 // order until one connects; happy-eyeballs parallel racing is deferred
@@ -8,7 +8,7 @@
 // small cajeta source through the JIT, call run() -> int32; the body
 // returns 1 on the expected result and 0 (or a negative diagnostic)
 // otherwise. The Cajeta-surface fallback logic under test lives in
-// runtime/src/cajeta/net/TcpStream.cajeta (connect(String,int32) +
+// runtime/src/cajeta/io/net/TcpStream.cajeta (connect(String,int32) +
 // the private connectAny core), built on Dns.resolve (NET-2.2, a
 // working @Native bridge) and TcpStream.connect(#SocketAddress)
 // (NET-1.3).
@@ -21,7 +21,7 @@
 // parses as stdlib. But its ONE observable branch point — whether an
 // individual TcpStream.connect(#SocketAddress) attempt connects or
 // throws — depends on the NET-1.3 socket-op *intrinsic codegen* (the
-// `cajeta.net.TcpStream`-receiver dispatch block that should live in
+// `cajeta.io.net.TcpStream`-receiver dispatch block that should live in
 // src/cajeta/asn/expression/MethodCallExpression.cpp, mirroring the
 // `cajeta.io.file.File` dispatch there). That codegen is NOT yet
 // implemented: TcpStream.connect/read/write/close are inert stubs
@@ -62,11 +62,11 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.IpAddress;\n"
-           "import cajeta.net.SocketAddress;\n"
-           "import cajeta.net.TcpStream;\n"
-           "import cajeta.net.NetException;\n"
-           "import cajeta.net.ConnectionRefusedException;\n"
+           "import cajeta.io.net.IpAddress;\n"
+           "import cajeta.io.net.SocketAddress;\n"
+           "import cajeta.io.net.TcpStream;\n"
+           "import cajeta.io.net.NetException;\n"
+           "import cajeta.io.net.ConnectionRefusedException;\n"
            "public final class A {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

@@ -1067,7 +1067,7 @@ struct cajeta_fiber {
     // based on whether __cajeta_current_fiber is set.
     struct cajeta_drop_entry* drop_top;
     struct cajeta_exception_frame* exc_top;
-    // FiberLocal binding stack head (docs/stdlib/FiberLocal.md). Same per-fiber
+    // FiberLocal binding stack head (docs/specification/concurrent/FiberLocal.md). Same per-fiber
     // rationale as scope_top/drop_top/exc_top: a __thread slot would alias across
     // the many fibers a carrier hosts. A fresh fiber inherits a deep-copied
     // snapshot of its spawner's chain (set in __cajeta_task_run); the chain is
@@ -2799,7 +2799,7 @@ void __cajeta_lock_destroy(void* p) {
 // --- Threading sync primitives: condition variable (R7-B) ----------------
 //
 // Fiber-aware condvar, paired with a Lock handle. `Mutex<T>.withLockWhen`
-// (docs/stdlib/Concurrency.md § Mutex) builds on it: wait-for-predicate
+// (docs/specification/concurrent/Concurrency.md § Mutex) builds on it: wait-for-predicate
 // inside a held lock, with notify on every mutation. A single condvar with
 // notify-all + per-waiter predicate re-check is the v1 strategy (spurious
 // wakeups are possible but harmless — each waiter re-tests its own
@@ -2909,7 +2909,7 @@ void __cajeta_condvar_destroy(void* cvp) {
 
 // --- Threading sync primitives: reader-writer lock (R7-D) ----------------
 //
-// Fiber-aware RW lock backing `RwLock<T>` (docs/stdlib/Concurrency.md §
+// Fiber-aware RW lock backing `RwLock<T>` (docs/specification/concurrent/Concurrency.md §
 // RwLock). Many readers may hold it concurrently; a writer holds it
 // exclusively. Writer-preference: a reader blocks while any writer is
 // waiting, so a steady stream of readers can't starve a writer.
@@ -3233,7 +3233,7 @@ static struct cajeta_drop_entry** __cajeta_drop_top_ptr(void) {
     return &__cajeta_main_drop_top;
 }
 
-// --- FiberLocal: ambient per-request state (docs/stdlib/FiberLocal.md) -------
+// --- FiberLocal: ambient per-request state (docs/specification/concurrent/FiberLocal.md) -------
 //
 // A fiber-keyed, scope-restored binding stack — the sound replacement for a
 // thread-pool ThreadLocal (fibers are single-use, so a binding cannot leak into
@@ -5935,7 +5935,7 @@ double __cajeta_random(void) {
 // indices clamp; result is a freshly malloc'd null-terminated copy.
 //
 // Note: cajeta.lang.String (the class form) substring is view-based
-// per the never-drop rule (see docs/stdlib/lang/String.md §
+// per the never-drop rule (see docs/specification/lang/String.md §
 // "Substring + slicing"). This C-string variant still copies because
 // the null-terminated ABI can't express a slice (a subspan of a longer
 // string would continue to the original terminator). The class
@@ -15090,7 +15090,7 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
 }
 
 // ---------------------------------------------------------------------------
-// cajeta.net — NET-1.1 native socket intrinsics (BSD sockets / Winsock).
+// cajeta.io.net — NET-1.1 native socket intrinsics (BSD sockets / Winsock).
 //
 // Kept in its own reviewable source file and #included here so it rides the
 // single-TU runtime → bitcode → embed build without a CMake change (the build
@@ -15101,46 +15101,46 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
 #include "cajeta_net_socket.c"
 
 // ---------------------------------------------------------------------------
-// cajeta.net — NET-1.7 non-blocking mode + WouldBlock-as-a-value intrinsics.
+// cajeta.io.net — NET-1.7 non-blocking mode + WouldBlock-as-a-value intrinsics.
 // MUST be included AFTER cajeta_net_socket.c (reuses its fd-ABI helpers,
 // cajeta_net_raw_errno, and the CAJETA_NET_* ordinal contract).
 // ---------------------------------------------------------------------------
 #include "cajeta_net_nonblocking.c"
 
 // ---------------------------------------------------------------------------
-// cajeta.net — NET-1.2 native sockaddr marshalling intrinsics.
+// cajeta.io.net — NET-1.2 native sockaddr marshalling intrinsics.
 // ---------------------------------------------------------------------------
 #include "cajeta_net_sockaddr.c"
 
 // ---------------------------------------------------------------------------
-// cajeta.net — NET-1.3 native getsockname/getpeername intrinsics.
+// cajeta.io.net — NET-1.3 native getsockname/getpeername intrinsics.
 // MUST be included AFTER cajeta_net_socket.c (reuses its fd-ABI typedefs +
 // cajeta_net_from_fd helper).
 // ---------------------------------------------------------------------------
 #include "cajeta_net_getname.c"
 
 // ---------------------------------------------------------------------------
-// cajeta.net — NET-1.4 native TcpListener support intrinsics.
+// cajeta.io.net — NET-1.4 native TcpListener support intrinsics.
 // MUST be included AFTER cajeta_net_socket.c + cajeta_net_sockaddr.c (reuses
 // their fd narrowing helpers, SOL_SOCKET context, and storage-size helper).
 // ---------------------------------------------------------------------------
 #include "cajeta_net_listener.c"
 
 // ---------------------------------------------------------------------------
-// cajeta.net — NET-1.6 native typed socket-option surface. MUST be included
+// cajeta.io.net — NET-1.6 native typed socket-option surface. MUST be included
 // AFTER cajeta_net_socket.c (reuses its fd-ABI helpers).
 // ---------------------------------------------------------------------------
 #include "cajeta_net_socket_options.c"
 
 // ---------------------------------------------------------------------------
-// cajeta.net — NET-2.1 native getaddrinfo (name resolution) intrinsics.
+// cajeta.io.net — NET-2.1 native getaddrinfo (name resolution) intrinsics.
 // MUST be included AFTER cajeta_net_socket.c (uses its file-static
 // cajeta_net_ensure_init() so WSAStartup ran on Windows).
 // ---------------------------------------------------------------------------
 #include "cajeta_net_getaddrinfo.c"
 
 // ---------------------------------------------------------------------------
-// cajeta.net.reactor — NET-3.1 reactor engine intrinsics (init/register/
+// cajeta.io.net.reactor — NET-3.1 reactor engine intrinsics (init/register/
 // deregister/await_readable/await_writable + portable select() probe).
 // MUST be included AFTER cajeta_net_socket.c (reuses its file-static
 // cajeta_net_from_fd / cajeta_net_ensure_init) AND after the R9.4 reactor
@@ -15149,7 +15149,7 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
 #include "cajeta_net_reactor.c"
 
 // ---------------------------------------------------------------------------
-// cajeta.net.reactor — NET-3.2 reactor lifecycle (lazy init / clean shutdown).
+// cajeta.io.net.reactor — NET-3.2 reactor lifecycle (lazy init / clean shutdown).
 // MUST be included AFTER cajeta_net_reactor.c: its shutdown drains NET-3.1's
 // live-registration counter (__cajeta_net_reactor_active_reset) and its init is
 // the body NET-3.1's __cajeta_net_reactor_init delegates to. The runtime

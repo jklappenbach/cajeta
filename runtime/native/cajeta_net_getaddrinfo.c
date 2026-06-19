@@ -1,4 +1,4 @@
-// cajeta.net — NET-2.1 native name-resolution intrinsics (`getaddrinfo`).
+// cajeta.io.net — NET-2.1 native name-resolution intrinsics (`getaddrinfo`).
 //
 // This translation unit is **#included once** at the bottom of
 // `cajeta_runtime.c`, *after* `cajeta_net_socket.c` and

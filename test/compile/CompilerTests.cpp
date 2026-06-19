@@ -55,7 +55,7 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // --- main lineage (threading / time / json / net preludes) ---
 // 2026-05-31: 96 → 110 — cajeta.concurrent + Atomic + cajeta.time.Duration + #66 stream sweep.
 // 2026-06-02: 110 → 123 — feature/build-system merge (collection.Cache, codec.json getters, …).
-// 2026-06-06: 123 → 264 — cajeta-net merge (cajeta.net.{tcp,udp,dns,http,tls,ws}, …, +141).
+// 2026-06-06: 123 → 264 — cajeta-net merge (cajeta.io.net.{tcp,udp,dns,http,tls,ws}, …, +141).
 // --- merge of origin/main into cajeta-xpu ---
 // 2026-06-11: merge of origin/main (Reflection Phases 1–11 prelude) into
 // cajeta-xpu (cajeta.gpu prelude). Both preludes now load together: the

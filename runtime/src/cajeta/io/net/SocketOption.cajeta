@@ -1,0 +1,55 @@
+package cajeta.io.net;
+
+/**
+ * Typed **socket-option key** enum (plan item **NET-1.6**) — the
+ * "typed enum keys, not raw ints" the spec mandates for the socket
+ * option surface ([`docs/Net.md`](../../../../../docs/Net.md)
+ * §Sockets).
+ *
+ * ## Why an enum and not bare `setsockopt(level, optname, …)`
+ *
+ * Raw `setsockopt` takes two platform integers (a *level* like
+ * `SOL_SOCKET`/`IPPROTO_TCP` and an *optname* like `TCP_NODELAY`) plus
+ * an untyped byte payload — values that (a) differ across OSes and
+ * (b) put the type of the payload (bool vs int vs `struct linger`) on
+ * the caller. This enum names each portable option once; the
+ * concrete typed setter/getter on [`TcpStream`](TcpStream.cajeta),
+ * [`UdpSocket`](UdpSocket.cajeta), and [`TcpListener`](TcpListener.cajeta)
+ * lowers to a **dedicated** native intrinsic
+ * (`__cajeta_net_set_nodelay`, `__cajeta_net_set_linger`, …) that holds
+ * the matching platform `level`/`optname` constants in C — exactly as
+ * NET-1.2 keeps `AF_*` behind `sockaddr_pack` and NET-1.4 kept
+ * `SO_REUSEADDR` behind `__cajeta_net_set_reuseaddr`. The Cajeta layer
+ * never names a platform option constant.
+ *
+ * The enum exists so an option can also be referred to *as a value*
+ * (e.g. a future generic `Socket.option(key)` reflective surface, or
+ * diagnostics that print which option a `NetException` came from)
+ * without re-deriving the typed-method name. The ordinals are
+ * **append-only** — never renumber an existing value.
+ *
+ * ## The options (each has a typed `set`/`get` pair on the sockets)
+ *
+ *   - `NO_DELAY` — TCP_NODELAY: disable Nagle (TCP only).
+ *   - `KEEP_ALIVE` — SO_KEEPALIVE: idle-connection death detection.
+ *   - `REUSE_ADDRESS` — SO_REUSEADDR: rebind a `TIME_WAIT` address.
+ *   - `REUSE_PORT` — SO_REUSEPORT: load-balanced same-port bind
+ *     (no-op on Windows, which lacks the flag).
+ *   - `RECV_BUFFER_SIZE` / `SEND_BUFFER_SIZE` — SO_RCVBUF/SO_SNDBUF.
+ *   - `LINGER` — SO_LINGER: close()-drain behavior (`struct linger`).
+ *   - `BROADCAST` — SO_BROADCAST: permit UDP broadcast sends.
+ *   - `TTL` — IP_TTL / IPV6_UNICAST_HOPS: outbound hop limit.
+ *   - `ONLY_V6` — IPV6_V6ONLY: disable IPv4-mapped dual-stack.
+ */
+public enum SocketOption {
+    NO_DELAY,
+    KEEP_ALIVE,
+    REUSE_ADDRESS,
+    REUSE_PORT,
+    RECV_BUFFER_SIZE,
+    SEND_BUFFER_SIZE,
+    LINGER,
+    BROADCAST,
+    TTL,
+    ONLY_V6
+}

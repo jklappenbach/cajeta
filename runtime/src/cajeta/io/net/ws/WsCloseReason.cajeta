@@ -1,0 +1,109 @@
+package cajeta.io.net.ws;
+
+import cajeta.lang.String;
+
+/**
+ * The **parsed body of a WebSocket close control frame** (RFC 6455 §5.5.1
+ * / §7.4) — the `{ code, reason }` pair the close handshake
+ * (**NET-10.5**) extracts from a [`WsOpcode.CLOSE`](WsOpcode.cajeta)
+ * frame's payload, and the value a caller hands
+ * [`WsControlFrames.close`](WsControlFrames.cajeta) to build one. A pure
+ * value type (no I/O), the close-layer analogue of
+ * [`WsMessage`](WsMessage.cajeta) for data frames.
+ *
+ * ## The close-frame payload (RFC 6455 §5.5.1)
+ *
+ * A close frame's payload is **optional**:
+ *
+ *   - **empty** — no status code, no reason. The application observes the
+ *     local-only [`WsCloseCode.NO_STATUS`](WsCloseCode.cajeta) (`1005`)
+ *     placeholder, and [`hasCode`](#hasCode) is `false`.
+ *   - **>= 2 bytes** — a 2-byte big-endian status [`code`](#code) followed
+ *     by an optional UTF-8 [`reason`](#reason). A 1-byte payload is
+ *     malformed (a status code MUST be a whole 2 bytes) — the parser
+ *     [`WsControlFrames.parseClose`](WsControlFrames.cajeta) rejects it.
+ *
+ * ## Fields
+ *
+ *   - [`code`](#code) — the 2-byte status code (RFC 6455 §7.4), or the
+ *     local placeholder `WsCloseCode.NO_STATUS` (`1005`) when the frame
+ *     carried no code.
+ *   - [`hasCode`](#hasCode) — `true` when a real on-wire status code was
+ *     present; `false` for an empty close frame. Distinguishes "the peer
+ *     said `1005`" (impossible — `1005` is never on the wire) from "the
+ *     peer sent no code", which both surface as `code == 1005`.
+ *   - [`reason`](#reason) — the UTF-8 reason text (never null; the empty
+ *     `String` when absent). Owned by this record.
+ *
+ * The reason text MUST be valid UTF-8 (RFC 6455 §5.5.1) and the whole
+ * close payload MUST be `<= 125` bytes (a control frame, RFC 6455 §5.5),
+ * so the reason is at most `123` bytes — the frame codec already enforces
+ * the 125-byte control-frame cap, and
+ * [`WsControlFrames.close`](WsControlFrames.cajeta) enforces the 123-byte
+ * reason cap on the build side.
+ */
+public class WsCloseReason {
+    /**
+     * The 2-byte status code (RFC 6455 §7.4), or
+     * [`WsCloseCode.NO_STATUS`](WsCloseCode.cajeta) (`1005`) when the close
+     * frame carried no code. Field 0.
+     */
+    public int32 code;
+    /** `true` when a real on-wire status code was present. Field 1. */
+    public boolean hasCode;
+    /** The UTF-8 reason text (never null; empty when absent). Field 2. */
+    public String reason;
+
+    /**
+     * Field-pinning no-arg constructor: a no-status close (the empty
+     * close-frame form). Builds the `1005` placeholder with no reason;
+     * the parser/builder produce populated instances, and this keeps the
+     * layout constructible and free of dangling state.
+     */
+    public WsCloseReason() {
+        this.code = 1005;           // WsCloseCode.NO_STATUS
+        this.hasCode = false;
+        this.reason = heap String();
+    }
+
+    /**
+     * Build a populated close reason from a present status code + reason.
+     * Sets [`hasCode`](#hasCode) `true`. Takes ownership of `reason`.
+     */
+    public static #WsCloseReason of(int32 code, #String reason) {
+        WsCloseReason r = heap WsCloseReason();
+        r.code = code;
+        r.hasCode = true;
+        r.reason = reason;
+        return #r;
+    }
+
+    /**
+     * The **no-status** close reason: an empty close frame carried no code.
+     * [`code`](#code) is the local placeholder
+     * [`WsCloseCode.NO_STATUS`](WsCloseCode.cajeta) (`1005`) and
+     * [`hasCode`](#hasCode) is `false`.
+     */
+    public static #WsCloseReason noStatus() {
+        WsCloseReason r = heap WsCloseReason();
+        r.code = 1005;              // WsCloseCode.NO_STATUS
+        r.hasCode = false;
+        r.reason = heap String();
+        return #r;
+    }
+
+    /** The status code (or `WsCloseCode.NO_STATUS` for an empty close). */
+    public int32 getCode() {
+        return this.code;
+    }
+
+    /** `true` when a real on-wire status code was present. */
+    public boolean hasCode() {
+        return this.hasCode;
+    }
+
+    /** The UTF-8 reason text (never null; empty when absent). */
+    public String getReason() {
+        return this.reason;
+    }
+}

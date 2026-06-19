@@ -75,7 +75,7 @@ namespace cajeta {
         // evaluates to a `ptr` to the closure record; dispatch through the
         // shared closure ABI (same path as the bare `op(args)` form). This is
         // what makes an array-of-function-type callable: `((T)->R)[] ops; …
-        // ops[i](x)`. See docs/stdlib/Lambdas.md.
+        // ops[i](x)`. See docs/specification/lang/Lambdas.md.
         if (auto calleeExpr = getCallee()) {
             if (!calleeExpr->getResolvedType()) calleeExpr->resolveTypes(module);
             auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(

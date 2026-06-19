@@ -74,7 +74,7 @@ TEST(UnsupportedExpressionTests, methodReferenceTypeThrowsNotImplemented) {
 // classes exist.
 
 // `obj.method<T>(...)` — explicit method-level type arguments
-// (Form C). Now implemented as Phase 3 of docs/stdlib/
+// (Form C). Now implemented as Phase 3 of docs/specification/
 // MethodLevelTemplate.md; see MethodTemplateExplicitArgsTests for
 // coverage. The previously-stub UnsupportedExpression branch has
 // been removed.

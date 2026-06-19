@@ -1,7 +1,7 @@
 //
 // SharedPoolHarness.h — NET-4.3 Model-B (event-driven shared-pool) harness.
 //
-// The NET-4.3 shared-pool server (runtime/src/cajeta/net/SharedPoolServer.cajeta)
+// The NET-4.3 shared-pool server (runtime/src/cajeta/io/net/SharedPoolServer.cajeta)
 // is, like the NET-4.1 core it extends, a piece of *pure dispatch logic*
 // riding on primitives that already exist (the NET-4.1 Server lifecycle +
 // in-flight drain, cajeta.concurrent.Channel, AtomicInt32). The Model-B
@@ -39,7 +39,7 @@
 // AtomicInt32, and std::thread for the worker fibers.
 //
 // The queue/worker/drain semantics here MUST mirror
-// runtime/src/cajeta/net/SharedPoolServer.cajeta exactly — they are the
+// runtime/src/cajeta/io/net/SharedPoolServer.cajeta exactly — they are the
 // executable spec for that pure-logic override. Kept under test/ so the
 // production sources carry no test-only surface.
 //

@@ -41,7 +41,7 @@ namespace cajeta {
         // NRVO sret slot, set by ReturnStatement when this `stack X(...)` is
         // the returned expression of a value-returning method. Forwarded to
         // the CreatorRest at generateCode so the instance is built directly
-        // into the caller's return slot. See docs/stdlib/ValueReturns.md.
+        // into the caller's return slot. See docs/specification/lang/ValueReturns.md.
         llvm::Value* nrvoTarget = nullptr;
     public:
         void setStackAlloc(bool v) { stackAlloc = v; }

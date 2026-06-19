@@ -1,10 +1,10 @@
-// Tests for the cajeta.net.ws WebSocket error hierarchy — plan item
+// Tests for the cajeta.io.net.ws WebSocket error hierarchy — plan item
 // NET-10.8 ("WS error hierarchy: HandshakeRejected, ProtocolViolation,
 // MessageTooLarge, ConnectionClosed (with close code)").
 //
 // The WS exception family is pure cajeta logic (no sockets): a set of
 // leaves under the intermediate WebSocketException root, which itself
-// descends from cajeta.net.NetException. So — exactly like
+// descends from cajeta.io.net.NetException. So — exactly like
 // NetExceptionTests / UriParseTests — these are golden-vector gtests over
 // the JIT: compile a tiny cajeta `run()` that throws/inspects a WS
 // exception and returns an int32 sentinel, then assert the value.
@@ -33,13 +33,13 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.NetException;\n"
-        "import cajeta.net.ws.WebSocketException;\n"
-        "import cajeta.net.ws.ProtocolViolationException;\n"
-        "import cajeta.net.ws.HandshakeRejectedException;\n"
-        "import cajeta.net.ws.MessageTooLargeException;\n"
-        "import cajeta.net.ws.ConnectionClosedException;\n"
-        "import cajeta.net.ws.WsCloseCode;\n"
+        "import cajeta.io.net.NetException;\n"
+        "import cajeta.io.net.ws.WebSocketException;\n"
+        "import cajeta.io.net.ws.ProtocolViolationException;\n"
+        "import cajeta.io.net.ws.HandshakeRejectedException;\n"
+        "import cajeta.io.net.ws.MessageTooLargeException;\n"
+        "import cajeta.io.net.ws.ConnectionClosedException;\n"
+        "import cajeta.io.net.ws.WsCloseCode;\n"
         "public final class W {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

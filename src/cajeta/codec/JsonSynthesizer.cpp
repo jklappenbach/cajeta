@@ -15,7 +15,7 @@ namespace cajeta {
     namespace {
 
     // True if this field is excluded from JSON deserialization
-    // (READ side). See `docs/stdlib/codec/Json.md` § Field-
+    // (READ side). See `docs/specification/codec/json/Json.md` § Field-
     // level annotations for the asymmetric @JsonIgnore semantics:
     //
     //   @JsonIgnore                              — both directions skipped (bare).
@@ -113,7 +113,7 @@ namespace cajeta {
 
     // Apply a class-level naming strategy to a field's declared name
     // to derive the wire key. All five strategies from
-    // `docs/stdlib/codec/Json.md` § Class-level naming:
+    // `docs/specification/codec/json/Json.md` § Class-level naming:
     //
     //   - `"SNAKE_CASE"`  — `firstName` → `first_name`
     //   - `"KEBAB_CASE"`  — `firstName` → `first-name`
@@ -203,7 +203,7 @@ namespace cajeta {
     }
 
     // @JsonInclude policy on a field. All four spec values
-    // (docs/stdlib/codec/Json.md § Field-level annotations):
+    // (docs/specification/codec/json/Json.md § Field-level annotations):
     //
     //   - "ALWAYS" (default) — emit key+value unconditionally
     //   - "NON_NULL"         — emit only when the field reference

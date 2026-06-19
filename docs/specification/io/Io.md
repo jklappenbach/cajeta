@@ -1,0 +1,81 @@
+# `cajeta.io` — Byte substrate + stream abstractions
+
+Umbrella for everything that crosses the program / outside-world
+boundary. Direct members are the shared abstractions; concrete I/O
+kinds (file, pipe, network, subprocess) live in nested subpackages so a
+program that only needs files doesn't drag in a TLS stack.
+
+Status: **designed, not implemented**. Tracked in Features.md.
+
+## Subpackages
+
+- [`io/file`](file/File.md) — files, paths, directories, watchers.
+- [`io/pipe`](Pipes.md) — anonymous pipes (subprocess stdio, fd-passing) and
+  named pipes / FIFOs. The byte-level, process-crossing transport; for
+  in-process streaming use [`Channel<T>`](../Concurrency.md), for structured
+  cross-process IPC a Unix-domain socket.
+- network — see the `cajeta.io.net` stack (`docs/Net.md`).
+- subprocess — see [`cajeta.process`](../Process.md).
+
+## `Buffer` + `BufferChain` — the byte substrate
+
+```cajeta
+public class Buffer {
+    public Buffer(int64 capacity);
+    public int64 capacity();
+    public int8[] data();
+    public Buffer next();
+    public void linkNext(Buffer next);
+}
+
+public class BufferChain {
+    public void append(Buffer b);
+    public Buffer head();
+    public int64 totalSize();
+}
+```
+
+`Buffer` wraps a single `int8[MAX_SIZE]`. `BufferChain` is the linked
+list of buffers used by the harness (multiple-inherits `Stream<Buffer>`
+for chain traversal).
+
+## `InputStream` / `OutputStream` / `Reader` / `Writer`
+
+Java-shaped abstractions, byte buffers underneath. Byte-level
+(`InputStream` / `OutputStream`) wrapped to code-point-level
+(`Reader` / `Writer`) with an `Encoding`. The same interfaces back
+files, sockets, subprocess stdio, and in-memory streams — every
+concrete I/O type implements them so generic code (compress /
+decompress, parse / serialize) works over any source.
+
+## Example shape
+
+```cajeta
+InputStream src = someFile.inputStream();
+OutputStream dst = otherFile.outputStream();
+
+Buffer buf = heap Buffer(8192);
+while (src.read(buf) > 0) {
+    dst.write(buf);
+}
+```
+
+## Open items
+
+All of `cajeta.io` (Buffer, BufferChain, InputStream, OutputStream,
+Reader, Writer) is unimplemented. Tracked in Features.md. Land along
+with the fiber reactor and the first concrete I/O subpackage that
+needs them.
+
+## See also
+
+- `cajeta.io.file` — file handle + path manipulation (the one
+  `cajeta.io` subpackage that is built today; see
+  [`io/file/File.md`](file/File.md), [`io/file/Path.md`](file/Path.md)).
+- The network stack is **`cajeta.io.net`**, a *peer* of `cajeta.io` (not a
+  child) — sockets, DNS, TLS, URI, HTTP/1.1, WebSocket. See
+  [`docs/Net.md`](../../Net.md); the forward-looking HTTP/2 + WS library
+  design is [`io/net/Networking.md`](net/Networking.md). There is no
+  `cajeta.io.net` package.
+- `cajeta.process` — subprocess management (see
+  [`Process.md`](../Process.md)).

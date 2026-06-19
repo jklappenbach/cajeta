@@ -4,7 +4,7 @@
 // Each test is currently DISABLED_ — strip the prefix when the
 // corresponding ToDo.md "Priority 2 → 5 → item N" lands. The tests
 // document concrete, reproducible source shapes that SHOULD work
-// under the L-03 design (docs/stdlib/UnifiedClasses.md
+// under the L-03 design (docs/specification/lang/UnifiedClasses.md
 // § Inheritance) but currently fail.
 //
 // Gap surface confirmed by probe session 2026-05-17. See ToDo.md

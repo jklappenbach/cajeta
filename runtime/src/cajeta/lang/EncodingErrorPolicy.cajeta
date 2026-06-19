@@ -32,7 +32,7 @@ package cajeta.lang;
  * shape across all parsing APIs (encoding, JSON, number parsing,
  * etc.). The semantics of REPAIR differ per domain — substitute
  * for encoding, lenient-syntax for JSON, saturate for numeric — but
- * the *shape* is uniform. See docs/stdlib/lang/String.md §
+ * the *shape* is uniform. See docs/specification/lang/String.md §
  * Parsing convention.
  */
 public enum EncodingErrorPolicy {

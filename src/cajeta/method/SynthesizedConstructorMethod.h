@@ -3,7 +3,7 @@
 //   - @AllArgsConstructor — one param per non-static field
 //   - @RequiredArgsConstructor — only `final` (and future @NonNull) fields
 //
-// (See docs/stdlib/Annotations.md § Constructors.)
+// (See docs/specification/reflect/Annotations.md § Constructors.)
 //
 // v1 limitations:
 //   - No implicit `super(args)` chaining. The synthesized body only

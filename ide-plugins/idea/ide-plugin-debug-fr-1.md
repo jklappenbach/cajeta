@@ -6,14 +6,14 @@ This document is the **what** (capabilities, acceptance criteria, requirement
 IDs) for making memory ownership, allocation class, and lifetime *visible* in
 the Cajeta debugger. The **how** (build order, checkpoints) lives in `Plan.md`;
 the DAP wire contract lives in `docs/Debugging.md`; the language
-semantics being visualized live in `docs/stdlib/MemoryModel.md` and
-`docs/stdlib/FieldOwnership.md`.
+semantics being visualized live in `docs/specification/lang/MemoryModel.md` and
+`docs/specification/lang/FieldOwnership.md`.
 
 Companion docs:
-- `docs/stdlib/MemoryModel.md` — source of truth for allocation classes,
+- `docs/specification/lang/MemoryModel.md` — source of truth for allocation classes,
   ownership, transfer (`#`), borrow, and drop. This doc visualizes those
   concepts; it does not redefine them.
-- `docs/stdlib/FieldOwnership.md` — field-level ownership rules.
+- `docs/specification/lang/FieldOwnership.md` — field-level ownership rules.
 - `docs/Debugging.md` — the DAP adapter contract the plugin speaks (see
   its “ownership annotations in the variables panel” v1 goal, § Goals).
 - `Plan.md` / `README.md` (this directory) — overall plugin plan and status.
@@ -52,7 +52,7 @@ the editor) as debugging is ongoing.
 
 - Changing the language's memory model or borrow checker. This doc *visualizes*
   existing semantics; any semantic gap discovered is filed against
-  `docs/stdlib/MemoryModel.md`, not fixed here.
+  `docs/specification/lang/MemoryModel.md`, not fixed here.
 - Heap-graph / object-graph visualization (who-points-at-whom across the whole
   heap). Tracked separately if pursued.
 - Allocation *timelines* / historical replay. This doc covers the live state at

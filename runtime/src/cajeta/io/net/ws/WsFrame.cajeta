@@ -1,0 +1,101 @@
+package cajeta.io.net.ws;
+
+/**
+ * One **decoded WebSocket frame** (RFC 6455 §5.2) — the structured form
+ * the incremental decoder ([`WsFrameDecoder`](WsFrameDecoder.cajeta),
+ * **NET-10.3**) emits and the encoder
+ * ([`WsFrameEncoder`](WsFrameEncoder.cajeta)) serializes. A pure value
+ * type (no I/O), the WS analogue of HTTP's
+ * [`BodyFraming`](../http/BodyFraming.cajeta) hand-off record.
+ *
+ * ## Fields (the frame header, minus the on-wire mask)
+ *
+ *   - [`fin`](#fin) — the **FIN** bit: `true` when this frame is the
+ *     final fragment of its message. A non-fragmented message is a single
+ *     `fin == true` frame; a fragmented message is one `fin == false`
+ *     frame of opcode text/binary followed by zero or more `fin == false`
+ *     continuation frames and a final `fin == true` continuation frame.
+ *     Reassembly into a logical message is the fragmentation layer's job
+ *     (NET-10.4); this codec reports each frame as it arrives.
+ *   - [`opcode`](#opcode) — the [`WsOpcode`](WsOpcode.cajeta) (`0x0`
+ *     continuation … `0xA` pong).
+ *   - [`masked`](#masked) — whether the frame **was masked on the wire**.
+ *     A decoded frame's [`payload`](#payload) is always the *unmasked*
+ *     application bytes regardless; this flag records the wire form for
+ *     the masking-enforcement check (client→server MUST be masked,
+ *     server→client MUST NOT — RFC 6455 §5.1).
+ *   - [`payload`](#payload) — the **unmasked** application payload (the
+ *     masking key has already been applied by the decoder). An empty —
+ *     but non-null — `int8[]` for a zero-length payload (a bare ping, an
+ *     empty close). Owned by the frame.
+ *
+ * The masking *key* itself is deliberately **not** a field: it is a
+ * transport detail consumed entirely by the codec (the decoder unmasks
+ * on the way in; the encoder generates a fresh key on the way out), so a
+ * decoded `WsFrame` carries only application-visible state.
+ */
+public class WsFrame {
+    /** The FIN bit — final fragment of the message when `true`. Field 0. */
+    public boolean fin;
+    /** The opcode (`WsOpcode.*`). Field 1. */
+    public int32 opcode;
+    /** Whether the frame was masked on the wire. Field 2. */
+    public boolean masked;
+    /** The unmasked application payload (never null; may be empty). Field 3. */
+    public int8[] payload;
+
+    /**
+     * Field-pinning no-arg constructor: a final, empty, unmasked
+     * continuation frame. The codec builds populated instances; this
+     * keeps the layout constructible and free of dangling state.
+     */
+    public WsFrame() {
+        this.fin = true;
+        this.opcode = 0;            // WsOpcode.CONTINUATION
+        this.masked = false;
+        this.payload = heap int8[0];
+    }
+
+    /**
+     * Build a frame from its decoded fields. Takes ownership of
+     * `payload` (which must be the **unmasked** application bytes).
+     */
+    public static #WsFrame of(boolean fin, int32 opcode, boolean masked, #int8[] payload) {
+        WsFrame f = heap WsFrame();
+        f.fin = fin;
+        f.opcode = opcode;
+        f.masked = masked;
+        f.payload = payload;
+        return #f;
+    }
+
+    /** The FIN bit. */
+    public boolean isFin() {
+        return this.fin;
+    }
+
+    /** The opcode (`WsOpcode.*`). */
+    public int32 getOpcode() {
+        return this.opcode;
+    }
+
+    /** Whether the frame was masked on the wire. */
+    public boolean isMasked() {
+        return this.masked;
+    }
+
+    /** The unmasked application payload (never null; may be empty). */
+    public int8[] getPayload() {
+        return this.payload;
+    }
+
+    /** Payload length in bytes. */
+    public int32 payloadLength() {
+        return this.payload.count();
+    }
+
+    /** `true` if this is a control frame (close/ping/pong). */
+    public boolean isControl() {
+        return WsOpcode.isControl(this.opcode);
+    }
+}

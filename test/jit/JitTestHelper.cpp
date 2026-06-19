@@ -52,7 +52,7 @@ extern "C" {
     void __cajeta_set_drop_chain_validate(int enabled);
     void __cajeta_set_stack_trace_capture(int enabled);
 
-    // cajeta.net TLS engine (runtime/native/cajeta_tls.c). Unlike the other
+    // cajeta.io.net TLS engine (runtime/native/cajeta_tls.c). Unlike the other
     // __cajeta_* runtime symbols, these are NOT in the embedded JIT bitcode
     // (that would drag OpenSSL's headers + unresolvable static-libssl SSL_*
     // externs into every JIT module). They're native-only in libcajeta_lib, so
@@ -933,7 +933,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     }
 #endif
 
-    // Bind the cajeta.net TLS engine symbols (native-only, see the extern block
+    // Bind the cajeta.io.net TLS engine symbols (native-only, see the extern block
     // at the top). Done on every platform: on MinGW the process generator can't
     // find exe-local symbols; elsewhere absoluteSymbols simply wins over the
     // (redundant) generator entry. The engine functions are self-contained — the

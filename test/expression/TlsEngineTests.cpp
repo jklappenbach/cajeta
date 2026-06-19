@@ -1,4 +1,4 @@
-// NET-5.1 — the cajeta.net TLS engine (memory-BIO intrinsics) driven natively.
+// NET-5.1 — the cajeta.io.net TLS engine (memory-BIO intrinsics) driven natively.
 //
 // Mirrors NetResolveTests' posture for getaddrinfo: exercise the
 // `__cajeta_tls_*` C surface directly (it's linked into the test binary via

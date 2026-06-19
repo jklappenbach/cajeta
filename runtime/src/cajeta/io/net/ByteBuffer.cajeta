@@ -1,0 +1,255 @@
+package cajeta.io.net;
+
+/**
+ * Mutable byte buffer with independent **read** and **write**
+ * cursors — the unit `BufferPool` hands out and reclaims. See
+ * `docs/Net.md` § *Buffer pool*.
+ *
+ * The layout is a classic three-region span over the backing
+ * `int8[] data`:
+ *
+ * ```
+ * +------------------+------------------+------------------+
+ * | already consumed |   readable       |   writable       |
+ * 0 .............. readPos ......... writePos ......... capacity
+ * ```
+ *
+ * - `[0, readPos)`        — bytes already consumed by the reader.
+ * - `[readPos, writePos)` — **readable** bytes (`readable()`).
+ * - `[writePos, capacity)`— **writable** space (`writable()`).
+ *
+ * Incremental parsers (NET-4.4 + the streaming bodies) drive it as:
+ * fill the writable region from a socket read (`advanceWrite`),
+ * parse out of the readable region, then `advanceRead` past what
+ * was consumed. When the readable region drains (`readPos ==
+ * writePos`) the buffer is `compact`ed / `clear`ed so the writable
+ * region reopens from the front rather than growing unbounded.
+ *
+ * This is **pure logic** — no syscalls, no native bridge. It is
+ * owned storage: the destructor-free `int8[]` field is reclaimed by
+ * the normal array-drop when the buffer is dropped.
+ *
+ * Single-fiber ownership: a buffer is checked out of the pool by
+ * exactly one connection at a time, so no internal locking.
+ */
+public class ByteBuffer {
+    /**
+     * Backing storage. Owned (mode-0); grows via `reserve`. Field
+     * index 0 keeps the hot pointer at a stable offset.
+     */
+    int8[] data;
+
+    /** Allocated length of `data` (its element count). */
+    int32 cap;
+
+    /**
+     * Read cursor — index of the next byte the reader will consume.
+     * Invariant: `0 <= readPos <= writePos`.
+     */
+    int32 readPos;
+
+    /**
+     * Write cursor — index of the next byte a writer will fill.
+     * Invariant: `readPos <= writePos <= cap`.
+     */
+    int32 writePos;
+
+    /**
+     * Allocate a buffer with `capacity` bytes of writable space and
+     * both cursors at the front. `capacity` must be > 0; the pool
+     * always passes its configured slab size.
+     */
+    public ByteBuffer(int32 capacity) {
+        this.data = heap int8[capacity];
+        this.cap = capacity;
+        this.readPos = 0;
+        this.writePos = 0;
+    }
+
+    /** Allocated capacity in bytes. */
+    public int32 capacity() {
+        return this.cap;
+    }
+
+    /** Bytes available to read: `writePos - readPos`. */
+    public int32 readable() {
+        return this.writePos - this.readPos;
+    }
+
+    /** Free bytes at the tail available to write: `cap - writePos`. */
+    public int32 writable() {
+        return this.cap - this.writePos;
+    }
+
+    /** Index of the next readable byte. */
+    public int32 readPosition() {
+        return this.readPos;
+    }
+
+    /** Index of the next writable byte. */
+    public int32 writePosition() {
+        return this.writePos;
+    }
+
+    /**
+     * Direct read of the byte at absolute index `i` in the backing
+     * store. Parsers peek with this; bounds are the caller's
+     * responsibility (consistent with `ArrayList.get`, which also
+     * defers bounds checks to the error-model wiring).
+     */
+    public int8 at(int32 i) {
+        return this.data[i];
+    }
+
+    /**
+     * Append `b` at the write cursor and advance it by one. Returns
+     * `true` if there was room, `false` if the writable region was
+     * full (the byte is **not** written in that case — the caller
+     * should `reserve`/`compact` first).
+     */
+    public boolean put(int8 b) {
+        if (this.writePos >= this.cap) {
+            return false;
+        }
+        this.data[this.writePos] = b;
+        this.writePos = this.writePos + 1;
+        return true;
+    }
+
+    /**
+     * Copy up to `len` bytes from `src[srcOff..]` into the writable
+     * region. Returns the count actually copied — `min(len,
+     * writable())` — so a short write signals the buffer is full
+     * without growing it (back-pressure is the pool/ring's job, not
+     * this primitive's).
+     */
+    public int32 write(int8[] src, int32 srcOff, int32 len) {
+        int32 room = this.cap - this.writePos;
+        int32 n = len;
+        if (n > room) {
+            n = room;
+        }
+        int32 i = 0;
+        while (i < n) {
+            this.data[this.writePos + i] = src[srcOff + i];
+            i = i + 1;
+        }
+        this.writePos = this.writePos + n;
+        return n;
+    }
+
+    /**
+     * Copy up to `len` bytes from the readable region into
+     * `dst[dstOff..]`, advancing the read cursor past them. Returns
+     * the count actually copied — `min(len, readable())`.
+     */
+    public int32 read(int8[] dst, int32 dstOff, int32 len) {
+        int32 avail = this.writePos - this.readPos;
+        int32 n = len;
+        if (n > avail) {
+            n = avail;
+        }
+        int32 i = 0;
+        while (i < n) {
+            dst[dstOff + i] = this.data[this.readPos + i];
+            i = i + 1;
+        }
+        this.readPos = this.readPos + n;
+        return n;
+    }
+
+    /**
+     * Mark `n` bytes of the writable region as filled — the form a
+     * socket read uses after writing straight into the backing store
+     * via `at`/raw access. Clamps to the writable room so it can
+     * never push `writePos` past `cap`.
+     */
+    public void advanceWrite(int32 n) {
+        int32 room = this.cap - this.writePos;
+        int32 m = n;
+        if (m > room) {
+            m = room;
+        }
+        this.writePos = this.writePos + m;
+    }
+
+    /**
+     * Mark `n` bytes of the readable region as consumed. Clamps to
+     * the readable count so it can never push `readPos` past
+     * `writePos`.
+     */
+    public void advanceRead(int32 n) {
+        int32 avail = this.writePos - this.readPos;
+        int32 m = n;
+        if (m > avail) {
+            m = avail;
+        }
+        this.readPos = this.readPos + m;
+    }
+
+    /**
+     * Slide the unread bytes down to the front so the writable
+     * region reopens. After compaction `readPos == 0` and
+     * `writePos == readable()`. Cheap no-op when `readPos == 0`.
+     * Parsers call this when the writable tail runs low but the
+     * readable region hasn't fully drained.
+     */
+    public void compact() {
+        if (this.readPos == 0) {
+            return;
+        }
+        int32 avail = this.writePos - this.readPos;
+        int32 i = 0;
+        while (i < avail) {
+            this.data[i] = this.data[this.readPos + i];
+            i = i + 1;
+        }
+        this.readPos = 0;
+        this.writePos = avail;
+    }
+
+    /**
+     * Reset both cursors to the front, discarding all content — the
+     * reclaim step the pool runs before re-handing the buffer to a
+     * new connection. Keeps the backing array (that's the whole
+     * point of pooling).
+     */
+    public void clear() {
+        this.readPos = 0;
+        this.writePos = 0;
+    }
+
+    /**
+     * Ensure at least `minWritable` bytes of writable tail room,
+     * growing the backing array (doubling, then to fit) only when
+     * `compact`ing the consumed prefix isn't enough. Used by the
+     * rope-style growth path for oversized frames the pool slab
+     * can't hold; the steady state never grows.
+     */
+    public void reserve(int32 minWritable) {
+        if (this.cap - this.writePos >= minWritable) {
+            return;
+        }
+        // First try reclaiming the already-consumed prefix.
+        this.compact();
+        if (this.cap - this.writePos >= minWritable) {
+            return;
+        }
+        int32 needed = this.writePos + minWritable;
+        int32 newCap = this.cap * 2;
+        if (newCap < needed) {
+            newCap = needed;
+        }
+        int8[] grown = heap int8[newCap];
+        int32 i = 0;
+        while (i < this.writePos) {
+            grown[i] = this.data[i];
+            i = i + 1;
+        }
+        // `#grown` moves the fresh array's ownership into the field;
+        // without it the local's scope-exit drop would free the
+        // array we just installed (same pattern as ArrayList.add).
+        this.data = #grown;
+        this.cap = newCap;
+    }
+}

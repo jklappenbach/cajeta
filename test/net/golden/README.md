@@ -1,8 +1,8 @@
-# `cajeta.net` golden vector corpus (NET-13.2)
+# `cajeta.io.net` golden vector corpus (NET-13.2)
 
 Checked-in, byte-exact test corpora shared across the networking
 phases. This is the **data** half of the TDD strategy: every parser
-and codec in the `cajeta.net` stack (and the crypto/codec primitives
+and codec in the `cajeta.io.net` stack (and the crypto/codec primitives
 that block it) pins against the same canonical vectors, so a
 conformance regression in any phase surfaces as a deterministic,
 reviewable diff against a known-answer file.

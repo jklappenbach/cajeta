@@ -99,7 +99,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // docs/stdlib/Concurrency.md — `scope { ... }` is a structured-concurrency block that
+    // docs/specification/concurrent/Concurrency.md — `scope { ... }` is a structured-concurrency block that
     // owns every Task spawned inside it; control doesn't leave the block
     // until every child task has finished or been cancelled. In the sync-
     // lowering MVP this is just a block: spawns run inline, so there are no

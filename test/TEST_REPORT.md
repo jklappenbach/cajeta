@@ -144,7 +144,7 @@ emitting false failures.
 |---|---|---|
 | `CompilerTests.canParseOnValid{Long,Short}Package` | Re-anchored `STDLIB_STRUCTURE_COUNT` 123 → 264 (net merge loaded ~141 new prelude structures; live count is 265). `test/compile/CompilerTests.cpp:66`. | both pass |
 | `Base64Tests.decode*` (9) | `runDecode` harness now uses `#int8[] run()` + `return #raw;` so the owned decode result transfers correctly. `test/parser/Base64Tests.cpp`. | all 29 `Base64Tests` pass |
-| `UriResolveTests` (2) | **Product fix:** `Uri.resolve` now synthesizes the empty reference instead of calling `Uri.parse("")` (which throws). **Test perf:** `rfc3986…Vectors` compiles once (one helper method per vector + a dispatcher) — 320s → ~8s. `runtime/src/cajeta/net/uri/Uri.cajeta`, `test/expression/UriResolveTests.cpp`. | all 13 `UriResolveTests` pass |
+| `UriResolveTests` (2) | **Product fix:** `Uri.resolve` now synthesizes the empty reference instead of calling `Uri.parse("")` (which throws). **Test perf:** `rfc3986…Vectors` compiles once (one helper method per vector + a dispatcher) — 320s → ~8s. `runtime/src/cajeta/io/net/uri/Uri.cajeta`, `test/expression/UriResolveTests.cpp`. | all 13 `UriResolveTests` pass |
 | `Sha256` / `WsFrameCodec` ×3 (false "hung") | Not bugs — slow multi-compile golden-vector tests (46–63s). Raised isolate per-test timeout 60s → 120s. Durable fix (compile-once) tracked as a follow-up. | no longer flagged hung |
 
 > Lesson for "accuracy": the first two failures investigated were *both* the

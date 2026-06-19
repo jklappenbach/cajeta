@@ -2,7 +2,7 @@ package tour.net;
 
 import tour.DemoClass;
 
-// cajeta.net — the synchronous TCP surface. This demo runs a complete loopback
+// cajeta.io.net — the synchronous TCP surface. This demo runs a complete loopback
 // echo on a single fiber: bind a listener on 127.0.0.1:0 (an ephemeral port),
 // connect a client, send four bytes, echo them from the server, and verify the
 // round-trip. On loopback the kernel completes the connect into the listen
@@ -16,15 +16,15 @@ import tour.DemoClass;
 // (The async surface — readAsync/writeAsync/acceptAsync on the fiber reactor —
 //  is exercised by the net test suite; this keeps the tour deterministic.)
 
-import cajeta.net.IpAddress;
-import cajeta.net.SocketAddress;
-import cajeta.net.TcpListener;
-import cajeta.net.TcpStream;
+import cajeta.io.net.IpAddress;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpListener;
+import cajeta.io.net.TcpStream;
 
 public class NetDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
-        System.stdout.println("-- Networking: TCP loopback echo (cajeta.net) --");
+        System.stdout.println("-- Networking: TCP loopback echo (cajeta.io.net) --");
 
         // Server: bind 127.0.0.1:0, read back the kernel-assigned port.
         IpAddress listenAddr = IpAddress.loopbackV4();

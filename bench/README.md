@@ -5,7 +5,7 @@ Gson, on the canonical [nativejson-benchmark](https://github.com/miloyip/nativej
 corpus. Workload: **streaming tokenization** (pull every token to end-of-document,
 numbers read lazily, no DOM) — the apples-to-apples operation across all three.
 
-Results and analysis live in [`docs/stdlib/codec/Json.md`](../docs/stdlib/codec/Json.md)
+Results and analysis live in [`docs/specification/codec/json/Json.md`](../docs/specification/codec/json/Json.md)
 § "v1 — measured". Headline: Cajeta tokenization is Gson-class (within ~2×) and
 ~3–4× behind Jackson; the correctness gaps found here (no float parsing in the
 value tree, Tier-3 DOM exhausting the live-allocation set on ~1.7 MB, `JsonReader`

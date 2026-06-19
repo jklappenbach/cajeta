@@ -80,7 +80,7 @@ TEST(OwnedStringDropTests, concatResultDoesNotDrop_neverDropRule) {
 // method's scope exit doesn't fire a drop either. Count stays 0 — same
 // reasoning as concatResultDoesNotDrop_neverDropRule above. Reclaiming
 // these buffers is a follow-up tied to the String never-drop revisit
-// (docs/stdlib/lang/String.md § Memory model).
+// (docs/specification/lang/String.md § Memory model).
 TEST(OwnedStringDropTests, substringResultDropsAtScopeExit) {
     EXPECT_EQ(observeDropCount(
         "String result = \"hello world\".substring(0, 5);"

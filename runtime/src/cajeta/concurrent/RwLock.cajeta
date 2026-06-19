@@ -1,7 +1,7 @@
 package cajeta.concurrent;
 
 /**
- * Read-heavy shared state — docs/stdlib/Concurrency.md § `RwLock<T>`.
+ * Read-heavy shared state — docs/specification/concurrent/Concurrency.md § `RwLock<T>`.
  * Like `Mutex` it owns the protected value, but distinguishes shared
  * reads from exclusive writes: many readers may hold the read lock at
  * once, a writer holds it exclusively. Writer-preference in the runtime

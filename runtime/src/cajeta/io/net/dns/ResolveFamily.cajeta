@@ -1,0 +1,44 @@
+package cajeta.io.net.dns;
+
+/**
+ * The **address-family filter** a [`Dns.resolve`](Dns.cajeta) call
+ * applies to a name lookup (plan item **NET-2.2**).
+ *
+ * A hostname can map to IPv4 addresses, IPv6 addresses, or both. This
+ * enum lets a caller restrict the result set to one family — e.g. a
+ * v4-only network path wants `V4_ONLY`, a v6-only listener wants
+ * `V6_ONLY`, and the default connect path wants `BOTH` so the
+ * sequential v4/v6 fallback (NET-2.6) has every candidate to try.
+ *
+ * ## Ordinal contract — the native `getaddrinfo` family filter
+ *
+ * The ordinals here are **deliberately the cajeta-portable enum
+ * positions** (`V4_ONLY = 0`, `V6_ONLY = 1`, `BOTH = 2`), **not** the
+ * native filter values the
+ * [`__cajeta_net_getaddrinfo`](../../../../native/cajeta_net_getaddrinfo.c)
+ * intrinsic expects. That native filter is a different little space:
+ *
+ *   -  `-1` = both   (`AF_UNSPEC`)
+ *   -   `0` = V4-only (`AF_INET`)
+ *   -   `1` = V6-only (`AF_INET6`)
+ *
+ * [`Dns`](Dns.cajeta) owns the one-line mapping from this enum to that
+ * native filter ([`Dns.nativeFilter`](Dns.cajeta)), so the platform
+ * value never leaks into application code — the same separation
+ * [`AddressFamily`](../AddressFamily.cajeta) keeps between its
+ * cajeta ordinals and the platform `AF_*` constants. Do **not** assume
+ * the enum ordinal equals the native filter; they intentionally
+ * differ (`BOTH` is enum `2` but native `-1`).
+ *
+ * This is distinct from [`AddressFamily`](../AddressFamily.cajeta) on
+ * purpose: `AddressFamily` discriminates *what a resolved address is*
+ * (`V4` / `V6`, a two-valued property of every address); `ResolveFamily`
+ * expresses *what a lookup should return* (a three-valued request,
+ * including "either"). Conflating them would force a phantom "both"
+ * member onto the address discriminant where it is meaningless.
+ */
+public enum ResolveFamily {
+    V4_ONLY,
+    V6_ONLY,
+    BOTH
+}

@@ -8,7 +8,7 @@ import cajeta.lang.String;
  * (see `OpenMode`) against a path that already exists, or a
  * `copyTo` / `moveTo` to a destination that already exists
  * without overwrite intent. Maps to POSIX `EEXIST`. See
- * `docs/stdlib/io/file/Errors.md`.
+ * `docs/specification/io/file/Errors.md`.
  *
  * A recoverable subtype of `IoException`: catch it to fall back
  * to a non-exclusive open, or let it propagate via your throws

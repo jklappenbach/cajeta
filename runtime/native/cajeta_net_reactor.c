@@ -1,4 +1,4 @@
-// cajeta.net.reactor — NET-3.1 native reactor engine (epoll / kqueue / IOCP).
+// cajeta.io.net.reactor — NET-3.1 native reactor engine (epoll / kqueue / IOCP).
 //
 // This translation unit is **#included once** at the bottom of
 // `cajeta_runtime.c` — the same single-TU → LLVM-bitcode → embed build path
@@ -16,7 +16,7 @@
 // ## Scope of NET-3.1 (per plan/cajeta-net-plan.md and docs/Net.md §The
 // reactor)
 //
-// NET-3.1 names a fixed five-intrinsic ABI the `cajeta.net` socket types lower
+// NET-3.1 names a fixed five-intrinsic ABI the `cajeta.io.net` socket types lower
 // their await points to:
 //
 //   __cajeta_net_reactor_init()                      — lazy-create the OS event

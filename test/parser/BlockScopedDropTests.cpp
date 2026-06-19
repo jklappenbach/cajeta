@@ -2,7 +2,7 @@
 // Tests for block-scoped drops. Each `{ ... }` is its own drop frame:
 // owned locals declared inside fire their destructors at the closing
 // `}`, not at the enclosing method's exit. Verifies the lock-twice-in-
-// a-method pattern that docs/stdlib/Concurrency.md's RAII guard story depends on.
+// a-method pattern that docs/specification/concurrent/Concurrency.md's RAII guard story depends on.
 //
 
 #include "gtest/gtest.h"
@@ -114,7 +114,7 @@ TEST(BlockScopedDropTests, methodBodyLocalDropsAtMethodExit) {
     ), 1);
 }
 
-// The lock-twice-in-a-method pattern from docs/stdlib/Concurrency.md. Pre-block-
+// The lock-twice-in-a-method pattern from docs/specification/concurrent/Concurrency.md. Pre-block-
 // scoped-drops this deadlocked: the first LockGuard didn't release
 // until method exit, so the second acquire blocked on a still-held
 // mutex. With block-scoped drops, g releases at its closing `}` and

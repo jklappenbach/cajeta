@@ -1,7 +1,7 @@
 //
 // MultiClassing R-3 — `@Override(from=Parent)` optional annotation.
 //
-// Design: docs/stdlib/MultiClassing.md § R-3.
+// Design: docs/specification/lang/MultiClassing.md § R-3.
 //
 // `@Override(from=B)` is accepted on any override; compiler verifies
 // the named class is an ancestor of the receiver class AND declares

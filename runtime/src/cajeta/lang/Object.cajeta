@@ -7,7 +7,7 @@ package cajeta.lang;
  * pass in `CajetaLlvmVisitor::visitClassDeclaration`), so the three
  * methods declared here are inherited by every user class unless
  * manually overridden. See
- * [stdlib/Lang.md § Object](../../../../../docs/stdlib/Lang.md)
+ * [specification/lang/Lang.md § Object](../../../../../docs/specification/lang/Lang.md)
  * for the full design.
  *
  * ## Default behaviour
@@ -26,7 +26,7 @@ package cajeta.lang;
  * (`HashMap``<Point, V>` where `Point(1, 2)` should equal `Point(1, 2)`)
  * **override `hash()` manually**, or opt into structural synthesis
  * via the `@AutoHash` annotation (planned — see §"Auto-hash opt-in"
- * in stdlib/Lang.md).
+ * in specification/lang/Lang.md).
  *
  * The per-process seed is initialized from OS entropy at process
  * start; hash values are stable for the value's lifetime within a
@@ -203,7 +203,7 @@ public class Object {
      * `~T()` is the supported way to answer _"when was this instance
      * destructed?"_** — an ordinary source breakpoint, no special machinery.
      *
-     * @See docs/stdlib/MemoryModel.md § Destructors
+     * @See docs/specification/lang/MemoryModel.md § Destructors
      */
     ~Object() {
     }

@@ -1,4 +1,4 @@
-// NET-7.6 — cajeta.net.http.KeepAlive tests (keep-alive semantics).
+// NET-7.6 — cajeta.io.net.http.KeepAlive tests (keep-alive semantics).
 //
 // Keep-alive is pure policy logic over the Headers map + the HTTP
 // version defaults (RFC 7230 §6.3) — no I/O — so it tests directly over
@@ -28,8 +28,8 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.Headers;\n"
-        "import cajeta.net.http.KeepAlive;\n"
+        "import cajeta.io.net.Headers;\n"
+        "import cajeta.io.net.http.KeepAlive;\n"
         "public final class M {\n"
         "    // Build a one-entry Connection header map (or an empty map\n"
         "    // when value is empty).\n"

@@ -1,0 +1,83 @@
+package cajeta.io.net.dns;
+
+import cajeta.io.net.SocketAddress;
+
+/**
+ * One value held by a [`DnsCache`](DnsCache.cajeta) — either a
+ * **positive** resolution (a non-empty, port-0 `SocketAddress[]`) or a
+ * **negative** result (a name that failed to resolve), tagged so the
+ * cache can serve a `(host, family)` "this name does not resolve"
+ * verdict from memory without re-hitting `getaddrinfo` on every retry
+ * (plan item **NET-2.4** — *negative-result caching*).
+ *
+ * ## Why a holder rather than caching the array directly
+ *
+ * Two reasons the cache stores a `DnsCacheEntry` and not a bare
+ * `SocketAddress[]`:
+ *
+ *   1. **Negative caching needs a sentinel.** A failed lookup has no
+ *      addresses to store; a `negative` flag is the in-band way to
+ *      record "asked, got nothing" so the next caller inside the TTL
+ *      sees the same failure cheaply (DNS storms against a dead name
+ *      are a real abuse vector). A null/empty array would be
+ *      indistinguishable from "not cached."
+ *   2. **It dodges array-typed generic values.** The underlying
+ *      [`Cache<K,V>`](../../collection/Cache.cajeta) parameterizes `V`
+ *      over an object type; wrapping the array in a plain class keeps
+ *      `V = DnsCacheEntry` and never asks the generic machinery to hold
+ *      a raw `SocketAddress[]` as a type argument.
+ *
+ * The stored addresses carry **port 0** — the cache keys on
+ * `(host, family)`, and the caller's port is baked at the
+ * [`DnsCache`](DnsCache.cajeta) surface, so the same cached entry
+ * serves every port a caller later asks for.
+ */
+public final class DnsCacheEntry {
+
+    /**
+     * The resolved endpoints (port 0), or `null` for a negative entry.
+     * On a positive entry this is the **shared** backing array handed
+     * back (by reference) to every hit inside the TTL — treat as
+     * read-only.
+     */
+    public SocketAddress[] addresses;
+
+    /**
+     * `true` when this entry records a **failed** lookup (a name that
+     * did not resolve). A negative entry has `addresses == null`; the
+     * cache re-raises on a hit instead of returning addresses.
+     */
+    public boolean negative;
+
+    /**
+     * Field-pinning no-arg ctor: an empty positive shell. The
+     * [`positive`](#positive) / [`negativeResult`](#negativeResult)
+     * factories are the real entry points.
+     */
+    public DnsCacheEntry() {
+        this.addresses = null;
+        this.negative = false;
+    }
+
+    /**
+     * A **positive** entry wrapping a non-empty, port-0
+     * `SocketAddress[]`. Takes ownership of `addrs`.
+     */
+    public static #DnsCacheEntry positive(#SocketAddress[] addrs) {
+        DnsCacheEntry e = heap DnsCacheEntry();
+        e.addresses = addrs;
+        e.negative = false;
+        return #e;
+    }
+
+    /**
+     * A **negative** entry — a name that failed to resolve. Carries no
+     * addresses; a cache hit on it re-raises rather than returning.
+     */
+    public static #DnsCacheEntry negativeResult() {
+        DnsCacheEntry e = heap DnsCacheEntry();
+        e.addresses = null;
+        e.negative = true;
+        return #e;
+    }
+}

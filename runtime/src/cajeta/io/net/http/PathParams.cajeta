@@ -1,0 +1,137 @@
+package cajeta.io.net.http;
+
+import cajeta.lang.String;
+
+/**
+ * **Path-parameter map** for the [`Router`](Router.cajeta) (plan item
+ * **NET-9.3**) — the `{name} -> value` bindings a matched route pattern
+ * (`/users/{id}`) extracts from a concrete request path (`/users/42`
+ * binds `id -> "42"`).
+ *
+ * It is a tiny **single-value, insertion-order** map over
+ * `cajeta.lang.String` — pure logic, no I/O, no native intrinsics — so it
+ * tests with golden vectors over `CajetaJit`, exactly like
+ * [`Headers`](../Headers.cajeta) and
+ * [`QueryParams`](../uri/QueryParams.cajeta) (whose parallel-array shape
+ * it mirrors). A route pattern's parameter names are unique by
+ * construction (a `{name}` appears once in a pattern), so unlike the
+ * header / query multi-maps this is **last-write-wins single-value** — one
+ * slot per name.
+ *
+ *   - `names[i]`  : the parameter name (the text inside `{ }`, e.g. `id`).
+ *   - `values[i]` : the **already percent-decoded** path segment the
+ *                   pattern captured for that name.
+ *
+ * ## Why decoded values
+ *
+ * A path segment on the wire may carry percent-escapes (`/users/a%2Fb`
+ * is one segment whose decoded value is `a/b`). The [`Router`](Router.cajeta)
+ * decodes each captured segment with
+ * [`PercentCodec.decode`](../uri/PercentCodec.cajeta) before binding it
+ * here, so a handler reading `req.pathParam("id")` gets the logical value,
+ * not the raw escapes — matching the `QueryParams` convention (decoded
+ * keys / values).
+ *
+ * @see [`Router`](Router.cajeta) for the matcher that populates this.
+ * @see [`HttpRequest.pathParam`](HttpRequest.cajeta#pathParam) for the
+ *      handler-facing accessor that reads it.
+ */
+public class PathParams {
+    String[] names;
+    String[] values;
+    int32 cap;
+    int32 sizeCount;
+
+    /** An empty path-param map. */
+    public PathParams() {
+        this.cap = 4;
+        this.names = heap String[4];
+        this.values = heap String[4];
+        this.sizeCount = 0;
+    }
+
+    /** Number of bound parameters. */
+    public int32 size() {
+        return this.sizeCount;
+    }
+
+    /** The parameter name at slot `i`, in capture order. */
+    public String nameAt(int32 i) {
+        return this.names[i];
+    }
+
+    /** The bound (decoded) value at slot `i`, in capture order. */
+    public String valueAt(int32 i) {
+        return this.values[i];
+    }
+
+    /**
+     * Bind `name -> value` (taking ownership of both), appending a slot in
+     * capture order. The [`Router`](Router.cajeta) only ever calls this
+     * with the **unique** parameter names of a single route pattern (a
+     * `{name}` appears once), so no de-duplication is needed — `get` is
+     * single-valued because the keys are distinct by construction.
+     */
+    public void put(#String name, #String value) {
+        this.ensureCapacity(this.sizeCount + 1);
+        this.names[this.sizeCount] = name;
+        this.values[this.sizeCount] = value;
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /** True iff a value is bound for `name`. */
+    public boolean contains(String name) {
+        return this.indexOf(name) >= 0;
+    }
+
+    /**
+     * The value bound for `name`, or `null` when `name` was not a
+     * parameter of the matched route. The returned `String` is a fresh
+     * view over the stored bytes (caller-owned, not an alias of the map's
+     * field-owned `String`), the
+     * [`QueryParams.getFirst`](../uri/QueryParams.cajeta#getFirst)
+     * ownership convention.
+     */
+    public #String get(String name) {
+        int32 i = this.indexOf(name);
+        if (i < 0) {
+            return null;
+        }
+        String v = this.values[i];
+        return heap String(v.bytes, v.byteLength);
+    }
+
+    /** Slot index for `name`, or `-1` when absent. */
+    int32 indexOf(String name) {
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.names[i].equals(name)) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /** Grow the parallel arrays to hold at least `need` slots. */
+    void ensureCapacity(int32 need) {
+        if (need <= this.cap) {
+            return;
+        }
+        int32 newCap = this.cap * 2;
+        while (newCap < need) {
+            newCap = newCap * 2;
+        }
+        String[] nn = heap String[newCap];
+        String[] nv = heap String[newCap];
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            nn[i] = this.names[i];
+            nv[i] = this.values[i];
+            i = i + 1;
+        }
+        this.names = nn;
+        this.values = nv;
+        this.cap = newCap;
+    }
+}

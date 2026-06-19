@@ -93,7 +93,7 @@ namespace cajeta {
         // Template-instantiation skip from MCE doesn't fire here (ctors
         // aren't method-templated under the current grammar — the doc
         // explicitly excludes constructors from method-level templates,
-        // see docs/stdlib/MethodLevelTemplate.md § Constructors
+        // see docs/specification/lang/MethodLevelTemplate.md § Constructors
         // and operators excluded).
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
             bool anyLambda = false;
@@ -179,7 +179,7 @@ namespace cajeta {
                 ctorName = klass->getTemplateOrigin()->getQName()->getTypeName();
             }
             // # transfer at ctor-call site (#67 + Phase 1 of #68 — see
-            // docs/stdlib/OwnershipTransfer.md). Two passes:
+            // docs/specification/lang/OwnershipTransfer.md). Two passes:
             //
             //   1. Caller-side: any argument the caller wrote `#x` on
             //      gets its source local's drop deactivated. The caller's
@@ -254,7 +254,7 @@ namespace cajeta {
                 // Only fires on a genuine double-free hazard: an
                 // IdentifierExpression of a class-typed local whose
                 // Field carries an active drop entry. See
-                // docs/stdlib/OwnershipTransfer.md.
+                // docs/specification/lang/OwnershipTransfer.md.
                 MethodPtr xferTarget = klass->resolveMethod(
                     ctorName, entries, /*isConstructor=*/true,
                     /*floatingParams=*/false);
@@ -286,7 +286,7 @@ namespace cajeta {
                                 "write `#" + idExpr->getTextValue() + "` at the call site "
                                 "to surrender ownership of the source local, or pass a "
                                 "fresh `heap T(...)` / `stack T(...)` construction. "
-                                "See docs/stdlib/OwnershipTransfer.md.",
+                                "See docs/specification/lang/OwnershipTransfer.md.",
                             "CAJETA_ERROR_TRANSFER_REQUIRED");
                     }
                 }

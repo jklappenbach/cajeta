@@ -12,8 +12,8 @@ from the in-repo specs.
 - `src/content.config.ts` defines a `docs` content collection whose glob loader
   reads `../docs/**/*.md`.
 - `src/pages/docs/[...slug].astro` renders one page per doc at `/docs/<slug>`,
-  where `<slug>` is the lowercased, path-based id (e.g. `docs/stdlib/MemoryModel.md`
-  → `/docs/stdlib/memorymodel`).
+  where `<slug>` is the lowercased, path-based id (e.g. `docs/specification/lang/MemoryModel.md`
+  → `/docs/specification/memorymodel`).
 - `src/pages/docs/index.astro` lists every doc, grouped into Core / Stdlib / GPU /
   Specs / Status (derived from the top-level directory).
 - `src/utils/docs.ts` derives each page's title (first `# ` heading), description
@@ -38,7 +38,7 @@ npm run build    # static site to ./dist
   them, but no blog routes are generated. Demo landing/home/pricing pages were
   removed; the homepage (`src/pages/index.astro`) is a Cajeta landing.
 - **Known limitation:** relative `*.md` links *inside* the doc markdown (e.g.
-  `[Views](stdlib/Views.md)`) point at source paths, not site routes, so they
+  `[Views](specification/lang/Views.md)`) point at source paths, not site routes, so they
   don't resolve in the rendered site. Rewriting them to `/docs/<slug>` would
   need a small rehype plugin — a future enhancement.
 - `public/decapcms/` is the template's CMS admin (geared at the now-disabled

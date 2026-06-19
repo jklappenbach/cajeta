@@ -1,6 +1,6 @@
 //
 // First-class function type — value-type representation of a callable
-// `(T1, T2, ..., Tn) -> R`. See docs/stdlib/Lambdas.md for the full design.
+// `(T1, T2, ..., Tn) -> R`. See docs/specification/lang/Lambdas.md for the full design.
 //
 // v1 (L1): non-capturing lambdas only. The LLVM-level value of a function-
 // typed expression is a bare function pointer (`ptr`). Captures (L2) will
@@ -25,7 +25,7 @@ namespace cajeta {
         std::vector<CajetaTypePtr> parameterTypes;
         CajetaTypePtr returnType;
         // Function-type return ABI discriminator (M5(b) — see
-        // docs/stdlib/ValueReturns.md). `true` (default) = the
+        // docs/specification/lang/ValueReturns.md). `true` (default) = the
         // pre-existing pointer-return / heap-ownership form `(P) -> #R`;
         // `false` reserves the sret value-return form `(P) -> R` that N3
         // will wire up. N1+N2 plumb the field so the canonical

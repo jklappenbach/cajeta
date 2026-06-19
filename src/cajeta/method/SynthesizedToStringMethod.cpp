@@ -104,7 +104,7 @@ namespace cajeta {
             // pass; this branch should never fire in practice.
             rejectToStringField(parent, fieldName, typeName,
                 "view-typed fields can't be embedded in classes "
-                "(see docs/stdlib/Views.md)",
+                "(see docs/specification/lang/Views.md)",
                 "store the underlying byte[] and reconstruct the view "
                 "in your manual toString()");
         }

@@ -9,7 +9,7 @@ package cajeta.error;
  * vtable with the runtime through a global constructor
  * (`__cajeta_set_unrecoverable_vtable`); when a thrown instance's vtable
  * chain reaches that address the throw bypasses user `catch` handlers and
- * propagates straight to abort. See `docs/stdlib/ErrorModel.md`.
+ * propagates straight to abort. See `docs/specification/error/ErrorModel.md`.
  *
  * Throw one when state has gone unrecoverably wrong:
  *

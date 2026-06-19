@@ -11,7 +11,7 @@
 // Follow-up commits add int64/boolean/float/String, then nested
 // classes, then annotation surface.
 //
-// See docs/stdlib/codec/Json.md § Tier 1.
+// See docs/specification/codec/json/Json.md § Tier 1.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"

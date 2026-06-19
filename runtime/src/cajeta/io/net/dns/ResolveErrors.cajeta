@@ -1,0 +1,102 @@
+package cajeta.io.net.dns;
+
+import cajeta.lang.String;
+import cajeta.io.net.NetException;
+
+/**
+ * The `cajeta_resolve_err` → DNS-[`NetException`](../NetException.cajeta)
+ * subtype mapping table (plan item **NET-2.5**) — the DNS-layer peer of
+ * [`NetErrors.fromErrno`](../NetErrors.cajeta).
+ *
+ * ## Why a separate table from `NetErrors.fromErrno`
+ *
+ * `getaddrinfo` does **not** report a socket `errno`; it reports an
+ * `EAI_*` code in a wholly **separate ordinal space**, which the NET-2.1
+ * native shim
+ * ([`runtime/native/cajeta_net_getaddrinfo.c`](../../../../native/cajeta_net_getaddrinfo.c))
+ * normalizes into `enum cajeta_resolve_err` and returns from
+ * [`__cajeta_net_getaddrinfo_error`](Dns.cajeta). Folding that space
+ * into [`NetErrors.fromErrno`](../NetErrors.cajeta) (which keys the
+ * *socket* `cajeta_net_err` space, where ordinal `1` means `WOULDBLOCK`,
+ * not `NONAME`) would alias two unrelated ordinal contracts onto the
+ * same integers. So the DNS layer keeps its own total mapper here,
+ * co-located with the [`UnknownHostException`](UnknownHostException.cajeta)
+ * / [`ResolutionFailedException`](ResolutionFailedException.cajeta)
+ * subtypes it produces — exactly as `NetErrors` sits beside the socket
+ * subtypes it produces.
+ *
+ * ## The two-way split
+ *
+ * The eight non-OK resolve ordinals collapse into two outcomes a caller
+ * actually branches on:
+ *
+ *   - **`NONAME` (1) / `NODATA` (2)** → definitive *name-not-found*
+ *     negatives → [`UnknownHostException`](UnknownHostException.cajeta).
+ *   - **everything else** (`AGAIN` 3, `FAIL` 4, `FAMILY` 5, `MEMORY` 6,
+ *     `SYSTEM` 7, `BADFLAGS` 8, `SERVICE` 9, `OTHER` 99) → transport /
+ *     server / local *failures* →
+ *     [`ResolutionFailedException`](ResolutionFailedException.cajeta).
+ *
+ * The precise ordinal is preserved on each subtype's `resolveErrno`
+ * field, so the coarse split never loses the fine cause (e.g. a retry
+ * policy can still single out `AGAIN`). See
+ * [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
+ *
+ * ## Totality
+ *
+ * `fromResolveErrno` is **total** over the ordinal space. `OK` (0) is
+ * not a failure — passing it is a caller bug (the resolve succeeded, so
+ * no exception should have been asked for); it maps to
+ * `ResolutionFailedException` carrying ordinal `0` rather than silently
+ * returning `null`, surfacing the misuse loudly (the same loud-fail
+ * discipline `NetErrors.fromErrno` applies to its `OK`). Every other
+ * value that is not NONAME/NODATA — including unknown future ordinals —
+ * falls through to `ResolutionFailedException`, so the table can never
+ * return `null`.
+ */
+public class ResolveErrors {
+
+    // ── Normalized `cajeta_resolve_err` ordinals — a byte-identical
+    //    mirror of `enum cajeta_resolve_err` in
+    //    runtime/native/cajeta_net_getaddrinfo.c. Append-only; never
+    //    renumber an existing value. ───────────────────────────────────
+    public static final int32 RESOLVE_OK       = 0;   // resolved (>= 1 address)
+    public static final int32 RESOLVE_NONAME   = 1;   // host not found / no such name
+    public static final int32 RESOLVE_NODATA   = 2;   // name valid but no address of the requested family
+    public static final int32 RESOLVE_AGAIN    = 3;   // transient failure, retry may succeed
+    public static final int32 RESOLVE_FAIL     = 4;   // non-recoverable failure
+    public static final int32 RESOLVE_FAMILY   = 5;   // requested family unsupported
+    public static final int32 RESOLVE_MEMORY   = 6;   // out of memory
+    public static final int32 RESOLVE_SYSTEM   = 7;   // system error (errno set)
+    public static final int32 RESOLVE_BADFLAGS = 8;   // invalid hints/flags
+    public static final int32 RESOLVE_SERVICE  = 9;   // service/port not supported
+    public static final int32 RESOLVE_OTHER    = 99;  // any unmapped EAI_* code
+
+    /**
+     * Map a normalized `cajeta_resolve_err` ordinal (the value
+     * [`__cajeta_net_getaddrinfo_error`](Dns.cajeta) returns) to the
+     * matching DNS [`NetException`](../NetException.cajeta) subtype,
+     * carrying `detail` as the message and the ordinal as the subtype's
+     * `resolveErrno`.
+     *
+     * `NONAME` (1) / `NODATA` (2) → [`UnknownHostException`]; every other
+     * ordinal (including `OK` 0 as a caller-bug guard, and any unmapped
+     * future value) → [`ResolutionFailedException`]. Returns a freshly
+     * heap-allocated, **unthrown** exception object — the caller (the
+     * [`Dns.resolve`](Dns.cajeta) failure path) decides whether to
+     * `throw` it. Total over the ordinal space; never returns `null`.
+     */
+    public static #NetException fromResolveErrno(int32 resolveErrno, String detail) {
+        if (resolveErrno == 1) {            // RESOLVE_NONAME
+            return heap UnknownHostException(detail, resolveErrno);
+        }
+        if (resolveErrno == 2) {            // RESOLVE_NODATA
+            return heap UnknownHostException(detail, resolveErrno);
+        }
+        // AGAIN (3), FAIL (4), FAMILY (5), MEMORY (6), SYSTEM (7),
+        // BADFLAGS (8), SERVICE (9), OTHER (99) — and the OK (0)
+        // caller-bug guard, plus any unknown future ordinal — all fall
+        // through to the transport/server/local failure bucket.
+        return heap ResolutionFailedException(detail, resolveErrno);
+    }
+}

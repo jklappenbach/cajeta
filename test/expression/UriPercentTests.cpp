@@ -1,4 +1,4 @@
-// Tests for cajeta.net.uri percent-encoding — plan item NET-6.2.
+// Tests for cajeta.io.net.uri percent-encoding — plan item NET-6.2.
 //
 // Scope: PercentCodec.encode / PercentCodec.decode and the
 // Uri.percentEncode / Uri.percentDecode facades, exercising the
@@ -34,10 +34,10 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.uri.Uri;\n"
-           "import cajeta.net.uri.PercentCodec;\n"
-           "import cajeta.net.uri.UriComponent;\n"
-           "import cajeta.net.uri.MalformedUriException;\n"
+           "import cajeta.io.net.uri.Uri;\n"
+           "import cajeta.io.net.uri.PercentCodec;\n"
+           "import cajeta.io.net.uri.UriComponent;\n"
+           "import cajeta.io.net.uri.MalformedUriException;\n"
            "public final class P {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

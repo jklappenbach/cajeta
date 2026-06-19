@@ -1,4 +1,4 @@
-// cajeta.net — NET-1.1 native socket intrinsics (BSD sockets / Winsock).
+// cajeta.io.net — NET-1.1 native socket intrinsics (BSD sockets / Winsock).
 //
 // This translation unit is **#included once** at the bottom of
 // `cajeta_runtime.c` (the runtime is built as a single TU → LLVM bitcode →
@@ -6,7 +6,7 @@
 // Keeping the net intrinsics in their own file makes them reviewable and
 // editable independently while still riding the existing single-TU build —
 // no CMake change to the bitcode-embed path is required. The functions are
-// plain `extern "C"`-ABI symbols (`__cajeta_net_*`) that the `cajeta.net`
+// plain `extern "C"`-ABI symbols (`__cajeta_net_*`) that the `cajeta.io.net`
 // stdlib wrappers (NET-1.2 onward) lower their method bodies to, exactly the
 // way `File` lowers to `__cajeta_file_*` and `Channel` to `Cajeta.lockNew`.
 //
@@ -80,9 +80,9 @@ typedef socklen_t cajeta_socklen_t;
 // Cross-platform error enum (the `cajeta_net_errno` shim).
 //
 // These ordinals are the stable contract between the native layer and the
-// `cajeta.net` exception mapping (NET-1.8): the cajeta side switches on this
+// `cajeta.io.net` exception mapping (NET-1.8): the cajeta side switches on this
 // value to pick the `NetException` subtype. Keep the ordinals append-only;
-// never renumber. The mapping table lives in `docs/stdlib/net/Errors.md`
+// never renumber. The mapping table lives in `docs/specification/io/net/Errors.md`
 // (authored by NET-1.8 / NET-11.6).
 // ---------------------------------------------------------------------------
 enum cajeta_net_err {

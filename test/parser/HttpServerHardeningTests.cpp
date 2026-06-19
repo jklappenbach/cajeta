@@ -1,4 +1,4 @@
-// NET-9.6 — cajeta.net.http server limits + hardening tests.
+// NET-9.6 — cajeta.io.net.http server limits + hardening tests.
 //
 // NET-9.6 adds four request ceilings to the HTTP/1.1 server (NET-9.1/9.4):
 // a head-read deadline (slowloris mitigation), a body-read deadline, a max
@@ -49,14 +49,14 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.http.HttpServer;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
-        "import cajeta.net.http.HttpParserLimits;\n"
-        "import cajeta.net.http.ServerLimits;\n"
-        "import cajeta.net.http.ExpectContinue;\n"
-        "import cajeta.net.http.Exchange;\n"
-        "import cajeta.net.NetException;\n"
+        "import cajeta.io.net.http.HttpServer;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
+        "import cajeta.io.net.http.HttpParserLimits;\n"
+        "import cajeta.io.net.http.ServerLimits;\n"
+        "import cajeta.io.net.http.ExpectContinue;\n"
+        "import cajeta.io.net.http.Exchange;\n"
+        "import cajeta.io.net.NetException;\n"
         "public final class M {\n"
         "    static #int8[] bytes(String s) {\n"
         "        int32 n = s.byteLength;\n"

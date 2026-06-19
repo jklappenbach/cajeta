@@ -1,0 +1,125 @@
+package cajeta.io.net;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Root of the `cajeta.io.net` exception hierarchy — the networking peer
+ * of [`cajeta.io.file.IoException`](../io/file/IoException.cajeta).
+ * See [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md)
+ * for the full chart (platform errno → cross-platform ordinal →
+ * exception) and the throws-clause discipline.
+ *
+ * ## Why a peer, not a child of `IoException`
+ *
+ * File I/O and network I/O share the fiber model but **nothing
+ * else** (see [`docs/Net.md`](../../../../../docs/Net.md)
+ * design principles): the network layer has its own error taxonomy,
+ * its own event engine, and a far larger surface (HTTP / WS / TLS /
+ * URI). So `NetException` roots its own tree off
+ * `cajeta.error.RecoverableException`, matching Rust's
+ * `std::io::Error` ↔ `std::net` split and Go's `net.Error`.
+ *
+ * ## Recoverable, not Unrecoverable
+ *
+ * `NetException extends RecoverableException`, so every networking
+ * call site either:
+ *   - catches the specific subtype explicitly, or
+ *   - declares it in its `throws` clause and propagates upward.
+ *
+ * The compiler's uncaught-throws check keeps the discipline visible.
+ *
+ * ## The `kind` discriminant
+ *
+ * Every instance carries `kind` — the stable cross-platform error
+ * ordinal it was classified to (the `cajeta_net_err` enum the NET-1.1
+ * native shim `__cajeta_net_last_error()` returns). It lets a single
+ * `catch (NetException e)` branch on the cause without a chain of
+ * `instanceof` tests, and it is the value [`NetErrors.fromErrno`](NetErrors.cajeta)
+ * keys the subtype selection on. The ordinals mirror
+ * `runtime/native/cajeta_net_socket.c`'s `enum cajeta_net_err`
+ * **exactly** — keep them in lock-step; they are an append-only
+ * contract.
+ *
+ * Subtype exceptions live in their own files alongside this one
+ * (`ConnectionRefusedException`, `BrokenPipeException`, …), exactly
+ * as the `cajeta.io.file` subtypes do.
+ *
+ * ## The consolidation point (NET-11.6)
+ *
+ * This class is the **single root every networking failure descends
+ * from** — not just the socket-layer subtypes above, but every
+ * later-phase family too: DNS (`UnknownHost` / `ResolutionFailed`),
+ * TLS (`TlsHandshakeFailed` / `CertificateInvalid` / `TlsProtocolError`),
+ * URI ([`MalformedUriException`](uri/MalformedUriException.cajeta)),
+ * the HTTP family under an intermediate `HttpException`, and the
+ * WebSocket family under `WebSocketException`. That is what lets a
+ * façade method (`HttpClient.send`, `WebSocket.connect`) declare one
+ * `throws NetException` clause that covers every fault its transport,
+ * TLS, DNS, and protocol layers can raise, and lets a request-boundary
+ * `catch (NetException e)` be the universal net-out. The complete
+ * cross-phase chart — built vs. planned per phase, plus each subtype's
+ * carried discriminant — is consolidated in
+ * [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
+ */
+public class NetException extends RecoverableException {
+    /**
+     * The cross-platform [`cajeta_net_err`] ordinal this failure was
+     * classified to (`KIND_*` below). `KIND_OTHER` (99) when the
+     * platform errno did not map to a specific subtype.
+     */
+    public int32 kind;
+
+    public NetException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 99;   // KIND_OTHER
+    }
+
+    /**
+     * Two-arg constructor carrying both the human message and an
+     * explicit cross-platform `kind` ordinal — used by
+     * [`NetErrors.fromErrno`](NetErrors.cajeta) for the
+     * *unmapped-ordinal fallback* (so a caller can still discriminate
+     * on `e.kind` for an `OTHER` / `INTERRUPTED` / `INVALID` /
+     * `ACCESS` / `IN_PROGRESS` cause that has no dedicated subtype).
+     *
+     * The concrete subtypes do **not** chain through this constructor
+     * — `super(...)` is still `UnsupportedExpression` in the compiler
+     * (see [`cajeta.error.Throwable`](../error/Throwable.cajeta)). Each
+     * subtype instead sets the inherited `message`/`cause` fields and
+     * its own `kind` directly in its own constructor, exactly as
+     * [`MalformedUriException`](uri/MalformedUriException.cajeta) sets
+     * `position` — the proven NET-6.1 pattern. "Each subclass repeats
+     * the field assignment," per `Throwable`'s own contract.
+     */
+    public NetException(String message, int32 kind) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = kind;
+    }
+
+    // -----------------------------------------------------------------
+    // Cross-platform error ordinals — a byte-identical mirror of
+    // `enum cajeta_net_err` in runtime/native/cajeta_net_socket.c.
+    // The native `__cajeta_net_last_error()` returns one of these; the
+    // cajeta layer (NetErrors.fromErrno) turns it into the matching
+    // subtype below. Append-only: never renumber an existing value.
+    // -----------------------------------------------------------------
+    public static final int32 KIND_OK                  = 0;
+    public static final int32 KIND_WOULD_BLOCK         = 1;
+    public static final int32 KIND_CONNECTION_REFUSED  = 2;
+    public static final int32 KIND_CONNECTION_RESET    = 3;
+    public static final int32 KIND_CONNECTION_ABORTED  = 4;
+    public static final int32 KIND_ADDRESS_IN_USE      = 5;
+    public static final int32 KIND_ADDRESS_NOT_AVAIL   = 6;
+    public static final int32 KIND_HOST_UNREACHABLE    = 7;
+    public static final int32 KIND_NETWORK_UNREACHABLE = 8;
+    public static final int32 KIND_BROKEN_PIPE         = 9;
+    public static final int32 KIND_TIMED_OUT           = 10;
+    public static final int32 KIND_INTERRUPTED         = 11;
+    public static final int32 KIND_INVALID             = 12;
+    public static final int32 KIND_ACCESS              = 13;
+    public static final int32 KIND_IN_PROGRESS         = 14;
+    public static final int32 KIND_OTHER               = 99;
+}

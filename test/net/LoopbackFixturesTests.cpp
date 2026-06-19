@@ -15,7 +15,7 @@
 // the product's own NET-1.1 socket intrinsics (`__cajeta_net_socket` /
 // `_connect` / `_send` / `_recv` / `_close`) — the same symbols
 // `TcpStream` (NET-1.3) lowers to. So this both keeps the fixture honest
-// and demonstrates the fixture is a valid peer for a cajeta.net client,
+// and demonstrates the fixture is a valid peer for a cajeta.io.net client,
 // which is its reason to exist. (NetSocketTests/NetListenerTests already
 // pin those intrinsics directly; here they are the test *driver*, not the
 // subject.)

@@ -1,4 +1,4 @@
-// NET-7.4 — cajeta.net.http.BodyReader tests (streaming body framing).
+// NET-7.4 — cajeta.io.net.http.BodyReader tests (streaming body framing).
 //
 // The body reader is a resumable, streaming decoder over byte buffers —
 // pure logic, no I/O — so it tests directly over the JIT, the same way
@@ -34,14 +34,14 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.Headers;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
-        "import cajeta.net.http.HttpParser;\n"
-        "import cajeta.net.http.BodyFraming;\n"
-        "import cajeta.net.http.BodyReader;\n"
-        "import cajeta.net.http.InvalidChunkEncodingException;\n"
-        "import cajeta.net.http.UnexpectedEofException;\n"
+        "import cajeta.io.net.Headers;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
+        "import cajeta.io.net.http.HttpParser;\n"
+        "import cajeta.io.net.http.BodyFraming;\n"
+        "import cajeta.io.net.http.BodyReader;\n"
+        "import cajeta.io.net.http.InvalidChunkEncodingException;\n"
+        "import cajeta.io.net.http.UnexpectedEofException;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

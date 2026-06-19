@@ -1,4 +1,4 @@
-// cajeta.net — NET-1.7 non-blocking mode + WouldBlock-as-a-value intrinsics.
+// cajeta.io.net — NET-1.7 non-blocking mode + WouldBlock-as-a-value intrinsics.
 //
 // This translation unit is **#included once** at the bottom of
 // `cajeta_runtime.c` (the same single-TU → bitcode → embed build path the

@@ -1,4 +1,4 @@
-// Tests for the cajeta.net buffer-management layer (NET-11.5):
+// Tests for the cajeta.io.net buffer-management layer (NET-11.5):
 //   - ByteBuffer  : read/write-cursor byte buffer (the pooled unit)
 //   - RingBuffer  : circular buffer + high/low watermark backpressure
 //   - BufferPool  : pooled ByteBuffer allocator, reuse-bounded
@@ -31,7 +31,7 @@ int32_t runI32(const std::string& src) {
 TEST(ByteBufferTests, freshBufferIsEmptyWithFullWritableRoom) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(64);\n"
@@ -45,7 +45,7 @@ TEST(ByteBufferTests, freshBufferIsEmptyWithFullWritableRoom) {
 TEST(ByteBufferTests, writeThenReadRoundTrips) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(16);\n"
@@ -67,7 +67,7 @@ TEST(ByteBufferTests, writeThenReadRoundTrips) {
 TEST(ByteBufferTests, writeStopsAtCapacityShortWrite) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(3);\n"
@@ -85,7 +85,7 @@ TEST(ByteBufferTests, writeStopsAtCapacityShortWrite) {
 TEST(ByteBufferTests, advanceReadAdvanceWriteTrackCursors) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(32);\n"
@@ -101,7 +101,7 @@ TEST(ByteBufferTests, advanceReadAdvanceWriteTrackCursors) {
 TEST(ByteBufferTests, advanceClampsToBounds) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(8);\n"
@@ -117,7 +117,7 @@ TEST(ByteBufferTests, advanceClampsToBounds) {
 TEST(ByteBufferTests, compactSlidesUnreadBytesToFront) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(8);\n"
@@ -141,7 +141,7 @@ TEST(ByteBufferTests, compactSlidesUnreadBytesToFront) {
 TEST(ByteBufferTests, clearResetsCursorsKeepsCapacity) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(16);\n"
@@ -157,7 +157,7 @@ TEST(ByteBufferTests, clearResetsCursorsKeepsCapacity) {
 TEST(ByteBufferTests, reserveGrowsBeyondCapacityPreservingContent) {
     auto src =
         "package test;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ByteBuffer b = heap ByteBuffer(4);\n"
@@ -187,7 +187,7 @@ TEST(ByteBufferTests, reserveGrowsBeyondCapacityPreservingContent) {
 TEST(RingBufferTests, writeReadWrapsAround) {
     auto src =
         "package test;\n"
-        "import cajeta.net.RingBuffer;\n"
+        "import cajeta.io.net.RingBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(4, 1, 3);\n"
@@ -209,7 +209,7 @@ TEST(RingBufferTests, writeReadWrapsAround) {
 TEST(RingBufferTests, writeShortWhenFull) {
     auto src =
         "package test;\n"
-        "import cajeta.net.RingBuffer;\n"
+        "import cajeta.io.net.RingBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(4, 1, 4);\n"
@@ -229,7 +229,7 @@ TEST(RingBufferTests, writeShortWhenFull) {
 TEST(RingBufferTests, highWatermarkTrips) {
     auto src =
         "package test;\n"
-        "import cajeta.net.RingBuffer;\n"
+        "import cajeta.io.net.RingBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(10, 2, 7);\n"
@@ -254,7 +254,7 @@ TEST(RingBufferTests, highWatermarkTrips) {
 TEST(RingBufferTests, lowWatermarkResumesAfterDrain) {
     auto src =
         "package test;\n"
-        "import cajeta.net.RingBuffer;\n"
+        "import cajeta.io.net.RingBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(10, 2, 7);\n"
@@ -278,7 +278,7 @@ TEST(RingBufferTests, lowWatermarkResumesAfterDrain) {
 TEST(RingBufferTests, peekDoesNotConsume) {
     auto src =
         "package test;\n"
-        "import cajeta.net.RingBuffer;\n"
+        "import cajeta.io.net.RingBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(8, 1, 6);\n"
@@ -298,7 +298,7 @@ TEST(RingBufferTests, peekDoesNotConsume) {
 TEST(RingBufferTests, skipConsumesWithoutCopy) {
     auto src =
         "package test;\n"
-        "import cajeta.net.RingBuffer;\n"
+        "import cajeta.io.net.RingBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        RingBuffer r = heap RingBuffer(8, 1, 6);\n"
@@ -317,7 +317,7 @@ TEST(RingBufferTests, skipConsumesWithoutCopy) {
 TEST(RingBufferTests, watermarksClampToSaneBand) {
     auto src =
         "package test;\n"
-        "import cajeta.net.RingBuffer;\n"
+        "import cajeta.io.net.RingBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         // high > capacity clamps to capacity; low > high clamps to high
@@ -336,8 +336,8 @@ TEST(RingBufferTests, watermarksClampToSaneBand) {
 TEST(BufferPoolTests, acquireGivesSlabSizedBuffer) {
     auto src =
         "package test;\n"
-        "import cajeta.net.BufferPool;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.BufferPool;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(128, 4);\n"
@@ -351,8 +351,8 @@ TEST(BufferPoolTests, acquireGivesSlabSizedBuffer) {
 TEST(BufferPoolTests, releaseRetainsIdleBuffer) {
     auto src =
         "package test;\n"
-        "import cajeta.net.BufferPool;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.BufferPool;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(64, 4);\n"
@@ -370,8 +370,8 @@ TEST(BufferPoolTests, releaseRetainsIdleBuffer) {
 TEST(BufferPoolTests, reuseStaysBounded) {
     auto src =
         "package test;\n"
-        "import cajeta.net.BufferPool;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.BufferPool;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(256, 4);\n"
@@ -393,8 +393,8 @@ TEST(BufferPoolTests, reuseStaysBounded) {
 TEST(BufferPoolTests, concurrentHoldsAllocateUpToNeed) {
     auto src =
         "package test;\n"
-        "import cajeta.net.BufferPool;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.BufferPool;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(64, 4);\n"
@@ -417,8 +417,8 @@ TEST(BufferPoolTests, concurrentHoldsAllocateUpToNeed) {
 TEST(BufferPoolTests, releaseBeyondMaxIdleDropsExtras) {
     auto src =
         "package test;\n"
-        "import cajeta.net.BufferPool;\n"
-        "import cajeta.net.ByteBuffer;\n"
+        "import cajeta.io.net.BufferPool;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(64, 2);\n"  // maxIdle 2

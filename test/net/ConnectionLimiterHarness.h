@@ -2,7 +2,7 @@
 // ConnectionLimiterHarness.h — NET-4.4 backpressure + connection-limit harness.
 //
 // The NET-4.4 backpressure mechanism
-// (runtime/src/cajeta/net/ConnectionLimiter.cajeta + ConnectionLimits.cajeta
+// (runtime/src/cajeta/io/net/ConnectionLimiter.cajeta + ConnectionLimits.cajeta
 // + LoadShedPolicy.cajeta) is a piece of *pure admission logic* riding on a
 // primitive that already exists (cajeta.concurrent.AtomicInt32): a
 // semaphore-style permit pool, lock-free over a single atomic, that bounds
@@ -39,7 +39,7 @@
 // analog + the contract these fixtures freeze.
 //
 // The permit accounting + the REFUSE/BLOCK ordinals + the clamp semantics
-// here MUST mirror runtime/src/cajeta/net/ConnectionLimiter.cajeta,
+// here MUST mirror runtime/src/cajeta/io/net/ConnectionLimiter.cajeta,
 // LoadShedPolicy.cajeta, and ConnectionLimits.cajeta exactly — they are the
 // executable spec for that pure-logic mechanism. Kept under test/ so
 // production sources carry no test-only surface.
@@ -54,7 +54,7 @@ namespace cajeta::net::testing {
 
     // -----------------------------------------------------------------------
     // load_shed — the NET-4.4 LoadShedPolicy ordinals, byte-identical to
-    // runtime/src/cajeta/net/LoadShedPolicy.cajeta. Append-only.
+    // runtime/src/cajeta/io/net/LoadShedPolicy.cajeta. Append-only.
     // -----------------------------------------------------------------------
     namespace load_shed {
         constexpr int32_t REFUSE = 0;   // admit-or-shed: close the surplus
@@ -63,7 +63,7 @@ namespace cajeta::net::testing {
 
     // -----------------------------------------------------------------------
     // ConnectionLimits — the NET-4.4 config defaults, byte-identical to
-    // runtime/src/cajeta/net/ConnectionLimits.cajeta. The four backpressure
+    // runtime/src/cajeta/io/net/ConnectionLimits.cajeta. The four backpressure
     // knobs common to both server models: the concurrent-connection cap, the
     // kernel listen backlog, and the per-connection read/write buffer caps.
     // -----------------------------------------------------------------------

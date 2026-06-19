@@ -261,7 +261,7 @@ namespace cajeta {
         };
         ReuseBindingBaseline reuseBaseline;
 
-        // MultiClassing Phase 3 v4 vbase ABI (docs/stdlib/
+        // MultiClassing Phase 3 v4 vbase ABI (docs/specification/
         // MultiClassing.md § Phase 3): for every transitive non-self
         // ancestor of this class, the layout reserves a `ptr` slot at
         // the END of own-fields (after all sub-objects + own properties).
@@ -925,7 +925,7 @@ namespace cajeta {
         // when an unsupported field type is encountered.
         void synthesizeAutoHash();
 
-        // Lombok-mirror synthesizers (docs/stdlib/Annotations.md
+        // Lombok-mirror synthesizers (docs/specification/reflect/Annotations.md
         // § Section 2). Each is gated on a class-level or field-level
         // annotation and runs once during generatePrototype after
         // ensureDefaultConstructor + synthesizeAutoHash. User-declared
@@ -989,7 +989,7 @@ namespace cajeta {
         // encoder owns the wire format. Phase A in v1 reserves the
         // surface + enforces mutual exclusion + emits "not yet
         // implemented" until Phase B lands the actual synthesis.
-        // See docs/stdlib/Annotations.md § @Encoding for views.
+        // See docs/specification/reflect/Annotations.md § @Encoding for views.
         void synthesizeEncoding();
 
         // @Builder on class. Synthesizes a nested `Outer.Builder` class

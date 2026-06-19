@@ -1,0 +1,18 @@
+package cajeta.io.net;
+
+import cajeta.lang.String;
+
+/**
+ * A `bind` failed because the address/port is already taken (another
+ * socket holds it, or it is in `TIME_WAIT` and `SO_REUSEADDR` was not
+ * set). POSIX `EADDRINUSE` / Winsock `WSAEADDRINUSE`.
+ * `kind == NetException.KIND_ADDRESS_IN_USE` (5). See
+ * [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
+ */
+public class AddressInUseException extends NetException {
+    public AddressInUseException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 5;   // NetException.KIND_ADDRESS_IN_USE
+    }
+}

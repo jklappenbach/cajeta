@@ -1,4 +1,4 @@
-// Tests for the consolidated cajeta.net error taxonomy — plan item
+// Tests for the consolidated cajeta.io.net error taxonomy — plan item
 // NET-11.6 ("NetException root + the shared error taxonomy doc; every
 // phase's exceptions hang off it").
 //
@@ -6,8 +6,8 @@
 // (pinned by NetExceptionTests.cpp). NET-6.5 reparented the URI parse
 // failure onto NetException (pinned by UriMalformedExceptionTests.cpp).
 // NET-11.6 is the *consolidation*: the invariant that the WHOLE tree —
-// across packages (cajeta.net + cajeta.net.uri) — descends from the one
-// `cajeta.net.NetException` root, so a single request-boundary
+// across packages (cajeta.io.net + cajeta.io.net.uri) — descends from the one
+// `cajeta.io.net.NetException` root, so a single request-boundary
 // `catch (NetException e)` is the universal net-out for any networking
 // failure regardless of which layer raised it.
 //
@@ -20,7 +20,7 @@
 //   (B) the cross-package single-root invariant: a socket-layer
 //       subtype, a URI parse failure, and an address parse failure are
 //       all catchable by one `catch (NetException)` — the property the
-//       taxonomy doc (docs/stdlib/net/Errors.md) promises.
+//       taxonomy doc (docs/specification/io/net/Errors.md) promises.
 //
 // Pure logic, no sockets — the same golden JIT harness NetExceptionTests
 // / UriMalformedExceptionTests use: compile a tiny cajeta source, call
@@ -51,13 +51,13 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.NetException;\n"
-           "import cajeta.net.ConnectionRefusedException;\n"
-           "import cajeta.net.MalformedAddressException;\n"
-           "import cajeta.net.IpAddress;\n"
-           "import cajeta.net.SocketAddress;\n"
-           "import cajeta.net.uri.Uri;\n"
-           "import cajeta.net.uri.MalformedUriException;\n"
+           "import cajeta.io.net.NetException;\n"
+           "import cajeta.io.net.ConnectionRefusedException;\n"
+           "import cajeta.io.net.MalformedAddressException;\n"
+           "import cajeta.io.net.IpAddress;\n"
+           "import cajeta.io.net.SocketAddress;\n"
+           "import cajeta.io.net.uri.Uri;\n"
+           "import cajeta.io.net.uri.MalformedUriException;\n"
            "public final class T {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"
@@ -142,7 +142,7 @@ TEST(NetTaxonomyTests, malformedAddressStillCaughtBySpecificSubtype) {
 // non-zero code, proving the catch fired for that source (and that none
 // escaped uncaught past the root).
 
-// A socket-layer subtype (cajeta.net) — thrown directly via the proven
+// A socket-layer subtype (cajeta.io.net) — thrown directly via the proven
 // `throw heap` form.
 TEST(NetTaxonomyTests, socketSubtypeCaughtAtRoot) {
     EXPECT_EQ(runI32(makeSource(
@@ -153,7 +153,7 @@ TEST(NetTaxonomyTests, socketSubtypeCaughtAtRoot) {
         "}")), 2);
 }
 
-// An address parse failure (cajeta.net) — caught at the same root.
+// An address parse failure (cajeta.io.net) — caught at the same root.
 TEST(NetTaxonomyTests, addressFailureCaughtAtRoot) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
@@ -164,7 +164,7 @@ TEST(NetTaxonomyTests, addressFailureCaughtAtRoot) {
         "}")), 12);
 }
 
-// A URI parse failure (cajeta.net.uri — a *different package*) — caught
+// A URI parse failure (cajeta.io.net.uri — a *different package*) — caught
 // at the same root, proving the tree spans packages.
 TEST(NetTaxonomyTests, uriFailureFromOtherPackageCaughtAtRoot) {
     EXPECT_EQ(runI32(makeSource(

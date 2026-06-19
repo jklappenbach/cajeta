@@ -37,7 +37,7 @@
 // Same rationale as NET-13.1: the cajeta-surface `TcpStream` lowering is
 // still being wired (NET-1.3 is "partial"), so the misbehaving *peer* a
 // cajeta client connects to must be a plain host-side server that speaks
-// raw sockets and has zero dependency on the cajeta.net surface. It lands
+// raw sockets and has zero dependency on the cajeta.io.net surface. It lands
 // now and is consumed by the later client phases — the same standalone
 // posture NET-13.1 and the NET-13.2 corpus have. Kept under test/ so
 // production sources carry no test-only surface.

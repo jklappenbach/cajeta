@@ -2,7 +2,7 @@
 // surface: `.parallel()` flag-flip, Splittable<T> on ArrayStream,
 // driver fork/join for count(), and the no-split fallback path.
 //
-// See docs/stdlib/StreamParallelism.md for design and
+// See docs/specification/lang/stream/StreamParallelism.md for design and
 // StreamParallelism.Examples.md for the full example/error reference.
 
 #include <gtest/gtest.h>

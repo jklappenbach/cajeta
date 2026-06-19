@@ -6,8 +6,8 @@
 // NET-4.5 is the **model-selection surface** that sits in front of them: the
 // `Server.builder()` fluent API + the `ServerModel` value that names which of
 // the two shipped accept stacks a build wires up
-// (runtime/src/cajeta/net/ServerModel.cajeta +
-// runtime/src/cajeta/net/ServerBuilder.cajeta).
+// (runtime/src/cajeta/io/net/ServerModel.cajeta +
+// runtime/src/cajeta/io/net/ServerBuilder.cajeta).
 //
 // Its distinct, testable contract — over and above the two models the
 // dependency harnesses already freeze — is pure *selection* logic, no I/O:
@@ -69,7 +69,7 @@ namespace cajeta::net::testing {
 
     // -----------------------------------------------------------------------
     // ServerModel — a faithful native model of
-    // runtime/src/cajeta/net/ServerModel.cajeta: the immutable carrier
+    // runtime/src/cajeta/io/net/ServerModel.cajeta: the immutable carrier
     // (kind + poolSize) the builder's .model(...) step takes, with the two
     // factories (fiberPerConnection / sharedPool) and the same pool-size
     // floor-at-1 normalization.
@@ -113,7 +113,7 @@ namespace cajeta::net::testing {
 
     // -----------------------------------------------------------------------
     // ServerBuilder — a faithful native model of
-    // runtime/src/cajeta/net/ServerBuilder.cajeta: accumulates address +
+    // runtime/src/cajeta/io/net/ServerBuilder.cajeta: accumulates address +
     // model + handler + backlog, defaulting the model to fiber-per-connection,
     // and build() dispatches on the model's kind to the matching factory
     // (delegating to ServerModel.bindServer{,WithBacklog}). No real sockets —

@@ -9,7 +9,7 @@
 // pointers (the `{fn,captures,drop}` ABI), `ops[i]` loads one element, and
 // `ops[i](args)` (CallExpression) lowers to an indirect call through the shared
 // closure ABI — the same path as the bare `op(args)` form. See
-// docs/stdlib/Lambdas.md. The device-bounded form (tag + if/else over a
+// docs/specification/lang/Lambdas.md. The device-bounded form (tag + if/else over a
 // statically-known candidate set) rides on the same surface.
 //
 

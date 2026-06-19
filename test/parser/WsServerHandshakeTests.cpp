@@ -1,4 +1,4 @@
-// NET-10.2 — cajeta.net.ws server-side WebSocket opening handshake
+// NET-10.2 — cajeta.io.net.ws server-side WebSocket opening handshake
 // (RFC 6455 §4.2). The server handshake is pure logic — an HttpRequest in,
 // a 101 HttpResponse (or a HandshakeRejectedException) out, no sockets — so
 // it tests directly over the JIT exactly the way WsFrameCodecTests /
@@ -27,11 +27,11 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.Headers;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
-        "import cajeta.net.ws.WsServerHandshake;\n"
-        "import cajeta.net.ws.HandshakeRejectedException;\n"
+        "import cajeta.io.net.Headers;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
+        "import cajeta.io.net.ws.WsServerHandshake;\n"
+        "import cajeta.io.net.ws.HandshakeRejectedException;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

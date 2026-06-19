@@ -2,7 +2,7 @@
 // ServerLifecycleHarnessTests.cpp — NET-4.1 server-core lifecycle + drain.
 //
 // Pins the pure-logic contract of the NET-4.1 `Server` core
-// (runtime/src/cajeta/net/Server.cajeta + ServerState.cajeta), modeled one
+// (runtime/src/cajeta/io/net/Server.cajeta + ServerState.cajeta), modeled one
 // level down via ServerLifecycleHarness.h (std::atomic standing in for
 // cajeta.concurrent.AtomicInt32), in the deterministic, scheduler-free
 // posture the other net harnesses use while the cajeta-surface accept loop

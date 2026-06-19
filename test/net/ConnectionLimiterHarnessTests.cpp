@@ -2,7 +2,7 @@
 // ConnectionLimiterHarnessTests.cpp — NET-4.4 backpressure + connection cap.
 //
 // Pins the pure-logic contract of the NET-4.4 backpressure mechanism
-// (runtime/src/cajeta/net/ConnectionLimiter.cajeta + ConnectionLimits.cajeta
+// (runtime/src/cajeta/io/net/ConnectionLimiter.cajeta + ConnectionLimits.cajeta
 // + LoadShedPolicy.cajeta), modeled one level down via
 // ConnectionLimiterHarness.h (std::atomic standing in for
 // cajeta.concurrent.AtomicInt32), in the deterministic, scheduler-free

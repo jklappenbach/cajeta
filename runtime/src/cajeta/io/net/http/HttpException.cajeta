@@ -1,0 +1,94 @@
+package cajeta.io.net.http;
+
+import cajeta.io.net.NetException;
+import cajeta.lang.String;
+
+/**
+ * Intermediate root of the **HTTP/1.1 message family** under
+ * [`cajeta.io.net.NetException`](../NetException.cajeta) (plan item
+ * **NET-7.7**). Every HTTP parse failure the incremental parser
+ * ([`HttpParser`](HttpParser.cajeta), NET-7.3) and the streaming body
+ * reader (NET-7.4) raise descends from this one type:
+ *
+ *   - [`MalformedMessageException`](MalformedMessageException.cajeta) —
+ *     the wire bytes are syntactically not a valid HTTP/1.1 message
+ *     (bad request/status line, header line with no `:`, non-numeric
+ *     `Content-Length`, …).
+ *   - [`HeadersTooLargeException`](HeadersTooLargeException.cajeta) —
+ *     the head crossed a configured limit (total bytes, header count,
+ *     or line length) before buffering unboundedly — the abuse gate.
+ *   - [`InvalidChunkEncodingException`](InvalidChunkEncodingException.cajeta)
+ *     — a `Transfer-Encoding: chunked` body is malformed (bad chunk
+ *     size line, missing chunk `CRLF`, oversize chunk, bad trailer).
+ *   - [`UnexpectedEofException`](UnexpectedEofException.cajeta) — the
+ *     stream ended before a complete head (or chunked body) was seen.
+ *
+ * ## Why an intermediate, not four direct `NetException` children
+ *
+ * The [`NetException`](../NetException.cajeta) design note names this
+ * level explicitly: "the HTTP family under an intermediate
+ * `HttpException`". It lets the HTTP layer — and any HTTP façade
+ * (`HttpClient.send`, an `HttpServer` request loop) — declare or catch
+ * **one** `throws HttpException` / `catch (HttpException e)` that covers
+ * every protocol-level fault, distinct from a transport-level
+ * `NetException` (a socket reset, a DNS failure), while a request-
+ * boundary `catch (NetException e)` still nets *both*. This mirrors the
+ * `cajeta.io.file` taxonomy, where `IoException` roots the file family,
+ * and Rust's `httparse` / Go's `net/http` error groupings.
+ *
+ * ## The inherited `kind`
+ *
+ * As a `NetException`, every instance carries the cross-platform
+ * [`kind`](../NetException.cajeta) ordinal. An HTTP parse failure is an
+ * **invalid-input** fault, not an errno-derived socket error, so the
+ * whole family classifies to
+ * [`NetException.KIND_INVALID`](../NetException.cajeta) (12) — the same
+ * bucket [`MalformedUriException`](../uri/MalformedUriException.cajeta)
+ * (NET-6.5) and `cajeta.codec.json.JsonParseException` use. A single
+ * `catch (NetException e)` can therefore branch on `e.kind == 12` for
+ * "the peer sent garbage" across URI, JSON, and HTTP alike; the precise
+ * per-subtype detail (byte `position`, `limit`/`observed`,
+ * `bytesBuffered`) rides on the concrete leaf.
+ *
+ * ## Recoverable discipline
+ *
+ * `NetException extends cajeta.error.RecoverableException`, so every
+ * HTTP-parsing call site either catches a leaf (or this `HttpException`
+ * root, or the `NetException` root) explicitly, or declares it in its
+ * `throws` clause and propagates upward — the compiler's uncaught-throws
+ * check keeps it visible. The full cross-phase chart lives in
+ * [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
+ *
+ * ## Construction
+ *
+ * Like every `cajeta.io.net` subtype (and per
+ * [`cajeta.error.Throwable`](../../error/Throwable.cajeta)'s contract,
+ * "each subclass repeats the field assignment"), the concrete leaves do
+ * **not** chain through a `super(...)` call — each sets the inherited
+ * `message`/`cause`/`kind` fields plus its own detail directly. This
+ * `(message)` constructor exists for the rare case a caller raises a
+ * bare `HttpException` (an HTTP fault with no more-specific leaf); it
+ * stamps `kind = NetException.KIND_INVALID`.
+ */
+public class HttpException extends NetException {
+    public HttpException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 12;   // NetException.KIND_INVALID
+    }
+
+    /**
+     * The HTTP status code a server should answer when this fault is
+     * raised while **reading a request** — the error→response mapping the
+     * [`HttpServer`](HttpServer.cajeta) request loop (NET-9.1) uses. The
+     * family default is `400 Bad Request` (the wire bytes were not a valid
+     * HTTP/1.1 message); [`HeadersTooLargeException`](HeadersTooLargeException.cajeta)
+     * overrides it to `431 Request Header Fields Too Large`. Exposed as a
+     * **virtual** method so the server maps a fault to its status by
+     * dynamic dispatch on the concrete leaf — no RTTI / `instanceof`
+     * needed.
+     */
+    public int32 httpStatus() {
+        return 400;
+    }
+}

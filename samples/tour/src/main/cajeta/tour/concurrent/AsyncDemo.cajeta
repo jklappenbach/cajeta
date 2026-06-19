@@ -50,7 +50,7 @@ import cajeta.concurrent.Tasks;
 //     it internally (the building block for withTimeout's
 //     `body`-taking shape).
 //
-// See docs/stdlib/Concurrency.md for the full design.
+// See docs/specification/concurrent/Concurrency.md for the full design.
 public class AsyncDemo extends DemoClass {
 
     // Async leaf returning a constant — exercised by the await/spawn

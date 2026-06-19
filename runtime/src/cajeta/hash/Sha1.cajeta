@@ -22,7 +22,7 @@ import cajeta.lang.String;
  * The handshake's correctness — not its security — depends on SHA-1
  * here; the algorithm is a protocol constant, so SHA-1's collision
  * weakness is irrelevant to it. This class exists to satisfy that
- * single caller (`cajeta.net` WebSocket handshake) and is flagged
+ * single caller (`cajeta.io.net` WebSocket handshake) and is flagged
  * accordingly.
  *
  * ## Surface
@@ -56,7 +56,7 @@ import cajeta.lang.String;
  *
  * @see cajeta.hash.Hasher
  * @see cajeta.hash.Sha256
- * @see [stdlib/Hashing.md § SHA-1](../../../../../docs/stdlib/Hashing.md)
+ * @see [specification/hash/Hashing.md § SHA-1](../../../../../docs/specification/hash/Hashing.md)
  */
 public final class Sha1 implements Hasher {
 

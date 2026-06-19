@@ -27,7 +27,7 @@ package cajeta.lang;
  * not part of `Encoding` — that lives under `cajeta.codec.*` (for example
  * `Json`), a separate package with no concrete crypto type yet.
  *
- * See docs/stdlib/lang/String.md § Encoding interchange.
+ * See docs/specification/lang/String.md § Encoding interchange.
  */
 public enum Encoding {
     /** Variable-width Unicode, the default interchange encoding. */

@@ -158,7 +158,7 @@ classBodyDeclaration
 // symbol. Subclass declarations with the same name as a method-
 // templated parent method shadow rather than override (warning
 // emitted; same model Java applies to `static` shadowing). See
-// docs/stdlib/MethodLevelTemplate.md for the dispatch model
+// docs/specification/lang/MethodLevelTemplate.md for the dispatch model
 // and constraints.
 //
 // Constructor and operator declarations remain non-templated at the
@@ -240,7 +240,7 @@ operatorOverloadDeclaration
    for invalid return type after parsing.
 
    Optional `typeParameters` after the identifier introduces
-   method-level type parameters (docs/stdlib/MethodLevelTemplate.md).
+   method-level type parameters (docs/specification/lang/MethodLevelTemplate.md).
    When present, the method is non-virtual and monomorphized per call
    site over (receiver-class args x method-level args). The same
    typeParameters nonterminal used for classDeclaration is reused
@@ -531,7 +531,7 @@ localVariableDeclaration
 identifier
     : IDENTIFIER
     | VAR
-    // Module-system soft keywords (docs/stdlib/Modules.md
+    // Module-system soft keywords (docs/specification/Modules.md
     // — pending). These tokens are reserved by the lexer for the
     // future module declaration syntax but the parser never uses
     // them in any rule today. Until the module surface lands,
@@ -578,7 +578,7 @@ statement
     // at the closing `}` of the resource's declaring block, so
     // `try (R r = …) { … }` is strictly redundant with
     // `{ R r = …; … }`. See docs/MemoryModel.md § Destructors
-    // and docs/stdlib/io/file/Readme.md § Design tenets for
+    // and docs/specification/io/file/Readme.md § Design tenets for
     // the rationale.
     | TRY block (catchClause+ finallyBlock? | finallyBlock)
     | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
@@ -678,7 +678,7 @@ arrayLiteral
 // type arguments for method-templated callees. Inference (no type
 // args) is the common case; explicit args are only required when
 // inference can't bind every type parameter (e.g. T appears only in
-// the return type). See docs/stdlib/MethodLevelTemplate.md.
+// the return type). See docs/specification/lang/MethodLevelTemplate.md.
 //
 // This is the only call-site form: there is no Java-style
 // `Type.<TypeArgs>name(args)` alternative — that form was removed in
@@ -813,7 +813,7 @@ lambdaBody
 
 primary
     : '(' expression ')'
-    // MultiClassing Phase 2 (docs/stdlib/MultiClassing.md § P-2):
+    // MultiClassing Phase 2 (docs/specification/lang/MultiClassing.md § P-2):
     // parent-view selectors on THIS / SUPER use angle brackets,
     // reusing template-instantiation syntax: `this<Base>.field`
     // reaches the slot belonging to ancestor `Base`;

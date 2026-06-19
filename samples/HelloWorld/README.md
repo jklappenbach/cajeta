@@ -70,7 +70,7 @@ public final class HelloWorld {
 
 - `package helloworld;` — every file declares its package; the path under `src/` must match (`src/helloworld/HelloWorld.cajeta` ↔ `helloworld.HelloWorld`).
 - `public static int32 run()` — the static no-arg entry method the compiler wires up as the program's C `main`. Its `int32` return becomes the exit status.
-- `System.stdout.println(...)` — cajeta's stdout intrinsic; see [`docs/stdlib/lang/System.md`](../../docs/stdlib/lang/System.md) for the full surface (multi-arg `{}` formatting, `System.env`, `System.property`, …).
+- `System.stdout.println(...)` — cajeta's stdout intrinsic; see [`docs/specification/lang/System.md`](../../docs/specification/lang/System.md) for the full surface (multi-arg `{}` formatting, `System.env`, `System.property`, …).
 
 ## Next steps
 

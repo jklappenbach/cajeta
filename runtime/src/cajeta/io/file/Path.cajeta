@@ -4,7 +4,7 @@ import cajeta.lang.String;
 
 /**
  * Immutable filesystem path. See
- * `docs/stdlib/io/file/Path.md`.
+ * `docs/specification/io/file/Path.md`.
  *
  * A `Path` wraps the raw OS-path bytes and offers pure-path queries
  * (`name`, `stem`, `extension`, `parent`, `isAbsolute`) plus join /

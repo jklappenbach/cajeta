@@ -1,4 +1,4 @@
-// Tests for cajeta.net.NetException hierarchy + the cajeta_net_errno →
+// Tests for cajeta.io.net.NetException hierarchy + the cajeta_net_errno →
 // exception mapping table — plan item NET-1.8.
 //
 // Scope: the *cajeta-side* error taxonomy that the NET-1.1 native errno
@@ -40,18 +40,18 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.NetException;\n"
-           "import cajeta.net.NetErrors;\n"
-           "import cajeta.net.ConnectionRefusedException;\n"
-           "import cajeta.net.ConnectionResetException;\n"
-           "import cajeta.net.ConnectionAbortedException;\n"
-           "import cajeta.net.AddressInUseException;\n"
-           "import cajeta.net.AddressNotAvailableException;\n"
-           "import cajeta.net.HostUnreachableException;\n"
-           "import cajeta.net.NetworkUnreachableException;\n"
-           "import cajeta.net.BrokenPipeException;\n"
-           "import cajeta.net.TimedOutException;\n"
-           "import cajeta.net.WouldBlockException;\n"
+           "import cajeta.io.net.NetException;\n"
+           "import cajeta.io.net.NetErrors;\n"
+           "import cajeta.io.net.ConnectionRefusedException;\n"
+           "import cajeta.io.net.ConnectionResetException;\n"
+           "import cajeta.io.net.ConnectionAbortedException;\n"
+           "import cajeta.io.net.AddressInUseException;\n"
+           "import cajeta.io.net.AddressNotAvailableException;\n"
+           "import cajeta.io.net.HostUnreachableException;\n"
+           "import cajeta.io.net.NetworkUnreachableException;\n"
+           "import cajeta.io.net.BrokenPipeException;\n"
+           "import cajeta.io.net.TimedOutException;\n"
+           "import cajeta.io.net.WouldBlockException;\n"
            "public final class N {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

@@ -5,7 +5,7 @@ import cajeta.error.Exception;
 
 /**
  * The pull-protocol base for everything iteration-related in the
- * stdlib (stdlib/Streams.md § Stream). Implementers override `next()`
+ * stdlib (specification/lang/stream/Streams.md § Stream). Implementers override `next()`
  * to yield elements; combinator methods on Stream itself consume
  * `next()` and inherit to every subclass.
  *
@@ -27,7 +27,7 @@ import cajeta.error.Exception;
  *
  * ## Stream vs Optional integration
  *
- * Per stdlib/Streams.md, Optional<T> extends Stream<T> with single-
+ * Per specification/lang/stream/Streams.md, Optional<T> extends Stream<T> with single-
  * shot next(). That lands once method-override on generic stdlib
  * classes is verified end-to-end via ArrayStream below.
  *
@@ -59,7 +59,7 @@ public class Stream<T> {
      * `.sequential()`. Terminals consult it to decide whether to
      * fork. The bit propagates through wrapper combinators (filter,
      * map, etc.) via their ctors (each wrapper copies its source's
-     * flag at construction). See docs/stdlib/StreamParallelism.md.
+     * flag at construction). See docs/specification/lang/stream/StreamParallelism.md.
      */
     boolean isParallel = false;
 
@@ -335,7 +335,7 @@ public class Stream<T> {
      * an `int32`, build a `String` from a stream of any T, etc.
      *
      * Non-virtual by construction (method-level templates can't sit in
-     * a vtable — see docs/stdlib/MethodLevelTemplate.md). The
+     * a vtable — see docs/specification/lang/MethodLevelTemplate.md). The
      * inherited `next()` is what subclasses customize; this combinator
      * stays the same body across every Stream<T> subclass.
      *

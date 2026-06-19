@@ -946,7 +946,7 @@ namespace cajeta {
         // 'enclosingStart' = slot where the surrounding sub-object's vtable
         // sits. Used to record `subObjectSlotMap[firstParent]` (which shares).
         //
-        // MultiClassing Phase 3 v1 (docs/stdlib/MultiClassing.md § P-4):
+        // MultiClassing Phase 3 v1 (docs/specification/lang/MultiClassing.md § P-4):
         // when an ancestor is reachable through multiple paths (true diamond),
         // record the CANONICAL (first-encountered) offset in subObjectSlotMap.
         // Without this guard, the second walk would overwrite with a later
@@ -1081,7 +1081,7 @@ namespace cajeta {
                         "view type '" + viewName + "' cannot be used as a "
                         "class field (class '" + canonical + "', field '"
                         + p->getName() + "'). Views are buffer overlays with "
-                        "borrowed lifetime — see docs/stdlib/Views.md "
+                        "borrowed lifetime — see docs/specification/lang/Views.md "
                         "(Errors caught statically). Workaround: store the "
                         "underlying byte[] in the class and construct the "
                         "view per access; or pass the view by value across "
@@ -1389,7 +1389,7 @@ namespace cajeta {
             std::static_pointer_cast<CajetaClass>(shared_from_this())));
     }
 
-    // Resolve `access="…"` (per docs/stdlib/Annotations.md §
+    // Resolve `access="…"` (per docs/specification/reflect/Annotations.md §
     // Accessors) to the matching Modifier bit. Default is PUBLIC.
     // Unknown values raise CAJETA_ERROR_ACCESSOR_BAD_ACCESS with the
     // annotation site for the diagnostic context. v1 honors the
@@ -1422,7 +1422,7 @@ namespace cajeta {
         // OR at field level (only that field). User-declared methods
         // with the same name and zero params win — synthesizer skips.
         // Naming: getter for field `name` is `name()`, size()-style
-        // (see docs/stdlib/Annotations.md § Accessors).
+        // (see docs/specification/reflect/Annotations.md § Accessors).
         //
         // @Data and @Value bundles also enable class-level @Getter.
         auto classAnn = findAnnotation("Getter");
@@ -1802,7 +1802,7 @@ namespace cajeta {
         // Mutual-exclusion check: @Encoding owns the wire format, so
         // it can't coexist with packed-layout annotations
         // (@BigEndian / @LittleEndian / @HostEndian / @Align).
-        // See docs/stdlib/Annotations.md § @Encoding for views
+        // See docs/specification/reflect/Annotations.md § @Encoding for views
         // — § Composition with existing annotations.
         const char* conflictingAnns[] = {
             "BigEndian", "LittleEndian", "HostEndian", "Align"
@@ -3535,7 +3535,7 @@ namespace cajeta {
             return (pos == string::npos) ? canon : canon.substr(pos + 2);
         };
 
-        // MultiClassing R-3 (docs/stdlib/MultiClassing.md): when
+        // MultiClassing R-3 (docs/specification/lang/MultiClassing.md): when
         // a method on THIS class carries @Override(from=X), verify X is
         // an ancestor of this class AND X declares a same-suffix
         // method. Both the identifier form (`from=B`) and class-literal
@@ -3636,7 +3636,7 @@ namespace cajeta {
         };
         walk(static_pointer_cast<CajetaClass>(shared_from_this()));
 
-        // MultiClassing Phase 1 (P-1, docs/stdlib/MultiClassing.md):
+        // MultiClassing Phase 1 (P-1, docs/specification/lang/MultiClassing.md):
         // detect collisions between sibling parents BEFORE the alias walk
         // hides them. The pre-existing walk above is last-write-wins by
         // declaration order (B silently shadows A when both are siblings
@@ -4547,7 +4547,7 @@ namespace cajeta {
             }
         }
 
-        // Method-template fallback (docs/stdlib/MethodLevelTemplate.md):
+        // Method-template fallback (docs/specification/lang/MethodLevelTemplate.md):
         // if no exact / subtype match was found, look for a method-templated
         // candidate with the same name and arity whose T-vars unify with the
         // supplied arg types. On a hit, instantiate the template into a
@@ -4798,7 +4798,7 @@ namespace cajeta {
         // takes the result slot as hidden arg 0 (before `this`). Use the
         // caller-supplied slot, or materialize a temp in the caller's frame; the
         // returned pointer then behaves like any class-instance pointer. See
-        // docs/stdlib/ValueReturns.md.
+        // docs/specification/lang/ValueReturns.md.
         bool usesSret = method->returnsStackValue();
         int sretOffset = usesSret ? 1 : 0;
         llvm::Value* sretSlot = sretTarget;
@@ -5003,7 +5003,7 @@ namespace cajeta {
         // entirely; LLVM gets a direct call to the resolved method.
         bool isView = dynamic_cast<CajetaView*>(this) != nullptr;
         // Method-level templated methods are non-virtual (templating
-        // excludes them from the vtable per docs/stdlib/
+        // excludes them from the vtable per docs/specification/
         // MethodLevelTemplate.md). Always direct-dispatch — the
         // concrete instantiation's LLVM function is the static target.
         bool isMethodTemplateInst = method->isMethodTemplateInstantiation();

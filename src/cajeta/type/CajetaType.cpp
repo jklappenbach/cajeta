@@ -395,7 +395,7 @@ namespace cajeta {
         // character literal `'c'` evaluates to int32 99, `'é'` to 233,
         // `'😀'` to 0x1F600. The 8-bit byte type has perfectly good
         // names (`int8` / `uint8`); `char` doesn't need to alias them.
-        // See docs/stdlib/lang/String.md § `char` is a 32-bit
+        // See docs/specification/lang/String.md § `char` is a 32-bit
         // Unicode codepoint. Redefined 2026-05-18 (was i8).
         //
         // `uchar` is kept as a deprecated alias for `uint8` so legacy
@@ -468,7 +468,7 @@ namespace cajeta {
         // C-string spell `pointer` (or, more rigorously, the new
         // encoding-prefixed byte-array literal — task #164, L-29 in
         // Features.md — once shipped). See
-        // docs/stdlib/lang/String.md § Memory model.
+        // docs/specification/lang/String.md § Memory model.
     }
 
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {
@@ -581,7 +581,7 @@ namespace cajeta {
         }
         // Function type: `(T1, T2) -> R`. Resolve each component and build
         // (or look up by canonical) a CajetaFunctionType. See
-        // docs/stdlib/Lambdas.md. The return slot is typeTypeOrVoid so
+        // docs/specification/lang/Lambdas.md. The return slot is typeTypeOrVoid so
         // `(T) -> void` is a legal function-type shape (P6.5).
         if (auto* fnt = ctx->functionType()) {
             std::vector<CajetaTypePtr> paramTypes;

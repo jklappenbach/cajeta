@@ -1,0 +1,52 @@
+package cajeta.io.net;
+
+import cajeta.lang.String;
+
+/**
+ * The server's **max-concurrent-connections cap** was reached and the
+ * active [`LoadShedPolicy`](LoadShedPolicy.cajeta) is
+ * [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) — so the surplus connection is
+ * shed rather than queued (plan item **NET-4.4**). Raised by
+ * [`ConnectionLimiter.admitOrThrow`](ConnectionLimiter.cajeta#admitOrThrow)
+ * when [`tryAdmit`](ConnectionLimiter.cajeta#tryAdmit) finds no free
+ * permit; the accept loop catches it, closes the just-accepted socket, and
+ * keeps serving — the excess load is shed back to the client, which sees an
+ * immediate connection close. The (cap+1)th connection in
+ * `ServerTests.connectionCapShedsExcess`.
+ *
+ * ## Why a `NetException`, not an OS-errno subtype
+ *
+ * Unlike [`ConnectionRefusedException`](ConnectionRefusedException.cajeta)
+ * (`ECONNREFUSED` — the *kernel* refused a `connect`), this is an
+ * **application-level admission decision**: the OS accepted the socket
+ * fine; *our* limiter chose to shed it. There is therefore no platform
+ * errno behind it, so it carries
+ * [`kind == NetException.KIND_OTHER`](NetException.cajeta#KIND_OTHER) (99) —
+ * the "no specific platform cause" ordinal. It still descends from
+ * [`NetException`](NetException.cajeta) so a request-boundary
+ * `catch (NetException e)` net-out covers it, and so a server operator can
+ * declare it in a `throws` clause when surfacing capacity events.
+ *
+ * The `cap` field carries the configured
+ * [`maxConnections`](ConnectionLimits.cajeta#maxConnections) ceiling that
+ * was hit, so an operator (or a `503` responder) can report exactly which
+ * limit to raise — the same `(message, <numeric ceiling>)` shape
+ * [`HeadersTooLargeException`](http/HeadersTooLargeException.cajeta) uses
+ * to carry its crossed limit in a field rather than baking it into the
+ * message string.
+ */
+public class TooManyConnectionsException extends NetException {
+    /**
+     * The configured concurrent-connection ceiling
+     * ([`ConnectionLimits.maxConnections`](ConnectionLimits.cajeta#maxConnections))
+     * that was reached when this connection was shed.
+     */
+    public int32 cap;
+
+    public TooManyConnectionsException(String message, int32 cap) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 99;   // NetException.KIND_OTHER — app-level cap, no errno
+        this.cap = cap;
+    }
+}

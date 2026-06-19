@@ -1,4 +1,4 @@
-// NET-5.2 — cajeta.net.tls.TlsConnection driven through the JIT.
+// NET-5.2 — cajeta.io.net.tls.TlsConnection driven through the JIT.
 //
 // Validates the full Cajeta TLS surface end-to-end: a client and a server
 // TlsConnection (created via the @Native engine bindings) complete a handshake
@@ -105,7 +105,7 @@ std::string verifyBody(const std::string& cert, const std::string& key, bool tru
 int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
-        "import cajeta.net.tls.TlsConnection;\n"
+        "import cajeta.io.net.tls.TlsConnection;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         + body +

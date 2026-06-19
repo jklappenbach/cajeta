@@ -1,0 +1,68 @@
+package cajeta.io.net;
+
+/**
+ * A bidirectional **async byte channel** — the transport seam the buffered
+ * [`AsyncReader`](AsyncReader.cajeta) / [`AsyncWriter`](AsyncWriter.cajeta)
+ * (and, through them, the HTTP/1.1 and WebSocket codecs) read and write
+ * *through*, abstracting **plaintext vs TLS**.
+ *
+ * The two implementors are:
+ *
+ *   - [`TcpStream`](TcpStream.cajeta) — the raw socket (plaintext `http://` /
+ *     `ws://`), where `readAsync` / `writeAllAsync` are the reactor-parking
+ *     non-blocking ops directly;
+ *   - [`TlsStream`](tls/TlsStream.cajeta) — the TLS engine over a socket
+ *     (`https://` / `wss://`), where the same calls drive the memory-BIO
+ *     pump (encrypt-on-write, decrypt-on-read) over the socket underneath.
+ *
+ * Because both satisfy this one interface, the **same** buffered reader/
+ * writer — and therefore the **same** [`HttpServer`](http/HttpServer.cajeta)
+ * connection loop and [`HttpClient`](http/HttpClient.cajeta) request path —
+ * run unchanged over a cleartext or an encrypted transport (plan items
+ * **NET-8.1** client / **NET-9.5** HTTPS server). This is the keystone seam
+ * that lets TLS termination be a *wrapping* concern, not a fork of the
+ * protocol code.
+ *
+ * ## Contract
+ *
+ *   - [`readAsync`](#readAsync) returns the count read (`>= 0`); `0` is an
+ *     orderly peer close (EOF) — the terminate-on-`0` contract the buffered
+ *     reader drives. It **parks the fiber** (not the carrier) until data is
+ *     ready.
+ *   - [`writeAllAsync`](#writeAllAsync) sends every requested byte, parking
+ *     the fiber on back-pressure; it raises on a broken peer.
+ *   - [`readWithin`](#readWithin) is the deadline-bounded read (slowloris
+ *     mitigation, NET-9.6); a non-positive `timeoutMs` is the unbounded
+ *     [`readAsync`](#readAsync).
+ *   - [`close`](#close) releases the channel (the socket, and for TLS a
+ *     clean `close_notify` first). Idempotent.
+ *
+ * The `offset` / `length` are `int64` to match the socket surface; in
+ * practice the buffered reader/writer always pass `offset == 0`.
+ */
+public interface ByteChannel {
+    /**
+     * Read up to `length` bytes into `buf[offset .. offset+length)`,
+     * parking the fiber until data arrives. Returns the count read
+     * (`>= 0`); `0` is EOF.
+     */
+    int64 readAsync(int8[] buf, int64 offset, int64 length);
+
+    /**
+     * Write **all** of `data[offset .. offset+length)`, parking the fiber
+     * on back-pressure until every byte is accepted (or a write raises).
+     */
+    void writeAllAsync(int8[] data, int64 offset, int64 length);
+
+    /**
+     * Deadline-bounded [`readAsync`](#readAsync): bound the total wait by
+     * `timeoutMs` milliseconds, raising
+     * [`TimedOutException`](TimedOutException.cajeta) if the deadline
+     * elapses with the peer idle. A non-positive `timeoutMs` is the
+     * unbounded [`readAsync`](#readAsync).
+     */
+    int64 readWithin(int8[] buf, int64 offset, int64 length, int32 timeoutMs);
+
+    /** Release the channel (idempotent). */
+    void close();
+}

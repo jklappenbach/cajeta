@@ -11,7 +11,7 @@ import cajeta.lang.String;
  * SHA-2 family member the rest of the stack relies on for integrity.
  * It is the primitive the networking layer is built on:
  *
- * - **TLS certificate validation** (`cajeta.net.tls`) fingerprints
+ * - **TLS certificate validation** (`cajeta.io.net.tls`) fingerprints
  *   certs + drives the verifier with SHA-256.
  * - **`cvm`'s release-checksum verification** — fetch a binary over
  *   HTTPS and confirm its published SHA-256 matches before installing.
@@ -64,7 +64,7 @@ import cajeta.lang.String;
  *
  * @see cajeta.hash.MD5
  * @see cajeta.hash.Hasher
- * @see [stdlib/Hashing.md § SHA-256](../../../../../docs/stdlib/Hashing.md)
+ * @see [specification/hash/Hashing.md § SHA-256](../../../../../docs/specification/hash/Hashing.md)
  */
 public final class Sha256 implements Hasher {
 

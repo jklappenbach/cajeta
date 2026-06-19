@@ -1,4 +1,4 @@
-// Tests for cajeta.net.uri query-param multi-map — plan item NET-6.3.
+// Tests for cajeta.io.net.uri query-param multi-map — plan item NET-6.3.
 //
 // Scope: QueryParams.parse / parseStrict (parse "?k=v&k2=v2" into an
 // ordered, duplicate-key preserving multi-map) and QueryParams.toString
@@ -36,9 +36,9 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.uri.Uri;\n"
-           "import cajeta.net.uri.QueryParams;\n"
-           "import cajeta.net.uri.MalformedUriException;\n"
+           "import cajeta.io.net.uri.Uri;\n"
+           "import cajeta.io.net.uri.QueryParams;\n"
+           "import cajeta.io.net.uri.MalformedUriException;\n"
            "public final class P {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

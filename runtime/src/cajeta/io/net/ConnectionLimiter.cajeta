@@ -1,0 +1,292 @@
+package cajeta.io.net;
+
+import cajeta.lang.String;
+import cajeta.io.net.ConnectionLimits;
+import cajeta.io.net.LoadShedPolicy;
+import cajeta.io.net.TooManyConnectionsException;
+import cajeta.concurrent.AtomicInt32;
+import cajeta.time.Duration;
+
+/**
+ * The **connection-admission gate** (plan item **NET-4.4**) — a
+ * semaphore-style permit pool that enforces the
+ * [`ConnectionLimits.maxConnections`](ConnectionLimits.cajeta#maxConnections)
+ * cap **common to both server accept models**. The accept loop calls
+ * [`admit`](#admit) for each accepted connection before dispatching it and
+ * [`release`](#release) when that connection's handler completes; the live
+ * (admitted-but-not-released) count is therefore bounded by the cap, which
+ * is the precise definition of "max concurrent connections."
+ *
+ * ## Why not reuse [`Semaphore`](../concurrent/Semaphore.cajeta)?
+ *
+ * [`Semaphore.acquire`](../concurrent/Semaphore.cajeta#acquire) is
+ * **blocking-only** — it has no non-blocking *try* path, so it cannot
+ * express the [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) load-shed policy
+ * (admit-or-fail) without parking the accept loop, which is exactly what
+ * `REFUSE` must avoid. This limiter is instead a **lock-free permit
+ * counter** over a single [`AtomicInt32`](../concurrent/AtomicInt32.cajeta):
+ *
+ *   - [`tryAdmit`](#tryAdmit) is a `compareAndSet` decrement loop — wholly
+ *     non-blocking, the heart of `REFUSE`.
+ *   - [`admit`](#admit) for [`BLOCK`](LoadShedPolicy.cajeta#BLOCK) layers a
+ *     park-with-backoff over `tryAdmit` (the same poll-with-backoff shape
+ *     [`Server.drainInflight`](Server.cajeta#drainInflight) uses), parking
+ *     the *fiber* (never the carrier) until a permit frees.
+ *
+ * Both models share one limiter instance: Model A
+ * ([`Server`](Server.cajeta)) gates its per-connection `spawn`, Model B
+ * ([`SharedPoolServer`](SharedPoolServer.cajeta)) gates its
+ * accept-then-enqueue — so the cap means the same thing whichever dispatch
+ * is in play.
+ *
+ * ## The `release` contract
+ *
+ * Every successful [`admit`](#admit) **must** be paired with exactly one
+ * [`release`](#release), and the release belongs in the connection
+ * handler's `finally` — the same `finally` that drops
+ * [`Server.inflight`](Server.cajeta#inflight) — so a handler that **throws**
+ * still returns its permit and never permanently shrinks the pool. A
+ * *refused* admission (a `false` [`tryAdmit`](#tryAdmit) /
+ * a thrown [`admitOrThrow`](#admitOrThrow)) took no permit and must **not**
+ * be released.
+ *
+ * ## Unbounded mode
+ *
+ * When the configured cap is `0`
+ * ([`ConnectionLimits.isUnbounded`](ConnectionLimits.cajeta#isUnbounded)),
+ * the limiter short-circuits: every [`tryAdmit`](#tryAdmit) succeeds and
+ * [`release`](#release) is a no-op, so a server that opts out of a cap pays
+ * nothing for the gate.
+ */
+public class ConnectionLimiter {
+    /**
+     * The number of **free permits** — admittable connections remaining. A
+     * successful admission decrements it; a release increments it. Held
+     * atomically so the accept loop (admitting) and the connection fibers
+     * (releasing) coordinate lock-free. Capped at construction by
+     * [`capacity`](#capacity). Field index 1 (after the vtable).
+     */
+    public AtomicInt32 permitCount;
+
+    /**
+     * The cap this limiter was sized to — the
+     * [`ConnectionLimits.maxConnections`](ConnectionLimits.cajeta#maxConnections)
+     * value. `0` ⇒ unbounded (the gate is bypassed). Retained so
+     * [`release`](#release) can clamp the permit count to it (defending the
+     * pool against a stray double-release) and so diagnostics can cite the
+     * cap.
+     */
+    public int32 capacity;
+
+    /**
+     * The [`LoadShedPolicy`](LoadShedPolicy.cajeta) ordinal —
+     * [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) or
+     * [`BLOCK`](LoadShedPolicy.cajeta#BLOCK) — that [`admit`](#admit)
+     * dispatches on when no permit is free.
+     */
+    public int32 shedPolicy;
+
+    /**
+     * Build a limiter holding `capacity` permits with the given shed
+     * `policy`. A `capacity` of `0` is the unbounded sentinel — every
+     * admission then succeeds and releases are no-ops. A negative capacity
+     * is clamped to `0` (treated as unbounded) rather than trapping, so a
+     * mis-configured cap degrades safely to "no cap" instead of refusing
+     * everything.
+     *
+     * @param capacity the max concurrent admissions (`0` ⇒ unbounded).
+     * @param policy   a [`LoadShedPolicy`](LoadShedPolicy.cajeta) ordinal.
+     */
+    public ConnectionLimiter(int32 capacity, int32 policy) {
+        int32 cap = capacity;
+        if (cap < 0) {
+            cap = 0;
+        }
+        this.capacity = cap;
+        this.permitCount = heap AtomicInt32(cap);
+        this.shedPolicy = policy;
+    }
+
+    /**
+     * Build a limiter straight from a [`ConnectionLimits`](ConnectionLimits.cajeta)
+     * config — sizing the permit pool to its
+     * [`maxConnections`](ConnectionLimits.cajeta#maxConnections) and taking
+     * its [`shedPolicy`](ConnectionLimits.cajeta#shedPolicy). The path the
+     * server cores use to wire backpressure from one config object.
+     */
+    public static #ConnectionLimiter fromLimits(ConnectionLimits limits) {
+        return heap ConnectionLimiter(limits.maxConnections, limits.shedPolicy);
+    }
+
+    // ----- non-blocking admission (the REFUSE primitive) -------------------
+
+    /**
+     * **Try to take a permit without blocking.** Returns `true` (and has
+     * consumed one permit — the caller must later [`release`](#release) it)
+     * iff a permit was free; `false` (no permit taken) if the cap is full.
+     *
+     * Unbounded ([`capacity`](#capacity) `== 0`) ⇒ always `true`, no permit
+     * accounting. Otherwise a lock-free `compareAndSet` decrement loop: read
+     * the current free count, and if it is `> 0` CAS it down by one — retry
+     * on a losing CAS (another carrier moved the count), bail `false` the
+     * instant the count is observed at `0`. Wholly non-blocking — this is
+     * the primitive the [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) policy and
+     * [`admitOrThrow`](#admitOrThrow) build on, so the accept loop never
+     * parks under a flood.
+     */
+    public boolean tryAdmit() {
+        if (this.capacity == 0) {
+            return true;   // unbounded — no gate
+        }
+        while (true) {
+            int32 free = this.permitCount.load();
+            if (free <= 0) {
+                return false;   // cap full — no permit to take
+            }
+            if (this.permitCount.compareAndSet(free, free - 1)) {
+                return true;    // took a permit
+            }
+            // lost the CAS to a concurrent admit/release — re-read and retry
+        }
+        return false;   // unreachable; the loop only exits via return
+    }
+
+    /**
+     * **Admit a connection per the configured shed policy**, blocking iff
+     * the policy is [`BLOCK`](LoadShedPolicy.cajeta#BLOCK). Returns `true`
+     * if a permit was taken (the caller owns it and must
+     * [`release`](#release) it), `false` only under
+     * [`REFUSE`](LoadShedPolicy.cajeta#REFUSE) when the cap is full (no
+     * permit taken — the caller sheds the connection).
+     *
+     *   - [`REFUSE`](LoadShedPolicy.cajeta#REFUSE): one
+     *     [`tryAdmit`](#tryAdmit) — its result is returned verbatim (no
+     *     wait).
+     *   - [`BLOCK`](LoadShedPolicy.cajeta#BLOCK): retry `tryAdmit`, parking
+     *     the fiber between attempts ([`awaitPermit`](#awaitPermit)) until a
+     *     permit frees — always eventually `true`.
+     *
+     * The accept loop calls this; on `false` it closes the just-accepted
+     * socket (the shed), on `true` it dispatches and arranges the paired
+     * [`release`](#release) in the handler's `finally`.
+     */
+    public boolean admit() {
+        if (this.shedPolicy == LoadShedPolicy.BLOCK) {
+            this.awaitPermit();
+            return true;
+        }
+        return this.tryAdmit();   // REFUSE (and any future non-blocking policy)
+    }
+
+    /**
+     * **Admit-or-throw** — the [`REFUSE`](LoadShedPolicy.cajeta#REFUSE)
+     * surface that turns a full cap into a
+     * [`TooManyConnectionsException`](TooManyConnectionsException.cajeta)
+     * rather than a `false` return, for call sites that prefer to let the
+     * shed propagate as an exception (e.g. an HTTP front-end that maps it to
+     * a `503`). On success a permit is taken (release it); on a full cap
+     * **no** permit is taken and the exception carries the cap that was hit.
+     *
+     * Independent of [`shedPolicy`](#shedPolicy): this is always the
+     * non-blocking try — a caller that wants blocking calls [`admit`](#admit)
+     * instead. Throws iff the non-blocking [`tryAdmit`](#tryAdmit) fails.
+     */
+    public void admitOrThrow() {
+        if (!this.tryAdmit()) {
+            throw heap TooManyConnectionsException(
+                "connection cap reached; shedding excess connection",
+                this.capacity);
+        }
+    }
+
+    /**
+     * Park the calling fiber (never the carrier) until a permit is free and
+     * taken — the [`BLOCK`](LoadShedPolicy.cajeta#BLOCK) wait. A
+     * poll-with-backoff over [`tryAdmit`](#tryAdmit), the same shape
+     * [`Server.drainInflight`](Server.cajeta#drainInflight) uses: spin
+     * `tryAdmit`, and on a full cap `Cajeta.fiberSleepNanos` the fiber for a
+     * backoff interval (100µs, doubling to a 10ms cap) before retrying — so
+     * a saturated server's waiting acceptors stay cheap, and the carrier is
+     * free to run the in-flight handlers whose completion will
+     * [`release`](#release) the permits these waiters need. Returns once a
+     * permit has been taken.
+     */
+    public void awaitPermit() {
+        int64 backoff = 100000;           // 100µs, doubling to a 10ms cap
+        while (!this.tryAdmit()) {
+            Cajeta.fiberSleepNanos(backoff);
+            if (backoff < 10000000) {
+                backoff = backoff * 2;
+            }
+        }
+        return;
+    }
+
+    // ----- release ---------------------------------------------------------
+
+    /**
+     * **Return one permit** — paired with each successful
+     * [`admit`](#admit) / [`tryAdmit`](#tryAdmit), called from the
+     * connection handler's `finally` (so a throwing handler still returns
+     * its permit). Increments the free-permit count, but **clamps at
+     * [`capacity`](#capacity)** so a stray double-release can never inflate
+     * the pool above the cap (which would let the limiter admit more than
+     * the configured maximum). Unbounded ([`capacity`](#capacity) `== 0`)
+     * ⇒ a no-op.
+     *
+     * The clamp is a `compareAndSet` increment loop: read the free count,
+     * and only CAS it up by one if it is still below `capacity` — if a race
+     * already pushed it to the cap, stop (drop the extra release) rather
+     * than overshoot.
+     */
+    public void release() {
+        if (this.capacity == 0) {
+            return;   // unbounded — nothing was taken
+        }
+        while (true) {
+            int32 free = this.permitCount.load();
+            if (free >= this.capacity) {
+                return;   // already at cap — drop a stray over-release
+            }
+            if (this.permitCount.compareAndSet(free, free + 1)) {
+                return;   // returned the permit
+            }
+            // lost the CAS to a concurrent admit/release — re-read and retry
+        }
+        return;   // unreachable
+    }
+
+    // ----- introspection ---------------------------------------------------
+
+    /**
+     * Free permits remaining — admittable connections before the cap is
+     * hit. A snapshot (advisory under concurrent admit/release). For an
+     * unbounded limiter this stays `0` (no permits are tracked); prefer
+     * [`isUnbounded`](#isUnbounded) to distinguish "cap full" from "no cap."
+     */
+    public int32 available() {
+        return this.permitCount.load();
+    }
+
+    /**
+     * Currently **admitted** (in-use) permits — `capacity − available`, the
+     * live connection count the cap bounds. `0` for an unbounded limiter.
+     * Together with [`capacity`](#capacity) this is what a load-monitoring
+     * probe reads.
+     */
+    public int32 inUse() {
+        if (this.capacity == 0) {
+            return 0;
+        }
+        return this.capacity - this.permitCount.load();
+    }
+
+    /**
+     * `true` when this limiter imposes **no** cap
+     * ([`capacity`](#capacity) `== 0`) — every admission succeeds and
+     * releases are no-ops.
+     */
+    public boolean isUnbounded() {
+        return this.capacity == 0;
+    }
+}

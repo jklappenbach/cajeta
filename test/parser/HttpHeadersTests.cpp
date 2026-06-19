@@ -1,4 +1,4 @@
-// NET-7.2 — cajeta.net.Headers tests.
+// NET-7.2 — cajeta.io.net.Headers tests.
 //
 // `Headers` is a pure-logic, case-insensitive, multi-value,
 // insertion-order-preserving HTTP header map (no I/O), so it tests
@@ -24,7 +24,7 @@ namespace {
 int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
-        "import cajeta.net.Headers;\n"
+        "import cajeta.io.net.Headers;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

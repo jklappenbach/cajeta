@@ -1,0 +1,20 @@
+package cajeta.io.net;
+
+import cajeta.lang.String;
+
+/**
+ * A write was attempted on a connection whose peer has closed its
+ * receive side — there is no one left to read the data. POSIX
+ * `EPIPE` (the runtime suppresses `SIGPIPE` via `MSG_NOSIGNAL`/
+ * `SO_NOSIGPIPE` so the error surfaces as a return value, not a
+ * signal); Winsock reports the corresponding `WSAESHUTDOWN`.
+ * `kind == NetException.KIND_BROKEN_PIPE` (9). See
+ * [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
+ */
+public class BrokenPipeException extends NetException {
+    public BrokenPipeException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 9;   // NetException.KIND_BROKEN_PIPE
+    }
+}

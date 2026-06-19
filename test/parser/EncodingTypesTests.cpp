@@ -4,7 +4,7 @@
 //   - EncodingErrorPolicy enum (FAIL / REPAIR)
 //   - EncodingException (extends RecoverableException)
 //
-// Per docs/stdlib/lang/String.md § Encoding interchange.
+// Per docs/specification/lang/String.md § Encoding interchange.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"

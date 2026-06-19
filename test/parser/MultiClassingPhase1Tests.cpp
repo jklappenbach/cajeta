@@ -9,7 +9,7 @@
 //   - CAJETA_ERROR_AMBIGUOUS_FIELD_ACCESS
 //   - CAJETA_ERROR_RETURN_TYPE_COLLISION
 //
-// Design: docs/stdlib/MultiClassing.md § P-1 + § Phase 1.
+// Design: docs/specification/lang/MultiClassing.md § P-1 + § Phase 1.
 //
 // Each negative test pairs with a positive companion that exercises
 // the same code paths after the user follows the remediation

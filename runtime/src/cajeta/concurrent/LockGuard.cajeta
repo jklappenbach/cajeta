@@ -24,7 +24,7 @@ package cajeta.concurrent;
  * without keeping the `Lock` object alive. Compare `WriteGuard` from
  * `RwLock`, which follows the same drop-to-release contract.
  *
- * See docs/stdlib/Concurrency.md § Synchronization primitives.
+ * See docs/specification/concurrent/Concurrency.md § Synchronization primitives.
  */
 public class LockGuard {
     public pointer handle;

@@ -1,4 +1,4 @@
-// NET-9.2 — cajeta.net.ServerModel selection + HttpServer model wiring.
+// NET-9.2 — cajeta.io.net.ServerModel selection + HttpServer model wiring.
 //
 // NET-9.2 is "run the existing handler-based HttpServer (NET-9.1) on BOTH
 // NET-4 accept models — fiber-per-connection (Model A, NET-4.2) and the
@@ -42,11 +42,11 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.ServerModel;\n"
-        "import cajeta.net.http.HttpServer;\n"
-        "import cajeta.net.http.HttpServerBuilder;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
+        "import cajeta.io.net.ServerModel;\n"
+        "import cajeta.io.net.http.HttpServer;\n"
+        "import cajeta.io.net.http.HttpServerBuilder;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

@@ -118,7 +118,7 @@ TEST(StructViewTests, freshBufferReadsZero) {
 
 // --- Struct passed as parameter is pass-by-pointer --------------------------
 //
-// Structs are zero-copy views over wire-format buffers (docs/stdlib/Views.md).
+// Structs are zero-copy views over wire-format buffers (docs/specification/lang/Views.md).
 // Method::generatePrototype passes them by pointer, not by value —
 // otherwise every call-boundary memcpy would defeat the whole point of
 // the view. These probes confirm:

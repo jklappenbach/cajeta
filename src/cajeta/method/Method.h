@@ -95,7 +95,7 @@ namespace cajeta {
         // by-value copy lowered through the sret + NRVO ABI rather than a
         // pointer. Storage class lives on the construction expression, so this
         // scan is the single source of truth — there is no `stack T` return
-        // type. See docs/stdlib/ValueReturns.md.
+        // type. See docs/specification/lang/ValueReturns.md.
         int returnsStackValueCache = -1;
         BlockPtr block;
         bool constructor;
@@ -124,7 +124,7 @@ namespace cajeta {
         vector<QualifiedNamePtr> throwsList;
         int virtualTableIndex;
 
-        // Method-level templates (docs/stdlib/MethodLevelTemplate.md).
+        // Method-level templates (docs/specification/lang/MethodLevelTemplate.md).
         // `methodTypeParameters` non-empty AND `methodTypeArguments` empty =
         // a method-template declaration (no LLVM function emitted; body source
         // captured for re-parse at call sites that instantiate it). Both non-
@@ -260,7 +260,7 @@ namespace cajeta {
         void emitBeforeAdvice(CajetaModulePtr module);
         void emitAfterAdvice(CajetaModulePtr module);
 
-        // @NonNull (docs/stdlib/Annotations.md § Null safety).
+        // @NonNull (docs/specification/reflect/Annotations.md § Null safety).
         // Emit entry-point null-checks for every @NonNull-annotated
         // pointer parameter. Skipped for the implicit `this` and for
         // non-reference parameters. Called from generateCode after
@@ -522,7 +522,7 @@ namespace cajeta {
         // and T=String thereby get distinct keys even though their
         // value-param signatures (and so their `toCanonical()`) are
         // identical — which is what lets addMethod's duplicate-static
-        // check accept both. See docs/stdlib/MethodLevelTemplate.md
+        // check accept both. See docs/specification/lang/MethodLevelTemplate.md
         // § two-layer naming.
         //
         // resolveMethod looks up ordinary methods by their plain
@@ -557,7 +557,7 @@ namespace cajeta {
 
         // Emit a thin forwarding wrapper to a C-runtime symbol named
         // `symbol`. Called by generateCode() when the method carries an
-        // @Native annotation. See docs/stdlib/
+        // @Native annotation. See docs/specification/
         // "Native methods" for the user-facing contract.
         void emitNativeForwardingBody(const std::string& symbol);
 

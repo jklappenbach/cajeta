@@ -1,0 +1,535 @@
+package cajeta.io.net.uri;
+
+import cajeta.lang.String;
+import cajeta.io.net.uri.UriComponent;
+import cajeta.io.net.uri.PercentCodec;
+
+/**
+ * **Query-param multi-map** (RFC 3986 §3.4 / plan item **NET-6.3**) —
+ * parse a `?k=v&k2=v2` query string into an **ordered, duplicate-key
+ * preserving** map, and recompose a query string from `(key, value)`
+ * pairs with the correct per-component percent-encoding.
+ *
+ * This is the layer that sits *on top of* [`Uri`](Uri.cajeta) (NET-6.1)
+ * and the [`PercentCodec`](PercentCodec.cajeta) (NET-6.2): `Uri.query()`
+ * hands back the **raw, still-percent-encoded** query slice, and this
+ * type turns it into decoded keys/values (and back). It is **pure
+ * `cajeta.lang.String` logic** — no I/O, no native intrinsics — so it
+ * tests with golden vectors over `CajetaJit`, exactly like
+ * [`PercentCodec`](PercentCodec.cajeta) and [`Headers`](../Headers.cajeta).
+ *
+ * ## Why a multi-map (not a plain map)
+ *
+ * A query string is an *ordered sequence* of pairs, and the same key
+ * may legitimately repeat: `?tag=a&tag=b&tag=c` is three distinct
+ * values for `tag`, and the order matters (it is the order a server's
+ * list-valued parameter sees). A plain last-write-wins map would lose
+ * both the duplicates and the ordering, so the storage model is the
+ * same parallel-array / insertion-order design as
+ * [`Headers`](../Headers.cajeta): one slot per `(key, value)` pair, in
+ * the exact order parsed or added.
+ *
+ *   - `keys[i]`   : the decoded key for slot `i`.
+ *   - `values[i]` : the decoded value for slot `i` (`""` for a
+ *                   bare `?flag` with no `=`).
+ *
+ * ## `+`-for-space (form-urlencoded) vs RFC 3986
+ *
+ * RFC 3986 treats `+` as an ordinary literal sub-delim — it is *not*
+ * space. But the `application/x-www-form-urlencoded` serialization that
+ * HTML forms (and virtually every `?key=value` query in the wild) use
+ * encodes a space as `+`. [`PercentCodec`](PercentCodec.cajeta)
+ * deliberately leaves `+` alone so its `encode`→`decode` stays a true
+ * byte-identity; the form `+`/space swap lives **here**, gated on a
+ * flag:
+ *
+ *   - [`parse`](#parse) (the common case) treats `+` as space on the
+ *     way in and emits `+` for space on the way out — matching how
+ *     query strings are produced and consumed in practice.
+ *   - [`parseStrict`](#parseStrict) keeps `+` literal (pure RFC 3986)
+ *     for callers who need byte-faithful round-tripping of a `+`.
+ *
+ * ## Round-trip
+ *
+ * `QueryParams.parse(q).toString()` reproduces `q` up to encoding
+ * normalization (uppercase `%XX`, and — in form mode — space `↔` `+`).
+ * Values are re-encoded with the `QUERY_PARAM` safe set so the `&`/`=`
+ * separators a value contains can never be mis-split on a later parse.
+ *
+ * @see [`PercentCodec`](PercentCodec.cajeta) for the byte codec this composes onto.
+ * @see [`UriComponent`](UriComponent.cajeta) for the `QUERY_PARAM` safe set.
+ */
+public class QueryParams {
+    String[] keys;
+    String[] values;
+    int32 cap;
+    int32 sizeCount;
+    /** True when `+` is the space encoding (form-urlencoded mode). */
+    boolean formEncoded;
+
+    /** An empty multi-map in form-encoded (`+`-is-space) mode. */
+    public QueryParams() {
+        this.cap = 8;
+        this.keys = heap String[8];
+        this.values = heap String[8];
+        this.sizeCount = 0;
+        this.formEncoded = true;
+    }
+
+    // -- factories ----------------------------------------------------------
+
+    /**
+     * Parse a raw query string into a multi-map, **form-urlencoded**:
+     * `+` decodes to a space and (on `toString`) a space re-encodes to
+     * `+`. This is the right default for `?key=value` query strings as
+     * they appear in URLs and HTML form submissions.
+     *
+     * `query` is the slice *after* the `?` (what [`Uri.query()`](Uri.cajeta)
+     * returns) — pass it with no leading `?`. A `null` or empty string
+     * yields an empty map. Pairs are split on `&`; each pair is split on
+     * its **first** `=` (so a value may itself contain `=`); both key
+     * and value are percent-decoded. A bare segment with no `=`
+     * (`?flag`) becomes `(flag, "")`. Empty segments (a leading,
+     * trailing, or doubled `&`) are skipped, matching lenient
+     * real-world query parsing.
+     *
+     * Throws [`MalformedUriException`](MalformedUriException.cajeta)
+     * (via [`PercentCodec.decode`](PercentCodec.cajeta)) if a key or
+     * value carries a truncated or non-hex `%XX` escape.
+     */
+    public static #QueryParams parse(String query) {
+        return QueryParams.parseWith(query, true);
+    }
+
+    /**
+     * Parse a raw query string into a multi-map, **strict RFC 3986**:
+     * `+` is kept literal (not space). Use this when a `+` in a value is
+     * meaningful and must round-trip byte-for-byte. Otherwise identical
+     * to [`parse`](#parse).
+     */
+    public static #QueryParams parseStrict(String query) {
+        return QueryParams.parseWith(query, false);
+    }
+
+    /**
+     * Shared parse core. `form` selects whether `+` is space (form
+     * mode) or a literal (strict RFC mode); the chosen mode is recorded
+     * on the result so a later [`toString`](#toString) re-encodes
+     * symmetrically.
+     */
+    private static #QueryParams parseWith(String query, boolean form) {
+        QueryParams q = heap QueryParams();
+        q.formEncoded = form;
+        // Single `return #q` at the end: moving `q` on an early return
+        // (the `query == null` path) would mark it moved for the
+        // fall-through path too, so the whole walk is guarded under one
+        // conditional instead (same workaround as BPlusTree.keysInOrder).
+        if (query != null) {
+            int32 n = query.byteLength;
+            int8[] b = query.bytes;
+
+            int32 segStart = 0;
+            int32 i = 0;
+            while (i <= n) {
+                // A segment ends at '&' (38) or at end-of-input.
+                boolean atEnd = (i == n);
+                boolean sep = (!atEnd) && (QueryParams.byteAt(b, i) == 38);
+                if (atEnd || sep) {
+                    if (i > segStart) {
+                        QueryParams.addSegment(q, query, segStart, i, form);
+                    }
+                    segStart = i + 1;
+                }
+                i = i + 1;
+            }
+        }
+        return #q;
+    }
+
+    /**
+     * Decode one `key[=value]` segment `[start, end)` of `query` and
+     * append it as a slot. The split is on the **first** `=` in the
+     * segment; a `=`-less segment is a bare key with an empty value.
+     * Each half is form-decoded (if `form`) then percent-decoded.
+     */
+    private static void addSegment(QueryParams q, String query,
+                                   int32 start, int32 end, boolean form) {
+        int8[] b = query.bytes;
+        int32 eq = -1;
+        int32 i = start;
+        while (i < end && eq < 0) {
+            if (QueryParams.byteAt(b, i) == 61) {   // '='
+                eq = i;
+            }
+            i = i + 1;
+        }
+        String rawKey;
+        String rawVal;
+        if (eq < 0) {
+            rawKey = query.substring(start, end);
+            int8[] empty = heap int8[0];
+            rawVal = heap String(#empty, 0);
+        } else {
+            rawKey = query.substring(start, eq);
+            rawVal = query.substring(eq + 1, end);
+        }
+        String decKey = QueryParams.decodeComponent(rawKey, form);
+        String decVal = QueryParams.decodeComponent(rawVal, form);
+        q.append(#decKey, #decVal);
+    }
+
+    /**
+     * Decode a single key or value: in form mode, swap every `+` for a
+     * space *first* (so a literal `+` would have arrived as `%2B`), then
+     * percent-decode. In strict mode, percent-decode only.
+     */
+    private static #String decodeComponent(String raw, boolean form) {
+        if (form) {
+            String spaced = QueryParams.plusToSpace(raw);
+            return PercentCodec.decode(spaced);
+        }
+        return PercentCodec.decode(raw);
+    }
+
+    // -- accessors ----------------------------------------------------------
+
+    /** Total slot count — repeated keys each count once. */
+    public int32 size() {
+        return this.sizeCount;
+    }
+
+    /** Decoded key at slot `i`, in parse/insertion order. */
+    public #String keyAt(int32 i) {
+        String k = this.keys[i];
+        return heap String(k.bytes, k.byteLength);
+    }
+
+    /** Decoded value at slot `i`, in parse/insertion order. */
+    public #String valueAt(int32 i) {
+        String v = this.values[i];
+        return heap String(v.bytes, v.byteLength);
+    }
+
+    /** True iff at least one slot carries `key`. */
+    public boolean contains(String key) {
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(key)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /** Number of slots carrying `key` (0 when absent). */
+    public int32 countFor(String key) {
+        int32 c = 0;
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(key)) {
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return c;
+    }
+
+    /**
+     * The **first** value for `key`, or `null` when `key` is absent.
+     * The first occurrence wins — the convention for a parameter that
+     * "should" be single-valued but might be duplicated. Use
+     * [`getAll`](#getAll) for the full ordered list. The returned
+     * `String` is a fresh view over the stored bytes (caller-owned, not
+     * an alias of the map's field-owned `String`).
+     */
+    public #String getFirst(String key) {
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(key)) {
+                String v = this.values[i];
+                return heap String(v.bytes, v.byteLength);
+            }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    /**
+     * Every value for `key`, in insertion order. Returns a zero-length
+     * array when `key` is absent (callers test `.length` / `0` rather
+     * than null-checking). Each element is a fresh view-mode `String`
+     * over the stored bytes — the copy-out discipline
+     * [`Headers.getAll`](../Headers.cajeta) uses, so the returned array
+     * owns its element handles and never aliases the map's storage.
+     */
+    public #String[] getAll(String key) {
+        int32 c = this.countFor(key);
+        String[] out = heap String[c];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(key)) {
+                String v = this.values[i];
+                out[w] = heap String(v.bytes, v.byteLength);
+                w = w + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // -- mutators -----------------------------------------------------------
+
+    /**
+     * Append a `(key, value)` slot, preserving insertion order.
+     * Duplicate keys accumulate (the multi-value case). `key` / `value`
+     * are stored **decoded** (raw, un-encoded text) — encoding happens
+     * only on [`toString`](#toString).
+     */
+    public void add(String key, String value) {
+        this.append(key.substring(0, key.byteLength),
+                    value.substring(0, value.byteLength));
+    }
+
+    /**
+     * Replace every existing slot for `key` with a single
+     * `(key, value)` slot (last-write-wins). The new slot is appended
+     * after the removal.
+     */
+    public void set(String key, String value) {
+        this.remove(key);
+        this.add(key, value);
+    }
+
+    /**
+     * Remove every slot carrying `key`, compacting the parallel arrays
+     * so the survivors keep their relative order.
+     */
+    public void remove(String key) {
+        int32 w = 0;
+        int32 r = 0;
+        while (r < this.sizeCount) {
+            if (!this.keys[r].equals(key)) {
+                this.keys[w] = this.keys[r];
+                this.values[w] = this.values[r];
+                w = w + 1;
+            }
+            r = r + 1;
+        }
+        int32 k = w;
+        while (k < this.sizeCount) {
+            this.keys[k] = null;
+            this.values[k] = null;
+            k = k + 1;
+        }
+        this.sizeCount = w;
+    }
+
+    /**
+     * Take ownership of an already-decoded `(key, value)` pair into the
+     * next slot, growing the backing arrays first if needed. Internal —
+     * callers go through [`add`](#add) / [`parse`](#parse), which supply
+     * fresh, caller-owned `String`s.
+     */
+    void append(#String key, #String value) {
+        if (this.sizeCount >= this.cap) {
+            this.grow();
+        }
+        this.keys[this.sizeCount] = key;
+        this.values[this.sizeCount] = value;
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    // -- recompose ----------------------------------------------------------
+
+    /**
+     * Recompose the multi-map into a query string: each slot becomes
+     * `encKey=encValue`, joined with `&`, in slot order. Keys and values
+     * are percent-encoded with the `QUERY_PARAM` safe set (so a literal
+     * `&`/`=`/`+`/`;` in a key or value is escaped and cannot be
+     * mis-split on a later [`parse`](#parse)).
+     *
+     * No leading `?` is emitted — the caller (or
+     * [`UriBuilder.query`](Uri.cajeta)) prepends it. An empty map yields
+     * `""`.
+     *
+     * Form-mode space handling (see [`encodeComponent`](#encodeComponent)):
+     * the codec already escapes a space to `%20` and a literal `+` to
+     * `%2B` (both are non-safe in `QUERY_PARAM`). In form mode we then
+     * rewrite every `%20` back to a bare `+`. Because the literal `+`
+     * left the codec as `%2B`, it is *not* touched by that rewrite — so
+     * a `+` on the wire unambiguously means "space" and a `%2B` means
+     * "a literal plus", which is exactly the inverse of what
+     * [`parse`](#parse) does (`+`→space, then decode `%2B`→`+`).
+     */
+    public #String toString() {
+        // Two-pass: sum the encoded lengths, then copy. Each component is
+        // encoded twice (encode is pure) rather than cached in a
+        // `String[]` of owned handles — the intermediate owned-String
+        // array mis-codegens here (the array-of-owned-String build/read).
+        int32 count = this.sizeCount;
+        int32 total = 0;
+        int32 i = 0;
+        while (i < count) {
+            // Bind the array element to a named local before passing it —
+            // a direct `encodeComponent(this.keys[i])` lowers the element
+            // read to a slot l-value and mistypes the String argument
+            // (arrives empty); the workaround BPlusTree/ArrayList use.
+            String rk = this.keys[i];
+            String rv = this.values[i];
+            String ek = this.encodeComponent(rk);
+            String ev = this.encodeComponent(rv);
+            // "key" + "=" + "val"; plus a '&' before every pair but the first.
+            total = total + ek.byteLength + ev.byteLength + 1;
+            if (i > 0) {
+                total = total + 1;                              // '&'
+            }
+            i = i + 1;
+        }
+        int8[] out = heap int8[total];
+        int32 dst = 0;
+        i = 0;
+        while (i < count) {
+            if (i > 0) {
+                out[dst] = (int8) 38;                           // '&'
+                dst = dst + 1;
+            }
+            String rk = this.keys[i];
+            String ek = this.encodeComponent(rk);
+            dst = QueryParams.copyBytes(out, dst, ek);
+            out[dst] = (int8) 61;                               // '='
+            dst = dst + 1;
+            String rv = this.values[i];
+            String ev = this.encodeComponent(rv);
+            dst = QueryParams.copyBytes(out, dst, ev);
+            i = i + 1;
+        }
+        return heap String(#out, total);
+    }
+
+    /**
+     * Encode one key/value half. The codec runs **first**, with the
+     * `QUERY_PARAM` safe set: a space becomes `%20` and a literal `+`
+     * becomes `%2B`. In form mode we then rewrite every `%20` to a bare
+     * `+` (the form-urlencoded space). The literal `+`, already `%2B`,
+     * is untouched — so space and literal-`+` stay distinguishable. In
+     * strict mode the codec output is returned verbatim (space stays
+     * `%20`, `+` stays `%2B`).
+     */
+    #String encodeComponent(String decoded) {
+        String enc = PercentCodec.encode(decoded, UriComponent.QUERY_PARAM);
+        if (this.formEncoded) {
+            return QueryParams.percent20ToPlus(enc);
+        }
+        return #enc;
+    }
+
+
+    // -- byte helpers -------------------------------------------------------
+
+    /** Read byte `i` of `b` as an unsigned 0..255 int32. */
+    private static int32 byteAt(int8[] b, int32 i) {
+        return ((int32) b[i]) & 0xff;
+    }
+
+    /**
+     * Copy every byte of `s` into `out` starting at `at`, returning the
+     * next write offset.
+     */
+    private static int32 copyBytes(int8[] out, int32 at, String s) {
+        int32 n = s.byteLength;
+        int8[] b = s.bytes;
+        int32 j = 0;
+        while (j < n) {
+            out[at] = b[j];
+            at = at + 1;
+            j = j + 1;
+        }
+        return at;
+    }
+
+    /**
+     * Replace every `+` (0x2B) byte in `s` with a space (0x20) — the
+     * form-urlencoded space decoding. Operates byte-wise (a `+` is
+     * single-byte ASCII and can't be part of a UTF-8 continuation, so a
+     * raw byte scan is correct).
+     */
+    private static #String plusToSpace(String s) {
+        int32 n = s.byteLength;
+        int8[] in = s.bytes;
+        int8[] out = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            int32 c = QueryParams.byteAt(in, i);
+            if (c == 43) {                  // '+'
+                out[i] = (int8) 32;         // ' '
+            } else {
+                out[i] = (int8) c;
+            }
+            i = i + 1;
+        }
+        return heap String(#out, n);
+    }
+
+    /**
+     * Rewrite every `%20` triple in the already-percent-encoded `s` to a
+     * single `+` (the form-urlencoded space). The output is never longer
+     * than `s` (each rewrite shrinks 3 bytes to 1), so it is sized at
+     * `n`. A literal `+` already arrived here as `%2B` and is left
+     * alone; a `%` that is not the start of a `%20` passes through
+     * unchanged (`s` is valid codec output, so every `%` begins a
+     * two-hex-digit escape). Case-insensitive on the hex digits
+     * (`%20`/`%2 0` n/a — only exact `2`,`0`).
+     */
+    private static #String percent20ToPlus(String s) {
+        int32 n = s.byteLength;
+        int8[] in = s.bytes;
+        int8[] out = heap int8[n];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = QueryParams.byteAt(in, i);
+            if (c == 37 && i + 2 < n
+                && QueryParams.byteAt(in, i + 1) == 50      // '2'
+                && QueryParams.byteAt(in, i + 2) == 48) {   // '0'
+                out[w] = (int8) 43;                         // '+'
+                w = w + 1;
+                i = i + 3;
+            } else {
+                out[w] = (int8) c;
+                w = w + 1;
+                i = i + 1;
+            }
+        }
+        int8[] exact = heap int8[w];
+        int32 k = 0;
+        while (k < w) {
+            exact[k] = out[k];
+            k = k + 1;
+        }
+        return heap String(#exact, w);
+    }
+
+    /**
+     * Double the parallel-array capacity, copying live slots through.
+     * `#dstK` / `#dstV` transfer ownership of the fresh storage into the
+     * fields so the locals' scope-exit drop doesn't reclaim the arrays
+     * we just installed (the ownership-marker discipline
+     * [`Headers.grow`](../Headers.cajeta) uses).
+     */
+    void grow() {
+        int32 newCap = this.cap * 2;
+        String[] dstK = heap String[newCap];
+        String[] dstV = heap String[newCap];
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            dstK[i] = this.keys[i];
+            dstV[i] = this.values[i];
+            i = i + 1;
+        }
+        this.keys = #dstK;
+        this.values = #dstV;
+        this.cap = newCap;
+    }
+}

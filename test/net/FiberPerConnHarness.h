@@ -5,7 +5,7 @@
 // NEW→RUNNING→DRAINING→STOPPED lifecycle and the in-flight drain counter.
 // NET-4.2 is the **fiber-per-connection dispatch model** that rides that
 // core — the `Server.dispatch` / `Server.serveConnection` seam in
-// runtime/src/cajeta/net/Server.cajeta. Its distinct, testable contract
+// runtime/src/cajeta/io/net/Server.cajeta. Its distinct, testable contract
 // (over and above the bare lifecycle the NET-4.1 harness already freezes):
 //
 //   1. **One fiber per accepted socket.** The accept loop spawns exactly
@@ -50,7 +50,7 @@
 // harnesses cannot drift). When the in-scheduler JIT `ServerTests.*` suite
 // lands, this stays its native analog and the contract those tests reuse.
 //
-// The dispatch rules here MUST mirror runtime/src/cajeta/net/Server.cajeta
+// The dispatch rules here MUST mirror runtime/src/cajeta/io/net/Server.cajeta
 // (`dispatch`, `serveConnection`, the `serve` scope) exactly. Kept under
 // test/ so production sources carry no test-only surface.
 //

@@ -2,8 +2,8 @@
 // ModelSelectionHarnessTests.cpp — NET-4.5 model-selection (Server.builder).
 //
 // Pins the pure-selection contract of the NET-4.5 model-selection surface
-// (runtime/src/cajeta/net/ServerModel.cajeta +
-// runtime/src/cajeta/net/ServerBuilder.cajeta), modeled one level down via
+// (runtime/src/cajeta/io/net/ServerModel.cajeta +
+// runtime/src/cajeta/io/net/ServerBuilder.cajeta), modeled one level down via
 // ModelSelectionHarness.h, in the deterministic, scheduler-free posture the
 // other net harnesses use while the cajeta-surface accept loop is still being
 // wired. The defining NET-4.5 property is that the builder *selects* the right

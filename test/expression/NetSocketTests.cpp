@@ -6,7 +6,7 @@
 // JIT), and cajeta_runtime.c #includes cajeta_net_socket.c, so these
 // `__cajeta_net_*` symbols are present and callable directly via extern "C".
 //
-// This exercises ONLY the native layer that NET-1.1 ships — the `cajeta.net`
+// This exercises ONLY the native layer that NET-1.1 ships — the `cajeta.io.net`
 // Cajeta surface (IpAddress / SocketAddress / TcpStream / sockaddr
 // marshalling) is NET-1.2+ and not yet built. So the test constructs
 // `sockaddr_in` directly (the job NET-1.2's `__cajeta_net_sockaddr_pack`

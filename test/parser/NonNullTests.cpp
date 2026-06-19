@@ -1,4 +1,4 @@
-// Tests for @NonNull on parameters (docs/stdlib/Annotations.md
+// Tests for @NonNull on parameters (docs/specification/reflect/Annotations.md
 // § Null safety). v1 wires only parameter-level checks; field-level
 // is half-supported via @RequiredArgsConstructor's `final`-or-@NonNull
 // predicate; return-type checks deferred.

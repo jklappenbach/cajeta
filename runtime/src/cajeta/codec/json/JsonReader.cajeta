@@ -11,7 +11,7 @@ import cajeta.lang.String;
  * — the caller pays the parse/decode cost only when it asks for a
  * concrete value (Phase 2).
  *
- * See docs/stdlib/codec/Json.md § Tier 2.
+ * See docs/specification/codec/json/Json.md § Tier 2.
  *
  * ## Usage
  *

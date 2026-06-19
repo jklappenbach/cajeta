@@ -147,7 +147,7 @@ cajeta.math.Float64        (boxed float64)
 ```
 
 `cajeta.lang.Integer / Long / Double / Boolean` (the shapes already
-documented in `docs/stdlib/`) become aliases / re-exports of
+documented in `docs/specification/`) become aliases / re-exports of
 `cajeta.math.Int32 / Int64 / Float64 / Boolean`. The math package is
 the source of truth; `cajeta.lang` carries the Java-style names for
 ergonomics.

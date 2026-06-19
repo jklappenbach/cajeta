@@ -8,7 +8,7 @@ import tour.DemoClass;
 //   3. Combine templates + MI — reusable generic behavior mixins.
 //
 // State is single-inheritance; behavior is multiple-inheritance. Overriding is
-// by signature (there is no `override` keyword). See docs/stdlib/MultiClassing.md.
+// by signature (there is no `override` keyword). See docs/specification/lang/MultiClassing.md.
 
 // ---- 1. Two behavior bases, each contributing concrete methods + state ------
 

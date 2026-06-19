@@ -1,7 +1,7 @@
 //
 // ServerLifecycleHarness.h — NET-4.1 server-core lifecycle + drain harness.
 //
-// The NET-4.1 `Server` core (runtime/src/cajeta/net/Server.cajeta) is two
+// The NET-4.1 `Server` core (runtime/src/cajeta/io/net/Server.cajeta) is two
 // subtle, easy-to-regress pieces of *pure logic* riding on primitives that
 // already exist (TcpListener, the reactor, AtomicInt32, Duration):
 //
@@ -34,7 +34,7 @@
 // the native analog + the contract these fixtures freeze.
 //
 // The state ordinals + transition rules + drain semantics here MUST mirror
-// runtime/src/cajeta/net/ServerState.cajeta and Server.cajeta exactly —
+// runtime/src/cajeta/io/net/ServerState.cajeta and Server.cajeta exactly —
 // they are the executable spec for that pure-logic core. Kept under test/
 // so production sources carry no test-only surface.
 //
@@ -49,7 +49,7 @@ namespace cajeta::net::testing {
 
     // -----------------------------------------------------------------------
     // ServerState — the NET-4.1 lifecycle ordinals, byte-identical to
-    // runtime/src/cajeta/net/ServerState.cajeta. Append-only; never renumber.
+    // runtime/src/cajeta/io/net/ServerState.cajeta. Append-only; never renumber.
     // -----------------------------------------------------------------------
     namespace server_state {
         constexpr int32_t NEW      = 0;

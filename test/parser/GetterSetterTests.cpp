@@ -1,5 +1,5 @@
 // Tests for the @Getter / @Setter Lombok-mirror annotations
-// (docs/stdlib/Annotations.md § Accessors). Each annotation
+// (docs/specification/reflect/Annotations.md § Accessors). Each annotation
 // can sit on the class (applies to every non-static field) or on
 // an individual field (only that field gets the accessor). Naming
 // follows size()-style: getter for `name` is `name()`, setter is

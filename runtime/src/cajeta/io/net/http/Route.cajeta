@@ -1,0 +1,194 @@
+package cajeta.io.net.http;
+
+import cajeta.lang.String;
+import cajeta.io.net.http.HttpRequest;
+import cajeta.io.net.http.HttpResponse;
+import cajeta.io.net.http.PathParams;
+import cajeta.io.net.uri.PercentCodec;
+import cajeta.io.net.uri.MalformedUriException;
+
+/**
+ * One **compiled route** in the [`Router`](Router.cajeta) (plan item
+ * **NET-9.3**) — a `(method, path-pattern, handler)` triple, with the
+ * pattern pre-split into match segments so dispatch is a per-request
+ * segment walk rather than a re-parse.
+ *
+ * A **path pattern** is the registered template, e.g. `/users/{id}` or
+ * `/`. It is split once at construction on `/` into **segments**; each
+ * segment is either:
+ *
+ *   - a **literal** (`users`) — matches a request segment iff the bytes
+ *     are equal, or
+ *   - a **parameter** (`{id}`) — matches *any* single non-empty request
+ *     segment, binding the captured (percent-decoded) value to the
+ *     parameter name (`id`).
+ *
+ * The pattern is **case-sensitive** in its literal segments (paths are,
+ * RFC 3986 §6.2.2.1) and the method token is taken verbatim
+ * (`HttpRequest.method` is case-sensitive, RFC 7230 §3.1.1).
+ *
+ * This minimal form deliberately has **no** wildcard / catch-all / regex /
+ * optional segments — a pattern and a request path match iff they have the
+ * **same segment count** and every segment pairwise matches. "Deliberately
+ * not a web framework" (Net.md §HTTP-server). The [`Router`](Router.cajeta)
+ * layers method-vs-path 404/405 resolution over a list of these.
+ */
+public class Route {
+    /** The HTTP method token this route answers (verbatim, e.g. `"GET"`). */
+    public String method;
+
+    /** The raw registered pattern (`"/users/{id}"`), kept for diagnostics. */
+    public String pattern;
+
+    /**
+     * The pattern's path segments, in order. `"/users/{id}"` splits to
+     * `["users", "{id}"]`; the root `"/"` splits to the empty list (zero
+     * segments). A literal segment carries its text; a parameter segment
+     * carries the `{name}` form verbatim and is identified at match time
+     * by [`isParam`](#isParam).
+     */
+    public String[] segments;
+
+    /** Number of valid entries in [`segments`](#segments). */
+    public int32 segmentCount;
+
+    /** The handler to invoke when this route matches. */
+    public (HttpRequest) -> #HttpResponse handler;
+
+    /**
+     * Compile a route from a method token, a path pattern, and a handler.
+     * Splits `pattern` into [`segments`](#segments) once; an empty path or
+     * `"/"` yields zero segments (the root route).
+     */
+    public Route(String method, String pattern,
+                 (HttpRequest) -> #HttpResponse handler) {
+        this.method = heap String(method.bytes, method.byteLength);
+        this.pattern = heap String(pattern.bytes, pattern.byteLength);
+        this.handler = handler;
+        this.splitPattern(pattern);
+    }
+
+    /**
+     * Split `pattern` on `/` into [`segments`](#segments). A leading `/`
+     * (the conventional absolute path) produces no empty leading segment;
+     * internal empty segments (a `//`) are skipped, matching the lenient
+     * normalization a request path receives in [`Router.dispatch`](Router.cajeta).
+     */
+    void splitPattern(String pattern) {
+        this.segments = heap String[8];
+        this.segmentCount = 0;
+        int32 n = pattern.byteLength;
+        int32 segStart = 0;
+        int32 i = 0;
+        while (i <= n) {
+            boolean atEnd = (i == n);
+            boolean slash = (!atEnd) && (((int32) pattern.byteAt(i) & 0xff) == 47);
+            if (atEnd || slash) {
+                if (i > segStart) {
+                    this.appendSegment(pattern.substring(segStart, i));
+                }
+                segStart = i + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    /** Append one compiled segment, growing the backing array on demand. */
+    void appendSegment(#String seg) {
+        if (this.segmentCount >= this.segments.count()) {
+            int32 newCap = this.segments.count() * 2;
+            String[] grown = heap String[newCap];
+            int32 j = 0;
+            while (j < this.segmentCount) {
+                grown[j] = this.segments[j];
+                j = j + 1;
+            }
+            this.segments = grown;
+        }
+        this.segments[this.segmentCount] = seg;
+        this.segmentCount = this.segmentCount + 1;
+    }
+
+    /** The number of pattern segments. */
+    public int32 patternSegmentCount() {
+        return this.segmentCount;
+    }
+
+    /** True iff this route's method token equals `m` (case-sensitive). */
+    public boolean methodMatches(String m) {
+        return this.method.equals(m);
+    }
+
+    /**
+     * Does pattern segment `i` denote a path **parameter** (`{name}`)?
+     * A segment is a parameter iff it is at least two bytes and is wrapped
+     * in `{` … `}`.
+     */
+    public boolean isParam(int32 i) {
+        String seg = this.segments[i];
+        int32 len = seg.byteLength;
+        if (len < 2) {
+            return false;
+        }
+        boolean open = (((int32) seg.byteAt(0) & 0xff) == 123);          // '{'
+        boolean close = (((int32) seg.byteAt(len - 1) & 0xff) == 125);   // '}'
+        return open && close;
+    }
+
+    /** The parameter name of segment `i` — the text inside the braces. */
+    public #String paramName(int32 i) {
+        String seg = this.segments[i];
+        return seg.substring(1, seg.byteLength - 1);
+    }
+
+    /** The literal text of segment `i` (only meaningful when not a param). */
+    public String literal(int32 i) {
+        return this.segments[i];
+    }
+
+    /**
+     * Attempt to match this route's pattern against the request `path`
+     * segments (`pathSegs[0..pathLen)`), populating `out` with the
+     * captured, percent-decoded parameter bindings.
+     *
+     * Returns `true` iff the segment counts are equal and every segment
+     * matches (literals byte-equal, parameters capture any non-empty
+     * segment). On a non-match `out` is left in whatever partial state the
+     * walk reached — the caller discards it (each dispatch uses a fresh
+     * [`PathParams`](PathParams.cajeta) per candidate route).
+     *
+     * A captured segment that carries a malformed `%XX` escape (so
+     * [`PercentCodec.decode`](../uri/PercentCodec.cajeta) throws) is
+     * treated as a **non-match** (the path is not a valid reference to the
+     * resource) rather than an error propagated to the caller.
+     */
+    public boolean tryMatch(String[] pathSegs, int32 pathLen, PathParams out) {
+        if (pathLen != this.segmentCount) {
+            return false;
+        }
+        int32 i = 0;
+        while (i < this.segmentCount) {
+            String reqSeg = pathSegs[i];
+            if (this.isParam(i)) {
+                // A parameter binds any non-empty segment.
+                if (reqSeg.byteLength == 0) {
+                    return false;
+                }
+                String name = this.paramName(i);
+                try {
+                    String decoded = PercentCodec.decode(reqSeg);
+                    out.put(#name, #decoded);
+                } catch (MalformedUriException e) {
+                    return false;
+                }
+            } else {
+                String lit = this.segments[i];
+                if (!lit.equals(reqSeg)) {
+                    return false;
+                }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

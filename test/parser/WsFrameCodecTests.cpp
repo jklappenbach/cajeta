@@ -1,4 +1,4 @@
-// NET-10.3 — cajeta.net.ws frame codec tests (RFC 6455 §5.2 framing).
+// NET-10.3 — cajeta.io.net.ws frame codec tests (RFC 6455 §5.2 framing).
 //
 // The WebSocket frame codec is a pair of pure-logic transforms over byte
 // buffers — an incremental resumable decoder (WsFrameDecoder) and a
@@ -38,11 +38,11 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.ws.WsOpcode;\n"
-        "import cajeta.net.ws.WsFrame;\n"
-        "import cajeta.net.ws.WsFrameDecoder;\n"
-        "import cajeta.net.ws.WsFrameEncoder;\n"
-        "import cajeta.net.ws.ProtocolViolationException;\n"
+        "import cajeta.io.net.ws.WsOpcode;\n"
+        "import cajeta.io.net.ws.WsFrame;\n"
+        "import cajeta.io.net.ws.WsFrameDecoder;\n"
+        "import cajeta.io.net.ws.WsFrameEncoder;\n"
+        "import cajeta.io.net.ws.ProtocolViolationException;\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"
@@ -63,11 +63,11 @@ int32_t runFull(const std::string& classBody) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.ws.WsOpcode;\n"
-        "import cajeta.net.ws.WsFrame;\n"
-        "import cajeta.net.ws.WsFrameDecoder;\n"
-        "import cajeta.net.ws.WsFrameEncoder;\n"
-        "import cajeta.net.ws.ProtocolViolationException;\n"
+        "import cajeta.io.net.ws.WsOpcode;\n"
+        "import cajeta.io.net.ws.WsFrame;\n"
+        "import cajeta.io.net.ws.WsFrameDecoder;\n"
+        "import cajeta.io.net.ws.WsFrameEncoder;\n"
+        "import cajeta.io.net.ws.ProtocolViolationException;\n"
         "public final class M {\n" + classBody + "}\n";
     auto jit = CajetaJit::compile(src, "test.M");
     auto fn = jit->lookup<int32_t (*)()>("run");

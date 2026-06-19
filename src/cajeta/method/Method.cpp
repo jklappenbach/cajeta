@@ -730,7 +730,7 @@ namespace cajeta {
         // Their formals/return types include placeholder T-vars and the
         // actual function signature isn't known until a concrete
         // instantiation pins each T to a real type. See
-        // docs/stdlib/MethodLevelTemplate.md.
+        // docs/specification/lang/MethodLevelTemplate.md.
         if (isMethodTemplate()) return;
         // Emit-target swap (test-reuse): for a stdlib-template instantiation
         // owned (emit-wise) by a user module, point `module` at the emit module
@@ -963,7 +963,7 @@ namespace cajeta {
             // Class instances, arrays, AND structs pass by pointer.
             // Structs were pass-by-value historically, but that
             // contradicts their zero-copy view-mode design intent
-            // (per docs/stdlib/Views.md): a struct IS a typed view over a
+            // (per docs/specification/lang/Views.md): a struct IS a typed view over a
             // wire-format buffer; memcpying the bytes at every call
             // boundary defeats the whole point. Now the call site
             // pushes the struct's address; the callee accesses
@@ -1011,7 +1011,7 @@ namespace cajeta {
         // returns `void` and takes a hidden leading `ptr` (param 0, before
         // `this`) carrying the `sret(structTy)` attribute; the callee
         // constructs its result directly into that caller-owned slot. See
-        // docs/stdlib/ValueReturns.md.
+        // docs/specification/lang/ValueReturns.md.
         bool sretReturn = returnsStackValue();
         llvm::Type* sretStructTy = nullptr;
         llvm::Type* llvmRet;
@@ -1048,7 +1048,7 @@ namespace cajeta {
         // Two-layer naming: instantiations of a same-canonical template
         // get distinct LLVM symbols via getLlvmSymbolName() (= canonical
         // + method-arg suffix). Ordinary methods get plain canonical.
-        // See docs/stdlib/MethodLevelTemplate.md § two-layer naming.
+        // See docs/specification/lang/MethodLevelTemplate.md § two-layer naming.
         string canonical = getLlvmSymbolName();
         // Generate-prototype runs multiple times on the same method
         // (CajetaClass::generatePrototype iterates, visitClassBody
@@ -1145,7 +1145,7 @@ namespace cajeta {
         // Method-level template declarations don't get an LLVM function.
         // Per-call sites monomorphize via instantiateMethodTemplate, which
         // produces a concrete Method (methodTypeArguments non-empty) that
-        // generateCode emits normally. See docs/stdlib/
+        // generateCode emits normally. See docs/specification/
         // MethodLevelTemplate.md.
         if (isMethodTemplate()) return;
         if (llvmBasicBlock != nullptr) {
@@ -2119,7 +2119,7 @@ namespace cajeta {
     }
 
 
-    // Two-layer naming helpers (docs/stdlib/MethodLevelTemplate.md
+    // Two-layer naming helpers (docs/specification/lang/MethodLevelTemplate.md
     // § Status / Known limitations). For instantiations of a method-
     // template, append the concrete method-level type args so the map
     // key and LLVM symbol disambiguate two instantiations that would

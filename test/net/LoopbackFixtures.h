@@ -2,7 +2,7 @@
 // LoopbackFixtures.h — NET-13.1 loopback test fixtures.
 //
 // An in-test TCP echo + HTTP request/response server harness — the
-// `cajeta.net` analog of the build tool's TestHttpServer
+// `cajeta.io.net` analog of the build tool's TestHttpServer
 // (test/buildtool/TestHttpServer.h) — so the client + server
 // networking phases (NET-8 HTTP client, NET-9 HTTP server, NET-10
 // WebSocket, and the NET-3 reactor harness) can test against a **real
@@ -21,7 +21,7 @@
 //                           direct descendant of the build tool's
 //                           TestHttpServer, re-homed into the
 //                           `cajeta::net::testing` namespace and trimmed to
-//                           the cajeta.net surface the plan calls for.
+//                           the cajeta.io.net surface the plan calls for.
 //
 // ## Why a C++ fixture (not a `.cajeta` one)
 //
@@ -34,7 +34,7 @@
 // host-side server. That is exactly the role the build tool's
 // TestHttpServer plays for the build-tool tests, and the role this
 // header plays for the net tests: it speaks raw BSD/Winsock sockets, has
-// zero dependency on the cajeta.net surface, and therefore lands now and
+// zero dependency on the cajeta.io.net surface, and therefore lands now and
 // is consumed by every later phase — the same standalone posture the
 // NET-13.2 golden corpus has.
 //
@@ -264,7 +264,7 @@ namespace cajeta::net::testing {
     // Speaks just enough HTTP to round-trip GET + POST with a Content-Length
     // body. `Connection: close` per response (keep-alive framing is a later
     // server concern); an unregistered path returns 404. This is the
-    // TestHttpServer contract re-homed to cajeta.net and pared to the
+    // TestHttpServer contract re-homed to cajeta.io.net and pared to the
     // request/response shape the plan's NET-13.1 calls for.
     // -----------------------------------------------------------------------
     class LoopbackHttpServer : public LoopbackServerBase {

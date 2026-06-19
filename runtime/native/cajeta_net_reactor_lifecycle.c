@@ -1,8 +1,8 @@
-// cajeta.net.reactor — NET-3.2 reactor lifecycle (lazy init / clean shutdown).
+// cajeta.io.net.reactor — NET-3.2 reactor lifecycle (lazy init / clean shutdown).
 //
 // This translation unit is **#included once** at the bottom of
 // `cajeta_runtime.c`, AFTER `cajeta_net_reactor.c` (NET-3.1) — the same
-// single-TU → LLVM-bitcode → embed build path the rest of the `cajeta.net`
+// single-TU → LLVM-bitcode → embed build path the rest of the `cajeta.io.net`
 // native layer rides. Keeping it in its own file is a *review* boundary, not a
 // *compilation* boundary: no CMake change to the bitcode-embed path is
 // required (only the one `#include` line listed in this item's `registration`).

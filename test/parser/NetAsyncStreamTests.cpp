@@ -1,4 +1,4 @@
-// Tests for the cajeta.net async byte-stream layer (NET-3.5):
+// Tests for the cajeta.io.net async byte-stream layer (NET-3.5):
 //   - AsyncReader : buffered reader over a TcpStream (read / readExact /
 //                   readUntil + the AsyncIterator<int8[]> chunk surface)
 //   - AsyncWriter : buffered writer over a TcpStream (writeAll / writeByte /
@@ -52,9 +52,9 @@ std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
            "import cajeta.lang.Optional;\n"
-           "import cajeta.net.TcpStream;\n"
-           "import cajeta.net.AsyncReader;\n"
-           "import cajeta.net.AsyncWriter;\n"
+           "import cajeta.io.net.TcpStream;\n"
+           "import cajeta.io.net.AsyncReader;\n"
+           "import cajeta.io.net.AsyncWriter;\n"
            "public final class S {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"
@@ -136,7 +136,7 @@ TEST(AsyncReaderTests, readExactPastEofRaises) {
         "try {\n"
         "    r.readExact(dst, 0, 5);\n"        // wants 5, EOF after 3 -> raise
         "    return -1;\n"
-        "} catch (cajeta.net.NetException e) {\n"
+        "} catch (cajeta.io.net.NetException e) {\n"
         "    return 1;\n"
         "}\n")), 1);
 }

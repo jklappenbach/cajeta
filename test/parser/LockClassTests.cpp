@@ -2,7 +2,7 @@
 // User-facing Lock and LockGuard classes — the cajeta.concurrent API
 // that wraps the low-level lock intrinsics with RAII semantics.
 // LockGuard's user-defined drop() calls release; the class-drop
-// infrastructure auto-fires it at scope exit. See docs/stdlib/Concurrency.md §
+// infrastructure auto-fires it at scope exit. See docs/specification/concurrent/Concurrency.md §
 // Synchronization primitives.
 //
 // As of R7-A these classes are part of the preloaded standard library

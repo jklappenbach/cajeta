@@ -2,7 +2,7 @@
 // GoldenVectors.h — loader for the NET-13.2 golden-vector corpus.
 //
 // The corpus (checked-in byte-exact test data under
-// test/net/golden/) is the shared known-answer set every cajeta.net
+// test/net/golden/) is the shared known-answer set every cajeta.io.net
 // parser/codec phase pins against. This header parses each corpus
 // file format into structured C++ records so a downstream phase can
 //

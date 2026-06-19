@@ -7,7 +7,7 @@
 // **deregister-on-cancel** — a cancelled or timed-out await leaves the
 // reactor's live-registration balance back where it started, never a leak.
 //
-// The cajeta surface (runtime/src/cajeta/net/reactor/Reactor.cajeta) realizes
+// The cajeta surface (runtime/src/cajeta/io/net/reactor/Reactor.cajeta) realizes
 // this by bracketing every fiber park in `Reactor.awaitReadable` /
 // `awaitWritable` with a `register` ... `try { park } finally { deregister }`
 // pair, so the deregister fires on the readable-return path, the reactor-error

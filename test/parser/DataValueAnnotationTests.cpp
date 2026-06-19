@@ -1,5 +1,5 @@
 // Tests for the @Data and @Value bundle annotations
-// (docs/stdlib/Annotations.md § Bundles).
+// (docs/specification/reflect/Annotations.md § Bundles).
 //
 // @Data  = @Getter + @Setter + @ToString + @AutoHash + @RequiredArgsConstructor
 // @Value = @Getter + @ToString + @AutoHash + @AllArgsConstructor (no setters;

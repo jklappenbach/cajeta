@@ -5,7 +5,7 @@
 // (NET-6/7/10/11) pin their parsers against. The parsers don't exist
 // yet, so this suite validates the corpus *itself*: every file loads,
 // the field shapes are right, and each vector is internally consistent
-// at a level that needs no cajeta.net parser — e.g. a SHA-256 digest
+// at a level that needs no cajeta.io.net parser — e.g. a SHA-256 digest
 // field is exactly 64 hex chars, a WebSocket frame's declared opcode
 // matches the low nibble of its wire bytes, a chunked vector
 // re-decodes (by an independent in-test decoder) to its stated output.

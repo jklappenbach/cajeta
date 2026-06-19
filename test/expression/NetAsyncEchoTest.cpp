@@ -5,7 +5,7 @@
 // `writeAllAsync` / `acceptAsync`) driven from inside a real fiber. Exercises
 // the b3 surface: TcpStream.readAsync/writeAsync/writeAllAsync,
 // TcpListener.acceptAsync, the WouldBlock readiness loop, the @Native reactor
-// bridges (cajeta.net.reactor.Reactor), and AsyncReader/AsyncWriter.
+// bridges (cajeta.io.net.reactor.Reactor), and AsyncReader/AsyncWriter.
 //
 // The async ops put the fd into non-blocking mode and park the fiber on the
 // reactor when a recv/send/accept reports WouldBlock. On Linux the park is the
@@ -43,12 +43,12 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.IpAddress;\n"
-           "import cajeta.net.SocketAddress;\n"
-           "import cajeta.net.TcpStream;\n"
-           "import cajeta.net.TcpListener;\n"
-           "import cajeta.net.AsyncReader;\n"
-           "import cajeta.net.AsyncWriter;\n"
+           "import cajeta.io.net.IpAddress;\n"
+           "import cajeta.io.net.SocketAddress;\n"
+           "import cajeta.io.net.TcpStream;\n"
+           "import cajeta.io.net.TcpListener;\n"
+           "import cajeta.io.net.AsyncReader;\n"
+           "import cajeta.io.net.AsyncWriter;\n"
            "import cajeta.concurrent.Tasks;\n"
            "public final class NetAsyncEcho {\n"
            "    public static int32 run() {\n"

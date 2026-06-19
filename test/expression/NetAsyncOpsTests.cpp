@@ -1,7 +1,7 @@
 //
 // NET-3.3 — Async socket ops (connect / read / write / accept).
 //
-// The `cajeta.net` async forms (TcpStream.readAsync / writeAsync /
+// The `cajeta.io.net` async forms (TcpStream.readAsync / writeAsync /
 // writeAllAsync / connectAsync, TcpListener.acceptAsync, UdpSocket.recvFromAsync
 // / sendToAsync) are pure-Cajeta **readiness loops** layered over the NET-1.7
 // non-blocking primitives + the NET-3.1 reactor: each tries the non-blocking

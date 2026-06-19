@@ -78,7 +78,7 @@ namespace cajeta {
         // / CallInst level (FunctionType only knows the parameter is a
         // `ptr`). Methods that returnsStackValue() and method-refs to
         // them share this shape, so a direct binding flows the same
-        // ABI through. See docs/stdlib/ValueReturns.md.
+        // ABI through. See docs/specification/lang/ValueReturns.md.
         bool useSret = false;
         if (!returnsOwnership) {
             auto rtClass = std::dynamic_pointer_cast<CajetaClass>(this->returnType);

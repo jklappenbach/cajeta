@@ -1,0 +1,18 @@
+package cajeta.io.net;
+
+import cajeta.lang.String;
+
+/**
+ * The peer reset an established connection (sent a TCP RST) — an
+ * abrupt close, distinct from an orderly FIN (which surfaces as a
+ * zero-length read, not an exception). POSIX `ECONNRESET` / Winsock
+ * `WSAECONNRESET`. `kind == NetException.KIND_CONNECTION_RESET` (3).
+ * See [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
+ */
+public class ConnectionResetException extends NetException {
+    public ConnectionResetException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 3;   // NetException.KIND_CONNECTION_RESET
+    }
+}

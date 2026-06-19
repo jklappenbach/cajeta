@@ -1,0 +1,64 @@
+package cajeta.io.net;
+
+/**
+ * The **load-shed policy** a [`ConnectionLimiter`](ConnectionLimiter.cajeta)
+ * applies when an accepted connection would exceed the
+ * `max-concurrent-connections` cap (plan item **NET-4.4**). Two strategies,
+ * held as `int32` ordinals — the same posture
+ * [`ServerState`](ServerState.cajeta) and
+ * [`NetException.KIND_*`](NetException.cajeta) take, so the value drops
+ * straight into a field with no boxing and the limiter can branch on it
+ * with a single integer compare on the hot accept path.
+ *
+ * ## The two strategies
+ *
+ * ```
+ *   REFUSE  — admit-or-fail: the (cap+1)th connection is closed at once,
+ *             the accept loop never parks → the server stays responsive
+ *             and the excess load is shed back to the client (it sees a
+ *             connection reset / immediate close).
+ *
+ *   BLOCK   — admit-or-wait: the accept loop parks (its fiber, never the
+ *             carrier) until an in-flight connection completes and frees a
+ *             permit → no connection is dropped, excess fan-in queues in
+ *             the kernel `listen` backlog instead.
+ * ```
+ *
+ * Both keep live connection-handling work bounded by the cap; they differ
+ * only in **what happens to the surplus**. `REFUSE` is the
+ * `ServerTests.connectionCapShedsExcess` acceptance (the (cap+1)th
+ * connection is rejected); `BLOCK` is the throughput-favouring variant
+ * where momentary bursts ride the backlog rather than erroring.
+ *
+ * ## Why ordinals, not an enum type
+ *
+ * Append-only contract — **never renumber an existing value**; new
+ * strategies (e.g. a future `REFUSE_WITH_503` that writes an HTTP error
+ * before closing) append a fresh ordinal. The native side carries no peer
+ * enum: the policy is pure user-space admission logic.
+ */
+public class LoadShedPolicy {
+    /**
+     * **Refuse** the surplus: when the cap is full, the limiter's
+     * non-blocking [`tryAdmit`](ConnectionLimiter.cajeta#tryAdmit) fails and
+     * the caller (the accept loop) **closes the connection immediately**
+     * rather than parking. The accept loop stays hot — it never blocks
+     * waiting for a permit, so a flood of excess connections cannot stall
+     * acceptance of the ones already admitted. This is the default for a
+     * latency-sensitive server that prefers shedding to queueing.
+     */
+    public static final int32 REFUSE = 0;
+
+    /**
+     * **Block** until a permit frees: when the cap is full, the limiter's
+     * blocking [`admit`](ConnectionLimiter.cajeta#admit) parks the accept
+     * loop's fiber (never the carrier) until an in-flight connection
+     * completes and [`release`](ConnectionLimiter.cajeta#release)s its
+     * permit. No connection is refused; the surplus waits in the kernel
+     * `listen` backlog (the [`ConnectionLimits.listenBacklog`](ConnectionLimits.cajeta#listenBacklog)
+     * knob sizes how deep that wait may go before the kernel itself starts
+     * refusing). The throughput-favouring variant for bursty, retry-averse
+     * clients.
+     */
+    public static final int32 BLOCK = 1;
+}

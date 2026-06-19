@@ -16,7 +16,7 @@
 // is driven through the product's own NET-1.1 socket intrinsics
 // (`__cajeta_net_socket` / `_connect` / `_send` / `_recv` / `_close`) —
 // the same symbols `TcpStream` (NET-1.3) lowers to — so this both keeps
-// the mock honest and demonstrates it is a valid peer for a cajeta.net
+// the mock honest and demonstrates it is a valid peer for a cajeta.io.net
 // client, which is its reason to exist.
 //
 #include "gtest/gtest.h"

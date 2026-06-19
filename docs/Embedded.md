@@ -4,7 +4,7 @@ This document scopes what it would take to make cajeta a serious option for embe
 
 The headline pitch: cajeta has memory safety without GC pauses, deterministic destruction via the drop chain, true monomorphization with no type erasure, structured concurrency that maps cleanly onto cooperative schedulers, and a syntax familiar to anyone with C / C++ / Java / TypeScript background. Those properties make a strong embedded language *in principle*. The work is making the runtime honor the constraints of each embedded tier.
 
-> **Cross-references:** [`CompilerModes.md`](CompilerModes.md) for the existing mode presets, [`stdlib/MemoryModel.md`](stdlib/MemoryModel.md) for the drop-chain design, [`stdlib/FieldOwnership.md`](stdlib/FieldOwnership.md) for the live-set rationale, [`stdlib/Concurrency.md`](stdlib/Concurrency.md) for the concurrency primitives that need a threading abstraction layer.
+> **Cross-references:** [`CompilerModes.md`](CompilerModes.md) for the existing mode presets, [`specification/lang/MemoryModel.md`](specification/lang/MemoryModel.md) for the drop-chain design, [`specification/lang/FieldOwnership.md`](specification/lang/FieldOwnership.md) for the live-set rationale, [`specification/concurrent/Concurrency.md`](specification/concurrent/Concurrency.md) for the concurrency primitives that need a threading abstraction layer.
 
 ---
 

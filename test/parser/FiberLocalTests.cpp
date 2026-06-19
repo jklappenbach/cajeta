@@ -1,6 +1,6 @@
 //
 // cajeta.concurrent.FiberLocal<T> / FiberContext — ambient per-request state
-// (docs/stdlib/FiberLocal.md). Fiber-keyed, scope-restored binding; the sound
+// (docs/specification/concurrent/FiberLocal.md). Fiber-keyed, scope-restored binding; the sound
 // replacement for a thread-pool ThreadLocal. These tests load the real stdlib
 // types from the embedded standard library and exercise the runtime intrinsics
 // (__cajeta_fiber_local_push/pop/get/is_bound + fiber_context_*).

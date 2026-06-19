@@ -1,7 +1,7 @@
 //
 // MultiClassing Phase 2 — `super<Base>.method()` + `this<Base>.field`.
 //
-// Design: docs/stdlib/MultiClassing.md § P-2 + § Phase 2.
+// Design: docs/specification/lang/MultiClassing.md § P-2 + § Phase 2.
 //
 // The bracket-form parent-view selector lets a child whose parents
 // declare colliding names resolve the ambiguity by qualifying the

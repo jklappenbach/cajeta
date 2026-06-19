@@ -1,7 +1,7 @@
 //
 // MultiClassing R-2 — narrow implicit-ctor-skip warning.
 //
-// Design: docs/stdlib/MultiClassing.md § R-2.
+// Design: docs/specification/lang/MultiClassing.md § R-2.
 //
 // Cajeta's implicit super-ctor loop walks every declared parent of
 // a subclass at construction time and calls each parent's no-arg

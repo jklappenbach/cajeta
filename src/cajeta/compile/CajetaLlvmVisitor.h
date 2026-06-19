@@ -1029,7 +1029,7 @@ namespace cajeta {
                 memberDeclaration->onModifier(any_cast<Modifier>(visitModifier(modifierContext)));
             }
 
-            // Method-level template post-check (docs/stdlib/
+            // Method-level template post-check (docs/specification/
             // MethodLevelTemplate.md): a declaration that introduces
             // method-level type parameters MUST be declared `final` or
             // `static`. The rule surfaces the non-virtuality at the
@@ -1175,7 +1175,7 @@ namespace cajeta {
                                 "virtual (they occupy no vtable slot) and must "
                                 "be marked explicitly to surface that property "
                                 "at the declaration site. See docs/"
-                                "stdlib/MethodLevelTemplate.md. Fix: add "
+                                "specification/lang/MethodLevelTemplate.md. Fix: add "
                                 "'final' modifier (or 'static' if no receiver "
                                 "is needed).",
                                 m->getName().c_str());
@@ -1299,7 +1299,7 @@ namespace cajeta {
         virtual std::any visitMethodDeclaration(CajetaParser::MethodDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
 
-            // Method-level templates (docs/stdlib/MethodLevelTemplate.md):
+            // Method-level templates (docs/specification/lang/MethodLevelTemplate.md):
             // capture <R, ...> if present, push a placeholder substitution so
             // formals + return type referencing R resolve cleanly during this
             // pass, then capture the body source for per-call re-parse instead
@@ -1496,7 +1496,7 @@ namespace cajeta {
         // class-drop wrapper machinery (CajetaClass::getOrCreateDropFunction)
         // picks it up unchanged. The identifier between ~ and ( must
         // match the enclosing class name, same convention as the
-        // constructor's identifier. See docs/stdlib/MemoryModel.md §
+        // constructor's identifier. See docs/specification/lang/MemoryModel.md §
         // Destructors.
         virtual std::any visitDestructorDeclaration(CajetaParser::DestructorDeclarationContext* ctx) override {
             string declaredName = ctx->identifier()->getText();
@@ -1861,7 +1861,7 @@ namespace cajeta {
 
         // Try-with-resources grammar rules removed 2026-05-20 —
         // destructors fire deterministically at scope exit, see
-        // docs/stdlib/MemoryModel.md § "No try-with-resources".
+        // docs/specification/lang/MemoryModel.md § "No try-with-resources".
 
         virtual std::any
         visitSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext* ctx) override {

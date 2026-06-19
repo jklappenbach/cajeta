@@ -1,0 +1,337 @@
+package cajeta.io.net;
+
+import cajeta.lang.String;
+
+/**
+ * HTTP/1.1 header map — **case-insensitive**, **multi-value**, and
+ * **insertion-order-preserving**.
+ *
+ * This is the header model the HTTP message types (`HttpRequest` /
+ * `HttpResponse`, NET-7.1) and the incremental parser/serializer
+ * (NET-7.3 / NET-7.5) read and write through. It is **pure logic**
+ * over `cajeta.lang.String` — no I/O, no native intrinsics — so it
+ * tests without sockets (golden-vector gtests over `CajetaJit`).
+ *
+ * ## Storage model
+ *
+ * Two parallel arrays, grown on demand, mirroring the `JsonObject`
+ * convention (parallel arrays + linear scan; the convenience tier
+ * isn't the hot path, so v1 stays dumb — no hashing):
+ *
+ *   - `keys[i]`   : the header field name, **lowercased at insert**
+ *                   (`Content-Type` and `content-type` collide). The
+ *                   wire is case-insensitive per RFC 7230 §3.2, so we
+ *                   canonicalize once on the way in and compare bytes.
+ *   - `values[i]` : the field value for that entry, trimmed of
+ *                   leading/trailing OWS (optional whitespace) at
+ *                   insert per RFC 7230 §3.2.4.
+ *
+ * Each `(name, value)` pair occupies one slot, in the exact order it
+ * was added. A repeated header (`Set-Cookie: a` then `Set-Cookie: b`)
+ * occupies **two** slots — order preserved — so `getAll` returns
+ * `["a", "b"]` in wire order. This is the representation that keeps
+ * both repeated-header and comma-folded semantics expressible.
+ *
+ * ## Comma-folding vs repeated headers
+ *
+ * RFC 7230 §3.2.2 says a recipient MAY combine multiple header fields
+ * with the same name into one `field-name: comma-separated-list`,
+ * **except** `Set-Cookie`, which MUST NOT be folded (its values can
+ * contain commas — an `Expires=...` date — so folding is lossy and
+ * ambiguous). This map stores every value as its own slot and exposes
+ * **both** views:
+ *
+ *   - `getAll(name)` — the raw per-occurrence list, never folded.
+ *   - `get(name)`    — the comma-folded single value for ordinary
+ *                      headers, but the **first** value for the
+ *                      special-case `Set-Cookie` (folding it would be
+ *                      wrong).
+ *
+ * ## API
+ *
+ *   - `add(name, value)`  — append a slot, preserving order.
+ *   - `set(name, value)`  — remove all existing slots for `name`, then
+ *                           append one. (Last-write-wins, single value.)
+ *   - `get(name)`         — folded value (or first, for `Set-Cookie`),
+ *                           or `null` when absent.
+ *   - `getAll(name)`      — `String[]` of every value for `name` in
+ *                           insertion order (length 0 when absent).
+ *   - `remove(name)`      — drop every slot for `name`.
+ *   - `contains(name)`    — presence test.
+ *   - `count()`           — total slot count (counts repeats).
+ *   - `nameAt`/`valueAt`  — raw indexed access for the serializer,
+ *                           which emits one wire line per slot.
+ */
+public class Headers {
+    String[] keys;
+    String[] values;
+    int32 cap;
+    int32 sizeCount;
+
+    public Headers() {
+        this.cap = 8;
+        this.keys = heap String[8];
+        this.values = heap String[8];
+        this.sizeCount = 0;
+    }
+
+    /**
+     * Total number of stored slots. A header added twice (or a folded
+     * line split into two `add`s) counts as two — this is the slot
+     * count the serializer iterates, not the distinct-name count.
+     */
+    public int32 count() {
+        return this.sizeCount;
+    }
+
+    /**
+     * Lowercased field name at slot `i` — for the serializer, which
+     * walks `0..count()` emitting one `name: value` line per slot.
+     */
+    public String nameAt(int32 i) {
+        return this.keys[i];
+    }
+
+    /** Field value at slot `i` (OWS-trimmed at insert). */
+    public String valueAt(int32 i) {
+        return this.values[i];
+    }
+
+    /**
+     * Append a `(name, value)` slot, preserving insertion order. The
+     * name is lowercased and the value OWS-trimmed on the way in.
+     * Repeated `add`s of the same name accumulate (the multi-value
+     * case) — use `set` for last-write-wins single-value semantics.
+     */
+    public void add(String name, String value) {
+        if (this.sizeCount >= this.cap) {
+            this.grow();
+        }
+        this.keys[this.sizeCount] = name.toLowerCase();
+        this.values[this.sizeCount] = value.trim();
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * Replace every existing slot for `name` with a single `(name,
+     * value)` slot. Last-write-wins; the new slot is appended after
+     * the removal, so it takes the position of a fresh insert (the
+     * common HTTP semantics for `Host`, `Content-Length`, etc.).
+     */
+    public void set(String name, String value) {
+        this.remove(name);
+        this.add(name, value);
+    }
+
+    /**
+     * True iff at least one slot carries `name` (case-insensitive).
+     */
+    public boolean contains(String name) {
+        String lname = name.toLowerCase();
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(lname)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * Number of slots carrying `name` (case-insensitive). Used to
+     * size the `getAll` result + to drive the comma-fold decision.
+     */
+    public int32 countFor(String name) {
+        String lname = name.toLowerCase();
+        int32 n = 0;
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(lname)) {
+                n = n + 1;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    /**
+     * Every value for `name`, in insertion order. Returns a
+     * zero-length array when `name` is absent (callers test
+     * `.count()` / length 0 rather than null-checking). Never folds —
+     * this is the raw per-occurrence view, correct for `Set-Cookie`.
+     *
+     * Each element is a **fresh view-mode `String`** over the stored
+     * value's bytes (`heap String(bytes, byteLength)`), not the stored
+     * `String` instance itself — the same copy-out discipline
+     * `JsonObject.keys()` uses, so the returned array owns its element
+     * handles and doesn't alias the map's field-owned `String`s.
+     */
+    public #String[] getAll(String name) {
+        String lname = name.toLowerCase();
+        int32 n = this.countFor(lname);
+        String[] out = heap String[n];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(lname)) {
+                String v = this.values[i];
+                out[w] = heap String(v.bytes, v.byteLength);
+                w = w + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * The value for `name`, or `null` when absent.
+     *
+     * For ordinary headers with multiple occurrences this returns the
+     * **comma-folded** single value (`"a, b"`) per RFC 7230 §3.2.2.
+     * For the special-case `Set-Cookie` — which MUST NOT be folded,
+     * because cookie values legitimately contain commas — this
+     * returns the **first** value only; iterate `getAll("set-cookie")`
+     * to see them all.
+     *
+     * A single-occurrence header (and the no-fold first-value case)
+     * returns a **fresh view-mode `String`** over the stored bytes —
+     * the same copy-out discipline as `getAll`, so the returned handle
+     * is owned by the caller and never aliases the map's field-owned
+     * `String`. Returns `null` (a genuine null reference) when absent.
+     */
+    public #String get(String name) {
+        String lname = name.toLowerCase();
+        // Find the first matching slot.
+        int32 first = -1;
+        int32 i = 0;
+        while (i < this.sizeCount && first < 0) {
+            if (this.keys[i].equals(lname)) {
+                first = i;
+            }
+            i = i + 1;
+        }
+        if (first < 0) {
+            return null;
+        }
+        int32 n = this.countFor(lname);
+        if (n == 1 || this.isNoFold(lname)) {
+            // Single value, or a no-fold header (Set-Cookie): return a
+            // fresh view over the first value's bytes, no concatenation.
+            String v = this.values[first];
+            return heap String(v.bytes, v.byteLength);
+        }
+        return this.foldValues(lname);
+    }
+
+    /**
+     * Remove every slot carrying `name` (case-insensitive),
+     * compacting the parallel arrays so insertion order of the
+     * survivors is preserved.
+     */
+    public void remove(String name) {
+        String lname = name.toLowerCase();
+        int32 w = 0;
+        int32 r = 0;
+        while (r < this.sizeCount) {
+            if (!this.keys[r].equals(lname)) {
+                this.keys[w] = this.keys[r];
+                this.values[w] = this.values[r];
+                w = w + 1;
+            }
+            r = r + 1;
+        }
+        // Null out the vacated tail so dropped Strings aren't pinned
+        // alive by stale slot references.
+        int32 k = w;
+        while (k < this.sizeCount) {
+            this.keys[k] = null;
+            this.values[k] = null;
+            k = k + 1;
+        }
+        this.sizeCount = w;
+    }
+
+    /**
+     * The set of header names that MUST NOT be comma-folded. Today
+     * that is exactly `Set-Cookie` (RFC 6265 §3) — its values carry
+     * commas in the `Expires` date, so folding is lossy. `name` is
+     * already lowercased by the caller.
+     */
+    boolean isNoFold(String name) {
+        return name.equals("set-cookie");
+    }
+
+    /**
+     * Concatenate every value for the (already-lowercased) `name`
+     * with the canonical `", "` separator, producing one folded
+     * `String`. Two passes: first sum the output byte length, then
+     * copy the bytes through a fresh buffer. Only reached for
+     * foldable multi-occurrence headers (`get` short-circuits the
+     * single-value and no-fold cases).
+     */
+    #String foldValues(String name) {
+        // Separator is ", " — two bytes: comma (0x2C), space (0x20).
+        int32 sepLen = 2;
+        int32 total = 0;
+        int32 matched = 0;
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(name)) {
+                if (matched > 0) {
+                    total = total + sepLen;
+                }
+                total = total + ((int32) this.values[i].size());
+                matched = matched + 1;
+            }
+            i = i + 1;
+        }
+        int8[] out = heap int8[total];
+        int32 dst = 0;
+        int32 emitted = 0;
+        i = 0;
+        while (i < this.sizeCount) {
+            if (this.keys[i].equals(name)) {
+                if (emitted > 0) {
+                    out[dst] = (int8) 44;       // ','
+                    dst = dst + 1;
+                    out[dst] = (int8) 32;       // ' '
+                    dst = dst + 1;
+                }
+                String v = this.values[i];
+                int32 vlen = (int32) v.size();
+                int32 j = 0;
+                while (j < vlen) {
+                    out[dst] = v.byteAt(j);
+                    dst = dst + 1;
+                    j = j + 1;
+                }
+                emitted = emitted + 1;
+            }
+            i = i + 1;
+        }
+        return heap String(#out, total);
+    }
+
+    /**
+     * Double the parallel-array capacity, copying live slots through.
+     * `#dstK` / `#dstV` transfer ownership of the fresh storage into
+     * the fields so the locals' scope-exit drop doesn't reclaim the
+     * arrays we just installed (the same ownership-marker discipline
+     * `ArrayList.add` uses on its grown backing store).
+     */
+    void grow() {
+        int32 newCap = this.cap * 2;
+        String[] dstK = heap String[newCap];
+        String[] dstV = heap String[newCap];
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            dstK[i] = this.keys[i];
+            dstV[i] = this.values[i];
+            i = i + 1;
+        }
+        this.keys = #dstK;
+        this.values = #dstV;
+        this.cap = newCap;
+    }
+}

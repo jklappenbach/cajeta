@@ -1,5 +1,5 @@
-// Tests for cajeta.net.uri.MalformedUriException — plan item NET-6.5
-// (`MalformedUri` reparented under `cajeta.net.NetException`).
+// Tests for cajeta.io.net.uri.MalformedUriException — plan item NET-6.5
+// (`MalformedUri` reparented under `cajeta.io.net.NetException`).
 //
 // NET-6.1 originally rooted MalformedUriException on
 // `cajeta.error.RecoverableException` as a placeholder, because the
@@ -42,9 +42,9 @@ int32_t runI32(const std::string& src) {
 std::string makeSource(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.uri.Uri;\n"
-           "import cajeta.net.uri.MalformedUriException;\n"
-           "import cajeta.net.NetException;\n"
+           "import cajeta.io.net.uri.Uri;\n"
+           "import cajeta.io.net.uri.MalformedUriException;\n"
+           "import cajeta.io.net.NetException;\n"
            "public final class U {\n"
            "    public static int32 run() {\n"
            "        " + body + "\n"

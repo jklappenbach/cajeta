@@ -41,7 +41,7 @@ import cajeta.collection.ArrayList;
 //                          target is somewhere in the source and you
 //                          don't care which copy you find.
 //
-// See docs/stdlib/StreamParallelism.md for the full surface.
+// See docs/specification/lang/stream/StreamParallelism.md for the full surface.
 public class ParallelStreamsDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");

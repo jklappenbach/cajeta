@@ -22,7 +22,7 @@ package cajeta.concurrent;
  * Compare `LockGuard` from `Lock`, which follows the same
  * drop-to-release contract for a plain mutual-exclusion lock.
  *
- * See docs/stdlib/Concurrency.md § Synchronization primitives.
+ * See docs/specification/concurrent/Concurrency.md § Synchronization primitives.
  */
 public class WriteGuard {
     public pointer handle;

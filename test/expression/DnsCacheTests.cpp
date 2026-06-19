@@ -1,4 +1,4 @@
-// Tests for cajeta.net.dns.DnsCache + the Resolver seam —
+// Tests for cajeta.io.net.dns.DnsCache + the Resolver seam —
 // plan item NET-2.4 (DNS TTL cache, bounded LRU keyed on (host, family),
 // with negative-result caching, over cajeta.collection.Cache<K,V>).
 //
@@ -49,13 +49,13 @@ int32_t runI32(const std::string& src) {
 std::string withCounting(const std::string& body) {
     return "package test;\n"
            "import cajeta.lang.String;\n"
-           "import cajeta.net.IpAddress;\n"
-           "import cajeta.net.SocketAddress;\n"
-           "import cajeta.net.NetException;\n"
+           "import cajeta.io.net.IpAddress;\n"
+           "import cajeta.io.net.SocketAddress;\n"
+           "import cajeta.io.net.NetException;\n"
            "import cajeta.time.Duration;\n"
-           "import cajeta.net.dns.DnsCache;\n"
-           "import cajeta.net.dns.Resolver;\n"
-           "import cajeta.net.dns.ResolveFamily;\n"
+           "import cajeta.io.net.dns.DnsCache;\n"
+           "import cajeta.io.net.dns.Resolver;\n"
+           "import cajeta.io.net.dns.ResolveFamily;\n"
            // A counting Resolver fake: every resolve() bumps a static
            // counter and returns a single port-0 loopback address.
            "public final class CountingResolver implements Resolver {\n"

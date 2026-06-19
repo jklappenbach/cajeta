@@ -1,0 +1,64 @@
+package cajeta.io.net.uri;
+
+/**
+ * Selects which **component-specific safe set** percent-encoding uses
+ * (plan item **NET-6.2**).
+ *
+ * RFC 3986 does *not* have one universal "encode everything that isn't
+ * unreserved" rule — each component permits a different subset of the
+ * **reserved** characters to appear *un*-encoded, because the delimiter
+ * that would otherwise terminate the component differs per component.
+ * Encoding too aggressively is lossy round-trip-wise; encoding too
+ * little corrupts the structure. So the encoder is parameterized by the
+ * component it is producing.
+ *
+ * ## The safe sets (RFC 3986 §2.3 + §3)
+ *
+ * Every component keeps the **unreserved** set raw:
+ *
+ * ```
+ * unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
+ * ```
+ *
+ * On top of that, each component additionally permits some of the
+ * **sub-delims** and a couple of **gen-delims**, per its ABNF:
+ *
+ * ```
+ * sub-delims = "!" / "$" / "&" / "'" / "(" / ")"
+ *            / "*" / "+" / "," / ";" / "="
+ * pchar      = unreserved / pct-encoded / sub-delims / ":" / "@"
+ * segment    = *pchar
+ * query      = *( pchar / "/" / "?" )
+ * fragment   = *( pchar / "/" / "?" )
+ * userinfo   = *( unreserved / pct-encoded / sub-delims / ":" )
+ * reg-name   = *( unreserved / pct-encoded / sub-delims )
+ * ```
+ *
+ * The ordinal values below are **stable** — [`PercentCodec`](PercentCodec.cajeta)
+ * switches on them to pick the safe-set predicate. Don't reorder
+ * without updating that map.
+ *
+ *   - `PATH`     — a whole path: `pchar` plus the `/` segment separator
+ *                  is left raw (a path *containing* slashes is normal).
+ *   - `SEGMENT`  — a single path segment: `pchar`, but `/` **is**
+ *                  encoded (so an embedded slash can't split the
+ *                  segment — the form `Uri.percentEncode` callers use
+ *                  when injecting one untrusted segment).
+ *   - `QUERY`    — `pchar` plus `/` and `?` raw. (A query-*value* with a
+ *                  literal `&` or `=` should use `QUERY_PARAM`.)
+ *   - `QUERY_PARAM` — a single key or value within a query: like
+ *                  `QUERY` but `&`, `=`, `+`, `;` are encoded so they
+ *                  can't be read as separators by the NET-6.3 parser.
+ *   - `FRAGMENT` — identical safe set to `QUERY` (`pchar` / `/` / `?`).
+ *   - `USERINFO` — `unreserved` / sub-delims / `:`.
+ *   - `HOST`     — reg-name: `unreserved` / sub-delims (no `:` or `@`).
+ */
+public enum UriComponent {
+    PATH,
+    SEGMENT,
+    QUERY,
+    QUERY_PARAM,
+    FRAGMENT,
+    USERINFO,
+    HOST
+}

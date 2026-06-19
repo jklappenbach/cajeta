@@ -6,7 +6,7 @@
 //  - fp4 (i4 storage) declare + load round-trip
 //
 // Arithmetic on the sub-fp16 types deliberately is NOT exercised: that path is
-// still gated behind runtime conversion helpers (docs/stdlib/FloatingPointModel.md describes the gap).
+// still gated behind runtime conversion helpers (docs/specification/lang/FloatingPointModel.md describes the gap).
 // These tests confirm the storage layer works for the new types and the
 // existing fp32/fp64 paths produce correct numerics.
 //

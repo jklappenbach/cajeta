@@ -1,7 +1,7 @@
-// Tests for the cajeta.net.http HTTP-exception hierarchy — plan item
+// Tests for the cajeta.io.net.http HTTP-exception hierarchy — plan item
 // NET-7.7 (`HttpException` intermediate + `MalformedMessage` /
 // `HeadersTooLarge` / `InvalidChunkEncoding` / `UnexpectedEof` reparented
-// under it, off `cajeta.net.NetException`).
+// under it, off `cajeta.io.net.NetException`).
 //
 // NET-7.3 / NET-7.4 originally rooted the four leaf exceptions directly on
 // `cajeta.error.RecoverableException` as placeholders, because the
@@ -54,14 +54,14 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.NetException;\n"
-        "import cajeta.net.http.HttpException;\n"
-        "import cajeta.net.http.HttpParser;\n"
-        "import cajeta.net.http.HttpParserLimits;\n"
-        "import cajeta.net.http.MalformedMessageException;\n"
-        "import cajeta.net.http.HeadersTooLargeException;\n"
-        "import cajeta.net.http.InvalidChunkEncodingException;\n"
-        "import cajeta.net.http.UnexpectedEofException;\n"
+        "import cajeta.io.net.NetException;\n"
+        "import cajeta.io.net.http.HttpException;\n"
+        "import cajeta.io.net.http.HttpParser;\n"
+        "import cajeta.io.net.http.HttpParserLimits;\n"
+        "import cajeta.io.net.http.MalformedMessageException;\n"
+        "import cajeta.io.net.http.HeadersTooLargeException;\n"
+        "import cajeta.io.net.http.InvalidChunkEncodingException;\n"
+        "import cajeta.io.net.http.UnexpectedEofException;\n"
         "public final class H {\n"
         "    public static int32 run() {\n"
         "        " + body + "\n"

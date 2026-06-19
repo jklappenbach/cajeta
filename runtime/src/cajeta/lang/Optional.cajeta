@@ -42,7 +42,7 @@ package cajeta.lang;
  *
  * ## Stream integration (deferred)
  *
- * stdlib/Streams.md commits to Optional extending `Stream`<T> with
+ * specification/lang/stream/Streams.md commits to Optional extending `Stream`<T> with
  * single-shot next(); that lands when `Stream`<T> itself does (P6.4+).
  */
 public class Optional<T> {

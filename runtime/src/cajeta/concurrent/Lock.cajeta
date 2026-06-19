@@ -1,7 +1,7 @@
 package cajeta.concurrent;
 
 /**
- * The no-data RAII gate from docs/stdlib/Concurrency.md § `Lock`. Wraps
+ * The no-data RAII gate from docs/specification/concurrent/Concurrency.md § `Lock`. Wraps
  * the async-aware lock intrinsics (`Cajeta.lock*`). `acquire()` returns a
  * `#``LockGuard` whose drop releases the lock; `tryAcquire()` is
  * non-blocking (1 = acquired, 0 = already held). The underlying mutex is
@@ -23,7 +23,7 @@ package cajeta.concurrent;
  * }
  * ```
  *
- * Async behaviour (docs/stdlib/AsyncStatus.md): on the single-carrier
+ * Async behaviour (docs/specification/concurrent/AsyncStatus.md): on the single-carrier
  * cooperative scheduler a fiber that hits a held lock parks and yields to
  * the carrier rather than blocking the OS thread; the main thread blocks
  * on the lock's condvar.

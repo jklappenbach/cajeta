@@ -8,7 +8,7 @@
 //
 // These golden vectors pin the native layer NET-1.3 adds on top of NET-1.1.
 // The full Cajeta-surface `TcpStream` connect/read/write/close round-trip is
-// the compiler-codegen half of NET-1.3 (a `cajeta.net.TcpStream`-receiver
+// the compiler-codegen half of NET-1.3 (a `cajeta.io.net.TcpStream`-receiver
 // dispatch block in MethodCallExpression.cpp, mirroring the File dispatch) and
 // is pinned by the JIT suite once that codegen lands.
 //

@@ -1,4 +1,4 @@
-// NET-9.1 — cajeta.net.http.HttpServer tests (HTTP/1.1 server core).
+// NET-9.1 — cajeta.io.net.http.HttpServer tests (HTTP/1.1 server core).
 //
 // The HttpServer connection loop is composed of pure codec layers — the
 // incremental parser (NET-7.3), the body reader (NET-7.4), the serializer
@@ -52,12 +52,12 @@ int32_t runI32(const std::string& body) {
     std::string src =
         "package test;\n"
         "import cajeta.lang.String;\n"
-        "import cajeta.net.http.HttpServer;\n"
-        "import cajeta.net.http.HttpRequest;\n"
-        "import cajeta.net.http.HttpResponse;\n"
-        "import cajeta.net.http.HttpParserLimits;\n"
-        "import cajeta.net.http.Exchange;\n"
-        "import cajeta.net.NetException;\n"
+        "import cajeta.io.net.http.HttpServer;\n"
+        "import cajeta.io.net.http.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpResponse;\n"
+        "import cajeta.io.net.http.HttpParserLimits;\n"
+        "import cajeta.io.net.http.Exchange;\n"
+        "import cajeta.io.net.NetException;\n"
         "public final class M {\n"
         "    // A String's UTF-8 bytes copied into a fresh owned array.\n"
         "    static #int8[] bytes(String s) {\n"

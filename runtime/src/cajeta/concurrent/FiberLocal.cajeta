@@ -1,7 +1,7 @@
 package cajeta.concurrent;
 
 /**
- * Ambient per-request state — docs/stdlib/FiberLocal.md. A fiber-keyed,
+ * Ambient per-request state — docs/specification/concurrent/FiberLocal.md. A fiber-keyed,
  * scope-restored binding: the sound replacement for a thread-pool
  * `ThreadLocal`/MDC. Carriers are pooled OS threads (a `__thread` slot would
  * alias across the many fibers a carrier hosts), but fibers are single-use, so

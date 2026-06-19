@@ -71,7 +71,7 @@ package cajeta.lang;
  * overloading flows through method-level template specialization.
  *
  * @see docs/MaskSelect.md      branchless per-lane conditionals
- * @see docs/stdlib/MethodLevelTemplate.md   the templating mechanism
+ * @see docs/specification/lang/MethodLevelTemplate.md   the templating mechanism
  */
 public class Math {
     /**

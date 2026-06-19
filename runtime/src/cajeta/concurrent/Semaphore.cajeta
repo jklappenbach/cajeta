@@ -1,7 +1,7 @@
 package cajeta.concurrent;
 
 /**
- * Counting permit pool — docs/stdlib/Concurrency.md § `Semaphore`. Bounds
+ * Counting permit pool — docs/specification/concurrent/Concurrency.md § `Semaphore`. Bounds
  * the number of concurrent operations against an unbounded set of
  * consumers. Built directly on the lock + condition-variable intrinsics
  * (the same primitives `Mutex` uses): `acquire` waits for a free permit

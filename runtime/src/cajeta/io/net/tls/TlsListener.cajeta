@@ -1,0 +1,113 @@
+package cajeta.io.net.tls;
+
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpStream;
+import cajeta.io.net.TcpListener;
+
+/**
+ * Server-side TLS termination over a [`TcpListener`](../TcpListener.cajeta)
+ * (**NET-5.5**). Binds a listening socket and presents a fixed certificate +
+ * private key; each [`accept`](#accept) returns a [`TlsStream`](TlsStream.cajeta)
+ * whose handshake has already completed, so the caller works in plaintext from
+ * the first byte.
+ *
+ * The cert/key (and the optional ALPN list) are **borrowed** — the listener does
+ * not own them — because a server's identity material is typically the same PEM
+ * the rest of the program holds (e.g. a loopback test uses the server cert as
+ * the client's trust anchor too). The caller must keep them alive for the
+ * listener's lifetime.
+ *
+ * Dropping the `TlsListener` closes the underlying listening socket.
+ */
+public class TlsListener {
+
+    TcpListener listener;
+    int8[] cert;
+    int32 certLen;
+    int8[] key;
+    int32 keyLen;
+    int8[] alpn;
+    int32 alpnLen;
+    boolean hasAlpn;
+
+    private TlsListener(#TcpListener listener, int8[] cert, int32 certLen,
+                        int8[] key, int32 keyLen) {
+        this.listener = #listener;
+        this.cert = cert;
+        this.certLen = certLen;
+        this.key = key;
+        this.keyLen = keyLen;
+        this.alpn = cert;        // placeholder until supportAlpn; never read
+        this.alpnLen = 0;
+        this.hasAlpn = false;
+    }
+
+    /**
+     * Bind a TLS-terminating listener to `addr`, presenting `cert` (chain) +
+     * `key` (PEM bytes). A `0` port binds to an OS-assigned one — read it back
+     * with [`boundPort`](#boundPort).
+     */
+    public static #TlsListener bind(SocketAddress addr, int8[] cert, int32 certLen,
+                                    int8[] key, int32 keyLen) {
+        TcpListener l = TcpListener.bind(addr);
+        return heap TlsListener(#l, cert, certLen, key, keyLen);
+    }
+
+    /**
+     * Offer `protos` (ALPN wire format: 1-byte length + bytes each) on every
+     * accepted connection; the handshake selects the first the client also
+     * offered (server preference). Optional — without it no ALPN is negotiated.
+     */
+    public void supportAlpn(int8[] protos, int32 len) {
+        this.alpn = protos;
+        this.alpnLen = len;
+        this.hasAlpn = true;
+    }
+
+    /** The bound local port (resolves a `0`-bind to the OS-assigned port). */
+    public int32 boundPort() {
+        return this.listener.boundPort();
+    }
+
+    /**
+     * Accept the next connection and drive the **server** TLS handshake to
+     * completion, returning a ready [`TlsStream`](TlsStream.cajeta). Throws the
+     * same [`TlsException`](TlsException.cajeta) family as
+     * [`TlsStream.handshake`](TlsStream.cajeta#handshake) on a failed handshake.
+     */
+    public #TlsStream accept() {
+        TcpStream sock = this.listener.accept();
+        TlsStream tls = TlsStream.server(#sock, this.cert, this.certLen,
+                                         this.key, this.keyLen);
+        if (this.hasAlpn) {
+            tls.supportAlpn(this.alpn, this.alpnLen);
+        }
+        tls.handshake();
+        return #tls;
+    }
+
+    /**
+     * The **fiber-parking** twin of [`accept`](#accept): accept the next
+     * connection via [`TcpListener.acceptAsync`](../TcpListener.cajeta#acceptAsync)
+     * (which parks the fiber on the listen socket's readiness rather than
+     * blocking the carrier), then drive the server TLS handshake. The form an
+     * `async` server loop uses so a fiber waiting for a connection yields its
+     * carrier (the no-carrier-blocks invariant) — required when the acceptor
+     * runs on the same scheduler as the peer that will connect.
+     */
+    public #TlsStream acceptAsync() {
+        TcpStream sock = this.listener.acceptAsync();
+        TlsStream tls = TlsStream.server(#sock, this.cert, this.certLen,
+                                         this.key, this.keyLen);
+        if (this.hasAlpn) {
+            tls.supportAlpn(this.alpn, this.alpnLen);
+        }
+        tls.handshake();
+        return #tls;
+    }
+
+    /** Stop listening (closes the underlying socket). */
+    public void close() {
+        this.listener.close();
+    }
+}

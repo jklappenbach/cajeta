@@ -1,0 +1,57 @@
+package cajeta.io.net.dns;
+
+import cajeta.lang.String;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.dns.ResolveFamily;
+
+/**
+ * The **name-resolution backend** a [`DnsCache`](DnsCache.cajeta) calls
+ * on a cache **miss** (plan item **NET-2.4**).
+ *
+ * The cache owns the LRU + TTL bookkeeping; the `Resolver` owns the
+ * one thing the cache deliberately knows nothing about — *how a name
+ * actually turns into addresses*. Separating the two is what makes the
+ * cache testable without a network: production wires
+ * [`SystemResolver`](SystemResolver.cajeta) (which drives the NET-2.2
+ * blocking [`Dns.resolve`](Dns.cajeta) `getaddrinfo` path), while a
+ * test injects a **counting** resolver and asserts that a second
+ * lookup *inside the TTL* never calls through — the
+ * `DnsTests.cacheHitSkipsSecondLookup` acceptance ("no second
+ * `getaddrinfo`; verified via an injectable resolver counter").
+ *
+ * ## Contract
+ *
+ * A single method, mirroring the family-filtered
+ * [`Dns.resolve(host, port, family)`](Dns.cajeta) overload minus the
+ * port (the cache keys on `(host, family)` and bakes a caller-supplied
+ * port at the surface, exactly as [`Dns`](Dns.cajeta) does — a port is
+ * not part of *what was resolved*, only *what the caller asked to dial*):
+ *
+ *   - **success** → a freshly owned, **non-empty** `SocketAddress[]`.
+ *   - **failure** → throws (the same
+ *     [`NetException`](../NetException.cajeta) family
+ *     [`Dns.resolve`](Dns.cajeta) raises). A throwing resolver is the
+ *     cache's signal to record (or refuse to record) a **negative**
+ *     result — see [`DnsCache.resolve`](DnsCache.cajeta).
+ *
+ * The returned array's ownership transfers to the cache, which holds it
+ * for the TTL window and hands **the same backing array** back to every
+ * hit inside that window (callers must not mutate it — it is the
+ * cached value, shared by reference, the standard `Cache<K,V>` value
+ * posture).
+ */
+public interface Resolver {
+
+    /**
+     * Resolve `host` under the `family` filter, returning every matching
+     * endpoint with **port 0** (the cache bakes the real port at its
+     * surface). Returns a non-empty owned array on success; throws a
+     * [`NetException`](../NetException.cajeta) on any failure.
+     *
+     * @param host   the hostname or numeric IP literal to resolve.
+     * @param family the address-family filter (`V4_ONLY` / `V6_ONLY` /
+     *               `BOTH`).
+     * @return a freshly owned, non-empty array of port-0 endpoints.
+     */
+    public #SocketAddress[] resolve(String host, ResolveFamily family);
+}

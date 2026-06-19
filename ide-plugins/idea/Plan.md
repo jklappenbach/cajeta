@@ -1339,7 +1339,7 @@ lifetime in both the Variables view and inline in the editor. Full requirements
 The CP7 group depends on the CP6f line completing first; CP7-1a..1d touch
 different layers and may be authored in parallel. The language semantics being
 visualized are specified in
-[`MemoryModel.md`](../../docs/stdlib/MemoryModel.md) (owned by a separate
+[`MemoryModel.md`](../../docs/specification/lang/MemoryModel.md) (owned by a separate
 workstream); this plan covers only the debugger surfacing of them.
 
 ### Verification — Debugging tier

@@ -1,0 +1,356 @@
+package cajeta.io.net.http;
+
+import cajeta.lang.String;
+import cajeta.io.net.http.HttpRequest;
+import cajeta.io.net.http.HttpResponse;
+import cajeta.io.net.http.Route;
+import cajeta.io.net.http.PathParams;
+
+/**
+ * The **minimal HTTP router** — plan item **NET-9.3**. Maps an incoming
+ * request's `(method, path)` to a registered handler by **method +
+ * path-pattern matching** (`/users/{id}` path parameters), returning the
+ * standard `404 Not Found` / `405 Method Not Allowed` defaults when no
+ * route answers.
+ *
+ * ```cajeta
+ * Router r = heap Router();
+ * r.route("GET", "/users/{id}", (req) -> {
+ *     String id = req.pathParam("id");
+ *     return HttpResponse.of(200).body(...);
+ * });
+ * HttpResponse resp = r.dispatch(request);   // 200 / 404 / 405
+ * ```
+ *
+ * ## Mounting on the server
+ *
+ * The router's [`dispatch`](#dispatch) **is** the server's per-request
+ * logic; a handler that forwards to it —
+ * `(req) -> theRouter.dispatch(req)` — is the
+ * `(HttpRequest) -> #HttpResponse` [`HttpServer.bind`](HttpServer.cajeta#bind)
+ * takes. That forwarding lambda is written at the **call site** (where the
+ * router instance is a live local the lambda captures by borrow), not
+ * returned from a `Router` method: the language's escaping-closure support
+ * (a closure that outlives the frame that captures a borrow) is a pending
+ * runtime item, so the router deliberately exposes `dispatch` directly
+ * rather than a closure factory. The dispatch logic itself — the NET-9.3
+ * deliverable — is complete and unit-tested below.
+ *
+ * ## What it is — and isn't
+ *
+ * "**Deliberately minimal — not a web framework**" (NET-9.3 /
+ * `docs/Net.md` §HTTP-server). It is the stdlib *transport*'s
+ * dispatch primitive: exact-method + segment-pattern matching with path
+ * params, and the two HTTP defaults. It has **no** middleware chain, no
+ * content negotiation, no wildcard / regex / optional segments, no route
+ * groups — a framework layers those on top. A pattern matches a path iff
+ * they have the **same segment count** and every segment pairwise matches
+ * (a literal byte-equal, a `{param}` capturing any non-empty segment); see
+ * [`Route`](Route.cajeta).
+ *
+ * ## Matching + the 404/405 split
+ *
+ * For a request `(method, path)`, [`dispatch`](#dispatch):
+ *
+ *   1. Splits `path` into segments (the query string and a trailing /
+ *      leading `/` are stripped — [`splitPath`](#splitPath)).
+ *   2. Walks the routes in **registration order**; the **first** route
+ *      whose pattern matches the path **and** whose method equals the
+ *      request method wins — its path params are bound onto the request
+ *      ([`HttpRequest.bindPathParams`](HttpRequest.cajeta#bindPathParams))
+ *      and its handler is invoked.
+ *   3. If **no** route matched both, but at least one route matched the
+ *      **path** (only the method differed), the result is
+ *      `405 Method Not Allowed` with an `Allow` header listing the methods
+ *      registered for that path (RFC 7231 §6.5.5).
+ *   4. Otherwise — no route's path matched — the result is `404 Not
+ *      Found`.
+ *
+ * Registration order matters only among routes that *both* match; an
+ * earlier `route(...)` registration shadows a later one for the same
+ * `(method, path)`. This is the `net/http.ServeMux`-style first-match
+ * dispatch the comparative table cites.
+ *
+ * ## Testability
+ *
+ * `dispatch` is **pure logic** over the [`HttpRequest`](HttpRequest.cajeta)
+ * / [`HttpResponse`](HttpResponse.cajeta) data types — no socket, no
+ * native — so it tests directly over the JIT with golden vectors (build a
+ * request, register routes, assert the response status + the bound path
+ * param), exactly like the rest of the NET-7/9 codec layer. The
+ * [`handler`](#handler) adapter packages `dispatch` as the
+ * `(HttpRequest) -> #HttpResponse` the [`HttpServer`](HttpServer.cajeta)
+ * (NET-9.1) connection loop already runs, so the router is "just a
+ * handler" — no server change is needed to mount it.
+ */
+public class Router {
+    Route[] routes;
+    int32 routeCount;
+
+    /** An empty router (no routes; everything 404s until registered). */
+    public Router() {
+        this.routes = heap Route[8];
+        this.routeCount = 0;
+    }
+
+    // -- registration -------------------------------------------------------
+
+    /**
+     * Register a `handler` for requests matching `method` + the path
+     * `pattern` (`/users/{id}`). Returns the borrowed `this` so
+     * registrations chain (`r.route(...).route(...)`), the builder
+     * convention used across the HTTP message types. Later registrations
+     * for the same `(method, pattern)` are shadowed by this one (first
+     * match wins at dispatch).
+     */
+    public Router route(String method, String pattern,
+                        (HttpRequest) -> #HttpResponse handler) {
+        Route r = heap Route(method, pattern, handler);
+        this.append(#r);
+        return this;
+    }
+
+    /** Append a compiled route, growing the backing array on demand. */
+    void append(#Route r) {
+        if (this.routeCount >= this.routes.count()) {
+            int32 newCap = this.routes.count() * 2;
+            Route[] grown = heap Route[newCap];
+            int32 j = 0;
+            while (j < this.routeCount) {
+                grown[j] = this.routes[j];
+                j = j + 1;
+            }
+            this.routes = grown;
+        }
+        this.routes[this.routeCount] = r;
+        this.routeCount = this.routeCount + 1;
+    }
+
+    /** The number of registered routes. */
+    public int32 size() {
+        return this.routeCount;
+    }
+
+    // -- dispatch -----------------------------------------------------------
+
+    /**
+     * Route `request` to its handler, or to the `404`/`405` default. On a
+     * match the captured path params are bound onto `request` (so the
+     * handler reads them via
+     * [`HttpRequest.pathParam`](HttpRequest.cajeta#pathParam)) before the
+     * handler runs. See the class doc for the full match + 404/405 rules.
+     */
+    public #HttpResponse dispatch(HttpRequest request) {
+        String method = request.getMethod();
+        String[] segs = Router.splitPath(request.getTarget());
+        int32 segCount = segs.count();
+
+        boolean pathMatchedAny = false;
+        int32 i = 0;
+        while (i < this.routeCount) {
+            Route r = this.routes[i];
+            PathParams params = heap PathParams();
+            if (r.tryMatch(segs, segCount, params)) {
+                if (r.methodMatches(method)) {
+                    request.bindPathParams(#params);
+                    return r.handler(request);
+                }
+                pathMatchedAny = true;
+            }
+            i = i + 1;
+        }
+
+        if (pathMatchedAny) {
+            return Router.methodNotAllowed(this.routes, this.routeCount,
+                                           segs, segCount);
+        }
+        return HttpResponse.of(404);
+    }
+
+    // -- defaults -----------------------------------------------------------
+
+    /**
+     * Build the `405 Method Not Allowed` response, attaching an `Allow`
+     * header that lists (comma-separated, RFC 7231 §6.5.5) the distinct
+     * methods registered for the route(s) whose **path** matched
+     * `pathSegs`. The body is empty — the status + `Allow` header carry
+     * the meaning.
+     */
+    static #HttpResponse methodNotAllowed(Route[] routes, int32 routeCount,
+                                          String[] pathSegs, int32 segCount) {
+        HttpResponse resp = HttpResponse.of(405);
+        String allow = Router.allowHeader(routes, routeCount, pathSegs, segCount);
+        if (allow.byteLength > 0) {
+            resp.setHeader("Allow", allow);
+        }
+        return #resp;
+    }
+
+    /**
+     * Compose the comma-separated `Allow` header value: the methods of
+     * every route whose path pattern matched `pathSegs`, de-duplicated,
+     * in registration order. A fresh throwaway [`PathParams`](PathParams.cajeta)
+     * per probe absorbs the captures (the match is re-run only to test the
+     * path, the bindings are discarded here).
+     */
+    static #String allowHeader(Route[] routes, int32 routeCount,
+                               String[] pathSegs, int32 segCount) {
+        String acc = Router.emptyString();
+        int32 i = 0;
+        while (i < routeCount) {
+            Route r = routes[i];
+            PathParams throwaway = heap PathParams();
+            if (r.tryMatch(pathSegs, segCount, throwaway)) {
+                String m = r.method;
+                if (!Router.csvContains(acc, m)) {
+                    acc = Router.csvAppend(acc, m);
+                }
+            }
+            i = i + 1;
+        }
+        return #acc;
+    }
+
+    // -- path splitting -----------------------------------------------------
+
+    /**
+     * Split a request-target into its path **segments**, dropping the
+     * query string (everything from the first `?`), the fragment
+     * (everything from the first `#`, defensively — a wire request-target
+     * has none), and leading / internal / trailing empty segments (so
+     * `"/"`, `""`, and `"/users/"` all normalize cleanly). `"/users/42"`
+     * → `["users", "42"]`; `"/users/42?x=1"` → `["users", "42"]`; `"/"`
+     * → `[]` (zero segments, matching the root route's pattern).
+     *
+     * Note this does **not** percent-decode the segments — the captured
+     * parameter values are decoded later, per-segment, by
+     * [`Route.tryMatch`](Route.cajeta#tryMatch), so a literal pattern
+     * segment compares against the **raw** request segment (the
+     * conventional behavior; patterns are written in raw form).
+     */
+    static #String[] splitPath(String target) {
+        int32 n = target.byteLength;
+        // Trim the path portion: stop at the first '?' or '#'.
+        int32 pathEnd = n;
+        int32 k = 0;
+        while (k < pathEnd) {
+            int32 c = ((int32) target.byteAt(k)) & 0xff;
+            if (c == 63 || c == 35) {       // '?' or '#'
+                pathEnd = k;
+            } else {
+                k = k + 1;
+            }
+        }
+
+        // First pass: count non-empty segments.
+        int32 count = Router.countSegments(target, pathEnd);
+        String[] out = heap String[count];
+
+        // Second pass: fill them.
+        int32 idx = 0;
+        int32 segStart = 0;
+        int32 i = 0;
+        while (i <= pathEnd) {
+            boolean atEnd = (i == pathEnd);
+            boolean slash = (!atEnd) && ((((int32) target.byteAt(i)) & 0xff) == 47);
+            if (atEnd || slash) {
+                if (i > segStart) {
+                    out[idx] = target.substring(segStart, i);
+                    idx = idx + 1;
+                }
+                segStart = i + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Count non-empty `/`-delimited segments in `target[0..pathEnd)`. */
+    static int32 countSegments(String target, int32 pathEnd) {
+        int32 count = 0;
+        int32 segStart = 0;
+        int32 i = 0;
+        while (i <= pathEnd) {
+            boolean atEnd = (i == pathEnd);
+            boolean slash = (!atEnd) && ((((int32) target.byteAt(i)) & 0xff) == 47);
+            if (atEnd || slash) {
+                if (i > segStart) {
+                    count = count + 1;
+                }
+                segStart = i + 1;
+            }
+            i = i + 1;
+        }
+        return count;
+    }
+
+    // -- small string helpers (Allow header CSV) ----------------------------
+
+    /** A fresh empty `String`. */
+    static #String emptyString() {
+        int8[] e = heap int8[0];
+        return heap String(#e, 0);
+    }
+
+    /**
+     * Append `token` to a comma-separated accumulator: `acc` when empty
+     * becomes `token`, otherwise `acc + ", " + token`.
+     */
+    static #String csvAppend(String acc, String token) {
+        int32 aLen = acc.byteLength;
+        int32 tLen = token.byteLength;
+        if (aLen == 0) {
+            return heap String(token.bytes, tLen);
+        }
+        int32 total = aLen + 2 + tLen;      // acc + ", " + token
+        int8[] out = heap int8[total];
+        int32 dst = 0;
+        int32 i = 0;
+        while (i < aLen) {
+            out[dst] = acc.byteAt(i);
+            dst = dst + 1;
+            i = i + 1;
+        }
+        out[dst] = (int8) 44;               // ','
+        dst = dst + 1;
+        out[dst] = (int8) 32;               // ' '
+        dst = dst + 1;
+        int32 j = 0;
+        while (j < tLen) {
+            out[dst] = token.byteAt(j);
+            dst = dst + 1;
+            j = j + 1;
+        }
+        return heap String(#out, total);
+    }
+
+    /**
+     * True iff the comma-separated list `csv` already contains the exact
+     * token `token` (so the `Allow` header lists each method once). The
+     * scan is on `", "`-delimited tokens, byte-exact.
+     */
+    static boolean csvContains(String csv, String token) {
+        int32 n = csv.byteLength;
+        int32 segStart = 0;
+        int32 i = 0;
+        while (i <= n) {
+            boolean atEnd = (i == n);
+            // A list separator is ',' (the following ' ' is skipped below).
+            boolean sep = (!atEnd) && ((((int32) csv.byteAt(i)) & 0xff) == 44);
+            if (atEnd || sep) {
+                int32 s = segStart;
+                // Skip a leading space left by the ", " join.
+                if (s < i && ((((int32) csv.byteAt(s)) & 0xff) == 32)) {
+                    s = s + 1;
+                }
+                String seg = csv.substring(s, i);
+                if (seg.equals(token)) {
+                    return true;
+                }
+                segStart = i + 1;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}
