@@ -1,0 +1,12 @@
+package cajeta.ifx;
+
+/**
+ * Permission — an OS-gated capability an ifx app may need to request at runtime. Microphone capture
+ * is gated on mobile + macOS; raw input-device access needs seat/udev-ACL on Linux. The app requests
+ * it and reads back a {@link PermissionState}; a denial is a reported state, never a crash.
+ * See documents/cajeta-gfx/cajeta-gfx-spec.md §9.7. Append-only ordinals.
+ */
+public enum Permission {
+    Microphone,    // 0 — audio capture (RECORD_AUDIO / NSMicrophoneUsageDescription)
+    InputDevice    // 1 — raw input-device access (Linux seat / udev ACL)
+}

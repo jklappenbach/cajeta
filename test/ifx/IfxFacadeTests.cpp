@@ -88,3 +88,51 @@ TEST(IfxFacadeTests, windowConstructsAndReturnsHandle) {
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 42);
 }
+
+// The capability/lifecycle/permission vocabulary — simple int32-aliased enums whose ordinals are
+// the stable contract a backend reports against. (The supports(Feature) query that consumes them
+// wires up with the backend registry — next stack item.)
+TEST(IfxFacadeTests, featureEnumOrdinalsAreStable) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.Feature;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return Feature.Touch;\n"   // 5
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 5);
+}
+
+TEST(IfxFacadeTests, permissionStateEnumOrdinals) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.PermissionState;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return PermissionState.Granted;\n"   // 2
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 2);
+}
+
+TEST(IfxFacadeTests, lifecyclePhaseEnumOrdinals) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.LifecyclePhase;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return LifecyclePhase.SurfaceRecreated;\n"   // 3
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 3);
+}

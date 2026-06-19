@@ -1,0 +1,14 @@
+package cajeta.ifx;
+
+/**
+ * PermissionState — the status of a {@link Permission}. {@code NotRequired} on platforms that don't
+ * gate it; {@code Pending} while an async OS prompt is outstanding; then {@code Granted}/{@code
+ * Denied}. Apps gate the permission-needing path on {@code Granted} and degrade on {@code Denied}.
+ * Append-only ordinals.
+ */
+public enum PermissionState {
+    NotRequired,   // 0 — the platform does not gate this permission
+    Pending,       // 1 — request outstanding (async OS prompt)
+    Granted,       // 2 — allowed
+    Denied         // 3 — refused (report + degrade; never crash)
+}

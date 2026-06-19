@@ -1,0 +1,27 @@
+package cajeta.ifx;
+
+/**
+ * Feature — the optional capabilities an ifx backend may or may not provide, queried at runtime via
+ * the backend registry (the portable floor is always present; everything here is feature-detected).
+ * Apps program to the floor and check {@code supports(Feature)} for the rest — never assume.
+ * See documents/cajeta-gfx/cajeta-gfx-spec.md §9.7 (the feature matrix + per-platform fallbacks).
+ *
+ * A simple enum (an int32-aliased ordinal). The ordinal is the stable contract a backend reports
+ * against — append only, never reorder.
+ */
+public enum Feature {
+    MultiWindow,         // 0  — multiple / resizable windows (desktop; ✗ on mobile)
+    WindowPositioning,   // 1  — programmatic window position (✗ on Wayland / mobile)
+    CursorWarp,          // 2  — teleport the cursor (✗ on Wayland; use PointerLock)
+    PointerLock,         // 3  — relative-pointer / pointer-lock (the portable FPS-mouse primitive)
+    KeyboardMouse,       // 4  — physical keyboard + mouse (optional on mobile)
+    Touch,               // 5  — touch input (the mobile floor; optional on desktop)
+    GamepadRumble,       // 6  — gamepad rumble / force feedback
+    AdaptiveTriggers,    // 7  — DualSense-style adaptive triggers
+    Gyro,                // 8  — gamepad gyroscope / motion
+    VirtualGamepad,      // 9  — OS on-screen virtual controller (iOS GCVirtualController)
+    AudioCapture,        // 10 — microphone capture (permission-gated)
+    LoopbackCapture,     // 11 — system-output / loopback capture (Windows WASAPI; limited elsewhere)
+    ExclusiveAudio,      // 12 — exclusive / low-latency audio path
+    Hdr                  // 13 — HDR present
+}
