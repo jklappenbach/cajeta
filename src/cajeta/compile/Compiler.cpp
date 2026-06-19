@@ -40,6 +40,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -1076,8 +1077,12 @@ namespace cajeta {
         // emit. Report (Phase A) only prints; On (Phase B) prunes unreachable
         // cajeta method bodies so their native deps are never linked.
         if (emitMode == EmitMode::Exe) {
-            if (flags.treeShake == TreeShake::Report) reportTreeShake();
-            else if (flags.treeShake == TreeShake::On) pruneUnreachable();
+            if (flags.treeShake == TreeShake::Report) {
+                reportTreeShake();
+            } else if (flags.treeShake == TreeShake::On) {
+                pruneDeadClinits();   // before the method prune so dead clinit
+                pruneUnreachable();   // callees cascade into it
+            }
         }
 
         // Archive emit bundles every parsed module's bitcode into one
@@ -1828,7 +1833,8 @@ namespace cajeta {
 
     std::unordered_set<std::string> Compiler::computeReachableSymbols(
             const std::vector<llvm::Module*>& lmods,
-            std::unordered_map<std::string, llvm::GlobalValue*>& defs) {
+            std::unordered_map<std::string, llvm::GlobalValue*>& defs,
+            bool excludeClinitRoots) {
         using namespace llvm;
 
         // Reachability is by SYMBOL NAME, not pointer: a callee is an extern decl
@@ -1868,8 +1874,13 @@ namespace cajeta {
                             if (auto* e = dyn_cast<ConstantStruct>(op.get()))
                                 if (e->getNumOperands() >= 2)
                                     if (auto* fn = dyn_cast<Function>(
-                                            e->getOperand(1)->stripPointerCasts()))
+                                            e->getOperand(1)->stripPointerCasts())) {
+                                        if (excludeClinitRoots &&
+                                                fn->getName().starts_with(
+                                                    "__cajeta_clinit_"))
+                                            continue;
                                         rootNames.push_back(fn->getName().str());
+                                    }
             }
             for (const char* un : {"llvm.used", "llvm.compiler.used"})
                 if (auto* u = lm->getGlobalVariable(un))
@@ -2044,6 +2055,172 @@ namespace cajeta {
         std::cout << "tree-shake (--tree-shake=on): pruned " << pruned
                   << " of " << totalFns
                   << " unreachable cajeta method bodies (kept " << keptFns << ")\n";
+    }
+
+    // Rebuild a module's @llvm.global_ctors initializer, dropping every entry whose
+    // ctor function name is in `excludeFnNames`. The array length changes, so the
+    // global's type changes — we create a replacement global and rename it.
+    static void rebuildGlobalCtorsExcluding(
+            llvm::Module* lm,
+            const std::unordered_set<std::string>& excludeFnNames) {
+        using namespace llvm;
+        auto* gc = lm->getGlobalVariable("llvm.global_ctors");
+        if (!gc || !gc->hasInitializer()) return;
+        auto* arr = dyn_cast<ConstantArray>(gc->getInitializer());
+        if (!arr) return;
+        SmallVector<Constant*, 32> kept;
+        for (auto& op : arr->operands()) {
+            bool drop = false;
+            if (auto* e = dyn_cast<ConstantStruct>(op.get()))
+                if (e->getNumOperands() >= 2)
+                    if (auto* fn = dyn_cast<Function>(
+                            e->getOperand(1)->stripPointerCasts()))
+                        drop = excludeFnNames.count(fn->getName().str()) > 0;
+            if (!drop) kept.push_back(cast<Constant>(op.get()));
+        }
+        if (kept.size() == arr->getNumOperands()) return;  // nothing removed here
+        auto* elemTy = cast<StructType>(arr->getType()->getElementType());
+        auto* newArrTy = ArrayType::get(elemTy, kept.size());
+        Constant* newInit = ConstantArray::get(newArrTy, kept);
+        auto* newGc = new GlobalVariable(*lm, newArrTy, /*isConstant=*/false,
+            gc->getLinkage(), newInit, "");
+        if (gc->hasSection()) newGc->setSection(gc->getSection());
+        gc->eraseFromParent();             // global_ctors has no IR uses
+        newGc->setName("llvm.global_ctors");
+    }
+
+    void Compiler::pruneDeadClinits() {
+        using namespace llvm;
+        std::vector<Module*> lmods;
+        collectLinkModules(lmods);
+        std::unordered_map<std::string, GlobalValue*> defs;
+        // "What the program reaches if no static initializer ran" — the oracle for
+        // whether a clinit's effect is observable.
+        std::unordered_set<std::string> reachedSansClinits =
+            computeReachableSymbols(lmods, defs, /*excludeClinitRoots=*/true);
+
+        const StringRef CLP = "__cajeta_clinit_";
+        std::vector<Function*> clinits;
+        for (auto* lm : lmods)
+            for (auto& f : lm->functions())
+                if (!f.isDeclaration() && f.getName().starts_with(CLP))
+                    clinits.push_back(&f);
+
+        auto globalsTouched = [](Function* f, bool stores,
+                                 std::unordered_set<std::string>& out) {
+            for (auto& bb : *f)
+                for (auto& inst : bb) {
+                    Value* ptr = nullptr;
+                    if (stores) {
+                        if (auto* st = dyn_cast<StoreInst>(&inst))
+                            ptr = st->getPointerOperand();
+                    } else {
+                        if (auto* ld = dyn_cast<LoadInst>(&inst))
+                            ptr = ld->getPointerOperand();
+                    }
+                    if (ptr)
+                        if (auto* g = dyn_cast<GlobalVariable>(
+                                getUnderlyingObject(ptr)))
+                            out.insert(g->getName().str());
+                }
+        };
+
+        // Globals loaded by each clinit (for the "read by another clinit" check).
+        std::unordered_map<Function*, std::unordered_set<std::string>> clinitLoads;
+        for (auto* cl : clinits) globalsTouched(cl, /*stores=*/false, clinitLoads[cl]);
+
+        // A native (declaration) callee with no OBSERVABLE program-level effect:
+        // fiber scope-stack bookkeeping, frame/temp allocation, and memory
+        // intrinsics. Deliberately EXCLUDES drop-chain registration and all I/O —
+        // so any clinit that constructs an owned object (registers a drop) or does
+        // I/O reaches a non-benign native and is conservatively KEPT. `scope_exit`
+        // only does observable work (runs registered drops) when a drop was
+        // registered, which already trips the non-benign path, so whitelisting the
+        // scope ops is sound for the drop-free clinits this can actually strip.
+        auto isBenignNative = [](StringRef n) {
+            return n.starts_with("__cajeta_scope_")
+                || n == "__cajeta_alloc" || n == "__cajeta_dbg_local_alloc"
+                || n.starts_with("llvm.memcpy") || n.starts_with("llvm.memset")
+                || n.starts_with("llvm.memmove") || n.starts_with("llvm.lifetime")
+                || n.starts_with("llvm.dbg") || n.starts_with("llvm.assume");
+        };
+
+        // Analyze a clinit's transitive closure (clinit + body-having callees) for
+        // EXTERNAL PURITY. Returns true ("impure", keep) on any indirect call or any
+        // call to a NON-BENIGN declaration (I/O, drop-chain, registration, ...).
+        // Collects every global the closure STOREs to, via the store's underlying
+        // object so GEP/cast-derived global writes count.
+        // NOTE soundness: it is NOT enough that callees are unreached-sans-clinits —
+        // a dead callee can still store to a LIVE global. We check the stores
+        // directly; the clinit is strippable only if the whole closure writes
+        // nothing live and triggers no opaque effect.
+        auto analyzeClosure = [&](Function* start,
+                                  std::unordered_set<std::string>& storedGlobals) -> bool {
+            bool impure = false;
+            std::vector<Function*> stack{start};
+            std::unordered_set<Function*> visited{start};
+            while (!stack.empty()) {
+                Function* f = stack.back(); stack.pop_back();
+                for (auto& bb : *f)
+                    for (auto& inst : bb) {
+                        if (auto* st = dyn_cast<StoreInst>(&inst)) {
+                            Value* base = getUnderlyingObject(st->getPointerOperand());
+                            if (auto* g = dyn_cast<GlobalVariable>(base))
+                                storedGlobals.insert(g->getName().str());
+                        } else if (auto* call = dyn_cast<CallBase>(&inst)) {
+                            Function* callee = call->getCalledFunction();
+                            if (!callee) { impure = true; continue; }   // indirect
+                            if (callee->isDeclaration()) {
+                                if (!isBenignNative(callee->getName()))
+                                    impure = true;   // opaque native effect
+                                continue;            // native leaf — don't recurse
+                            }
+                            if (visited.insert(callee).second) stack.push_back(callee);
+                        }
+                    }
+            }
+            return impure;
+        };
+
+        std::vector<Function*> toStrip;
+        for (auto* cl : clinits) {
+            // Externally pure: the closure writes only DEAD globals (nothing live
+            // reads them) and makes no indirect / native call.
+            std::unordered_set<std::string> stored;
+            if (analyzeClosure(cl, stored)) continue;        // native/indirect -> keep
+            bool pure = true;
+            for (auto& g : stored)
+                if (reachedSansClinits.count(g)) { pure = false; break; }  // live write
+            if (!pure) continue;
+            // The clinit's own statics must not be read by ANOTHER clinit — if that
+            // one is kept it would then read an uninitialized global. Conservative
+            // (no inter-clinit fixpoint): any shared read keeps this clinit.
+            std::unordered_set<std::string> W;
+            globalsTouched(cl, /*stores=*/true, W);
+            bool sharedWithClinit = false;
+            for (auto& g : W) {
+                for (auto& [other, loads] : clinitLoads)
+                    if (other != cl && loads.count(g)) { sharedWithClinit = true; break; }
+                if (sharedWithClinit) break;
+            }
+            if (sharedWithClinit) continue;
+            toStrip.push_back(cl);
+        }
+
+        if (toStrip.empty()) {
+            std::cout << "tree-shake (--tree-shake=on): 0 of " << clinits.size()
+                      << " class clinits are dead\n";
+            return;
+        }
+        std::unordered_set<std::string> stripNames;
+        for (auto* cl : toStrip) stripNames.insert(cl->getName().str());
+        for (auto* lm : lmods) rebuildGlobalCtorsExcluding(lm, stripNames);
+        for (auto* cl : toStrip) {
+            cl->deleteBody();
+            cl->setLinkage(GlobalValue::ExternalLinkage);
+        }
+        std::cout << "tree-shake (--tree-shake=on): stripped " << toStrip.size()
+                  << " of " << clinits.size() << " dead class clinits\n";
     }
 
     void Compiler::emitArchive(const std::string& archiveRootPath, bool uber) {
