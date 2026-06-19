@@ -37,12 +37,20 @@
 #include "../method/Method.h"
 #include "cajeta/buildtool/Subprocess.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 #include <sys/stat.h>
+#include <unordered_map>
+#include <unordered_set>
 
 #ifdef CAJETA_HAS_LLD
 #include "lld/Common/Driver.h"
@@ -1237,6 +1245,18 @@ namespace cajeta {
             emitCMainShim(entryMethod);
         }
 
+        // Tier-1 RTA — after the main shim + all ctors exist, before per-module
+        // emit. Report (Phase A) only prints; On (Phase B) prunes unreachable
+        // cajeta method bodies so their native deps are never linked.
+        if (emitMode == EmitMode::Exe) {
+            if (flags.treeShake == TreeShake::Report) {
+                reportTreeShake();
+            } else if (flags.treeShake == TreeShake::On) {
+                pruneDeadClinits();   // before the method prune so dead clinit
+                pruneUnreachable();   // callees cascade into it
+            }
+        }
+
         // Archive emit bundles every parsed module's bitcode into one
         // `.cja` file. The exploded per-module loop below is skipped —
         // a single artifact is the whole point.
@@ -1968,6 +1988,411 @@ namespace cajeta {
         } else {
             b.CreateRet(llvm::ConstantInt::get(i32Ty, 0));
         }
+    }
+
+    void Compiler::collectLinkModules(std::vector<llvm::Module*>& lmods) {
+        // Every llvm::Module that participates in the final link: user modules,
+        // re-driven classpath deps, and the always-linked stdlib.
+        auto addMod = [&](const CajetaModulePtr& m) {
+            if (m && m->getLlvmModule()) lmods.push_back(m->getLlvmModule());
+        };
+        for (auto& m : modules) addMod(m);
+        for (auto& m : externalModules) addMod(m);
+        if (auto stdlib = CajetaModule::getStdlibModule()) addMod(stdlib);
+        std::sort(lmods.begin(), lmods.end());
+        lmods.erase(std::unique(lmods.begin(), lmods.end()), lmods.end());
+    }
+
+    std::unordered_set<std::string> Compiler::computeReachableSymbols(
+            const std::vector<llvm::Module*>& lmods,
+            std::unordered_map<std::string, llvm::GlobalValue*>& defs,
+            bool excludeClinitRoots) {
+        using namespace llvm;
+
+        // Reachability is by SYMBOL NAME, not pointer: a callee is an extern decl
+        // in the caller's module but a definition in another. Map each name to its
+        // defining GlobalValue (function with a body / global with an initializer).
+        for (auto* lm : lmods) {
+            for (auto& f : lm->functions())
+                if (!f.isDeclaration()) defs.emplace(f.getName().str(), &f);
+            for (auto& g : lm->globals())
+                if (g.hasInitializer()) defs.emplace(g.getName().str(), &g);
+        }
+
+        // Pull every GlobalValue name referenced inside a constant (initializers:
+        // vtable slots, #ClassObject -> vtable, global_ctors array, constexpr
+        // wrappers around a global).
+        std::function<void(const Constant*, std::vector<std::string>&)> collectConst =
+            [&](const Constant* c, std::vector<std::string>& out) {
+                if (!c) return;
+                if (auto* gv = dyn_cast<GlobalValue>(c)) {
+                    out.push_back(gv->getName().str());
+                    return;
+                }
+                for (auto& op : c->operands())
+                    if (auto* sub = dyn_cast<Constant>(op.get())) collectConst(sub, out);
+            };
+
+        // Roots = what --gc-sections cannot drop for a final exe: the C `main`
+        // shim, every llvm.global_ctors entry (run at startup), and llvm.used pins.
+        std::vector<std::string> rootNames;
+        for (auto* lm : lmods) {
+            if (auto* mainFn = lm->getFunction("main"))
+                if (!mainFn->isDeclaration()) rootNames.push_back("main");
+            if (auto* gc = lm->getGlobalVariable("llvm.global_ctors")) {
+                if (gc->hasInitializer())
+                    if (auto* arr = dyn_cast<ConstantArray>(gc->getInitializer()))
+                        for (auto& op : arr->operands())
+                            if (auto* e = dyn_cast<ConstantStruct>(op.get()))
+                                if (e->getNumOperands() >= 2)
+                                    if (auto* fn = dyn_cast<Function>(
+                                            e->getOperand(1)->stripPointerCasts())) {
+                                        if (excludeClinitRoots &&
+                                                fn->getName().starts_with(
+                                                    "__cajeta_clinit_"))
+                                            continue;
+                                        rootNames.push_back(fn->getName().str());
+                                    }
+            }
+            for (const char* un : {"llvm.used", "llvm.compiler.used"})
+                if (auto* u = lm->getGlobalVariable(un))
+                    if (u->hasInitializer())
+                        collectConst(u->getInitializer(), rootNames);
+        }
+
+        // BFS the by-name reference graph. A function references the globals used
+        // in its instructions (direct calls, function-pointer refs, global loads);
+        // a global references the globals in its initializer. Conservative and
+        // matches section-GC: referencing a vtable keeps all its slot functions.
+        std::unordered_set<std::string> reached;
+        std::vector<std::string> work;
+        auto enqueue = [&](const std::string& n) {
+            if (defs.count(n) && reached.insert(n).second) work.push_back(n);
+        };
+        for (auto& r : rootNames) enqueue(r);
+
+        while (!work.empty()) {
+            std::string name = std::move(work.back());
+            work.pop_back();
+            GlobalValue* gv = defs[name];
+            std::vector<std::string> refs;
+            if (auto* f = dyn_cast<Function>(gv)) {
+                // Soundness edges NOT carried as instruction operands: the EH
+                // personality function and prefix/prologue data. Missing these
+                // would let pruning drop a function the ABI still calls.
+                if (f->hasPersonalityFn())
+                    if (auto* p = dyn_cast<GlobalValue>(
+                            f->getPersonalityFn()->stripPointerCasts()))
+                        refs.push_back(p->getName().str());
+                if (f->hasPrefixData())
+                    if (auto* c = dyn_cast<Constant>(f->getPrefixData()))
+                        collectConst(c, refs);
+                if (f->hasPrologueData())
+                    if (auto* c = dyn_cast<Constant>(f->getPrologueData()))
+                        collectConst(c, refs);
+                for (auto& bb : *f)
+                    for (auto& inst : bb)
+                        for (auto& op : inst.operands()) {
+                            Value* v = op.get();
+                            if (auto* g = dyn_cast<GlobalValue>(v->stripPointerCasts()))
+                                refs.push_back(g->getName().str());
+                            else if (auto* c = dyn_cast<Constant>(v))
+                                collectConst(c, refs);
+                        }
+            } else if (auto* g = dyn_cast<GlobalVariable>(gv)) {
+                if (g->hasInitializer()) collectConst(g->getInitializer(), refs);
+            }
+            for (auto& r : refs) enqueue(r);
+        }
+        return reached;
+    }
+
+    void Compiler::reportTreeShake() {
+        using namespace llvm;
+        std::vector<Module*> lmods;
+        collectLinkModules(lmods);
+        std::unordered_map<std::string, GlobalValue*> defs;
+        std::unordered_set<std::string> reached = computeReachableSymbols(lmods, defs);
+
+        // Subsystem bucket for a per-area breakdown — strip the leading
+        // `__cajeta_cajeta_` mangling and take the package head (e.g. net, gpu).
+        auto subsystemOf = [](const std::string& s) -> std::string {
+            static const char* P = "__cajeta_cajeta_";
+            size_t i = (s.rfind(P, 0) == 0) ? std::strlen(P) : 0;
+            size_t j = s.find('_', i);
+            return (j == std::string::npos) ? std::string("<other>")
+                                            : s.substr(i, j - i);
+        };
+        // The headline net/TLS/OpenSSL tail (incl. template instantiations over
+        // net types). Used for the soundness signal (none should be reachable).
+        auto looksNet = [](const std::string& s) {
+            auto has = [&](const char* k){ return s.find(k) != std::string::npos; };
+            return has("_net_") || has("Tls") || has("tls") || has("Ssl")
+                || has("ssl") || has("crypto") || has("Crypto")
+                || has("socket") || has("Socket");
+        };
+
+        // Diff: defined functions not reached are Phase-B strip candidates.
+        size_t totalFns = 0, reachedFns = 0, netReached = 0;
+        std::vector<std::string> strip, netStrip;
+        std::map<std::string, size_t> stripBySubsystem;
+        for (auto& [n, g] : defs) {
+            if (!isa<Function>(g)) continue;
+            totalFns++;
+            bool net = looksNet(n);
+            if (reached.count(n)) {
+                reachedFns++;
+                if (net) netReached++;
+            } else {
+                strip.push_back(n);
+                stripBySubsystem[subsystemOf(n)]++;
+                if (net) netStrip.push_back(n);
+            }
+        }
+        std::sort(netStrip.begin(), netStrip.end());
+
+        std::cout << "\n=== tree-shake (Tier-1 RTA Phase A — report only, no emission change) ===\n";
+        std::cout << "modules analyzed   : " << lmods.size() << "\n";
+        std::cout << "defined functions  : " << totalFns << "\n";
+        std::cout << "  reachable        : " << reachedFns << "\n";
+        std::cout << "  strippable       : " << strip.size();
+        if (totalFns)
+            std::cout << "  (" << (strip.size() * 100 / totalFns) << "%)";
+        std::cout << "\n";
+        // Soundness signal: in a non-net program no net/TLS symbol may be
+        // reachable. A nonzero here means an unexpected edge kept the net tail.
+        std::cout << "net/TLS reachable  : " << netReached
+                  << "  (strippable: " << netStrip.size() << ")\n";
+
+        std::cout << "strippable by subsystem (top 12):\n";
+        std::vector<std::pair<std::string, size_t>> bySub(
+            stripBySubsystem.begin(), stripBySubsystem.end());
+        std::sort(bySub.begin(), bySub.end(),
+            [](auto& a, auto& b){ return a.second > b.second; });
+        for (size_t i = 0; i < bySub.size() && i < 12; ++i)
+            std::cout << "  " << bySub[i].first << " : " << bySub[i].second << "\n";
+
+        if (!netStrip.empty()) {
+            std::cout << "net/TLS strippable sample (Phase B would not emit these):\n";
+            size_t cap = std::min<size_t>(netStrip.size(), 12);
+            for (size_t i = 0; i < cap; ++i)
+                std::cout << "  " << netStrip[i] << "\n";
+            if (netStrip.size() > cap)
+                std::cout << "  ... and " << (netStrip.size() - cap) << " more\n";
+        }
+        std::cout << "=== end tree-shake report ===\n\n";
+    }
+
+    void Compiler::pruneUnreachable() {
+        using namespace llvm;
+        std::vector<Module*> lmods;
+        collectLinkModules(lmods);
+        std::unordered_map<std::string, GlobalValue*> defs;
+        std::unordered_set<std::string> reached = computeReachableSymbols(lmods, defs);
+
+        // The precise set of prunable functions = every cajeta METHOD body,
+        // taken from Method->llvm::Function (NOT a name prefix). This covers all
+        // packages (user + stdlib) and can never touch runtime/ABI helpers,
+        // natives, ctors, clinits, or reflect adapters — none of those are
+        // Methods. deleteBody turns an unreachable method into an extern
+        // declaration: it emits no code, and (critically) its references to
+        // native symbols vanish, so a non-TLS program no longer references
+        // `__cajeta_tls_*` and the linker never pulls cajeta_tls.o / OpenSSL (the
+        // win --gc-sections can't get on its own; see stdlib-tree-shaking.md). By
+        // BFS soundness an unreachable method is referenced only by other
+        // unreachable entities (a reachable vtable keeps all its slots), so
+        // dropping its body strands no live ref; an unsound prune would fail loud
+        // as an undefined symbol at link, not silently miscompile. ExternalLinkage
+        // keeps an internal/private function valid IR once it is bodyless;
+        // unreferenced, it emits nothing.
+        size_t pruned = 0, keptFns = 0, totalFns = 0;
+        std::unordered_set<llvm::Function*> seen;
+        auto consider = [&](const CajetaModulePtr& mod) {
+            if (!mod) return;
+            for (auto& method : mod->getAllMethods()) {
+                if (!method) continue;
+                Function* f = method->getLlvmFunction();
+                if (!f || f->isDeclaration()) continue;
+                if (!seen.insert(f).second) continue;   // a method appears once
+                totalFns++;
+                if (reached.count(f->getName().str())) { keptFns++; continue; }
+                f->deleteBody();
+                f->setLinkage(GlobalValue::ExternalLinkage);
+                pruned++;
+            }
+        };
+        for (auto& m : modules) consider(m);
+        for (auto& m : externalModules) consider(m);
+        if (auto stdlib = CajetaModule::getStdlibModule()) consider(stdlib);
+        std::cout << "tree-shake (--tree-shake=on): pruned " << pruned
+                  << " of " << totalFns
+                  << " unreachable cajeta method bodies (kept " << keptFns << ")\n";
+    }
+
+    // Rebuild a module's @llvm.global_ctors initializer, dropping every entry whose
+    // ctor function name is in `excludeFnNames`. The array length changes, so the
+    // global's type changes — we create a replacement global and rename it.
+    static void rebuildGlobalCtorsExcluding(
+            llvm::Module* lm,
+            const std::unordered_set<std::string>& excludeFnNames) {
+        using namespace llvm;
+        auto* gc = lm->getGlobalVariable("llvm.global_ctors");
+        if (!gc || !gc->hasInitializer()) return;
+        auto* arr = dyn_cast<ConstantArray>(gc->getInitializer());
+        if (!arr) return;
+        SmallVector<Constant*, 32> kept;
+        for (auto& op : arr->operands()) {
+            bool drop = false;
+            if (auto* e = dyn_cast<ConstantStruct>(op.get()))
+                if (e->getNumOperands() >= 2)
+                    if (auto* fn = dyn_cast<Function>(
+                            e->getOperand(1)->stripPointerCasts()))
+                        drop = excludeFnNames.count(fn->getName().str()) > 0;
+            if (!drop) kept.push_back(cast<Constant>(op.get()));
+        }
+        if (kept.size() == arr->getNumOperands()) return;  // nothing removed here
+        auto* elemTy = cast<StructType>(arr->getType()->getElementType());
+        auto* newArrTy = ArrayType::get(elemTy, kept.size());
+        Constant* newInit = ConstantArray::get(newArrTy, kept);
+        auto* newGc = new GlobalVariable(*lm, newArrTy, /*isConstant=*/false,
+            gc->getLinkage(), newInit, "");
+        if (gc->hasSection()) newGc->setSection(gc->getSection());
+        gc->eraseFromParent();             // global_ctors has no IR uses
+        newGc->setName("llvm.global_ctors");
+    }
+
+    void Compiler::pruneDeadClinits() {
+        using namespace llvm;
+        std::vector<Module*> lmods;
+        collectLinkModules(lmods);
+        std::unordered_map<std::string, GlobalValue*> defs;
+        // "What the program reaches if no static initializer ran" — the oracle for
+        // whether a clinit's effect is observable.
+        std::unordered_set<std::string> reachedSansClinits =
+            computeReachableSymbols(lmods, defs, /*excludeClinitRoots=*/true);
+
+        const StringRef CLP = "__cajeta_clinit_";
+        std::vector<Function*> clinits;
+        for (auto* lm : lmods)
+            for (auto& f : lm->functions())
+                if (!f.isDeclaration() && f.getName().starts_with(CLP))
+                    clinits.push_back(&f);
+
+        auto globalsTouched = [](Function* f, bool stores,
+                                 std::unordered_set<std::string>& out) {
+            for (auto& bb : *f)
+                for (auto& inst : bb) {
+                    Value* ptr = nullptr;
+                    if (stores) {
+                        if (auto* st = dyn_cast<StoreInst>(&inst))
+                            ptr = st->getPointerOperand();
+                    } else {
+                        if (auto* ld = dyn_cast<LoadInst>(&inst))
+                            ptr = ld->getPointerOperand();
+                    }
+                    if (ptr)
+                        if (auto* g = dyn_cast<GlobalVariable>(
+                                getUnderlyingObject(ptr)))
+                            out.insert(g->getName().str());
+                }
+        };
+
+        // Globals loaded by each clinit (for the "read by another clinit" check).
+        std::unordered_map<Function*, std::unordered_set<std::string>> clinitLoads;
+        for (auto* cl : clinits) globalsTouched(cl, /*stores=*/false, clinitLoads[cl]);
+
+        // A native (declaration) callee with no OBSERVABLE program-level effect:
+        // fiber scope-stack bookkeeping, frame/temp allocation, and memory
+        // intrinsics. Deliberately EXCLUDES drop-chain registration and all I/O —
+        // so any clinit that constructs an owned object (registers a drop) or does
+        // I/O reaches a non-benign native and is conservatively KEPT. `scope_exit`
+        // only does observable work (runs registered drops) when a drop was
+        // registered, which already trips the non-benign path, so whitelisting the
+        // scope ops is sound for the drop-free clinits this can actually strip.
+        auto isBenignNative = [](StringRef n) {
+            return n.starts_with("__cajeta_scope_")
+                || n == "__cajeta_alloc" || n == "__cajeta_dbg_local_alloc"
+                || n.starts_with("llvm.memcpy") || n.starts_with("llvm.memset")
+                || n.starts_with("llvm.memmove") || n.starts_with("llvm.lifetime")
+                || n.starts_with("llvm.dbg") || n.starts_with("llvm.assume");
+        };
+
+        // Analyze a clinit's transitive closure (clinit + body-having callees) for
+        // EXTERNAL PURITY. Returns true ("impure", keep) on any indirect call or any
+        // call to a NON-BENIGN declaration (I/O, drop-chain, registration, ...).
+        // Collects every global the closure STOREs to, via the store's underlying
+        // object so GEP/cast-derived global writes count.
+        // NOTE soundness: it is NOT enough that callees are unreached-sans-clinits —
+        // a dead callee can still store to a LIVE global. We check the stores
+        // directly; the clinit is strippable only if the whole closure writes
+        // nothing live and triggers no opaque effect.
+        auto analyzeClosure = [&](Function* start,
+                                  std::unordered_set<std::string>& storedGlobals) -> bool {
+            bool impure = false;
+            std::vector<Function*> stack{start};
+            std::unordered_set<Function*> visited{start};
+            while (!stack.empty()) {
+                Function* f = stack.back(); stack.pop_back();
+                for (auto& bb : *f)
+                    for (auto& inst : bb) {
+                        if (auto* st = dyn_cast<StoreInst>(&inst)) {
+                            Value* base = getUnderlyingObject(st->getPointerOperand());
+                            if (auto* g = dyn_cast<GlobalVariable>(base))
+                                storedGlobals.insert(g->getName().str());
+                        } else if (auto* call = dyn_cast<CallBase>(&inst)) {
+                            Function* callee = call->getCalledFunction();
+                            if (!callee) { impure = true; continue; }   // indirect
+                            if (callee->isDeclaration()) {
+                                if (!isBenignNative(callee->getName()))
+                                    impure = true;   // opaque native effect
+                                continue;            // native leaf — don't recurse
+                            }
+                            if (visited.insert(callee).second) stack.push_back(callee);
+                        }
+                    }
+            }
+            return impure;
+        };
+
+        std::vector<Function*> toStrip;
+        for (auto* cl : clinits) {
+            // Externally pure: the closure writes only DEAD globals (nothing live
+            // reads them) and makes no indirect / native call.
+            std::unordered_set<std::string> stored;
+            if (analyzeClosure(cl, stored)) continue;        // native/indirect -> keep
+            bool pure = true;
+            for (auto& g : stored)
+                if (reachedSansClinits.count(g)) { pure = false; break; }  // live write
+            if (!pure) continue;
+            // The clinit's own statics must not be read by ANOTHER clinit — if that
+            // one is kept it would then read an uninitialized global. Conservative
+            // (no inter-clinit fixpoint): any shared read keeps this clinit.
+            std::unordered_set<std::string> W;
+            globalsTouched(cl, /*stores=*/true, W);
+            bool sharedWithClinit = false;
+            for (auto& g : W) {
+                for (auto& [other, loads] : clinitLoads)
+                    if (other != cl && loads.count(g)) { sharedWithClinit = true; break; }
+                if (sharedWithClinit) break;
+            }
+            if (sharedWithClinit) continue;
+            toStrip.push_back(cl);
+        }
+
+        if (toStrip.empty()) {
+            std::cout << "tree-shake (--tree-shake=on): 0 of " << clinits.size()
+                      << " class clinits are dead\n";
+            return;
+        }
+        std::unordered_set<std::string> stripNames;
+        for (auto* cl : toStrip) stripNames.insert(cl->getName().str());
+        for (auto* lm : lmods) rebuildGlobalCtorsExcluding(lm, stripNames);
+        for (auto* cl : toStrip) {
+            cl->deleteBody();
+            cl->setLinkage(GlobalValue::ExternalLinkage);
+        }
+        std::cout << "tree-shake (--tree-shake=on): stripped " << toStrip.size()
+                  << " of " << clinits.size() << " dead class clinits\n";
     }
 
     void Compiler::emitArchive(const std::string& archiveRootPath, bool uber) {

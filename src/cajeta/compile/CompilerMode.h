@@ -76,6 +76,11 @@ namespace cajeta {
     // (inert); 0b narrows it via the reachability BFS.
     enum class LinkMode { Full, Lean };
 
+    // --tree-shake (Tier-1 RTA; plans/compiler/stdlib-tree-shaking.md). Report is
+    // Phase A (analysis only); On is Phase B (prune unreachable cajeta method
+    // bodies so the linker drops their native deps, e.g. OpenSSL). Default Off.
+    enum class TreeShake { Off, Report, On };
+
     struct CompilerFlags {
         // ----- safety nets (runtime checks) -----
         BoundsCheck     bounds              = BoundsCheck::On;
@@ -113,6 +118,13 @@ namespace cajeta {
         // --keepset-json=<path>: write the generated keep-set + provenance to this
         // JSON file (empty = off; lean builds only).
         std::string     keepsetJson         = "";
+
+        // ----- tree-shaking (Tier-1 RTA; plans/compiler/stdlib-tree-shaking.md) -----
+        // --tree-shake=off|report. Report (Phase A) computes IR-level reachability
+        // from the entry + ABI/ctor roots, diffs it against the full emitted method
+        // set, and prints what Phase B would strip (e.g. cajeta.net.tls.* in a
+        // non-TLS program) — with NO change to emission. Default Off.
+        TreeShake       treeShake           = TreeShake::Off;
 
         // ----- debugging -----
         // Emit __cajeta_dbg_safepoint(loc_id) at each statement boundary so the
