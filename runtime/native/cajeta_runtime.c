@@ -4218,6 +4218,54 @@ int32_t __cajeta_is_subtype(void* leafRtti, void* boundRtti) {
     return 0;
 }
 
+// obj -> its CajetaRtti* (the obj->vtable->classObject->rtti hop), or NULL when
+// obj isn't a real heap object carrying a vtable/classObject/rtti.
+static void* cajeta_rtti_from_obj(void* obj) {
+    if (!obj) return NULL;
+    void* vtable = *(void**) obj;                          // header slot 0
+    if ((uintptr_t) vtable < 4096) return NULL;            // not a real vtable
+    void* classObject =
+        *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return NULL;
+    return *(void**) ((char*) classObject + CAJETA_CLASSOBJECT_RTTI_OFFSET);
+}
+
+// True iff canonical instantiation name `typeName` (e.g. "test.Box<test.Dog>")
+// has erased base exactly `baseName` (e.g. "test.Box") — i.e. typeName is
+// baseName followed by '<' (an instantiation) or end-of-string (the raw base).
+static int cajeta_base_name_matches(const char* typeName, const char* baseName) {
+    size_t bl = strlen(baseName);
+    if (strncmp(typeName, baseName, bl) != 0) return 0;
+    char after = typeName[bl];
+    return after == '<' || after == '\0';
+}
+
+// Class-bounded-wildcard reified match (reified-capture-spec.md §5): is `obj` an
+// instance of `baseName<...>` whose reified template arg at `argIndex` conforms
+// to `boundName` — element type == bound, or element <: bound? Backs
+// `instanceof Foo<? extends Bound>` and the `(Foo<? extends Bound>) w` capture
+// cast. The element type is recovered by NAME from the container's reified
+// templateArgs, resolved to its RTTI via the name->RTTI registry, then walked
+// against the bound. Null-safe; returns 0 ("doesn't match" / "cannot prove the
+// bound" — an unregistered element/bound type) rather than ever admitting a
+// mis-bounded value.
+int32_t __cajeta_instanceof_bounded(void* obj, const char* baseName,
+                                    int32_t argIndex, const char* boundName) {
+    if (!obj || !baseName || !boundName) return 0;
+    CajetaRtti* r = (CajetaRtti*) cajeta_rtti_from_obj(obj);
+    if (!r || !r->typeName) return 0;
+    if (!cajeta_base_name_matches(r->typeName, baseName)) return 0;
+    if (argIndex < 0 || argIndex >= r->templateArgCount || !r->templateArgs)
+        return 0;
+    const char* elemName = r->templateArgs[argIndex];
+    if (!elemName) return 0;
+    if (strcmp(elemName, boundName) == 0) return 1;        // reflexive / exact
+    void* elemRtti = __cajeta_rtti_for_name(elemName);
+    void* boundRtti = __cajeta_rtti_for_name(boundName);
+    if (!elemRtti || !boundRtti) return 0;                 // unresolved: fail safe
+    return __cajeta_is_subtype(elemRtti, boundRtti);
+}
+
 // RTTI scalar readers — `rtti` is a CajetaRtti* (the #RttiGlobal address a
 // Class instance holds in its `rtti` field).
 int32_t __cajeta_rtti_field_count(void* rtti) {

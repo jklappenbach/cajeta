@@ -11,15 +11,6 @@ Design sources: `agents/documents/cajeta-templates/reified-capture-spec.md`,
 `numeric-bounds-plan.md`, and the Tensor docs under
 `agents/documents/cajeta-math/`.
 
-## Capture — extended targets (toward `Tensor<T>` / `Tensor<? extends ...>`)
-
-- class-bounded-wildcard capture (capture plan 5b) — `(Foo<? extends Animal>) w`
-  succeeds for `Foo<Dog>`, fails for `Foo<Cat>`. Depends on the name→RTTI
-  registry above. NOTE: `isAssignableToWildcard`'s class-bound check uses
-  `isParentOrKind`, which skips `implements` — see
-  [[isparentorkind-skips-interfaces]]; use a conforms-to-incl-interfaces helper
-  here.
-
 ## Numeric — the deep variance item
 
 - bare `Tensor<? extends Floating>` variable/field over a mutable primitive

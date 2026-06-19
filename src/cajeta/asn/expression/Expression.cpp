@@ -948,6 +948,17 @@ namespace cajeta {
     // forward-declared so the capture-cast guard below can use it.
     static std::string erasedBaseOf(const std::string& canonical);
 
+    // Detect a class-bounded-wildcard capture target `Base<? extends Bound>`
+    // (reified-capture-spec.md §5). Returns true and fills baseCanon (the erased
+    // container base, e.g. "test.Box"), argIndex (the bounded arg's position),
+    // and boundCanon (the bound's canonical name, e.g. "test.Animal") iff `type`
+    // is a class instantiation whose sole type argument is a bounded-EXTENDS
+    // wildcard. Single-arg only for now — multi-arg / mixed-arg targets fall
+    // through to the existing concrete-target handling. Defined later in this TU.
+    static bool boundedWildcardTarget(const CajetaTypePtr& type,
+                                      std::string& baseCanon, int& argIndex,
+                                      std::string& boundCanon);
+
     // Materialize a compile-time std::string as a static cajeta.lang.String
     // (view-mode) instance, returning the instance global. Mirrors the
     // LITERAL_TYPE_TEXT_BLOCK path in LiteralExpression so synthesized codegen
@@ -1000,24 +1011,16 @@ namespace cajeta {
         return instGv;
     }
 
-    // Reified guard for a capture downcast `(Foo<A...>) w`: if w's runtime
-    // instantiation isn't `targetCanon`, throw cajeta.error.ClassCastException
-    // instead of handing back a mis-typed pointer (reified-capture-spec.md §3).
-    // Leaves the builder positioned in the match-true block, so the caller
-    // returns the reused pointer there.
-    static void emitCaptureCastGuard(CajetaModulePtr module, llvm::Value* objPtr,
-                                     const std::string& targetCanon) {
+    // Shared tail of a reified capture-cast guard: branch on `matchBit`, throw
+    // cajeta.error.ClassCastException("... <msgDetail>") on the false edge, and
+    // leave the builder positioned in the match-true block (so the caller returns
+    // the reused pointer there). Thrown via the same __cajeta_throw path as a
+    // user `throw`, so owned-local unwinding behaves identically.
+    static void emitCaptureCastThrowBranch(CajetaModulePtr module,
+                                           llvm::Value* matchBit,
+                                           const std::string& msgDetail) {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& ctx = *module->getLlvmContext();
-        llvm::Function* checkFn =
-            module->getRuntimeFunction("__cajeta_instanceof_named");
-        if (!checkFn) return;  // no runtime check — fall through (legacy cast)
-        llvm::Value* namePtr =
-            builder->CreateGlobalString(targetCanon, "cast.target");
-        llvm::Value* r =
-            builder->CreateCall(checkFn, {objPtr, namePtr}, "cast.match");
-        llvm::Value* matchBit = builder->CreateICmpNE(
-            r, llvm::ConstantInt::get(r->getType(), 0));
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
         llvm::BasicBlock* okBB =
             llvm::BasicBlock::Create(ctx, "cast_ok", parentFn);
@@ -1025,9 +1028,6 @@ namespace cajeta {
             llvm::BasicBlock::Create(ctx, "cast_fail", parentFn);
         builder->CreateCondBr(matchBit, okBB, failBB);
 
-        // Fail: throw heap ClassCastException("..."). Built via the shared
-        // construction helper; thrown via the same __cajeta_throw path as a
-        // user `throw` (so owned-local unwinding behaves identically).
         builder->SetInsertPoint(failBB);
         bool threw = false;
         auto& cmap = CajetaType::getCanonicalMap();
@@ -1035,7 +1035,7 @@ namespace cajeta {
         if (it != cmap.end()) {
             if (auto cce = std::dynamic_pointer_cast<CajetaClass>(it->second)) {
                 llvm::Value* msg = materializeStringConstant(module,
-                    "capture cast failed: value is not a " + targetCanon);
+                    "capture cast failed: " + msgDetail);
                 std::vector<ParameterEntry> entries;
                 entries.push_back(
                     ParameterEntry(CajetaType::of("String"), "", msg));
@@ -1055,6 +1055,53 @@ namespace cajeta {
         }
 
         builder->SetInsertPoint(okBB);
+    }
+
+    // Reified guard for a capture downcast `(Foo<A...>) w`: if w's runtime
+    // instantiation isn't `targetCanon`, throw cajeta.error.ClassCastException
+    // instead of handing back a mis-typed pointer (reified-capture-spec.md §3).
+    static void emitCaptureCastGuard(CajetaModulePtr module, llvm::Value* objPtr,
+                                     const std::string& targetCanon) {
+        auto* builder = module->getBuilder();
+        llvm::Function* checkFn =
+            module->getRuntimeFunction("__cajeta_instanceof_named");
+        if (!checkFn) return;  // no runtime check — fall through (legacy cast)
+        llvm::Value* namePtr =
+            builder->CreateGlobalString(targetCanon, "cast.target");
+        llvm::Value* r =
+            builder->CreateCall(checkFn, {objPtr, namePtr}, "cast.match");
+        llvm::Value* matchBit = builder->CreateICmpNE(
+            r, llvm::ConstantInt::get(r->getType(), 0));
+        emitCaptureCastThrowBranch(module, matchBit,
+            "value is not a " + targetCanon);
+    }
+
+    // Reified guard for a class-bounded-wildcard capture downcast
+    // `(Base<? extends Bound>) w` (reified-capture-spec.md §5): throw
+    // ClassCastException unless w is a `baseCanon<...>` whose reified element type
+    // at `argIndex` conforms to `boundCanon`.
+    static void emitBoundedCaptureCastGuard(CajetaModulePtr module,
+                                            llvm::Value* objPtr,
+                                            const std::string& baseCanon,
+                                            int argIndex,
+                                            const std::string& boundCanon) {
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        llvm::Function* checkFn =
+            module->getRuntimeFunction("__cajeta_instanceof_bounded");
+        if (!checkFn) return;  // no runtime check — fall through
+        llvm::Value* baseStr =
+            builder->CreateGlobalString(baseCanon, "cast.base");
+        llvm::Value* boundStr =
+            builder->CreateGlobalString(boundCanon, "cast.bound");
+        llvm::Value* idx =
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), argIndex);
+        llvm::Value* r = builder->CreateCall(
+            checkFn, {objPtr, baseStr, idx, boundStr}, "cast.bmatch");
+        llvm::Value* matchBit = builder->CreateICmpNE(
+            r, llvm::ConstantInt::get(r->getType(), 0));
+        emitCaptureCastThrowBranch(module, matchBit,
+            "element of " + baseCanon + " is not a " + boundCanon);
     }
 
     llvm::Value* CastExpression::generateCode(CajetaModulePtr module) {
@@ -1136,7 +1183,19 @@ namespace cajeta {
                     && erasedBaseOf(srcCanon) == erasedBaseOf(dstCanon);
                 bool captureDowncast = dstClass && dstConcrete && srcType
                     && srcCanon != dstCanon && (srcIsWildcard || sameBase);
-                if (captureDowncast && val->getType()->isPointerTy()) {
+                // Class-bounded-wildcard downcast `(Base<? extends Bound>) w`
+                // (§5): the dst isn't concrete, so it's a bounded reified check —
+                // the captured element must conform to Bound or the cast throws.
+                std::string boundBaseCanon, boundCanon;
+                int boundArgIdx = -1;
+                bool boundedDowncast = srcType
+                    && boundedWildcardTarget(destType, boundBaseCanon,
+                                             boundArgIdx, boundCanon)
+                    && srcCanon != dstCanon && (srcIsWildcard || sameBase);
+                if (boundedDowncast && val->getType()->isPointerTy()) {
+                    emitBoundedCaptureCastGuard(module, val, boundBaseCanon,
+                                                boundArgIdx, boundCanon);
+                } else if (captureDowncast && val->getType()->isPointerTy()) {
                     emitCaptureCastGuard(module, val, dstCanon);
                 }
                 return val;
@@ -3369,6 +3428,25 @@ namespace cajeta {
         return lt == std::string::npos ? canonical : canonical.substr(0, lt);
     }
 
+    static bool boundedWildcardTarget(const CajetaTypePtr& type,
+                                      std::string& baseCanon, int& argIndex,
+                                      std::string& boundCanon) {
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+        if (!klass) return false;
+        const auto& args = klass->getTypeArguments();
+        if (args.size() != 1) return false;             // single-arg only (v1)
+        const auto& arg = args[0];
+        if (!arg || !arg->isWildcard()
+                || arg->wildcardKind() != CajetaType::WildcardKind::Extends)
+            return false;
+        CajetaTypePtr bound = arg->wildcardBound();
+        if (!bound) return false;
+        baseCanon = erasedBaseOf(type->toCanonical());
+        argIndex = 0;
+        boundCanon = bound->toCanonical();
+        return true;
+    }
+
     llvm::Value* InstanceOfExpression::generateCode(CajetaModulePtr module) {
         // cajeta monomorphizes, so a value widened to a template wildcard
         // (`Tensor<?>`) is, at runtime, still its concrete instantiation. When the
@@ -3408,11 +3486,21 @@ namespace cajeta {
         bool wantRuntime = targetClass && targetConcrete && lhsType
             && lhsCanon != targetCanon && (lhsIsWildcard || sameBase);
 
+        // Class-bounded-wildcard target `Base<? extends Bound>` (§5): not a
+        // concrete instantiation (so `wantRuntime` is false), but still a real
+        // reified question — does the container's reified element type conform to
+        // the bound? Resolved at runtime by __cajeta_instanceof_bounded.
+        std::string boundBaseCanon, boundCanon;
+        int boundArgIdx = -1;
+        bool wantBounded = boundedWildcardTarget(type, boundBaseCanon,
+                                                 boundArgIdx, boundCanon)
+            && lhsType && (lhsIsWildcard || sameBase);
+
         auto* builder = module->getBuilder();
 
         // We need the lhs object pointer for the runtime match and/or the
         // pattern binding; otherwise we only evaluate it for side-effects.
-        bool needObj = wantRuntime || !pattern.empty();
+        bool needObj = wantRuntime || wantBounded || !pattern.empty();
         llvm::Value* objPtr = nullptr;
         if (needObj) {
             llvm::Value* raw = children[0]->generateCode(module);
@@ -3424,7 +3512,24 @@ namespace cajeta {
         // Compute the match bit. Runtime reified check when the static type
         // doesn't pin the answer; otherwise the folded compile-time constant.
         llvm::Value* matchBit;
-        if (wantRuntime && objPtr && objPtr->getType()->isPointerTy()) {
+        if (wantBounded && objPtr && objPtr->getType()->isPointerTy()) {
+            llvm::Function* fn =
+                module->getRuntimeFunction("__cajeta_instanceof_bounded");
+            if (fn) {
+                llvm::Value* baseStr = builder->CreateGlobalString(
+                    boundBaseCanon, "instanceof.base");
+                llvm::Value* boundStr = builder->CreateGlobalString(
+                    boundCanon, "instanceof.bound");
+                llvm::Value* idx = llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), boundArgIdx);
+                llvm::Value* r = builder->CreateCall(
+                    fn, {objPtr, baseStr, idx, boundStr}, "instanceof.bmatch");
+                matchBit = builder->CreateICmpNE(
+                    r, llvm::ConstantInt::get(r->getType(), 0));
+            } else {
+                matchBit = llvm::ConstantInt::getFalse(i1);
+            }
+        } else if (wantRuntime && objPtr && objPtr->getType()->isPointerTy()) {
             llvm::Function* fn =
                 module->getRuntimeFunction("__cajeta_instanceof_named");
             if (fn) {

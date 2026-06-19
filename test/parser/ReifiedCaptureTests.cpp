@@ -326,3 +326,93 @@ TEST(ReifiedCaptureTests, rttiForNameResolvesRegisteredCanonicalName) {
     // null arg is tolerated (no crash) and returns NULL.
     EXPECT_EQ(__cajeta_rtti_for_name(nullptr), nullptr);
 }
+
+// --- item 3: class-bounded-wildcard capture (capture plan 5b) --------------
+
+// A class hierarchy where Dog IS-A Animal and Cat is NOT, plus a Box<T>
+// container, so `Box<? extends Animal>` admits Box<Dog> and rejects Box<Cat>.
+const char* ANIMALS =
+    "package test;\n"
+    "import cajeta.error.ClassCastException;\n"
+    "public class Animal { public int32 kind() { return 1; } }\n"
+    "public class Dog extends Animal { public int32 bark() { return 2; } }\n"
+    "public class Cat { public int32 meow() { return 3; } }\n"
+    "public class Box<T> {\n"
+    "    T value;\n"
+    "    public Box(T v) { this.value = v; }\n"
+    "    public T get() { return this.value; }\n"
+    "}\n";
+
+// instanceof a class-bounded wildcard: true when the reified element type
+// conforms to the bound (Dog <: Animal).
+TEST(ReifiedCaptureTests, instanceofBoundedWildcardMatchesSubtype) {
+    std::string src = std::string(ANIMALS) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Dog> bd = heap Box<Dog>(heap Dog());\n"
+        "        Box<?> w = bd;\n"
+        "        int32 r = 0;\n"
+        "        if (w instanceof Box<? extends Animal>) { r = r + 1; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// instanceof a class-bounded wildcard: false when the element type does NOT
+// conform to the bound (Cat is not an Animal).
+TEST(ReifiedCaptureTests, instanceofBoundedWildcardRejectsNonSubtype) {
+    std::string src = std::string(ANIMALS) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Cat> bc = heap Box<Cat>(heap Cat());\n"
+        "        Box<?> w = bc;\n"
+        "        int32 r = 0;\n"
+        "        if (w instanceof Box<? extends Animal>) { r = r + 1; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+// checked cast to a class-bounded wildcard SUCCEEDS when the element conforms:
+// no throw, the (widened) handle is recovered.
+TEST(ReifiedCaptureTests, capturedCastBoundedWildcardSucceedsOnSubtype) {
+    std::string src = std::string(ANIMALS) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Dog> bd = heap Box<Dog>(heap Dog());\n"
+        "        Box<?> w = bd;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<?> cap = (Box<? extends Animal>) w;\n"
+        "            result = 1;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 0;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// checked cast to a class-bounded wildcard THROWS when the element does not
+// conform (Cat is not an Animal) — never hands back a mis-bounded handle.
+TEST(ReifiedCaptureTests, capturedCastBoundedWildcardThrowsOnNonSubtype) {
+    std::string src = std::string(ANIMALS) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Cat> bc = heap Box<Cat>(heap Cat());\n"
+        "        Box<?> w = bc;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<?> cap = (Box<? extends Animal>) w;\n"
+        "            result = 1;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 0;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
