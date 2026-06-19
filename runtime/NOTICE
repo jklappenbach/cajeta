@@ -1,0 +1,6 @@
+Cajeta runtime and standard library
+Copyright (c) 2026 Julian Klappenbach
+
+This product (the contents of the runtime/ directory — the C runtime and the
+Cajeta standard library) is licensed under the Apache License, Version 2.0.
+See the LICENSE file in this directory for the full text.

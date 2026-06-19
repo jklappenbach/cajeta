@@ -1,21 +1,94 @@
-MIT License
+Cajeta — Licensing
+==================
 
-Copyright (c) 2026 Julian Klappenbach
+Copyright (c) 2026 Julian Klappenbach. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Cajeta is distributed under a split license. Which terms apply depends on
+which part of the project you are using:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+  • The COMPILER and TOOLCHAIN are licensed under the
+    GNU Affero General Public License, version 3 (AGPLv3).
+    Full text: LICENSE-AGPLv3.txt
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+  • The RUNTIME and STANDARD LIBRARY are licensed under the
+    Apache License, version 2.0 (Apache-2.0).
+    Full text: LICENSE-Apache-2.0.txt  (and runtime/LICENSE)
+
+This is the same split used by toolchains such as GCC: the compiler is
+strongly protected, while the code that ships *inside* the programs you build
+is permissive, so your Cajeta programs are never encumbered.
+
+
+1. What is covered by which license
+-----------------------------------
+
+Apache-2.0 (permissive) applies to:
+  • runtime/        — the C runtime and the Cajeta standard library
+                      (everything that is linked into a compiled Cajeta program)
+  • samples/        — example programs, provided so you may freely copy them
+
+AGPLv3 (copyleft) applies to everything else authored in this repository,
+including but not limited to:
+  • src/            — the Cajeta compiler
+  • tools/          — toolchain tools (e.g. the version manager)
+  • build-tools/, cmake/, scripts/, packaging/, man/ — build & release tooling
+  • docs/, plans/, research/ — project documentation
+
+Third-party components vendored into this repository (for example under
+antlr4/ and any other directory carrying its own LICENSE/COPYING file) remain
+under their original licenses; nothing here changes those terms.
+
+
+2. Compiling your own programs does NOT make them AGPL
+------------------------------------------------------
+
+The AGPLv3 covers the *source code of the compiler and toolchain itself*. It
+does not reach the programs you compile with it:
+
+  • Running the Cajeta compiler over your source code does not place your
+    program under the AGPL. The output is yours.
+  • The runtime and standard library that get linked into your compiled
+    program are licensed under Apache-2.0 (Section 1), which imposes no
+    copyleft on your program.
+
+In short: build whatever you like with Cajeta, ship it under any license you
+choose. The AGPL obligations attach only if you modify and distribute — or run
+as a network service — the compiler/toolchain itself.
+
+
+3. Dual licensing of the compiler (AGPL or commercial)
+------------------------------------------------------
+
+The compiler/toolchain is available under the AGPLv3 *or* a separate
+commercial license. If you want to embed, modify, or offer the Cajeta
+compiler/toolchain (or a derivative of it) as part of a proprietary product
+or a hosted service WITHOUT the obligations of the AGPLv3 — in particular
+without releasing your modifications or your service's corresponding source —
+you need a commercial license.
+
+For commercial licensing, contact:
+    Julian Klappenbach <jklappenbach@gmail.com>
+
+
+4. Contributions
+----------------
+
+Unless you state otherwise, any contribution you intentionally submit for
+inclusion in Cajeta is provided under the license that governs the part of the
+repository it touches (AGPLv3 for the compiler/toolchain, Apache-2.0 for the
+runtime/standard library), and you grant the copyright holder the right to
+also license your contribution under the commercial license described in
+Section 3. This is what keeps dual licensing possible; substantial
+contributions may be asked to sign a Contributor License Agreement (CLA).
+
+
+5. Trademarks
+-------------
+
+This license covers copyright in the code. It does not grant any rights to use
+the name "Cajeta", the Cajeta logos, or other Cajeta trademarks, except as
+required for reasonable and customary use in describing the origin of the work.
+
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, as set out more
+fully in the applicable license texts referenced above.

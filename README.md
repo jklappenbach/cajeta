@@ -586,3 +586,20 @@ The deep-dive specs live in `docs/`:
 | Time                        | [`Time.md`](docs/stdlib/Time.md) |
 
 Open work is tracked in [`todo.md`](todo.md). Historical implementation milestones are under [`docs/history/`](docs/history/).
+
+## License
+
+Cajeta uses a split license (the same model as GCC — protect the compiler,
+keep your programs free):
+
+- **Compiler & toolchain** (`src/`, `tools/`, build tooling, docs) —
+  **GNU AGPLv3** ([`LICENSE-AGPLv3.txt`](LICENSE-AGPLv3.txt)).
+- **Runtime & standard library** (`runtime/`) and **samples** (`samples/`) —
+  **Apache-2.0** ([`LICENSE-Apache-2.0.txt`](LICENSE-Apache-2.0.txt)).
+
+Compiling your program with Cajeta does **not** place it under the AGPL — the
+output is yours, and the runtime/stdlib linked into it is Apache-2.0, so your
+Cajeta programs are unencumbered. The compiler is also available under a
+**commercial license** for proprietary or hosted use without the AGPL's
+obligations. See [`LICENSE`](LICENSE) for the full statement and contact
+details.
