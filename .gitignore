@@ -75,4 +75,4 @@ test/cajeta_test*_tests.cmake
 /site/docs/cajetadocs/
 
 # Generated cajetadoc review dump (output of cajetadoc-pass.workflow.js)
-plans/cajetadoc/flagged.json
+tools/cajetadoc/flagged.json
