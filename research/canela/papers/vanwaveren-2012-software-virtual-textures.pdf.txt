@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Software Virtual Textures
+description: A technical report detailing a software implementation of virtual texturing that maps a single huge virtual texture to physical pages via indirection and feedback.
+url: https://mrelusive.com/publications/papers/Software-Virtual-Textures.pdf

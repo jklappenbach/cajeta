@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Even Faster Sorting of (Not Only) Integers (RADULS2)
+description: Fastest parallel MSD radix of its time; fixing bucket-start ALIGNMENT made the non-temporal-store scatter ~2x faster — concrete proof the scatter is dominated by memory-store behavior, not ALU/SIMD. SIMD use is a rounding error.
+url: https://arxiv.org/abs/1703.00687

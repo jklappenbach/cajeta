@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Computing Extremely Accurate Quantiles Using t-Digests
+description: Describes the t-digest, an online, mergeable sketch for approximating rank statistics with high relative accuracy in the distribution tails using small memory.
+url: https://arxiv.org/abs/1902.04023

@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Fast Modular Squaring with AVX512IFMA
+description: Specializes IFMA (VPMADD52, redundant radix-2^52 limbs) for squaring (dominant in square-and-multiply), exploiting a_i*a_j symmetry to ~halve partial products; stacks orthogonally with multi-buffer batching.
+url: https://eprint.iacr.org/2018/335.pdf

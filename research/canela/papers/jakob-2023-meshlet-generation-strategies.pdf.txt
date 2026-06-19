@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Performance Comparison of Meshlet Generation Strategies
+description: Jensen, Frisvad, and Bærentzen's 2023 JCGT paper benchmarks several algorithms for partitioning triangle meshes into meshlets and measures their impact on mesh-shader rendering and per-cluster culling performance on NVIDIA hardware.
+url: https://jcgt.org/published/0012/02/01/

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Zstandard Compression and the application/zstd Media Type (RFC 8878)
+description: LZ77 dictionary stage + dual entropy backends (FSE/tANS for sequences, Huffman for literals) with multiple interleaved states for ILP/SIMD. Frame/block container: independent frames are the unit of zstd --threads (embarrassingly thread-parallel compress); overlapSize trades ratio for parallelism. Single-frame decode is serial but fast.
+url: https://www.rfc-editor.org/rfc/rfc8878.pdf

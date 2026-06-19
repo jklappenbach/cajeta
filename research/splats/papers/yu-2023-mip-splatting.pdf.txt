@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Mip-Splatting: Alias-free 3D Gaussian Splatting
+description: Introduces a 3D smoothing filter plus a 2D Mip filter to eliminate aliasing and erosion artifacts when rendering 3D Gaussian splats at sampling rates different from training.
+url: https://arxiv.org/abs/2311.16493

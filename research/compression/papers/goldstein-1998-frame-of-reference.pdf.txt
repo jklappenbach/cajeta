@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Compressing Relations and Indexes (Frame-of-Reference)
+description: Origin of Frame-of-Reference (FOR): per-block base + small fixed-width offsets; supports per-tuple random-access decompress and very fast (SIMD-bit-unpackable) decode. The basis of all later bit-packing+FOR schemes.
+url: https://cs.brown.edu/courses/csci2270/archives/2008/Papers/Compression/Ramakrishnan.pdf

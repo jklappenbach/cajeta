@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Batched Multi-Triangulation
+description: Introduces a batched, GPU-friendly multiresolution mesh framework that builds and queries level-of-detail using coarse-grained primitive patches for efficient adaptive rendering of huge meshes.
+url: http://vcg.isti.cnr.it/publication/2005/CGGMPS05/

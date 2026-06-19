@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: ISA-L Igzip: Improvements to a Fast Deflate
+description: igzip ~6x faster than zlib at competitive ratio (approaching LZ4/Snappy speed) via assembly + SIMD match-finding + SIMD CRC, NOT by parallelizing Huffman. Confirms the entropy/bitstream stage is the serial bottleneck; SIMD attacks everything around it.
+url: https://ieeexplore.ieee.org/document/7923748

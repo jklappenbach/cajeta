@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Multi-Chart Geometry Images
+description: Extends geometry images by remeshing a surface into multiple charts packed in a single image, reducing distortion while preserving regular sampling.
+url: https://doi.org/10.2312/SGP/SGP03/146-155

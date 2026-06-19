@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Brotli Compressed Data Format (RFC 7932)
+description: LZ77 + 2nd-order context-modeled Huffman + built-in 122 KB static dictionary, window up to 16 MB; higher ratio than gzip at similar decode speed. Same serial bit-Huffman + LZ-copy decode; threading via block/stream framing.
+url: https://www.rfc-editor.org/rfc/rfc7932.txt

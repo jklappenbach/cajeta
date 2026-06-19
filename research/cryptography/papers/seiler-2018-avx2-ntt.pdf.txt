@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Faster AVX2 optimized NTT multiplication for Ring-LWE lattice cryptography
+description: THE AVX2 NTT paper: modified Montgomery reduction on 16-bit ops (vpmulhw/vpmullw) -> 16x16-bit signed butterflies; layer merging + lazy reduction. ~4.2x (NewHope) / ~6.3x (Kyber) poly-mult; branch-free constant-time. The template the official Kyber/Dilithium AVX2 code reuses; in-lane butterfly vectorization (16 coeffs/register).
+url: https://eprint.iacr.org/2018/039.pdf

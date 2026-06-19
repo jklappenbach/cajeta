@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GaussianShader: 3D Gaussian Splatting with Shading Functions for Reflective Surfaces
+description: An approach that augments 3D Gaussians with a simplified shading function and normal estimation to render reflective surfaces with view-dependent appearance.
+url: https://arxiv.org/abs/2311.17977

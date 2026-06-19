@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: c-blosc: A blocking, shuffling, lossless compression library
+description: Delivers data to CPU cache FASTER than memcpy by storing it compressed and shuffle+decompressing inside cache — the embodiment of 'trade compute for bandwidth'. Bit/byte-shuffle SIMD transform + L1/L2-sized blocks multithreaded across blocks. Thesis: modern CPUs starve for data.
+url: https://github.com/Blosc/c-blosc

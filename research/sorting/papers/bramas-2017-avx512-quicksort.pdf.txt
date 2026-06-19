@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Novel Hybrid Quicksort Algorithm Vectorized using AVX-512
+description: AVX-512 vectorized quicksort partition (mask + store/compress + permute) plus a branchless Bitonic sorting-network base case for small partitions (up to ~256 elts in registers); ~8x over std::sort. The per-recursion SIMD engine a parallel quicksort/merge calls per thread.
+url: https://arxiv.org/abs/1704.08579

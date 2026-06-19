@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Survey on 3D Gaussian Splatting
+description: A comprehensive survey reviewing the principles, optimization, and applications of 3D Gaussian Splatting as a real-time radiance-field representation and rendering technique.
+url: https://arxiv.org/abs/2401.03890

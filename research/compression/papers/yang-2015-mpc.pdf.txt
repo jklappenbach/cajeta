@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: MPC: A Massively Parallel Compression Algorithm for Scientific Data
+description: Algorithm-SYNTHESIS over 138,240 candidate pipelines built only from easily-parallelizable components; final = LNV6 residual + bit-reorg + LNV1 delta + zero-elim. Processes 1024-element chunks in parallel with almost no state -> ideal for GPU/SIMD; matches best CPU ratios at 1-2 orders higher throughput. Lesson: design serial dependencies OUT.
+url: https://userweb.cs.txstate.edu/~burtscher/papers/cluster15.pdf

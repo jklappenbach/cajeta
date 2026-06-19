@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: SPDP: An Automatically Synthesized Lossless Compression Algorithm for Floating-Point Data
+description: Auto-synthesized pipeline: difference coding + byte shuffling + LZ coding, one algorithm for float32/64. Byte-shuffle/SoA transform is SIMD-friendly; the trailing LZ stage reintroduces a serial match dependency (the ratio/parallelism tension).
+url: https://userweb.cs.txstate.edu/~burtscher/papers/dcc18.pdf

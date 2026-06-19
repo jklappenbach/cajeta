@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Real-time Neural Radiance Caching for Path Tracing
+description: Trains a small neural network online to cache and query radiance during path tracing, denoising indirect illumination in real time without precomputation.
+url: https://arxiv.org/abs/2106.12372

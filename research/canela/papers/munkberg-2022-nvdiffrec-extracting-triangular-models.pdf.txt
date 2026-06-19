@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Extracting Triangular 3D Models, Materials, and Lighting From Images
+description: Presents nvdiffrec, a differentiable rendering pipeline that jointly recovers triangle meshes, spatially-varying materials, and environment lighting from multi-view images.
+url: https://arxiv.org/abs/2111.12503

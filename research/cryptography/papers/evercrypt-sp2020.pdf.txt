@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: EverCrypt: A Fast, Verified, Cross-Platform Cryptographic Provider
+description: Unifies HACL* (C) + ValeCrypt (verified asm) behind ONE verified API with proven agility + multiplexing (runtime CPU-feature dispatch C vs AVX2 vs AES-NI). ~124K verified lines. Performance MATCHES OR EXCEEDS best unverified impls — refutes 'verified = slow.'
+url: https://eprint.iacr.org/2019/757.pdf

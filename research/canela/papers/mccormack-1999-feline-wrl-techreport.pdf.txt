@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Feline: Fast Elliptical Lines for Anisotropic Texture Mapping (WRL Research Report 99/1)
+description: The Compaq WRL technical-report version of McCormack et al.'s Feline work detailing the fast elliptical-line anisotropic texture filtering algorithm and its hardware implementation.
+url: https://www.bitsavers.org/pdf/dec/tech_reports/WRL-99-1.pdf

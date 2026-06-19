@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: gECC: A GPU-Based High-Throughput Framework for Elliptic Curve Cryptography
+description: One GPU thread per independent EC op; Montgomery's-trick batched inversion amortizes the costliest step across thousands of ops; large ops/sec gains scaling with batch size. Never parallelizes within one ladder — only across the batch (the throughput model for a fiber runtime).
+url: https://arxiv.org/abs/2501.03245

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 4D Gaussian Splatting for Real-Time Dynamic Scene Rendering
+description: A representation that models dynamic scenes with a compact 4D Gaussian deformation field, enabling real-time rendering of time-varying content.
+url: https://arxiv.org/abs/2310.08528

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Optimized Vectorization Implementation of CRYSTALS-Dilithium
+description: AVX-512 (+AVX2) Dilithium; PSPM-TEE small-poly-mult beats the NTT path 47-66% in signing; tailored reduction exploits AVX-512 IFMA 52-bit MAC. AVX-512 over AVX2: keygen +43-46%, sign +37-44%, verify +45-47% (wider lanes pack more independent butterflies/coeffs).
+url: https://arxiv.org/abs/2306.01989

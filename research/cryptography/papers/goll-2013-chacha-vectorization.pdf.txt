@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Vectorization of ChaCha Stream Cipher
+description: 4-way SIMD: process 4 ChaCha block-states in parallel across AVX2 lanes; 1.43 cyc/byte Haswell (~2x prior); extends to 8/16-way on AVX-512. ARX (add-rotate-xor, no S-box) maps cleanly onto Vector<u32,N> rotate/add/xor — the prime example where a first-class-SIMD language expresses the kernel naturally and constant-time. Counter-based -> block-parallel.
+url: https://eprint.iacr.org/2013/759.pdf

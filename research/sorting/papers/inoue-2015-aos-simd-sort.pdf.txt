@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: SIMD- and Cache-Friendly Algorithm for Sorting an Array of Structures
+description: Extends AA-sort to key+payload array-of-structures (the realistic DB/record case): SIMD compress/gather of payloads + multi-core merge composition. Relevant when sorting records, not just primitive keys.
+url: https://www.vldb.org/pvldb/vol8/p1274-inoue.pdf

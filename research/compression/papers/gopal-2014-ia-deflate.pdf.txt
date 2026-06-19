@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: High Performance DEFLATE/ZLIB Compression on Intel Architecture (ISA-L igzip)
+description: SIMD/assembly hash-based match-finder + SIMD CRC; igzip ~6x zlib at competitive ratio. Demonstrates SIMD lifts the DEFLATE ENCODER's match-find and CRC while the Huffman/entropy stage stays scalar/bit-serial.
+url: https://www.intel.com/content/dam/www/public/us/en/documents/white-papers/ia-deflate-compression-paper.pdf

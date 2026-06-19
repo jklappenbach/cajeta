@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Analyzing and Comparing Montgomery Multiplication Algorithms (SOS/CIOS/FIOS/FIPS/CIHS)
+description: Taxonomy of Montgomery multiplication layouts; CIOS most efficient on word-serial CPUs. The operand- vs product-scanning distinction is exactly what IFMA papers re-map onto 52-bit lanes; CIOS is the scalar baseline they vectorize against.
+url: http://koclab.cs.ucsb.edu/teaching/cren/docx/j37.pdf

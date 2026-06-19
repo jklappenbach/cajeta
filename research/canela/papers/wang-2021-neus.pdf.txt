@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: NeuS: Learning Neural Implicit Surfaces by Volume Rendering for Multi-view Reconstruction
+description: Introduces NeuS, an unbiased SDF-based volume rendering formulation that reconstructs accurate neural implicit surfaces from multi-view images.
+url: https://arxiv.org/abs/2106.10689

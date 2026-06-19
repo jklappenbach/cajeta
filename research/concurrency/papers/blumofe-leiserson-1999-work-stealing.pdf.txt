@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Scheduling Multithreaded Computations by Work Stealing
+description: Proves that randomized work stealing schedules fully strict multithreaded computations within tight expected bounds on execution time, space, and inter-processor communication.
+url: https://dl.acm.org/doi/10.1145/324133.324234

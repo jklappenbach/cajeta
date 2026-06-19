@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: dietgpu: GPU generalized ANS (rANS) entropy + float codec
+description: First public GPU byte-oriented rANS; ~250-410 GB/s on A100 via many independent interleaved rANS streams (Giesen interleaving at GPU scale). FP extension targets ML/HPC interconnect — compression as a bandwidth multiplier on the wire.
+url: https://github.com/facebookresearch/dietgpu

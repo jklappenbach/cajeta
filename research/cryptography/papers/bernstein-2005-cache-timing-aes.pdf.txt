@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Cache-timing attacks on AES
+description: Recovers a full AES key remotely from secret-dependent S-box cache latency in table-driven OpenSSL AES. The foundational argument that crypto codegen must forbid secret-dependent loads/branches — motivates AES-NI, bitslicing, ARX ciphers.
+url: https://cr.yp.to/antiforgery/cachetiming-20050414.pdf

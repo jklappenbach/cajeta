@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Bitwise MSB Radix Sort on AVX-512 (Technical Report)
+description: The clearest example of actually vectorizing the radix PARTITION on a CPU: recursive 1-bit MSD where each level partitions by the current bit using AVX-512 mask + vpcompress compaction (same primitive as AVX-512 quicksort). ~10x std::sort for in-register/in-cache data, single-threaded — a compute-bound, cache-resident result that does not contradict the out-of-cache bandwidth ceiling.
+url: https://www.ti.uni-bielefeld.de/downloads/publications/simdRadixSort.pdf

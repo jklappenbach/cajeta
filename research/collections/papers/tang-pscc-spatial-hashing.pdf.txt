@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: PSCC: Parallel Self-Collision Culling with Spatial Hashing on GPUs
+description: Presents a GPU self-collision culling method combining normal-cone-test-front traversal with an enhanced spatial hashing scheme, achieving large speedups for cloth and deformable-body collision detection.
+url: https://dl.acm.org/doi/10.1145/3203188

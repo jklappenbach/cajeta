@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Implementing the Diverting Fast Radix Algorithm
+description: Engineering of a modern fast (scalar) radix sort; relevant for the counting/diversion tactics and as an LSD-radix baseline.
+url: https://arxiv.org/abs/2207.14334

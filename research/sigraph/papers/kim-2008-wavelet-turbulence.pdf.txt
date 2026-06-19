@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Wavelet Turbulence for Fluid Simulation
+description: Adds high-resolution turbulent detail to low-resolution fluid simulations by synthesizing energy-conserving small-scale motion in wavelet bands.
+url: https://doi.org/10.1145/1399504.1360649

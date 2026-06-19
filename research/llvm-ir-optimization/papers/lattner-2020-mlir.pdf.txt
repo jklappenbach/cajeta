@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: MLIR: A Compiler Infrastructure for the End of Moore's Law
+description: Presents MLIR, an extensible multi-level intermediate representation and compiler infrastructure supporting custom dialects and progressive lowering.
+url: https://arxiv.org/abs/2002.11054

@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Intel AES New Instructions Set (AES-NI white paper)
+description: AESENC/AESENCLAST/AESDEC/.../AESKEYGENASSIST: one full AES round per instruction; constant-time by construction (no data-dependent tables, immune to cache-timing). ~1.3 cyc/byte single-block -> ~0.6-0.7 when >=4 independent blocks (CTR/XTS/CBC-decrypt) are interleaved to hide AESENC latency; CBC-encrypt cannot (chained).
+url: https://www.intel.com/content/dam/doc/white-paper/advanced-encryption-standard-new-instructions-set-paper.pdf

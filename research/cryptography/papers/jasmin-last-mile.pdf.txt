@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Last Mile: High-Assurance and High-Speed Cryptographic Implementations (Jasmin/libjade)
+description: Jasmin compiler proven in Coq to PRESERVE constant-time through compilation (closes the verified-source/unverified-compiler gap); security proofs in EasyCrypt. libjade: verified high-speed PQC (ML-KEM, Keccak) + X25519. The model for compiler-preserved CT — directly relevant to a Cajeta secret type + codegen.
+url: https://arxiv.org/abs/1904.04606

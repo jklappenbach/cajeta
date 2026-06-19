@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: CRYSTALS-Kyber (ML-KEM basis)
+description: IND-CCA2 KEM (Module-LWE) via tweaked Fiat-Shamir; NTT over n=256, q=3329 (16-bit) -> AVX2 16x16-bit lanes natural; polys stored in NTT domain (cheap pointwise basemul). NTT in-lane vectorizable; encaps/decaps across messages embarrassingly parallel.
+url: https://eprint.iacr.org/2017/634.pdf

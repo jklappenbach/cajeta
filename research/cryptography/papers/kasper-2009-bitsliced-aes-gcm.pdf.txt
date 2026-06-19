@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Faster and Timing-Attack Resistant AES-GCM (bitsliced AES)
+description: Bitslices AES across a 128-bit register: 8 blocks in parallel, S-box as a Boolean circuit (no lookups) -> fully constant-time WITHOUT AES-NI. 7.59 cyc/byte AES-CTR; first constant-time AES-GCM. The reference for CT AES on machines lacking AES-NI (older ARM, embedded); needs >=8-way block parallelism (counter modes only).
+url: https://eprint.iacr.org/2009/129.pdf

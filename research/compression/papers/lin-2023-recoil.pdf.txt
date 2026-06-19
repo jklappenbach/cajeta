@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Recoil: Parallel rANS Decoding with Decoder-Adaptive Scalability
+description: Decode a single rANS bitstream from any position by saving intermediate states, avoiding the per-partition ratio/overhead cost of naive parallel rANS; adaptively scales parallelism to CPU lanes vs GPU threads. Beats other ANS codecs on both.
+url: https://arxiv.org/abs/2306.12141

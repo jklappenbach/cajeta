@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: A Block-Sorting Lossless Data Compression Algorithm (BWT)
+description: Reversible block permutation (sort of rotations) clustering context, then MTF + RLE + entropy (basis of bzip2). Operates on independent fixed blocks (100-900 KB) -> naturally block-parallel (pbzip2). Suffix-sort is the cost; block independence enables many-core scaling.
+url: https://www.hpl.hp.com/techreports/Compaq-DEC/SRC-RR-124.pdf

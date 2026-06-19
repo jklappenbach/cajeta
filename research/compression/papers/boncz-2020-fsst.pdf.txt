@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FSST: Fast Random Access String Compression
+description: Symbol-table substitution codec (<=8-byte codes) giving random-access decompression of individual strings; ~2 GB/s+, SIMD-amenable. Stacks with dictionaries (+~51% string ratio in BtrBlocks).
+url: https://www.vldb.org/pvldb/vol13/p2649-boncz.pdf

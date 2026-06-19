@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Decoding billions of integers per second through vectorization
+description: SIMD-BP128 (vectorized fixed-width bit-packing, 128 ints/block, branchless) + SIMD-FastPFOR (patched FOR, exceptions in side streams); ~4+ billion ints/s decode, ~2x prior best while saving bits. Block-structured -> embarrassingly block-parallel; so fast it becomes memory-bandwidth-bound.
+url: https://arxiv.org/abs/1209.2137

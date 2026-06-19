@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML-only); fetch the original from the url below.
+name: AA-Sort: A New Parallel Sorting Algorithm for Multi-Core SIMD Processors
+description: Foundational SIMD comparison sort: in-register vectorized combsort base + vectorized odd-even/bitonic merge, engineered to eliminate unaligned accesses; ~1.8x ESSL, ~3.3x GPUTeraSort. The original per-thread-SIMD-base + parallel-merge template that later vectorized sorts refine. PDF IEEE-gated.
+url: https://www.semanticscholar.org/paper/107fbdf5c64d77aa31dbe52a287cf8d39b4d4bab

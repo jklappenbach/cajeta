@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: PARADIS: An Efficient Parallel Algorithm for In-place Radix Sort
+description: Parallel in-place MSD radix via speculative non-contiguous stripe permutation + a parallel repair phase, with distribution-adaptive load balancing; no SIMD. The in-place-parallel-radix baseline that RegionsSort and IPS2Ra later outperform.
+url: http://www.vldb.org/pvldb/vol8/p1518-cho.pdf

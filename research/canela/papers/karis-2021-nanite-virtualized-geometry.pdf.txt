@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Deep Dive into Nanite Virtualized Geometry
+description: Karis, Stubbe, and Schreiner's 2021 SIGGRAPH Advances talk presents Unreal Engine 5's Nanite system, a cluster-based virtualized geometry pipeline using hierarchical LOD, GPU-driven software rasterization, and streaming to render film-quality triangle counts in real time.
+url: https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf

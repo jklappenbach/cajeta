@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Fast Vectorized Sorting Implementation Based on ARM SVE
+description: Retargets the bitonic-network base + vectorized partition to scalable (length-agnostic) ARM SVE; ~4-7x over std::sort. Portability angle for one-source-many-ISA SIMD sort.
+url: https://arxiv.org/abs/2105.07782

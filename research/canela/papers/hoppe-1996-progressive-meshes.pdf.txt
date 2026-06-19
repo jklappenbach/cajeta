@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Progressive Meshes
+description: A SIGGRAPH 1996 paper introducing the progressive mesh, a continuous level-of-detail representation built from edge collapses that supports lossless compression, streaming, and selective refinement.
+url: https://doi.org/10.1145/237170.237216

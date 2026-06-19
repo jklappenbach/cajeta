@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: ReBLUR: A Hierarchical Recurrent Denoiser
+description: Describes ReBLUR, a fast hierarchical recurrent (temporally accumulating) denoiser for real-time ray-traced signals, published in Ray Tracing Gems II.
+url: https://doi.org/10.1007/978-1-4842-7185-8_49

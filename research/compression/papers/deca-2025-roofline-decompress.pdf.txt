@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: DECA: A Near-Core LLM Decompression Accelerator Grounded on a 3D Roofline Model
+description: Builds a 3D roofline (compute/bandwidth/decompression) showing many quantized-weight decode kernels are vector-COMPUTE-bound, not bandwidth-bound; near-core accel gives up to 4x. Framing: decompression is its own roofline axis — bandwidth- vs compute-bound depends on decode-ops per byte moved.
+url: https://arxiv.org/abs/2505.19349

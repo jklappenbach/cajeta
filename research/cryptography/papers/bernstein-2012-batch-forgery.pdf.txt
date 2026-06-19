@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Faster Batch Forgery Identification
+description: Random-linear-combination batch verify + divide-and-conquer to locate every bad signature cheaply; one shared multiexponentiation << n independent scalar mults; per-sig verify still a serial field/EC chain.
+url: https://eprint.iacr.org/2012/549.pdf

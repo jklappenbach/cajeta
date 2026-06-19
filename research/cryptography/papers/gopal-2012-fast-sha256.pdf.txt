@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Fast SHA-256 Implementations on Intel Architecture Processors
+description: Pre-SHA-NI SIMD scheduling (multi-buffer: hash N independent messages in parallel SSE/AVX lanes) — the technique for parallel SHA when each message is serial. Directly relevant to a multi-fiber model hashing many buffers.
+url: https://www.intel.com/content/dam/develop/external/us/en/documents/sha-256-implementations-paper.pdf

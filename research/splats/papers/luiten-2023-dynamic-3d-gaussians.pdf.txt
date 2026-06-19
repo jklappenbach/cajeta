@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Dynamic 3D Gaussians: Tracking by Persistent Dynamic View Synthesis
+description: A method that extends 3D Gaussians to dynamic scenes by enforcing persistence and rigidity over time, yielding dense 6-DOF tracking and novel-view synthesis.
+url: https://arxiv.org/abs/2308.09713

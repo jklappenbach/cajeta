@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Engineering Faster Sorters for Small Sets of Items
+description: Optimal/near-optimal sorting networks for very small n and Register Sample Sort (splitters in registers, n<=256); quantifies the crossover where a branchless network base case beats insertion/scalar small-sort — the theory for picking the SIMD base-case threshold and network layout.
+url: https://arxiv.org/abs/2002.05599

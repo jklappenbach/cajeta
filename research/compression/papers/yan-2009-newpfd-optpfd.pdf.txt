@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Inverted Index Compression and Query Processing with Optimized Document Ordering (NewPFD/OptPFD)
+description: Refines PForDelta: NewPFD (compact exception storage) and OptPFD (per-block optimal bit-width minimizing size). Best PFOR-family ratio on posting data; foundation SIMD-FastPFOR later vectorized. Per-128-block -> block-parallel.
+url: https://vldb.org/pvldb/vol2/vldb09-227.pdf

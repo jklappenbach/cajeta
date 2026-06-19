@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Arithmetic Coding for Data Compression
+description: Near-optimal entropy via interval subdivision; separates model from coder. Fundamentally serial (each symbol narrows the interval used for the next; renormalization carries dependencies) — the archetype non-vectorizable entropy decode that motivated ANS.
+url: https://dl.acm.org/doi/10.1145/214762.214771

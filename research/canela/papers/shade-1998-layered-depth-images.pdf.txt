@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Layered Depth Images
+description: Introduces the layered depth image, an image-based representation storing multiple depth samples per pixel to render disocclusions during view changes.
+url: https://doi.org/10.1145/280814.280882

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: UMAP: Uniform Manifold Approximation and Projection for Dimension Reduction
+description: Introduces UMAP, a manifold-learning dimensionality reduction technique grounded in Riemannian geometry and topology that is fast and preserves global structure better than t-SNE.
+url: https://arxiv.org/abs/1802.03426

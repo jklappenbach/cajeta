@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: SIMD Compression and the Intersection of Sorted Integers
+description: S4-BP128-D4: SIMD bit-packing + vectorized 4-wide delta; ~0.7 cycles/int at SOTA ratio. Vectorizes delta (lane prefix-sum) and adds SIMD galloping intersection. Per-block -> block-parallel; bandwidth-bound at scale.
+url: https://arxiv.org/abs/1401.6399

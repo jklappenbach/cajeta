@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: The Security and Performance of the Galois/Counter Mode (GCM)
+description: Original GCM design + security proof; GHASH as a Carter-Wegman polynomial MAC, hardware-friendly (table or CLMUL), pipelineable with the cipher (CTR blocks independent; GHASH via aggregated CLMUL).
+url: https://eprint.iacr.org/2004/193.pdf

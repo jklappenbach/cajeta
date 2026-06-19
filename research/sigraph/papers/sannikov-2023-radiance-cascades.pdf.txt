@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Radiance Cascades: A Novel Approach to Calculating Global Illumination
+description: Introduces a hierarchy of radiance probe "cascades" that trade angular resolution against spatial resolution with distance to compute noise-free real-time diffuse global illumination.
+url: https://github.com/Raikiri/RadianceCascadesPaper

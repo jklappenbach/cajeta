@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Fast Batch Verification for Modular Exponentiation and Digital Signatures
+description: Foundational batch paper: random-subset / small-exponents / bucket tests; RSA screening ~= one verify + hashing for the whole batch. Turns n exponentiation checks into one multiexponentiation — canonical embarrassing-parallelism-across-operations.
+url: https://eprint.iacr.org/1998/007.pdf

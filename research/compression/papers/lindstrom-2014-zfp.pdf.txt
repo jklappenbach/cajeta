@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Fixed-Rate Compressed Floating-Point Arrays (ZFP)
+description: Compresses independent 4^d blocks via block-float exponent alignment + orthogonal transform + embedded bit-plane coding -> fixed-rate, random-access, embarrassingly parallel (CUDA/OpenMP backends). Lossy/error-bounded.
+url: https://computing.llnl.gov/projects/zfp

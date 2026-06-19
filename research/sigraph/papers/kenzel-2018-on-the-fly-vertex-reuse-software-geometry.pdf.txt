@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: On-the-fly Vertex Reuse for Massively-Parallel Software Geometry Processing
+description: Presents a software geometry pipeline that achieves efficient on-the-fly vertex reuse and load balancing for massively parallel GPU rasterization.
+url: https://doi.org/10.1145/3197517.3201374

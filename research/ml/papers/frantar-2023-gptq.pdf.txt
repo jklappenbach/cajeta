@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers
+description: Introduces GPTQ, a one-shot second-order (Hessian-based) post-training quantization method that compresses large language models to 3-4 bits with little accuracy loss.
+url: https://arxiv.org/abs/2210.17323

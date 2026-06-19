@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Sandy2x: New Curve25519 Speed Records
+description: 2-way SSE/AVX vectorized 32x32->64 multiplier on radix-2^25.5 limbs; X25519 ~159k Sandy Bridge cyc. Fills 2 lanes WITHIN one ladder step (two independent field muls) — parallelizes inside the serial ladder chain.
+url: https://eprint.iacr.org/2015/943.pdf

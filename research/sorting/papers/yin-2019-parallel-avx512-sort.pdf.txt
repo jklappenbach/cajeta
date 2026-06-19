@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML-only); fetch the original from the url below.
+name: Efficient Parallel Sort on AVX-512-Based Multi/Many-Core Architectures
+description: Two-level design: vectorized bitonic sort as the per-thread base case + load-balanced multi-threaded pairwise merge up the tree; combines data-level (AVX-512) and thread-level parallelism to ~1.1B floats/s on KNL. Clearest published statement of the SIMD-base + thread-merge architecture. PDF IEEE-gated.
+url: https://ieeexplore.ieee.org/document/8855628

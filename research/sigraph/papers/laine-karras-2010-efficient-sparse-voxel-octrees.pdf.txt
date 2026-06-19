@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Efficient Sparse Voxel Octrees
+description: Introduces a compact sparse voxel octree data structure with contour encoding and beam optimization for memory-efficient GPU ray tracing of detailed geometry.
+url: https://research.nvidia.com/publication/2010-02_efficient-sparse-voxel-octrees

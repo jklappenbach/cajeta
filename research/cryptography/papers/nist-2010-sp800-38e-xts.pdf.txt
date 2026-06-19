@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: NIST SP 800-38E: XTS-AES Mode for Confidentiality on Storage Devices
+description: Tweakable narrow-block mode for disk sectors; each block independently tweaked -> embarrassingly parallel across blocks and sectors (ideal multi-fiber + SIMD), random access. dm-crypt/BitLocker/FileVault.
+url: https://nvlpubs.nist.gov/nistpubs/legacy/sp/nistspecialpublication800-38e.pdf

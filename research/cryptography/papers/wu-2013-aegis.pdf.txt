@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: AEGIS: A Fast Authenticated Encryption Algorithm (v1.1)
+description: AES-round-based AEAD (built directly on AESENC); AEGIS-128L ~0.3 cyc/byte on Haswell — faster than AES-GCM (no separate GHASH). CAESAR winner (high-performance); uses several AES rounds per step to fill the AES pipeline.
+url: https://competitions.cr.yp.to/round3/aegisv11.pdf

@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: HACL*: A Verified Modern Cryptographic Library
+description: Written in Low* (F* subset), compiled to readable standalone C (also WASM); proves memory safety + functional correctness + secret-independence (constant-time). Covers X25519/Ed25519/ChaCha20/Poly1305/AES-GCM/SHA-2/3/BLAKE2/HKDF/P-256/NaCl. Generated C is MIT/Apache -> embeddable. The model for verified primitives Cajeta could bind rather than hand-author.
+url: https://eprint.iacr.org/2017/536.pdf

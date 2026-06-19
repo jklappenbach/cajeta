@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML-only); fetch the original from the url below.
+name: Fast Sort on CPUs and GPUs: A Case for Bandwidth Oblivious SIMD Sort
+description: THE bandwidth-bound analysis: a software local-buffer SIMD radix still requires lane-consecutive writes, so radix scales only ~3.7x with SIMD width vs merge sort's ~6.5x; merge is 'bandwidth-oblivious' (streams ~2R+2W via multiway/bitonic merge) and beats radix up to 3x at wide SIMD / large keys. PDF not downloaded (semanticscholar 403).
+url: https://doi.org/10.1145/1807167.1807207

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Predictive Framework for Base-n Radix Sort Optimization
+description: Models the radix digit-width tradeoff (number of passes vs bucket count vs cache/TLB/bandwidth pressure) to predict the optimal radix base — useful for auto-tuning pass count to the memory hierarchy.
+url: https://arxiv.org/abs/2509.19021

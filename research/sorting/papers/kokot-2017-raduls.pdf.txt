@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Sorting Data on Ultra-Large Scale with RADULS
+description: Parallel MSD radix tuned for billions of records on multicore; speed comes from thread parallelism + cache-friendly binning + non-temporal-store scatter, with only minimal SSE for branch-free small networks.
+url: https://arxiv.org/abs/1612.02557

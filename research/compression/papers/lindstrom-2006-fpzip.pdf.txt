@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Fast and Efficient Compression of Floating-Point Data (fpzip)
+description: Lorenzo-predictor + range coding; primarily lossless, optional lossy. High ratio but the range coder is a serial bit-engine (fast single-thread, not SIMD-vectorizable); ZFP later beat it on lossy + parallelism.
+url: https://computing.llnl.gov/projects/fpzip

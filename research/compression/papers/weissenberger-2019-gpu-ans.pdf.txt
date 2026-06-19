@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Massively Parallel ANS Decoding on GPUs
+description: Arbitrarily scalable parallel ANS decode via a novel overflow pattern; up to 17x over 64 CPU threads, up to 31x over a SIMD solution, 39x over zstd's entropy codec. Confirms ANS interleaving scales from CPU SIMD lanes to thousands of GPU threads.
+url: https://dl.acm.org/doi/10.1145/3337821.3337888

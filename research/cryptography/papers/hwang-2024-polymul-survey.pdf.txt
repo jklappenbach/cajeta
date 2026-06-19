@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: A Survey of Polynomial Multiplications for Lattice-Based Cryptosystems
+description: Maps NTT/Toom-Cook/Karatsuba/Nussbaumer across Kyber/Dilithium/NTRU/Saber on AVX2/AVX-512/Neon; systematizes Montgomery/Barrett reductions on SIMD lanes, layer-merging, NTT-unfriendly-ring workarounds. Best secondary citation-map for SIMD NTT codegen.
+url: https://cic.iacr.org/p/1/2/1/pdf

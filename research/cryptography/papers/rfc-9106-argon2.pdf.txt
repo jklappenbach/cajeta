@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: RFC 9106: Argon2 Memory-Hard Function for Password Hashing and Proof-of-Work Applications
+description: The IETF specification of the Argon2 memory-hard password-hashing and key-derivation function and its variants (Argon2d/i/id).
+url: https://www.rfc-editor.org/rfc/rfc9106

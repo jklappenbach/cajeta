@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Accelerating Virtual Texturing Using CUDA
+description: A GPU Pro chapter showing how to offload virtual-texturing page-table generation and management to the GPU via CUDA for faster large-texture streaming.
+url: https://doi.org/10.1201/b10648-51

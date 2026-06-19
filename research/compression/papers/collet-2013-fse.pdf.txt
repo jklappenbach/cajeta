@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Finite State Entropy (FSE) — a new breed of entropy coder
+description: First efficient tANS implementation: table-driven FSM, no multiply, branch-light; powers zstd sequence coding. Decode is table lookups with a serial state update; speed from FSM simplicity + several parallel FSE states.
+url: https://github.com/Cyan4973/FiniteStateEntropy

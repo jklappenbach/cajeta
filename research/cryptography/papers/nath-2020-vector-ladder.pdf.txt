@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Efficient 4-way Vectorizations of the Montgomery Ladder
+description: Reorganizes the ladder so exactly 4 field mul/sqr run per step, mapped to AVX2 and AVX-512 lanes; strongest single-key (non-batch) ladder vectorization. Restructures the recurrence so 4 independent field ops always exist to fill lanes.
+url: https://eprint.iacr.org/2020/378.pdf

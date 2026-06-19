@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: ReSTIR PG: Path Guiding with Spatiotemporally Resampled Paths
+description: Extracts path-guiding distributions from ReSTIR's spatiotemporally resampled paths to generate better initial candidates each frame, reducing variance and correlation artifacts in real-time path tracing.
+url: https://doi.org/10.1145/3757377.3763813

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Lumigraph
+description: A SIGGRAPH 1996 paper introducing the Lumigraph, an image-based 4D representation of the plenoptic function that enables novel-view synthesis from a set of captured images.
+url: https://doi.org/10.1145/237170.237200

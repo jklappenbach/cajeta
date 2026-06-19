@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: FIPS 197: Advanced Encryption Standard (Rijndael)
+description: AES-128/192/256, 128-bit block, SubBytes/ShiftRows/MixColumns/AddRoundKey over GF(2^8). The 256-byte S-box lookup is the canonical secret-dependent-load timing hazard (motivates AES-NI/bitslicing). Round structure is the unit AES-NI AESENC collapses to one instruction; parallelism comes from the MODE, not the cipher.
+url: https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.197-upd1.pdf

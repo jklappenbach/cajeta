@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Octree-GS: Towards Consistent Real-time Rendering with LOD-Structured 3D Gaussians
+description: Organizes 3D Gaussian splatting into an octree-based level-of-detail hierarchy for consistent, adaptive real-time rendering of large scenes.
+url: https://arxiv.org/abs/2403.17898

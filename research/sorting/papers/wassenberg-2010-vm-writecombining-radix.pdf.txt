@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Faster Radix Sort via Virtual Memory and Write-Combining
+description: Radix's scatter is write-bandwidth bound: software write-combining buffers + non-temporal/streaming stores + a virtual-memory counting trick reach ~88% of peak DRAM bandwidth with PURELY SCALAR code (621 M keys/s, ~1.5x Intel's sort) — direct evidence SIMD adds nothing to the radix permutation step.
+url: https://arxiv.org/abs/1008.2849

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: ReSTIR GI: Path Resampling for Real-Time Path Tracing
+description: Applies reservoir-based spatiotemporal resampling to multi-bounce indirect light paths, dramatically reducing noise in real-time path-traced global illumination.
+url: https://doi.org/10.1111/cgf.14378

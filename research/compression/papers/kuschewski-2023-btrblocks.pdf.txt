@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: BtrBlocks: Efficient Columnar Compression for Data Lakes
+description: Recursive cascade of lightweight SIMD-decodable encodings (FOR, RLE, dictionary, FSST, Roaring, Pseudodecimal) chosen per column block for fast vectorized decompression + good ratio over heavyweight LZ. Reuses SIMD-FastPFOR/FastBP128/FSST; block-per-column-chunk -> thread-parallel.
+url: https://www.cs.cit.tum.de/fileadmin/w00cfj/dis/papers/btrblocks.pdf

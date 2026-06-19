@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FCBench: Cross-Domain Benchmarking of Lossless Compression for Floating-Point Data
+description: Evaluates 8 CPU + 5 GPU FP compressors over 33 datasets using the ROOFLINE model to locate bottlenecks; finds several codecs memory-bandwidth-bound rather than compute-bound (a faster codec then doesn't speed an already bandwidth-limited pipeline).
+url: https://arxiv.org/abs/2312.10301

@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: ndzip-gpu: Efficient Lossless Compression of Scientific Floating-Point Data on GPUs
+description: Intra-block parallelism + warp-cooperative vertical bit-packing for the bit-serial step; same algorithm maps to CPU AVX and GPU SIMT (CPU<->GPU portability lesson). Bottleneck is decorrelation memory traffic, not arithmetic.
+url: https://dps.uibk.ac.at/~fabian/publications/2021-ndzip-gpu-efficient-lossless-compression-of-scientific-floating-point-data-on-gpus.pdf

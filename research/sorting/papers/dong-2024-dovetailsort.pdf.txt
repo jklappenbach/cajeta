@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Parallel Integer Sort: Theory and Practice (DovetailSort)
+description: Work-efficient practical parallel MSD integer sort (RegionsSort-class) that blends integer + comparison sorting to exploit duplicate keys; efficiency dominated by core count at high parallelism (bandwidth/scheduling), no SIMD. Current strong baseline for thread-scaling on integers.
+url: https://arxiv.org/abs/2401.00710

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: TVM: An Automated End-to-End Optimizing Compiler for Deep Learning
+description: Introduces TVM, a compiler that lowers deep-learning models to optimized code across hardware backends using graph- and operator-level optimizations and ML-based autotuning.
+url: https://arxiv.org/abs/1802.04799

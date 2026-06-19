@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Relaxing the Counting Requirement for LSD Radix Sorts
+description: Removes the separate counting pass of LSD radix (relative of Wassenberg's VM trick), cutting memory passes on the bandwidth-bound path.
+url: https://users.encs.concordia.ca/~sthiel/DS/SEA2015_FastRadix.pdf

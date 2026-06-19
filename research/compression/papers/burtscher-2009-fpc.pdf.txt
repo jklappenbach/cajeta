@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FPC: A High-Speed Compressor for Double-Precision Floating-Point Data
+description: Two hash-based value predictors (FCM+DFCM), XOR residual + leading-zero-byte coding; 8-300x faster than BZIP2/GZIP at comparable ratio. Largely SERIAL (per-value hash-table state) -> the counter-example showing high single-thread speed but hard-to-SIMD, motivating state-free MPC/ndzip.
+url: https://userweb.cs.txstate.edu/~burtscher/papers/tc09.pdf

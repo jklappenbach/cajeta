@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Fast and Lean Immutable Multi-Maps on the JVM based on Heterogeneous Hash-Array Mapped Tries
+description: Proposes the Heterogeneous Hash-Array Mapped Trie (HHAMT), a framework that stores type-heterogeneous keys/values inline to encode compact, high-performance immutable multi-maps on the JVM.
+url: https://arxiv.org/abs/1608.01036

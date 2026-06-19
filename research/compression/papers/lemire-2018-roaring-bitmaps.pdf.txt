@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Roaring Bitmaps: Implementation of an Optimized Software Library
+description: Hybrid containers (bitmap/array/run) keyed by high-16-bits with SIMD (AVX2/AVX-512/NEON) set ops (intersection/union/diff). SIMD accelerates the OPERATIONS, not just decode; containers parallelize independently. Bitmap ops bandwidth-bound, array ops compute-bound.
+url: https://arxiv.org/abs/1709.07821

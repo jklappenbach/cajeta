@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Poly1305-AES: a state-of-the-art message-authentication code
+description: Polynomial MAC over GF(2^130-5); vectorizable via precomputed powers of r (r,r^2,r^4...) for parallel multiply-accumulate (like GHASH but a prime field). Constant-time multiprecision, no secret-dependent branches.
+url: https://cr.yp.to/mac/poly1305-20050329.pdf

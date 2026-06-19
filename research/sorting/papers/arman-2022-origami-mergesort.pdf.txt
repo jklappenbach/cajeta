@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Origami: A High-Performance Mergesort Framework
+description: ISA-parameterized (SSE/AVX2/AVX-512) framework: in-register sorting-network base case up to 8x faster than prior in-register sorters + a branchless streaming merger (~1.5x); distribution-independent (no adversarial degradation); single-thread up to 2x over closest competitor with near-linear multicore speedup. Strongest combined base-case + multithreaded-merge system.
+url: https://www.vldb.org/pvldb/vol15/p259-arman.pdf

@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: ChaCha20 and Poly1305 for IETF Protocols (RFC 8439)
+description: ChaCha20 = ARX stream cipher (no S-box -> constant-time by design, no tables); Poly1305 = GF(2^130-5) one-time MAC. The standard AEAD for platforms without AES-NI (mobile/ARM); counter-based -> block-parallel; SIMD-vectorizes 4/8/16-way.
+url: https://www.rfc-editor.org/rfc/rfc8439.txt

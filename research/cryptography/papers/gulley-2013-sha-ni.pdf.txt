@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Intel SHA Extensions (SHA-NI)
+description: SHA256RNDS2/SHA256MSG1/2 fuse multiple SHA-256 rounds per instruction (multi-cyc/byte -> sub-cyc). SHA-256 (Merkle-Damgard) is SERIAL within one message — SHA-NI accelerates the compression function but you cannot block-parallelize a single hash; parallelism only across independent messages (or a tree mode like BLAKE3).
+url: https://www.intel.com/content/dam/develop/external/us/en/documents/intel-sha-extensions-white-paper-402097.pdf

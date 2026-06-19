@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: High-speed high-security signatures (Ed25519)
+description: Deterministic EdDSA on twisted Edwards; 32-byte keys, 64-byte sigs; ~87.5k cyc sign / ~134k verify on Westmere. Proposes BATCH verification: N independent sigs folded into one multi-scalar mult — the natural lane/ILP-parallel target vs the serial single ladder.
+url: https://eprint.iacr.org/2011/368.pdf

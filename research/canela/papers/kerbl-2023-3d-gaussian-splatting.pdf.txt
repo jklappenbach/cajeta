@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: 3D Gaussian Splatting for Real-Time Radiance Field Rendering
+description: Kerbl, Kopanas, Leimkühler, and Drettakis's 2023 SIGGRAPH paper represents scenes as optimizable anisotropic 3D Gaussians rendered by a fast tile-based differentiable rasterizer, achieving state-of-the-art radiance-field quality at real-time frame rates.
+url: https://arxiv.org/abs/2308.04079

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Theoretically-Efficient and Practical Parallel In-Place Radix Sorting (RegionsSort)
+description: Builds a graph of bucket-regions whose cycles are independent in-place swap tasks, permuting with no auxiliary array (O(K log r log n) bookkeeping); 19-65x on 36 cores, 1.2-4.4x over optimized out-of-place parallel radix. No SIMD; in-place itself is the bandwidth optimization (halved writes).
+url: https://jshun.csail.mit.edu/RegionsSort.pdf

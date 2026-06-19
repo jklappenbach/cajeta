@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Snappy compressed format
+description: LZ77-type, fixed byte-oriented encoding, 64 KB blocks, 4-byte-hash match-finder; no entropy stage, ~order-of-magnitude faster than zlib at 20-100% larger output. Serial decode-copy; parallelism external (per-record/RPC frame).
+url: https://github.com/google/snappy/blob/main/format_description.txt

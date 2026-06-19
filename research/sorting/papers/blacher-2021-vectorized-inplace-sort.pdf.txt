@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Fast and Robust Vectorized In-Place Sorting of Primitive Types
+description: AVX2 in-place vectorized quicksort: distribution-robust vectorized partition + bitonic sorting-network base case to fill vector registers; >=30% faster than IPS4o/BlockQuicksort-class sorts for int. Direct precursor to vqsort; the per-thread kernel a parallel sort dispatches.
+url: https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.SEA.2021.3

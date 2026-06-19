@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Radix Sort for Vector Multiprocessors
+description: Foundational vectorized radix: SIMD-able histogram/counting via loop raking + a vectorized parallel prefix-sum for bucket offsets. Establishes the durable lesson that the histogram + scan COMPUTE phases vectorize well while the scatter does not (vector machines only tolerated scatter via high-bandwidth interleaved memory).
+url: https://www.cs.cmu.edu/~scandal/papers/cray-sort-supercomputing91.html

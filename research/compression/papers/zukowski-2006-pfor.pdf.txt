@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Super-Scalar RAM-CPU Cache Compression
+description: Origin of PFOR / PFOR-DELTA / PDICT: frame-of-reference + PATCHED exceptions stored in unused slots so the main decode loop stays branch-free and super-scalar/SIMD-able. The ancestor of every later SIMD PFOR variant; block-oriented -> block-parallel.
+url: https://db.cs.uni-tuebingen.de/teaching/ws2526/databases-inside-and-out/papers/5_compression.pdf

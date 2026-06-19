@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Surface Simplification Using Quadric Error Metrics
+description: A SIGGRAPH 1997 paper introducing the quadric error metric for iterative edge-collapse mesh simplification, producing high-quality approximations efficiently.
+url: https://doi.org/10.1145/258734.258849

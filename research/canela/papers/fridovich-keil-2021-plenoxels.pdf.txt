@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Plenoxels: Radiance Fields without Neural Networks
+description: A paper representing a scene as a sparse voxel grid of spherical-harmonic coefficients optimized by gradient descent, matching NeRF quality while training orders of magnitude faster without any neural network.
+url: https://arxiv.org/abs/2112.05131

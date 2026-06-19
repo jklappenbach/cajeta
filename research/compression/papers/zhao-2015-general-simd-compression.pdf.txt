@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A General SIMD-Based Approach to Accelerating Compression Algorithms
+description: Generalizes SIMD group bit-unpacking (precomputed shift/mask vectors + pshufb) across varint/PForDelta/bit-packing; win = removing per-value bit-offset updates. Per-block vectorized inner loop -> block-parallel.
+url: https://arxiv.org/abs/1502.01916

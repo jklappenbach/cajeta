@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Modular Multiplication Without Trial Division (Montgomery REDC)
+description: Foundational REDC: map operands to N-residues (a*R mod N), replace mod-N reduction with shifts by radix R; conversion amortized across ops sharing modulus N. Defines the radix-R limb + per-limb carry chain every vectorized RSA/IFMA paper builds on. Serial big-int; parallelism only across independent exponentiations.
+url: http://class.ece.iastate.edu/tyagi/cpre681/papers/montgomery.pdf

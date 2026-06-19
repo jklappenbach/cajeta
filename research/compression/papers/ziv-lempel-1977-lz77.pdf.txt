@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: A Universal Algorithm for Sequential Data Compression (LZ77)
+description: Sliding-window dictionary: replace repeats with (offset,length) back-references. The parse/match-find is the expensive sequential stage; decode is a serial history copy (overlapping copies). SIMD only widens a single long literal/copy run; parallelism comes only from later block framing.
+url: https://doi.org/10.1109/TIT.1977.1055714

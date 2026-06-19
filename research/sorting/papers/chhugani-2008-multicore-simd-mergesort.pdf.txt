@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Efficient Implementation of Sorting on Multi-Core SIMD CPU Architecture
+description: Vectorized bitonic-merge mergesort: ~3.3x/core with SSE, ~near-linear across cores IN CACHE. Canonical bandwidth result: out-of-cache 256M elements scale only ~1.75x across cores (DRAM-bound) UNLESS a MULTIWAY merge keeps data cache-resident, converting the merge back to compute-bound so SIMD+threads compose again.
+url: http://www.vldb.org/pvldb/vol1/1454171.pdf

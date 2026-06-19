@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Nanite: A Deep Dive
+description: SIGGRAPH 2021 Advances talk detailing Unreal Engine 5's Nanite virtualized geometry system for rendering film-quality, cluster-based LOD meshes at real-time rates.
+url: https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf

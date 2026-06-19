@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Wave Particles
+description: Introduces wave particles, a lightweight particle-based representation of surface water waves and their interactions with floating objects for real-time interactive simulation.
+url: https://doi.org/10.1145/1276377.1276501

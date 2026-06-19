@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale
+description: Introduces an 8-bit quantization scheme with mixed-precision decomposition for outlier features, enabling inference of large transformers without accuracy loss.
+url: https://arxiv.org/abs/2208.07339

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Truncated Multiplication and Batch SIMD AVX-512 for Montgomery Multiplication / Modexp
+description: 8 independent operands in 8 AVX-512 VPMADD52 lanes; batch mul/sqr/modmul/modsqr + constant-time fixed-window modexp; truncated Montgomery ~20% faster; >4x over GMP and OpenSSL. Core argument: a single modexp is a long serial dependency chain, so throughput comes from 8 INDEPENDENT exponentiations side-by-side, not from vectorizing within one.
+url: https://arxiv.org/abs/2410.18129

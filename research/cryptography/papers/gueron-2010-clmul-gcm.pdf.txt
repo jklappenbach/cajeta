@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Carry-Less Multiplication (PCLMULQDQ) and its Usage for Computing the GCM Mode
+description: PCLMULQDQ = 64x64->127-bit carry-less GF(2) multiply, the primitive making GHASH (GCM's GF(2^128) authenticator) fast AND constant-time. Aggregated reduction batches several CLMULs before one modular reduction -> multi-block parallel GHASH; brings AES-GCM to a few cyc/byte (<1 on VAES). GHASH (Horner) factors into independent CLMULs (H,H^2,H^4...) that parallelize with SIMD width.
+url: https://cdrdv2-public.intel.com/836172/clmul-wp-rev-2-02-2014-04-20.pdf

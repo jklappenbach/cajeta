@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: End-to-End Compressed Meshlet Rendering
+description: Keeps triangle meshes compressed in GPU memory and decompresses meshlets just-in-time within mesh shaders, cutting memory use and streaming latency.
+url: https://doi.org/10.1111/cgf.15002

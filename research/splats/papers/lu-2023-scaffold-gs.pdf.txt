@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Scaffold-GS: Structured 3D Gaussians for View-Adaptive Rendering
+description: A structured representation that anchors Gaussians to a sparse voxel scaffold and predicts their attributes on the fly for view-adaptive, robust rendering.
+url: https://arxiv.org/abs/2312.00109

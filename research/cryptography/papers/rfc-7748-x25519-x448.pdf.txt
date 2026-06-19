@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Elliptic Curves for Security (RFC 7748): X25519 / X448
+description: Curve25519/448 and X25519/448 DH; constant-time exception-free Montgomery ladder with cswap. The ECDH key-agreement primitives OpenPGP/TLS wrap session keys with.
+url: https://www.rfc-editor.org/rfc/rfc7748.txt

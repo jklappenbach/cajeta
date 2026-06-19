@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: RRB-Trees: Efficient Immutable Vectors
+description: Proposes Relaxed Radix Balanced trees, which relax the strict radix balancing of persistent vectors to support O(log n) immutable concatenation, insert-at, and split while preserving fast index/update.
+url: https://infoscience.epfl.ch/record/169879

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Survey on 3D Gaussian Splatting
+description: A comprehensive survey of 3D Gaussian Splatting, the explicit radiance-field representation enabling real-time, high-quality novel-view synthesis, covering methods, applications, and challenges.
+url: https://arxiv.org/abs/2401.03890

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Dynamic Virtual Textures
+description: Describes a virtual texturing system supporting runtime-updatable textures for very large terrains, streaming tiles on demand into a GPU texture cache.
+url: https://videalab.udc.es/sites/default/files/publicaciones/WSCG_Dynamic_virtual_textures.pdf

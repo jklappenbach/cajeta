@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Virtualized 3D Gaussians: Flexible Cluster-based Level-of-Detail System for Real-Time Rendering of Composed Scenes
+description: Proposes a hierarchical cluster-based level-of-detail system for 3D Gaussian splatting that dynamically selects essential clusters to render large composed scenes in real time at high quality.
+url: https://arxiv.org/abs/2505.06523

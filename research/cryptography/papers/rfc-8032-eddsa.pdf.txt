@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Edwards-Curve Digital Signature Algorithm (RFC 8032): Ed25519 / Ed448
+description: Defines Ed25519 (edwards25519+SHA-512) and Ed448; deterministic nonces. The signature curves OpenPGP references; batch verification folds N sigs into one multi-scalar mult.
+url: https://www.rfc-editor.org/rfc/rfc8032.txt

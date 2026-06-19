@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: DEFLATE Compressed Data Format Specification v1.3 (RFC 1951)
+description: LZ77 (32 KB window) + canonical Huffman; substrate of gzip/zlib/PNG/ZIP. Doubly serial decode (bit-serial Huffman codeword boundaries + history-dependent LZ copy). SIMD only helps the periphery (CRC, match-find); single-stream decode is unvectorizable.
+url: https://www.rfc-editor.org/rfc/rfc1951.txt

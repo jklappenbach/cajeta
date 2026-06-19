@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Fiat-Crypto: Simple High-Level Code for Cryptographic Arithmetic (Synthesized & Verified)
+description: Coq SYNTHESIZES correct-by-construction field arithmetic from number-theoretic specs; generated Curve25519/P-256 arithmetic ships in BoringSSL/Chrome/Android/Go (verified arithmetic in production HTTPS). The model for a compiler generating provably-correct crypto math.
+url: https://jasongross.github.io/papers/2019-fiat-crypto-ieee-sp.pdf

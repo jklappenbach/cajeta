@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML-only); fetch the original from the url below.
+name: Intel x86-simd-sort (library)
+description: Production AVX-512/AVX2 quicksort/quickselect/argsort/key-value sort: vpcompress (compress-store) pivot partition + bitonic sorting-network base case (switch at 64/128/256/512 by dtype/ISA); 10-17x in NumPy/PyTorch. Single-thread per call by design — literally the per-thread vectorized engine a parallel sort dispatches. No paper (code).
+url: https://github.com/intel/x86-simd-sort

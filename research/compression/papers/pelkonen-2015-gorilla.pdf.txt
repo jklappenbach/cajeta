@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Gorilla: A Fast, Scalable, In-Memory Time Series Database
+description: Delta-of-delta timestamp coding + XOR of successive float values (leading/trailing-zero control bits); ~12x size reduction. Per-stream serial bit-packing (each value depends on prior XOR) but parallel across many independent series -> the canonical fiber-per-series model.
+url: https://www.vldb.org/pvldb/vol8/p1816-teller.pdf

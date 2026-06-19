@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Gentle Overview of Asynchronous Session-based Concurrency: Deadlock Freedom by Typing
+description: A tutorial survey presenting three typed process frameworks that guarantee deadlock freedom for asynchronously communicating, session-typed processes in cyclic networks and a concurrent functional language.
+url: https://arxiv.org/abs/2412.08232

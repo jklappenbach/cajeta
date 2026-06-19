@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Improving RRB-Tree Performance through Transience
+description: A master's thesis that formalizes the persistent vector and RRB-tree and introduces three transience-based optimizations (implemented in the C library librrb) that substantially improve append performance.
+url: https://ntnuopen.ntnu.no/ntnu-xmlui/handle/11250/254006

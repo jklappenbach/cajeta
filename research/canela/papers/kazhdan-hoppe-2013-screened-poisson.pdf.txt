@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Screened Poisson Surface Reconstruction
+description: Kazhdan and Hoppe's 2013 paper extends Poisson reconstruction with a screening term that constrains the implicit function to pass near the input points, improving fidelity to fine detail while retaining the method's robustness.
+url: https://dl.acm.org/doi/10.1145/2487228.2487237

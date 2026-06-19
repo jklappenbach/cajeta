@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Curve25519: new Diffie-Hellman speed records
+description: Introduces the Curve25519 elliptic curve and a high-speed, constant-time Montgomery-ladder x-coordinate Diffie-Hellman function designed for security and performance.
+url: https://cr.yp.to/ecdh/curve25519-20060209.pdf

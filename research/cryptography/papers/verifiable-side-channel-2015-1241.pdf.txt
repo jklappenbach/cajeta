@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Verifiable side-channel security of cryptographic implementations: constant-time MEE-CBC
+description: Presents a machine-checked methodology proving black-box and constant-time security of MEE-CBC, uncovering a timing-countermeasure bypass bug in AWS's s2n library.
+url: https://eprint.iacr.org/2015/1241

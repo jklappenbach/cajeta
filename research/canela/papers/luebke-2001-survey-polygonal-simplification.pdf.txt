@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Developer's Survey of Polygonal Simplification Algorithms
+description: Luebke's 2001 IEEE CG&A article surveys the major polygonal mesh simplification techniques, classifying them by mechanism and error metric to guide developers in choosing an appropriate level-of-detail algorithm.
+url: https://ieeexplore.ieee.org/document/920624

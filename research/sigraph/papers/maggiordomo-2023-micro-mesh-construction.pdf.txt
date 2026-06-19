@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Micro-Mesh Construction
+description: Presents algorithms to convert high-resolution meshes into compact base meshes with displaced micro-triangles for the hardware-accelerated micro-mesh primitive.
+url: https://doi.org/10.1145/3592440

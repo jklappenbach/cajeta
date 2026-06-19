@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields
+description: Introduces DDGI, a grid of ray-traced irradiance probes with depth-based visibility weighting that provides robust, leak-free real-time diffuse global illumination.
+url: https://jcgt.org/published/0008/02/01/

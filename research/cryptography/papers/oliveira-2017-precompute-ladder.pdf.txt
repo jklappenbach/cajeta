@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: How to (Pre-)Compute a Ladder (X25519/X448)
+description: Precomputable fixed-base (keygen) ladder: table-driven addition chain replaces per-step diff-additions; constant-time table access; exposes more independent ops to SIMD/ILP.
+url: https://eprint.iacr.org/2017/264.pdf

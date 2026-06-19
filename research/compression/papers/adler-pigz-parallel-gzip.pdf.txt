@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: pigz — A parallel implementation of gzip
+description: Splits input into 128 KB chunks, each DEFLATE-compressed on its own thread, primed with the prior chunk's last 32 KB for ratio (-i drops it for true independence + random access). A single write thread concatenates. DECOMPRESSION is NOT parallelizable on one deflate stream — the canonical 'parallel compress, serial decode' asymmetry.
+url: https://zlib.net/pigz/

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Stream VByte: Faster Byte-Oriented Integer Compression
+description: Separates control stream from data stream so one pshufb shuffle scatters 4 ints/step (no per-byte continuation branch); up to 2x varint-G8IU, can EXCEED memcpy throughput (bandwidth-bound). Byte-aligned, portable; control/data split makes it block-parallel.
+url: https://arxiv.org/abs/1709.08990

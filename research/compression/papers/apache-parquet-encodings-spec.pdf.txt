@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Apache Parquet Encodings (spec)
+description: RLE/Bit-Packing Hybrid, RLE_DICTIONARY, DELTA_BINARY_PACKED (FOR+delta mini-blocks with per-miniblock bit-width, SIMD-bit-unpackable), BYTE_STREAM_SPLIT (transpose float bytes). Column-chunk + page + mini-block structure -> embarrassingly parallel at every level (production proof block-structured SIMD codecs compose with threads).
+url: https://github.com/apache/parquet-format/blob/master/Encodings.md

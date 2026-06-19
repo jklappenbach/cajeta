@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Volumetric Method for Building Complex Models from Range Images
+description: A SIGGRAPH 1996 paper introducing the signed-distance-function volumetric fusion of multiple range scans, foundational to modern surface reconstruction and KinectFusion-style systems.
+url: https://doi.org/10.1145/237170.237269

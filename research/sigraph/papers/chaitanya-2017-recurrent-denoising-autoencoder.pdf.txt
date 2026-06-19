@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Interactive Reconstruction of Monte Carlo Image Sequences using a Recurrent Denoising Autoencoder
+description: Presents a recurrent convolutional denoising autoencoder that reconstructs temporally stable images from sparse, noisy low-sample Monte Carlo path-traced sequences in real time.
+url: https://doi.org/10.1145/3072959.3073601

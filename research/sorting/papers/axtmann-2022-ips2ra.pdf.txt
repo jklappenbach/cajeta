@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Engineering In-place (Shared-memory) Sorting Algorithms (IPS4o / IPS2Ra)
+description: In-place parallel MSD radix (IPS2Ra) and samplesort (IPS4o) on one framework: branch-free super-scalar classification into buffer blocks + parallel block permutation (needs CMPXCHG16B). No key-level SIMD; the win is in-place halving DRAM traffic + ILP + threads. Fastest known across most sizes/distributions.
+url: https://arxiv.org/abs/2009.13569

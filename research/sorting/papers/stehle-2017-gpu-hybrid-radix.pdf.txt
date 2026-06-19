@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Memory Bandwidth-Efficient Hybrid Radix Sort on GPUs
+description: Explicitly frames radix as bandwidth-bound and minimizes the number of full passes over memory (dominant cost ~ passes x 2 x data); GPU analog of the CPU roofline argument — fewer passes beats faster per-element math.
+url: https://arxiv.org/abs/1611.01137

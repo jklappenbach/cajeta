@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Interleaved Entropy Coders
+description: Because ANS states are symmetric/self-buffering, K coders interleave into one bitstream with NO extra metadata -> serial per-symbol decode becomes K latency-hidden lanes. Provides scalar, 4-way SSE4.1, and 16-way AVX2 rANS decoders (>1.6x ILP, >2x SIMD). THE result that makes SIMD genuinely accelerate the entropy stage; requires the encoder to interleave (format choice).
+url: https://arxiv.org/abs/1402.3392

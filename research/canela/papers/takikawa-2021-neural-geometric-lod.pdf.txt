@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Neural Geometric Level of Detail: Real-time Rendering with Implicit 3D Shapes
+description: Stores neural SDF features in a sparse octree to provide continuous level of detail and real-time rendering of implicit 3D shapes.
+url: https://arxiv.org/abs/2101.10994

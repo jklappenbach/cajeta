@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Gentle Introduction to ReSTIR: Path Reuse in Real-Time
+description: SIGGRAPH course providing an accessible, unified derivation of reservoir-based spatiotemporal importance resampling (ReSTIR) for real-time many-light and path reuse rendering.
+url: https://doi.org/10.1145/3587423.3595511

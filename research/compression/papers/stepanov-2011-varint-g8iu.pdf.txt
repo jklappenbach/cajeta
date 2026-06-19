@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: SIMD-Based Decoding of Posting Lists (varint-G8IU)
+description: Fixes the data block at 8 bytes with one control byte for a variable int count, designed for pshufb SIMD decode; ~300% faster than scalar VByte. Predecessor that Stream VByte/Masked VByte beat (interleaved control byte limits throughput). Note: Group Varint (Dean/folly) is the 4-ints-per-block byte codec.
+url: https://www.stepanovpapers.com/CIKM_2011.pdf

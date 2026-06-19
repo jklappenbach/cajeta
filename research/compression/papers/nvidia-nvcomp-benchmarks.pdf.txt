@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: nvCOMP (NVIDIA GPU compression library)
+description: LZ4/Snappy/ANS/Bitcomp/Cascaded GPU codecs up to ~100 GB/s. Explicitly: 'LZ-based algorithms are a poor match to the GPU SIMT model' (match-copy dependency resists parallelism); ANS and numeric/bit-parallel codecs scale best. Lesson: entropy + numeric transforms parallelize, LZ matching does not.
+url: https://github.com/NVIDIA/nvcomp/blob/main/doc/Benchmarks.md

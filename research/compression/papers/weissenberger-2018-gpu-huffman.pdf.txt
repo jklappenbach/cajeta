@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: Massively Parallel Huffman Decoding on GPUs
+description: Exploits Huffman self-synchronization: threads launched at spaced bit offsets re-sync onto codeword boundaries, enabling massively parallel single-stream decode; >1 order of magnitude over CPU. Thread-parallel (not CPU-SIMD); property unique to Huffman, not range coders.
+url: https://arxiv.org/abs/2201.09118

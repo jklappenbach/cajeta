@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: LZ4 Block & Frame Format
+description: Pure LZ77, fixed byte-oriented token, no entropy coder -> branch-light multi-GB/s decode (~1 byte/cycle, reaches RAM-speed on multicore; faster than memcpy on RLE). Independent-block Frame mode -> parallel/seekable decode at a small ratio cost (window reset).
+url: https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md

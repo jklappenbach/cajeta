@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Asymmetric Numeral Systems (ANS)
+description: rANS/tANS: single integer state per symbol gives arithmetic-coder ratio at Huffman-class speed. KEY structural property: encoder/decoder states are symmetric and self-contained, which ENABLES interleaving N independent streams (the door to SIMD). A single stream is still serial. Now the industry-default entropy stage (zstd/FSE, JPEG XL).
+url: https://arxiv.org/abs/1311.2540

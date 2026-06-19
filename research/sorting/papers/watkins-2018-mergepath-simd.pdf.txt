@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML-only); fetch the original from the url below.
+name: A Fast and Simple Approach to Merge and Merge Sort using Wide Vector Instructions
+description: Vectorizes MERGE via Merge Path (no Batcher-bitonic comparator overhead): each SIMD lane / thread merges an equal-work diagonal slice; 16-wide AVX-512, 2.94x over scalar merge, >300M elts/s. The load-balancing primitive for a parallel (multi-fiber) merge sort whose inner merge is itself SIMD. PDF gated (GT repo 403).
+url: https://repository.gatech.edu/articles/conference_contribution/_/19136610

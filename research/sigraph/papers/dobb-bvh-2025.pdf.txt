@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: DOBB-BVH: Efficient Ray Traversal by Transforming Wide BVHs into Oriented Bounding Box Trees using Discrete Rotations
+description: A GPU post-processing technique that converts wide axis-aligned BVHs into oriented bounding box trees using quantized discrete rotations, improving ray-traversal performance by up to ~32%.
+url: https://arxiv.org/abs/2506.22849

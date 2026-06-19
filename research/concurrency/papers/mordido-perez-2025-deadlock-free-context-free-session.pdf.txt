@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Deadlock-free Context-free Session Types
+description: A priority-based type system that guarantees both protocol conformance and deadlock freedom for concurrent functional programs governed by context-free session types with cyclic communication, recursion, and polymorphism.
+url: https://arxiv.org/abs/2506.20356

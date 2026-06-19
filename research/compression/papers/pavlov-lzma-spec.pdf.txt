@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: LZMA / 7-Zip
+description: LZ77 with very large dictionary (~4 GB) + repeated-distance optimization + a binary range coder driven by adaptive Markov context bit-probabilities. The MOST serial entropy design (each decoded bit updates the model for the next); high ratio, no SIMD; parallelism only via external block splitting.
+url: https://en.wikipedia.org/wiki/LZMA

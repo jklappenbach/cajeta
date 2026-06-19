@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: fiber_context - fibers without scheduler (P0876R11)
+description: A C++ standards proposal for std::fiber_context, a minimal scheduler-free stackful context-switching primitive that lets a fiber explicitly resume a designated successor, serving as a building block for coroutines and cooperative multitasking.
+url: https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2022/p0876r11.pdf

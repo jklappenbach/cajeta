@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Adam: A Method for Stochastic Optimization
+description: Introduces Adam, an adaptive first-order optimizer that computes per-parameter learning rates from estimates of the first and second moments of the gradients.
+url: https://arxiv.org/abs/1412.6980

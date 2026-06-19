@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Physically Based Sky, Atmosphere and Cloud Rendering in Frostbite
+description: The SIGGRAPH 2016 course notes describing Frostbite's physically based, unified model for real-time rendering of sky, atmospheric scattering, aerial perspective, and volumetric clouds.
+url: https://www.ea.com/frostbite/news/physically-based-sky-atmosphere-and-cloud-rendering

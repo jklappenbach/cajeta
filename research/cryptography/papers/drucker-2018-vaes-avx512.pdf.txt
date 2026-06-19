@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Making AES Great Again: the Forthcoming Vectorized AES Instruction (VAES / VPCLMULQDQ)
+description: VAESENC/VPCLMULQDQ apply AES rounds / carry-less mul to 4 (AVX-512) or 2 (AVX2) 128-bit lanes per instruction; ~0.16 cyc/byte AES-CTR and big AES-GCM/GCM-SIV gains. Needs 4-block-at-a-time pipelining to fill lanes -> maps directly to a Vector<u8,64>/multi-block abstraction. CBC-encrypt still excluded.
+url: https://eprint.iacr.org/2018/392.pdf

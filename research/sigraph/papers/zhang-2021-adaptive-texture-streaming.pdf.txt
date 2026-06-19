@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: High-performance adaptive texture streaming and rendering of large 3D cities
+description: Presents a texture-streaming system that adapts its workload to measured frame latency and prioritizes by mesh perceptibility to render large 3D cities with millions of textures without stutter.
+url: https://doi.org/10.1007/s00371-021-02152-z

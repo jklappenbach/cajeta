@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Vectorized VByte Decoding (Masked VByte)
+description: Accelerates the LEGACY VByte format in place (no re-encode): SIMD continuation-bit mask extraction + shuffle-table gather; 2-4x scalar VByte (in Lucene/PISA). Decodes independent runs -> block-parallel; bandwidth-bound on dense data.
+url: https://arxiv.org/abs/1503.07387

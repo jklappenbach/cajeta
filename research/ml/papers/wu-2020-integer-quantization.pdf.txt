@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Integer Quantization for Deep Learning Inference: Principles and Empirical Evaluation
+description: Reviews the mathematics of integer quantization and presents an 8-bit workflow keeping accuracy within 1% of the floating-point baseline across vision, speech, and language models.
+url: https://arxiv.org/abs/2004.09602

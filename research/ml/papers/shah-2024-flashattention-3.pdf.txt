@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision
+description: Accelerates attention on Hopper GPUs via warp-specialized asynchrony, overlapped matmul/softmax, and FP8 block quantization, reaching up to 1.3 PFLOPs/s.
+url: https://arxiv.org/abs/2407.08608

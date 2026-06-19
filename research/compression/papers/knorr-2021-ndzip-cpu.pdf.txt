@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/code); fetch the original from the url below.
+name: ndzip: A High-Throughput Parallel Lossless Compressor for Scientific Data
+description: Multidimensional integer-delta decorrelation + vertical bit-packing, per-block (no global state) -> embarrassingly thread-parallel + SIMD-parallel within decorrelation. Compresses/decompresses CLOSE TO MAIN MEMORY BANDWIDTH (the key bandwidth-bound data point); past the bandwidth ceiling, more cores/SIMD yield diminishing returns.
+url: https://dps.uibk.ac.at/~fabian/publications/2021-ndzip-a-high-throughput-parallel-lossless-compressor-for-scientific-data.pdf

@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: CRYSTALS-Dilithium (ML-DSA basis)
+description: Fiat-Shamir-with-aborts signature (MLWE+MSIS); n=256, q=8380417 (23-bit) -> 32-bit/IFMA-52 lanes; AVX2 NTT + per-iteration rejection. Signing dominated by repeated NTTs across rejection trials (each independent); verification fully public -> trivially parallel.
+url: https://eprint.iacr.org/2017/633.pdf

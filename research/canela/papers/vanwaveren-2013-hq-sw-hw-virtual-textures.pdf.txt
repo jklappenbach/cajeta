@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Virtual Texturing in Software and Hardware (SIGGRAPH 2013)
+description: A SIGGRAPH course presentation comparing high-quality software and hardware (partially-resident texture) approaches to virtual texturing for massive worlds.
+url: https://mrelusive.com/publications/presentations/2013_siggraph/hq_sw_hw_vts_12.pdf

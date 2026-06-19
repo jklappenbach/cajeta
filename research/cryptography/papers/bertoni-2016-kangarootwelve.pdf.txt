@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: KangarooTwelve: fast hashing based on Keccak-p
+description: Defines KangarooTwelve, an extendable-output function built on a reduced-round Keccak-p permutation with a tree hashing mode for high-throughput parallel hashing.
+url: https://eprint.iacr.org/2016/770

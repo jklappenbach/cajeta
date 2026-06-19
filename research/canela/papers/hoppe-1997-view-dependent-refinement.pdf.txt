@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: View-Dependent Refinement of Progressive Meshes
+description: Hoppe's SIGGRAPH 1997 paper introduces a selective-refinement framework that adapts a progressive mesh in real time to the viewer's position, screen-space error, and silhouette for view-dependent level-of-detail rendering.
+url: https://doi.org/10.1145/258734.258843

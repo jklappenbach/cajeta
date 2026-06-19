@@ -1,0 +1,4 @@
+# No local PDF (paywalled/HTML/server-blocked); fetch the original from the url below.
+name: Montgomery Multiplication Using Vector Instructions
+description: Pre-IFMA SSE2/NEON 2-way: two independent multiplication chains across SIMD lanes (lanes hold separate sub-computations, not one serial chain). Precursor to multi-buffer / CRT-half-per-lane batching.
+url: https://eprint.iacr.org/2013/519.pdf

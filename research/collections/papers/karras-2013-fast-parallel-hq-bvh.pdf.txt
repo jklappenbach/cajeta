@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Fast Parallel Construction of High-Quality Bounding Volume Hierarchies
+description: Proposes a massively parallel GPU algorithm that iteratively reorganizes treelets of an existing BVH to reach over 90% of offline SBVH ray-tracing quality in near-linear time.
+url: https://research.nvidia.com/publication/2013-07_fast-parallel-construction-high-quality-bounding-volume-hierarchies
