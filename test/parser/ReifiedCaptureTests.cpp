@@ -82,6 +82,50 @@ TEST(ReifiedCaptureTests, instanceofBindingMismatchSkips) {
     EXPECT_EQ(runI32(src), -1);
 }
 
+// tryAs on a MATCH: returns a present Optional holding the same object.
+TEST(ReifiedCaptureTests, tryAsPresentOnMatch) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "    public T get() { return this.value; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> bi = heap Box<int32>(42);\n"
+        "        Box<?> w = bi;\n"
+        "        Optional<Box<int32>> o = w.tryAs<Box<int32>>();\n"
+        "        if (o.isPresent()) { return o.get().get(); }\n"
+        "        return -1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// tryAs on a MISMATCH: returns an empty Optional (no throw, no mis-typed ptr).
+TEST(ReifiedCaptureTests, tryAsEmptyOnMismatch) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "    public T get() { return this.value; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> bi = heap Box<int32>(7);\n"
+        "        Box<?> w = bi;\n"
+        "        Optional<Box<float32>> o = w.tryAs<Box<float32>>();\n"
+        "        if (o.isEmpty()) { return 99; }\n"
+        "        return -1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
 // capture: a guarded cast recovers the concrete handle and reads through it.
 TEST(ReifiedCaptureTests, capturedCastReadsConcrete) {
     std::string src = std::string(BOX) +

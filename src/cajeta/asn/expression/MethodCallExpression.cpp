@@ -413,6 +413,65 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
 
+        // ----- tryAs<T>() intrinsic (reified capture -> Optional<T>) -----
+        // `recv.tryAs<Foo<int32>>()` checks recv's runtime reified instantiation
+        // (reified-capture-spec.md §1/§4) and returns Optional<Foo<int32>>:
+        // present, holding the SAME pointer, on a match; empty on mismatch or
+        // null. Built on __cajeta_instanceof_named + the shared construction
+        // helper (CajetaClass::heapConstruct). No control flow needed — the
+        // Optional just stores (present, value): present = the match bit, value =
+        // select(match, recv, null), then one Optional<T> construction. The held
+        // value is a borrow (aliases recv's object; representation-identical
+        // because cajeta monomorphizes), not a fresh allocation.
+        if (methodCallName == "tryAs"
+                && explicitMethodTypeArgs.size() == 1
+                && explicitMethodTypeArgs[0]
+                && parameters.empty()
+                && !children.empty()) {
+            auto recvExpr = std::dynamic_pointer_cast<Expression>(children[0]);
+            if (recvExpr) {
+                if (!recvExpr->getResolvedType()) recvExpr->resolveTypes(module);
+                llvm::Value* raw = children[0]->generateCode(module);
+                llvm::Value* objPtr = loadIfLValue(module, raw, recvExpr);
+                CajetaTypePtr targetType = explicitMethodTypeArgs[0];
+                auto optTmpl = std::dynamic_pointer_cast<CajetaClass>(
+                    CajetaType::of("Optional", "cajeta.lang"));
+                if (objPtr && objPtr->getType()->isPointerTy()
+                        && optTmpl && optTmpl->isTemplate()) {
+                    auto optInst = std::dynamic_pointer_cast<CajetaClass>(
+                        optTmpl->instantiate({targetType}));
+                    if (optInst) {
+                        llvm::PointerType* ptrTy =
+                            llvm::PointerType::get(llvmCtx, 0);
+                        llvm::Value* nullPtr =
+                            llvm::ConstantPointerNull::get(ptrTy);
+                        llvm::Value* matchBit = llvm::ConstantInt::getFalse(
+                            llvm::Type::getInt1Ty(llvmCtx));
+                        if (llvm::Function* fn = module->getRuntimeFunction(
+                                "__cajeta_instanceof_named")) {
+                            llvm::Value* namePtr = builder->CreateGlobalString(
+                                targetType->toCanonical(), "tryas.target");
+                            llvm::Value* r = builder->CreateCall(
+                                fn, {objPtr, namePtr}, "tryas.match");
+                            matchBit = builder->CreateICmpNE(
+                                r, llvm::ConstantInt::get(r->getType(), 0));
+                        }
+                        llvm::Value* value = builder->CreateSelect(
+                            matchBit, objPtr, nullPtr, "tryas.val");
+                        // boolean is i1 in cajeta, so matchBit is the present arg.
+                        CajetaTypePtr boolTy = CajetaType::of("boolean");
+                        std::vector<ParameterEntry> entries;
+                        entries.push_back(ParameterEntry(boolTy, "", matchBit));
+                        entries.push_back(ParameterEntry(targetType, "", value));
+                        llvm::Value* opt =
+                            optInst->heapConstruct(module, entries);
+                        resolvedType = optInst;
+                        return opt;
+                    }
+                }
+            }
+        }
+
         // ----- REFL-12: bounded reflection lowering -----
         // The bounded reflection entry points carry the bound `Shape` as an
         // explicit method type argument: `Class.heapInstance<Shape>(name)` and
