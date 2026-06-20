@@ -66,7 +66,11 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-15: 320 → 328 — feature/json-schema merge added the SIMD JSON binding
 // stdlib (cajeta.codec.json.{JsonIndex,JsonCursor,JsonHandler,JsonSax,
 // JsonLinesWriter} + cajeta.io.Buffer; +8 prelude structures).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 328;
+// 2026-06-20: 328 → 342 — codec Phase 0/1 stdlib merge: the cajeta.wire tier
+// interfaces (Encoder/SchemaEncoder/Schema/Compressor/Decompressor) + the CSV
+// codec (cajeta.codec.csv.{CsvIndex,CsvReader,CsvWriter,Csv,CsvParseException})
+// + remaining JSON binding classes (+14 prelude structures).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 342;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
