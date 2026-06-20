@@ -129,4 +129,81 @@ public final class CsvReader {
         }
         return out;
     }
+
+    // -- Field-value decoders (backs the Tier-1 `Csv.parse<T>` synthesizer) --
+    // These parse a whole already-unquoted field value (the int8[] from
+    // `field(i)`) into a primitive. v1 is permissive: non-digit bytes are
+    // skipped rather than rejected — fail-loud parsing lands in 1.2b-b3.
+
+    /** Parse the value bytes as a base-10 int64 (optional leading `-`). */
+    public static int64 parseI64(int8[] s) {
+        int32 n = (int32) s.count();
+        int32 i = 0;
+        boolean negative = false;
+        if (n > 0 && s[0] == (int8)45) { negative = true; i = 1; }
+        int64 acc = (int64) 0;
+        while (i < n) {
+            int8 c = s[i];
+            if (c >= (int8)48 && c <= (int8)57) {
+                acc = acc * (int64)10 + (int64)(((int32) c) - 48);
+            }
+            i = i + 1;
+        }
+        if (negative) { return - acc; }
+        return acc;
+    }
+
+    /** Parse the value bytes as float64 — sign, integer, fraction, exponent. */
+    public static float64 parseF64(int8[] s) {
+        int32 n = (int32) s.count();
+        int32 i = 0;
+        boolean negative = false;
+        if (n > 0 && s[0] == (int8)45) { negative = true; i = 1; }
+        float64 intPart = 0.0;
+        while (i < n) {
+            int8 c = s[i];
+            if (c < (int8)48 || c > (int8)57) { break; }
+            intPart = intPart * 10.0 + (float64)(((int32) c) - 48);
+            i = i + 1;
+        }
+        float64 frac = 0.0;
+        float64 scale = 1.0;
+        if (i < n && s[i] == (int8)46) {
+            i = i + 1;
+            while (i < n) {
+                int8 c = s[i];
+                if (c < (int8)48 || c > (int8)57) { break; }
+                scale = scale * 10.0;
+                frac = frac + ((float64)(((int32) c) - 48)) / scale;
+                i = i + 1;
+            }
+        }
+        float64 r = intPart + frac;
+        if (i < n && (s[i] == (int8)101 || s[i] == (int8)69)) {
+            i = i + 1;
+            boolean expNeg = false;
+            if (i < n && s[i] == (int8)45) { expNeg = true; i = i + 1; }
+            else if (i < n && s[i] == (int8)43) { i = i + 1; }
+            int32 exp = 0;
+            while (i < n) {
+                int8 c = s[i];
+                if (c < (int8)48 || c > (int8)57) { break; }
+                exp = exp * 10 + (((int32) c) - 48);
+                i = i + 1;
+            }
+            float64 pow10 = 1.0;
+            int32 ej = 0;
+            while (ej < exp) { pow10 = pow10 * 10.0; ej = ej + 1; }
+            if (expNeg) { r = r / pow10; } else { r = r * pow10; }
+        }
+        if (negative) { return - r; }
+        return r;
+    }
+
+    /** Parse the value bytes as boolean — true iff it starts with t/T/1. */
+    public static boolean parseBool(int8[] s) {
+        if ((int32) s.count() == 0) { return false; }
+        int8 c = s[0];
+        return c == (int8)116 || c == (int8)84 || c == (int8)49;
+    }
 }
