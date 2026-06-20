@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"   // setenv/unsetenv for the CAJETA_IFX_* override tests
 
 #include <cstdint>
 #include <string>
@@ -281,6 +282,67 @@ TEST(IfxRegistryTests, supportsFalseForUnregisteredDomain) {
         "if (r.supportsAudio(Feature.Hdr))           { acc = acc + 1; }\n"   // empty audio  → false
         "if (r.supportsWindow(Feature.MultiWindow))  { acc = acc + 1; }\n"   // floor        → false
         "return acc;\n"), 0);
+}
+
+// 4c -- CAJETA_IFX_WINDOW=<name> forces that registered backend over probe()/priority(): the named
+// low-priority backend binds even though a higher-priority one is viable.
+TEST(IfxRegistryTests, envOverrideForcesNamedWindowBackend) {
+    setenv("CAJETA_IFX_WINDOW", "lowprio", 1);
+    int32_t got = runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerWindow(heap FakeWindow(\"fast\", 100, true));\n"     // higher priority
+        "r.registerWindow(heap FakeWindow(\"lowprio\", 1, true));\n"    // lower priority, but named
+        "WindowBackend b = r.selectWindow(false);\n"
+        "if (b.name().equals(\"lowprio\")) { return 1; }\n"
+        "return 0;\n");
+    unsetenv("CAJETA_IFX_WINDOW");
+    EXPECT_EQ(got, 1);
+}
+
+// 4g -- an unknown CAJETA_IFX_WINDOW value is a loud launch error (IfxException), even for a headless
+// request: the operator named a backend that is not registered, so we fail rather than silently ignore.
+TEST(IfxRegistryTests, envOverrideUnknownWindowNameFailsLoudly) {
+    setenv("CAJETA_IFX_WINDOW", "nonesuch", 1);
+    int32_t got = runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerWindow(heap NullWindowBackend());\n"
+        "r.registerWindow(heap FakeWindow(\"fast\", 100, true));\n"
+        "try {\n"
+        "    WindowBackend b = r.selectWindow(true);\n"   // headless, but the unknown name still throws
+        "    return 0;\n"
+        "} catch (IfxException e) {\n"
+        "    return 1;\n"
+        "}\n");
+    unsetenv("CAJETA_IFX_WINDOW");
+    EXPECT_EQ(got, 1);
+}
+
+// 4c (input) -- CAJETA_IFX_INPUT forces the named input backend over priority.
+TEST(IfxRegistryTests, envOverrideForcesNamedInputBackend) {
+    setenv("CAJETA_IFX_INPUT", "pad", 1);
+    int32_t got = runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerInput(heap FakeInput(\"fast\", 100, true));\n"
+        "r.registerInput(heap FakeInput(\"pad\", 1, true));\n"
+        "InputBackend i = r.selectInput();\n"
+        "if (i.name().equals(\"pad\")) { return 1; }\n"
+        "return 0;\n");
+    unsetenv("CAJETA_IFX_INPUT");
+    EXPECT_EQ(got, 1);
+}
+
+// 4c (audio) -- CAJETA_IFX_AUDIO forces the named audio backend over priority.
+TEST(IfxRegistryTests, envOverrideForcesNamedAudioBackend) {
+    setenv("CAJETA_IFX_AUDIO", "alsa", 1);
+    int32_t got = runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerAudio(heap FakeAudio(\"fast\", 100, true));\n"
+        "r.registerAudio(heap FakeAudio(\"alsa\", 1, true));\n"
+        "AudioBackend a = r.selectAudio();\n"
+        "if (a.name().equals(\"alsa\")) { return 1; }\n"
+        "return 0;\n");
+    unsetenv("CAJETA_IFX_AUDIO");
+    EXPECT_EQ(got, 1);
 }
 
 // 5b -- instance() is a true process-wide singleton AND is the load-time register() entry external

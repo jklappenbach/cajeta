@@ -93,6 +93,18 @@ public final class BackendRegistry {
      *                 and accepts the null floor; false: the app wants a real interactive window.
      */
     public WindowBackend selectWindow(boolean headless) {
+        // Env override (spec §4.2): CAJETA_IFX_WINDOW=<name> forces that registered backend over
+        // probe()/priority() — explicit operator intent (e.g. x11 even when Wayland is viable). An
+        // unknown name is a loud launch error (§4 case / 4g). Matched by name(), so it also bypasses
+        // the headless/loud-error policy: forcing "null" is an explicit opt-in to the floor.
+        String forcedWindow = System.env.get("CAJETA_IFX_WINDOW");
+        if (forcedWindow != null) {
+            int32 forcedIndex = this.windowIndexByName(forcedWindow);
+            if (forcedIndex >= 0) { return this.windows.get(forcedIndex); }
+            throw heap IfxException(
+                "CAJETA_IFX_WINDOW=\"" + forcedWindow + "\" names no registered ifx.window backend");
+        }
+
         WindowBackend best = null;
         int32 bestPriority = 0;
         boolean haveBest = false;
@@ -111,7 +123,8 @@ public final class BackendRegistry {
             i = i + 1;
         }
 
-        if (best == null || this.isNullFloor(best.name())) {
+        // `!haveBest` rather than `best == null`: never null-compare an interface value (codegen).
+        if (!haveBest || this.isNullFloor(best.name())) {
             // Only the silent floor (or nothing) is viable for the window domain.
             if (headless) {
                 return best;   // opt-in headless: bind the null floor silently (null if none at all)
@@ -124,8 +137,17 @@ public final class BackendRegistry {
         return best;
     }
 
-    /** Bind the input backend: highest-`priority()` viable, the null floor (empty devices) at worst. */
+    /** Bind the input backend: highest-`priority()` viable, the null floor (empty devices) at worst.
+     *  `CAJETA_IFX_INPUT=<name>` forces a registered backend; an unknown name fails loudly (§4.2/4g). */
     public InputBackend selectInput() {
+        String forcedInput = System.env.get("CAJETA_IFX_INPUT");
+        if (forcedInput != null) {
+            int32 forcedIndex = this.inputIndexByName(forcedInput);
+            if (forcedIndex >= 0) { return this.inputs.get(forcedIndex); }
+            throw heap IfxException(
+                "CAJETA_IFX_INPUT=\"" + forcedInput + "\" names no registered ifx.input backend");
+        }
+
         InputBackend best = null;
         int32 bestPriority = 0;
         boolean haveBest = false;
@@ -145,8 +167,17 @@ public final class BackendRegistry {
         return best;
     }
 
-    /** Bind the audio backend: highest-`priority()` viable, the silent null floor at worst. */
+    /** Bind the audio backend: highest-`priority()` viable, the silent null floor at worst.
+     *  `CAJETA_IFX_AUDIO=<name>` forces a registered backend; an unknown name fails loudly (§4.2/4g). */
     public AudioBackend selectAudio() {
+        String forcedAudio = System.env.get("CAJETA_IFX_AUDIO");
+        if (forcedAudio != null) {
+            int32 forcedIndex = this.audioIndexByName(forcedAudio);
+            if (forcedIndex >= 0) { return this.audios.get(forcedIndex); }
+            throw heap IfxException(
+                "CAJETA_IFX_AUDIO=\"" + forcedAudio + "\" names no registered ifx.audio backend");
+        }
+
         AudioBackend best = null;
         int32 bestPriority = 0;
         boolean haveBest = false;
@@ -249,5 +280,39 @@ public final class BackendRegistry {
     // real bind from the floor for the window domain's three-cases policy.
     private boolean isNullFloor(String backendName) {
         return backendName.equals("null");
+    }
+
+    // ── Env-override lookup helpers. Return an int32 index (or -1), NEVER a possibly-null interface,
+    // so the select*() callers branch on `idx >= 0` instead of null-comparing an interface value
+    // (which miscompiles — see the supports*() note above).
+
+    /** Index of the first registered window backend whose name() == wanted, or -1. */
+    private int32 windowIndexByName(String wanted) {
+        int32 i = 0;
+        while (i < this.windows.count()) {
+            if (this.windows.get(i).name().equals(wanted)) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /** Index of the first registered input backend whose name() == wanted, or -1. */
+    private int32 inputIndexByName(String wanted) {
+        int32 i = 0;
+        while (i < this.inputs.count()) {
+            if (this.inputs.get(i).name().equals(wanted)) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /** Index of the first registered audio backend whose name() == wanted, or -1. */
+    private int32 audioIndexByName(String wanted) {
+        int32 i = 0;
+        while (i < this.audios.count()) {
+            if (this.audios.get(i).name().equals(wanted)) { return i; }
+            i = i + 1;
+        }
+        return -1;
     }
 }
