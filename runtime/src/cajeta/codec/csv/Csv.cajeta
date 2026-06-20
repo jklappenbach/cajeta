@@ -1,0 +1,51 @@
+package cajeta.codec.csv;
+
+import cajeta.lang.String;
+
+/**
+ * Typed CSV facade — the `Csv.parse<T>` entry point that binds CSV rows to a
+ * declared type `T` (or `T[]` for the whole file). Like `Json.parse<T>`, this
+ * is a **Tier-1 synthesizer**: the compiler walks `T`'s declared fields and
+ * emits a per-T header→field bind over `CsvReader` at the call site — no
+ * runtime reflection, no intermediate value tree.
+ *
+ * The header row names the columns; each header is matched to a field of `T`
+ * (by field name, an `@CsvColumn("name")` rename, a class-level
+ * `@CsvNamingStrategy`, or an `@CsvAlias`). Columns with no matching field are
+ * skipped (projection); a field with no matching column is left default unless
+ * marked `@CsvRequired`, which fails loud. Supported field types:
+ * `int32` / `int64` / `float64` / `boolean` / `String`.
+ *
+ * ```cajeta
+ * Trade[] trades = Csv.parse<Trade[]>(bytes, (int64) bytes.count());
+ * ```
+ *
+ * The body below is a **failsafe**: if the synthesizer (Phase 4b in
+ * `MethodTemplateInstantiator`) does not engage, callers get a thrown
+ * `CsvParseException` rather than a silently default-zeroed result.
+ *
+ * See docs/specification/codec/Codecs.md § CSV and
+ * agents/cajeta/codecs/codecs-plan.md § 1.2b.
+ */
+public final class Csv {
+    /**
+     * Tier-1 templated parse: bind CSV `bytes` (first `length` valid) to `T`.
+     * The resolver routes `Csv.parse<T>(...)` here via the explicit type
+     * argument; the synthesizer replaces this captured body per-T.
+     *
+     * Throws `CsvParseException` if the synthesizer fails to engage.
+     */
+    public static T parse<T>(int8[] bytes, int64 length) {
+        throw heap CsvParseException(
+            "Csv.parse<T>: synthesizer not engaged", (int64) 0);
+    }
+
+    /**
+     * Tier-1 `String` convenience — forwards to the byte-buffer variant. Its
+     * `(String)` shape does not match the synthesizer's `(int8[], int64)`
+     * signature, so this delegation body is preserved verbatim.
+     */
+    public static T parse<T>(String s) {
+        return Csv.parse<T>(s.bytes, (int64) s.byteLength);
+    }
+}
