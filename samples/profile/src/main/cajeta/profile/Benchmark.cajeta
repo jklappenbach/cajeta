@@ -69,6 +69,18 @@ public class Benchmark {
         return true;
     }
 
+    // Whether a specific variant can run. A benchmark with a per-input limitation
+    // (e.g. the v1 JSON DOM not parsing floats, so only integer-only inputs work)
+    // returns false for the unsupported variants; the harness records a skip row
+    // (with skipReason) instead of letting the workload throw.
+    public boolean supportsVariant(String variant) {
+        return true;
+    }
+
+    public String skipReason() {
+        return "variant not supported by this benchmark";
+    }
+
     // Variant matrix (spec §4.4/§4.5). A benchmark with parameterized inputs —
     // sort {type×pattern×prediction}, JSON {in-order/out-of-order/missing-key} —
     // returns one label per variant; the measurement loop produces one result row

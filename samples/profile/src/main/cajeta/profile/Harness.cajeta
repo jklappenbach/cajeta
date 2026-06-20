@@ -21,7 +21,7 @@ public class Harness {
     // input; teardown() runs once at the end.
     public static void measureInto(Benchmark b, String runId, ArrayList<Result> rows) {
         if (!b.available()) {
-            rows.add(Harness.skippedRow(b, runId,
+            rows.add(Harness.skippedRow(b, runId, "",
                 "unavailable (dataset not configured? set PROFILE_DATA_DIR + fetch)"));
             return;
         }
@@ -32,7 +32,12 @@ public class Harness {
         while (vi < vn) {
             String v = vs.get(vi);
             // Owned temporary straight into the list (add stores a reference).
-            rows.add(Harness.measureOne(b, runId, v));
+            if (b.supportsVariant(v)) {
+                rows.add(Harness.measureOne(b, runId, v));
+            } else {
+                String why = b.skipReason();
+                rows.add(Harness.skippedRow(b, runId, v, why));
+            }
             vi = vi + 1;
         }
         b.teardown();
@@ -119,13 +124,14 @@ public class Harness {
 
     // A recorded skip row (never a silent omission) for a benchmark that can't
     // run here — e.g. its dataset isn't configured.
-    public static #Result skippedRow(Benchmark b, String runId, String reason) {
+    public static #Result skippedRow(Benchmark b, String runId, String variant, String reason) {
         String nm = b.name();
         String ar = b.area();
         Result r = heap Result();
         r.runId = "" + runId;
         r.benchmark = "" + nm;
         r.area = "" + ar;
+        r.variant = "" + variant;
         r.language = "cajeta";
         r.status = "skipped";
         r.checkOk = false;

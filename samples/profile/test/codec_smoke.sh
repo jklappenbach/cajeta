@@ -53,6 +53,20 @@ for vrt in twitter citm_catalog canada; do
     echo "[codec] json-tokenize/$vrt ok  bytes=$isz  min_ns=$mn"
 done
 
+# json DOM-family: citm (integer-only) runs ok; twitter/canada skip (v1 DOM
+# doesn't parse floats) — the limitation surfaced as data, not a crash.
+for bench in json-dom json-serialize json-roundtrip; do
+    st="$(col "$bench" citm_catalog 28)"
+    [[ "$st" == "ok" ]] || fail "$bench/citm_catalog status=$st"
+    mn="$(col "$bench" citm_catalog 17)"
+    echo "[codec] $bench/citm_catalog ok  min_ns=$mn"
+    for vrt in twitter canada; do
+        st="$(col "$bench" "$vrt" 28)"
+        [[ "$st" == "skipped" ]] || fail "$bench/$vrt expected skip (floats), got $st"
+        echo "[codec] $bench/$vrt skipped (floats) ✓"
+    done
+done
+
 # base64 enc/dec ok
 for b in base64-encode base64-decode; do
     st="$(awk -F, -v b="$b" 'NR>1 && $4==b {print $28; exit}' "$OUT")"
