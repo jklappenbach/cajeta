@@ -1,0 +1,19 @@
+# Vendored benchmark suites / competitor libraries (spec §17.4, §18). Cloned
+# on demand by vendor.sh into competitors/vendor/<name>/, which records the
+# resolved commit in <name>.lock for reproducibility. Fetched per-area when a
+# unit needs them (not all up front).
+# Columns: name<TAB>url
+sort-research-rs	https://github.com/Voultapher/sort-research-rs
+highway	https://github.com/google/highway
+ips4o	https://github.com/ips4o/ips4o
+smhasher	https://github.com/rurban/smhasher
+stringzilla	https://github.com/ashvardanian/StringZilla
+simdutf	https://github.com/simdutf/simdutf
+unordered_dense	https://github.com/martinus/unordered_dense
+abseil	https://github.com/abseil/abseil-cpp
+simdjson	https://github.com/simdjson/simdjson
+yyjson	https://github.com/ibireme/yyjson
+glaze	https://github.com/stephenberry/glaze
+babelstream	https://github.com/UoB-HPC/BabelStream
+mixbench	https://github.com/ekondis/mixbench
+parallel-reductions	https://github.com/ashvardanian/ParallelReductionsBenchmark

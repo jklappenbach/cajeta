@@ -3,3 +3,5 @@ build/
 # Fetched datasets (content-addressed cache) and benchmark run outputs.
 datasets/cache/
 results/
+# Vendored suite clones (cloned on demand; the .lock + manifest stay tracked).
+competitors/vendor/*/
