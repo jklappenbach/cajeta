@@ -33,6 +33,84 @@ namespace cajeta {
         return out;
     }
 
+    // camelCase → snake_case / kebab-case (mirror of JSON's applyNamingStrategy).
+    // Empty / IDENTITY / CAMEL_CASE are no-ops; unrecognized strategies pass
+    // through unchanged.
+    std::string applyNamingStrategy(const std::string& strategy,
+                                     const std::string& declaredName) {
+        if (strategy.empty() || strategy == "IDENTITY" || strategy == "CAMEL_CASE") {
+            return declaredName;
+        }
+        if (strategy == "PASCAL_CASE") {
+            if (declaredName.empty()) return declaredName;
+            std::string out = declaredName;
+            if (out[0] >= 'a' && out[0] <= 'z') out[0] = (char) (out[0] - 'a' + 'A');
+            return out;
+        }
+        if (strategy == "SNAKE_CASE" || strategy == "KEBAB_CASE") {
+            char sep = (strategy == "SNAKE_CASE") ? '_' : '-';
+            std::string out;
+            out.reserve(declaredName.size() + 4);
+            for (size_t i = 0; i < declaredName.size(); ++i) {
+                char c = declaredName[i];
+                if (i > 0 && c >= 'A' && c <= 'Z') {
+                    out.push_back(sep);
+                    out.push_back((char) (c - 'A' + 'a'));
+                } else if (c >= 'A' && c <= 'Z') {
+                    out.push_back((char) (c - 'A' + 'a'));
+                } else {
+                    out.push_back(c);
+                }
+            }
+            return out;
+        }
+        return declaredName;
+    }
+
+    // Class-level @CsvNamingStrategy("...") value, or empty when absent.
+    std::string classNamingStrategy(const CajetaClassPtr& T) {
+        if (!T) return std::string();
+        if (auto ann = T->findAnnotation("CsvNamingStrategy")) {
+            return ann->getString("value");
+        }
+        return std::string();
+    }
+
+    // True if the field carries @CsvIgnore — dropped from the bind entirely.
+    bool isCsvIgnored(const StructurePropertyPtr& prop) {
+        return prop && prop->findAnnotation("CsvIgnore") != nullptr;
+    }
+
+    // Primary header key for a field. Precedence (mirror effectiveJsonKey):
+    //   1. @CsvColumn("name") on the field — wins.
+    //   2. class @CsvNamingStrategy transform of the declared name.
+    //   3. the declared name verbatim.
+    std::string effectiveCsvKey(const StructurePropertyPtr& prop,
+                                 const std::string& classStrategy) {
+        if (!prop) return std::string();
+        if (auto ann = prop->findAnnotation("CsvColumn")) {
+            std::string renamed = ann->getString("value");
+            if (!renamed.empty()) return renamed;
+        }
+        return applyNamingStrategy(classStrategy, prop->getName());
+    }
+
+    // Extra header keys accepted on read via @CsvAlias({"a","b"}) (or the
+    // single-value form). Order preserved; empty if absent.
+    std::vector<std::string> csvAliases(const StructurePropertyPtr& prop) {
+        std::vector<std::string> out;
+        if (!prop) return out;
+        if (auto ann = prop->findAnnotation("CsvAlias")) {
+            const auto& list = ann->getStringList("value");
+            for (auto& s : list) out.push_back(s);
+            if (out.empty()) {
+                std::string single = ann->getString("value");
+                if (!single.empty()) out.push_back(single);
+            }
+        }
+        return out;
+    }
+
     // The reader-driven value decode for a supported primitive field type, or
     // empty if the type isn't bound in b2. `fv` names the field's value bytes.
     std::string decodeExpr(const std::string& canon, const std::string& fv) {
@@ -58,11 +136,18 @@ namespace cajeta {
     std::string synthesizeArrayParseBody(const CajetaClassPtr& E) {
         const std::string Ec = E->getQName()->toCanonical();
 
-        // Bindable fields: those whose type is a supported primitive or String.
-        struct Bind { std::string name; std::string canon; bool isString; bool required; };
+        // Bindable fields: those whose type is a supported primitive or String,
+        // and not @CsvIgnore'd. `keys` holds the header strings that map to the
+        // field (primary key first, then aliases).
+        struct Bind {
+            std::string name; std::string canon; bool isString; bool required;
+            std::vector<std::string> keys;
+        };
+        const std::string classStrategy = classNamingStrategy(E);
         std::vector<Bind> binds;
         for (auto& prop : E->getPropertyList()) {
             if (!prop) continue;
+            if (isCsvIgnored(prop)) continue;
             auto ty = prop->getType();
             if (!ty || !ty->getQName()) continue;
             const std::string tc = ty->getQName()->toCanonical();
@@ -70,7 +155,11 @@ namespace cajeta {
             if (isString || tc == "int32" || tc == "int64"
                     || tc == "float64" || tc == "boolean") {
                 bool required = prop->findAnnotation("CsvRequired") != nullptr;
-                binds.push_back({prop->getName(), tc, isString, required});
+                std::vector<std::string> keys;
+                keys.push_back(effectiveCsvKey(prop, classStrategy));
+                for (auto& a : csvAliases(prop)) keys.push_back(a);
+                binds.push_back({prop->getName(), tc, isString, required,
+                                 std::move(keys)});
             }
         }
 
@@ -93,8 +182,15 @@ namespace cajeta {
               "heap cajeta.lang.String(#hb, (int32) hb.count());\n";
         bool first = true;
         for (auto& b : binds) {
+            std::ostringstream guard;
+            bool firstKey = true;
+            for (auto& k : b.keys) {
+                if (!firstKey) guard << " || ";
+                guard << "hn.equals(\"" << escapeCajetaString(k) << "\")";
+                firstKey = false;
+            }
             os << "            " << (first ? "if" : "else if")
-               << " (hn.equals(\"" << escapeCajetaString(b.name) << "\")) "
+               << " (" << guard.str() << ") "
                << "{ col_" << b.name << " = hi; }\n";
             first = false;
         }

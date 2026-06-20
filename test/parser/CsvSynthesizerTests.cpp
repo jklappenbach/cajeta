@@ -180,3 +180,71 @@ TEST(CsvSynthesizerTests, requiredOnePresentOneMissingThrows) {
         " }"),
         1);
 }
+
+// ---- b4: annotation surface (@CsvColumn / @CsvNamingStrategy / @CsvIgnore / @CsvAlias) ----
+
+// @CsvColumn("user_id") renames the header key the field binds to.
+TEST(CsvSynthesizerTests, csvColumnRename) {
+    EXPECT_EQ(runCsv(
+        "public class Box { @CsvColumn(\"user_id\") public int32 id; }\n",
+        "user_id\n42",
+        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        " return rows[0].id;"),
+        42);
+}
+
+// Class-level @CsvNamingStrategy("SNAKE_CASE") matches camelCase fields to
+// snake_case header keys.
+TEST(CsvSynthesizerTests, csvNamingStrategySnakeCase) {
+    EXPECT_EQ(runCsv(
+        "@CsvNamingStrategy(\"SNAKE_CASE\")\n"
+        "public class User { public int32 firstName; }\n",
+        "first_name\n7",
+        "User[] rows = Csv.parse<User[]>(buf, n);"
+        " return rows[0].firstName;"),
+        7);
+}
+
+// KEBAB_CASE uses '-' separators.
+TEST(CsvSynthesizerTests, csvNamingStrategyKebabCase) {
+    EXPECT_EQ(runCsv(
+        "@CsvNamingStrategy(\"KEBAB_CASE\")\n"
+        "public class User { public int32 firstName; }\n",
+        "first-name\n8",
+        "User[] rows = Csv.parse<User[]>(buf, n);"
+        " return rows[0].firstName;"),
+        8);
+}
+
+// Field-level @CsvColumn wins over the class naming strategy — the snake-case
+// key "first_name" no longer binds; only the explicit column does.
+TEST(CsvSynthesizerTests, csvColumnOverridesStrategy) {
+    EXPECT_EQ(runCsv(
+        "@CsvNamingStrategy(\"SNAKE_CASE\")\n"
+        "public class User { @CsvColumn(\"EXPLICIT\") public int32 firstName; }\n",
+        "EXPLICIT\n9",
+        "User[] rows = Csv.parse<User[]>(buf, n);"
+        " return rows[0].firstName;"),
+        9);
+}
+
+// @CsvIgnore drops a field from the bind entirely — a matching header column
+// does not populate it (stays at default).
+TEST(CsvSynthesizerTests, csvIgnoreField) {
+    EXPECT_EQ(runCsv(
+        "public class Box { public int32 a; @CsvIgnore public int32 secret; }\n",
+        "a,secret\n5,99",
+        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        " return rows[0].a * 100 + rows[0].secret;"),
+        5 * 100 + 0);   // 500 — secret ignored
+}
+
+// @CsvAlias adds alternate header keys accepted on read.
+TEST(CsvSynthesizerTests, csvAliasReadsAlternateKey) {
+    EXPECT_EQ(runCsv(
+        "public class Box { @CsvAlias({\"uid\", \"user-id\"}) public int32 id; }\n",
+        "uid\n42",
+        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        " return rows[0].id;"),
+        42);
+}
