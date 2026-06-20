@@ -37,6 +37,23 @@ public class Benchmark {
         return "";
     }
 
+    // Methodology knobs the measurement loop (Harness, Unit 3) reads. Defaults
+    // match the bench/ precedent; slow benchmarks override with fewer trials.
+    public int32 warmupIters() {
+        return 20;
+    }
+
+    public int32 measuredIters() {
+        return 200;
+    }
+
+    // Nanoseconds of unavoidable per-iteration overhead (allocation / fresh-
+    // buffer read) to subtract from each measured trial — the BindBench pattern.
+    // 0 = nothing to subtract.
+    public int64 baselineNanos() {
+        return (int64) 0;
+    }
+
     // Lifecycle. setup → run → teardown → checkResult, driven by Profile.
     public void setup() {
     }

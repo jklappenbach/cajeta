@@ -4,6 +4,8 @@ import cajeta.collection.ArrayList;
 
 import profile.Benchmark;
 import profile.ExampleBenchmark;
+import profile.SumBench;
+import profile.Harness;
 import profile.report.Result;
 import profile.report.Report;
 import profile.report.Memory;
@@ -28,11 +30,13 @@ public final class Profile {
         // chain releases them at scope exit.
         ArrayList<Benchmark> benchmarks = heap ArrayList<Benchmark>();
         benchmarks.add(heap ExampleBenchmark());
+        benchmarks.add(heap SumBench());
 
         // Parse the minimal flags so far. (Full selection — --area, --bench,
         // --lang, --no-report — lands in Unit 17.)
         boolean listMode = false;
         boolean selfTest = false;
+        boolean runMode = false;
         String outPath = null;
         int32 i = 0;
         while (i < args.count()) {
@@ -41,6 +45,9 @@ public final class Profile {
             }
             if (args[i].equals("--selftest")) {
                 selfTest = true;
+            }
+            if (args[i].equals("--run")) {
+                runMode = true;
             }
             if (args[i].equals("--out")) {
                 if (i + 1 < args.count()) {
@@ -55,6 +62,13 @@ public final class Profile {
         // sibling env CSV, then exits.
         if (selfTest) {
             return Profile.runSelfTest(outPath);
+        }
+
+        // --run: measure every registered benchmark through the Harness loop
+        // (Unit 3) and write the results CSV. (Selection by area/lang/bench
+        // lands in Unit 17; for now it runs all registered benchmarks.)
+        if (runMode) {
+            return Profile.runMeasured(benchmarks, outPath);
         }
 
         int32 n = benchmarks.count();
@@ -90,6 +104,41 @@ public final class Profile {
 
         System.stdout.println("");
         System.stdout.println("=== profile complete ===");
+        return 0;
+    }
+
+    // Unit 3: measure every registered benchmark through the Harness loop and
+    // write one results CSV row per benchmark. Competitor rows (other languages)
+    // are appended by their own runners + the driver later.
+    public static int32 runMeasured(ArrayList<Benchmark> benchmarks, String outPath) {
+        String results = outPath;
+        if (results == null) {
+            results = "/tmp/profile-results.csv";
+        }
+        String runId = System.env.get("PROFILE_RUN_ID");
+        if (runId == null) {
+            runId = "local-run";
+        }
+
+        ArrayList<Result> rows = heap ArrayList<Result>();
+        int32 i = 0;
+        int32 n = benchmarks.count();
+        while (i < n) {
+            Benchmark b = benchmarks.get(i);
+            // Pass the owned Result straight into the list (add stores a
+            // reference, not a copy — a named owning local would drop it at
+            // loop end and dangle the stored reference). Read it back from the
+            // list (a borrow) for the progress line.
+            rows.add(Harness.measure(b, runId));
+            Result r = rows.get(i);
+            System.stdout.println("  measured " + r.benchmark + " [" + r.area
+                + "]  min_ns=" + r.minNs + "  median_ns=" + r.medianNs
+                + "  ws_kb=" + r.workingSetKb + "  " + r.status);
+            i = i + 1;
+        }
+
+        Report.writeResults(results, rows);
+        System.stdout.println("run: wrote " + results);
         return 0;
     }
 
