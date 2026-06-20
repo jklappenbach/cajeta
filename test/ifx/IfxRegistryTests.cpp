@@ -35,6 +35,7 @@ std::string withFakes(const std::string& body) {
     return
         "package test;\n"
         "import cajeta.ifx.BackendRegistry;\n"
+        "import cajeta.ifx.IfxInfo;\n"
         "import cajeta.ifx.WindowBackend;\n"
         "import cajeta.ifx.InputBackend;\n"
         "import cajeta.ifx.AudioBackend;\n"
@@ -282,6 +283,18 @@ TEST(IfxRegistryTests, supportsFalseForUnregisteredDomain) {
         "if (r.supportsAudio(Feature.Hdr))           { acc = acc + 1; }\n"   // empty audio  → false
         "if (r.supportsWindow(Feature.MultiWindow))  { acc = acc + 1; }\n"   // floor        → false
         "return acc;\n"), 0);
+}
+
+// 4e -- IfxInfo.describe() snapshots the bound backend per domain from the shared registry: a real
+// window backend registered through instance() shows up as the bound window name (over the floor).
+TEST(IfxRegistryTests, ifxInfoDescribeReflectsRegisteredWindow) {
+    EXPECT_EQ(runI32(
+        "BackendRegistry.instance().registerWindow(heap FakeWindow(\"win32\", 100, true));\n"
+        "IfxInfo info = IfxInfo.describe();\n"
+        "if (info.windowBackendName().equals(\"win32\")\n"
+        "    && info.inputBackendName().equals(\"null\")\n"     // input floor (auto-registered)
+        "    && info.audioBackendName().equals(\"null\")) { return 1; }\n"  // audio floor
+        "return 0;\n"), 1);
 }
 
 // 4c -- CAJETA_IFX_WINDOW=<name> forces that registered backend over probe()/priority(): the named

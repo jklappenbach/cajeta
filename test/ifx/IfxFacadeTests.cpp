@@ -389,6 +389,28 @@ TEST(IfxFacadeTests, ifxInfoSupportsFacadeRoutesToRegistry) {
     EXPECT_EQ(fn(), 0);
 }
 
+// 4e -- IfxInfo.describe() snapshots the active per-domain bind. With only the auto-registered floor
+// (no OS backend linked), every domain reports the "null" floor — and describe() is headless-tolerant
+// (it must never raise the interactive loud-error just to report what's bound).
+TEST(IfxFacadeTests, ifxInfoDescribeSnapshotsFloorBind) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.IfxInfo;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        IfxInfo info = IfxInfo.describe();\n"
+        "        if (info.windowBackendName().equals(\"null\")\n"
+        "            && info.inputBackendName().equals(\"null\")\n"
+        "            && info.audioBackendName().equals(\"null\")) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1);
+}
+
 // ── Unit 8: recording SPI seam (stub-level, spec §7) ──────────────────────────────────────────
 
 // 8a -- the VideoSink seam + its royalty-free PNG-sequence fallback are referenceable from stdlib:
