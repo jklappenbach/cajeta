@@ -71,7 +71,7 @@ fn emit(
     };
     // columns.txt order (31 cols).
     println!(
-        "1,{run_id},{ts},json-dom,codec,{dataset},{bytes},,{bytes},rust,{rustver},{lib},{ver},-O3 lto,{warmup},{trials},\
+        "1,{run_id},{ts},json-dom,codec,{dataset},{bytes},,{bytes},rust,{rustver},{lib},{ver},-O3 lto target-cpu=native,{warmup},{trials},\
 {min},{median},{mean},{p95},{mbps:.1},MB/s,{rss},-1,{alloc},-1,-1,{status},{check},,",
         run_id = run_id, ts = ts, dataset = dataset, bytes = bytes,
         rustver = env("PROFILE_LANG_VERSION", ""), lib = lib, ver = ver,

@@ -44,7 +44,7 @@ fn emit(run_id: &str, ts: &str, bench: &str, input: usize,
     // clbg has no natural throughput unit — leave throughput/unit empty; the
     // report derives a rate from input_size/min_ns.
     println!(
-        "1,{run_id},{ts},{bench},clbg,,{input},,{input},rust,{ver},scalar,std,-O3 lto,{warmup},{trials},\
+        "1,{run_id},{ts},{bench},clbg,,{input},,{input},rust,{ver},scalar,std,-O3 lto target-cpu=native,{warmup},{trials},\
 {mn},{med},{mean},{p95},,,{rss},-1,{alloc},-1,-1,{status},{check},,",
         run_id = run_id, ts = ts, bench = bench, input = input, ver = env("PROFILE_LANG_VERSION", ""),
         warmup = warmup, trials = trials, mn = mn, med = med, mean = mean, p95 = p95,

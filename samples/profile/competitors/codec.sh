@@ -80,7 +80,7 @@ fi
 if want go; then
     if command -v go >/dev/null 2>&1; then
         if ( cd "$DIR/go/codec" && go mod tidy >/tmp/profile-codec-go.log 2>&1 && \
-             PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-codec-go.log ); then
+             GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-codec-go.log ); then
             :
         else
             skip_lang go go "go build/run failed (see /tmp/profile-codec-go.log)"

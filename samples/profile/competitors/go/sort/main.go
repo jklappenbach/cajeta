@@ -121,7 +121,7 @@ func emit(runID, ts, bench, variant, lib string, warmup, trials int, samples []i
 		status = "invalid"
 	}
 	fmt.Printf(
-		"1,%s,%s,%s,sort,,%d,,%d,go,%s,%s,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,%.2f,Melem/s,%d,-1,%d,-1,-1,%s,%t,,%s\n",
+		"1,%s,%s,%s,sort,,%d,,%d,go,%s,%s,stdlib,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.2f,Melem/s,%d,-1,%d,-1,-1,%s,%t,,%s\n",
 		runID, ts, bench, N, N, env("PROFILE_LANG_VERSION", ""), lib,
 		warmup, trials, mn, med, mean, p95, mels, peakRSSKb(), gAlloc, status, ok, variant)
 }

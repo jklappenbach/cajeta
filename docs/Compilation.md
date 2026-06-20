@@ -763,6 +763,10 @@ level — but only tier-1 targets are validated end-to-end.
 The `--target` flag overrides the default (host triple); `--cpu`
 and `--features` select the specific CPU model and feature flags
 within the target (e.g. `--cpu=skylake --features=+avx2,+bmi2`).
+`--cpu=native` resolves to the host's CPU model plus its detected
+feature set — the equivalent of clang/gcc `-march=native`, letting
+the optimizer's vectorizers use the host's widest ISA (AVX2/AVX-512/
+FMA, NEON, …) instead of the conservative `generic` baseline.
 
 ### Linker integration
 
@@ -965,7 +969,7 @@ flags — those positions are mandatory.
 | Flag                          | Description                                    |
 |-------------------------------|------------------------------------------------|
 | `--target=<triple>`           | LLVM target triple. Default: host triple.      |
-| `--cpu=<name>`                | CPU model within target (e.g. `skylake`). Default: `generic`. |
+| `--cpu=<name>`                | CPU model within target (e.g. `skylake`, or `native` for the host CPU + features ≈ `-march=native`). Default: `generic`. |
 | `--features=<list>`           | Comma-separated CPU features (`+avx2,+bmi2`).  |
 
 ### Mode + optimization

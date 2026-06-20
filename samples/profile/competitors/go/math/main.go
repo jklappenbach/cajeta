@@ -79,7 +79,7 @@ func emit(runID, ts, bench string, input int, flops float64, warmup, trials int,
 		status = "invalid"
 	}
 	fmt.Printf(
-		"1,%s,%s,%s,math,,%d,,%d,go,%s,scalar,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,%.3f,GFLOP/s,%d,-1,%d,-1,-1,%s,%t,,\n",
+		"1,%s,%s,%s,math,,%d,,%d,go,%s,scalar,stdlib,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.3f,GFLOP/s,%d,-1,%d,-1,-1,%s,%t,,\n",
 		runID, ts, bench, input, input, env("PROFILE_LANG_VERSION", ""),
 		warmup, trials, mn, med, mean, p95, gflops, peakRSSKb(), gAlloc, status, ok)
 }

@@ -79,7 +79,7 @@ fi
 if want go; then
     if command -v go >/dev/null 2>&1; then
         ( cd "$DIR/go/hash" && go mod tidy >/tmp/profile-hash-go.log 2>&1 && \
-          PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-hash-go.log ) \
+          GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-hash-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-hash-go.log)"
     else
         skip_lang go go "go not installed"

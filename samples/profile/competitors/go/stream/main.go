@@ -76,7 +76,7 @@ func emit(runID, ts, bench, lib string, input, warmup, trials int, samples []int
 		status = "invalid"
 	}
 	fmt.Printf(
-		"1,%s,%s,%s,stream,,%d,,%d,go,%s,%s,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,%.2f,Mop/s,%d,-1,%d,-1,-1,%s,%t,,\n",
+		"1,%s,%s,%s,stream,,%d,,%d,go,%s,%s,stdlib,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.2f,Mop/s,%d,-1,%d,-1,-1,%s,%t,,\n",
 		runID, ts, bench, input, input, env("PROFILE_LANG_VERSION", ""), lib,
 		warmup, trials, mn, med, mean, p95, mops, peakRSSKb(), gAlloc, status, ok)
 }

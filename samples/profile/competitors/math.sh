@@ -66,7 +66,7 @@ fi
 # ---- go (scalar) ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/math" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-math-go.log ) \
+        ( cd "$DIR/go/math" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-math-go.log ) \
             || skip_lang go scalar "go build/run failed (see /tmp/profile-math-go.log)"
     else
         skip_lang go scalar "go not installed"

@@ -63,7 +63,12 @@
         "release": {
             "description": "Optimized release build of the profile harness",
             "actions": [
-                { "action": "build", "flavor": "release",
+                // O3 + host-native CPU (AVX2/FMA on this machine) so the Cajeta
+                // benchmarks compete on the same footing as the competitors'
+                // `-O3 -march=native` / `target-cpu=native` builds, instead of
+                // the default release flavor's O2 + generic-baseline x86-64.
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native" },
                   "output-path": "build/profile", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }

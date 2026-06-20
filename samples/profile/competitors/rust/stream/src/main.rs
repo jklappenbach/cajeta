@@ -41,7 +41,7 @@ fn emit(run_id: &str, ts: &str, bench: &str, lib: &str, input: usize,
     let mops = if med > 0 { input as f64 / med as f64 * 1e9 / 1e6 } else { 0.0 };
     let status = if check_ok { "ok" } else { "invalid" };
     println!(
-        "1,{run_id},{ts},{bench},stream,,{input},,{input},rust,{ver},{lib},std,-O3 lto,{warmup},{trials},\
+        "1,{run_id},{ts},{bench},stream,,{input},,{input},rust,{ver},{lib},std,-O3 lto target-cpu=native,{warmup},{trials},\
 {mn},{med},{mean},{p95},{mops:.2},Mop/s,{rss},-1,{alloc},-1,-1,{status},{check},,",
         run_id = run_id, ts = ts, bench = bench, input = input, ver = env("PROFILE_LANG_VERSION", ""),
         lib = lib, warmup = warmup, trials = trials, mn = mn, med = med, mean = mean, p95 = p95,

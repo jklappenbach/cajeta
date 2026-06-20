@@ -66,7 +66,7 @@ fi
 # ---- go (atomic.Int64 + goroutines) ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/concurrent" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-conc-go.log ) \
+        ( cd "$DIR/go/concurrent" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-conc-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-conc-go.log)"
     else
         skip_lang go go "go not installed"

@@ -64,7 +64,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/time" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-time-go.log ) \
+        ( cd "$DIR/go/time" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-time-go.log ) \
             || skip_lang go time "go build/run failed (see /tmp/profile-time-go.log)"
     else
         skip_lang go time "go not installed"

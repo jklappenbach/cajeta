@@ -44,7 +44,7 @@ fn emit(run_id: &str, ts: &str, bench: &str, input: usize, flops: f64,
     let gflops = if med > 0 { flops / med as f64 } else { 0.0 }; // FLOP per ns == GFLOP/s
     let status = if check_ok { "ok" } else { "invalid" };
     println!(
-        "1,{run_id},{ts},{bench},math,,{input},,{input},rust,{ver},scalar,std,-O3 lto,{warmup},{trials},\
+        "1,{run_id},{ts},{bench},math,,{input},,{input},rust,{ver},scalar,std,-O3 lto target-cpu=native,{warmup},{trials},\
 {mn},{med},{mean},{p95},{gflops:.3},GFLOP/s,{rss},-1,{alloc},-1,-1,{status},{check},,",
         run_id = run_id, ts = ts, bench = bench, input = input, ver = env("PROFILE_LANG_VERSION", ""),
         warmup = warmup, trials = trials, mn = mn, med = med, mean = mean, p95 = p95,
