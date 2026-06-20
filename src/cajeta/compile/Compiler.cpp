@@ -5,6 +5,7 @@
 #include "Compiler.h"
 #include "CajetaArchive.h"
 #include "CajetaModule.h"
+#include "NativeLink.h"
 #include "CajetaLlvmVisitor.h"
 #include "Optimizer.h"
 #include "StdlibEmbedded.h"
@@ -1654,6 +1655,34 @@ namespace cajeta {
                  "W int      cajeta_xpu_optix_launch_tri(const char*a,uint64_t b,const char*c,const char*d,const char*e,const char*f,const void*g,uint64_t h,uint32_t i){(void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return -1;}\n";
         }
 
+        // Native-dependency link inputs (native-deps unit 7). DCE-aware: only
+        // libs whose @Native symbol is still live after tree-shaking (scanned
+        // across user + classpath-dep modules); linked as static archives so
+        // --gc-sections + archive-member semantics still strip unused members.
+        // No live native reqs → nativeArchives is empty → the link line is
+        // unchanged for every program that uses no @Native lib.
+        std::set<std::string> liveNativeLibs;
+        auto scanLive = [&](const std::list<CajetaModulePtr>& mods) {
+            for (auto& mod : mods) {
+                if (!mod || !mod->getLlvmModule()) continue;
+                auto libs = collectLiveNativeLibs(*mod->getLlvmModule());
+                liveNativeLibs.insert(libs.begin(), libs.end());
+            }
+        };
+        scanLive(modules);
+        scanLive(externalModules);
+        std::vector<std::string> nativeArchives;
+        if (!liveNativeLibs.empty()) {
+            auto resolved = resolveNativeArchivesForLink(
+                liveNativeLibs, hostNativePlatform(), nativeLinkSearchDirs());
+            if (!resolved) {
+                cerr << "cajeta: --emit=exe: "
+                     << llvm::toString(resolved.takeError()) << std::endl;
+                return;
+            }
+            nativeArchives = std::move(*resolved);
+        }
+
         buildtool::SubprocessResult res;
         bool launched = false;
         std::string usedDriver;
@@ -1670,6 +1699,10 @@ namespace cajeta {
             // runtime's CUDA ray-query provider). `--gc-sections` drops them
             // when the entry never reaches GPU AS code.
             opt.argv.push_back(optixStubPath);
+            // Native-dep archives AFTER the objects that reference them (single-
+            // pass linkers pull only the referenced members; --gc-sections drops
+            // the rest). DCE-aware + gated above, so empty for non-@Native progs.
+            for (const auto& a : nativeArchives) opt.argv.push_back(a);
             opt.argv.push_back("-o");
             opt.argv.push_back(outPath);
             // Dead-strip unreferenced sections. The codegen emits one section
