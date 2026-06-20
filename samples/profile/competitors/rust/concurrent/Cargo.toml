@@ -1,0 +1,17 @@
+[package]
+name = "profile-concurrent"
+version = "0.1.0"
+edition = "2021"
+
+# Stdlib only: AtomicI64 for the atomic counter, std::thread for the spawn/await
+# task primitive (OS threads — the honest cost of "spawn a task" without an async
+# runtime; contrast with Go goroutines, Python asyncio, and Cajeta's fibers).
+
+[[bin]]
+name = "profile-concurrent"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
