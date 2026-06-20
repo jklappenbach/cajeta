@@ -585,3 +585,67 @@ TEST(TensorTests, seamElementwiseCpuGpuAgree) {
         "}\n";
     EXPECT_EQ(runI32Xpu(src), 1);
 }
+
+// 7a — the interop protocol round-trips a Tensor zero-copy: t.protocol() exports
+// { Storage borrow, dtype, shape, strides, device, read-only }; Tensor.fromProtocol
+// rebuilds a Tensor<?> sharing the SAME Storage (a write through the rebuilt handle
+// shows through the original), with shape/dtype/device/read-only preserved.
+TEST(TensorTests, interopRoundTrip) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.TensorProtocol;\n"
+        "import cajeta.math.DType;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float32[] data = { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<float32> t = Tensor.of<float32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        "        TensorProtocol p = t.protocol();\n"                      // export
+        "        if (p.ndim() != 2) { return -1; }\n"                    // metadata preserved
+        "        if (p.shapeAt(0) != 2 || p.shapeAt(1) != 3) { return -2; }\n"
+        "        DType pd = p.dtype();\n"
+        "        if (!pd.isFloating() || pd.bits() != 32) { return -3; }\n"
+        "        if (p.device() != 0) { return -4; }\n"                  // host
+        "        if (p.isReadOnly()) { return -5; }\n"
+        "        Tensor<?> w = Tensor.fromProtocol(p);\n"                // import → Tensor<?>
+        "        if (!(w instanceof Tensor<float32>)) { return -6; }\n"  // reified dtype recovered
+        "        Tensor<float32> back = (Tensor<float32>) w;\n"          // capture
+        "        if (back.shapeAt(1) != 3) { return -7; }\n"
+        "        back.set2(0, 0, 9.0f);\n"                               // write through rebuilt
+        "        if (t.get2(0, 0) != 9.0f) { return -8; }\n"            // shows through original (zero-copy)
+        "        if (back.get2(1, 2) != 5.0f) { return -9; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 7c (exact) — a Tensor<?> from fromProtocol captures to the concrete Tensor<T>
+// iff the reified dtype matches: an int32 protocol rebuilds a Tensor<int32> (not
+// Tensor<float32>), shares storage, and an exact-dtype capture cast succeeds while
+// a wrong-dtype instanceof is false. (The bounded Tensor<? extends Floating> form
+// is deferred to numeric-bounds-plan — the numeric conformance predicate.)
+TEST(TensorTests, wildcardCaptureFromProtocol) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.TensorProtocol;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tensor<int32> t = Tensor.arange<int32>(4);\n"          // [0,1,2,3]
+        "        TensorProtocol p = t.protocol();\n"
+        "        Tensor<?> w = Tensor.fromProtocol(p);\n"
+        "        if (w instanceof Tensor<float32>) { return -1; }\n"    // wrong dtype rejected
+        "        if (!(w instanceof Tensor<int32>)) { return -2; }\n"   // exact dtype matched
+        "        Tensor<int32> back = (Tensor<int32>) w;\n"
+        "        back.set1(0, 42);\n"
+        "        if (t.get1(0) != 42) { return -3; }\n"                 // zero-copy storage share
+        "        if (back.get1(3) != 3) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

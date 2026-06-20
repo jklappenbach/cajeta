@@ -409,11 +409,100 @@ public class Tensor<T> {
         return this.store.deviceBuffer();
     }
 
+    // ────────────────────────────── interop protocol (Phase 7) ───────────────
+
+    /**
+     * Export this tensor through the {@link TensorProtocol} interop seam
+     * (tensor-spec.md §7): a dtype-erased description carrying a **borrow** of this
+     * tensor's `Storage` plus its offset/shape/strides/dtype/device/read-only.
+     * Zero-copy — the protocol shares this tensor's backing; pair with
+     * {@link #fromProtocol} to round-trip a `Tensor` (or hand the buffer to an
+     * external consumer) without a copy.
+     */
+    public #TensorProtocol protocol() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] shp = heap int64[nd];
+        int64[] strd = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            shp[i] = this.shapeDims[i];
+            strd[i] = this.strideDims[i];
+            i = i + 1;
+        }
+        DType d = DType.of<T>();
+        // Widen Storage<T> → Storage<?>: the protocol borrows the backing (shared,
+        // not owned — this tensor keeps ownership; the live-set frees it once).
+        return heap TensorProtocol(this.store, this.offsetVal, shp, strd, #d,
+                                   this.device(), false);
+    }
+
+    /**
+     * Import a {@link TensorProtocol} as a `Tensor<?>` (tensor-spec.md §7 + §2.1
+     * airlock). Switches on the protocol's **runtime** dtype to rebuild the
+     * matching concrete `Tensor<X>` sharing the protocol's borrowed `Storage`
+     * (zero-copy), then widens it to `Tensor<?>` — callers **capture** it back to
+     * the concrete instantiation (`(Tensor<float32>) w`, reified-capture). Returns
+     * `null` for a dtype outside the rebuilt set (the fp8/fp6/fp4 + 128-bit
+     * variants are deferred). The bounded `Tensor<? extends Floating>` admit/reject
+     * form rides on `numeric-bounds-plan` (the numeric conformance predicate).
+     */
+    public static #Tensor<?> fromProtocol(TensorProtocol p) {
+        DType dt = p.dtype();
+        int32 k = dt.kind();
+        int32 b = dt.bits();
+        int32 v = dt.variant();
+        if (k == DType.KIND_BOOL) { return Tensor.rebuildShared<boolean>(p); }
+        if (k == DType.KIND_INT) {
+            if (b == 8)  { return Tensor.rebuildShared<int8>(p); }
+            if (b == 16) { return Tensor.rebuildShared<int16>(p); }
+            if (b == 32) { return Tensor.rebuildShared<int32>(p); }
+            if (b == 64) { return Tensor.rebuildShared<int64>(p); }
+        }
+        if (k == DType.KIND_UINT) {
+            if (b == 8)  { return Tensor.rebuildShared<uint8>(p); }
+            if (b == 16) { return Tensor.rebuildShared<uint16>(p); }
+            if (b == 32) { return Tensor.rebuildShared<uint32>(p); }
+            if (b == 64) { return Tensor.rebuildShared<uint64>(p); }
+        }
+        if (k == DType.KIND_FLOAT && v == DType.VAR_STD) {
+            if (b == 32) { return Tensor.rebuildShared<float32>(p); }
+            if (b == 64) { return Tensor.rebuildShared<float64>(p); }
+        }
+        return null;   // unsupported dtype — caller treats null as "cannot import"
+    }
+
+    /**
+     * Rebuild a concrete `Tensor<E>` sharing the protocol's borrowed `Storage`
+     * (zero-copy): capture the erased `Storage<?>` back to `Storage<E>` (reified —
+     * sound because the dispatch in {@link #fromProtocol} matched the dtype), then
+     * wrap it as a non-owning shared view. Returned as `#Tensor<?>` (the `Tensor<E>`
+     * widens). Internal — driven by `fromProtocol`'s dtype switch.
+     */
+    static #Tensor<?> rebuildShared<E>(TensorProtocol p) {
+        Storage<E> s = (Storage<E>) p.base();      // reified capture (borrow, no copy)
+        int64[] shp = p.shapeCopy();
+        int64[] strd = p.strideCopy();
+        Tensor<E> t = heap Tensor<E>(s, p.offset(), shp, strd);
+        t.markSharedView();
+        return #t;
+    }
+
     // ────────────────────────────── views (Phase 3) ──────────────────────────
 
     void markView(Tensor<T> base) {
         this.viewFlag = true;
         this.baseTensor = base;
+    }
+
+    /**
+     * Mark this tensor as a non-owning view over storage it shares but whose root
+     * is not a `Tensor` (e.g. a `Storage` borrowed through {@link TensorProtocol}).
+     * `base()` stays null (no `Tensor` root); the shared `Storage` is freed once by
+     * the live-set, exactly as for {@link #alias} views.
+     */
+    void markSharedView() {
+        this.viewFlag = true;
+        this.baseTensor = null;
     }
 
     /**
