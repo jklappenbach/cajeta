@@ -42,10 +42,10 @@ namespace cajeta::buildtool {
         // rejected (YAML forbids tab indentation); blank and comment-only lines
         // are skipped. These byte scans are isolated so a SIMD newline scan can
         // replace them later (spec §5).
-        llvm::Expected<std::vector<Line>> scanLines(std::string_view header) {
+        llvm::Expected<std::vector<Line>> scanLines(std::string_view header, int firstLine) {
             std::vector<Line> out;
             size_t pos = 0;
-            int lineNo = 1;
+            int lineNo = firstLine;
             while (pos < header.size()) {
                 size_t nl = header.find('\n', pos);
                 size_t end = (nl == std::string_view::npos) ? header.size() : nl;
@@ -266,10 +266,13 @@ namespace cajeta::buildtool {
                 if (colon == llvm::StringRef::npos) {
                     return makeError(cur.lineNo, "expected 'key: value' mapping entry");
                 }
-                llvm::StringRef key = cur.text.take_front(colon).rtrim();
-                if (key.empty()) {
+                llvm::StringRef keyRef = cur.text.take_front(colon).rtrim();
+                if (keyRef.empty()) {
                     return makeError(cur.lineNo, "empty mapping key");
                 }
+                // json::ObjectKey(StringRef) BORROWS its bytes — store an owned
+                // std::string so keys outlive the header buffer they came from.
+                std::string key = keyRef.str();
                 llvm::StringRef valueRegion = cur.text.drop_front(colon + 1).ltrim();
                 ++idx;
 
@@ -332,8 +335,8 @@ namespace cajeta::buildtool {
 
     } // namespace
 
-    llvm::Expected<llvm::json::Value> parseYaml(std::string_view header) {
-        auto lines = scanLines(header);
+    llvm::Expected<llvm::json::Value> parseYaml(std::string_view header, int firstLine) {
+        auto lines = scanLines(header, firstLine);
         if (!lines) {
             return lines.takeError();
         }

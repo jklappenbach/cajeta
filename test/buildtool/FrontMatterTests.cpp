@@ -6,11 +6,15 @@
 
 #include <gtest/gtest.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/FileSystem.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <string>
 
+using cajeta::buildtool::FrontMatter;
 using cajeta::buildtool::FrontMatterSplit;
+using cajeta::buildtool::parseFrontMatter;
+using cajeta::buildtool::parseFrontMatterFile;
 using cajeta::buildtool::splitFrontMatter;
 
 namespace {
@@ -78,4 +82,99 @@ TEST(FrontMatterSplitTests, closingFenceAtEofEmptyBody) {
     auto r = unwrap(splitFrontMatter("---\nid: x\n---\n"));
     EXPECT_TRUE(r.present);
     EXPECT_EQ(r.body, "");
+}
+
+// --- D.Y4: public parseFrontMatter facility (spec §4; uc 4.2.1–4.2.2) ---
+
+namespace {
+
+    FrontMatter unwrapFm(llvm::Expected<FrontMatter> e) {
+        EXPECT_TRUE((bool)e);
+        if (!e) {
+            consumeError(e.takeError());
+            return {};
+        }
+        return std::move(*e);
+    }
+
+    std::string fmErrorText(llvm::Expected<FrontMatter>&& e) {
+        std::string out;
+        llvm::raw_string_ostream os(out);
+        os << e.takeError();
+        return out;
+    }
+
+} // namespace
+
+// uc 4.2.1 — a skill-shaped doc parses to metadata Value + verbatim body.
+TEST(FrontMatterParseTests, parsesSkillShapedDoc) {
+    std::string src =
+        "---\n"
+        "id: borrow-checker\n"
+        "applies-to: [cajeta.mem, cajeta.borrow]\n"
+        "title: \"Borrow checking\"\n"
+        "description: how to satisfy the checker\n"
+        "---\n"
+        "# Borrow checking\n\nBody text.\n";
+    auto fm = unwrapFm(parseFrontMatter(src));
+    auto* o = fm.frontmatter.getAsObject();
+    ASSERT_NE(o, nullptr);
+    EXPECT_EQ(o->getString("id"), std::optional<llvm::StringRef>("borrow-checker"));
+    EXPECT_EQ(o->getString("title"), std::optional<llvm::StringRef>("Borrow checking"));
+    auto* applies = o->getArray("applies-to");
+    ASSERT_NE(applies, nullptr);
+    ASSERT_EQ(applies->size(), 2u);
+    EXPECT_EQ((*applies)[0].getAsString(), std::optional<llvm::StringRef>("cajeta.mem"));
+    EXPECT_EQ(fm.body, "# Borrow checking\n\nBody text.\n");
+}
+
+// uc 4.2.1 / §2.2.2 — a plain .md doc yields {} and the whole input as body.
+TEST(FrontMatterParseTests, noFrontmatterIsEmptyObjectWholeBody) {
+    std::string src = "# Just markdown\nno header\n";
+    auto fm = unwrapFm(parseFrontMatter(src));
+    auto* o = fm.frontmatter.getAsObject();
+    ASSERT_NE(o, nullptr);
+    EXPECT_EQ(o->size(), 0u);
+    EXPECT_EQ(fm.body, src);
+}
+
+// §4.1 — determinism: same input → identical value and body across parses.
+TEST(FrontMatterParseTests, deterministic) {
+    std::string src = "---\nid: x\nn: [1, 2]\n---\nbody\n";
+    auto a = unwrapFm(parseFrontMatter(src));
+    auto b = unwrapFm(parseFrontMatter(src));
+    EXPECT_EQ(a.frontmatter, b.frontmatter);
+    EXPECT_EQ(a.body, b.body);
+}
+
+// uc 4.2.2 — a parse error reports the document-absolute line.
+TEST(FrontMatterParseTests, parseErrorHasDocumentLine) {
+    // The unterminated quote is on document line 3 (fence is line 1).
+    auto e = parseFrontMatter("---\nid: x\nbad: 'oops\n---\nbody\n");
+    ASSERT_FALSE((bool)e);
+    EXPECT_NE(fmErrorText(std::move(e)).find("line 3"), std::string::npos);
+}
+
+// uc 4.2.1 — file variant reads disk and returns the parsed document.
+TEST(FrontMatterParseTests, fileVariantReadsDisk) {
+    llvm::SmallString<128> path;
+    int fd = 0;
+    ASSERT_FALSE((bool)llvm::sys::fs::createTemporaryFile("fm", "md", fd, path));
+    {
+        llvm::raw_fd_ostream os(fd, /*shouldClose=*/true);
+        os << "---\nid: ondisk\n---\nbody\n";
+    }
+    auto fm = unwrapFm(parseFrontMatterFile(path));
+    auto* o = fm.frontmatter.getAsObject();
+    ASSERT_NE(o, nullptr);
+    EXPECT_EQ(o->getString("id"), std::optional<llvm::StringRef>("ondisk"));
+    EXPECT_EQ(fm.body, "body\n");
+    llvm::sys::fs::remove(path);
+}
+
+// uc 4.2.2 — a missing file is an error carrying the path, not a crash.
+TEST(FrontMatterParseTests, missingFileErrorCarriesPath) {
+    auto e = parseFrontMatterFile("/no/such/cajeta/skill-zzz.md");
+    ASSERT_FALSE((bool)e);
+    EXPECT_NE(fmErrorText(std::move(e)).find("skill-zzz.md"), std::string::npos);
 }

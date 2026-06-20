@@ -4,7 +4,10 @@
 //
 #include "cajeta/buildtool/FrontMatter.h"
 
+#include "cajeta/buildtool/Yaml.h"
+
 #include <llvm/Support/Error.h>
+#include <llvm/Support/MemoryBuffer.h>
 
 namespace cajeta::buildtool {
 
@@ -87,6 +90,47 @@ namespace cajeta::buildtool {
         // Body is everything after the closing fence line, byte-for-byte.
         out.body.assign(source.data() + pos, source.size() - pos);
         return out;
+    }
+
+    llvm::Expected<FrontMatter> parseFrontMatter(std::string_view source) {
+        auto split = splitFrontMatter(source);
+        if (!split) {
+            return split.takeError();
+        }
+
+        FrontMatter out;
+        out.body = std::move(split->body);
+        if (!split->present) {
+            // No fence: empty frontmatter, whole input is the body.
+            return out;
+        }
+
+        // The header's first line is the document line after the opening `---`
+        // fence (line 1), so YAML errors report document-absolute lines.
+        auto value = parseYaml(split->header, 2);
+        if (!value) {
+            return value.takeError();
+        }
+        out.frontmatter = std::move(*value);
+        return out;
+    }
+
+    llvm::Expected<FrontMatter> parseFrontMatterFile(llvm::StringRef path) {
+        auto buffer = llvm::MemoryBuffer::getFile(path);
+        if (!buffer) {
+            return llvm::createStringError(
+                buffer.getError(),
+                ("front matter: cannot read '" + path + "'").str());
+        }
+
+        auto parsed = parseFrontMatter((*buffer)->getBuffer());
+        if (!parsed) {
+            // Prefix the path so file-level errors carry their source.
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(),
+                (path + ": " + llvm::toString(parsed.takeError())).str());
+        }
+        return parsed;
     }
 
 } // namespace cajeta::buildtool

@@ -7,7 +7,9 @@
 #include <string>
 #include <string_view>
 
+#include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/JSON.h>
 
 namespace cajeta::buildtool {
 
@@ -33,5 +35,25 @@ namespace cajeta::buildtool {
     // line ending). With no leading fence, returns {present=false, header="",
     // body=source}. An opening `---` with no closing fence is an error.
     llvm::Expected<FrontMatterSplit> splitFrontMatter(std::string_view source);
+
+    // A parsed front-matter Markdown document (spec §4.1): the YAML header as an
+    // `llvm::json::Value` and the Markdown body verbatim.
+    struct FrontMatter {
+        // Parsed frontmatter. An empty object `{}` when the document has no
+        // frontmatter fence.
+        llvm::json::Value frontmatter = llvm::json::Object{};
+        // Markdown body, byte-for-byte.
+        std::string body;
+    };
+
+    // Parse a front-matter Markdown document: split off the `---` header
+    // (splitFrontMatter), parse it as YAML (parseYaml), and return it alongside
+    // the verbatim body. With no frontmatter, the value is `{}` and the body is
+    // the whole input. Parse errors name the document-absolute line.
+    llvm::Expected<FrontMatter> parseFrontMatter(std::string_view source);
+
+    // Like parseFrontMatter, but reads `path` from disk. I/O and parse errors
+    // carry the file path (spec uc 4.2.2).
+    llvm::Expected<FrontMatter> parseFrontMatterFile(llvm::StringRef path);
 
 } // namespace cajeta::buildtool

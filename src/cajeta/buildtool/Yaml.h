@@ -22,7 +22,10 @@ namespace cajeta::buildtool {
     //
     // An empty (or all-comment) header parses to an empty object `{}`. Parse
     // failures (unterminated quote, tab indentation, bad structure) return an
-    // error naming the 1-based line.
-    llvm::Expected<llvm::json::Value> parseYaml(std::string_view header);
+    // error naming the line. `firstLine` is the source line number of the
+    // header's first line, so errors can be reported document-absolute (the
+    // frontmatter facility passes the line after the opening `---` fence);
+    // it defaults to 1 when the header is parsed standalone.
+    llvm::Expected<llvm::json::Value> parseYaml(std::string_view header, int firstLine = 1);
 
 } // namespace cajeta::buildtool
