@@ -37,6 +37,18 @@ extern "C" void ___chkstk_ms(void);
 extern "C" void sincos(double, double*, double*);
 extern "C" void sincosf(float, float*, float*);
 
+// compiler-rt/libgcc bfloat16 conversion builtins the CPU-kernel lowering emits
+// for bf16 arithmetic (float/double <-> bf16). libgcc provides them but, like
+// the libm family below, they're statically linked and absent from the host PE
+// export table, so the JIT's process generator can't see them — every bf16
+// kernel then fails to materialize ("Symbols not found: [ __truncsfbf2 ]").
+// Only the address is taken (never called from C++), so the placeholder
+// unsigned-short bf16 representation here is ABI-irrelevant. POSIX hosts export
+// these from libgcc, so this is Windows-only.
+extern "C" unsigned short __truncsfbf2(float);
+extern "C" unsigned short __truncdfbf2(double);
+extern "C" float          __extendbfsf2(unsigned short);
+
 // libm math functions the stdlib's Math intrinsics + float ops lower to. These
 // are statically linked from libm/libmingwex but absent from the host PE export
 // table, so the JIT's process-symbol generator can't see them — every
@@ -89,6 +101,10 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
+    // bf16 conversion builtins — see the extern "C" block above.
+    CJ_SYM("__truncsfbf2",     &__truncsfbf2),
+    CJ_SYM("__truncdfbf2",     &__truncdfbf2),
+    CJ_SYM("__extendbfsf2",    &__extendbfsf2),
     // libm — see the extern "C" block above for why these need binding.
     CJ_SYM("fabsf",  &fabsf),   CJ_SYM("fabs",   &fabs),
     CJ_SYM("sqrtf",  &sqrtf),   CJ_SYM("sqrt",   &sqrt),
