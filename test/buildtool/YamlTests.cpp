@@ -111,3 +111,76 @@ TEST(YamlTests, tabIndentationIsError) {
     EXPECT_NE(msg.find("line 2"), std::string::npos);
     EXPECT_NE(msg.find("tab"), std::string::npos);
 }
+
+// --- D.Y3: sequences (block + flow) + nesting (spec §3.1; uc 3.3.2) ---
+
+// uc 3.3.2 — flow sequence of plain scalars → JSON array of strings.
+TEST(YamlTests, flowSequenceOfStrings) {
+    auto v = unwrap(parseYaml("applies-to: [a, b, c]\n"));
+    auto* a = v.getAsObject()->getArray("applies-to");
+    ASSERT_NE(a, nullptr);
+    ASSERT_EQ(a->size(), 3u);
+    EXPECT_EQ((*a)[0].getAsString(), std::optional<llvm::StringRef>("a"));
+    EXPECT_EQ((*a)[2].getAsString(), std::optional<llvm::StringRef>("c"));
+}
+
+// §3.1 — empty flow sequence → empty array.
+TEST(YamlTests, flowSequenceEmpty) {
+    auto v = unwrap(parseYaml("x: []\n"));
+    auto* a = v.getAsObject()->getArray("x");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->size(), 0u);
+}
+
+// §3.1 — flow items carry scalar typing and quoting.
+TEST(YamlTests, flowSequenceTypedAndQuoted) {
+    auto v = unwrap(parseYaml("n: [1, 2, 3]\nq: ['1', true, \"x\"]\n"));
+    auto* o = v.getAsObject();
+    auto* n = o->getArray("n");
+    ASSERT_NE(n, nullptr);
+    EXPECT_EQ((*n)[0].getAsInteger(), std::optional<int64_t>(1));
+    EXPECT_EQ((*n)[2].getAsInteger(), std::optional<int64_t>(3));
+    auto* q = o->getArray("q");
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ((*q)[0].getAsString(), std::optional<llvm::StringRef>("1")); // quoted → string
+    EXPECT_EQ((*q)[1].getAsBoolean(), std::optional<bool>(true));
+    EXPECT_EQ((*q)[2].getAsString(), std::optional<llvm::StringRef>("x"));
+}
+
+// uc 3.3.2 — block sequence (`- ` lines under a key) → JSON array.
+TEST(YamlTests, blockSequence) {
+    auto v = unwrap(parseYaml("items:\n  - a\n  - b\n  - 3\nafter: ok\n"));
+    auto* o = v.getAsObject();
+    auto* items = o->getArray("items");
+    ASSERT_NE(items, nullptr);
+    ASSERT_EQ(items->size(), 3u);
+    EXPECT_EQ((*items)[0].getAsString(), std::optional<llvm::StringRef>("a"));
+    EXPECT_EQ((*items)[2].getAsInteger(), std::optional<int64_t>(3));
+    EXPECT_EQ(o->getString("after"), std::optional<llvm::StringRef>("ok"));
+}
+
+// D.Y3.3 — block and flow forms produce identical JSON arrays.
+TEST(YamlTests, blockAndFlowAreEquivalent) {
+    auto flow = unwrap(parseYaml("applies-to: [a, b]\n"));
+    auto block = unwrap(parseYaml("applies-to:\n  - a\n  - b\n"));
+    EXPECT_EQ(flow, block);
+}
+
+// §3.1 — nesting: a block sequence of flow sequences.
+TEST(YamlTests, nestedSequences) {
+    auto v = unwrap(parseYaml("matrix:\n  - [1, 2]\n  - [3, 4]\n"));
+    auto* m = v.getAsObject()->getArray("matrix");
+    ASSERT_NE(m, nullptr);
+    ASSERT_EQ(m->size(), 2u);
+    auto* row1 = (*m)[1].getAsArray();
+    ASSERT_NE(row1, nullptr);
+    EXPECT_EQ((*row1)[0].getAsInteger(), std::optional<int64_t>(3));
+    EXPECT_EQ((*row1)[1].getAsInteger(), std::optional<int64_t>(4));
+}
+
+// uc 3.3.4 — malformed flow (unclosed `[`) → error naming the line.
+TEST(YamlTests, unclosedFlowSequenceIsError) {
+    auto e = parseYaml("ok: 1\nbad: [a, b\n");
+    ASSERT_FALSE((bool)e);
+    EXPECT_NE(errorText(std::move(e)).find("line 2"), std::string::npos);
+}

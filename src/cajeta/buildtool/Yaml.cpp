@@ -28,6 +28,16 @@ namespace cajeta::buildtool {
                 ("line " + llvm::Twine(line) + ": " + msg).str());
         }
 
+        // True for a block-sequence entry line: `- item` or a bare `-`.
+        bool isSeqItem(llvm::StringRef text) {
+            return text == "-" || text.starts_with("- ");
+        }
+
+        // Mutually-recursive parsers (mappings, sequences, scalars can nest).
+        llvm::Expected<llvm::json::Value> parseScalar(llvm::StringRef v, int lineNo);
+        llvm::Expected<llvm::json::Value>
+        parseBlock(const std::vector<Line>& lines, size_t& idx, int indent);
+
         // Split the header into significant lines. Leading-whitespace tabs are
         // rejected (YAML forbids tab indentation); blank and comment-only lines
         // are skipped. These byte scans are isolated so a SIMD newline scan can
@@ -124,12 +134,81 @@ namespace cajeta::buildtool {
             return makeError(lineNo, "unterminated double-quoted string");
         }
 
+        // Find the index of the top-level `]` matching the `[` at v[0], honoring
+        // quotes and nested brackets. Returns npos if unterminated.
+        size_t findFlowClose(llvm::StringRef v) {
+            int depth = 0;
+            bool inS = false, inD = false;
+            for (size_t i = 0; i < v.size(); ++i) {
+                char c = v[i];
+                if (inS) {
+                    if (c == '\'') inS = false;
+                } else if (inD) {
+                    if (c == '\\') { ++i; }
+                    else if (c == '"') inD = false;
+                } else if (c == '\'') {
+                    inS = true;
+                } else if (c == '"') {
+                    inD = true;
+                } else if (c == '[') {
+                    ++depth;
+                } else if (c == ']') {
+                    if (--depth == 0) return i;
+                }
+            }
+            return llvm::StringRef::npos;
+        }
+
+        // Parse a flow sequence `[a, b, c]` (v[0]=='['). Items are split on
+        // top-level commas (respecting quotes/nested brackets) and parsed as
+        // scalars, so typing, quoting, and nested flow sequences all carry.
+        llvm::Expected<llvm::json::Value> parseFlowSequence(llvm::StringRef v, int lineNo) {
+            size_t close = findFlowClose(v);
+            if (close == llvm::StringRef::npos) {
+                return makeError(lineNo, "unterminated flow sequence");
+            }
+            llvm::json::Array arr;
+            llvm::StringRef inner = v.substr(1, close - 1);
+
+            int depth = 0;
+            bool inS = false, inD = false;
+            size_t itemStart = 0;
+            auto emit = [&](size_t end) -> llvm::Error {
+                llvm::StringRef item = inner.substr(itemStart, end - itemStart).trim();
+                if (!item.empty()) {
+                    auto val = parseScalar(item, lineNo);
+                    if (!val) return val.takeError();
+                    arr.push_back(std::move(*val));
+                }
+                return llvm::Error::success();
+            };
+            for (size_t i = 0; i < inner.size(); ++i) {
+                char c = inner[i];
+                if (inS) {
+                    if (c == '\'') inS = false;
+                } else if (inD) {
+                    if (c == '\\') { ++i; }
+                    else if (c == '"') inD = false;
+                } else if (c == '\'') {
+                    inS = true;
+                } else if (c == '"') {
+                    inD = true;
+                } else if (c == '[') {
+                    ++depth;
+                } else if (c == ']') {
+                    --depth;
+                } else if (c == ',' && depth == 0) {
+                    if (auto e = emit(i)) return e;
+                    itemStart = i + 1;
+                }
+            }
+            if (auto e = emit(inner.size())) return e;
+            return llvm::json::Value(std::move(arr));
+        }
+
         // Type a plain (unquoted) scalar per spec §3.1, after stripping any
         // trailing inline comment (a '#' preceded by whitespace).
         llvm::json::Value typePlainScalar(llvm::StringRef v) {
-            // Strip an inline comment: first '#' that is at the start or follows
-            // whitespace. A '#' glued to a non-space char (e.g. a URL fragment)
-            // is literal.
             for (size_t i = 0; i < v.size(); ++i) {
                 if (v[i] == '#' && (i == 0 || v[i - 1] == ' ' || v[i - 1] == '\t')) {
                     v = v.take_front(i);
@@ -158,18 +237,18 @@ namespace cajeta::buildtool {
             return llvm::json::Value(v.str());
         }
 
-        // Parse a scalar value region (already trimmed on the left).
+        // Parse a value region (already trimmed on the left): a flow sequence,
+        // a quoted string, or a plain typed scalar.
         llvm::Expected<llvm::json::Value> parseScalar(llvm::StringRef v, int lineNo) {
             if (v.empty()) {
                 return llvm::json::Value(nullptr);
             }
-            if (v.front() == '\'') {
-                return parseSingleQuoted(v, lineNo);
+            switch (v.front()) {
+                case '[': return parseFlowSequence(v, lineNo);
+                case '\'': return parseSingleQuoted(v, lineNo);
+                case '"': return parseDoubleQuoted(v, lineNo);
+                default: return typePlainScalar(v);
             }
-            if (v.front() == '"') {
-                return parseDoubleQuoted(v, lineNo);
-            }
-            return typePlainScalar(v);
         }
 
         // Parse a block of mapping entries all at `indent`. Advances `idx` past
@@ -179,6 +258,10 @@ namespace cajeta::buildtool {
             llvm::json::Object obj;
             while (idx < lines.size() && lines[idx].indent == indent) {
                 const Line& cur = lines[idx];
+                if (isSeqItem(cur.text)) {
+                    return makeError(cur.lineNo,
+                                     "unexpected sequence item in a mapping");
+                }
                 size_t colon = cur.text.find(':');
                 if (colon == llvm::StringRef::npos) {
                     return makeError(cur.lineNo, "expected 'key: value' mapping entry");
@@ -193,28 +276,58 @@ namespace cajeta::buildtool {
                 if (valueRegion.empty()) {
                     // Either a nested block (deeper indent) or a null value.
                     if (idx < lines.size() && lines[idx].indent > indent) {
-                        if (lines[idx].text.starts_with("-")) {
-                            // Block sequences arrive in unit D.Y3.
-                            return makeError(lines[idx].lineNo,
-                                             "block sequences are not yet supported");
-                        }
-                        auto child = parseMapping(lines, idx, lines[idx].indent);
-                        if (!child) {
-                            return child.takeError();
-                        }
+                        auto child = parseBlock(lines, idx, lines[idx].indent);
+                        if (!child) return child.takeError();
                         obj[key] = std::move(*child);
                     } else {
                         obj[key] = llvm::json::Value(nullptr);
                     }
                 } else {
                     auto val = parseScalar(valueRegion, cur.lineNo);
-                    if (!val) {
-                        return val.takeError();
-                    }
+                    if (!val) return val.takeError();
                     obj[key] = std::move(*val);
                 }
             }
             return llvm::json::Value(std::move(obj));
+        }
+
+        // Parse a block of sequence entries (`- item`) all at `indent`.
+        llvm::Expected<llvm::json::Value>
+        parseSequence(const std::vector<Line>& lines, size_t& idx, int indent) {
+            llvm::json::Array arr;
+            while (idx < lines.size() && lines[idx].indent == indent &&
+                   isSeqItem(lines[idx].text)) {
+                const Line& cur = lines[idx];
+                // Strip the leading "-" and a following space.
+                llvm::StringRef item = cur.text.drop_front(1).ltrim();
+                ++idx;
+
+                if (item.empty()) {
+                    // Nested block on deeper-indented lines, else a null element.
+                    if (idx < lines.size() && lines[idx].indent > indent) {
+                        auto child = parseBlock(lines, idx, lines[idx].indent);
+                        if (!child) return child.takeError();
+                        arr.push_back(std::move(*child));
+                    } else {
+                        arr.push_back(llvm::json::Value(nullptr));
+                    }
+                } else {
+                    auto val = parseScalar(item, cur.lineNo);
+                    if (!val) return val.takeError();
+                    arr.push_back(std::move(*val));
+                }
+            }
+            return llvm::json::Value(std::move(arr));
+        }
+
+        // Dispatch a block at `indent` to a sequence or a mapping based on its
+        // first line.
+        llvm::Expected<llvm::json::Value>
+        parseBlock(const std::vector<Line>& lines, size_t& idx, int indent) {
+            if (idx < lines.size() && isSeqItem(lines[idx].text)) {
+                return parseSequence(lines, idx, indent);
+            }
+            return parseMapping(lines, idx, indent);
         }
 
     } // namespace
@@ -230,7 +343,7 @@ namespace cajeta::buildtool {
 
         size_t idx = 0;
         int baseIndent = lines->front().indent;
-        auto value = parseMapping(*lines, idx, baseIndent);
+        auto value = parseBlock(*lines, idx, baseIndent);
         if (!value) {
             return value.takeError();
         }
