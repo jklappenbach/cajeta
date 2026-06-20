@@ -1,0 +1,24 @@
+package cajeta.ifx;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * IfxException — the loud-failure signal the backend registry raises when a program asks for a
+ * capability no registered backend can provide. The motivating case (spec §4 case 3): an app
+ * requests an *interactive* window but only the silent {@link NullWindowBackend} floor is present
+ * (no `cajeta-ifx-<os>` linked). Binding the null floor there would give a silent black screen, so
+ * the registry refuses and throws this instead — naming the missing domain so the cause is obvious.
+ *
+ * Recoverable, not Unrecoverable: a launch harness or test must be able to *observe* the failure
+ * (catch it, assert the message) — the acceptance criterion is "logged and testable, never a silent
+ * black screen". A real app is expected NOT to swallow it: left uncaught it propagates to the
+ * top-level handler and aborts loudly, which is the intended launch-time behavior. Mirrors the
+ * `cajeta.codec` / `cajeta.io` domain-exception discipline (see {@link cajeta.codec.Base64Exception}).
+ */
+public class IfxException extends RecoverableException {
+    public IfxException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

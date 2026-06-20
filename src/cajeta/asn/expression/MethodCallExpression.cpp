@@ -142,6 +142,29 @@ namespace cajeta {
         return sPtr;
     }
 
+    // Pass-by-pointer ABI bridge for closure-call arguments. Class / interface /
+    // array params cross the call boundary as `ptr` (see
+    // CajetaFunctionType::toCallingConvType and Method::generatePrototype), but a
+    // closure arg can be materialized as the aggregate VALUE instead — e.g. an
+    // interface fat-pointer struct loaded from an array or stream slot. Spilling
+    // that value to an entry-block stack slot and passing its address makes the
+    // call match the closure's `ptr` parameter. Without this, an interface-typed
+    // closure argument fails LLVM verify ("Call parameter type does not match
+    // function signature"); repro: a stream / forEach consumer over an
+    // ArrayList<SomeInterface>. Unlike the int/float width coercions next to it,
+    // this case is a value→pointer ABI fix, not a representation change.
+    static llvm::Value* spillAggregateForByPointerArg(CajetaModulePtr module,
+                                                      llvm::Value* v) {
+        auto* builder = module->getBuilder();
+        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(
+            &curFn->getEntryBlock(), curFn->getEntryBlock().begin());
+        llvm::Value* slot = entryBuilder.CreateAlloca(
+            v->getType(), nullptr, "byptr_arg");
+        builder->CreateStore(v, slot);
+        return slot;
+    }
+
     // Indirect call through a closure value — shared by the bare-identifier
     // form `op(args)` (MethodCallExpression) and the postfix expression/indexed
     // form `arr[i](args)` (CallExpression). `closurePtr` is a `ptr` to the
@@ -210,6 +233,8 @@ namespace cajeta {
                 } else if (expected->isFloatingPointTy()
                         && v->getType()->isFloatingPointTy()) {
                     v = builder->CreateFPCast(v, expected);
+                } else if (expected->isPointerTy() && !v->getType()->isPointerTy()) {
+                    v = spillAggregateForByPointerArg(module, v);
                 }
             }
             callArgs.push_back(v);
@@ -3587,8 +3612,19 @@ namespace cajeta {
                         receiver = builder->CreateLoad(a->getAllocatedType(), a);
                     }
                 } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
-                    receiver = builder->CreateLoad(
-                        llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
+                    // Class-ref array elements store an 8-byte `ptr` to the heap
+                    // instance — load through to the dispatch receiver. Interface
+                    // elements are 24-byte fat-pointer bodies stored INLINE, so
+                    // the element GEP already points AT the body; loading would
+                    // yield the data word and the interface dispatch path would
+                    // deref it as a body → garbage vtable → crash. Skip the load
+                    // for interfaces (mirrors the field-receiver branch below).
+                    auto elemRc = dynamic_pointer_cast<CajetaClass>(receiverType);
+                    bool elemIsInterface = elemRc && elemRc->isInterface();
+                    if (!elemIsInterface) {
+                        receiver = builder->CreateLoad(
+                            llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
+                    }
                 } else if ((dynamic_pointer_cast<DotExpression>(exprChild)
                             || dynamic_pointer_cast<IdentifierExpression>(exprChild))
                         && (llvm::isa<llvm::GetElementPtrInst>(receiver)
@@ -3830,6 +3866,9 @@ namespace cajeta {
                             } else if (expected->isFloatingPointTy()
                                     && v->getType()->isFloatingPointTy()) {
                                 v = builder->CreateFPCast(v, expected);
+                            } else if (expected->isPointerTy()
+                                    && !v->getType()->isPointerTy()) {
+                                v = spillAggregateForByPointerArg(module, v);
                             }
                         }
                         args.push_back(v);

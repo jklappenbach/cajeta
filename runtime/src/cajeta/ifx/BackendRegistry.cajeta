@@ -1,0 +1,144 @@
+package cajeta.ifx;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+
+/**
+ * BackendRegistry — the ifx keystone: a registry + probe + dispatcher, the same pattern as the GPU
+ * backend dispatcher (spec §4 / cajeta-gfx-spec §9.4). Backends register themselves at load through
+ * the per-domain entry points; at launch the registry binds, per domain independently, the
+ * highest-`priority()` backend whose `probe()` reports it viable in the current environment
+ * (Wayland vs X11, PipeWire vs ALSA, …). ifx depends on no backend — dependency inversion.
+ *
+ * The window/input/audio domains are registered and selected SEPARATELY: a server may bind real
+ * audio with only the null window floor, and gamepads come from a different OS API than the window
+ * queue. The always-present {@link NullWindowBackend} / {@link NullInputBackend} /
+ * {@link NullAudioBackend} floor (spec §5) means selection never comes up empty once the floor is
+ * registered.
+ *
+ * Three-cases policy (spec §4 case 3), enforced by {@link #selectWindow}:
+ *   1. A real backend is viable                       → bind it.
+ *   2. Within-OS choice among real backends           → probe()/priority() decide (ties: first
+ *                                                        registered wins, deterministically).
+ *   3. ONLY the null floor is viable                  → an opt-in *headless* request binds null
+ *                                                        silently; an *interactive* window request
+ *                                                        fails loudly ({@link IfxException}) rather
+ *                                                        than hand back a silent black screen.
+ * Input and audio have no loud-error case — an empty device set / silent output is a valid headless
+ * outcome, so {@link #selectInput} / {@link #selectAudio} simply return the best viable backend
+ * (the null floor at worst).
+ *
+ * v1 statically links the bundled backends and dispatches at launch. The `CAJETA_IFX_*` env override
+ * (mirroring `CAJETA_XPU_BACKEND`) is not wired here yet — it awaits a pure-Cajeta env-read
+ * primitive (ifx carries no FFI). Auto-registration of the null floor at load is a separate step
+ * (the registry is constructed and populated explicitly for now).
+ */
+public final class BackendRegistry {
+    // Per-domain registries, in registration order. Order is load-bearing: it is the deterministic
+    // tie-break when two viable backends report the same priority().
+    private ArrayList<WindowBackend> windows;
+    private ArrayList<InputBackend>  inputs;
+    private ArrayList<AudioBackend>  audios;
+
+    public BackendRegistry() {
+        this.windows = heap ArrayList<WindowBackend>();
+        this.inputs  = heap ArrayList<InputBackend>();
+        this.audios  = heap ArrayList<AudioBackend>();
+    }
+
+    /** Register a window-domain backend (called by each backend at load; the null floor too). */
+    public void registerWindow(WindowBackend backend) { this.windows.add(backend); }
+    /** Register an input-domain backend. */
+    public void registerInput(InputBackend backend)   { this.inputs.add(backend); }
+    /** Register an audio-domain backend. */
+    public void registerAudio(AudioBackend backend)   { this.audios.add(backend); }
+
+    /**
+     * Bind the window backend for this launch. Picks the highest-`priority()` viable backend; on a
+     * priority tie the first-registered wins (the loop replaces the incumbent only on a strictly
+     * greater priority). If the only viable backend is the null floor, an opt-in headless request
+     * binds it silently and an interactive request fails loudly.
+     *
+     * @param headless the call site's explicit intent — true: the app opts into offscreen rendering
+     *                 and accepts the null floor; false: the app wants a real interactive window.
+     */
+    public WindowBackend selectWindow(boolean headless) {
+        WindowBackend best = null;
+        int32 bestPriority = 0;
+        boolean haveBest = false;
+        int32 i = 0;
+        while (i < this.windows.count()) {
+            WindowBackend candidate = this.windows.get(i);
+            if (candidate.probe()) {
+                int32 candidatePriority = candidate.priority();
+                // strictly greater → the first-registered of equal-priority backends keeps the bind
+                if (!haveBest || candidatePriority > bestPriority) {
+                    best = candidate;
+                    bestPriority = candidatePriority;
+                    haveBest = true;
+                }
+            }
+            i = i + 1;
+        }
+
+        if (best == null || this.isNullFloor(best.name())) {
+            // Only the silent floor (or nothing) is viable for the window domain.
+            if (headless) {
+                return best;   // opt-in headless: bind the null floor silently (null if none at all)
+            }
+            // Interactive request with no real backend: loud, logged, never a silent black screen.
+            throw heap IfxException(
+                "no ifx.window backend viable for this environment; only the null floor is present — "
+                + "link cajeta-ifx-<os>, or opt into headless rendering");
+        }
+        return best;
+    }
+
+    /** Bind the input backend: highest-`priority()` viable, the null floor (empty devices) at worst. */
+    public InputBackend selectInput() {
+        InputBackend best = null;
+        int32 bestPriority = 0;
+        boolean haveBest = false;
+        int32 i = 0;
+        while (i < this.inputs.count()) {
+            InputBackend candidate = this.inputs.get(i);
+            if (candidate.probe()) {
+                int32 candidatePriority = candidate.priority();
+                if (!haveBest || candidatePriority > bestPriority) {
+                    best = candidate;
+                    bestPriority = candidatePriority;
+                    haveBest = true;
+                }
+            }
+            i = i + 1;
+        }
+        return best;
+    }
+
+    /** Bind the audio backend: highest-`priority()` viable, the silent null floor at worst. */
+    public AudioBackend selectAudio() {
+        AudioBackend best = null;
+        int32 bestPriority = 0;
+        boolean haveBest = false;
+        int32 i = 0;
+        while (i < this.audios.count()) {
+            AudioBackend candidate = this.audios.get(i);
+            if (candidate.probe()) {
+                int32 candidatePriority = candidate.priority();
+                if (!haveBest || candidatePriority > bestPriority) {
+                    best = candidate;
+                    bestPriority = candidatePriority;
+                    haveBest = true;
+                }
+            }
+            i = i + 1;
+        }
+        return best;
+    }
+
+    // The null floor is the contract-stable backend whose name() is "null" (spec §5). Used to tell a
+    // real bind from the floor for the window domain's three-cases policy.
+    private boolean isNullFloor(String backendName) {
+        return backendName.equals("null");
+    }
+}

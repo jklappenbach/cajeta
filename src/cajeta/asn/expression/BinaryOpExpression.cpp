@@ -94,6 +94,58 @@ namespace cajeta {
         return builder->CreateBinOp(op, lhs, rhs);
     }
 
+    // Store an interface value into an INLINE 24-byte fat-pointer body slot — an
+    // interface-typed array element (`arr[i] = ...`) whose slot IS the body, not a
+    // pointer to it. A plain `CreateStore(rhsVal, slot)` would write only the first
+    // word (the data pointer), leaving vtable + kind unset, so a later dispatch
+    // reads a garbage vtable and crashes. Two RHS shapes:
+    //   - concrete class instance → build the fat body in place
+    //     (data = instance ptr, vtable = the per-(class, iface) global, kind =
+    //     BORROWED_CLASS). Mirrors LocalVariableDeclaration § S9.5.4 and the
+    //     class→interface param-passing upcast in CajetaClass.cpp.
+    //   - interface value (rhsVal is already a ptr to a 24-byte body, e.g.
+    //     `ArrayList.add(backend)` storing its interface param) → memcpy the body in.
+    static void storeInterfaceInlineBody(CajetaModulePtr module, llvm::Value* slot,
+            llvm::Value* rhsVal, const std::shared_ptr<CajetaClass>& ifaceClass,
+            ExpressionPtr rhsAst) {
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* bodyTy = ifaceClass->getLlvmType();
+
+        CajetaTypePtr rhsType = rhsAst ? rhsAst->getResolvedType() : nullptr;
+        auto rhsClass = std::dynamic_pointer_cast<CajetaClass>(rhsType);
+        bool rhsIsInterface = rhsClass && rhsClass->isInterface();
+
+        if (rhsClass && !rhsIsInterface) {
+            llvm::Value* dataSlot = builder->CreateStructGEP(bodyTy, slot, 0, "iface_data");
+            llvm::Value* vtSlot = builder->CreateStructGEP(bodyTy, slot, 1, "iface_vtable");
+            llvm::Value* kindSlot = builder->CreateStructGEP(bodyTy, slot, 2, "iface_kind");
+            builder->CreateStore(rhsVal, dataSlot);
+            std::string ifaceCanonical = ifaceClass->getQName()->toCanonical();
+            llvm::Constant* vtableRef = nullptr;
+            if (auto gv = rhsClass->getInterfaceVTable(ifaceCanonical)) {
+                vtableRef = CajetaModule::ensureGlobalInModule(
+                    module->getLlvmModule(), gv);
+            }
+            if (!vtableRef) {
+                vtableRef = llvm::ConstantPointerNull::get(
+                    llvm::cast<llvm::PointerType>(ptrTy));
+            }
+            builder->CreateStore(vtableRef, vtSlot);
+            builder->CreateStore(
+                llvm::ConstantInt::get(i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                kindSlot);
+        } else {
+            // Interface → interface: rhsVal points at a 24-byte body; copy it in.
+            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+            uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
+            builder->CreateMemCpy(slot, llvm::MaybeAlign(8),
+                rhsVal, llvm::MaybeAlign(8), bodyBytes);
+        }
+    }
+
     // l-value → r-value coercion. Three cases:
     //   (1) IdentifierExpression alloca: load with the alloca's allocated type.
     //       Common case for local vars.
@@ -139,6 +191,20 @@ namespace cajeta {
         if (ast && dynamic_pointer_cast<ArrayIndexExpression>(ast)) {
             CajetaTypePtr elemType = ast->getResolvedType();
             if (elemType) {
+                // S9.5.4 — interface elements are 24-byte fat-pointer bodies
+                // stored INLINE in the array's data slot, so the element GEP
+                // already points AT the body (unlike a plain class-ref element,
+                // whose slot holds a `ptr` to a heap instance). Dispatch and
+                // assignment alike want a pointer to the body, not a loaded
+                // word — hand the GEP back as the interface value, exactly as
+                // the DotExpression branch does for interface fields. Loading
+                // here would yield the body's first word (the data ptr); a
+                // later dispatch dereferences that as a body → garbage vtable.
+                auto elemClass = dynamic_pointer_cast<CajetaClass>(elemType);
+                if (elemClass && elemClass->isInterface()
+                        && llvm::isa<llvm::GetElementPtrInst>(v)) {
+                    return v;
+                }
                 llvm::Type* loadTy;
                 // Class-typed elements (CajetaArray, plain CajetaClass)
                 // are stored as pointers in the array's data slot.
@@ -1405,7 +1471,28 @@ namespace cajeta {
                             module, rhsVal, srcClass, dstClass);
                     }
                 }
-                builder->CreateStore(rhsVal, lhs);
+                // Interface-typed array element: the slot is an INLINE 24-byte
+                // fat-pointer body, so a plain store would write only the data
+                // word and leave the vtable garbage. Build/copy the body in place
+                // instead. (Class-ref elements store an 8-byte pointer and fall
+                // through to the normal store below.)
+                bool storedInterfaceInline = false;
+                if (lhsAst && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsElemClass = dynamic_pointer_cast<CajetaClass>(
+                        lhsAst->getResolvedType());
+                    if (lhsElemClass && lhsElemClass->isInterface()) {
+                        if (rhsAst && !rhsAst->getResolvedType()) {
+                            rhsAst->resolveTypes(module);
+                        }
+                        storeInterfaceInlineBody(module, lhs, rhsVal,
+                            lhsElemClass, rhsAst);
+                        storedInterfaceInline = true;
+                    }
+                }
+                if (!storedInterfaceInline) {
+                    builder->CreateStore(rhsVal, lhs);
+                }
                 // Ownership transfer into a class-typed array slot.
                 // When `arr[i] = local` stores a heap-owned class
                 // pointer, the slot now owns the reference; the
@@ -2071,7 +2158,27 @@ namespace cajeta {
             case BINARY_OP_NE: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
                 bool isFp = l->getType()->isFloatingPointTy();
-                bool isSigned = ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) != 0;
+                // Signedness from the AST's resolved types AS WELL AS getTypeFlagsOf.
+                // getTypeFlagsOf keys on the LLVM value's type (i32 for BOTH int32
+                // and uint32) and can lose the signed distinction — notably when an
+                // operand is the int32 RESULT of an interface method dispatch. That
+                // produced an UNSIGNED compare that breaks negatives: `7 > -1000`
+                // became `7 > 0xFFFFFC18` → false (the ifx registry's priority
+                // selection never beat the -1000 null floor). The +/-/* cases already
+                // source signedness from the AST for the same reason; mirror them
+                // here. ORing both sources only ever ADDS signed-ness for an operand
+                // the AST knows is signed — a genuine uint32 carries no SIGNED_FLAG in
+                // either source, so unsigned compares are unaffected.
+                auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
+                    auto pick = [](ExpressionPtr e) -> long {
+                        if (!e) return 0;
+                        auto t = e->getResolvedType();
+                        return t ? (long) t->getTypeFlags() : 0;
+                    };
+                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                };
+                bool isSigned = ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) != 0
+                    || signedFromAst(lhsAst, rhsAst);
                 if (isFp) {
                     switch (binaryOp) {
                         case BINARY_OP_LT: result = builder->CreateFCmpOLT(l, r); break;
