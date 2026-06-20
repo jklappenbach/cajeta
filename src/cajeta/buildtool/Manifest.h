@@ -13,6 +13,7 @@
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -64,6 +65,33 @@ namespace cajeta::buildtool {
         llvm::json::Object customFlavorsRaw;
     };
 
+    // settings.native-libraries entry — a native C/C++ library a Cajeta
+    // library binds via @Native. Keyed by lib-id. See
+    // docs/specification/buildtool/native-deps-spec.md §2.
+    struct NativeArtifact {
+        std::string platform;                 // "linux-x64", ...
+        std::optional<std::string> url;       // download coordinate
+        std::optional<std::string> sha256;    // integrity check
+    };
+
+    struct NativeLibrary {
+        std::string id;                       // the map key
+        std::string version;                  // required: default version constraint
+        std::string license;                  // required: SPDX id
+        bool redistributable = false;
+        std::string link = "static";          // "static" | "dynamic" (default static)
+        std::vector<std::string> platforms;   // supported triples
+        std::map<std::string, NativeArtifact> artifacts;  // platform -> coords
+        std::optional<std::string> acquire;   // embargoed acquisition instructions
+    };
+
+    // settings.native-overrides entry — the ONE developer-facing native knob:
+    // force a non-default version or a local path. Keyed by lib-id.
+    struct NativeOverride {
+        std::optional<std::string> version;
+        std::optional<std::string> path;
+    };
+
     // Top-level manifest. Phase 0 keeps the non-details blocks as raw
     // JSON values so we can validate they exist and have the right
     // top-level type without yet modeling their contents. Later phases
@@ -101,6 +129,18 @@ namespace cajeta::buildtool {
     // structurally invalid shapes (e.g. binaries entry without
     // `entry-method`).
     llvm::Expected<SettingsBuild> parseSettingsBuild(const Manifest& m);
+
+    // Parse settings.native-libraries (keyed by lib-id). Missing block →
+    // empty map. Errors on a malformed entry (missing version/license,
+    // unknown link mode, non-object entry). See native-deps-spec §2.1.
+    llvm::Expected<std::map<std::string, NativeLibrary>>
+    parseNativeLibraries(const Manifest& m);
+
+    // Parse settings.native-overrides (keyed by lib-id) — the developer's
+    // version/path override. Missing block → empty map. Each entry must set
+    // 'version' or 'path'.
+    llvm::Expected<std::map<std::string, NativeOverride>>
+    parseNativeOverrides(const Manifest& m);
 
     // Load + validate a manifest from disk. Errors are
     // `cajeta::buildtool::ManifestError` with citation-style messages.

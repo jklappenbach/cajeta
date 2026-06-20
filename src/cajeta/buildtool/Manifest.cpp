@@ -339,6 +339,87 @@ namespace cajeta::buildtool {
         return out;
     }
 
+    llvm::Expected<std::map<std::string, NativeLibrary>>
+    parseNativeLibraries(const Manifest& m) {
+        auto err = [](const std::string& where, const std::string& msg) {
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(), where + ": " + msg);
+        };
+        std::map<std::string, NativeLibrary> out;
+        const auto* nl = m.settingsRaw.getObject("native-libraries");
+        if (!nl) return out;  // no block → empty; valid
+        for (const auto& kv : *nl) {
+            NativeLibrary lib;
+            lib.id = kv.first.str();
+            const std::string where = "settings.native-libraries." + lib.id;
+            const auto* o = kv.second.getAsObject();
+            if (!o) return err(where, "entry must be an object");
+            auto ver = o->getString("version");
+            if (!ver) return err(where, "missing required 'version'");
+            lib.version = ver->str();
+            auto lic = o->getString("license");
+            if (!lic) return err(where, "missing required 'license'");
+            lib.license = lic->str();
+            if (auto r = o->getBoolean("redistributable"))
+                lib.redistributable = *r;
+            if (auto lk = o->getString("link")) {
+                lib.link = lk->str();
+                if (lib.link != "static" && lib.link != "dynamic")
+                    return err(where, "unknown link mode '" + lib.link +
+                               "' (expected 'static' or 'dynamic')");
+            }
+            if (const auto* plats = o->getArray("platforms")) {
+                for (const auto& p : *plats) {
+                    if (auto ps = p.getAsString())
+                        lib.platforms.push_back(ps->str());
+                    else
+                        return err(where + ".platforms",
+                                   "entries must be strings");
+                }
+            }
+            if (const auto* arts = o->getObject("artifacts")) {
+                for (const auto& akv : *arts) {
+                    NativeArtifact a;
+                    a.platform = akv.first.str();
+                    const auto* ao = akv.second.getAsObject();
+                    if (!ao)
+                        return err(where + ".artifacts." + a.platform,
+                                   "must be an object");
+                    if (auto u = ao->getString("url")) a.url = u->str();
+                    if (auto s = ao->getString("sha256")) a.sha256 = s->str();
+                    lib.artifacts[a.platform] = std::move(a);
+                }
+            }
+            if (auto acq = o->getString("acquire")) lib.acquire = acq->str();
+            out[lib.id] = std::move(lib);
+        }
+        return out;
+    }
+
+    llvm::Expected<std::map<std::string, NativeOverride>>
+    parseNativeOverrides(const Manifest& m) {
+        auto err = [](const std::string& where, const std::string& msg) {
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(), where + ": " + msg);
+        };
+        std::map<std::string, NativeOverride> out;
+        const auto* no = m.settingsRaw.getObject("native-overrides");
+        if (!no) return out;
+        for (const auto& kv : *no) {
+            NativeOverride ov;
+            const std::string id = kv.first.str();
+            const std::string where = "settings.native-overrides." + id;
+            const auto* o = kv.second.getAsObject();
+            if (!o) return err(where, "entry must be an object");
+            if (auto v = o->getString("version")) ov.version = v->str();
+            if (auto p = o->getString("path")) ov.path = p->str();
+            if (!ov.version && !ov.path)
+                return err(where, "must set 'version' or 'path'");
+            out[id] = std::move(ov);
+        }
+        return out;
+    }
+
     llvm::Expected<Manifest> loadManifestFile(const std::string& path) {
         auto buf = llvm::MemoryBuffer::getFile(path);
         if (!buf) {
