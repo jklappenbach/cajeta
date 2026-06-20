@@ -130,6 +130,13 @@ namespace cajeta::buildtool {
     // `entry-method`).
     llvm::Expected<SettingsBuild> parseSettingsBuild(const Manifest& m);
 
+    // Parse one native-library entry object (the value under a lib-id key).
+    // `where` is the diagnostic prefix. Shared by the manifest parser and the
+    // .cja embedded-metadata parser (native-deps unit 4).
+    llvm::Expected<NativeLibrary> parseNativeLibraryEntry(
+        const std::string& id, const llvm::json::Object& entry,
+        const std::string& where);
+
     // Parse settings.native-libraries (keyed by lib-id). Missing block →
     // empty map. Errors on a malformed entry (missing version/license,
     // unknown link mode, non-object entry). See native-deps-spec §2.1.
