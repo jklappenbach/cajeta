@@ -1,0 +1,26 @@
+package cajeta.wire;
+
+/**
+ * Schema-carrying wire codec for values of type `T`. Identical in spirit to
+ * `Encoder<T>`, but every call also takes a `Schema`: it is the contract for
+ * **untagged** formats (e.g. Avro) whose bytes are undecodable without the
+ * schema that produced them. Tagged formats that carry their own structure
+ * (Protobuf, MessagePack) use the thinner `Encoder<T>` instead.
+ *
+ * As with `Encoder<T>`, the two halves are inverses —
+ * `decode(encode(value, s), s)` yields a value equal to the original — and both
+ * directions transfer ownership of their heap result (`#`) to the caller.
+ *
+ * ```cajeta
+ * SchemaEncoder<Order> codec = AvroEncoder<Order>();
+ * #int8[] bytes = codec.encode(order, schema);
+ * #Order  back  = codec.decode(bytes, schema);
+ * ```
+ */
+public interface SchemaEncoder<T> {
+    /** Serializes `value` under `schema` into a caller-owned byte buffer. */
+    #int8[] encode(T value, Schema schema);
+
+    /** Reconstructs a `T` from `bytes` under `schema`. Inverse of `encode`. */
+    #T decode(int8[] bytes, Schema schema);
+}
