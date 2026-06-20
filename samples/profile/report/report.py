@@ -122,15 +122,59 @@ def group_by_area(rows):
     return [(a, g[a]) for a in order if a in g]
 
 
+# Datasets are encoded two ways: competitors set dataset_name; the Cajeta
+# benchmarks instead put the dataset in the variant column (variant=twitter/citm/
+# canada) or distinguish only by input_size. So "dataset" is unified below, and a
+# variant that merely names a known dataset is NOT treated as a real variant (it
+# becomes the in-panel dataset <select>, not a separate sidebar entry).
+
+def area_dataset_names(rows):
+    d = {}
+    for r in rows:
+        dn = r.get("dataset_name", "")
+        if dn:
+            d.setdefault(r.get("area", ""), set()).add(dn)
+    return d
+
+
+def area_size_to_ds(rows):
+    d = {}
+    for r in rows:
+        dn = r.get("dataset_name", "")
+        if dn:
+            d.setdefault(r.get("area", ""), {})[r.get("input_size", "")] = dn
+    return d
+
+
+def real_variant(r, area_ds):
+    v = r.get("variant", "")
+    if v and v in area_ds.get(r.get("area", ""), ()):
+        return ""  # a dataset-as-variant is not a real variant
+    return v
+
+
+def row_dataset(r, area_ds, area_s2d):
+    dn = r.get("dataset_name", "")
+    if dn:
+        return dn
+    a = r.get("area", "")
+    v = r.get("variant", "")
+    if v and v in area_ds.get(a, ()):
+        return v
+    return area_s2d.get(a, {}).get(r.get("input_size", ""), "")
+
+
 def benchmarks(rows):
     """Ordered list of (area, benchmark, variant, key, rows) — one per distinct
-    (area, benchmark, variant) comparison, AREAS_ORDER then first-seen order."""
+    (area, benchmark, real-variant) comparison, AREAS_ORDER then first-seen order.
+    Dataset-as-variant rows collapse into the same benchmark (selected in-panel)."""
+    area_ds = area_dataset_names(rows)
     order, g = [], {}
     for r in rows:
         area = r.get("area", "")
         if area in ("scaffold", "selftest", "none", ""):
             continue
-        k = (area, r.get("benchmark", ""), r.get("variant", ""))
+        k = (area, r.get("benchmark", ""), real_variant(r, area_ds))
         if k not in g:
             g[k] = []
             order.append(k)
@@ -266,84 +310,83 @@ CSS = r"""
 :root{
   --bg:#EFE0C6; --panel:#FBF4E6; --panel2:#F3E7CF; --fg:#2C1B0C; --muted:#7A5C36;
   --tan:#E7CFA6; --caramel:#B06A2C; --deep:#7A481E; --espresso:#3A2412;
-  --gold:#D49A3C; --line:#1A0E04; --shadow:rgba(58,36,18,.18);
+  --gold:#D49A3C; --line:#1A0E04; --hair:rgba(122,72,30,.28); --shadow:rgba(58,36,18,.16);
 }
 :root[data-theme="dark"]{
   --bg:#170E07; --panel:#2A1B10; --panel2:#22150B; --fg:#F3E5CD; --muted:#BC9B6F;
   --tan:#3A2716; --caramel:#C77F38; --deep:#E2B36C; --espresso:#F0DDBE;
-  --gold:#E8B655; --line:#000; --shadow:rgba(0,0,0,.5);
+  --gold:#E8B655; --line:#000; --hair:rgba(226,179,108,.26); --shadow:rgba(0,0,0,.45);
 }
 *{box-sizing:border-box}
 html,body{margin:0}
 body{font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
   background:var(--bg);color:var(--fg);
-  background-image:radial-gradient(circle at 18% -10%,rgba(212,154,60,.16),transparent 42%),
-                   radial-gradient(circle at 100% 0%,rgba(122,72,30,.14),transparent 38%);}
-h1,h2,h3,.brandfont{font-family:Georgia,"Times New Roman",serif}
+  background-image:radial-gradient(circle at 18% -10%,rgba(212,154,60,.14),transparent 42%),
+                   radial-gradient(circle at 100% 0%,rgba(122,72,30,.12),transparent 38%);}
+h1,h2,h3{font-family:Georgia,"Times New Roman",serif}
 a{color:inherit}
 
 /* ---- header ---- */
 header{position:relative;color:#FBF1DD;padding:22px 30px;
   background:linear-gradient(120deg,var(--espresso),var(--deep) 42%,var(--caramel) 78%,var(--gold));
-  border-bottom:2px solid var(--line);box-shadow:0 3px 0 var(--line),0 10px 24px var(--shadow);}
+  border-bottom:2px solid var(--line);}
 :root[data-theme="dark"] header{color:#1c1208}
 header h1{margin:0;font-size:27px;letter-spacing:.3px;text-shadow:0 1px 0 rgba(0,0,0,.25)}
 header .sub{opacity:.94;margin-top:3px;font-size:14px}
-.toggle{position:absolute;top:18px;right:24px;background:rgba(0,0,0,.22);
-  border:1.5px solid var(--line);color:inherit;border-radius:999px;padding:6px 14px;
+.toggle{position:absolute;top:18px;right:24px;background:rgba(0,0,0,.18);
+  border:1px solid rgba(255,255,255,.35);color:inherit;border-radius:999px;padding:6px 14px;
   cursor:pointer;font-size:13px;font-weight:600}
-.toggle:hover{background:rgba(0,0,0,.34)}
+.toggle:hover{background:rgba(0,0,0,.3)}
 
 /* ---- layout ---- */
 .app{display:flex;align-items:flex-start;gap:0}
 .sidebar{position:sticky;top:0;align-self:flex-start;width:268px;flex:0 0 268px;
   max-height:100vh;overflow:auto;padding:16px 12px 40px;
-  background:var(--panel2);border-right:2px solid var(--line)}
+  background:var(--panel2);border-right:1px solid var(--hair)}
 .main{flex:1 1 auto;min-width:0;padding:22px 26px 60px;max-width:1080px}
 
-/* ---- sidebar index ---- */
+/* ---- sidebar index (no per-item pinlines — highlight by fill + gold rail) ---- */
 .sb-area{font-family:Georgia,serif;font-size:12px;letter-spacing:.14em;text-transform:uppercase;
   color:var(--caramel);margin:16px 8px 6px;font-weight:700}
 .navbench{display:flex;justify-content:space-between;gap:8px;align-items:center;
-  padding:7px 10px;margin:3px 2px;border:1.5px solid transparent;border-radius:8px;
-  cursor:pointer;font-size:13.5px;color:var(--fg)}
-.navbench:hover{background:var(--panel);border-color:var(--line)}
+  padding:7px 10px;margin:2px 2px;border-radius:8px;cursor:pointer;font-size:13.5px;color:var(--fg)}
+.navbench:hover{background:var(--panel)}
 .navbench.active{background:linear-gradient(90deg,var(--tan),var(--panel));
-  border:1.5px solid var(--line);box-shadow:inset 3px 0 0 var(--gold),0 1px 0 var(--shadow);font-weight:600}
+  box-shadow:inset 3px 0 0 var(--gold);font-weight:600}
 .navbench .vtag{font-size:10.5px;color:var(--muted);white-space:nowrap}
 
-/* ---- env strip ---- */
+/* ---- env strip (soft hairline only) ---- */
 .env{display:flex;flex-wrap:wrap;gap:6px 16px;background:var(--panel);
-  border:2px solid var(--line);border-radius:12px;padding:12px 18px;margin:0 0 18px;
-  box-shadow:3px 3px 0 var(--shadow)}
+  border:1px solid var(--hair);border-radius:12px;padding:12px 18px;margin:0 0 18px}
 .env span{font-size:12.5px}
 .env b{color:var(--caramel);font-weight:700}
 
 /* ---- legend ---- */
 .legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin:0 0 20px;font-size:12.5px}
 .legend .sw{display:inline-flex;align-items:center;gap:6px}
-.legend .chip{width:14px;height:14px;border:1.5px solid var(--line);border-radius:3px;display:inline-block}
+.legend .chip{width:14px;height:14px;border:1px solid var(--hair);border-radius:3px;display:inline-block}
 
-/* ---- panels ---- */
+/* ---- panels (the one place that keeps a true black pinline) ---- */
 .panel{display:none;background:var(--panel);border:2px solid var(--line);border-radius:14px;
-  padding:20px 22px 24px;box-shadow:5px 5px 0 var(--shadow);margin-bottom:24px}
+  padding:20px 22px 24px;box-shadow:4px 4px 0 var(--shadow);margin-bottom:24px}
 .panel.show{display:block}
 .panel h2{margin:0 0 2px;font-size:22px;color:var(--deep)}
 :root[data-theme="dark"] .panel h2{color:var(--gold)}
-.panel .meta{color:var(--muted);font-size:12.5px;margin-bottom:14px}
-.panel .meta .pill{display:inline-block;border:1.5px solid var(--line);border-radius:999px;
-  padding:1px 9px;margin-right:6px;background:var(--tan);color:var(--espresso);font-weight:600}
+.panel .meta{color:var(--muted);font-size:12.5px;margin-bottom:16px}
+.panel .meta .pill{display:inline-block;border-radius:999px;padding:1px 10px;margin-right:6px;
+  background:var(--tan);color:var(--espresso);font-weight:600}
 
-/* ---- tabs ---- */
-.tabs{display:flex;gap:8px;margin:0 0 14px;border-bottom:2px solid var(--line);padding-bottom:0}
+/* ---- tabs: the active tab OPENS into the content (no line under it); the rest
+        sit behind the strip's hairline ---- */
+.tabs{display:flex;gap:6px;margin:0 0 16px;border-bottom:2px solid var(--line)}
 .tabb{appearance:none;cursor:pointer;font:inherit;font-weight:600;font-size:13px;
-  padding:8px 16px;color:var(--muted);background:var(--panel2);
-  border:1.5px solid var(--line);border-bottom:none;border-radius:9px 9px 0 0;
-  position:relative;top:2px}
-.tabb:hover{color:var(--fg)}
-.tabb.active{color:var(--espresso);background:var(--gold);top:0;
-  box-shadow:0 -2px 0 var(--line)}
-:root[data-theme="dark"] .tabb.active{color:#1c1208}
+  padding:8px 17px;color:var(--muted);background:transparent;
+  border:2px solid transparent;border-bottom:none;border-radius:9px 9px 0 0;margin-bottom:-2px}
+.tabb:hover{color:var(--fg);background:var(--panel2)}
+.tabb.active{color:var(--espresso);background:var(--panel);
+  border-color:var(--line);border-top:3px solid var(--gold);
+  border-bottom:2px solid var(--panel)}   /* erases the strip line under the active tab */
+:root[data-theme="dark"] .tabb.active{color:var(--espresso)}
 .tabc{display:none}
 .tabc.show{display:block}
 
@@ -360,19 +403,25 @@ header .sub{opacity:.94;margin-top:3px;font-size:14px}
   box-shadow:2px 2px 0 var(--shadow);transition:transform .08s ease}
 .col:hover .bar{transform:translateY(-3px)}
 .bar.star{border-width:2.5px;box-shadow:0 0 0 1.5px var(--gold),2px 2px 0 var(--shadow)}
-.bar.stub{height:9px!important;border-style:dashed;
+.bar.stub{height:9px!important;border-style:dashed;box-shadow:none;
   background:repeating-linear-gradient(45deg,var(--tan),var(--tan) 5px,var(--panel2) 5px,var(--panel2) 10px)}
 .name{font-size:11px;margin-top:8px;text-align:center;max-width:74px;line-height:1.25;
   word-break:break-word;color:var(--fg)}
 .name .lib{display:block;color:var(--muted);font-size:10px}
 .name.cajeta{font-weight:700;color:var(--deep)}
 :root[data-theme="dark"] .name.cajeta{color:var(--gold)}
-.empty{padding:40px 8px;color:var(--muted);font-style:italic;border-bottom:2px solid var(--line)}
+.empty{padding:40px 8px;color:var(--muted);font-style:italic}
 .status-skipped{color:#9a6b12;font-weight:600}
 :root[data-theme="dark"] .status-skipped{color:var(--gold)}
 
+/* ---- dataset select + variant suffix ---- */
+.vsuf{color:var(--muted);font-weight:400;font-size:16px}
+.dslabel{display:inline-block;font-size:12.5px;color:var(--muted);margin:0 0 14px;font-weight:600}
+.dssel{font:inherit;font-size:13px;font-weight:600;color:var(--espresso);background:var(--tan);
+  border:1px solid var(--hair);border-radius:8px;padding:5px 11px;margin-left:6px;cursor:pointer}
+
 footer{color:var(--muted);font-size:12px;padding:26px 30px;text-align:center}
-footer code{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 5px}
+footer code{background:var(--panel);border:1px solid var(--hair);border-radius:4px;padding:0 5px}
 """
 
 
@@ -486,31 +535,79 @@ def gen_html(rows, env):
         f"<span class='sw'><span class='chip' style='background:{lang_color(la)}'></span>"
         f"{html.escape(la)}{' ★' if la == 'cajeta' else ''}</span>" for la in langs_present) + "</div>")
 
+    area_ds = area_dataset_names(rows)
+    area_s2d = area_size_to_ds(rows)
+    ds_size = {a: {d: s for s, d in m.items()} for a, m in area_s2d.items()}
+
+    metrics = (("thr", "Throughput"), ("time", "Time"), ("mem", "Memory"))
     first = True
     for area, bench, variant, key, rs in benches:
-        skipped = [r for r in rs if r.get("status") in ("skipped", "invalid")]
-        meas = measured(rs)
-        ts, hs, msr = time_series(rs), thr_series(rs, area), mem_series(rs)
-        default = "thr" if hs else "time"
-        title = html.escape(bench) + (f" <span style='color:var(--muted);font-weight:400'>· {html.escape(variant)}</span>" if variant else "")
+        # A benchmark may run over several datasets (codec: twitter/citm/canada).
+        # Dataset is an in-panel <select>, NOT a separate sidebar entry — so each
+        # chart compares one dataset cleanly across competitors.
+        dsof = lambda r: row_dataset(r, area_ds, area_s2d)
+        sizemap = ds_size.get(area, {})
+        named = []
+        for r in rs:
+            d = dsof(r)
+            if d and d not in named:
+                named.append(d)
+        named.sort(key=lambda d: fnum(sizemap.get(d, "")) or 0)
+        multi = len(named) > 1
+
+        if multi:
+            # rows we still couldn't slot: one stub per language, shown in the
+            # datasets where that language is otherwise absent.
+            floating, seen = [], set()
+            for r in rs:
+                if not dsof(r):
+                    la = r.get("language", "")
+                    if la not in seen:
+                        seen.add(la)
+                        floating.append(r)
+            blocks = []
+            for d in named:
+                drows = [r for r in rs if dsof(r) == d]
+                here = {r.get("language", "") for r in drows}
+                drows += [r for r in floating if r.get("language", "") not in here]
+                blocks.append((d, drows))
+        else:
+            blocks = [("", rs)]
+
+        default = "thr" if thr_series(blocks[0][1], area) else "time"
+        title = html.escape(bench) + (f" <span class='vsuf'>· {html.escape(variant)}</span>" if variant else "")
         n_ok = sum(1 for r in rs if r.get("status") == "ok")
-        insz = next((r.get("input_size", "") for r in rs if r.get("input_size", "")), "")
+        n_sk = sum(1 for r in rs if r.get("status") in ("skipped", "invalid"))
         meta = (f"<span class='pill'>{html.escape(area)}</span>"
                 f"<span class='pill'>{n_ok} measured</span>"
-                + (f"<span class='pill'>{len(skipped)} skipped</span>" if skipped else "")
-                + (f" input {html.escape(str(insz))}" if insz and insz not in ('-1', '') else ""))
-        tabs = []
-        for m_key, m_name, ser in (("thr", "Throughput", hs), ("time", "Time", ts), ("mem", "Memory", msr)):
-            act = " active" if m_key == default else ""
-            tabs.append(f"<button class='tabb tabb-{m_key}{act}' onclick=\"showTab('{key}','{m_key}')\">{m_name}</button>")
-        contents = []
-        for m_key, m_name, ser in (("thr", "Throughput", hs), ("time", "Time", ts), ("mem", "Memory", msr)):
-            act = " show" if m_key == default else ""
-            contents.append(f"<div class='tabc tabc-{m_key}{act}'>{render_tab(ser, meas, skipped, m_name)}</div>")
+                + (f"<span class='pill'>{n_sk} skipped</span>" if n_sk else ""))
+
+        sel = ""
+        if multi:
+            opts = "".join(f"<option value='{slug(d)}'>{html.escape(d)}</option>" for d, _ in blocks)
+            sel = (f"<label class='dslabel'>dataset"
+                   f"<select class='dssel' onchange=\"showDataset('{key}',this.value)\">{opts}</select></label>")
+
+        tabbar = "<div class='tabs'>" + "".join(
+            f"<button class='tabb{' active' if m == default else ''}' data-m='{m}' "
+            f"onclick=\"showTab('{key}','{m}')\">{name}</button>" for m, name in metrics) + "</div>"
+
+        dsblocks = []
+        for i, (d, drows) in enumerate(blocks):
+            meas = measured(drows)
+            skipped = [r for r in drows if r.get("status") in ("skipped", "invalid")]
+            sers = {"thr": thr_series(drows, area), "time": time_series(drows), "mem": mem_series(drows)}
+            names = {"thr": "Throughput", "time": "Time", "mem": "Memory"}
+            tabcs = "".join(
+                f"<div class='tabc tabc-{m}{' show' if m == default else ''}'>"
+                f"{render_tab(sers[m], meas, skipped, names[m])}</div>" for m in ("thr", "time", "mem"))
+            disp = "block" if i == 0 else "none"
+            dsblocks.append(f"<div class='dsblock' data-ds='{slug(d)}' style='display:{disp}'>{tabcs}</div>")
+
         main.append(
             f"<section class='panel{' show' if first else ''}' id='panel-{key}'>"
             f"<h2>{title}</h2><div class='meta'>{meta}</div>"
-            f"<div class='tabs'>{''.join(tabs)}</div>{''.join(contents)}</section>")
+            f"{sel}{tabbar}{''.join(dsblocks)}</section>")
         first = False
     main.append("</main>")
 
@@ -533,12 +630,25 @@ function showBench(k){
   var n=document.getElementById('nav-'+k); if(n){n.classList.add('active');
     n.scrollIntoView({block:'nearest'});}
 }
+function applyTab(p,m){
+  p.querySelectorAll('.dsblock').forEach(function(blk){
+    var vis=blk.style.display!=='none';
+    blk.querySelectorAll('.tabc').forEach(function(t){t.classList.remove('show')});
+    if(vis){var c=blk.querySelector('.tabc-'+m); if(c)c.classList.add('show');}
+  });
+}
 function showTab(k,m){
   var p=document.getElementById('panel-'+k); if(!p)return;
-  p.querySelectorAll('.tabc').forEach(function(t){t.classList.remove('show')});
   p.querySelectorAll('.tabb').forEach(function(t){t.classList.remove('active')});
-  var c=p.querySelector('.tabc-'+m); if(c)c.classList.add('show');
-  var b=p.querySelector('.tabb-'+m); if(b)b.classList.add('active');
+  var b=p.querySelector('.tabb[data-m="'+m+'"]'); if(b)b.classList.add('active');
+  applyTab(p,m);
+}
+function showDataset(k,ds){
+  var p=document.getElementById('panel-'+k); if(!p)return;
+  p.querySelectorAll('.dsblock').forEach(function(b){b.style.display='none'});
+  var b=p.querySelector('.dsblock[data-ds="'+ds+'"]'); if(b)b.style.display='block';
+  var act=p.querySelector('.tabb.active');
+  applyTab(p, act?act.getAttribute('data-m'):'thr');
 }
 function tog(){var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';}
 (function(){var f=document.querySelector('.navbench');if(f)f.classList.add('active');})();
