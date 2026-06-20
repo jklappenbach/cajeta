@@ -41,8 +41,8 @@ namespace cajeta::buildtool {
             if (actual.empty())
                 return ioErr("native fetch: cannot hash '" + sourcePath + "'");
             if (stripSha(actual) != stripSha(expectedSha256))
-                return ioErr("native fetch: sha256 mismatch for '" + lib +
-                             "' — expected " + expectedSha256 + ", got " + actual);
+                return ioErr(nativeChecksumMismatchMessage(
+                    lib, expectedSha256, actual));
         }
         std::string dir = nativeCacheDir(cacheRoot, lib, version, platform);
         fs::create_directories(dir, ec);
@@ -110,6 +110,9 @@ namespace cajeta::buildtool {
             const NativeLibrary& lib, const std::string& version,
             const std::string& platform, const std::string& mirrorRoot,
             const std::string& cacheRoot) {
+        // Network seam: a mirror fetch is a network op — refused at run/JIT time.
+        if (auto e = guardNativeNetwork("Olla mirror fetch of '" + lib.id + "'"))
+            return std::move(e);
         if (!mayMirrorNativeBinary(lib)) {
             std::string acq = lib.acquire ? (" (" + *lib.acquire + ")") : "";
             return ioErr("native: '" + lib.id + "' is embargoed "
@@ -140,6 +143,59 @@ namespace cajeta::buildtool {
             sha = *it->second.sha256;
         return fetchNativeToCache(cacheRoot, lib.id, version, platform,
                                   srcFile, sha);
+    }
+
+    // --- Unit 11: diagnostics + network seam -----------------------------
+
+    std::string nativeMissingMessage(
+            const std::string& lib, const std::string& version,
+            const std::string& platform,
+            const std::vector<std::string>& probedDirs,
+            const std::string& acquire) {
+        std::string probed;
+        for (const auto& d : probedDirs)
+            probed += (probed.empty() ? "" : ", ") + d;
+        if (probed.empty()) probed = "(none)";
+        std::string msg = "native library '" + lib + "' " + version +
+            " for " + platform + " not found; probed: " + probed +
+            ". Fix: run `cajeta fetch` (online), vendor it into native/" +
+            platform + "/, or set CAJETA_NATIVE_PATH";
+        if (!acquire.empty()) msg += "; " + acquire;
+        return msg + ".";
+    }
+
+    std::string nativeChecksumMismatchMessage(
+            const std::string& lib, const std::string& expected,
+            const std::string& actual) {
+        return "native library '" + lib + "': sha256 mismatch — expected " +
+            expected + ", got " + actual +
+            " (refusing to use a corrupt/tampered artifact)";
+    }
+
+    std::string nativeUnsupportedPlatformMessage(
+            const std::string& lib, const std::string& platform,
+            const std::vector<std::string>& availablePlatforms) {
+        std::string avail;
+        for (const auto& p : availablePlatforms)
+            avail += (avail.empty() ? "" : ", ") + p;
+        if (avail.empty()) avail = "(none)";
+        return "native library '" + lib + "' is not available for platform '" +
+            platform + "'; available: " + avail;
+    }
+
+    namespace {
+        NativePhase g_nativePhase = NativePhase::Provision;
+    }
+    void setNativePhase(NativePhase p) { g_nativePhase = p; }
+    NativePhase nativePhase() { return g_nativePhase; }
+
+    llvm::Error guardNativeNetwork(const std::string& op) {
+        if (g_nativePhase == NativePhase::Execution)
+            return ioErr("native: refusing network op (" + op +
+                         ") at execution/JIT time — the network is touched only "
+                         "at provision time. Pre-provision via `cajeta fetch`/"
+                         "`vendor` or bundle the artifact in the .cja.");
+        return llvm::Error::success();
     }
 
 } // namespace cajeta::buildtool

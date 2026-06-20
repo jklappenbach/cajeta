@@ -63,4 +63,28 @@ namespace cajeta::buildtool {
         const std::string& platform, const std::string& mirrorRoot,
         const std::string& cacheRoot);
 
+    // --- Unit 11: fail-loud diagnostics + provision-time-only net seam ----
+
+    // Actionable diagnostics — every native failure names what/where/how-to-fix.
+    std::string nativeMissingMessage(
+        const std::string& lib, const std::string& version,
+        const std::string& platform, const std::vector<std::string>& probedDirs,
+        const std::string& acquire);
+    std::string nativeChecksumMismatchMessage(
+        const std::string& lib, const std::string& expected,
+        const std::string& actual);
+    std::string nativeUnsupportedPlatformMessage(
+        const std::string& lib, const std::string& platform,
+        const std::vector<std::string>& availablePlatforms);
+
+    // The network seam (spec INV-2): the network may be touched ONLY at
+    // provision time. The execution/JIT path sets Execution; any native network
+    // op then hard-errors instead of reaching out.
+    enum class NativePhase { Provision, Execution };
+    void setNativePhase(NativePhase p);
+    NativePhase nativePhase();
+    // Returns an Error (hard-fail) if called while in the Execution phase;
+    // success otherwise. Guards every native network op.
+    llvm::Error guardNativeNetwork(const std::string& op);
+
 } // namespace cajeta::buildtool
