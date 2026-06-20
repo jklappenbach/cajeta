@@ -25,7 +25,7 @@ CAJETA="${CAJETA:-${REPO_ROOT}/build-cajeta/src/cajeta}"
 cd "$SCRIPT_DIR"
 
 # Areas that have a competitor runner (competitors/<area>.sh). Grows as Phase B lands.
-COMPETITOR_AREAS="codec hash sort string math collection clbg"
+COMPETITOR_AREAS="codec hash sort string math collection clbg time"
 
 [[ -x "$CAJETA" ]] || { echo "error: cajeta not found at $CAJETA (build ./build.sh or set CAJETA=)" >&2; exit 1; }
 
