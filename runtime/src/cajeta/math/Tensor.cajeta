@@ -480,10 +480,14 @@ public class Tensor<T> {
      * Internal — driven by `fromProtocol`'s dtype switch.
      */
     static #Tensor<?> rebuildShared<E>(TensorProtocol p) {
-        Storage<E> s = (Storage<E>) p.base();      // Object → Storage<E> (borrow, no copy)
         int64[] shp = p.shapeCopy();
         int64[] strd = p.strideCopy();
-        Tensor<E> t = heap Tensor<E>(s, p.offset(), shp, strd);
+        // Pass the borrowed backing DIRECTLY (no named `Storage<E> s` local): a
+        // class-typed local bound to a borrow gets an owning drop registered, which
+        // would virtual-drop this SHARED Storage at scope exit and free the buffer
+        // out from under the returned view (and the exporting tensor) — a
+        // use-after-free. Mirrors makeView passing `this.store` inline.
+        Tensor<E> t = heap Tensor<E>((Storage<E>) p.base(), p.offset(), shp, strd);
         t.markSharedView();
         return #t;
     }
