@@ -401,7 +401,7 @@ header .sub{opacity:.94;margin-top:3px;font-size:14px}
 /* ---- bar chart ---- */
 .axis{font-size:12px;color:var(--muted);margin:2px 2px 12px;font-weight:600}
 .axis .dir{color:var(--caramel)}
-.chart{display:flex;align-items:flex-end;gap:16px;height:288px;padding:8px 6px 0;
+.chart{display:flex;align-items:flex-end;gap:16px;height:300px;padding:8px 6px 0;
   overflow-x:auto;border-bottom:2px solid var(--line)}
 .col{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;
   height:100%;min-width:58px}
@@ -413,8 +413,10 @@ header .sub{opacity:.94;margin-top:3px;font-size:14px}
 .bar.star{border-width:2.5px;box-shadow:0 0 0 1.5px var(--gold),2px 2px 0 var(--shadow)}
 .bar.stub{height:9px!important;border-style:dashed;box-shadow:none;
   background:repeating-linear-gradient(45deg,var(--tan),var(--tan) 5px,var(--panel2) 5px,var(--panel2) 10px)}
-.name{font-size:11px;margin-top:8px;text-align:center;max-width:74px;line-height:1.25;
-  word-break:break-word;color:var(--fg)}
+/* fixed height so every bar shares one baseline regardless of how many lines the
+   library name wraps to (Cajeta has no library line, competitors have long ones) */
+.name{font-size:11px;margin-top:8px;text-align:center;width:78px;line-height:1.25;
+  height:54px;overflow:hidden;word-break:break-word;color:var(--fg);flex:0 0 auto}
 .name .lib{display:block;color:var(--muted);font-size:10px}
 .name.cajeta{font-weight:700;color:var(--deep)}
 :root[data-theme="dark"] .name.cajeta{color:var(--gold)}
@@ -439,7 +441,7 @@ def bar_col(b, better, unit):
     label = row_label(r)
     lib = r.get("library", "")
     color = lang_color(lang)
-    h = max(6, round(b["score"] * 250))
+    h = max(6, round(b["score"] * 210))
     star = " star" if lang == "cajeta" else ""
     nm_cls = " cajeta" if lang == "cajeta" else ""
     star_mark = "★ " if lang == "cajeta" else ""
