@@ -1,0 +1,26 @@
+package cajeta.codec.csv;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Recoverable exception thrown when a typed `Csv.parse<T>` bind fails —
+ * a required column is missing, a field does not parse as its declared
+ * type, or (as a failsafe) the compiler-side `CsvSynthesizer` did not
+ * engage and the captured facade body ran instead.
+ *
+ * `position` is the byte offset (0-based) at which the problem was
+ * noticed, or 0 when not applicable (e.g. the failsafe path).
+ *
+ * ```cajeta
+ * throw heap CsvParseException("column 'price' not found in header", 0);
+ * ```
+ */
+public class CsvParseException extends RecoverableException {
+    public int64 position;
+
+    public CsvParseException(String message, int64 position) {
+        this.message = message;
+        this.cause = 0;
+        this.position = position;
+    }
+}

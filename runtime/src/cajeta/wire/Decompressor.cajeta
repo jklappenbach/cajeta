@@ -1,0 +1,26 @@
+package cajeta.wire;
+
+/**
+ * The block-decompress stage as an explicit, reusable component — the byte→byte
+ * inverse of `Compressor`. Shared by every Class C container format (Parquet,
+ * ORC, Avro), which frame their payloads as independently compressed blocks.
+ * Deliberately separate from `Encoder<T>`: decompression is format-agnostic and
+ * carries no `T`.
+ *
+ * Implementations (`Snappy`, `Lz4`, `Zstd`, `Gzip`/`zlib`, `Brotli`) are all our
+ * own Cajeta — no third-party libraries. The caller supplies `expandedLen` (the
+ * known decompressed byte length, recorded in the container's block header) so
+ * the output buffer is sized in one allocation.
+ *
+ * ```cajeta
+ * Decompressor d = Snappy();
+ * #int8[] plain = d.decompress(block, expandedLen);
+ * ```
+ */
+public interface Decompressor {
+    /**
+     * Decompresses `src` into a fresh, caller-owned buffer of exactly
+     * `expandedLen` bytes (the decompressed length carried by the block header).
+     */
+    #int8[] decompress(int8[] src, int64 expandedLen);
+}

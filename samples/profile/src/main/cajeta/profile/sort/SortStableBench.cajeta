@@ -1,0 +1,92 @@
+package profile.sort;
+
+import cajeta.collection.Sort;
+import cajeta.time.Clock;
+
+import profile.Benchmark;
+
+// Stable (mergesort) sort of N random int64 — the Sort.sortStable path, vs the
+// unstable quicksort in sort-int64. Each trial copies the source and sorts.
+// Cross-check: non-decreasing.
+public class SortStableBench extends Benchmark {
+
+    public int32 n;
+    public int64[] src;
+    public int64 baseNs;
+    public int32 sortedOk;
+
+    public String name() {
+        return "sort-stable-int64";
+    }
+
+    public String area() {
+        return "sort";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 50000;
+        this.src = heap int64[this.n];
+        int64 x = 991;
+        int32 i = 0;
+        while (i < this.n) {
+            x = (x * 1103515245 + 12345) & 0x7FFFFFFF;
+            this.src[i] = x;
+            i = i + 1;
+        }
+        int64 r0 = Clock.nanoTime();
+        int32 k = 0;
+        while (k < 3) {
+            int64[] w = heap int64[this.n];
+            int32 j = 0;
+            while (j < this.n) {
+                w[j] = this.src[j];
+                j = j + 1;
+            }
+            k = k + 1;
+        }
+        this.baseNs = (Clock.nanoTime() - r0) / 3;
+    }
+
+    public int64 baselineNanos() {
+        return this.baseNs;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        int64[] w = heap int64[this.n];
+        int32 i = 0;
+        while (i < this.n) {
+            w[i] = this.src[i];
+            i = i + 1;
+        }
+        Sort.sortStable<int64>(w, this.n);
+        boolean ok = true;
+        int32 j = 1;
+        while (j < this.n) {
+            if (w[j] < w[j - 1]) {
+                ok = false;
+            }
+            j = j + 1;
+        }
+        if (ok) {
+            this.sortedOk = 1;
+        } else {
+            this.sortedOk = 0;
+        }
+    }
+
+    public boolean checkResult() {
+        return this.sortedOk == 1;
+    }
+}

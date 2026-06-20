@@ -313,13 +313,28 @@ namespace cajeta {
         // #63: an interface method (abstract, no body) returning a value-shape
         // class (Optional<T>, etc.) has no body to scan, but the dispatch-site
         // ABI must match the impl's. Impls of such methods use `return stack
-        // X(...)` (the canonical shape) and compile with sret; the interface
-        // decl's prototype must too, or indirect calls via the vtable
-        // misalign args. Force sret on the interface decl based on the
-        // signature alone.
+        // X(...)` (or `return o` for a local value-shape, forced sret via #66
+        // off this very decl) and compile with sret; the interface decl's
+        // prototype must too, or indirect calls via the vtable misalign args.
+        // Force sret on the interface decl based on the signature alone.
+        //
+        // EXCEPTION — a REFERENCE return like cajeta.lang.String is returned by
+        // its impls as a heap POINTER, never sret; forcing sret here mismatches
+        // the impl ABI and crashes on dispatch (the ifx Backend.name() case:
+        // NullWindowBackend::name returns a String pointer while the sret-forced
+        // decl expected `void name(sret, this)`). No prior code dispatched a
+        // String-returning interface method, so excluding it cannot regress the
+        // value-shape (Optional) path the force exists for.
         if (parent && parent->isInterface()) {
-            returnsStackValueCache = 1;
-            return true;
+            QualifiedNamePtr rtName = rtClass->getQName();
+            bool isReferenceReturn = rtName
+                && rtName->getTypeName() == "String"
+                && rtName->getPackageName() == "cajeta.lang";
+            if (!isReferenceReturn) {
+                returnsStackValueCache = 1;
+                return true;
+            }
+            // String reference return: fall through to a pointer return.
         }
         // #66: a class method whose body has no `return stack X(...)` (the
         // canonical PeekStream/SkipStream shape — body is just `return o;`
@@ -1192,6 +1207,30 @@ namespace cajeta {
                 }
                 return;
             }
+        }
+
+        // A bounded-wildcard instantiation (`Holder<? extends Floating>`) is an
+        // abstract handle: you operate on it by capturing back to a concrete
+        // instantiation (reified-capture-spec.md §5), never by calling its
+        // methods directly — external mutator calls are PECS-rejected at the call
+        // site (MethodCallExpression), and there is no single concrete primitive
+        // element layout to lower a real body against (and the class's own-T
+        // internal write would trip the PECS guard). Emit a trap stub so the
+        // vtable/method symbol still resolves; it is never validly reached. Does
+        // NOT apply to the unbounded `?` (e.g. Class<?>), whose bodies reflection
+        // force-builds and dispatches — that path keeps its real body below.
+        if (parent && parent->isBoundedWildcardInstantiation() && llvmFunction) {
+            llvm::BasicBlock* bb = llvm::BasicBlock::Create(
+                *module->getLlvmContext(), "entry", llvmFunction);
+            llvm::IRBuilder<> b(bb);
+            if (llvmFunction->getReturnType()->isVoidTy()) {
+                b.CreateRetVoid();
+            } else {
+                b.CreateRet(llvm::Constant::getNullValue(
+                    llvmFunction->getReturnType()));
+            }
+            llvmBasicBlock = bb;   // mark emitted (idempotency guard above)
+            return;
         }
 
         // @Native("symbol") — the method's body is a forwarding call to

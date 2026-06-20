@@ -6,7 +6,9 @@
 sort-research-rs	https://github.com/Voultapher/sort-research-rs
 highway	https://github.com/google/highway
 ips4o	https://github.com/ips4o/ips4o
+pdqsort	https://github.com/orlp/pdqsort
 smhasher	https://github.com/rurban/smhasher
+xxhash	https://github.com/Cyan4973/xxHash
 stringzilla	https://github.com/ashvardanian/StringZilla
 simdutf	https://github.com/simdutf/simdutf
 unordered_dense	https://github.com/martinus/unordered_dense

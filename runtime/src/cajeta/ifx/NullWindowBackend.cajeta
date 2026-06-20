@@ -1,0 +1,32 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * NullWindowBackend — the silent headless window floor. Always registered at lowest priority and
+ * shipped in stdlib so any program that uses ifx runs with no OS backend present: it creates no
+ * window (returns a headless {@link Surface} — gfx renders to an offscreen image) and yields no
+ * events. Choosing headless is fine; *needing* a real window with only this present is the
+ * loud-error case the registry raises (spec §9.4 case 3). The capture/replay sibling is the external
+ * cajeta-ifx-harness backend.
+ */
+public final class NullWindowBackend implements WindowBackend {
+    public NullWindowBackend() { }
+
+    public boolean probe()    { return true; }       // always viable
+    public int32   priority() { return -1000; }      // lowest — only when nothing else
+    public String  name()     { return "null"; }
+    public boolean supports(Feature feature) { return false; }   // floor: no optional capabilities
+
+    // The floor gates nothing and prompts for nothing.
+    public PermissionState requestPermission(Permission permission) { return PermissionState.NotRequired; }
+    public PermissionState permissionState(Permission permission)   { return PermissionState.NotRequired; }
+
+    public Window createWindow(String title, uint32 width, uint32 height) { return null; }
+    public Surface surfaceOf(Window w) { return null; }   // headless surface
+    public #WindowEvent[] poll(Window w) { return null; }
+    public void destroy(Window w) { }
+
+    // A headless window never loses a surface, so it delivers no lifecycle events.
+    public #LifecyclePhase[] pollLifecycle(Window w) { return null; }
+}

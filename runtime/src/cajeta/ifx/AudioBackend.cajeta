@@ -1,0 +1,12 @@
+package cajeta.ifx;
+
+/**
+ * AudioBackend — the audio output/capture provider (WASAPI / CoreAudio / PipeWire / AAudio / harness
+ * / null). Opens an {@link AudioStream} and submits interleaved PCM frames. The
+ * {@link NullAudioBackend} is the silent floor.
+ */
+public interface AudioBackend extends Backend {
+    public AudioStream openOutput(uint32 sampleRate, uint32 channels);
+    public void submit(AudioStream s, float32[] frames);
+    public void close(AudioStream s);
+}

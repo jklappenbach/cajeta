@@ -19,6 +19,7 @@
 
 #include "cajeta/xpu/cpu/CpuKernelLowering.h"
 #include "cajeta/xpu/cpu/CpuBackend.h"
+#include "XpuCpuJit.h"
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
 #include "cajeta/xpu/amd/HipDriver.h"
@@ -331,7 +332,7 @@ TEST(XpuVectorDeviceTests, runsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr))
         << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
@@ -372,7 +373,7 @@ TEST(XpuVectorDeviceTests, bufferOfVectorRunsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr))
         << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
@@ -525,7 +526,7 @@ TEST(XpuVectorDeviceTests, intrinsicsRunOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(
@@ -614,7 +615,7 @@ TEST(XpuVectorDeviceTests, geometryRunsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(
@@ -703,7 +704,7 @@ TEST(XpuVectorDeviceTests, masksRunOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(
@@ -792,7 +793,7 @@ TEST(XpuVectorDeviceTests, swizzleRunsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(
@@ -879,7 +880,7 @@ static void runHalfOnCpu(const char* src, const char* cls, const char* kern) {
     auto host = std::make_unique<llvm::Module>("xpu_half_exec", *ctx);
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(
@@ -1042,7 +1043,7 @@ TEST(XpuVectorDeviceTests, integerDotRunsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr))
         << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);

@@ -1,0 +1,123 @@
+package profile.clbg;
+
+import profile.Benchmark;
+
+// Computer Language Benchmarks Game: fannkuch-redux at N=10. Generates all N!
+// permutations, repeatedly reverses the first k elements (k = perm[0]) until the
+// head is 0, counts flips, and reports the max-flips + the even/odd-indexed
+// checksum. Cross-check: the canonical N=10 results — maxFlips=38, checksum=73196.
+public class FannkuchBench extends Benchmark {
+
+    public int32 nDim;
+    public int32 maxFlips;
+    public int32 checksum;
+
+    public String name() {
+        return "clbg-fannkuch-redux";
+    }
+
+    public String area() {
+        return "clbg";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public void setup() {
+        this.nDim = 10;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.nDim;
+    }
+
+    public void run(int32 iterations) {
+        int32 n = this.nDim;
+        int32[] perm1 = heap int32[n];
+        int32[] perm = heap int32[n];
+        int32[] count = heap int32[n];
+        int32 i = 0;
+        while (i < n) {
+            perm1[i] = i;
+            i = i + 1;
+        }
+        int32 maxF = 0;
+        int32 csum = 0;
+        int32 permParity = 0;
+        int32 r = n;
+        boolean done = false;
+        while (!done) {
+            while (r != 1) {
+                count[r - 1] = r;
+                r = r - 1;
+            }
+            int32 k = 0;
+            while (k < n) {
+                perm[k] = perm1[k];
+                k = k + 1;
+            }
+            int32 flips = 0;
+            int32 head = perm[0];
+            while (head != 0) {
+                int32 lo = 0;
+                int32 hi = head;
+                while (lo < hi) {
+                    int32 t = perm[lo];
+                    perm[lo] = perm[hi];
+                    perm[hi] = t;
+                    lo = lo + 1;
+                    hi = hi - 1;
+                }
+                flips = flips + 1;
+                head = perm[0];
+            }
+            if (flips > maxF) {
+                maxF = flips;
+            }
+            if (permParity == 0) {
+                csum = csum + flips;
+            } else {
+                csum = csum - flips;
+            }
+
+            // Advance to the next permutation.
+            boolean advanced = false;
+            while (!advanced) {
+                if (r == n) {
+                    done = true;
+                    advanced = true;
+                } else {
+                    int32 perm0 = perm1[0];
+                    int32 j = 0;
+                    while (j < r) {
+                        perm1[j] = perm1[j + 1];
+                        j = j + 1;
+                    }
+                    perm1[r] = perm0;
+                    count[r] = count[r] - 1;
+                    if (count[r] > 0) {
+                        advanced = true;
+                    } else {
+                        r = r + 1;
+                    }
+                }
+            }
+            if (permParity == 0) {
+                permParity = 1;
+            } else {
+                permParity = 0;
+            }
+        }
+        this.maxFlips = maxF;
+        this.checksum = csum;
+    }
+
+    public boolean checkResult() {
+        return this.maxFlips == 38 && this.checksum == 73196;
+    }
+}

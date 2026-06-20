@@ -1,0 +1,19 @@
+[package]
+name = "profile-collection"
+version = "0.1.0"
+edition = "2021"
+
+# Hash-map competitors mirror the Ankerl insert+find shape. std HashMap uses
+# SipHash (DoS-resistant); ahash is the fast non-cryptographic hasher commonly
+# swapped in. Vec/HashSet cover arraylist-append + dedup.
+[dependencies]
+ahash = "0.8"
+
+[[bin]]
+name = "profile-collection"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

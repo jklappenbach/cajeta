@@ -585,3 +585,146 @@ TEST(TensorTests, seamElementwiseCpuGpuAgree) {
         "}\n";
     EXPECT_EQ(runI32Xpu(src), 1);
 }
+
+// 7a — the interop protocol round-trips a Tensor zero-copy: t.protocol() exports
+// { Storage borrow, dtype, shape, strides, device, read-only }; Tensor.fromProtocol
+// rebuilds a Tensor<?> sharing the SAME Storage (a write through the rebuilt handle
+// shows through the original), with shape/dtype/device/read-only preserved.
+TEST(TensorTests, interopRoundTrip) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.TensorProtocol;\n"
+        "import cajeta.math.DType;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float32[] data = { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<float32> t = Tensor.of<float32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        "        TensorProtocol p = t.protocol();\n"                      // export
+        "        if (p.ndim() != 2) { return -1; }\n"                    // metadata preserved
+        "        if (p.shapeAt(0) != 2 || p.shapeAt(1) != 3) { return -2; }\n"
+        "        DType pd = p.dtype();\n"
+        "        if (!pd.isFloating() || pd.bits() != 32) { return -3; }\n"
+        "        if (p.device() != 0) { return -4; }\n"                  // host
+        "        if (p.isReadOnly()) { return -5; }\n"
+        "        Tensor<?> w = Tensor.fromProtocol(p);\n"                // import → Tensor<?>
+        "        if (!(w instanceof Tensor<float32>)) { return -6; }\n"  // reified dtype recovered
+        "        Tensor<float32> back = (Tensor<float32>) w;\n"          // capture
+        "        if (back.shapeAt(1) != 3) { return -7; }\n"
+        "        back.set2(0, 0, 9.0f);\n"                               // write through rebuilt
+        "        if (t.get2(0, 0) != 9.0f) { return -8; }\n"            // shows through original (zero-copy)
+        "        if (back.get2(1, 2) != 5.0f) { return -9; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 7c (exact) — a Tensor<?> from fromProtocol captures to the concrete Tensor<T>
+// iff the reified dtype matches: an int32 protocol rebuilds a Tensor<int32> (not
+// Tensor<float32>), shares storage, and an exact-dtype capture cast succeeds while
+// a wrong-dtype instanceof is false. (The bounded Tensor<? extends Floating> form
+// is deferred to numeric-bounds-plan — the numeric conformance predicate.)
+TEST(TensorTests, wildcardCaptureFromProtocol) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.TensorProtocol;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tensor<int32> t = Tensor.arange<int32>(4);\n"          // [0,1,2,3]
+        "        TensorProtocol p = t.protocol();\n"
+        "        Tensor<?> w = Tensor.fromProtocol(p);\n"
+        "        if (w instanceof Tensor<float32>) { return -1; }\n"    // wrong dtype rejected
+        "        if (!(w instanceof Tensor<int32>)) { return -2; }\n"   // exact dtype matched
+        "        Tensor<int32> back = (Tensor<int32>) w;\n"
+        "        back.set1(0, 42);\n"
+        "        if (t.get1(0) != 42) { return -3; }\n"                 // zero-copy storage share
+        "        if (back.get1(3) != 3) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 7c (bounded) — a Tensor<?> recovered from fromProtocol admits/rejects a bounded
+// NUMERIC wildcard by reified dtype KIND: a float32 tensor ⊨ Tensor<? extends
+// Floating>, an int32 tensor ⊭ it; the admitted float captures to the concrete
+// Tensor<float32> and shares storage. Backed by the runtime numeric-marker
+// conformance in __cajeta_instanceof_bounded (numeric-bounds). Exercises TWO
+// fromProtocol tensors in one scope — the regression guard for the interop-drop
+// fix (Object-erased TensorProtocol backing, not Storage<?>).
+TEST(TensorTests, wildcardBoundedFloatingFromProtocol) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.TensorProtocol;\n"
+        "import cajeta.lang.Floating;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> tf = Tensor.arange<float32>(4);\n"
+        "        TensorProtocol pf = tf.protocol();\n"
+        "        Tensor<?> wf = Tensor.fromProtocol(pf);\n"
+        "        Tensor<int32> ti = Tensor.arange<int32>(4);\n"
+        "        TensorProtocol pi = ti.protocol();\n"
+        "        Tensor<?> wi = Tensor.fromProtocol(pi);\n"
+        "        int32 r = 0;\n"
+        "        if (wf instanceof Tensor<? extends Floating>) { r = r + 1; }\n"    // float ⊨ Floating
+        "        if (wi instanceof Tensor<? extends Floating>) { r = r + 10; }\n"   // int ⊭ Floating
+        "        if (r != 1) { return -1; }\n"
+        "        Tensor<float32> cap = (Tensor<float32>) wf;\n"        // capture admitted float
+        "        cap.set1(0, 9.0f);\n"
+        "        if (tf.get1(0) != 9.0f) { return -2; }\n"            // zero-copy through the chain
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 7b — external-producer import via the protocol with the CONTIGUITY contract
+// (fromProtocolContiguous). Two paths in one scope: (1) an AMENABLE (already
+// contiguous) layout is consumed zero-copy — the result is a view, writes show
+// through to the producer; (2) a NON-AMENABLE (transposed / non-contiguous) layout
+// is COPIED into an independent contiguous tensor — not a view, writes don't show
+// through. isView() is how the import "says so". Regression guard for the
+// rebuildShared/rebuildContiguous borrowed-Storage UAF: the copy path materializes
+// directly from the borrow (materializeFrom) and must NOT free the producer buffer.
+TEST(TensorTests, externalProducerZeroCopy) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.TensorProtocol;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float32[] data = { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<float32> producer = Tensor.of<float32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        // (1) amenable: already contiguous → zero-copy view, writes show through
+        "        TensorProtocol pc = producer.protocol();\n"
+        "        Tensor<?> wc = Tensor.fromProtocolContiguous(pc);\n"
+        "        Tensor<float32> capc = (Tensor<float32>) wc;\n"
+        "        if (!capc.isView()) { return -1; }\n"
+        "        if (capc.get2(1, 2) != 5.0f) { return -2; }\n"
+        "        capc.set2(0, 1, 77.0f);\n"
+        "        if (producer.get2(0, 1) != 77.0f) { return -3; }\n"           // shows through (zero-copy)
+        // (2) non-amenable: transpose → non-contiguous → independent copy
+        "        Tensor<float32> tr = producer.transpose();\n"                  // [3,2], non-contiguous
+        "        TensorProtocol pt = tr.protocol();\n"
+        "        Tensor<?> wt = Tensor.fromProtocolContiguous(pt);\n"
+        "        Tensor<float32> capt = (Tensor<float32>) wt;\n"
+        "        if (capt.isView()) { return -4; }\n"
+        "        if (!capt.isContiguous()) { return -5; }\n"
+        "        if (capt.get2(0, 0) != 0.0f) { return -6; }\n"               // tr[0,0] == producer[0,0]
+        "        if (capt.get2(2, 1) != 5.0f) { return -7; }\n"               // tr[2,1] == producer[1,2]
+        "        capt.set2(0, 0, 99.0f);\n"
+        "        if (producer.get2(0, 0) != 0.0f) { return -8; }\n"           // independent — producer unchanged
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

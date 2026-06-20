@@ -1,0 +1,99 @@
+package profile.codec;
+
+import cajeta.collection.ArrayList;
+import cajeta.codec.json.Json;
+import cajeta.codec.json.JsonValue;
+import cajeta.error.Exception;
+
+import profile.Benchmark;
+
+// JSON conformance (the JSON_checker accept/reject idea): feed a vector of
+// clearly-valid and clearly-malformed documents and assert the parser's verdict
+// (accept = parses, reject = throws) matches the expected classification for
+// every case. A correctness benchmark — the value is the pass/fail vector, not
+// the time. Cases are object/array-rooted + integer-only to keep the verdict
+// unambiguous (top-level scalars and floats are separate concerns).
+public class JsonConformanceBench extends Benchmark {
+
+    public ArrayList<String> validCases;
+    public ArrayList<String> invalidCases;
+    public int32 correct;
+    public int32 total;
+
+    public String name() {
+        return "json-conformance";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public void setup() {
+        this.validCases = heap ArrayList<String>();
+        this.validCases.add("{}");
+        this.validCases.add("[]");
+        this.validCases.add("{\"a\":1}");
+        this.validCases.add("[1,2,3]");
+        this.validCases.add("{\"a\":{\"b\":2}}");
+        this.validCases.add("{\"a\":1,\"b\":2}");
+        this.validCases.add("[[1],[2]]");
+
+        this.invalidCases = heap ArrayList<String>();
+        this.invalidCases.add("{");
+        this.invalidCases.add("[1,2");
+        this.invalidCases.add("{\"a\"}");
+        this.invalidCases.add("{\"a\":}");
+        this.invalidCases.add("]");
+        this.invalidCases.add("{\"x\":1");
+        this.invalidCases.add("}");
+    }
+
+    public int64 inputSize() {
+        return (int64) (this.validCases.count() + this.invalidCases.count());
+    }
+
+    // True if `s` parses (accepted); false if it throws (rejected).
+    public boolean accepts(String s) {
+        try {
+            JsonValue v = Json.parse(s);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public void run(int32 iterations) {
+        int32 c = 0;
+        int32 t = 0;
+        int32 i = 0;
+        while (i < this.validCases.count()) {
+            if (this.accepts(this.validCases.get(i))) {
+                c = c + 1;
+            }
+            t = t + 1;
+            i = i + 1;
+        }
+        int32 j = 0;
+        while (j < this.invalidCases.count()) {
+            if (!this.accepts(this.invalidCases.get(j))) {
+                c = c + 1;
+            }
+            t = t + 1;
+            j = j + 1;
+        }
+        this.correct = c;
+        this.total = t;
+    }
+
+    public boolean checkResult() {
+        return this.total > 0 && this.correct == this.total;
+    }
+}

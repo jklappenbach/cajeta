@@ -78,10 +78,11 @@ test/cajeta_test*_tests.cmake
 tools/cajetadoc/flagged.json
 
 # Internal plans / research / design docs — kept LOCAL (in agents/), out of the
-# public repository. Specs are tracked (public); only plans and the agents/
+# public repository. Specs are PUBLIC (tracked); only plans and the agents/
 # working tree stay local.
 agents/
 *-plan.md
 
 # Machine-specific LLVM toolchain pin (sourced by setup.sh) — local only.
 scripts/llvm-env.local.sh
+build-three/

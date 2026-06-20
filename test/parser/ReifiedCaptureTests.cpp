@@ -158,6 +158,112 @@ TEST(ReifiedCaptureTests, unguardedCastSucceedsOnMatch) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// --- item 1: nested + supertype capture targets (capture plan 5a) ---------
+
+// NESTED target — `Box<Box<int32>>` widened to `Box<?>`. The reified match is
+// recursive: instanceof the exact nested instantiation is true, instanceof a
+// nested instantiation that differs only in the INNER arg is false.
+TEST(ReifiedCaptureTests, instanceofMatchesNestedInstantiation) {
+    std::string src = std::string(BOX) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Box<int32>> bbi = heap Box<Box<int32>>(heap Box<int32>(7));\n"
+        "        Box<?> w = bbi;\n"
+        "        int32 r = 0;\n"
+        "        if (w instanceof Box<Box<int32>>) { r = r + 1; }\n"
+        "        if (w instanceof Box<Box<float32>>) { r = r + 10; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// NESTED capture cast — recover `Box<Box<int32>>` from `Box<?>` and read both
+// levels through the captured handle (same pointer, no copy).
+TEST(ReifiedCaptureTests, capturedCastReadsNested) {
+    std::string src = std::string(BOX) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Box<int32>> bbi = heap Box<Box<int32>>(heap Box<int32>(42));\n"
+        "        Box<?> w = bbi;\n"
+        "        Box<Box<int32>> cap = (Box<Box<int32>>) w;\n"
+        "        return cap.get().get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// SUPERTYPE target — `List<T> extends Container<T>`. A `List<int32>` value held
+// as `Container<?>` matches BOTH its exact instantiation (`List<int32>`) and its
+// template SUPERtype instantiation (`Container<int32>`), but not a wrong arg
+// (`Container<float32>`). The is-a check walks the reified parent chain.
+TEST(ReifiedCaptureTests, instanceofMatchesTemplateSupertype) {
+    std::string src =
+        "package test;\n"
+        "public class Container<U> {\n"
+        "    public int32 count() { return 41; }\n"
+        "}\n"
+        "public class List<T> extends Container<T> {\n"
+        "    public int32 listMark() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> l = heap List<int32>();\n"
+        "        Container<?> w = l;\n"
+        "        int32 r = 0;\n"
+        "        if (w instanceof Container<int32>) { r = r + 1; }\n"
+        "        if (w instanceof List<int32>) { r = r + 100; }\n"
+        "        if (w instanceof Container<float32>) { r = r + 10; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 101);
+}
+
+// SUPERTYPE capture cast — recover the concrete supertype instantiation
+// `Container<int32>` from `Container<?>` and dispatch the inherited method.
+TEST(ReifiedCaptureTests, capturedCastToTemplateSupertype) {
+    std::string src =
+        "package test;\n"
+        "public class Container<U> {\n"
+        "    public int32 count() { return 41; }\n"
+        "}\n"
+        "public class List<T> extends Container<T> {\n"
+        "    public int32 listMark() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> l = heap List<int32>();\n"
+        "        Container<?> w = l;\n"
+        "        Container<int32> cap = (Container<int32>) w;\n"
+        "        return cap.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 41);
+}
+
+// SUPERTYPE capture down to the EXACT subtype — `Container<?>` that is really a
+// `List<int32>` recovers to `List<int32>` and reaches the subtype-only method.
+TEST(ReifiedCaptureTests, capturedCastToExactSubtypeThroughSupertypeWildcard) {
+    std::string src =
+        "package test;\n"
+        "public class Container<U> {\n"
+        "    public int32 count() { return 41; }\n"
+        "}\n"
+        "public class List<T> extends Container<T> {\n"
+        "    public int32 listMark() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> l = heap List<int32>();\n"
+        "        Container<?> w = l;\n"
+        "        List<int32> cap = (List<int32>) w;\n"
+        "        return cap.listMark();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
 // unguarded capture cast on a MISMATCH: throws cajeta.error.ClassCastException
 // (catchable) rather than handing back a mis-typed pointer (UB).
 TEST(ReifiedCaptureTests, unguardedCastThrowsClassCastException) {
@@ -184,4 +290,206 @@ TEST(ReifiedCaptureTests, unguardedCastThrowsClassCastException) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 7);
+}
+
+// --- item 2: name -> RTTI registry (class-bounded-wildcard precursor) ------
+
+// `__cajeta_rtti_for_name` maps a type's canonical name -> its CajetaRtti* over
+// the REFL-8 registry (#ClassObject = { vtable, rtti }, rtti at offset 8), so the
+// capture-site lowering for `(Foo<? extends Animal>) w` can recover the element
+// type's hierarchy from the NAME the container RTTI stores. This is the lookup
+// CONTRACT, unit-tested against the PROCESS registry — host C++ and
+// __cajeta_register_class share the same statically-linked runtime copy, whereas
+// the JIT embeds its OWN runtime copy ([[nvidia-on-device-validation]]: host C++
+// can't see JIT-local statics). The real-data path (JIT ctors populate the
+// embedded registry; the capture site reads it) is covered end-to-end by the
+// class-bounded-wildcard capture tests (item 3), which run inside the JIT.
+extern "C" {
+    void* __cajeta_rtti_for_name(const char* name);
+    void __cajeta_register_class(const char* name, void* classObject);
+}
+
+TEST(ReifiedCaptureTests, rttiForNameResolvesRegisteredCanonicalName) {
+    // #ClassObject layout the registry stores: { ptr Class#VTable, ptr rtti }.
+    // Static storage so the registry's borrowed pointer stays valid for the
+    // process lifetime (the table is never freed). A sentinel rtti value lets us
+    // prove the helper returns the offset-8 slot, not merely non-null.
+    static void* sentinelRtti = reinterpret_cast<void*>(0xCAFEF00D);
+    static void* fakeClassObject[2] = { /*vtable*/ nullptr, /*rtti*/ sentinelRtti };
+    __cajeta_register_class("test.FakeWidgetForNameLookup", fakeClassObject);
+
+    // hit: returns exactly the rtti pointer at offset 8 of the registered object.
+    EXPECT_EQ(__cajeta_rtti_for_name("test.FakeWidgetForNameLookup"), sentinelRtti);
+    // miss: an unregistered canonical name resolves to NULL — the capture site
+    // treats this as "cannot prove the bound" and fails the capture safely.
+    EXPECT_EQ(__cajeta_rtti_for_name("test.UnregisteredZzzName"), nullptr);
+    // null arg is tolerated (no crash) and returns NULL.
+    EXPECT_EQ(__cajeta_rtti_for_name(nullptr), nullptr);
+}
+
+// --- item 3: class-bounded-wildcard capture (capture plan 5b) --------------
+
+// A class hierarchy where Dog IS-A Animal and Cat is NOT, plus a Box<T>
+// container, so `Box<? extends Animal>` admits Box<Dog> and rejects Box<Cat>.
+const char* ANIMALS =
+    "package test;\n"
+    "import cajeta.error.ClassCastException;\n"
+    "public class Animal { public int32 kind() { return 1; } }\n"
+    "public class Dog extends Animal { public int32 bark() { return 2; } }\n"
+    "public class Cat { public int32 meow() { return 3; } }\n"
+    "public class Box<T> {\n"
+    "    T value;\n"
+    "    public Box(T v) { this.value = v; }\n"
+    "    public T get() { return this.value; }\n"
+    "}\n";
+
+// instanceof a class-bounded wildcard: true when the reified element type
+// conforms to the bound (Dog <: Animal).
+TEST(ReifiedCaptureTests, instanceofBoundedWildcardMatchesSubtype) {
+    std::string src = std::string(ANIMALS) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Dog> bd = heap Box<Dog>(heap Dog());\n"
+        "        Box<?> w = bd;\n"
+        "        int32 r = 0;\n"
+        "        if (w instanceof Box<? extends Animal>) { r = r + 1; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// instanceof a class-bounded wildcard: false when the element type does NOT
+// conform to the bound (Cat is not an Animal).
+TEST(ReifiedCaptureTests, instanceofBoundedWildcardRejectsNonSubtype) {
+    std::string src = std::string(ANIMALS) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Cat> bc = heap Box<Cat>(heap Cat());\n"
+        "        Box<?> w = bc;\n"
+        "        int32 r = 0;\n"
+        "        if (w instanceof Box<? extends Animal>) { r = r + 1; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+// checked cast to a class-bounded wildcard SUCCEEDS when the element conforms:
+// no throw, the (widened) handle is recovered.
+TEST(ReifiedCaptureTests, capturedCastBoundedWildcardSucceedsOnSubtype) {
+    std::string src = std::string(ANIMALS) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Dog> bd = heap Box<Dog>(heap Dog());\n"
+        "        Box<?> w = bd;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<?> cap = (Box<? extends Animal>) w;\n"
+        "            result = 1;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 0;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// checked cast to a class-bounded wildcard THROWS when the element does not
+// conform (Cat is not an Animal) — never hands back a mis-bounded handle.
+TEST(ReifiedCaptureTests, capturedCastBoundedWildcardThrowsOnNonSubtype) {
+    std::string src = std::string(ANIMALS) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Cat> bc = heap Box<Cat>(heap Cat());\n"
+        "        Box<?> w = bc;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<?> cap = (Box<? extends Animal>) w;\n"
+        "            result = 1;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 0;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+// --- item: NUMERIC-bounded-wildcard capture (capture plan 5c) ---------------
+// The runtime numeric-marker conformance for a bounded wildcard whose bound is a
+// cajeta.lang numeric marker: a PRIMITIVE element carries no class RTTI, so the
+// match checks the reified dtype KIND (float ⊨ Floating, int ⊭ Floating). This is
+// the runtime mirror of numeric-bounds' compile-time satisfiesNumericMarker —
+// what makes `(Box<? extends Floating>) w` over a fully-erased Box<?> sound.
+
+const char* BOXF =
+    "package test;\n"
+    "import cajeta.lang.Floating;\n"
+    "import cajeta.error.ClassCastException;\n"
+    "public class Box<T> {\n"
+    "    T value;\n"
+    "    public Box(T v) { this.value = v; }\n"
+    "    public T get() { return this.value; }\n"
+    "}\n";
+
+// instanceof a numeric-bounded wildcard: true when the reified element dtype is a
+// float (float32 ⊨ Floating), false when it is an int (int32 ⊭ Floating).
+TEST(ReifiedCaptureTests, instanceofBoundedWildcardNumericFloating) {
+    std::string src = std::string(BOXF) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<float32> bf = heap Box<float32>(2.5f);\n"
+        "        Box<?> wf = bf;\n"
+        "        Box<int32> bi = heap Box<int32>(7);\n"
+        "        Box<?> wi = bi;\n"
+        "        int32 r = 0;\n"
+        "        if (wf instanceof Box<? extends Floating>) { r = r + 1; }\n"   // float ⊨ Floating
+        "        if (wi instanceof Box<? extends Floating>) { r = r + 10; }\n"  // int ⊭ Floating
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// checked cast to a numeric-bounded wildcard SUCCEEDS for a float element.
+TEST(ReifiedCaptureTests, capturedCastBoundedWildcardNumericSucceedsOnFloat) {
+    std::string src = std::string(BOXF) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<float32> bf = heap Box<float32>(2.5f);\n"
+        "        Box<?> w = bf;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<?> cap = (Box<? extends Floating>) w;\n"
+        "            result = 1;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 0;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// checked cast to a numeric-bounded wildcard THROWS for an int element (int32 is
+// not Floating) — never hands back a mis-bounded handle.
+TEST(ReifiedCaptureTests, capturedCastBoundedWildcardNumericThrowsOnInt) {
+    std::string src = std::string(BOXF) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> bi = heap Box<int32>(7);\n"
+        "        Box<?> w = bi;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<?> cap = (Box<? extends Floating>) w;\n"
+        "            result = 1;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 0;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
 }

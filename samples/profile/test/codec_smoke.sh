@@ -53,6 +53,15 @@ for vrt in twitter citm_catalog canada; do
     echo "[codec] json-tokenize/$vrt ok  bytes=$isz  min_ns=$mn"
 done
 
+# json-bind-skip: the index-walk binding path runs on ALL 3 (skips numbers, no
+# float gap) — bench's fastest Cajeta JSON path.
+for vrt in twitter citm_catalog canada; do
+    st="$(col json-bind-skip "$vrt" 28)"
+    [[ "$st" == "ok" ]] || fail "json-bind-skip/$vrt status=$st"
+    mn="$(col json-bind-skip "$vrt" 17)"
+    echo "[codec] json-bind-skip/$vrt ok  min_ns=$mn"
+done
+
 # json DOM-family: citm (integer-only) runs ok; twitter/canada skip (v1 DOM
 # doesn't parse floats) — the limitation surfaced as data, not a crash.
 for bench in json-dom json-serialize json-roundtrip; do
@@ -66,6 +75,11 @@ for bench in json-dom json-serialize json-roundtrip; do
         echo "[codec] $bench/$vrt skipped (floats) ✓"
     done
 done
+
+# json-conformance: accept/reject vector all correct (self-contained)
+cst="$(awk -F, 'NR>1 && $4=="json-conformance"{print $28; exit}' "$OUT")"
+[[ "$cst" == "ok" ]] || fail "json-conformance status=$cst (a case misclassified)"
+echo "[codec] json-conformance ok (accept/reject vector matches)"
 
 # base64 enc/dec ok
 for b in base64-encode base64-decode; do

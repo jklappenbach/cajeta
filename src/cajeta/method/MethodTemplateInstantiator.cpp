@@ -21,6 +21,7 @@
 #include "../type/QualifiedName.h"
 #include "../asn/ClassBodyDeclaration.h"
 #include "../codec/JsonSynthesizer.h"
+#include "../codec/CsvSynthesizer.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/CajetaLlvmVisitor.h"
 #include "../compile/Compiler.h"
@@ -306,6 +307,9 @@ namespace cajeta {
                                   << ">:\n" << effectiveSource << "\n";
                     }
                 }
+            } else if (synthesizeCsvMethodSource(parent, name, args, paramTypes,
+                    synthesized)) {
+                effectiveSource = std::move(synthesized);
             }
         }
 

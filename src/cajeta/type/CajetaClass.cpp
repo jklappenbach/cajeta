@@ -127,6 +127,16 @@ namespace cajeta {
         return false;
     }
 
+    bool CajetaClass::isBoundedWildcardInstantiation() const {
+        for (auto& a : typeArguments) {
+            if (a && a->isWildcard()
+                    && a->wildcardKind() != CajetaType::WildcardKind::Unbounded) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool CajetaClass::isNumericMarkerName(const string& name) {
         return name == "Numeric" || name == "Floating"
             || name == "Integral" || name == "Complex";
@@ -4540,8 +4550,13 @@ namespace cajeta {
         }
 
         // Constructors are NOT inherited; only walk parents for instance methods.
+        // Use getSuperClasses() (not the raw field) so a parent that loaded after
+        // our prototype — e.g. `AudioBackend extends Backend` where AudioBackend
+        // sorts before Backend in the stdlib's alphabetical load — is lazily
+        // re-resolved here; otherwise inherited methods like Backend.probe()
+        // would never be found on AudioBackend.
         if (!isConstructor) {
-            for (auto& parent : superClasses) {
+            for (auto& parent : getSuperClasses()) {
                 MethodPtr m = parent->resolveMethod(methodName, parameters, isConstructor, floatingParams);
                 if (m) return m;
             }

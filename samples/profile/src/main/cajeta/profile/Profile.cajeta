@@ -8,11 +8,44 @@ import profile.SumBench;
 import profile.VariantBench;
 import profile.Harness;
 import profile.codec.JsonTokenizeBench;
+import profile.codec.JsonBindBench;
 import profile.codec.JsonDomBench;
 import profile.codec.JsonSerializeBench;
 import profile.codec.JsonRoundtripBench;
+import profile.codec.JsonConformanceBench;
 import profile.codec.Base64EncodeBench;
 import profile.codec.Base64DecodeBench;
+import profile.collection.ArrayListAppendBench;
+import profile.collection.HashMapIntBench;
+import profile.collection.HashMapStringBench;
+import profile.collection.HashSetDedupBench;
+import profile.collection.LinkedListBench;
+import profile.collection.HeapSortBench;
+import profile.collection.RedBlackTreeBench;
+import profile.sort.SortInt64Bench;
+import profile.sort.SortF64Bench;
+import profile.sort.SortStableBench;
+import profile.sort.BinarySearchBench;
+import profile.string.StringBuildBench;
+import profile.string.StringSearchBench;
+import profile.string.StringReplaceBench;
+import profile.string.StringUpperBench;
+import profile.hash.XXHash3Bench;
+import profile.hash.SipHashBench;
+import profile.hash.Sha256Bench;
+import profile.hash.Md5Bench;
+import profile.stream.StreamPipelineBench;
+import profile.stream.StreamParallelReduceBench;
+import profile.math.SaxpyBench;
+import profile.math.DotProductBench;
+import profile.math.MatMulBench;
+import profile.clbg.MandelbrotBench;
+import profile.clbg.FannkuchBench;
+import profile.clbg.SpectralNormBench;
+import profile.time.InstantArithmeticBench;
+import profile.time.LocalDateArithmeticBench;
+import profile.concurrent.AtomicBench;
+import profile.concurrent.TaskSpawnBench;
 import profile.report.Result;
 import profile.report.Report;
 import profile.report.Memory;
@@ -41,18 +74,63 @@ public final class Profile {
         benchmarks.add(heap VariantBench());
         // -- codec area (Unit 5) --
         benchmarks.add(heap JsonTokenizeBench());
+        benchmarks.add(heap JsonBindBench());
         benchmarks.add(heap JsonDomBench());
         benchmarks.add(heap JsonSerializeBench());
         benchmarks.add(heap JsonRoundtripBench());
+        benchmarks.add(heap JsonConformanceBench());
         benchmarks.add(heap Base64EncodeBench());
         benchmarks.add(heap Base64DecodeBench());
+        // -- collection area (Unit 6) --
+        benchmarks.add(heap ArrayListAppendBench());
+        benchmarks.add(heap HashMapIntBench());
+        benchmarks.add(heap HashMapStringBench());
+        benchmarks.add(heap HashSetDedupBench());
+        benchmarks.add(heap LinkedListBench());
+        benchmarks.add(heap HeapSortBench());
+        benchmarks.add(heap RedBlackTreeBench());
+        // -- sort area (Unit 7) --
+        benchmarks.add(heap SortInt64Bench());
+        benchmarks.add(heap SortF64Bench());
+        benchmarks.add(heap SortStableBench());
+        benchmarks.add(heap BinarySearchBench());
+        // -- string area (Unit 8) --
+        benchmarks.add(heap StringBuildBench());
+        benchmarks.add(heap StringSearchBench());
+        benchmarks.add(heap StringReplaceBench());
+        benchmarks.add(heap StringUpperBench());
+        // -- hash area (Unit 9) --
+        benchmarks.add(heap XXHash3Bench());
+        benchmarks.add(heap SipHashBench());
+        benchmarks.add(heap Sha256Bench());
+        benchmarks.add(heap Md5Bench());
+        // -- stream area (Unit 10) --
+        benchmarks.add(heap StreamPipelineBench());
+        benchmarks.add(heap StreamParallelReduceBench());
+        // -- math area (Unit 11) --
+        benchmarks.add(heap SaxpyBench());
+        benchmarks.add(heap DotProductBench());
+        benchmarks.add(heap MatMulBench());
+        // -- CLBG classics (Unit 12) --
+        benchmarks.add(heap MandelbrotBench());
+        benchmarks.add(heap FannkuchBench());
+        benchmarks.add(heap SpectralNormBench());
+        // -- time area (Unit 13) --
+        benchmarks.add(heap InstantArithmeticBench());
+        benchmarks.add(heap LocalDateArithmeticBench());
+        // -- concurrency area (Unit 14) --
+        benchmarks.add(heap AtomicBench());
+        benchmarks.add(heap TaskSpawnBench());
 
-        // Parse the minimal flags so far. (Full selection — --area, --bench,
-        // --lang, --no-report — lands in Unit 17.)
+        // Flags: --list, --selftest, --run, --out <path>, and selection by
+        // --area <area> / --bench <name> (Unit 17). Language selection is a
+        // driver concern (the Cajeta harness only emits cajeta rows).
         boolean listMode = false;
         boolean selfTest = false;
         boolean runMode = false;
         String outPath = null;
+        String areaFilter = null;
+        String benchFilter = null;
         int32 i = 0;
         while (i < args.count()) {
             if (args[i].equals("--list")) {
@@ -69,6 +147,16 @@ public final class Profile {
                     outPath = args[i + 1];
                 }
             }
+            if (args[i].equals("--area")) {
+                if (i + 1 < args.count()) {
+                    areaFilter = args[i + 1];
+                }
+            }
+            if (args[i].equals("--bench")) {
+                if (i + 1 < args.count()) {
+                    benchFilter = args[i + 1];
+                }
+            }
             i = i + 1;
         }
 
@@ -83,7 +171,7 @@ public final class Profile {
         // (Unit 3) and write the results CSV. (Selection by area/lang/bench
         // lands in Unit 17; for now it runs all registered benchmarks.)
         if (runMode) {
-            return Profile.runMeasured(benchmarks, outPath);
+            return Profile.runMeasured(benchmarks, outPath, areaFilter, benchFilter);
         }
 
         int32 n = benchmarks.count();
@@ -125,7 +213,8 @@ public final class Profile {
     // Unit 3: measure every registered benchmark through the Harness loop and
     // write one results CSV row per benchmark. Competitor rows (other languages)
     // are appended by their own runners + the driver later.
-    public static int32 runMeasured(ArrayList<Benchmark> benchmarks, String outPath) {
+    public static int32 runMeasured(ArrayList<Benchmark> benchmarks, String outPath,
+                                    String areaFilter, String benchFilter) {
         String results = outPath;
         if (results == null) {
             results = "/tmp/profile-results.csv";
@@ -140,10 +229,24 @@ public final class Profile {
         int32 n = benchmarks.count();
         while (i < n) {
             Benchmark b = benchmarks.get(i);
-            // measureInto appends one row per variant (the owned Results go
-            // straight into the list — add stores a reference, so a named
-            // owning local would drop and dangle it).
-            Harness.measureInto(b, runId, rows);
+            // Selection: skip benchmarks not matching --area / --bench (if set).
+            boolean keep = true;
+            if (areaFilter != null) {
+                if (!b.area().equals(areaFilter)) {
+                    keep = false;
+                }
+            }
+            if (benchFilter != null) {
+                if (!b.name().equals(benchFilter)) {
+                    keep = false;
+                }
+            }
+            if (keep) {
+                // measureInto appends one row per variant (the owned Results go
+                // straight into the list — add stores a reference, so a named
+                // owning local would drop and dangle it).
+                Harness.measureInto(b, runId, rows);
+            }
             i = i + 1;
         }
 

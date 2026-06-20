@@ -1,0 +1,75 @@
+package profile.collection;
+
+import cajeta.collection.Heap;
+
+import profile.Benchmark;
+
+// Binary min-heap as a priority queue (heapsort): push N pseudo-random values,
+// then pop all and verify they come out non-decreasing. Cross-check: the pop
+// sequence is sorted (sortedOk == 1).
+public class HeapSortBench extends Benchmark {
+
+    public int32 n;
+    public int32 sortedOk;
+
+    public String name() {
+        return "heap-sort";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 50000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        Heap<int32> h = heap Heap<int32>();
+        int64 x = 12345;
+        int32 i = 0;
+        while (i < this.n) {
+            x = (x * 1103515245 + 12345) & 0x7FFFFFFF;
+            h.push((int32) x);
+            i = i + 1;
+        }
+        // A heap pops in sorted order — accept either direction (min or max),
+        // so the cross-check verifies "monotonic" without assuming orientation.
+        int32 prev = h.pop();
+        boolean asc = true;
+        boolean desc = true;
+        int32 j = 1;
+        while (j < this.n) {
+            int32 v = h.pop();
+            if (v < prev) {
+                asc = false;
+            }
+            if (v > prev) {
+                desc = false;
+            }
+            prev = v;
+            j = j + 1;
+        }
+        if (asc || desc) {
+            this.sortedOk = 1;
+        } else {
+            this.sortedOk = 0;
+        }
+    }
+
+    public boolean checkResult() {
+        return this.sortedOk == 1;
+    }
+}

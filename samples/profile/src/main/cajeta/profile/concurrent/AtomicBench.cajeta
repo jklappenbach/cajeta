@@ -1,0 +1,51 @@
+package profile.concurrent;
+
+import cajeta.concurrent.AtomicInt64;
+
+import profile.Benchmark;
+
+// Atomic counter throughput: N fetchAdd(1) on an AtomicInt64. Cross-check: the
+// final load() equals N (every increment landed).
+public class AtomicBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public String name() {
+        return "atomic-fetchadd";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void setup() {
+        this.n = 1000000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        AtomicInt64 a = heap AtomicInt64(0);
+        int32 i = 0;
+        while (i < this.n) {
+            a.fetchAdd(1);
+            i = i + 1;
+        }
+        this.result = a.load();
+    }
+
+    public boolean checkResult() {
+        return this.result == (int64) this.n;
+    }
+}

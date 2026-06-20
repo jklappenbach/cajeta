@@ -424,7 +424,20 @@ namespace cajeta {
         CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
         void setEmitModule(CajetaModulePtr m) { emitModule = m; }
 
-        list<CajetaClassPtr>& getSuperClasses() { return superClasses; }
+        list<CajetaClassPtr>& getSuperClasses() {
+            // Lazy re-resolve: a NAMED parent (qExtended) may not have resolved
+            // into superClasses at prototype time because it loaded LATER (the
+            // stdlib parses a package's files alphabetically, so a sub-interface
+            // sorting before its base — `AudioBackend` < `Backend` — is built
+            // first, leaving its `extends Backend` link empty and cached). Once
+            // the parent registers, this re-resolution picks it up so the
+            // interface vtable synthesis and method-inheritance walks see the
+            // inherited obligations. Idempotent + only fires while short.
+            if (superClasses.size() < qExtended.size()) {
+                resolveSuperClasses();
+            }
+            return superClasses;
+        }
 
         // LLVM struct index for a class field. Class instances reserve LLVM
         // slot 0 for the vtable pointer, so user properties live at LLVM
@@ -793,6 +806,16 @@ namespace cajeta {
         // is the wildcard sentinel. Distinguishes `Stream<?>` from
         // `Stream<int32>`. Step 1 — template wildcards.
         bool isWildcardInstantiation() const;
+
+        // True iff any type argument is a BOUNDED wildcard (`? extends B` /
+        // `? super B`) — NOT the unbounded `?`. A bounded-wildcard instantiation
+        // (`Holder<? extends Floating>`) is an abstract handle: its method bodies
+        // are deliberately not codegen'd (no concrete element layout; the own-T
+        // internal write would trip PECS), so code operates on it by capturing
+        // back to a concrete instantiation. Unbounded `?` (e.g. `Class<?>`) is
+        // excluded — reflection force-builds and dispatches it, so its bodies
+        // MUST be emitted.
+        bool isBoundedWildcardInstantiation() const;
 
         // True iff `from` (a concrete instantiation of some template)
         // is assignable to `wildcardInst` (a wildcard instantiation of

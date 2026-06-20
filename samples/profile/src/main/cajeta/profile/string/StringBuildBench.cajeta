@@ -1,0 +1,52 @@
+package profile.string;
+
+import profile.Benchmark;
+
+// String build by repeated concatenation: append an 8-char piece N times. With
+// no StringBuilder in the stdlib, `s = s + piece` copies the growing string each
+// time — O(N^2). That quadratic cost is itself the finding this benchmark
+// surfaces (vs a builder in the competitor languages). Cross-check: final length
+// == 8*N. N kept modest because of the quadratic behaviour.
+public class StringBuildBench extends Benchmark {
+
+    public int32 n;
+    public int64 finalLen;
+
+    public String name() {
+        return "string-build-concat";
+    }
+
+    public String area() {
+        return "string";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 4000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        String s = "";
+        int32 i = 0;
+        while (i < this.n) {
+            s = s + "abcdefgh";
+            i = i + 1;
+        }
+        this.finalLen = (int64) s.count();
+    }
+
+    public boolean checkResult() {
+        return this.finalLen == (int64) (this.n * 8);
+    }
+}

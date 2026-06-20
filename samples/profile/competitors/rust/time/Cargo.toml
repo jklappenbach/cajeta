@@ -1,0 +1,18 @@
+[package]
+name = "profile-time"
+version = "0.1.0"
+edition = "2021"
+
+# chrono is the de-facto Rust date/time library (NaiveDate / DateTime), the
+# competitor to Cajeta's Instant/LocalDate value types.
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[[bin]]
+name = "profile-time"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

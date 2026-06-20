@@ -4158,6 +4158,32 @@ void* __cajeta_class_for_name(void* nameBytes) {
     return NULL;
 }
 
+// name -> RTTI lookup (reified-capture: class-bounded-wildcard precursor).
+// Resolves a type's canonical name (a plain C string — the form a capture-site
+// lowering holds for a container's element type) to that type's CajetaRtti*,
+// so `(Foo<? extends Animal>) w` can recover the element type's hierarchy at
+// runtime and bound-check it (the container RTTI stores only the element's NAME
+// string, not its RTTI pointer). Reuses the REFL-8 name->#ClassObject table:
+// #ClassObject = { ptr Class#VTable, ptr rtti }, so the rtti is at offset 8 (the
+// same hop __cajeta_instanceof_named makes). Returns a borrow of a
+// process-lifetime static, or NULL when no class with that canonical name is
+// registered (e.g. DCE'd under Lean, or never compiled) — callers must treat a
+// NULL as "cannot prove the bound" and fail the capture safely. Also strengthens
+// reflection (a name->rtti primitive for the reflective layer).
+#define CAJETA_CLASSOBJECT_RTTI_OFFSET 8
+void* __cajeta_rtti_for_name(const char* name) {
+    if (!name) return NULL;
+    for (int i = 0; i < g_cajeta_class_count; ++i) {
+        const char* n = g_cajeta_classes[i].name;
+        if (n && strcmp(n, name) == 0) {
+            void* classObject = g_cajeta_classes[i].classObject;
+            if (!classObject) return NULL;
+            return *(void**) ((char*) classObject + CAJETA_CLASSOBJECT_RTTI_OFFSET);
+        }
+    }
+    return NULL;
+}
+
 // REFL-10: registry enumeration for Class.allClasses / classesInPackage /
 // classesAnnotated. The filtering (package match, annotation match) is done in
 // cajeta over getName()/hasAnnotation(); these two primitives just expose the
@@ -4190,6 +4216,112 @@ int32_t __cajeta_is_subtype(void* leafRtti, void* boundRtti) {
         vtable = *(void**) ((char*) vtable + CAJETA_VTABLE_PARENT_OFFSET);
     }
     return 0;
+}
+
+// obj -> its CajetaRtti* (the obj->vtable->classObject->rtti hop), or NULL when
+// obj isn't a real heap object carrying a vtable/classObject/rtti.
+static void* cajeta_rtti_from_obj(void* obj) {
+    if (!obj) return NULL;
+    void* vtable = *(void**) obj;                          // header slot 0
+    if ((uintptr_t) vtable < 4096) return NULL;            // not a real vtable
+    void* classObject =
+        *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return NULL;
+    return *(void**) ((char*) classObject + CAJETA_CLASSOBJECT_RTTI_OFFSET);
+}
+
+// True iff canonical instantiation name `typeName` (e.g. "test.Box<test.Dog>")
+// has erased base exactly `baseName` (e.g. "test.Box") — i.e. typeName is
+// baseName followed by '<' (an instantiation) or end-of-string (the raw base).
+static int cajeta_base_name_matches(const char* typeName, const char* baseName) {
+    size_t bl = strlen(baseName);
+    if (strncmp(typeName, baseName, bl) != 0) return 0;
+    char after = typeName[bl];
+    return after == '<' || after == '\0';
+}
+
+// The last '.'-separated component of a canonical name ("cajeta.lang.Floating"
+// -> "Floating"; "Floating" -> "Floating").
+static const char* cajeta_last_name(const char* s) {
+    const char* dot = strrchr(s, '.');
+    return dot ? dot + 1 : s;
+}
+
+// Numeric-marker code for a bound's canonical name: 1=Numeric, 2=Floating,
+// 3=Integral, 4=Complex; -1 if `boundName` is not a cajeta.lang numeric marker
+// (so the caller uses the nominal class-subtype path instead).
+static int cajeta_numeric_marker_code(const char* boundName) {
+    const char* n = cajeta_last_name(boundName);
+    if (strcmp(n, "Numeric")  == 0) return 1;
+    if (strcmp(n, "Floating") == 0) return 2;
+    if (strcmp(n, "Integral") == 0) return 3;
+    if (strcmp(n, "Complex")  == 0) return 4;
+    return -1;
+}
+
+// Numeric kind of a reified element TYPE NAME (the primitive name a container's
+// RTTI records, e.g. "float32"/"bfloat16"/"int32"/"uint8"/"boolean"):
+// 0=bool, 1=integral (signed/unsigned int), 2=float, 3=complex; -1 if it is not
+// a known numeric primitive (e.g. a class element — fall through to the nominal
+// path). Mirrors the FLAG-lattice kinds CajetaClass::satisfiesNumericMarker uses,
+// resolved here from the name because primitives carry no class RTTI.
+static int cajeta_numeric_kind_of(const char* t) {
+    if (!t) return -1;
+    if (strcmp(t, "boolean") == 0)    return 0;
+    if (strncmp(t, "float",  5) == 0) return 2;   // float16/32/64/128, float8*/6*/4*
+    if (strncmp(t, "bfloat", 6) == 0) return 2;   // bfloat16
+    if (strncmp(t, "complex", 7) == 0) return 3;  // complex64/128 (reserved)
+    if (strncmp(t, "uint", 4) == 0)   return 1;   // uint8..uint128
+    if (strncmp(t, "int", 3) == 0)    return 1;   // int8..int128
+    return -1;
+}
+
+// Does an element of numeric kind `elemKind` satisfy numeric marker `markerCode`?
+// bool satisfies no numeric marker; Numeric admits integral/float/complex (not
+// bool); Floating admits float; Integral admits int/uint; Complex admits complex.
+static int cajeta_numeric_conforms(int elemKind, int markerCode) {
+    if (elemKind == 0) return 0;                                  // bool: none
+    if (markerCode == 1) return elemKind == 1 || elemKind == 2 || elemKind == 3;
+    if (markerCode == 2) return elemKind == 2;
+    if (markerCode == 3) return elemKind == 1;
+    if (markerCode == 4) return elemKind == 3;
+    return 0;
+}
+
+// Class-bounded-wildcard reified match (reified-capture-spec.md §5): is `obj` an
+// instance of `baseName<...>` whose reified template arg at `argIndex` conforms
+// to `boundName` — element type == bound, satisfies a numeric marker bound, or
+// element <: bound (nominal)? Backs `instanceof Foo<? extends Bound>` and the
+// `(Foo<? extends Bound>) w` capture cast. The element type is recovered by NAME
+// from the container's reified templateArgs; a **numeric-marker** bound
+// (cajeta.lang.{Numeric,Floating,Integral,Complex}) is checked against the
+// element's primitive KIND (reified-capture 5c / tensor 7c — primitives carry no
+// class RTTI to walk), otherwise the name is resolved to its RTTI and walked as a
+// nominal subtype. Null-safe; returns 0 ("doesn't match" / "cannot prove the
+// bound") rather than ever admitting a mis-bounded value.
+int32_t __cajeta_instanceof_bounded(void* obj, const char* baseName,
+                                    int32_t argIndex, const char* boundName) {
+    if (!obj || !baseName || !boundName) return 0;
+    CajetaRtti* r = (CajetaRtti*) cajeta_rtti_from_obj(obj);
+    if (!r || !r->typeName) return 0;
+    if (!cajeta_base_name_matches(r->typeName, baseName)) return 0;
+    if (argIndex < 0 || argIndex >= r->templateArgCount || !r->templateArgs)
+        return 0;
+    const char* elemName = r->templateArgs[argIndex];
+    if (!elemName) return 0;
+    if (strcmp(elemName, boundName) == 0) return 1;        // reflexive / exact
+    // Numeric-marker bound on a primitive element: check the dtype kind by name.
+    int markerCode = cajeta_numeric_marker_code(boundName);
+    if (markerCode >= 0) {
+        int elemKind = cajeta_numeric_kind_of(elemName);
+        if (elemKind >= 0) return cajeta_numeric_conforms(elemKind, markerCode);
+        // class element under a numeric marker: fall through to the nominal walk
+        // (a class may nominally implement the marker).
+    }
+    void* elemRtti = __cajeta_rtti_for_name(elemName);
+    void* boundRtti = __cajeta_rtti_for_name(boundName);
+    if (!elemRtti || !boundRtti) return 0;                 // unresolved: fail safe
+    return __cajeta_is_subtype(elemRtti, boundRtti);
 }
 
 // RTTI scalar readers — `rtti` is a CajetaRtti* (the #RttiGlobal address a
