@@ -942,6 +942,25 @@ endif()
 add_executable(${CMAKE_PROJECT_NAME} main.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/cli/DocCommand.cpp)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_PROJECT_NAME}_lib)
+# Native-deps unit 12 (jit-run unblock): the in-process JIT resolves the
+# standalone native runtime — the TLS natives (`__cajeta_tls_*`, kept OUT of the
+# embedded JIT bitcode) and `cajeta_xpu_optix_*` — via dlsym on the driver's own
+# symbols. main.cpp references none of them statically, so without this the
+# driver drops the TLS object and never exports the optix symbols, and `jit-run`
+# of any non-trivial program fails ("Symbols not found"). Mirror the cajeta_test
+# target: force-link the TLS object + OpenSSL and export symbols (`-rdynamic`).
+if(NOT WIN32)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
+            ${CAJETA_TLS_OBJ} OpenSSL::SSL OpenSSL::Crypto)
+    set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES ENABLE_EXPORTS ON)
+    target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -rdynamic)
+    # Don't export the static LLVM symbols (HIP's bundled LLVM would clash) —
+    # the __cajeta_* runtime symbols the JIT dlsym's stay exported.
+    if(CAJETA_LLVM_EXCLUDE_LIBS)
+        target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+                "-Wl,--exclude-libs,${CAJETA_LLVM_EXCLUDE_LIBS}")
+    endif()
+endif()
 if(TARGET cajetadoc_core)
     target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE cajetadoc_core)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE CAJETA_HAS_DOC=1)

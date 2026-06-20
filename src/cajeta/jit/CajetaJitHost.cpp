@@ -30,6 +30,8 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/compile/NativeLink.h"
+#include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaType.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
@@ -204,6 +206,19 @@ BuiltJit buildJit(const JitRunOptions& opts) {
     for (auto& m : compiler->getModules())
         for (auto& [name, klass] : m->getStructures())
             if (klass) klass->generateStaticInitializers();
+
+    // REFL-2 — fill the reflective invoke-adapter bodies + finalize/register
+    // #ClassObjects now that every method's LLVM function exists. Mirrors
+    // Compiler::compile's AOT pass and the JitTestHelper pipeline; WITHOUT it
+    // the `__cajeta_*_reflect_invoke/new` thunks stay undefined and the JIT
+    // materialization fails ("Symbols not found"). Idempotent.
+    for (auto& [key, type] : cajeta::CajetaType::getCanonicalMap()) {
+        if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(type)) {
+            klass->emitReflectInvokeBody();
+            klass->emitReflectNewBody();
+            klass->finalizeClassObject();
+        }
+    }
 
     for (auto& m : compiler->getModules()) {
         if (m == primary) continue;
