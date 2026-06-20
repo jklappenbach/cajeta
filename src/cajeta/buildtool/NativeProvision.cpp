@@ -3,7 +3,10 @@
 #include "NativeProvision.h"
 #include "ArtifactCache.h"
 
+#include <curl/curl.h>
+
 #include <filesystem>
+#include <fstream>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -18,6 +21,42 @@ namespace cajeta::buildtool {
         llvm::Error ioErr(const std::string& msg) {
             return llvm::createStringError(
                 llvm::inconvertibleErrorCode(), msg);
+        }
+
+        size_t writeToOfstream(char* p, size_t sz, size_t nm, void* ud) {
+            static_cast<std::ofstream*>(ud)->write(
+                p, static_cast<std::streamsize>(sz * nm));
+            return sz * nm;
+        }
+
+        // GET `url` → `dest` (no auth; the Olla native mirror is public for
+        // redistributable artifacts). Provision-time only.
+        llvm::Error httpGetToFile(const std::string& url,
+                                  const std::string& dest) {
+            CURL* curl = curl_easy_init();
+            if (!curl) return ioErr("native http: curl init failed");
+            std::ofstream out(dest, std::ios::binary);
+            if (!out) {
+                curl_easy_cleanup(curl);
+                return ioErr("native http: cannot open '" + dest + "'");
+            }
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToOfstream);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out);
+            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+            curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+            CURLcode rc = curl_easy_perform(curl);
+            long code = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+            curl_easy_cleanup(curl);
+            out.close();
+            if (rc != CURLE_OK)
+                return ioErr("native http: GET " + url + " failed: " +
+                             curl_easy_strerror(rc));
+            if (code != 200)
+                return ioErr("native http: GET " + url + " returned HTTP " +
+                             std::to_string(code));
+            return llvm::Error::success();
         }
     } // namespace
 
@@ -120,6 +159,36 @@ namespace cajeta::buildtool {
                          "not the binary. Acquire it and provision locally" +
                          acq + ".");
         }
+        // Real HTTP mirror: GET the artifact, then verify + cache (unit 15).
+        if (mirrorRoot.rfind("http://", 0) == 0
+                || mirrorRoot.rfind("https://", 0) == 0) {
+            std::string fname = "lib" + lib.id + ".a";
+            std::string url = mirrorRoot + "/" + lib.id + "/" + version + "/" +
+                platform + "/" + fname;
+            auto ait = lib.artifacts.find(platform);
+            if (ait != lib.artifacts.end() && ait->second.url) {
+                url = *ait->second.url;
+                fname = std::filesystem::path(url).filename().string();
+            }
+            // Download into a unique temp dir under the artifact's real
+            // filename so it caches as `lib<id>.a` (fetchNativeToCache keys the
+            // cached name off the source basename).
+            std::error_code ec;
+            std::string tmpdir = (std::filesystem::temp_directory_path() /
+                ("nd-olla-dl-" + lib.id + "-" + version + "-" + platform))
+                .string();
+            std::filesystem::create_directories(tmpdir, ec);
+            std::string tmp = tmpdir + "/" + fname;
+            if (auto e = httpGetToFile(url, tmp)) return std::move(e);
+            std::string sha;
+            if (ait != lib.artifacts.end() && ait->second.sha256)
+                sha = *ait->second.sha256;
+            auto r = fetchNativeToCache(cacheRoot, lib.id, version, platform,
+                                        tmp, sha);
+            std::filesystem::remove_all(tmpdir, ec);
+            return r;
+        }
+
         // Locate the artifact on the mirror (stub: a local
         // <mirrorRoot>/<lib>/<version>/<platform>/ dir).
         std::string mdir =
