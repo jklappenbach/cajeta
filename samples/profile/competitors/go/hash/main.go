@@ -81,9 +81,9 @@ func emit(runID, ts, bench, lib, ver string, warmup, trials int, samples []int64
 		status = "invalid"
 	}
 	fmt.Printf(
-		"1,%s,%s,%s,hash,,%d,,%d,go,%s,%s,%s,-gcflags,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,-1,-1,-1,%s,%t,,\n",
+		"1,%s,%s,%s,hash,,%d,,%d,go,%s,%s,%s,-gcflags,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,%d,-1,-1,%s,%t,,\n",
 		runID, ts, bench, N, N, env("PROFILE_LANG_VERSION", ""), lib, ver,
-		warmup, trials, mn, med, mean, p95, mbps, peakRSSKb(), status, checkOK)
+		warmup, trials, mn, med, mean, p95, mbps, peakRSSKb(), gAlloc, status, checkOK)
 }
 
 func benchU64(warmup, trials int, f func() uint64) []int64 {
@@ -97,7 +97,18 @@ func benchU64(warmup, trials int, f func() uint64) []int64 {
 		s = append(s, time.Since(t0).Nanoseconds())
 		_ = sink
 	}
+	measAlloc(func() { f() })
 	return s
+}
+
+var gAlloc uint64
+
+func measAlloc(run func()) {
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	run()
+	runtime.ReadMemStats(&b)
+	gAlloc = b.TotalAlloc - a.TotalAlloc
 }
 
 func main() {

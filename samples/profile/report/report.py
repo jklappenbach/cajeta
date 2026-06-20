@@ -263,20 +263,28 @@ def thr_series(rows, area):
 
 
 def mem_series(rows):
-    # working_set_kb is the per-benchmark RSS *delta* — the comparable metric.
-    # peak_rss_kb is a whole-process high-water mark (cumulative + runtime
-    # baseline), which would make a long-lived host look catastrophically heavy
-    # vs short-lived per-runner processes, so it is deliberately NOT used here.
-    # Rows without working_set (the competitor runners, currently) become n/a.
-    vals = [(r, fnum(r.get("working_set_kb"))) for r in measured(rows)]
+    # alloc_bytes = bytes the benchmark asked the allocator for (one execution) —
+    # the runtime-independent, comparable memory metric (tracemalloc / Go MemStats
+    # / a Rust counting global allocator / a C++ operator-new counter). RSS-based
+    # numbers are NOT used: they measure different things per runtime (an allocator
+    # that retains vs one that returns), so they aren't comparable. Rows without
+    # alloc_bytes (e.g. the Cajeta harness, which doesn't emit it) become n/a.
+    vals = [(r, fnum(r.get("alloc_bytes"))) for r in measured(rows)]
     vals = [(r, v) for r, v in vals if v is not None and v >= 0]
     if not vals:
         return None
     pos = [v for _, v in vals if v > 0]
     base = min(pos) if pos else 1.0
     big = max((v for _, v in vals), default=0)
-    div, unit = (1024.0, "MB") if big >= 1024 else (1.0, "KB")
-    # lower is better; a 0-delta (retained nothing) is the leanest → tallest bar.
+    if big >= 1 << 30:
+        div, unit = float(1 << 30), "GB"
+    elif big >= 1 << 20:
+        div, unit = float(1 << 20), "MB"
+    elif big >= 1 << 10:
+        div, unit = float(1 << 10), "KB"
+    else:
+        div, unit = 1.0, "B"
+    # lower is better; allocating nothing (0) is the leanest → tallest bar.
     bars = [dict(r=r, value=v / div, score=(base / v if v > 0 else 1.0)) for r, v in vals]
     return dict(unit=unit, better="lower", bars=bars)
 
@@ -495,7 +503,7 @@ def render_tab(series, measured_rows, skipped, metric_name):
         if series["better"] == "higher":
             arrow = "↑ taller is better"
         elif metric_name == "Memory":
-            arrow = "↓ lower is better — taller bar = leaner (per-benchmark working-set delta)"
+            arrow = "↓ lower is better — taller bar = leaner (bytes allocated, one execution)"
         else:
             arrow = "↓ lower is better — taller bar = faster"
         axis = (f"<div class='axis'><b>{metric_name}</b> · unit <b>{html.escape(series['unit'])}</b> "

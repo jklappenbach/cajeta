@@ -3,6 +3,19 @@
 // competitors/columns.txt. Libraries: serde_json (de-facto standard) and
 // simd-json (SIMD SOTA). Cross-check: a known element count per file.
 use std::time::Instant;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU64, Ordering as _Ord};
+static _ALLOCED: AtomicU64 = AtomicU64::new(0);
+static _LAST: AtomicU64 = AtomicU64::new(0);
+struct _Counting;
+unsafe impl GlobalAlloc for _Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 { _ALLOCED.fetch_add(l.size() as u64, _Ord::Relaxed); System.alloc(l) }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) { System.dealloc(p, l) }
+}
+#[global_allocator]
+static _GA: _Counting = _Counting;
+fn _alloc_of<F: FnOnce()>(run: F) { _ALLOCED.store(0, _Ord::Relaxed); run(); _LAST.store(_ALLOCED.load(_Ord::Relaxed), _Ord::Relaxed); }
+fn _la() -> u64 { _LAST.load(_Ord::Relaxed) }
 
 const FILES: &[(&str, &str, usize)] = &[
     // (dataset_name, filename, expected count)  twitter.statuses / citm.events / canada.features
@@ -59,12 +72,12 @@ fn emit(
     // columns.txt order (31 cols).
     println!(
         "1,{run_id},{ts},json-dom,codec,{dataset},{bytes},,{bytes},rust,{rustver},{lib},{ver},-O3 lto,{warmup},{trials},\
-{min},{median},{mean},{p95},{mbps:.1},MB/s,{rss},-1,-1,-1,-1,{status},{check},,",
+{min},{median},{mean},{p95},{mbps:.1},MB/s,{rss},-1,{alloc},-1,-1,{status},{check},,",
         run_id = run_id, ts = ts, dataset = dataset, bytes = bytes,
         rustver = env("PROFILE_LANG_VERSION", ""), lib = lib, ver = ver,
         warmup = warmup, trials = trials,
         min = s.min, median = s.median, mean = s.mean, p95 = s.p95,
-        mbps = mbps, rss = peak_rss_kb(), status = status, check = check_ok,
+        mbps = mbps, rss = peak_rss_kb(), alloc = _la(), status = status, check = check_ok,
     );
 }
 
@@ -98,6 +111,7 @@ fn main() {
                 .ok()
                 .map(|v| count(&v, dataset) == expect)
                 .unwrap_or(false);
+            _alloc_of(|| { let _ = serde_json::from_slice::<serde_json::Value>(&bytes); });
             for _ in 0..warmup {
                 let _ = serde_json::from_slice::<serde_json::Value>(&bytes);
             }
@@ -120,6 +134,7 @@ fn main() {
                 .ok()
                 .map(|v| count_simd(&v, dataset) == expect)
                 .unwrap_or(false);
+            _alloc_of(|| { let mut b = bytes.clone(); let _ = simd_json::to_owned_value(&mut b); });
             for _ in 0..warmup {
                 let mut b = bytes.clone();
                 let _ = simd_json::to_owned_value(&mut b);

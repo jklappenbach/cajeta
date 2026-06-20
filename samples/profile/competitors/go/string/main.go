@@ -7,6 +7,7 @@
 package main
 
 import (
+	"runtime"
 	"fmt"
 	"os"
 	"sort"
@@ -77,9 +78,9 @@ func emit(runID, ts, bench, lib string, bytes, warmup, trials int, samples []int
 		status = "invalid"
 	}
 	fmt.Printf(
-		"1,%s,%s,%s,string,,%d,,%d,go,%s,%s,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,-1,-1,-1,%s,%t,,\n",
+		"1,%s,%s,%s,string,,%d,,%d,go,%s,%s,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,%d,-1,-1,%s,%t,,\n",
 		runID, ts, bench, bytes, bytes, env("PROFILE_LANG_VERSION", ""), lib,
-		warmup, trials, mn, med, mean, p95, mbps, peakRSSKb(), status, ok)
+		warmup, trials, mn, med, mean, p95, mbps, peakRSSKb(), gAlloc, status, ok)
 }
 
 func benchInt(warmup, trials int, f func() int, check func(int) bool) ([]int64, bool) {
@@ -94,6 +95,7 @@ func benchInt(warmup, trials int, f func() int, check func(int) bool) ([]int64, 
 		samples = append(samples, time.Since(t0).Nanoseconds())
 		ok = check(r)
 	}
+	measAlloc(func() { f() })
 	return samples, ok
 }
 
@@ -109,7 +111,18 @@ func benchStr(warmup, trials int, f func() string, check func(string) bool) ([]i
 		samples = append(samples, time.Since(t0).Nanoseconds())
 		ok = check(r)
 	}
+	measAlloc(func() { f() })
 	return samples, ok
+}
+
+var gAlloc uint64
+
+func measAlloc(run func()) {
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	run()
+	runtime.ReadMemStats(&b)
+	gAlloc = b.TotalAlloc - a.TotalAlloc
 }
 
 func main() {

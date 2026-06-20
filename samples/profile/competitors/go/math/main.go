@@ -5,6 +5,7 @@
 package main
 
 import (
+	"runtime"
 	"fmt"
 	"math"
 	"os"
@@ -78,9 +79,19 @@ func emit(runID, ts, bench string, input int, flops float64, warmup, trials int,
 		status = "invalid"
 	}
 	fmt.Printf(
-		"1,%s,%s,%s,math,,%d,,%d,go,%s,scalar,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,%.3f,GFLOP/s,%d,-1,-1,-1,-1,%s,%t,,\n",
+		"1,%s,%s,%s,math,,%d,,%d,go,%s,scalar,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,%.3f,GFLOP/s,%d,-1,%d,-1,-1,%s,%t,,\n",
 		runID, ts, bench, input, input, env("PROFILE_LANG_VERSION", ""),
-		warmup, trials, mn, med, mean, p95, gflops, peakRSSKb(), status, ok)
+		warmup, trials, mn, med, mean, p95, gflops, peakRSSKb(), gAlloc, status, ok)
+}
+
+var gAlloc uint64
+
+func measAlloc(run func()) {
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	run()
+	runtime.ReadMemStats(&b)
+	gAlloc = b.TotalAlloc - a.TotalAlloc
 }
 
 func main() {
