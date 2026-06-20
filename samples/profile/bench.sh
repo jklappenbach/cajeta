@@ -3,14 +3,17 @@
 #   1. fetch + checksum the reference datasets
 #   2. build the harness --release (benchmarks are native AOT)
 #   3. run the benchmarks -> results/<timestamp>/results.csv
+#   3b. (--competitors) run the cross-language competitor runners, appending rows
 #   4. capture the host env block -> env.csv
 #   5. generate the Cajeta-themed report site + report.md from the CSV
 #
 # Selection args pass through to the harness:
-#   ./bench.sh                 # everything
-#   ./bench.sh --area sort     # one area
-#   ./bench.sh --bench saxpy   # one benchmark
-#   ./bench.sh --list          # list benchmarks + areas (no run)
+#   ./bench.sh                      # everything (Cajeta side)
+#   ./bench.sh --area sort          # one area
+#   ./bench.sh --bench saxpy        # one benchmark
+#   ./bench.sh --list               # list benchmarks + areas (no run)
+#   ./bench.sh --competitors        # also run other-language competitors (Phase B)
+#   ./bench.sh --area codec --competitors   # Cajeta + competitors, one area
 #
 # Override the compiler with CAJETA=, the dataset cache with PROFILE_DATA_DIR=,
 # and the output dir with PROFILE_OUT=.
@@ -21,6 +24,9 @@ REPO_ROOT="$( cd -- "${SCRIPT_DIR}/../.." &> /dev/null && pwd )"
 CAJETA="${CAJETA:-${REPO_ROOT}/build-cajeta/src/cajeta}"
 cd "$SCRIPT_DIR"
 
+# Areas that have a competitor runner (competitors/<area>.sh). Grows as Phase B lands.
+COMPETITOR_AREAS="codec"
+
 [[ -x "$CAJETA" ]] || { echo "error: cajeta not found at $CAJETA (build ./build.sh or set CAJETA=)" >&2; exit 1; }
 
 # --list short-circuits (build + list, no run/report).
@@ -29,9 +35,22 @@ if [[ "${1:-}" == "--list" ]]; then
     exec ./build/profile --list
 fi
 
+# Split our own flags (--competitors) from harness passthrough args; capture --area.
+RUN_COMPETITORS=0
+AREA_FILTER=""
+HARNESS_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --competitors) RUN_COMPETITORS=1; shift ;;
+        --area) AREA_FILTER="${2:-}"; HARNESS_ARGS+=("$1" "${2:-}"); shift 2 ;;
+        *) HARNESS_ARGS+=("$1"); shift ;;
+    esac
+done
+
 TS="$(date +%Y%m%d-%H%M%S)"
 OUT="${PROFILE_OUT:-results/$TS}"
 DATA="${PROFILE_DATA_DIR:-${SCRIPT_DIR}/datasets/cache}"
+RUN_TS="$(date +%s)"
 mkdir -p "$OUT"
 
 echo "[bench] (1/5) datasets -> $DATA"
@@ -42,8 +61,20 @@ echo "[bench] (2/5) build --release"
 "$CAJETA" release >/dev/null
 
 echo "[bench] (3/5) run benchmarks -> $OUT/results.csv"
-PROFILE_DATA_DIR="$DATA" PROFILE_RUN_ID="$TS" PROFILE_RUN_TS="$(date +%s)" \
-    ./build/profile --run --out "$OUT/results.csv" "$@"
+PROFILE_DATA_DIR="$DATA" PROFILE_RUN_ID="$TS" PROFILE_RUN_TS="$RUN_TS" \
+    ./build/profile --run --out "$OUT/results.csv" "${HARNESS_ARGS[@]}"
+
+if [[ "$RUN_COMPETITORS" == "1" ]]; then
+    echo "[bench] (3b) competitors (cross-language; builds cargo/cmake/go on first run)"
+    for area in $COMPETITOR_AREAS; do
+        [[ -n "$AREA_FILTER" && "$AREA_FILTER" != "$area" ]] && continue
+        runner="competitors/$area.sh"
+        [[ -f "$runner" ]] || continue
+        echo "  [competitors] $area"
+        PROFILE_DATA_DIR="$DATA" PROFILE_RUN_ID="$TS" PROFILE_RUN_TS="$RUN_TS" \
+            bash "$runner" >> "$OUT/results.csv" || echo "    note: $area competitors failed (recorded as skips)"
+    done
+fi
 
 echo "[bench] (4/5) capture env -> $OUT/env.csv"
 bash scripts/env-capture.sh > "$OUT/env.csv"

@@ -91,11 +91,12 @@ def gen_markdown(rows, env):
     for area, rs in group_by_area(rows):
         out.append(f"## {area}")
         out.append("")
-        out.append("| benchmark | variant | lang | input | min (ms) | median (ms) | rate | ws (KB) | status |")
-        out.append("|---|---|---|---|---|---|---|---|---|")
+        out.append("| benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |")
+        out.append("|---|---|---|---|---|---|---|---|---|---|")
         for r in rs:
-            out.append("| {b} | {v} | {l} | {i} | {mn} | {md} | {rt} | {ws} | {st} |".format(
+            out.append("| {b} | {v} | {l} | {lib} | {i} | {mn} | {md} | {rt} | {ws} | {st} |".format(
                 b=r.get("benchmark", ""), v=r.get("variant", ""), l=r.get("language", ""),
+                lib=r.get("library", "") or "stdlib",
                 i=r.get("input_size", ""), mn=ms(r.get("min_ns")), md=ms(r.get("median_ns")),
                 rt=rate(r.get("input_size"), r.get("min_ns")),
                 ws=r.get("working_set_kb", ""), st=r.get("status", "")))
@@ -179,6 +180,7 @@ def gen_html(rows, env):
         f"<a href='#{a}'>{html.escape(a)} ({len(rs)})</a>" for a, rs in areas) + "</nav>")
 
     cols = [("benchmark", "benchmark"), ("variant", "variant"), ("language", "lang"),
+            ("library", "library"),
             ("input_size", "input"), ("min_ns", "min (ms)"), ("median_ns", "median (ms)"),
             ("_rate", "rate"), ("_bar", ""), ("working_set_kb", "ws KB"), ("status", "status")]
     for area, rs in areas:
@@ -192,7 +194,8 @@ def gen_html(rows, env):
             st = r.get("status", "")
             cells = [
                 html.escape(r.get("benchmark", "")), html.escape(r.get("variant", "")),
-                html.escape(lang), html.escape(r.get("input_size", "")),
+                html.escape(lang), html.escape(r.get("library", "") or "stdlib"),
+                html.escape(r.get("input_size", "")),
                 ms(r.get("min_ns")), ms(r.get("median_ns")),
                 rate(r.get("input_size"), r.get("min_ns")),
                 bar(r.get("min_ns"), maxns), html.escape(r.get("working_set_kb", "")),
