@@ -126,3 +126,57 @@ TEST(CsvSynthesizerTests, unmappedHeaderColumnIgnored) {
         " return ((int32) rows.count()) * 100 + rows[0].a;"),
         1 * 100 + 5);   // 105
 }
+
+// ---- b3: projection of T fields + @CsvRequired fail-loud ----
+
+// A T field with no matching header column and no @CsvRequired stays at its
+// default (projection of fields) — no throw.
+//   a\n5  →  Box{a,b}: a=5, b defaults to 0
+TEST(CsvSynthesizerTests, unmappedFieldDefaultsWhenNotRequired) {
+    EXPECT_EQ(runCsv(
+        "public class Box { public int32 a; public int32 b; }\n",
+        "a\n5",
+        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        " return rows[0].a * 100 + rows[0].b;"),
+        5 * 100 + 0);   // 500
+}
+
+// A @CsvRequired field whose column IS present binds normally — no throw.
+TEST(CsvSynthesizerTests, requiredColumnPresentBinds) {
+    EXPECT_EQ(runCsv(
+        "public class Box { @CsvRequired public int32 id; }\n",
+        "id\n42",
+        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        " return rows[0].id;"),
+        42);
+}
+
+// A @CsvRequired field absent from the header fails loud — CsvParseException.
+//   header has `x`, not the required `id`
+TEST(CsvSynthesizerTests, requiredColumnMissingThrows) {
+    EXPECT_EQ(runCsv(
+        "public class Box { @CsvRequired public int32 id; public int32 x; }\n",
+        "x\n9",
+        "try {"
+        "   Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "   return 0;"
+        " } catch (cajeta.codec.csv.CsvParseException e) {"
+        "   return 1;"
+        " }"),
+        1);
+}
+
+// Two required fields, one present, one missing — still throws.
+TEST(CsvSynthesizerTests, requiredOnePresentOneMissingThrows) {
+    EXPECT_EQ(runCsv(
+        "public class Pair { @CsvRequired public int32 left;"
+        " @CsvRequired public int32 right; }\n",
+        "left\n1",
+        "try {"
+        "   Pair[] rows = Csv.parse<Pair[]>(buf, n);"
+        "   return 0;"
+        " } catch (cajeta.codec.csv.CsvParseException e) {"
+        "   return 1;"
+        " }"),
+        1);
+}

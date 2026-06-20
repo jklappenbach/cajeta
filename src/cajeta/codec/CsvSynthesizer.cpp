@@ -59,7 +59,7 @@ namespace cajeta {
         const std::string Ec = E->getQName()->toCanonical();
 
         // Bindable fields: those whose type is a supported primitive or String.
-        struct Bind { std::string name; std::string canon; bool isString; };
+        struct Bind { std::string name; std::string canon; bool isString; bool required; };
         std::vector<Bind> binds;
         for (auto& prop : E->getPropertyList()) {
             if (!prop) continue;
@@ -69,7 +69,8 @@ namespace cajeta {
             bool isString = (tc == "cajeta.lang.String");
             if (isString || tc == "int32" || tc == "int64"
                     || tc == "float64" || tc == "boolean") {
-                binds.push_back({prop->getName(), tc, isString});
+                bool required = prop->findAnnotation("CsvRequired") != nullptr;
+                binds.push_back({prop->getName(), tc, isString, required});
             }
         }
 
@@ -100,6 +101,18 @@ namespace cajeta {
         os << "            hi = hi + 1;\n";
         os << "        }\n";
         os << "    }\n";
+        // Fail-loud: a @CsvRequired field whose column never appeared in the
+        // header is a hard error (mirrors JSON's @JsonRequired). Checked once
+        // against the shared header — not per-row — since CSV columns are
+        // positional and the header binds them for the whole file.
+        for (auto& b : binds) {
+            if (!b.required) continue;
+            os << "    if (col_" << b.name << " < (int32) 0) {\n";
+            os << "        throw heap CsvParseException("
+               << "\"required column '" << escapeCajetaString(b.name)
+               << "' not found in header\", (int64) 0);\n";
+            os << "    }\n";
+        }
         os << "    int32 rowCount = 0;\n";
         os << "    boolean cn = rh.nextRow();\n";
         os << "    while (cn) { rowCount = rowCount + 1; cn = rh.nextRow(); }\n";
