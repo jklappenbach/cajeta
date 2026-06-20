@@ -388,3 +388,92 @@ TEST(IfxFacadeTests, ifxInfoSupportsFacadeRoutesToRegistry) {
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 0);
 }
+
+// ── Unit 8: recording SPI seam (stub-level, spec §7) ──────────────────────────────────────────
+
+// 8a -- the VideoSink seam + its royalty-free PNG-sequence fallback are referenceable from stdlib:
+// frames pushed through the seam are recorded WHILE OPEN; writes before open() / after close() drop.
+// (Real PNG byte-encoding lives in the external harness; this proves the contract.)
+TEST(IfxFacadeTests, videoSinkFallbackCountsFramesWhileOpen) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.PngSequenceVideoSink;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        PngSequenceVideoSink png = heap PngSequenceVideoSink();\n"
+        "        png.writeFrame(null);\n"                  // not open → dropped
+        "        png.open(1280, 720, 30);\n"
+        "        png.writeFrame(null);\n"                  // counted
+        "        png.writeFrame(null);\n"                  // counted
+        "        png.close();\n"
+        "        png.writeFrame(null);\n"                  // closed → dropped
+        "        return png.frameCount();\n"               // 2
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 2);
+}
+
+// 8a -- the fallback is usable THROUGH the VideoSink seam interface (open returns true, name()
+// dispatches): this is the shape the external harness implements + registers against.
+TEST(IfxFacadeTests, videoSinkReferenceableThroughSeamInterface) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.VideoSink;\n"
+        "import cajeta.ifx.PngSequenceVideoSink;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        VideoSink sink = heap PngSequenceVideoSink();\n"
+        "        if (sink.open(640, 480, 24) && sink.name().equals(\"png-sequence\")) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1);
+}
+
+// 8a -- the AudioSink seam + its royalty-free WAV fallback: sample-buffers count while open.
+TEST(IfxFacadeTests, audioSinkFallbackCountsBuffersWhileOpen) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.WavAudioSink;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WavAudioSink wav = heap WavAudioSink();\n"
+        "        wav.writeSamples(null);\n"               // not open → dropped
+        "        wav.open(48000, 2);\n"
+        "        wav.writeSamples(null);\n"               // counted
+        "        wav.writeSamples(null);\n"               // counted
+        "        wav.writeSamples(null);\n"               // counted
+        "        wav.close();\n"
+        "        return wav.bufferCount();\n"             // 3
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 3);
+}
+
+// 8a -- the WAV fallback is usable through the AudioSink seam interface (the harness's shape).
+TEST(IfxFacadeTests, audioSinkReferenceableThroughSeamInterface) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.AudioSink;\n"
+        "import cajeta.ifx.WavAudioSink;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        AudioSink sink = heap WavAudioSink();\n"
+        "        if (sink.open(44100, 1) && sink.name().equals(\"wav\")) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1);
+}
