@@ -100,4 +100,46 @@ namespace cajeta::buildtool {
             }};
     }
 
+    // --- Unit 10: Olla native mirror -------------------------------------
+
+    bool mayMirrorNativeBinary(const NativeLibrary& lib) {
+        return lib.redistributable;
+    }
+
+    llvm::Expected<std::string> fetchFromOllaMirror(
+            const NativeLibrary& lib, const std::string& version,
+            const std::string& platform, const std::string& mirrorRoot,
+            const std::string& cacheRoot) {
+        if (!mayMirrorNativeBinary(lib)) {
+            std::string acq = lib.acquire ? (" (" + *lib.acquire + ")") : "";
+            return ioErr("native: '" + lib.id + "' is embargoed "
+                         "(redistributable:false) — Olla serves metadata only, "
+                         "not the binary. Acquire it and provision locally" +
+                         acq + ".");
+        }
+        // Locate the artifact on the mirror (stub: a local
+        // <mirrorRoot>/<lib>/<version>/<platform>/ dir).
+        std::string mdir =
+            mirrorRoot + "/" + lib.id + "/" + version + "/" + platform;
+        std::string srcFile;
+        const char* suffixes[] = {".a", ".so", ".dylib"};
+        std::error_code ec;
+        for (const char* sfx : suffixes) {
+            for (const std::string& p : {mdir + "/lib" + lib.id + sfx,
+                                         mdir + "/" + lib.id + sfx}) {
+                if (fs::exists(p, ec)) { srcFile = p; break; }
+            }
+            if (!srcFile.empty()) break;
+        }
+        if (srcFile.empty())
+            return ioErr("native: Olla mirror has no artifact for '" + lib.id +
+                         "' " + version + " (" + platform + ")");
+        std::string sha;
+        auto it = lib.artifacts.find(platform);
+        if (it != lib.artifacts.end() && it->second.sha256)
+            sha = *it->second.sha256;
+        return fetchNativeToCache(cacheRoot, lib.id, version, platform,
+                                  srcFile, sha);
+    }
+
 } // namespace cajeta::buildtool

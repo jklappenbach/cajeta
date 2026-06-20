@@ -46,4 +46,21 @@ namespace cajeta::buildtool {
     // offline. Plugs into the unit-5 probe order.
     NativeProvider cacheNativeProvider(const std::string& cacheRoot);
 
+    // --- Unit 10: Olla native mirror -------------------------------------
+
+    // Whether a native lib's BINARY may be published to / fetched from a public
+    // Olla mirror. Embargoed (redistributable=false) → false: Olla carries
+    // metadata only, never the binary — the publish-side + fetch-side guard.
+    bool mayMirrorNativeBinary(const NativeLibrary& lib);
+
+    // Fetch a redistributable artifact from an Olla mirror into the cache
+    // (provision time, verified). `mirrorRoot` stands in for the mirror (the
+    // stub is a local `<lib>/<version>/<platform>/` dir; real HTTP swaps in via
+    // HttpRepository). An embargoed lib is refused — Olla serves metadata only,
+    // directing the developer to provision it (its `acquire` note).
+    llvm::Expected<std::string> fetchFromOllaMirror(
+        const NativeLibrary& lib, const std::string& version,
+        const std::string& platform, const std::string& mirrorRoot,
+        const std::string& cacheRoot);
+
 } // namespace cajeta::buildtool
