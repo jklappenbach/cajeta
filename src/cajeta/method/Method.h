@@ -560,6 +560,11 @@ namespace cajeta {
         // @Native annotation. See docs/specification/
         // "Native methods" for the user-facing contract.
         void emitNativeForwardingBody(const std::string& symbol);
+        // Record a native-library requirement (lib-id, symbol) as LLVM named
+        // metadata `cajeta.native.reqs` on the emit module. Consumed by .cja
+        // emission (native-deps unit 3) and the resolver (unit 4). Deduped.
+        void recordNativeRequirement(const std::string& lib,
+                                     const std::string& symbol);
 
         static map<string, MethodPtr>& getArchive();
 

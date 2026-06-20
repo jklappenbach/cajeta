@@ -363,6 +363,28 @@ namespace cajeta {
     // calling the runtime function directly. Signature mismatch between
     // the cajeta declaration and the runtime symbol falls on the user —
     // the declaration must mirror the runtime function's types exactly.
+    void Method::recordNativeRequirement(const std::string& lib,
+                                         const std::string& symbol) {
+        llvm::Module* lmod = getEmitModule()->getLlvmModule();
+        llvm::LLVMContext& ctx = lmod->getContext();
+        llvm::NamedMDNode* nmd =
+            lmod->getOrInsertNamedMetadata("cajeta.native.reqs");
+        // Dedup: skip an identical {lib, symbol} entry.
+        for (unsigned i = 0; i < nmd->getNumOperands(); ++i) {
+            llvm::MDNode* op = nmd->getOperand(i);
+            if (op->getNumOperands() != 2) continue;
+            auto* l = llvm::dyn_cast<llvm::MDString>(op->getOperand(0));
+            auto* s = llvm::dyn_cast<llvm::MDString>(op->getOperand(1));
+            if (l && s && l->getString() == lib && s->getString() == symbol)
+                return;
+        }
+        llvm::Metadata* entry[] = {
+            llvm::MDString::get(ctx, lib),
+            llvm::MDString::get(ctx, symbol),
+        };
+        nmd->addOperand(llvm::MDNode::get(ctx, entry));
+    }
+
     void Method::emitNativeForwardingBody(const std::string& symbol) {
         // The forwarding wrapper IS this method's llvmFunction (in the emit
         // module); its runtime-symbol extern must be co-resident there.
@@ -1203,13 +1225,22 @@ namespace cajeta {
         // / object at link or JIT time. The wrapper is trivially
         // inlinable so call overhead is zero after LLVM passes run.
         if (auto nativeAnn = findAnnotation("Native")) {
-            std::string symbol = nativeAnn->getString("value");
+            // Two forms:
+            //   @Native("__cajeta_x")                 — runtime symbol (no lib)
+            //   @Native(symbol="X", lib="zstd")       — external-library binding
+            // The external form additionally records a native requirement
+            // (lib-id, symbol) for the resolver; codegen is identical (the
+            // symbol is an extern resolved at link/JIT time).
+            std::string symbol = nativeAnn->getString("symbol");
+            if (symbol.empty()) symbol = nativeAnn->getString("value");
+            std::string lib = nativeAnn->getString("lib");
             if (symbol.empty()) {
                 cerr << "@Native on " << buildCanonical(parent, name, parameterList, true)
                      << " requires a symbol-name argument" << std::endl;
                 return;
             }
             emitNativeForwardingBody(symbol);
+            if (!lib.empty()) recordNativeRequirement(lib, symbol);
             return;
         }
         // A5: when @Around advice matched this method, lazily create
