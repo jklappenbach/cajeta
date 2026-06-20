@@ -160,6 +160,12 @@ namespace cajeta {
         // emitCMainShim after Phase-2 codegen, when binary emit is on.
         string entryMethod;
 
+        // Package source root (trailing-slash normalized) — set by
+        // Compiler::compile(...) so emitArchive can locate the package's
+        // `skills/` dir and embed skill members into the `.cja` (skill-discovery
+        // D.3). Empty when compile() hasn't run (e.g. unit tests).
+        string skillSourceRoot;
+
         // Collected .o paths from Obj/Exe emissions, fed to the linker for Exe mode.
         std::vector<string> objectFiles;
 

@@ -4,6 +4,7 @@
 
 #include "Compiler.h"
 #include "CajetaArchive.h"
+#include "cajeta/buildtool/skill/SkillPackager.h"
 #include "CajetaModule.h"
 #include "CajetaLlvmVisitor.h"
 #include "Optimizer.h"
@@ -935,6 +936,10 @@ namespace cajeta {
         if (archiveRootPath[archiveRootPath.size() - 1] != '/') {
             archiveRootPath.append("/");
         }
+
+        // Remember the package source root so emitArchive can embed the
+        // package's hand-authored skills/ into the .cja (skill-discovery D.3).
+        this->skillSourceRoot = sourceRootPath;
 
 //        std::filesystem::path cwd = std::filesystem::current_path();
 
@@ -2660,6 +2665,12 @@ namespace cajeta {
             }
             arc.setDeps(std::move(kept));
         }
+
+        // Embed the package's hand-authored skills (skill-discovery D.3): a
+        // no-op when there is no skills/ dir; throws a clear error on an invalid
+        // skill. Uber archives carry the consuming project's own skills only —
+        // each dependency already ships its skills inside its own .cja.
+        buildtool::skill::addSkillMembersToArchiveOrThrow(arc, skillSourceRoot);
 
         arc.writeTo(outPath);
     }
