@@ -30,9 +30,11 @@ capability to cajeta code. It is an **index/retrieval** family, not a collection
 - `cajeta.search.fuzzy` — a matcher composing the index (prefilter) + distance (scoring) +
   ranking.
 
-Files live at `runtime/src/cajeta/search/<Type>.cajeta` with `package cajeta.search.ngram;`
-etc., mirroring `cajeta.collection` conventions (PascalCase types, camelCase methods,
-`<T>`/`<K,V>` generics, JavaDoc-style docs, `heap`/ownership `#`).
+Files live under a path that matches the package (the compiler derives the package from the
+file path, not the `package` declaration): `package cajeta.search.ngram;` →
+`runtime/src/cajeta/search/ngram/<Type>.cajeta`. Conventions mirror `cajeta.collection`
+(PascalCase types, camelCase methods, `<T>`/`<K,V>` generics, JavaDoc-style docs,
+`heap`/ownership `#`).
 
 ### 1.4 Non-goals
 - Full-text / token inverted indexing with relevance ranking (TF-IDF/BM25) — a future

@@ -618,6 +618,10 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
+        # cajeta.search.ngram (cajeta.search package): n-gram inverted index for
+        # fuzzy candidate generation. Built over cajeta.collection (HashMap/
+        # ArrayList/HashSet) + cajeta.lang.String, so it must parse after both.
+        ${CAJETA_STDLIB_ROOT}/cajeta/search/ngram
         # ── cajeta.io.net (cajeta-net branch, NET-* plan) — PURE-LOGIC SLICE.
         # Only directories whose .cajeta sources are pure logic (no socket /
         # reactor intrinsic calls) are eagerly compiled here. The socket-backed
