@@ -1,0 +1,51 @@
+package profile.string;
+
+import profile.Benchmark;
+
+// Substring search: indexOf a needle that doesn't occur in a ~360 KB text (a
+// full scan). Cross-check: returns -1 (not found). The text is built by doubling
+// a base sentence directly in the field (O(n), avoids a named-local drop).
+public class StringSearchBench extends Benchmark {
+
+    public String text;
+    public int64 textLen;
+    public int64 lastIdx;
+
+    public String name() {
+        return "string-search";
+    }
+
+    public String area() {
+        return "string";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void setup() {
+        this.text = "the quick brown fox jumps over the lazy dog ";
+        int32 k = 0;
+        while (k < 13) {
+            this.text = this.text + this.text;
+            k = k + 1;
+        }
+        this.textLen = (int64) this.text.count();
+    }
+
+    public int64 inputSize() {
+        return this.textLen;
+    }
+
+    public void run(int32 iterations) {
+        this.lastIdx = this.text.indexOf("zzzzqx-not-present");
+    }
+
+    public boolean checkResult() {
+        return this.lastIdx < 0;
+    }
+}
