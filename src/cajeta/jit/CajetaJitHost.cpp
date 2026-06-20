@@ -22,12 +22,14 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/NativeLink.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
@@ -261,6 +263,13 @@ BuiltJit buildJit(const JitRunOptions& opts) {
         out.errorCode = 1;
         return out;
     }
+    // Native-dependency requirements (native-deps unit 8): read the live
+    // @Native libs from the module BEFORE it is moved into the JIT. ORC
+    // generators (added after the process generator below) are lazy, so DCE is
+    // automatic — a generator is consulted only for a symbol actually
+    // materialized. The JIT NEVER fetches at run time; artifacts must be local.
+    std::set<std::string> liveNativeLibs = cajeta::collectLiveNativeLibs(**parsed);
+
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
 
     auto jitOrErr = llvm::orc::LLJITBuilder().create();
@@ -321,6 +330,39 @@ BuiltJit buildJit(const JitRunOptions& opts) {
             }
             cajeta::jit::cantFail(
                 mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
+        }
+    }
+
+    // Native-dependency JIT generators (native-deps unit 8). For each
+    // referenced @Native lib, resolve a LOCAL artifact (.cja native/ extraction
+    // / CAJETA_NATIVE_PATH / ~/.cajeta/native — never the network) and add an
+    // ORC generator so its symbols resolve at materialization. Lazy → a lib
+    // whose symbols are never materialized is never loaded (DCE for JIT). A
+    // genuinely-referenced-but-absent lib surfaces as an undefined symbol at
+    // materialization (precise placement message lands in unit 11).
+    if (!liveNativeLibs.empty()) {
+        auto& execSession = out.jit->getExecutionSession();
+        const char prefix = out.jit->getDataLayout().getGlobalPrefix();
+        const std::string platform = cajeta::hostNativePlatform();
+        const std::vector<std::string> dirs = cajeta::nativeLinkSearchDirs();
+        for (const auto& lib : liveNativeLibs) {
+            auto art = cajeta::findNativeJitArtifact(lib, platform, dirs);
+            if (!art) continue;  // absent → lazy lookup fails loud only if needed
+            if (art->isStatic) {
+                auto gen = llvm::orc::StaticLibraryDefinitionGenerator::Load(
+                    out.jit->getObjLinkingLayer(), art->path.c_str());
+                if (gen) mainDylib.addGenerator(std::move(*gen));
+                else std::cerr << "cajeta jit: native lib '" << lib
+                               << "' load failed: "
+                               << cajeta::jit::toString(gen.takeError()) << "\n";
+            } else {
+                auto gen = llvm::orc::DynamicLibrarySearchGenerator::Load(
+                    art->path.c_str(), prefix);
+                if (gen) mainDylib.addGenerator(std::move(*gen));
+                else std::cerr << "cajeta jit: native lib '" << lib
+                               << "' load failed: "
+                               << cajeta::jit::toString(gen.takeError()) << "\n";
+            }
         }
     }
     // NOTE: the fp128 soft-float helpers (__trunctfdf2, __fixtfdi, ...) that the

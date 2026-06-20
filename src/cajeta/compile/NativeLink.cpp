@@ -104,4 +104,30 @@ namespace cajeta {
         return out;
     }
 
+    std::optional<NativeJitArtifact> findNativeJitArtifact(
+            const std::string& lib, const std::string& platform,
+            const std::vector<std::string>& searchDirs) {
+        // (candidate path, isStatic), in preference order: shared first.
+        auto exists = [](const std::string& p) {
+            std::error_code ec;
+            return std::filesystem::exists(p, ec);
+        };
+        for (const auto& dir : searchDirs) {
+            const std::string bases[] = {dir + "/" + platform, dir};
+            for (const auto& base : bases) {
+                struct Cand { std::string suffix; bool isStatic; };
+                const Cand cands[] = {
+                    {".so", false}, {".dylib", false}, {".a", true},
+                };
+                for (const auto& c : cands) {
+                    for (const std::string& p : {base + "/lib" + lib + c.suffix,
+                                                 base + "/" + lib + c.suffix}) {
+                        if (exists(p)) return NativeJitArtifact{p, c.isStatic};
+                    }
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
 } // namespace cajeta

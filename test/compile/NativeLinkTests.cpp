@@ -114,3 +114,39 @@ TEST(NativeLinkTests, hostPlatformShape) {
     std::string p = hostNativePlatform();
     EXPECT_NE(p.find('-'), std::string::npos);
 }
+
+// JIT artifact finder prefers a shared lib over a static archive.
+TEST(NativeLinkTests, jitArtifactPrefersSharedOverStatic) {
+    auto base = std::filesystem::temp_directory_path() / "nd-jit-pref";
+    auto pdir = base / "linux-x64";
+    std::filesystem::create_directories(pdir);
+    std::ofstream(pdir / "libfoo.a", std::ios::binary) << "A";
+    std::ofstream(pdir / "libfoo.so", std::ios::binary) << "S";
+
+    auto art = findNativeJitArtifact("foo", "linux-x64", {base.string()});
+    ASSERT_TRUE(art.has_value());
+    EXPECT_FALSE(art->isStatic);                          // .so preferred
+    EXPECT_EQ(art->path, (pdir / "libfoo.so").string());
+    std::filesystem::remove_all(base);
+}
+
+// Falls back to a static archive when no shared lib is present.
+TEST(NativeLinkTests, jitArtifactFallsBackToStatic) {
+    auto base = std::filesystem::temp_directory_path() / "nd-jit-static";
+    auto pdir = base / "linux-x64";
+    std::filesystem::create_directories(pdir);
+    std::ofstream(pdir / "libfoo.a", std::ios::binary) << "A";
+    auto art = findNativeJitArtifact("foo", "linux-x64", {base.string()});
+    ASSERT_TRUE(art.has_value());
+    EXPECT_TRUE(art->isStatic);
+    std::filesystem::remove_all(base);
+}
+
+// Absent → nullopt (the JIT never fetches; lazy lookup fails loud only if used).
+TEST(NativeLinkTests, jitArtifactAbsentIsNullopt) {
+    auto empty = std::filesystem::temp_directory_path() / "nd-jit-empty";
+    std::filesystem::create_directories(empty);
+    EXPECT_FALSE(findNativeJitArtifact("zstd", "linux-x64", {empty.string()})
+                     .has_value());
+    std::filesystem::remove_all(empty);
+}

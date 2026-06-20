@@ -14,6 +14,7 @@
 
 #include <llvm/Support/Error.h>
 
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -40,6 +41,21 @@ namespace cajeta {
     llvm::Expected<std::vector<std::string>> resolveNativeArchivesForLink(
         const std::set<std::string>& liveLibs,
         const std::string& platform,
+        const std::vector<std::string>& searchDirs);
+
+    // A JIT-loadable native artifact: a shared lib (`isStatic=false`, loaded via
+    // an ORC DynamicLibrarySearchGenerator) or a static archive
+    // (`isStatic=true`, via StaticLibraryDefinitionGenerator).
+    struct NativeJitArtifact {
+        std::string path;
+        bool isStatic = false;
+    };
+
+    // Find a JIT-loadable artifact for `lib` under `searchDirs` (prefers a
+    // shared lib `.so`/`.dylib`, falls back to a static archive `.a`). Empty if
+    // none is present locally — the JIT NEVER fetches at run time.
+    std::optional<NativeJitArtifact> findNativeJitArtifact(
+        const std::string& lib, const std::string& platform,
         const std::vector<std::string>& searchDirs);
 
 } // namespace cajeta
