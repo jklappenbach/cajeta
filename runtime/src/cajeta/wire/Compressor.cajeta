@@ -1,0 +1,19 @@
+package cajeta.wire;
+
+/**
+ * The block-compress stage — the byte→byte inverse of `Decompressor`, paired
+ * with it on every Class C container writer (Parquet, ORC, Avro). Format-
+ * agnostic and carries no `T`, so it is deliberately separate from `Encoder<T>`.
+ *
+ * Implementations (`Snappy`, `Lz4`, `Zstd`, `Gzip`/`zlib`, `Brotli`) are all our
+ * own Cajeta — no third-party libraries.
+ *
+ * ```cajeta
+ * Compressor c = Snappy();
+ * #int8[] block = c.compress(plain);
+ * ```
+ */
+public interface Compressor {
+    /** Compresses `src` into a fresh, caller-owned block buffer. */
+    #int8[] compress(int8[] src);
+}

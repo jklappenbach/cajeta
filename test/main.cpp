@@ -1,5 +1,8 @@
 #include "gtest/gtest.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 #if defined(_WIN32)
 #  include <cstdlib>
 #  include <string>
@@ -27,5 +30,18 @@ int main(int argc, char **argv) {
     appendMsysCoreutilsToPath();
 #endif
     ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    const int rc = RUN_ALL_TESTS();
+
+    // Bypass the C/C++ exit-handler chain (atexit/static dtors) and terminate
+    // immediately. cajeta_test statically links the fork LLVM, while a GPU
+    // backend (HIP comgr / RADV) dlopens its OWN LLVM at device init. At process
+    // exit the two copies' global `cl::opt` ManagedStatic registries collide and
+    // an LLVM option global (e.g. AsmMacroMaxNestingDepth) is freed with a
+    // corrupted chunk size -> "double free or corruption" -> SIGABRT, AFTER all
+    // tests have already passed. gtest has fully printed/flushed its results by
+    // the time RUN_ALL_TESTS returns, so skipping teardown is observationally
+    // safe and lets ctest see the real pass/fail exit code. CPU-only runs (no 2nd
+    // LLVM) were unaffected either way.
+    std::fflush(nullptr);
+    std::_Exit(rc);
 }
