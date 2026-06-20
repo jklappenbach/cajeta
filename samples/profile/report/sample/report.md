@@ -6,54 +6,54 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| json-tokenize | twitter | cajeta | stdlib | 631514 | 1.390 | 1.442 | 454.18M/s | 620 | ok |
-| json-tokenize | citm_catalog | cajeta | stdlib | 1727204 | 3.634 | 3.958 | 475.29M/s | 1980 | ok |
-| json-tokenize | canada | cajeta | stdlib | 2251051 | 8.305 | 8.724 | 271.06M/s | 3608 | ok |
-| json-bind-skip | twitter | cajeta | stdlib | 631514 | 0.135 | 0.138 | 4.69G/s | 2708 | ok |
-| json-bind-skip | citm_catalog | cajeta | stdlib | 1727204 | 0.417 | 0.482 | 4.15G/s | 4 | ok |
-| json-bind-skip | canada | cajeta | stdlib | 2251051 | 0.730 | 0.814 | 3.08G/s | 4 | ok |
+| json-tokenize | twitter | cajeta | stdlib | 631514 | 1.812 | 1.897 | 348.59M/s | 620 | ok |
+| json-tokenize | citm_catalog | cajeta | stdlib | 1727204 | 3.852 | 4.027 | 448.34M/s | 1944 | ok |
+| json-tokenize | canada | cajeta | stdlib | 2251051 | 9.129 | 9.172 | 246.58M/s | 3524 | ok |
+| json-bind-skip | twitter | cajeta | stdlib | 631514 | 0.158 | 0.163 | 4.00G/s | 2624 | ok |
+| json-bind-skip | citm_catalog | cajeta | stdlib | 1727204 | 0.380 | 0.397 | 4.54G/s | 4 | ok |
+| json-bind-skip | canada | cajeta | stdlib | 2251051 | 0.731 | 0.740 | 3.08G/s | 4 | ok |
 | json-dom | twitter | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| json-dom | citm_catalog | cajeta | stdlib | 1727204 | 10.218 | 10.543 | 169.04M/s | 479368 | ok |
+| json-dom | citm_catalog | cajeta | stdlib | 1727204 | 10.452 | 10.635 | 165.24M/s | 479368 | ok |
 | json-dom | canada | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
 | json-serialize | twitter | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| json-serialize | citm_catalog | cajeta | stdlib | 1727204 | 13.481 | 14.586 | 128.12M/s | 595212 | ok |
+| json-serialize | citm_catalog | cajeta | stdlib | 1727204 | 11.150 | 13.009 | 154.91M/s | 595212 | ok |
 | json-serialize | canada | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
 | json-roundtrip | twitter | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| json-roundtrip | citm_catalog | cajeta | stdlib | 1727204 | 33.520 | 35.038 | 51.53M/s | 1074740 | ok |
+| json-roundtrip | citm_catalog | cajeta | stdlib | 1727204 | 33.103 | 34.781 | 52.18M/s | 1074740 | ok |
 | json-roundtrip | canada | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| json-conformance |  | cajeta | stdlib | 14 | 0.025 | 0.027 | 567.79K/s | 864 | ok |
-| base64-encode |  | cajeta | stdlib | 1048576 | 10.406 | 10.757 | 100.77M/s | 136556 | ok |
-| base64-decode |  | cajeta | stdlib | 1048576 | 11.432 | 11.813 | 91.72M/s | 102420 | ok |
-| json-dom |  | rust | serde_json | 631514 | 0.985 | 1.005 | 640.82M/s | -1 | ok |
-| json-dom |  | rust | simd-json | 631514 | 0.770 | 0.776 | 819.70M/s | -1 | ok |
-| json-dom |  | rust | serde_json | 1727204 | 2.264 | 2.459 | 762.77M/s | -1 | ok |
-| json-dom |  | rust | simd-json | 1727204 | 1.575 | 1.591 | 1.10G/s | -1 | ok |
-| json-dom |  | rust | serde_json | 2251051 | 4.126 | 4.151 | 545.59M/s | -1 | ok |
-| json-dom |  | rust | simd-json | 2251051 | 4.222 | 4.829 | 533.23M/s | -1 | ok |
-| json-dom |  | cpp | simdjson | 631514 | 0.085 | 0.088 | 7.43G/s | -1 | ok |
-| json-dom |  | cpp | yyjson | 631514 | 0.119 | 0.124 | 5.29G/s | -1 | ok |
-| json-dom |  | cpp | simdjson | 1727204 | 0.230 | 0.231 | 7.50G/s | -1 | ok |
-| json-dom |  | cpp | yyjson | 1727204 | 0.316 | 0.318 | 5.47G/s | -1 | ok |
-| json-dom |  | cpp | simdjson | 2251051 | 1.238 | 1.242 | 1.82G/s | -1 | ok |
-| json-dom |  | cpp | yyjson | 2251051 | 1.327 | 1.333 | 1.70G/s | -1 | ok |
-| json-dom |  | go | encoding/json | 631514 | 3.598 | 3.909 | 175.52M/s | -1 | ok |
-| json-dom |  | go | goccy/go-json | 631514 | 1.765 | 2.455 | 357.82M/s | -1 | ok |
-| json-dom |  | go | encoding/json | 1727204 | 8.490 | 9.808 | 203.43M/s | -1 | ok |
-| json-dom |  | go | goccy/go-json | 1727204 | 4.515 | 5.512 | 382.52M/s | -1 | ok |
-| json-dom |  | go | encoding/json | 2251051 | 15.090 | 15.862 | 149.18M/s | -1 | ok |
-| json-dom |  | go | goccy/go-json | 2251051 | 13.188 | 13.546 | 170.69M/s | -1 | ok |
-| json-dom |  | python | json | 631514 | 1.746 | 1.830 | 361.79M/s | -1 | ok |
-| json-dom |  | python | orjson | 631514 | 0.689 | 0.703 | 916.13M/s | -1 | ok |
-| json-dom |  | python | msgspec | 631514 | 0.905 | 0.914 | 697.96M/s | -1 | ok |
-| json-dom |  | python | ujson | 631514 | 1.133 | 1.147 | 557.19M/s | -1 | ok |
-| json-dom |  | python | json | 1727204 | 4.027 | 4.089 | 428.90M/s | -1 | ok |
-| json-dom |  | python | orjson | 1727204 | 2.041 | 2.056 | 846.35M/s | -1 | ok |
-| json-dom |  | python | msgspec | 1727204 | 2.629 | 2.657 | 657.03M/s | -1 | ok |
-| json-dom |  | python | ujson | 1727204 | 3.049 | 3.073 | 566.57M/s | -1 | ok |
-| json-dom |  | python | json | 2251051 | 32.079 | 32.472 | 70.17M/s | -1 | ok |
-| json-dom |  | python | orjson | 2251051 | 5.483 | 5.586 | 410.59M/s | -1 | ok |
-| json-dom |  | python | msgspec | 2251051 | 5.725 | 5.956 | 393.22M/s | -1 | ok |
-| json-dom |  | python | ujson | 2251051 | 8.476 | 8.666 | 265.59M/s | -1 | ok |
+| json-conformance |  | cajeta | stdlib | 14 | 0.025 | 0.027 | 550.57K/s | 864 | ok |
+| base64-encode |  | cajeta | stdlib | 1048576 | 10.871 | 10.941 | 96.46M/s | 136556 | ok |
+| base64-decode |  | cajeta | stdlib | 1048576 | 11.726 | 12.056 | 89.42M/s | 102420 | ok |
+| json-dom |  | rust | serde_json | 631514 | 1.070 | 1.084 | 590.24M/s | -1 | ok |
+| json-dom |  | rust | simd-json | 631514 | 0.843 | 0.847 | 748.73M/s | -1 | ok |
+| json-dom |  | rust | serde_json | 1727204 | 2.261 | 2.326 | 763.80M/s | -1 | ok |
+| json-dom |  | rust | simd-json | 1727204 | 1.552 | 1.558 | 1.11G/s | -1 | ok |
+| json-dom |  | rust | serde_json | 2251051 | 4.083 | 4.099 | 551.36M/s | -1 | ok |
+| json-dom |  | rust | simd-json | 2251051 | 4.063 | 4.101 | 554.05M/s | -1 | ok |
+| json-dom |  | cpp | simdjson | 631514 | 0.086 | 0.087 | 7.33G/s | -1 | ok |
+| json-dom |  | cpp | yyjson | 631514 | 0.116 | 0.116 | 5.45G/s | -1 | ok |
+| json-dom |  | cpp | simdjson | 1727204 | 0.231 | 0.233 | 7.47G/s | -1 | ok |
+| json-dom |  | cpp | yyjson | 1727204 | 0.311 | 0.313 | 5.55G/s | -1 | ok |
+| json-dom |  | cpp | simdjson | 2251051 | 1.238 | 1.241 | 1.82G/s | -1 | ok |
+| json-dom |  | cpp | yyjson | 2251051 | 1.326 | 1.333 | 1.70G/s | -1 | ok |
+| json-dom |  | go | encoding/json | 631514 | 3.784 | 4.032 | 166.88M/s | -1 | ok |
+| json-dom |  | go | goccy/go-json | 631514 | 2.047 | 2.661 | 308.46M/s | -1 | ok |
+| json-dom |  | go | encoding/json | 1727204 | 8.150 | 9.495 | 211.93M/s | -1 | ok |
+| json-dom |  | go | goccy/go-json | 1727204 | 5.226 | 5.822 | 330.48M/s | -1 | ok |
+| json-dom |  | go | encoding/json | 2251051 | 15.770 | 17.136 | 142.74M/s | -1 | ok |
+| json-dom |  | go | goccy/go-json | 2251051 | 14.345 | 16.757 | 156.92M/s | -1 | ok |
+| json-dom |  | python | json | 631514 | 1.740 | 1.757 | 362.99M/s | -1 | ok |
+| json-dom |  | python | orjson | 631514 | 0.676 | 0.691 | 933.99M/s | -1 | ok |
+| json-dom |  | python | msgspec | 631514 | 0.896 | 0.899 | 704.94M/s | -1 | ok |
+| json-dom |  | python | ujson | 631514 | 1.094 | 1.108 | 577.12M/s | -1 | ok |
+| json-dom |  | python | json | 1727204 | 3.968 | 3.986 | 435.31M/s | -1 | ok |
+| json-dom |  | python | orjson | 1727204 | 2.047 | 2.067 | 843.57M/s | -1 | ok |
+| json-dom |  | python | msgspec | 1727204 | 2.642 | 2.686 | 653.79M/s | -1 | ok |
+| json-dom |  | python | ujson | 1727204 | 2.951 | 2.986 | 585.23M/s | -1 | ok |
+| json-dom |  | python | json | 2251051 | 31.724 | 32.537 | 70.96M/s | -1 | ok |
+| json-dom |  | python | orjson | 2251051 | 5.530 | 5.698 | 407.03M/s | -1 | ok |
+| json-dom |  | python | msgspec | 2251051 | 5.861 | 5.930 | 384.05M/s | -1 | ok |
+| json-dom |  | python | ujson | 2251051 | 8.622 | 8.800 | 261.09M/s | -1 | ok |
 | json-dom |  | java | jackson | 631514 |  |  |  | -1 | skipped |
 | json-dom |  | java | jackson | 1727204 |  |  |  | -1 | skipped |
 | json-dom |  | java | jackson | 2251051 |  |  |  | -1 | skipped |
@@ -62,83 +62,100 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| arraylist-append |  | cajeta | stdlib | 100000 | 0.963 | 1.007 | 103.84M/s | 45368 | ok |
-| hashmap-int |  | cajeta | stdlib | 50000 | 2.464 | 2.528 | 20.29M/s | 69128 | ok |
-| hashmap-string |  | cajeta | stdlib | 30000 | 11.668 | 12.590 | 2.57M/s | 338916 | ok |
-| hashset-dedup |  | cajeta | stdlib | 100000 | 3.203 | 3.286 | 31.22M/s | 46104 | ok |
-| linkedlist-insert-traverse |  | cajeta | stdlib | 40000 | 1.251 | 1.285 | 31.97M/s | 56268 | ok |
-| heap-sort |  | cajeta | stdlib | 50000 | 4.307 | 4.378 | 11.61M/s | 13684 | ok |
-| redblacktree-insert-lookup |  | cajeta | stdlib | 20000 | 3.388 | 3.481 | 5.90M/s | 25016 | ok |
+| arraylist-append |  | cajeta | stdlib | 100000 | 0.970 | 1.006 | 103.07M/s | 45368 | ok |
+| hashmap-int |  | cajeta | stdlib | 50000 | 2.460 | 2.522 | 20.32M/s | 69128 | ok |
+| hashmap-string |  | cajeta | stdlib | 30000 | 11.621 | 12.083 | 2.58M/s | 338916 | ok |
+| hashset-dedup |  | cajeta | stdlib | 100000 | 3.427 | 3.484 | 29.18M/s | 46104 | ok |
+| linkedlist-insert-traverse |  | cajeta | stdlib | 40000 | 1.282 | 1.301 | 31.21M/s | 56268 | ok |
+| heap-sort |  | cajeta | stdlib | 50000 | 4.423 | 4.575 | 11.30M/s | 13684 | ok |
+| redblacktree-insert-lookup |  | cajeta | stdlib | 20000 | 3.282 | 3.373 | 6.09M/s | 25016 | ok |
 
 ## sort
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| sort-int64 | random | cajeta | stdlib | 50000 | 3.109 | 3.133 | 16.08M/s | 11752 | ok |
+| sort-int64 | random | cajeta | stdlib | 50000 | 3.094 | 3.123 | 16.16M/s | 11752 | ok |
 | sort-int64 | ascending | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
 | sort-int64 | descending | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
 | sort-int64 | dups | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| sort-f64 |  | cajeta | stdlib | 50000 | 3.344 | 3.668 | 14.95M/s | 11752 | ok |
-| sort-stable-int64 |  | cajeta | stdlib | 50000 | 3.436 | 3.511 | 14.55M/s | 23452 | ok |
-| binary-search |  | cajeta | stdlib | 50000 | 5.255 | 5.375 | 9.51M/s | 11736 | ok |
-| sort-int64 | random | rust | std-unstable | 50000 | 0.422 | 0.435 | 118.62M/s | -1 | ok |
-| sort-int64 | ascending | rust | std-unstable | 50000 | 0.013 | 0.013 | 3.73G/s | -1 | ok |
-| sort-int64 | descending | rust | std-unstable | 50000 | 0.017 | 0.017 | 2.98G/s | -1 | ok |
-| sort-int64 | dups | rust | std-unstable | 50000 | 0.107 | 0.107 | 469.39M/s | -1 | ok |
-| sort-stable-int64 |  | rust | std-stable | 50000 | 0.737 | 0.746 | 67.87M/s | -1 | ok |
-| sort-f64 |  | rust | std-unstable | 50000 | 0.924 | 0.930 | 54.09M/s | -1 | ok |
-| sort-int64 | random | cpp | std::sort | 50000 | 1.840 | 2.140 | 27.18M/s | -1 | ok |
-| sort-int64 | random | cpp | pdqsort | 50000 | 0.718 | 0.731 | 69.65M/s | -1 | ok |
-| sort-int64 | ascending | cpp | std::sort | 50000 | 0.257 | 0.273 | 194.81M/s | -1 | ok |
-| sort-int64 | ascending | cpp | pdqsort | 50000 | 0.020 | 0.020 | 2.52G/s | -1 | ok |
-| sort-int64 | descending | cpp | std::sort | 50000 | 0.150 | 0.150 | 334.18M/s | -1 | ok |
-| sort-int64 | descending | cpp | pdqsort | 50000 | 0.041 | 0.042 | 1.21G/s | -1 | ok |
-| sort-int64 | dups | cpp | std::sort | 50000 | 0.498 | 0.506 | 100.37M/s | -1 | ok |
-| sort-int64 | dups | cpp | pdqsort | 50000 | 0.078 | 0.078 | 640.15M/s | -1 | ok |
-| sort-stable-int64 |  | cpp | std::stable_sort | 50000 | 2.056 | 2.107 | 24.32M/s | -1 | ok |
-| sort-f64 |  | cpp | std::sort | 50000 | 2.246 | 2.286 | 22.26M/s | -1 | ok |
-| sort-int64 | random | go | slices.Sort | 50000 | 2.261 | 2.770 | 22.12M/s | -1 | ok |
-| sort-int64 | ascending | go | slices.Sort | 50000 | 0.017 | 0.031 | 2.93G/s | -1 | ok |
-| sort-int64 | descending | go | slices.Sort | 50000 | 0.026 | 0.041 | 1.90G/s | -1 | ok |
-| sort-int64 | dups | go | slices.Sort | 50000 | 0.092 | 0.101 | 541.28M/s | -1 | ok |
-| sort-stable-int64 |  | go | slices.SortStableFunc | 50000 | 6.151 | 6.822 | 8.13M/s | -1 | ok |
-| sort-f64 |  | go | slices.Sort | 50000 | 2.778 | 2.814 | 18.00M/s | -1 | ok |
-| sort-int64 | random | python | Timsort | 50000 | 7.438 | 7.548 | 6.72M/s | -1 | ok |
-| sort-int64 | ascending | python | Timsort | 50000 | 0.106 | 0.110 | 470.94M/s | -1 | ok |
-| sort-int64 | descending | python | Timsort | 50000 | 0.110 | 0.112 | 454.76M/s | -1 | ok |
-| sort-int64 | dups | python | Timsort | 50000 | 0.807 | 0.815 | 61.92M/s | -1 | ok |
-| sort-stable-int64 |  | python | Timsort | 50000 | 7.534 | 7.659 | 6.64M/s | -1 | ok |
-| sort-f64 |  | python | Timsort | 50000 | 4.563 | 4.621 | 10.96M/s | -1 | ok |
+| sort-f64 |  | cajeta | stdlib | 50000 | 3.305 | 3.329 | 15.13M/s | 11752 | ok |
+| sort-stable-int64 |  | cajeta | stdlib | 50000 | 3.469 | 3.543 | 14.41M/s | 23452 | ok |
+| binary-search |  | cajeta | stdlib | 50000 | 5.307 | 5.323 | 9.42M/s | 11736 | ok |
+| sort-int64 | random | rust | std-unstable | 50000 | 0.371 | 0.382 | 134.70M/s | -1 | ok |
+| sort-int64 | ascending | rust | std-unstable | 50000 | 0.012 | 0.012 | 4.19G/s | -1 | ok |
+| sort-int64 | descending | rust | std-unstable | 50000 | 0.015 | 0.015 | 3.35G/s | -1 | ok |
+| sort-int64 | dups | rust | std-unstable | 50000 | 0.095 | 0.095 | 526.71M/s | -1 | ok |
+| sort-stable-int64 |  | rust | std-stable | 50000 | 0.651 | 0.659 | 76.84M/s | -1 | ok |
+| sort-f64 |  | rust | std-unstable | 50000 | 0.828 | 0.837 | 60.41M/s | -1 | ok |
+| sort-int64 | random | cpp | std::sort | 50000 | 1.821 | 1.850 | 27.46M/s | -1 | ok |
+| sort-int64 | random | cpp | pdqsort | 50000 | 0.726 | 0.733 | 68.88M/s | -1 | ok |
+| sort-int64 | ascending | cpp | std::sort | 50000 | 0.259 | 0.261 | 193.01M/s | -1 | ok |
+| sort-int64 | ascending | cpp | pdqsort | 50000 | 0.020 | 0.020 | 2.55G/s | -1 | ok |
+| sort-int64 | descending | cpp | std::sort | 50000 | 0.150 | 0.151 | 333.02M/s | -1 | ok |
+| sort-int64 | descending | cpp | pdqsort | 50000 | 0.041 | 0.041 | 1.22G/s | -1 | ok |
+| sort-int64 | dups | cpp | std::sort | 50000 | 0.489 | 0.494 | 102.15M/s | -1 | ok |
+| sort-int64 | dups | cpp | pdqsort | 50000 | 0.078 | 0.078 | 644.36M/s | -1 | ok |
+| sort-stable-int64 |  | cpp | std::stable_sort | 50000 | 2.021 | 2.027 | 24.75M/s | -1 | ok |
+| sort-f64 |  | cpp | std::sort | 50000 | 2.228 | 2.264 | 22.44M/s | -1 | ok |
+| sort-int64 | random | go | slices.Sort | 50000 | 2.258 | 2.312 | 22.14M/s | -1 | ok |
+| sort-int64 | ascending | go | slices.Sort | 50000 | 0.014 | 0.016 | 3.56G/s | -1 | ok |
+| sort-int64 | descending | go | slices.Sort | 50000 | 0.021 | 0.022 | 2.34G/s | -1 | ok |
+| sort-int64 | dups | go | slices.Sort | 50000 | 0.106 | 0.125 | 473.85M/s | -1 | ok |
+| sort-stable-int64 |  | go | slices.SortStableFunc | 50000 | 6.207 | 6.252 | 8.06M/s | -1 | ok |
+| sort-f64 |  | go | slices.Sort | 50000 | 2.751 | 2.767 | 18.18M/s | -1 | ok |
+| sort-int64 | random | python | Timsort | 50000 | 7.407 | 7.478 | 6.75M/s | -1 | ok |
+| sort-int64 | ascending | python | Timsort | 50000 | 0.104 | 0.106 | 480.70M/s | -1 | ok |
+| sort-int64 | descending | python | Timsort | 50000 | 0.110 | 0.111 | 456.09M/s | -1 | ok |
+| sort-int64 | dups | python | Timsort | 50000 | 0.787 | 0.792 | 63.57M/s | -1 | ok |
+| sort-stable-int64 |  | python | Timsort | 50000 | 7.435 | 7.573 | 6.72M/s | -1 | ok |
+| sort-f64 |  | python | Timsort | 50000 | 4.598 | 4.652 | 10.88M/s | -1 | ok |
 
 ## string
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| string-build-concat |  | cajeta | stdlib | 4000 | 10.117 | 12.379 | 395.38K/s | 1891392 | ok |
-| string-search |  | cajeta | stdlib | 360448 | 0.211 | 0.211 | 1.71G/s | 0 | ok |
-| string-replace |  | cajeta | stdlib | 360448 | 1.016 | 1.034 | 354.89M/s | 18800 | ok |
-| string-uppercase |  | cajeta | stdlib | 360448 | 0.278 | 0.283 | 1.30G/s | 17604 | ok |
+| string-build-concat |  | cajeta | stdlib | 4000 | 10.049 | 13.023 | 398.07K/s | 1891392 | ok |
+| string-search |  | cajeta | stdlib | 360448 | 0.139 | 0.211 | 2.60G/s | 0 | ok |
+| string-replace |  | cajeta | stdlib | 360448 | 1.016 | 1.025 | 354.73M/s | 18800 | ok |
+| string-uppercase |  | cajeta | stdlib | 360448 | 0.256 | 0.260 | 1.41G/s | 17604 | ok |
+| string-search |  | rust | std-find | 360448 | 0.023 | 0.023 | 15.69G/s | -1 | ok |
+| string-search |  | rust | memchr | 360448 | 0.008 | 0.008 | 44.75G/s | -1 | ok |
+| string-replace |  | rust | std-replace | 360448 | 0.111 | 0.112 | 3.26G/s | -1 | ok |
+| string-uppercase |  | rust | std-to_uppercase | 360448 | 0.016 | 0.016 | 22.57G/s | -1 | ok |
+| string-build-concat |  | rust | String::push_str | 4000 | 0.000 | 0.000 | 10.81G/s | -1 | ok |
+| string-search |  | cpp | std::string::find | 360448 | 0.030 | 0.030 | 12.10G/s | -1 | ok |
+| string-replace |  | cpp | std find-loop | 360448 | 0.096 | 0.114 | 3.76G/s | -1 | ok |
+| string-uppercase |  | cpp | ascii-toupper | 360448 | 0.355 | 0.357 | 1.02G/s | -1 | ok |
+| string-build-concat |  | cpp | std::string += | 4000 | 0.002 | 0.002 | 2.35G/s | -1 | ok |
+| string-search |  | go | strings.Index | 360448 | 0.050 | 0.050 | 7.26G/s | -1 | ok |
+| string-replace |  | go | strings.ReplaceAll | 360448 | 0.123 | 0.172 | 2.92G/s | -1 | ok |
+| string-uppercase |  | go | strings.ToUpper | 360448 | 0.377 | 0.387 | 957.19M/s | -1 | ok |
+| string-build-concat |  | go | strings.Builder | 4000 | 0.001 | 0.004 | 2.94G/s | -1 | ok |
+| string-search |  | python | str.find | 360448 | 0.044 | 0.044 | 8.17G/s | -1 | ok |
+| string-replace |  | python | str.replace | 360448 | 0.336 | 0.338 | 1.07G/s | -1 | ok |
+| string-uppercase |  | python | str.upper | 360448 | 0.071 | 0.071 | 5.09G/s | -1 | ok |
+| string-build-concat |  | python | str.join | 4000 | 0.010 | 0.010 | 402.50M/s | -1 | ok |
 
 ## hash
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| xxhash3 |  | cajeta | stdlib | 1048576 | 0.026 | 0.026 | 40.47G/s | 0 | ok |
+| xxhash3 |  | cajeta | stdlib | 1048576 | 0.023 | 0.024 | 44.71G/s | 0 | ok |
 | siphash |  | cajeta | stdlib | 1048576 | 0.246 | 0.247 | 4.26G/s | 0 | ok |
-| sha256 |  | cajeta | stdlib | 1048576 | 2.244 | 2.277 | 467.21M/s | 0 | ok |
-| md5 |  | cajeta | stdlib | 1048576 | 1.723 | 1.732 | 608.57M/s | 0 | ok |
-| xxhash3 |  | rust | xxhash-rust | 1048576 | 0.029 | 0.029 | 35.74G/s | -1 | ok |
-| sha256 |  | rust | sha2 | 1048576 | 0.420 | 0.423 | 2.50G/s | -1 | ok |
-| md5 |  | rust | md-5 | 1048576 | 1.252 | 1.256 | 837.30M/s | -1 | ok |
-| xxhash3 |  | cpp | xxHash | 1048576 | 0.009 | 0.009 | 114.64G/s | -1 | ok |
-| sha256 |  | cpp | openssl | 1048576 | 0.538 | 0.541 | 1.95G/s | -1 | ok |
-| md5 |  | cpp | openssl | 1048576 | 0.936 | 1.089 | 1.12G/s | -1 | ok |
-| xxhash3 |  | go | zeebo/xxh3 | 1048576 | 0.020 | 0.020 | 51.97G/s | -1 | ok |
-| sha256 |  | go | crypto/sha256 | 1048576 | 0.419 | 0.422 | 2.50G/s | -1 | ok |
-| md5 |  | go | crypto/md5 | 1048576 | 0.937 | 0.938 | 1.12G/s | -1 | ok |
-| xxhash3 |  | python | xxhash | 1048576 | 0.023 | 0.023 | 45.21G/s | -1 | ok |
-| sha256 |  | python | hashlib | 1048576 | 0.420 | 0.422 | 2.50G/s | -1 | ok |
-| md5 |  | python | hashlib | 1048576 | 0.936 | 0.938 | 1.12G/s | -1 | ok |
+| sha256 |  | cajeta | stdlib | 1048576 | 2.247 | 2.270 | 466.62M/s | 0 | ok |
+| md5 |  | cajeta | stdlib | 1048576 | 1.643 | 1.650 | 638.32M/s | 0 | ok |
+| xxhash3 |  | rust | xxhash-rust | 1048576 | 0.025 | 0.025 | 41.27G/s | -1 | ok |
+| sha256 |  | rust | sha2 | 1048576 | 0.472 | 0.475 | 2.22G/s | -1 | ok |
+| md5 |  | rust | md-5 | 1048576 | 1.402 | 1.404 | 748.04M/s | -1 | ok |
+| xxhash3 |  | cpp | xxHash | 1048576 | 0.008 | 0.008 | 125.80G/s | -1 | ok |
+| sha256 |  | cpp | openssl | 1048576 | 0.470 | 0.473 | 2.23G/s | -1 | ok |
+| md5 |  | cpp | openssl | 1048576 | 1.046 | 1.046 | 1.00G/s | -1 | ok |
+| xxhash3 |  | go | zeebo/xxh3 | 1048576 | 0.018 | 0.018 | 59.50G/s | -1 | ok |
+| sha256 |  | go | crypto/sha256 | 1048576 | 0.468 | 0.471 | 2.24G/s | -1 | ok |
+| md5 |  | go | crypto/md5 | 1048576 | 1.040 | 1.041 | 1.01G/s | -1 | ok |
+| xxhash3 |  | python | xxhash | 1048576 | 0.023 | 0.023 | 45.33G/s | -1 | ok |
+| sha256 |  | python | hashlib | 1048576 | 0.417 | 0.417 | 2.52G/s | -1 | ok |
+| md5 |  | python | hashlib | 1048576 | 0.925 | 0.929 | 1.13G/s | -1 | ok |
 | siphash |  | rust | siphash | 1048576 |  |  |  | -1 | skipped |
 | siphash |  | cpp | siphash | 1048576 |  |  |  | -1 | skipped |
 | siphash |  | go | siphash | 1048576 |  |  |  | -1 | skipped |
@@ -148,35 +165,47 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| stream-filter-map-reduce |  | cajeta | stdlib | 1000000 | 73.834 | 77.582 | 13.54M/s | 0 | ok |
-| stream-parallel-reduce |  | cajeta | stdlib | 1000000 | 32.444 | 34.879 | 30.82M/s | 0 | ok |
+| stream-filter-map-reduce |  | cajeta | stdlib | 1000000 | 75.968 | 79.064 | 13.16M/s | 0 | ok |
+| stream-parallel-reduce |  | cajeta | stdlib | 1000000 | 32.615 | 34.476 | 30.66M/s | 0 | ok |
 
 ## math
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| saxpy |  | cajeta | stdlib | 1000000 | 0.597 | 0.609 | 1.67G/s | 0 | ok |
-| dot-product |  | cajeta | stdlib | 1000000 | 0.452 | 0.466 | 2.21G/s | 0 | ok |
-| matmul |  | cajeta | stdlib | 40000 | 2.947 | 2.977 | 13.57M/s | 0 | ok |
+| saxpy |  | cajeta | stdlib | 1000000 | 0.585 | 0.594 | 1.71G/s | 0 | ok |
+| dot-product |  | cajeta | stdlib | 1000000 | 0.391 | 0.393 | 2.56G/s | 0 | ok |
+| matmul |  | cajeta | stdlib | 40000 | 2.827 | 2.934 | 14.15M/s | 0 | ok |
+| saxpy |  | rust | scalar | 1000000 | 0.588 | 0.613 | 1.70G/s | -1 | ok |
+| dot-product |  | rust | scalar | 1000000 | 0.391 | 0.395 | 2.56G/s | -1 | ok |
+| matmul |  | rust | scalar | 40000 | 2.300 | 2.311 | 17.40M/s | -1 | ok |
+| saxpy |  | cpp | scalar | 1000000 | 0.407 | 0.416 | 2.46G/s | -1 | ok |
+| dot-product |  | cpp | scalar | 1000000 | 0.643 | 0.649 | 1.56G/s | -1 | ok |
+| matmul |  | cpp | scalar | 40000 | 2.461 | 2.465 | 16.26M/s | -1 | ok |
+| saxpy |  | go | scalar | 1000000 | 0.463 | 0.467 | 2.16G/s | -1 | ok |
+| dot-product |  | go | scalar | 1000000 | 0.457 | 0.461 | 2.19G/s | -1 | ok |
+| matmul |  | go | scalar | 40000 | 3.367 | 3.386 | 11.88M/s | -1 | ok |
+| saxpy |  | python | numpy | 1000000 | 0.412 | 0.437 | 2.43G/s | -1 | ok |
+| dot-product |  | python | numpy | 1000000 | 0.010 | 0.011 | 98.14G/s | -1 | ok |
+| matmul |  | python | numpy | 40000 | 0.075 | 0.079 | 533.40M/s | -1 | ok |
 
 ## clbg
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| clbg-mandelbrot |  | cajeta | stdlib | 640000 | 28.666 | 28.793 | 22.33M/s | 0 | ok |
-| clbg-fannkuch-redux |  | cajeta | stdlib | 10 | 161.585 | 163.055 | 62/s | 0 | ok |
-| clbg-spectral-norm |  | cajeta | stdlib | 100 | 3.508 | 3.594 | 28.51K/s | 0 | ok |
+| clbg-mandelbrot |  | cajeta | stdlib | 640000 | 28.672 | 28.723 | 22.32M/s | 0 | ok |
+| clbg-fannkuch-redux |  | cajeta | stdlib | 10 | 160.856 | 161.830 | 62/s | 0 | ok |
+| clbg-spectral-norm |  | cajeta | stdlib | 100 | 3.603 | 3.619 | 27.75K/s | 0 | ok |
 
 ## time
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| time-instant-arith |  | cajeta | stdlib | 1000000 | 51.077 | 52.281 | 19.58M/s | 0 | ok |
-| time-localdate-arith |  | cajeta | stdlib | 100000 | 5.100 | 5.115 | 19.61M/s | 0 | ok |
+| time-instant-arith |  | cajeta | stdlib | 1000000 | 50.023 | 50.449 | 19.99M/s | 0 | ok |
+| time-localdate-arith |  | cajeta | stdlib | 100000 | 5.044 | 5.052 | 19.83M/s | 0 | ok |
 
 ## concurrent
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| atomic-fetchadd |  | cajeta | stdlib | 1000000 | 9.522 | 9.677 | 105.02M/s | 0 | ok |
-| task-spawn-await |  | cajeta | stdlib | 20000 | 190.893 | 214.373 | 104.77K/s | 0 | ok |
+| atomic-fetchadd |  | cajeta | stdlib | 1000000 | 9.477 | 9.497 | 105.52M/s | 0 | ok |
+| task-spawn-await |  | cajeta | stdlib | 20000 | 177.467 | 181.260 | 112.70K/s | 0 | ok |
