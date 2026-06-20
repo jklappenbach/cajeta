@@ -29,7 +29,10 @@ public class LinkedListBench extends Benchmark {
     }
 
     public void setup() {
-        this.n = 50000;
+        // Each node is a separate heap allocation; keep the live count under the
+        // runtime's live-allocation tracking cap (49152) so --release (bounded)
+        // doesn't stop tracking mid-run. See reference_live_set_cap memory.
+        this.n = 40000;
     }
 
     public int64 inputSize() {

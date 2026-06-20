@@ -1,0 +1,65 @@
+package profile.sort;
+
+import cajeta.collection.Sort;
+
+import profile.Benchmark;
+
+// Binary search throughput: build a sorted array (a[i] = 2*i), then run N
+// searches for keys that all exist. Cross-check: every search finds its key
+// (found count == N).
+public class BinarySearchBench extends Benchmark {
+
+    public int32 n;
+    public int64 found;
+
+    public String name() {
+        return "binary-search";
+    }
+
+    public String area() {
+        return "sort";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 50000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        int64[] a = heap int64[this.n];
+        int32 i = 0;
+        while (i < this.n) {
+            a[i] = (int64) (i * 2);
+            i = i + 1;
+        }
+        int64 hits = 0;
+        int64 x = 12345;
+        int64 nn = (int64) this.n;
+        int32 m = 0;
+        while (m < this.n) {
+            x = (x * 1103515245 + 12345) & 0x7FFFFFFF;
+            int64 key = (x % nn) * 2;
+            int32 idx = Sort.binarySearch<int64>(a, this.n, key);
+            if (idx >= 0) {
+                hits = hits + 1;
+            }
+            m = m + 1;
+        }
+        this.found = hits;
+    }
+
+    public boolean checkResult() {
+        return this.found == (int64) this.n;
+    }
+}

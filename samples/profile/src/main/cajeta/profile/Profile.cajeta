@@ -22,6 +22,10 @@ import profile.collection.HashSetDedupBench;
 import profile.collection.LinkedListBench;
 import profile.collection.HeapSortBench;
 import profile.collection.RedBlackTreeBench;
+import profile.sort.SortInt64Bench;
+import profile.sort.SortF64Bench;
+import profile.sort.SortStableBench;
+import profile.sort.BinarySearchBench;
 import profile.report.Result;
 import profile.report.Report;
 import profile.report.Memory;
@@ -65,6 +69,11 @@ public final class Profile {
         benchmarks.add(heap LinkedListBench());
         benchmarks.add(heap HeapSortBench());
         benchmarks.add(heap RedBlackTreeBench());
+        // -- sort area (Unit 7) --
+        benchmarks.add(heap SortInt64Bench());
+        benchmarks.add(heap SortF64Bench());
+        benchmarks.add(heap SortStableBench());
+        benchmarks.add(heap BinarySearchBench());
 
         // Parse the minimal flags so far. (Full selection — --area, --bench,
         // --lang, --no-report — lands in Unit 17.)
