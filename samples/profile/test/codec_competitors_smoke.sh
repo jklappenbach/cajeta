@@ -45,7 +45,7 @@ while IFS= read -r row; do
         [[ "$min" =~ ^[0-9]+$ && "$min" -gt 0 ]] || fail "ok row min_ns not positive: $row"
         [[ "$thr" =~ ^[0-9.]+$ ]]                || fail "ok row throughput not numeric: $row"
         [[ "$chk" == "true" ]]                   || fail "ok row failed element-count cross-check: $row"
-    elif [[ "$status" == "skip" ]]; then
+    elif [[ "$status" == "skipped" ]]; then
         # skip rows must carry a human reason in notes (col 30)
         note="$(printf '%s' "$row" | awk -F, '{print $30}')"
         [[ -n "$note" ]] || fail "skip row missing reason: $row"

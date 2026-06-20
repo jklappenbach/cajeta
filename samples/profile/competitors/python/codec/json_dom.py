@@ -62,7 +62,7 @@ def skip_row(run_id, ts, dataset, nbytes, lib, reason):
     pyver = env("PROFILE_LANG_VERSION", "")
     return (
         f"1,{run_id},{ts},json-dom,codec,{dataset},{nbytes},,{nbytes},python,{pyver},"
-        f"{lib},,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skip,,{reason},"
+        f"{lib},,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,{reason},"
     )
 
 

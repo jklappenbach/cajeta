@@ -46,7 +46,7 @@ def skip_row(run_id, ts, bench, lib, reason):
     pyver = env("PROFILE_LANG_VERSION", "")
     return (
         f"1,{run_id},{ts},{bench},hash,,{N},,{N},python,{pyver},{lib},,,0,0,"
-        f"-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skip,,{reason},"
+        f"-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,{reason},"
     )
 
 

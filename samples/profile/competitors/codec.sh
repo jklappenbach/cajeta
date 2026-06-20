@@ -33,7 +33,7 @@ skip_lang() {
     for entry in "${CORPUS[@]}"; do
         name="${entry%% *}"; file="${entry##* }"
         bytes=-1; [[ -f "$DATA_DIR/$file" ]] && bytes="$(stat -c%s "$DATA_DIR/$file")"
-        echo "1,${rid},${ts},json-dom,codec,${name},${bytes},,${bytes},${lang},,${lib},,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skip,,${reason},"
+        echo "1,${rid},${ts},json-dom,codec,${name},${bytes},,${bytes},${lang},,${lib},,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,${reason},"
     done
 }
 

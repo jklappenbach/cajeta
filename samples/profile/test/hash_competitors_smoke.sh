@@ -34,7 +34,7 @@ while IFS= read -r row; do
         chk="$(printf '%s' "$row" | awk -F, '{print $29}')"
         [[ "$min" =~ ^[0-9]+$ && "$min" -gt 0 ]] || fail "ok row min_ns not positive: $row"
         [[ "$chk" == "true" ]]                   || fail "ok row failed reference-digest cross-check: $row"
-    elif [[ "$status" == "skip" ]]; then
+    elif [[ "$status" == "skipped" ]]; then
         note="$(printf '%s' "$row" | awk -F, '{print $30}')"
         [[ -n "$note" ]] || fail "skip row missing reason: $row"
     else
@@ -44,7 +44,7 @@ done <<< "$OUT"
 
 # (2) siphash is a skip for every language (no portable matching-key SipHash).
 echo "$OUT" | awk -F, '$4=="siphash"' | grep -q . || fail "no siphash rows emitted"
-echo "$OUT" | awk -F, '$4=="siphash" && $28!="skip"' | grep -q . && fail "siphash should be skip-only"
+echo "$OUT" | awk -F, '$4=="siphash" && $28!="skipped"' | grep -q . && fail "siphash should be skip-only"
 
 # (3) the always-present languages (rust + python) produced measured, cross-checked rows
 #     for all three real algorithms.

@@ -28,7 +28,7 @@ skip_lang() {
     local lang="$1" lib="$2" reason="$3"
     local rid="${PROFILE_RUN_ID:-local}" ts="${PROFILE_RUN_TS:-}" b
     for b in $BENCHES; do
-        echo "1,${rid},${ts},${b},hash,,${N},,${N},${lang},,${lib},,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skip,,${reason},"
+        echo "1,${rid},${ts},${b},hash,,${N},,${N},${lang},,${lib},,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,${reason},"
     done
 }
 
@@ -36,7 +36,7 @@ skip_lang() {
 siphash_skip() {
     local rid="${PROFILE_RUN_ID:-local}" ts="${PROFILE_RUN_TS:-}" lang
     for lang in $LANGS; do
-        echo "1,${rid},${ts},siphash,hash,,${N},,${N},${lang},,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skip,,no portable cross-language SipHash with a matching key,"
+        echo "1,${rid},${ts},siphash,hash,,${N},,${N},${lang},,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,"
     done
 }
 
