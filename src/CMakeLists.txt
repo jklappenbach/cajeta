@@ -618,6 +618,14 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
+        # cajeta.ifx (ifx platform facade): the full pure-logic surface — contract
+        # value types (IfxInfo/Surface/Window/WindowEvent/InputDevice/AudioStream +
+        # Feature/Permission/PermissionState/LifecyclePhase), the Backend SPI
+        # (Backend + Window/Input/AudioBackend), the always-present Null* floor,
+        # BackendRegistry (+ its instance() singleton) and IfxException. All
+        # pure Cajeta — no @Native/intrinsics — so the whole dir is eager-safe.
+        # The OS window/input/audio backends are EXTERNAL (cajeta-ifx-* repos).
+        ${CAJETA_STDLIB_ROOT}/cajeta/ifx
         # ── cajeta.io.net (cajeta-net branch, NET-* plan) — PURE-LOGIC SLICE.
         # Only directories whose .cajeta sources are pure logic (no socket /
         # reactor intrinsic calls) are eagerly compiled here. The socket-backed

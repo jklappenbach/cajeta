@@ -1,0 +1,21 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * AudioSink — the recording seam for the audio mix (spec §7), the audio sibling of {@link VideoSink}.
+ * Consumes the interleaved PCM the app mixes and writes it to a recording. ifx defines only the seam;
+ * the royalty-free reference fallback is {@link WavAudioSink}, and the real capture/replay is the
+ * external {@code cajeta-ifx-harness}. Selection mirrors the video seam (registry + probe + priority +
+ * {@code CAJETA_IFX_VIDEO}), handled where the recording is wired up.
+ */
+public interface AudioSink {
+    /** Begin capturing at the given sample rate + channel count; true if the sink opened. */
+    public boolean open(uint32 sampleRate, uint32 channels);
+    /** Append one buffer of interleaved PCM frames (borrowed). */
+    public void writeSamples(float32[] frames);
+    /** Finish and flush the recording. */
+    public void close();
+    /** Stable sink name / format tag, e.g. "wav" | "harness". */
+    public String name();
+}

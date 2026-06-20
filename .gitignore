@@ -83,5 +83,6 @@ tools/cajetadoc/flagged.json
 # specs elsewhere. Plans stay private.
 agents/
 *-spec.md
+!docs/specs/*-spec.md
 *-plan.md
 !docs/**/*-spec.md

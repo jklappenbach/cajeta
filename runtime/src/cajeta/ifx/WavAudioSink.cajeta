@@ -1,0 +1,47 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * WavAudioSink — the stdlib royalty-free fallback {@link AudioSink} (spec §7): the audio mix → a
+ * WAV/PCM file, no licensed codec. Like {@link PngSequenceVideoSink} this stdlib reference is
+ * intentionally MINIMAL — it records the stream format and counts the sample-buffers that pass
+ * through the seam while open, proving the contract; the real WAV byte-writing ships in
+ * {@code cajeta-ifx-harness}. {@code name()} == {@code "wav"}.
+ */
+public final class WavAudioSink implements AudioSink {
+    private uint32  rate;
+    private uint32  channelCount;
+    private int32   buffers;
+    private boolean recording;
+
+    public WavAudioSink() {
+        this.rate = 0;
+        this.channelCount = 0;
+        this.buffers = 0;
+        this.recording = false;
+    }
+
+    public boolean open(uint32 sampleRate, uint32 channels) {
+        this.rate = sampleRate;
+        this.channelCount = channels;
+        this.buffers = 0;
+        this.recording = true;
+        return true;
+    }
+
+    // Sample-buffers only count while open: writes before open() / after close() are dropped.
+    public void writeSamples(float32[] frames) {
+        if (this.recording) { this.buffers = this.buffers + 1; }
+    }
+
+    public void close() { this.recording = false; }
+
+    public String name() { return "wav"; }
+
+    // Observable recording state (reference fallback / tests).
+    public int32   bufferCount()  { return this.buffers; }
+    public uint32  sampleRate()   { return this.rate; }
+    public uint32  channels()     { return this.channelCount; }
+    public boolean isRecording()  { return this.recording; }
+}

@@ -1843,8 +1843,19 @@ namespace cajeta {
             // primitive elements load their own LLVM type; reference elements load `ptr`.
             CajetaTypePtr elemType = idx->getResolvedType();
             if (elemType) {
+                auto elemClass = dynamic_pointer_cast<CajetaClass>(elemType);
+                bool elemIsInterface = elemClass && elemClass->isInterface();
                 llvm::Type* loadTy;
-                if (dynamic_pointer_cast<CajetaArray>(elemType) ||
+                if (elemIsInterface) {
+                    // Interface element: the GEP points AT the inline 24-byte
+                    // fat-pointer body, and the by-value return ABI wants that
+                    // body STRUCT. Load it directly (a single load). The
+                    // reference-element path (loadTy=ptr) would load only the
+                    // data word, and the return coercion below would then deref
+                    // that as a body → garbage vtable → crash. (`return
+                    // this.data[i]` in ArrayList<SomeInterface>.get is the case.)
+                    loadTy = elemType->getLlvmType();
+                } else if (dynamic_pointer_cast<CajetaArray>(elemType) ||
                     (elemType->getTypeFlags() & STRUCT_FLAG)) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 } else {

@@ -1,0 +1,26 @@
+package cajeta.ifx;
+
+/**
+ * WindowEvent — a single portable window/input event value type. The common core every OS delivers
+ * (key/mouse/resize/close); OS-exclusive quirks ride capability-gated extensions, never this struct.
+ * Keyboard/mouse arrive here through the window's event queue; gamepads come from InputDevice.
+ */
+public final class WindowEvent {
+    int32   type;     // 0 NONE · 1 KEY_DOWN · 2 KEY_UP · 3 MOUSE_MOVE · 4 MOUSE_BTN · 5 RESIZE · 6 CLOSE
+    int32   code;     // key / button code
+    float32 x;        // cursor position or delta
+    float32 y;
+    uint32  width;    // for RESIZE
+    uint32  height;
+
+    public WindowEvent(int32 type, int32 code, float32 x, float32 y, uint32 width, uint32 height) {
+        this.type = type;
+        this.code = code;
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+    }
+
+    public int32 eventType() { return this.type; }
+}

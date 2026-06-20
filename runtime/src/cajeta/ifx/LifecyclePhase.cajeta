@@ -1,0 +1,15 @@
+package cajeta.ifx;
+
+/**
+ * LifecyclePhase — the mandatory app/surface lifecycle transitions every ifx backend must deliver.
+ * Mobile forces them (Android APP_CMD_TERM_WINDOW, iOS background); desktop emits the same shape
+ * (minimize/restore). The gfx swapchain MUST handle {@code SurfaceLost}/{@code SurfaceRecreated} —
+ * it is non-optional, because mobile breaks without it. See cajeta-gfx-spec.md §9.7.
+ * Append-only ordinals.
+ */
+public enum LifecyclePhase {
+    Suspend,            // 0 — app backgrounded / paused; stop rendering + audio
+    Resume,             // 1 — app foregrounded; resume
+    SurfaceLost,        // 2 — the present surface went away; release the swapchain
+    SurfaceRecreated    // 3 — a new surface is available; rebuild the swapchain
+}

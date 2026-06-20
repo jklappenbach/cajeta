@@ -1,0 +1,51 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * PngSequenceVideoSink — the stdlib royalty-free fallback {@link VideoSink} (spec §7): window frames
+ * → a PNG image sequence, no licensed codec. This stdlib reference is intentionally MINIMAL — it
+ * records the recording parameters and counts the frames that pass through the seam while open,
+ * proving the contract end-to-end and giving the external {@code cajeta-ifx-harness} a concrete shape
+ * to extend. The actual PNG byte-encoding to disk ships in the harness (ifx is pure-Cajeta and stdlib
+ * carries no encoder). {@code name()} == {@code "png-sequence"}.
+ */
+public final class PngSequenceVideoSink implements VideoSink {
+    private uint32  recordWidth;
+    private uint32  recordHeight;
+    private uint32  recordFps;
+    private int32   frames;
+    private boolean recording;
+
+    public PngSequenceVideoSink() {
+        this.recordWidth = 0;
+        this.recordHeight = 0;
+        this.recordFps = 0;
+        this.frames = 0;
+        this.recording = false;
+    }
+
+    public boolean open(uint32 width, uint32 height, uint32 fps) {
+        this.recordWidth = width;
+        this.recordHeight = height;
+        this.recordFps = fps;
+        this.frames = 0;
+        this.recording = true;
+        return true;
+    }
+
+    // Frames only count while the recording is open: writes before open() / after close() are dropped.
+    public void writeFrame(int8[] rgba) {
+        if (this.recording) { this.frames = this.frames + 1; }
+    }
+
+    public void close() { this.recording = false; }
+
+    public String name() { return "png-sequence"; }
+
+    // Observable recording state (reference fallback / tests).
+    public int32   frameCount()     { return this.frames; }
+    public uint32  recordedWidth()  { return this.recordWidth; }
+    public uint32  recordedHeight() { return this.recordHeight; }
+    public boolean isRecording()    { return this.recording; }
+}

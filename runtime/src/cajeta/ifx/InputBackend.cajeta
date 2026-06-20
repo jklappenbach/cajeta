@@ -1,0 +1,14 @@
+package cajeta.ifx;
+
+/**
+ * InputBackend — the extended-input (gamepad) provider. Keyboard/mouse arrive as {@link WindowEvent}s
+ * through the window queue; gamepads come from a separate OS API (XInput / GameInput / evdev /
+ * GameController / Paddleboat), so they have their own backend. The {@link NullInputBackend} is the
+ * empty floor (no devices).
+ */
+public interface InputBackend extends Backend {
+    public int32 gamepadCount();
+    public InputDevice gamepad(int32 index);
+    public boolean buttonDown(InputDevice d, int32 button);
+    public float32 axis(InputDevice d, int32 axis);
+}

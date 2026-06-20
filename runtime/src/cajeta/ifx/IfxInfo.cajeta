@@ -1,0 +1,71 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * IfxInfo — anchor type and app-facing facade for the {@code cajeta.ifx} package (the
+ * interface-framework facade for window / input / audio). Eager stdlib package.
+ *
+ * An IfxInfo VALUE (from {@link #describe}) is a snapshot of the active per-domain backend bind —
+ * which backend `ifx` selected for window / input / audio this launch. The static members are the
+ * app-facing facade (version, capability feature-detection).
+ *
+ * cajeta.ifx is a PORTABLE CONTRACT only — no FFI, no OS code. OS backends (cajeta-ifx-*) and the
+ * capture/replay harness are external libraries that implement the contracts here and register
+ * through the backend registry. See documents/cajeta-gfx/cajeta-gfx-spec.md §9.
+ */
+public final class IfxInfo {
+    // Snapshot of the bound backend per domain (the name() of the selected backend).
+    private String windowName;
+    private String inputName;
+    private String audioName;
+
+    private IfxInfo(String window, String input, String audio) {
+        this.windowName = window;
+        this.inputName = input;
+        this.audioName = audio;
+    }
+
+    public static int32 version() {
+        return 1;   // v0.1 — facade surface revision
+    }
+
+    /**
+     * Snapshot the active per-domain backend bind from the shared registry. HEADLESS-TOLERANT: it
+     * uses the headless window bind, so a describe() on a floor-only setup reports the {@code "null"}
+     * floor name rather than raising the interactive loud-error — describing what's bound must never
+     * throw. The null floor is always auto-registered (see {@link BackendRegistry#instance}), so each
+     * domain resolves to a real backend or the floor, never null.
+     */
+    public static #IfxInfo describe() {
+        BackendRegistry registry = BackendRegistry.instance();
+        WindowBackend window = registry.selectWindow(true);
+        InputBackend  input  = registry.selectInput();
+        AudioBackend  audio  = registry.selectAudio();
+        return heap IfxInfo(window.name(), input.name(), audio.name());
+    }
+
+    /** Name of the backend bound for the window domain in this snapshot (e.g. "win32" | "null"). */
+    public String windowBackendName() { return this.windowName; }
+    /** Name of the backend bound for the input domain in this snapshot. */
+    public String inputBackendName()  { return this.inputName; }
+    /** Name of the backend bound for the audio domain in this snapshot. */
+    public String audioBackendName()  { return this.audioName; }
+
+    // ── Capability feature-detection (spec §6). Top-level facade over BackendRegistry: an app asks
+    // ifx whether the *bound* backend for a domain provides an optional Feature, and programs to the
+    // floor for the rest. With no OS backend linked, every optional feature is unsupported.
+
+    /** Does the bound window backend provide {@code feature}? */
+    public static boolean supportsWindow(Feature feature) {
+        return BackendRegistry.instance().supportsWindow(feature);
+    }
+    /** Does the bound input backend provide {@code feature}? */
+    public static boolean supportsInput(Feature feature) {
+        return BackendRegistry.instance().supportsInput(feature);
+    }
+    /** Does the bound audio backend provide {@code feature}? */
+    public static boolean supportsAudio(Feature feature) {
+        return BackendRegistry.instance().supportsAudio(feature);
+    }
+}

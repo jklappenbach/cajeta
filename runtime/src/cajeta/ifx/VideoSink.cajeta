@@ -1,0 +1,22 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * VideoSink — the recording seam for presented frames (spec §7). A recorder consumes the frames the
+ * app presents and writes them to a recording. ifx defines only the SEAM; the real encoders live
+ * OUTSIDE stdlib — the capture/replay {@code cajeta-ifx-harness} backend and optional external codec
+ * libraries implement this interface and register like any backend (selection = registry + probe +
+ * priority + {@code CAJETA_IFX_VIDEO} override, graceful/loud per §9.4). Stdlib ships only a
+ * royalty-free reference fallback ({@link PngSequenceVideoSink}); no licensed codec ships in stdlib.
+ */
+public interface VideoSink {
+    /** Begin a recording at the given drawable size + frame rate; true if the sink opened. */
+    public boolean open(uint32 width, uint32 height, uint32 fps);
+    /** Append one presented frame: tightly-packed RGBA8 pixels (width*height*4 bytes), borrowed. */
+    public void writeFrame(int8[] rgba);
+    /** Finish and flush the recording. */
+    public void close();
+    /** Stable sink name / format tag, e.g. "png-sequence" | "harness". */
+    public String name();
+}

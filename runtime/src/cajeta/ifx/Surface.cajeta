@@ -1,0 +1,28 @@
+package cajeta.ifx;
+
+/**
+ * Surface — the OPAQUE present target handed from a window backend to the gfx swapchain.
+ *
+ * It wraps a platform handle (HWND / wl_surface / CAMetalLayer / ANativeWindow) that callers NEVER
+ * inspect; the gfx swapchain backend pairs it with the matching Vulkan WSI extension. A headless
+ * surface ({@code nativeHandle == 0}) carries no OS handle — gfx renders to an offscreen image
+ * instead (servers, CI, the harness). Build-from-description, opaque, per-backend — the same noun
+ * discipline as AccelerationStructure (CajetaGPU.md §1.4).
+ */
+public final class Surface {
+    int64  nativeHandle;   // opaque; 0 == headless / offscreen
+    int32  kind;           // backend tag (win32 / wayland / xcb / metal / android / headless)
+    uint32 width;
+    uint32 height;
+
+    public Surface(int64 nativeHandle, int32 kind, uint32 width, uint32 height) {
+        this.nativeHandle = nativeHandle;
+        this.kind = kind;
+        this.width = width;
+        this.height = height;
+    }
+
+    public boolean isHeadless()     { return this.nativeHandle == 0; }
+    public uint32  surfaceWidth()   { return this.width; }
+    public uint32  surfaceHeight()  { return this.height; }
+}
