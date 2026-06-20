@@ -1,0 +1,58 @@
+package profile.time;
+
+import cajeta.time.LocalDate;
+
+import profile.Benchmark;
+
+// LocalDate arithmetic throughput: N iterations of plusDays + toEpochDay
+// (calendar math). Cross-check: the accumulated epoch-day sum is the closed form
+// 1+2+...+N == N*(N+1)/2 (starting from epoch day 0, each step lands on day i).
+public class LocalDateArithmeticBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public String name() {
+        return "time-localdate-arith";
+    }
+
+    public String area() {
+        return "time";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 100000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        // Fresh LocalDate each iteration (value-type in-place reassignment in a
+        // loop doesn't persist).
+        int64 acc = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            LocalDate d = LocalDate.ofEpochDay((int64) i);
+            LocalDate d2 = d.plusDays(1);
+            acc = acc + d2.toEpochDay();
+            i = i + 1;
+        }
+        this.result = acc;
+    }
+
+    public boolean checkResult() {
+        // sum_{i=0}^{n-1} (i + 1) = n*(n+1)/2
+        int64 nn = (int64) this.n;
+        return this.result == nn * (nn + 1) / 2;
+    }
+}

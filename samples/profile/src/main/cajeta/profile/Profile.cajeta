@@ -42,6 +42,8 @@ import profile.math.MatMulBench;
 import profile.clbg.MandelbrotBench;
 import profile.clbg.FannkuchBench;
 import profile.clbg.SpectralNormBench;
+import profile.time.InstantArithmeticBench;
+import profile.time.LocalDateArithmeticBench;
 import profile.report.Result;
 import profile.report.Report;
 import profile.report.Memory;
@@ -111,6 +113,9 @@ public final class Profile {
         benchmarks.add(heap MandelbrotBench());
         benchmarks.add(heap FannkuchBench());
         benchmarks.add(heap SpectralNormBench());
+        // -- time area (Unit 13) --
+        benchmarks.add(heap InstantArithmeticBench());
+        benchmarks.add(heap LocalDateArithmeticBench());
 
         // Parse the minimal flags so far. (Full selection — --area, --bench,
         // --lang, --no-report — lands in Unit 17.)
