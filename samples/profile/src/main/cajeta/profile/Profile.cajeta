@@ -7,6 +7,9 @@ import profile.ExampleBenchmark;
 import profile.SumBench;
 import profile.VariantBench;
 import profile.Harness;
+import profile.codec.JsonTokenizeBench;
+import profile.codec.Base64EncodeBench;
+import profile.codec.Base64DecodeBench;
 import profile.report.Result;
 import profile.report.Report;
 import profile.report.Memory;
@@ -33,6 +36,10 @@ public final class Profile {
         benchmarks.add(heap ExampleBenchmark());
         benchmarks.add(heap SumBench());
         benchmarks.add(heap VariantBench());
+        // -- codec area (Unit 5) --
+        benchmarks.add(heap JsonTokenizeBench());
+        benchmarks.add(heap Base64EncodeBench());
+        benchmarks.add(heap Base64DecodeBench());
 
         // Parse the minimal flags so far. (Full selection — --area, --bench,
         // --lang, --no-report — lands in Unit 17.)

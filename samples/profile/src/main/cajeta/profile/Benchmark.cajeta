@@ -56,6 +56,19 @@ public class Benchmark {
         return (int64) 0;
     }
 
+    // Input size in bytes/elements for the current variant (lets the report
+    // derive throughput, e.g. MB/s). -1 = not applicable.
+    public int64 inputSize() {
+        return (int64) -1;
+    }
+
+    // Whether this benchmark can run in the current environment. A dataset-backed
+    // benchmark returns false when its corpus isn't configured/fetched, so the
+    // harness records a skipped row instead of crashing on a missing file.
+    public boolean available() {
+        return true;
+    }
+
     // Variant matrix (spec §4.4/§4.5). A benchmark with parameterized inputs —
     // sort {type×pattern×prediction}, JSON {in-order/out-of-order/missing-key} —
     // returns one label per variant; the measurement loop produces one result row

@@ -16,7 +16,7 @@ fail() { echo "METHOD FAIL: $1" >&2; exit 1; }
 
 cd "$PROJ"
 echo "[method] building..."
-"$CAJETA" build >/dev/null || fail "build failed"
+"$CAJETA" release >/dev/null || fail "release build failed"  # benchmarks measured as --release (§1.4)
 
 OUT="/tmp/profile-method.csv"
 rm -f "$OUT"

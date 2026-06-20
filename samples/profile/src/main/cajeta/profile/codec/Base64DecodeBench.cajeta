@@ -1,0 +1,56 @@
+package profile.codec;
+
+import cajeta.codec.Base64;
+
+import profile.Benchmark;
+
+// Base64 decode throughput. setup() encodes a 1 MiB buffer once; each trial
+// decodes that string. The decoded length round-trips to the original size
+// (the cross-check). Self-generating, so it needs no dataset.
+public class Base64DecodeBench extends Benchmark {
+
+    public String encoded;
+    public int64 origLen;
+    public int64 decLen;
+
+    public String name() {
+        return "base64-decode";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 20;
+    }
+
+    public int32 measuredIters() {
+        return 100;
+    }
+
+    public void setup() {
+        this.origLen = 1048576;
+        int8[] d = heap int8[(int32) this.origLen];
+        int32 i = 0;
+        int32 n = (int32) this.origLen;
+        while (i < n) {
+            d[i] = (int8) ((i * 31 + 7) & 0xFF);
+            i = i + 1;
+        }
+        this.encoded = Base64.encode(d, this.origLen);
+    }
+
+    public int64 inputSize() {
+        return this.origLen;
+    }
+
+    public void run(int32 iterations) {
+        int8[] dec = Base64.decode(this.encoded);
+        this.decLen = (int64) dec.count();
+    }
+
+    public boolean checkResult() {
+        return this.decLen == this.origLen;
+    }
+}

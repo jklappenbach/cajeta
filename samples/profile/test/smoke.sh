@@ -20,7 +20,7 @@ cd "$PROJ"
 
 # (1) build → build/profile
 echo "[smoke] building..."
-"$CAJETA" build || fail "cajeta build failed"
+"$CAJETA" release || fail "cajeta release build failed"  # default mode executes all benchmarks → --release (§1.4)
 [[ -x "$PROJ/build/profile" ]] || fail "expected binary build/profile not produced"
 
 # (1) run → banner

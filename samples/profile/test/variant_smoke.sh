@@ -16,7 +16,7 @@ fail() { echo "VARIANT FAIL: $1" >&2; exit 1; }
 
 cd "$PROJ"
 echo "[variant] building..."
-"$CAJETA" build >/dev/null || fail "build failed"
+"$CAJETA" release >/dev/null || fail "release build failed"  # benchmarks measured as --release (§1.4)
 
 OUT="/tmp/profile-variant.csv"
 rm -f "$OUT"

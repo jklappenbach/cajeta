@@ -20,6 +20,11 @@ public class Harness {
     // per variant. setup() runs once; prepare(variant) builds each variant's
     // input; teardown() runs once at the end.
     public static void measureInto(Benchmark b, String runId, ArrayList<Result> rows) {
+        if (!b.available()) {
+            rows.add(Harness.skippedRow(b, runId,
+                "unavailable (dataset not configured? set PROFILE_DATA_DIR + fetch)"));
+            return;
+        }
         b.setup();
         ArrayList<String> vs = b.variants();
         int32 vi = 0;
@@ -90,6 +95,7 @@ public class Harness {
         r.area = "" + benchArea;
         r.variant = "" + variant;
         r.language = "cajeta";
+        r.inputSize = b.inputSize();
         r.warmup = warm;
         r.trials = trials;
         r.minNs = samples[0];
@@ -108,6 +114,22 @@ public class Harness {
         } else {
             r.status = "invalid";
         }
+        return r;
+    }
+
+    // A recorded skip row (never a silent omission) for a benchmark that can't
+    // run here — e.g. its dataset isn't configured.
+    public static #Result skippedRow(Benchmark b, String runId, String reason) {
+        String nm = b.name();
+        String ar = b.area();
+        Result r = heap Result();
+        r.runId = "" + runId;
+        r.benchmark = "" + nm;
+        r.area = "" + ar;
+        r.language = "cajeta";
+        r.status = "skipped";
+        r.checkOk = false;
+        r.notes = "" + reason;
         return r;
     }
 
