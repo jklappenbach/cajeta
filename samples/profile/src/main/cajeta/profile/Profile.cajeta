@@ -34,6 +34,8 @@ import profile.hash.XXHash3Bench;
 import profile.hash.SipHashBench;
 import profile.hash.Sha256Bench;
 import profile.hash.Md5Bench;
+import profile.stream.StreamPipelineBench;
+import profile.stream.StreamParallelReduceBench;
 import profile.report.Result;
 import profile.report.Report;
 import profile.report.Memory;
@@ -92,6 +94,9 @@ public final class Profile {
         benchmarks.add(heap SipHashBench());
         benchmarks.add(heap Sha256Bench());
         benchmarks.add(heap Md5Bench());
+        // -- stream area (Unit 10) --
+        benchmarks.add(heap StreamPipelineBench());
+        benchmarks.add(heap StreamParallelReduceBench());
 
         // Parse the minimal flags so far. (Full selection — --area, --bench,
         // --lang, --no-report — lands in Unit 17.)
