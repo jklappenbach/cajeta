@@ -21,10 +21,12 @@
     },
 
     "settings": {
-        // Benchmarks time workloads (clock) and write CSV results / fetch
-        // datasets (filesystem). The core stdlib is built into the toolchain
-        // and dead-code-eliminated to what the harness actually uses.
-        "capabilities": ["filesystem", "clock"],
+        // Benchmarks time workloads (clock), write CSV results / fetch datasets
+        // and read /proc for memory (filesystem), and read toolchain versions /
+        // flags / config from the environment (env: System.env.get). The core
+        // stdlib is built into the toolchain and dead-code-eliminated to what
+        // the harness actually uses.
+        "capabilities": ["filesystem", "clock", "env"],
         "dependencies": {},
 
         "build": {

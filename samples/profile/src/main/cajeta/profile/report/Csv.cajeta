@@ -1,0 +1,51 @@
+package profile.report;
+
+// Minimal RFC-4180-ish CSV field escaping for the report writer. A field is
+// quoted only when it contains a comma, double-quote, CR or LF; inside a quoted
+// field, embedded double-quotes are doubled. Numbers and simple tokens pass
+// through unquoted so the CSV stays human- and pandas-friendly.
+public class Csv {
+
+    // ASCII bytes we must guard against: ',' 44, '"' 34, '\n' 10, '\r' 13.
+    public static #String field(String s) {
+        if (s == null) {
+            return "";
+        }
+        int32 n = (int32) s.count();
+        boolean needsQuote = false;
+        int32 i = 0;
+        while (i < n) {
+            int8 c = s.byteAt(i);
+            if (c == 44 || c == 34 || c == 10 || c == 13) {
+                needsQuote = true;
+            }
+            i = i + 1;
+        }
+        if (!needsQuote) {
+            // Return a fresh owned copy (the #String contract) — never the
+            // borrowed parameter.
+            return "" + s;
+        }
+        String out = "\"";
+        int32 j = 0;
+        while (j < n) {
+            int8 c = s.byteAt(j);
+            if (c == 34) {
+                out = out + "\"\"";
+            } else {
+                out = out + s.substring(j, j + 1);
+            }
+            j = j + 1;
+        }
+        out = out + "\"";
+        return out;
+    }
+
+    // Canonical boolean rendering for CSV cells.
+    public static #String boolStr(boolean b) {
+        if (b) {
+            return "true";
+        }
+        return "false";
+    }
+}

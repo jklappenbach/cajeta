@@ -4,6 +4,9 @@ import cajeta.collection.ArrayList;
 
 import profile.Benchmark;
 import profile.ExampleBenchmark;
+import profile.report.Result;
+import profile.report.Report;
+import profile.report.Memory;
 
 // Entry point for the cross-language benchmark suite. Builds an
 // ArrayList<Benchmark>, pushes one instance of every benchmark into it, then
@@ -26,15 +29,32 @@ public final class Profile {
         ArrayList<Benchmark> benchmarks = heap ArrayList<Benchmark>();
         benchmarks.add(heap ExampleBenchmark());
 
-        // Parse the minimal flags Unit 1 needs. (Full selection — --area,
-        // --bench, --lang, --out, --no-report — lands in Unit 17.)
+        // Parse the minimal flags so far. (Full selection — --area, --bench,
+        // --lang, --no-report — lands in Unit 17.)
         boolean listMode = false;
+        boolean selfTest = false;
+        String outPath = null;
         int32 i = 0;
         while (i < args.count()) {
             if (args[i].equals("--list")) {
                 listMode = true;
             }
+            if (args[i].equals("--selftest")) {
+                selfTest = true;
+            }
+            if (args[i].equals("--out")) {
+                if (i + 1 < args.count()) {
+                    outPath = args[i + 1];
+                }
+            }
             i = i + 1;
+        }
+
+        // --selftest: exercise the reporting schema + memory capture end-to-end
+        // (Unit 2). Writes a results CSV (with a real /proc peak-RSS read) and a
+        // sibling env CSV, then exits.
+        if (selfTest) {
+            return Profile.runSelfTest(outPath);
         }
 
         int32 n = benchmarks.count();
@@ -70,6 +90,67 @@ public final class Profile {
 
         System.stdout.println("");
         System.stdout.println("=== profile complete ===");
+        return 0;
+    }
+
+    // Unit 2 self-test: emit the reporting CSVs using the real schema, a real
+    // /proc peak-RSS read, and env values pulled via System.env.get. Proves the
+    // schema, memory capture, env capture, and skip-row shape before the
+    // measurement loop (Unit 3) and real benchmarks (Unit 5+) are wired in.
+    public static int32 runSelfTest(String outPath) {
+        String results = outPath;
+        if (results == null) {
+            results = "/tmp/profile-selftest.csv";
+        }
+        String envPath = results + ".env";
+
+        String runId = System.env.get("PROFILE_RUN_ID");
+        if (runId == null) {
+            runId = "selftest-run";
+        }
+        String cajVer = System.env.get("PROFILE_CAJETA_VERSION");
+        if (cajVer == null) {
+            cajVer = "unknown";
+        }
+
+        ArrayList<Result> rows = heap ArrayList<Result>();
+
+        // An OK row with a genuine peak-RSS reading.
+        Result ok = heap Result();
+        ok.runId = runId;
+        ok.benchmark = "example";
+        ok.area = "scaffold";
+        ok.language = "cajeta";
+        ok.languageVersion = cajVer;
+        ok.library = "stdlib";
+        ok.flags = "--release -march=native";
+        ok.warmup = 20;
+        ok.trials = 200;
+        ok.minNs = 1000;
+        ok.medianNs = 1100;
+        ok.meanNs = 1150;
+        ok.p95Ns = 1300;
+        ok.peakRssKb = Memory.peakRssKb();
+        ok.status = "ok";
+        ok.checkOk = true;
+        rows.add(ok);
+
+        // A skipped row (missing-toolchain shape) — recorded, never silent.
+        Result skip = heap Result();
+        skip.runId = runId;
+        skip.benchmark = "example";
+        skip.area = "scaffold";
+        skip.language = "rust";
+        skip.status = "skipped";
+        skip.checkOk = false;
+        skip.notes = "toolchain not found: cargo";
+        rows.add(skip);
+
+        Report.writeResults(results, rows);
+        Report.writeEnv(envPath, runId);
+
+        System.stdout.println("selftest: wrote " + results);
+        System.stdout.println("selftest: peak_rss_kb = " + ok.peakRssKb);
         return 0;
     }
 }
