@@ -587,92 +587,39 @@ list(APPEND GENERATED_SOURCES ${CAJETA_TLS_EMBED})
 # Keeping them as real files (rather than inline C strings) makes the
 # stdlib reviewable / editable like any other cajeta code.
 set(CAJETA_STDLIB_ROOT ${PROJECT_SOURCE_DIR}/runtime/src)
-# Explicit subset list rather than a recursive glob: the runtime/src tree
-# also contains skeletal stubs (codec/, lang/string/, math/) that aren't
-# parseable yet — embedding those would crash the compiler at first use.
-# Add directories here as their `.cajeta` files become real and pass the
-# stdlib parse pass. Glob inside the explicit subdirs so adding new
-# error/* files (etc.) is automatic.
+# Recursive discovery rather than a hand-maintained allowlist: every
+# `.cajeta` under runtime/src is embedded, so a new package (e.g. a new
+# cajeta.search.* module) is picked up automatically with no edit here.
 #
-# Order within each directory doesn't matter: cross-file forward
-# references for both "type-as-field" and "extends" use the placeholder
-# mechanism, and CajetaModule::buildPendingPrototypes runs a fixed-point
-# layout pass after parse so subclasses get their full inherited-field
-# layout regardless of parse order.
-set(CAJETA_STDLIB_DIRS
-        ${CAJETA_STDLIB_ROOT}/cajeta/lang
-        ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
-        # cajeta.reflect (REFL-1): Class + RTTI introspection. Depends only on
-        # cajeta.lang (Object, String), already in the prelude above.
-        ${CAJETA_STDLIB_ROOT}/cajeta/reflect
-        ${CAJETA_STDLIB_ROOT}/cajeta/error
-        # cajeta/time before cajeta/concurrent: R9.3's withTimeout (a stdlib
-        # function in cajeta.concurrent) takes a Duration parameter, so the
-        # Duration class has to be loadable when threading parses.
-        ${CAJETA_STDLIB_ROOT}/cajeta/time
-        # Threading sync primitives (Lock/LockGuard today; Mutex/RwLock/
-        # ConditionVariable/Channel/Semaphore land in later R7 sub-phases).
-        # After cajeta/lang (needs Object) and cajeta/error (future
-        # Channel close/timeout throws).
-        ${CAJETA_STDLIB_ROOT}/cajeta/concurrent
-        ${CAJETA_STDLIB_ROOT}/cajeta/io/file
-        ${CAJETA_STDLIB_ROOT}/cajeta/hash
-        ${CAJETA_STDLIB_ROOT}/cajeta/collection
-        # cajeta.search.ngram (cajeta.search package): n-gram inverted index for
-        # fuzzy candidate generation. Built over cajeta.collection (HashMap/
-        # ArrayList/HashSet) + cajeta.lang.String, so it must parse after both.
-        ${CAJETA_STDLIB_ROOT}/cajeta/search/ngram
-        # ── cajeta.io.net (cajeta-net branch, NET-* plan) — PURE-LOGIC SLICE.
-        # Only directories whose .cajeta sources are pure logic (no socket /
-        # reactor intrinsic calls) are eagerly compiled here. The socket-backed
-        # files call compiler receiver-dispatch lowering that isn't implemented
-        # yet (NET-1.3 / MethodCallExpression.cpp); eager-compiling them crashes
-        # the stdlib build. Those are isolated under gated subdirs and are NOT
-        # listed: cajeta/io/net/socket, cajeta/io/net/reactor, cajeta/io/net/dns, and the
-        # socket-backed files of net/http + net/ws (see net/http/socket,
-        # net/ws/socket). The embed glob is non-recursive, so listing net/http
-        # picks up only its pure message-model files, not net/http/socket.
-        # cajeta.io.net core: NetException + exception hierarchy + Headers +
-        # TcpStream/TcpListener/UdpSocket (sync surface, b1/b2) + the async
-        # buffered-stream trio AsyncReader/AsyncWriter/RingBuffer (NET-3.5, b3).
-        # The async trio declares `package cajeta.io.net` and lives here (NOT under
-        # net/socket): the JIT compile path enforces package==dir, so a file
-        # under net/socket would have to declare `package cajeta.io.net.socket`.
-        # The b5 server stack (Server/SharedPoolServer/ConnectionLimiter/...)
-        # is isolated under net/socket/server (NOT listed) so it stays gated.
-        ${CAJETA_STDLIB_ROOT}/cajeta/io/net
-        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/reactor  # async I/O reactor (NET-3.1 @Native bridges, b3)
-        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/dns      # DNS (NET-2, b4) — diagnostic un-gate
-        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/tls      # TLS engine surface (NET-5, b6)
-        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/uri      # RFC 3986 URI parse/build (NET-6)
-        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/http     # HTTP/1.1 message model (NET-7) — pure files; net/http/socket gated
-        ${CAJETA_STDLIB_ROOT}/cajeta/io/net/ws       # WebSocket frame codec + protocol (NET-10) — pure files; net/ws/socket gated
-        ${CAJETA_STDLIB_ROOT}/cajeta/wire
-        ${CAJETA_STDLIB_ROOT}/cajeta/codec        # Base64 (NET-11.3)
-        ${CAJETA_STDLIB_ROOT}/cajeta/codec/json
-        # Larger-than-memory collections. Listed after collection/wire/
-        # io.file so its dependencies (BPlusTree shape, Encoder, File) are
-        # already in the prelude when these parse.
-        ${CAJETA_STDLIB_ROOT}/cajeta/collection/ltm
-        ${CAJETA_STDLIB_ROOT}/cajeta/gpu
-        ${CAJETA_STDLIB_ROOT}/cajeta/gpu/xpu
-        # Linear-algebra value types (B1). Matrix references resolve to the flat
-        # CajetaMatrix representation; the declared class supplies the operator
-        # surface. Depends only on Vector (synthesized) and Object (lang), both
-        # already in the prelude by here.
-        ${CAJETA_STDLIB_ROOT}/cajeta/math)
-set(CAJETA_STDLIB_FILES "")
-foreach(dir ${CAJETA_STDLIB_DIRS})
-    file(GLOB dir_files CONFIGURE_DEPENDS ${dir}/*.cajeta)
-    # Sort within each directory only — the directory order in
-    # CAJETA_STDLIB_DIRS is load-bearing: cajeta/lang (Object) must
-    # parse before classes that auto-extend it. Without ordering,
-    # alphabetical sort would put cajeta/error/* ahead of
-    # cajeta/lang/Object and force every Throwable-family class
-    # through the placeholder-resolution fallback unnecessarily.
-    list(SORT dir_files)
-    list(APPEND CAJETA_STDLIB_FILES ${dir_files})
+# Two knobs keep this safe:
+#   * CAJETA_STDLIB_EXCLUDE_REGEX gates subtrees that aren't embeddable yet —
+#     skeletal stubs and the socket-backed net files whose receiver-dispatch
+#     lowering isn't implemented (eager-compiling them crashes the stdlib
+#     build). These are isolated under their own subdirs (e.g.
+#     cajeta/io/net/**/socket, cajeta/lang/string) so a path regex gates them
+#     cleanly. They currently hold no sources; the regex is the forward guard.
+#   * cajeta/lang is pinned FIRST so Object parses before the classes that
+#     auto-extend it. Cross-file forward references (fields and `extends`) and
+#     inherited-field layout otherwise resolve via the placeholder +
+#     CajetaModule::buildPendingPrototypes fixed-point pass regardless of
+#     order — so the remaining files just sort deterministically.
+set(CAJETA_STDLIB_EXCLUDE_REGEX "/cajeta/(io/net/([^/]+/)*socket(/|$)|lang/string/)")
+file(GLOB_RECURSE CAJETA_STDLIB_ALL CONFIGURE_DEPENDS ${CAJETA_STDLIB_ROOT}/*.cajeta)
+set(CAJETA_STDLIB_LANG "")
+set(CAJETA_STDLIB_REST "")
+foreach(src_path ${CAJETA_STDLIB_ALL})
+    if(src_path MATCHES "${CAJETA_STDLIB_EXCLUDE_REGEX}")
+        continue()
+    endif()
+    if(src_path MATCHES "/cajeta/lang/")
+        list(APPEND CAJETA_STDLIB_LANG ${src_path})
+    else()
+        list(APPEND CAJETA_STDLIB_REST ${src_path})
+    endif()
 endforeach()
+list(SORT CAJETA_STDLIB_LANG)
+list(SORT CAJETA_STDLIB_REST)
+set(CAJETA_STDLIB_FILES ${CAJETA_STDLIB_LANG} ${CAJETA_STDLIB_REST})
 list(LENGTH CAJETA_STDLIB_FILES CAJETA_STDLIB_COUNT)
 set(CAJETA_STDLIB_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_stdlib_embedded.cpp)
 set(CAJETA_STDLIB_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/cajeta_stdlib_manifest.txt)
