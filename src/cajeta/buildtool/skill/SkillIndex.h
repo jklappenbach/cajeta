@@ -66,6 +66,13 @@ namespace cajeta::buildtool::skill {
         // The entry for `id`, or nullptr.
         const SkillEntry* entry(llvm::StringRef id) const;
 
+        // Canonical names bound to `id` (sorted). Lets Search report the matched
+        // canonical name for a title hit (spec §3.5).
+        std::vector<std::string> namesForId(llvm::StringRef id) const;
+
+        // All skill ids, sorted. Used by List to enumerate (spec §3.6).
+        std::vector<std::string> allIds() const;
+
         size_t skillCount() const { return skills_.size(); }
 
     private:

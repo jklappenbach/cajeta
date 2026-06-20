@@ -225,4 +225,21 @@ namespace cajeta::buildtool::skill {
         return it == skills_.end() ? nullptr : &it->second;
     }
 
+    std::vector<std::string> SkillIndex::namesForId(llvm::StringRef id) const {
+        std::vector<std::string> out;
+        for (const auto& [name, ids] : names_) {
+            if (std::find(ids.begin(), ids.end(), id.str()) != ids.end()) {
+                out.push_back(name);
+            }
+        }
+        return out; // names_ iteration is already sorted
+    }
+
+    std::vector<std::string> SkillIndex::allIds() const {
+        std::vector<std::string> out;
+        out.reserve(skills_.size());
+        for (const auto& [id, entry] : skills_) out.push_back(id);
+        return out; // skills_ is a std::map → sorted
+    }
+
 } // namespace cajeta::buildtool::skill
