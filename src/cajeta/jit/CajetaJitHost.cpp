@@ -30,6 +30,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/compile/NativeLink.h"
+#include "cajeta/buildtool/NativeProvision.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/dbg/DebugLocTable.h"
@@ -473,6 +474,12 @@ std::string entryTargetFromDotted(const std::string& dotted) {
 int runJit(const JitRunOptions& opts, JitRunResult* result) {
     BuiltJit built = buildJit(opts);
     if (built.errorCode != 0 || !built.jit) return built.errorCode;
+
+    // Native-deps unit 16: native resolution/provisioning is done (buildJit);
+    // entering the execution phase. The net seam now hard-fails any native
+    // network op for the remainder of the run (spec INV-2). Belt-and-suspenders:
+    // the JIT resolves only local artifacts, so nothing here reaches out.
+    cajeta::buildtool::setNativePhase(cajeta::buildtool::NativePhase::Execution);
 
     llvm::orc::LLJIT* jit = built.jit.get();
     if (result) result->entrySafepointsEmitted = built.entrySafepointsEmitted;
