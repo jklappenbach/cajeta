@@ -1,0 +1,5 @@
+# Build output (also covered by the repo-root .gitignore).
+build/
+# Fetched datasets (content-addressed cache) and benchmark run outputs.
+datasets/cache/
+results/
