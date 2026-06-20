@@ -1,5 +1,6 @@
 package profile;
 
+import cajeta.collection.ArrayList;
 import cajeta.time.Clock;
 
 import profile.Benchmark;
@@ -15,8 +16,25 @@ import profile.report.Memory;
 // competitor rows are produced by their own per-language runners.
 public class Harness {
 
-    public static #Result measure(Benchmark b, String runId) {
+    // Measure one benchmark across all its variants, appending one Result row
+    // per variant. setup() runs once; prepare(variant) builds each variant's
+    // input; teardown() runs once at the end.
+    public static void measureInto(Benchmark b, String runId, ArrayList<Result> rows) {
         b.setup();
+        ArrayList<String> vs = b.variants();
+        int32 vi = 0;
+        int32 vn = vs.count();
+        while (vi < vn) {
+            String v = vs.get(vi);
+            // Owned temporary straight into the list (add stores a reference).
+            rows.add(Harness.measureOne(b, runId, v));
+            vi = vi + 1;
+        }
+        b.teardown();
+    }
+
+    public static #Result measureOne(Benchmark b, String runId, String variant) {
+        b.prepare(variant);
 
         int32 warm = b.warmupIters();
         int32 trials = b.measuredIters();
@@ -25,7 +43,7 @@ public class Harness {
         // Warmup — reach steady state before measuring.
         int32 w = 0;
         while (w < warm) {
-            b.run(1);
+            b.runVariant(variant, 1);
             w = w + 1;
         }
 
@@ -37,7 +55,7 @@ public class Harness {
         int32 t = 0;
         while (t < trials) {
             int64 t0 = Clock.nanoTime();
-            b.run(1);
+            b.runVariant(variant, 1);
             int64 t1 = Clock.nanoTime();
             int64 dur = t1 - t0 - baseline;
             if (dur < 0) {
@@ -48,7 +66,6 @@ public class Harness {
         }
 
         int64 peak = Memory.peakRssKb();
-        b.teardown();
         boolean ok = b.checkResult();
 
         // Distribution (sort then index). n ~ a few hundred.
@@ -66,11 +83,12 @@ public class Harness {
         String benchArea = b.area();
 
         Result r = heap Result();
-        // Materialize an owned copy of the runId param — storing a borrowed
-        // parameter into a field that outlives the call dangles after return.
+        // Owned copies of the borrowed params — storing a borrow into a field
+        // that outlives the call dangles after return.
         r.runId = "" + runId;
         r.benchmark = "" + benchName;
         r.area = "" + benchArea;
+        r.variant = "" + variant;
         r.language = "cajeta";
         r.warmup = warm;
         r.trials = trials;

@@ -34,13 +34,13 @@ echo "[schema] header: $HEADER"
 # (1) required columns present
 for col in schema_version run_id timestamp_unix benchmark area language library flags \
            warmup trials min_ns median_ns mean_ns p95_ns throughput peak_rss_kb \
-           alloc_bytes alloc_count working_set_kb status check_ok notes; do
+           alloc_bytes alloc_count working_set_kb status check_ok notes variant; do
     echo "$HEADER" | tr ',' '\n' | grep -qx "$col" || fail "header missing column: $col"
 done
 
-# (1) exactly 30 columns
+# (1) exactly 31 columns
 NCOLS="$(head -1 "$OUT" | awk -F, '{print NF}')"
-[[ "$NCOLS" == "30" ]] || fail "expected 30 columns, got $NCOLS"
+[[ "$NCOLS" == "31" ]] || fail "expected 31 columns, got $NCOLS"
 
 # (2) ok row (line 2) peak_rss_kb (col 23) is a positive integer
 PEAK="$(awk -F, 'NR==2{print $23}' "$OUT")"

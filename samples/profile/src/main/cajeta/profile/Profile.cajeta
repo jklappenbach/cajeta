@@ -5,6 +5,7 @@ import cajeta.collection.ArrayList;
 import profile.Benchmark;
 import profile.ExampleBenchmark;
 import profile.SumBench;
+import profile.VariantBench;
 import profile.Harness;
 import profile.report.Result;
 import profile.report.Report;
@@ -31,6 +32,7 @@ public final class Profile {
         ArrayList<Benchmark> benchmarks = heap ArrayList<Benchmark>();
         benchmarks.add(heap ExampleBenchmark());
         benchmarks.add(heap SumBench());
+        benchmarks.add(heap VariantBench());
 
         // Parse the minimal flags so far. (Full selection — --area, --bench,
         // --lang, --no-report — lands in Unit 17.)
@@ -125,16 +127,23 @@ public final class Profile {
         int32 n = benchmarks.count();
         while (i < n) {
             Benchmark b = benchmarks.get(i);
-            // Pass the owned Result straight into the list (add stores a
-            // reference, not a copy — a named owning local would drop it at
-            // loop end and dangle the stored reference). Read it back from the
-            // list (a borrow) for the progress line.
-            rows.add(Harness.measure(b, runId));
-            Result r = rows.get(i);
-            System.stdout.println("  measured " + r.benchmark + " [" + r.area
-                + "]  min_ns=" + r.minNs + "  median_ns=" + r.medianNs
-                + "  ws_kb=" + r.workingSetKb + "  " + r.status);
+            // measureInto appends one row per variant (the owned Results go
+            // straight into the list — add stores a reference, so a named
+            // owning local would drop and dangle it).
+            Harness.measureInto(b, runId, rows);
             i = i + 1;
+        }
+
+        // Progress lines (read back from the list as borrows).
+        int32 k = 0;
+        int32 rn = rows.count();
+        while (k < rn) {
+            Result r = rows.get(k);
+            System.stdout.println("  measured " + r.benchmark + " [" + r.area
+                + "] variant='" + r.variant + "'  min_ns=" + r.minNs
+                + "  median_ns=" + r.medianNs + "  ws_kb=" + r.workingSetKb
+                + "  " + r.status);
+            k = k + 1;
         }
 
         Report.writeResults(results, rows);

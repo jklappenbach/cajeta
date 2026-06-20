@@ -1,5 +1,7 @@
 package profile;
 
+import cajeta.collection.ArrayList;
+
 // Base class for every benchmark in the suite. Each benchmark extends
 // Benchmark and overrides the lifecycle methods; the Profile entry point
 // builds an ArrayList<Benchmark>, pushes one instance of every benchmark
@@ -52,6 +54,24 @@ public class Benchmark {
     // 0 = nothing to subtract.
     public int64 baselineNanos() {
         return (int64) 0;
+    }
+
+    // Variant matrix (spec §4.4/§4.5). A benchmark with parameterized inputs —
+    // sort {type×pattern×prediction}, JSON {in-order/out-of-order/missing-key} —
+    // returns one label per variant; the measurement loop produces one result row
+    // per label. Default: a single unlabelled variant. `prepare(variant)` builds
+    // the per-variant input; `runVariant` is the measured body for that variant.
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("");
+        return v;
+    }
+
+    public void prepare(String variant) {
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
     }
 
     // Lifecycle. setup → run → teardown → checkResult, driven by Profile.

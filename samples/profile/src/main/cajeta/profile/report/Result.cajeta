@@ -40,6 +40,7 @@ public class Result {
     public String status;            // ok | skipped | invalid
     public boolean checkOk;
     public String notes;
+    public String variant;           // pattern×prediction / access-pattern label ("" if none)
 
     public Result() {
         this.schemaVersion = 1;
@@ -72,10 +73,11 @@ public class Result {
         this.status = "ok";
         this.checkOk = true;
         this.notes = "";
+        this.variant = "";
     }
 
     public static #String header() {
-        return "schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes";
+        return "schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes,variant";
     }
 
     public #String toRow() {
@@ -109,6 +111,7 @@ public class Result {
         s = s + "," + Csv.field(this.status);
         s = s + "," + Csv.field(Csv.boolStr(this.checkOk));
         s = s + "," + Csv.field(this.notes);
+        s = s + "," + Csv.field(this.variant);
         return s;
     }
 }
