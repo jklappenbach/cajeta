@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -2692,6 +2693,49 @@ namespace cajeta {
                 if (d.includedEntryCount > 0) kept.push_back(std::move(d));
             }
             arc.setDeps(std::move(kept));
+        }
+
+        // Native-deps unit 13: default packaging step — bundle the resolved
+        // native artifacts for the live @Native libs into the archive's native/
+        // tree (so a published .cja carries its redistributable natives; a
+        // provisioned embargoed artifact rides along too). No-op when no
+        // @Native lib is live. Bundles the host platform's artifact (the only
+        // one a single build host has); a missing one is reported, not fatal.
+        {
+            std::set<std::string> liveLibs;
+            for (auto& m : modules)
+                if (m && m->getLlvmModule()) {
+                    auto l = collectLiveNativeLibs(*m->getLlvmModule());
+                    liveLibs.insert(l.begin(), l.end());
+                }
+            if (!liveLibs.empty()) {
+                const std::string platform = hostNativePlatform();
+                const auto dirs = nativeLinkSearchDirs();
+                std::string reqsJson = "{\"requires\":[";
+                bool first = true;
+                for (const auto& lib : liveLibs) {
+                    if (!first) reqsJson += ",";
+                    reqsJson += "\"" + lib + "\"";
+                    first = false;
+                    auto art = findNativeJitArtifact(lib, platform, dirs);
+                    if (!art) {
+                        cerr << "cajeta: note: native lib '" << lib
+                             << "' not bundled (not provisioned for "
+                             << platform << ")" << std::endl;
+                        continue;
+                    }
+                    std::ifstream in(art->path, std::ios::binary);
+                    std::vector<uint8_t> bytes(
+                        (std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+                    std::string fname =
+                        std::filesystem::path(art->path).filename().string();
+                    arc.addNativeArtifact(platform, fname, std::move(bytes));
+                }
+                reqsJson += "],\"libraries\":{}}";
+                arc.setNativeLibrariesMeta(
+                    std::vector<uint8_t>(reqsJson.begin(), reqsJson.end()));
+            }
         }
 
         arc.writeTo(outPath);
