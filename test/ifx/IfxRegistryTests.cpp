@@ -203,3 +203,38 @@ TEST(IfxRegistryTests, audioFallsToSilentFloorWithoutThrowing) {
         "if (a.name().equals(\"null\")) { return 1; }\n"
         "return 0;\n"), 1);
 }
+
+// ---- Unit 5: bootstrap / auto-registration of the null floor (spec section 5 "always registered") ----
+// The process-wide registry, BackendRegistry.instance(), auto-registers the Null* floor on first
+// access. A program that links no OS backend still binds -- with NO explicit registerWindow call by
+// the app. This is what makes "import ifx and it just works headless" true.
+
+// 5a (window) -- the shared registry already carries the null window floor on first access: an opt-in
+// headless request binds it silently, the app having registered nothing.
+TEST(IfxRegistryTests, sharedRegistryAutoRegistersNullWindowFloor) {
+    EXPECT_EQ(runI32(
+        "WindowBackend b = BackendRegistry.instance().selectWindow(true);\n"
+        "if (b.name().equals(\"null\")) { return 1; }\n"
+        "return 0;\n"), 1);
+}
+
+// 5a (input + audio) -- the input and audio floors are auto-registered too, each domain resolving to
+// its own -1000 floor with no app registration.
+TEST(IfxRegistryTests, sharedRegistryAutoRegistersInputAndAudioFloor) {
+    EXPECT_EQ(runI32(
+        "InputBackend i = BackendRegistry.instance().selectInput();\n"
+        "AudioBackend a = BackendRegistry.instance().selectAudio();\n"
+        "if (i != null && a != null && i.priority() == -1000 && a.priority() == -1000) { return 1; }\n"
+        "return 0;\n"), 1);
+}
+
+// 5b -- instance() is a true process-wide singleton AND is the load-time register() entry external
+// backends call: a backend registered through instance() lands in the same registry the app selects
+// from, so it wins over the auto-registered floor (also proving select(false) does not fail loudly
+// once a real backend is present).
+TEST(IfxRegistryTests, sharedRegistryIsSingletonAndAppRegistrationWins) {
+    EXPECT_EQ(runI32(
+        "BackendRegistry.instance().registerWindow(heap FakeWindow(\"real\", 50, true));\n"
+        "WindowBackend b = BackendRegistry.instance().selectWindow(false);\n"
+        "return b.priority();\n"), 50);
+}

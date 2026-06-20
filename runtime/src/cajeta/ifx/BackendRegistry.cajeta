@@ -34,6 +34,14 @@ import cajeta.lang.String;
  * (the registry is constructed and populated explicitly for now).
  */
 public final class BackendRegistry {
+    // The process-wide registry. ifx exposes a single shared registry the whole program selects
+    // from; backends (and the null floor) register into THIS instance. Lazily constructed on first
+    // access so the always-present floor is registered without the app doing anything (spec §5):
+    // `import ifx` and a headless program just works. Lazy-on-first-use rather than an eager
+    // module-load static-init keeps the always-present guarantee without depending on heap allocation
+    // running inside a load-time clinit (which the runtime allocator/order does not guarantee).
+    private static BackendRegistry shared;
+
     // Per-domain registries, in registration order. Order is load-bearing: it is the deterministic
     // tie-break when two viable backends report the same priority().
     private ArrayList<WindowBackend> windows;
@@ -44,6 +52,28 @@ public final class BackendRegistry {
         this.windows = heap ArrayList<WindowBackend>();
         this.inputs  = heap ArrayList<InputBackend>();
         this.audios  = heap ArrayList<AudioBackend>();
+    }
+
+    /**
+     * The shared process-wide registry, with the {@link NullWindowBackend} / {@link NullInputBackend}
+     * / {@link NullAudioBackend} floor auto-registered the first time it is touched. This is both the
+     * registry the app selects from and the load-time registration entry an external backend calls:
+     *
+     *   BackendRegistry.instance().registerWindow(heap Win32WindowBackend());
+     *
+     * Because the floor registers first, a later-registered real backend wins on priority(); when no
+     * real backend ever registers, the floor is what selection falls to (silent for headless/input/
+     * audio, loud for an interactive window — see {@link #selectWindow}).
+     */
+    public static BackendRegistry instance() {
+        if (BackendRegistry.shared == null) {
+            BackendRegistry r = heap BackendRegistry();
+            r.registerWindow(heap NullWindowBackend());
+            r.registerInput(heap NullInputBackend());
+            r.registerAudio(heap NullAudioBackend());
+            BackendRegistry.shared = r;
+        }
+        return BackendRegistry.shared;
     }
 
     /** Register a window-domain backend (called by each backend at load; the null floor too). */
