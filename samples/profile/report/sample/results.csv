@@ -1,195 +1,203 @@
 schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes,variant
-1,20260620-160201,,example,scaffold,,-1,,-1,cajeta,,,,,20,200,921,942,981,1062,,,2956,-1,-1,-1,88,ok,true,,
-1,20260620-160201,,sum,selftest,,-1,,-1,cajeta,,,,,5,50,6732,6742,6738,6743,,,2996,-1,-1,-1,20,ok,true,,
-1,20260620-160201,,variant-demo,selftest,,-1,,-1,cajeta,,,,,3,20,50,60,60,110,,,3036,-1,-1,-1,20,ok,true,,small
-1,20260620-160201,,variant-demo,selftest,,-1,,-1,cajeta,,,,,3,20,270,281,300,371,,,3076,-1,-1,-1,20,ok,true,,large
-1,20260620-160201,,json-tokenize,codec,,-1,,631514,cajeta,,,,,10,50,1450599,1533446,1543764,1771043,,,4336,-1,-1,-1,620,ok,true,,twitter
-1,20260620-160201,,json-tokenize,codec,,-1,,1727204,cajeta,,,,,10,50,3827375,4019447,4013779,4103104,,,7340,-1,-1,-1,1920,ok,true,,citm_catalog
-1,20260620-160201,,json-tokenize,codec,,-1,,2251051,cajeta,,,,,10,50,9142391,9303123,9313677,9547324,,,9448,-1,-1,-1,3508,ok,true,,canada
-1,20260620-160201,,json-bind-skip,codec,,-1,,631514,cajeta,,,,,10,50,162570,163412,164666,169233,,,9448,-1,-1,-1,2612,ok,true,,twitter
-1,20260620-160201,,json-bind-skip,codec,,-1,,1727204,cajeta,,,,,10,50,401617,406746,407842,415873,,,12208,-1,-1,-1,4,ok,true,,citm_catalog
-1,20260620-160201,,json-bind-skip,codec,,-1,,2251051,cajeta,,,,,10,50,737470,764610,774038,883184,,,14772,-1,-1,-1,4,ok,true,,canada
-1,20260620-160201,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
-1,20260620-160201,,json-dom,codec,,-1,,1727204,cajeta,,,,,5,30,10375772,11170148,11172509,11736666,,,564776,-1,-1,-1,479368,ok,true,,citm_catalog
-1,20260620-160201,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
-1,20260620-160201,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
-1,20260620-160201,,json-serialize,codec,,-1,,1727204,cajeta,,,,,5,30,12285119,14251253,14124357,15847379,,,1312236,-1,-1,-1,595212,ok,true,,citm_catalog
-1,20260620-160201,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
-1,20260620-160201,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
-1,20260620-160201,,json-roundtrip,codec,,-1,,1727204,cajeta,,,,,5,30,32737921,34927044,34769791,36404107,,,2567808,-1,-1,-1,1074740,ok,true,,citm_catalog
-1,20260620-160201,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
-1,20260620-160201,,json-conformance,codec,,-1,,14,cajeta,,,,,3,20,25298,26670,26698,28003,,,2569020,-1,-1,-1,864,ok,true,,
-1,20260620-160201,,base64-encode,codec,,-1,,1048576,cajeta,,,,,20,100,10473690,10596361,10987555,12946278,,,2733924,-1,-1,-1,136556,ok,true,,
-1,20260620-160201,,base64-decode,codec,,-1,,1048576,cajeta,,,,,20,100,11507077,11634517,11657377,11797144,,,2859232,-1,-1,-1,102420,ok,true,,
-1,20260620-160201,,arraylist-append,collection,,-1,,100000,cajeta,,,,,5,50,998771,1005204,1032393,1175624,,,2909156,-1,-1,-1,45368,ok,true,,
-1,20260620-160201,,hashmap-int,collection,,-1,,50000,cajeta,,,,,5,30,2525016,2557928,2602637,2745101,,,2989816,-1,-1,-1,69128,ok,true,,
-1,20260620-160201,,hashmap-string,collection,,-1,,30000,cajeta,,,,,5,30,11566008,11919414,11966551,12670238,,,3385236,-1,-1,-1,338916,ok,true,,
-1,20260620-160201,,hashset-dedup,collection,,-1,,100000,cajeta,,,,,5,30,3204136,3272114,3299400,3439489,,,3439040,-1,-1,-1,46104,ok,true,,
-1,20260620-160201,,linkedlist-insert-traverse,collection,,-1,,40000,cajeta,,,,,5,30,1275612,1295110,1332269,1474368,,,3504700,-1,-1,-1,56268,ok,true,,
-1,20260620-160201,,heap-sort,collection,,-1,,50000,cajeta,,,,,5,30,4595437,4639610,4645557,4764485,,,3520684,-1,-1,-1,13684,ok,true,,
-1,20260620-160201,,redblacktree-insert-lookup,collection,,-1,,20000,cajeta,,,,,3,20,3308482,3371482,3403939,3711541,,,3549468,-1,-1,-1,25016,ok,true,,
-1,20260620-160201,,sort-int64,sort,,-1,,50000,cajeta,,,,,5,30,3042080,3061447,3066375,3087116,,,3564756,-1,-1,-1,11752,ok,true,,random
-1,20260620-160201,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),ascending
-1,20260620-160201,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),descending
-1,20260620-160201,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),dups
-1,20260620-160201,,sort-f64,sort,,-1,,50000,cajeta,,,,,5,30,3310546,3330414,3530028,4333814,,,3580060,-1,-1,-1,11752,ok,true,,
-1,20260620-160201,,sort-stable-int64,sort,,-1,,50000,cajeta,,,,,5,30,3444702,3548888,3588566,3900952,,,3609000,-1,-1,-1,23452,ok,true,,
-1,20260620-160201,,binary-search,sort,,-1,,50000,cajeta,,,,,5,30,5314161,5339478,5370060,5538403,,,3622708,-1,-1,-1,11736,ok,true,,
-1,20260620-160201,,string-build-concat,string,,-1,,4000,cajeta,,,,,5,30,10284684,13484983,13169121,14928562,,,5858840,-1,-1,-1,1891392,ok,true,,
-1,20260620-160201,,string-search,string,,-1,,360448,cajeta,,,,,10,50,207651,211057,211602,214544,,,5860160,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,string-replace,string,,-1,,360448,cajeta,,,,,10,50,1016915,1022947,1032155,1085916,,,5883424,-1,-1,-1,18800,ok,true,,
-1,20260620-160201,,string-uppercase,string,,-1,,360448,cajeta,,,,,10,50,255592,263066,272230,311407,,,5904900,-1,-1,-1,17604,ok,true,,
-1,20260620-160201,,xxhash3,hash,,-1,,1048576,cajeta,,,,,20,100,23634,23755,23998,25928,,,5905924,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,siphash,hash,,-1,,1048576,cajeta,,,,,20,100,245803,246645,249090,264658,,,5906948,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,sha256,hash,,-1,,1048576,cajeta,,,,,10,50,2254537,2281608,2315149,2476516,,,5907972,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,md5,hash,,-1,,1048576,cajeta,,,,,10,50,1719820,1726252,1730560,1755327,,,5908996,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,stream-filter-map-reduce,stream,,-1,,1000000,cajeta,,,,,5,30,74093515,76841542,78154848,83040549,,,5916808,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,stream-parallel-reduce,stream,,-1,,1000000,cajeta,,,,,5,30,32617534,34150582,34179454,35873377,,,5925000,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,saxpy,math,,-1,,1000000,cajeta,,,,,10,50,593247,605521,641644,841735,,,5948436,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,dot-product,math,,-1,,1000000,cajeta,,,,,10,50,390346,393341,397828,416625,,,5964060,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,matmul,math,,-1,,40000,cajeta,,,,,5,20,2920792,2928887,2930748,2955598,,,5965000,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,clbg-mandelbrot,clbg,,-1,,640000,cajeta,,,,,5,20,28644780,28768934,28898851,29526050,,,5965000,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,clbg-fannkuch-redux,clbg,,-1,,10,cajeta,,,,,3,10,163541824,165032373,165657466,171364511,,,5965000,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,clbg-spectral-norm,clbg,,-1,,100,cajeta,,,,,5,30,3621843,3756897,3748847,3887664,,,5965000,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,time-instant-arith,time,,-1,,1000000,cajeta,,,,,10,50,49906933,51120990,51854732,55452460,,,5965000,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,time-localdate-arith,time,,-1,,100000,cajeta,,,,,5,30,4942971,5100949,5300207,6470779,,,5965000,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,atomic-fetchadd,concurrent,,-1,,1000000,cajeta,,,,,10,50,9479717,9689082,9692120,9709380,,,5965000,-1,-1,-1,0,ok,true,,
-1,20260620-160201,,task-spawn-await,concurrent,,-1,,20000,cajeta,,,,,2,3,194313992,198637377,213795848,248436177,,,5965488,-1,-1,-1,0,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),serde_json,1,-O3 lto,3,10,985126,1001747,1006327,1045530,601.2,MB/s,5512,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),simd-json,0.13,-O3 lto,3,10,715547,723102,775031,995335,832.9,MB/s,8104,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),serde_json,1,-O3 lto,3,10,2271749,2291446,2292899,2322155,718.8,MB/s,12136,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),simd-json,0.13,-O3 lto,3,10,1583634,1605194,1608675,1668543,1026.2,MB/s,14576,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),serde_json,1,-O3 lto,3,10,4114741,4152392,4195162,4509815,517.0,MB/s,14576,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),simd-json,0.13,-O3 lto,3,10,4119981,4148695,4186056,4485569,517.5,MB/s,22688,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,simdjson,4.6.1,-O3 -march=native,3,10,83177,86473,86861,90811,6964.7,MB/s,7076,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,yyjson,0.10,-O3 -march=native,3,10,118203,119045,119449,123533,5059.1,MB/s,6868,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,simdjson,4.6.1,-O3 -march=native,3,10,228019,228851,231846,253918,7197.7,MB/s,11584,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,yyjson,0.10,-O3 -march=native,3,10,310966,313571,317202,333258,5253.0,MB/s,11440,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,simdjson,4.6.1,-O3 -march=native,3,10,1239695,1245276,1245827,1256427,1723.9,MB/s,17412,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,yyjson,0.10,-O3 -march=native,3,10,1335025,1343300,1346176,1378246,1598.1,MB/s,17412,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,go,go version go1.26.0 linux/amd64,encoding/json,go1.26.0,-gcflags,3,10,3426856,3722363,3800136,4339254,161.8,MB/s,9848,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,go,go version go1.26.0 linux/amd64,goccy/go-json,v0.10.5,-gcflags,3,10,2266028,2533062,2537958,2793533,237.8,MB/s,16172,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,go,go version go1.26.0 linux/amd64,encoding/json,go1.26.0,-gcflags,3,10,8278475,9359952,9240679,10146173,176.0,MB/s,20048,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,go,go version go1.26.0 linux/amd64,goccy/go-json,v0.10.5,-gcflags,3,10,4407713,5283463,5293803,6394756,311.8,MB/s,30016,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,go,go version go1.26.0 linux/amd64,encoding/json,go1.26.0,-gcflags,3,10,14553476,15791708,15990932,17818445,135.9,MB/s,30016,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,go,go version go1.26.0 linux/amd64,goccy/go-json,v0.10.5,-gcflags,3,10,12689244,14710041,14483150,17617618,145.9,MB/s,31596,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,python,Python 3.12.9,json,3.12.9,-OO,3,10,1743695,1753113,1751742,1761278,343.5,MB/s,15608,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,python,Python 3.12.9,orjson,3.11.9,-OO,3,10,689689,704928,724055,925243,854.4,MB/s,16556,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,python,Python 3.12.9,msgspec,0.21.1,-OO,3,10,914743,930713,1033552,1635040,647.1,MB/s,17908,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,python,Python 3.12.9,ujson,5.13.0,-OO,3,10,1123646,1153092,1229529,1827302,522.3,MB/s,20316,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,python,Python 3.12.9,json,3.12.9,-OO,3,10,3909966,4014783,4037564,4223616,410.3,MB/s,26324,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,python,Python 3.12.9,orjson,3.11.9,-OO,3,10,2093704,2108562,2141546,2352631,781.2,MB/s,28884,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,python,Python 3.12.9,msgspec,0.21.1,-OO,3,10,2702871,2723691,2763038,2966628,604.8,MB/s,28884,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,python,Python 3.12.9,ujson,5.13.0,-OO,3,10,2966267,3021272,3040967,3289877,545.2,MB/s,30932,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,python,Python 3.12.9,json,3.12.9,-OO,3,10,31739600,32557030,32542186,33571951,65.9,MB/s,35072,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,python,Python 3.12.9,orjson,3.11.9,-OO,3,10,5753829,5885277,5896459,6138163,364.8,MB/s,38860,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,python,Python 3.12.9,msgspec,0.21.1,-OO,3,10,6098408,6211992,6271796,7053227,345.6,MB/s,38860,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,python,Python 3.12.9,ujson,5.13.0,-OO,3,10,8812992,8889346,9026838,9941457,241.5,MB/s,38860,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,json-dom,codec,twitter,631514,,631514,java,,jackson,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,requires Maven + Jackson/fastjson2 jars (JDK has no stdlib JSON; not provisioned),
-1,20260620-160201,1781985721,json-dom,codec,citm_catalog,1727204,,1727204,java,,jackson,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,requires Maven + Jackson/fastjson2 jars (JDK has no stdlib JSON; not provisioned),
-1,20260620-160201,1781985721,json-dom,codec,canada,2251051,,2251051,java,,jackson,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,requires Maven + Jackson/fastjson2 jars (JDK has no stdlib JSON; not provisioned),
-1,20260620-160201,1781985721,xxhash3,hash,,1048576,,1048576,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),xxhash-rust,0.8,-O3 lto,3,10,22613,22662,22672,22823,44126.7,MB/s,3308,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sha256,hash,,1048576,,1048576,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),sha2,0.10,-O3 lto,3,10,415683,417767,417569,420943,2393.7,MB/s,3412,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,md5,hash,,1048576,,1048576,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),md-5,0.10,-O3 lto,3,10,1238213,1248402,1295740,1686276,801.0,MB/s,3412,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,xxhash3,hash,,1048576,,1048576,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,xxHash,0.8.3,-O3 -march=native,3,10,7374,7424,7425,7504,134698.3,MB/s,6868,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sha256,hash,,1048576,,1048576,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,openssl,3.5.5,-O3 -march=native,3,10,415853,417977,417924,425662,2392.5,MB/s,9804,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,md5,hash,,1048576,,1048576,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,openssl,3.5.5,-O3 -march=native,3,10,922738,925444,929300,964106,1080.6,MB/s,9808,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,xxhash3,hash,,1048576,,1048576,go,go version go1.26.0 linux/amd64,zeebo/xxh3,v1.0.2,-gcflags,3,10,16501,16511,16535,16752,60565.7,MB/s,4068,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sha256,hash,,1048576,,1048576,go,go version go1.26.0 linux/amd64,crypto/sha256,go1.26.0,-gcflags,3,10,415262,417226,417311,421795,2396.8,MB/s,4092,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,md5,hash,,1048576,,1048576,go,go version go1.26.0 linux/amd64,crypto/md5,go1.26.0,-gcflags,3,10,926916,944249,950316,1010283,1059.0,MB/s,4112,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,xxhash3,hash,,1048576,,1048576,python,Python 3.12.9,xxhash,3.7.0,-OO,3,10,23264,23404,23998,28383,42727.7,MB/s,16648,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sha256,hash,,1048576,,1048576,python,Python 3.12.9,hashlib,3.12.9,-OO,3,10,417446,419701,420921,426373,2382.6,MB/s,16648,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,md5,hash,,1048576,,1048576,python,Python 3.12.9,hashlib,3.12.9,-OO,3,10,924441,926706,928051,937566,1079.1,MB/s,16648,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,siphash,hash,,1048576,,1048576,rust,,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,
-1,20260620-160201,1781985721,siphash,hash,,1048576,,1048576,cpp,,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,
-1,20260620-160201,1781985721,siphash,hash,,1048576,,1048576,go,,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,
-1,20260620-160201,1781985721,siphash,hash,,1048576,,1048576,python,,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,355519,361551,364074,376299,138.29,Melem/s,3096,-1,-1,-1,-1,ok,true,,random
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,11341,11422,11391,11451,4377.52,Melem/s,3160,-1,-1,-1,-1,ok,true,,ascending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,14257,14317,14540,15559,3492.35,Melem/s,3160,-1,-1,-1,-1,ok,true,,descending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,90761,91021,91479,96031,549.32,Melem/s,3160,-1,-1,-1,-1,ok,true,,dups
-1,20260620-160201,1781985721,sort-stable-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-stable,std,-O3 lto,3,10,589491,594750,599901,637070,84.07,Melem/s,3292,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sort-f64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,738752,750434,764260,839000,66.63,Melem/s,3292,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,1802195,1844304,1883474,2048699,27.11,Melem/s,4672,-1,-1,-1,-1,ok,true,,random
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,pdqsort,std,-O3 -march=native,3,10,707983,717492,791571,1293086,69.69,Melem/s,5252,-1,-1,-1,-1,ok,true,,random
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,259038,268787,269629,286499,186.02,Melem/s,5252,-1,-1,-1,-1,ok,true,,ascending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,pdqsort,std,-O3 -march=native,3,10,19877,19947,19946,20027,2506.64,Melem/s,5252,-1,-1,-1,-1,ok,true,,ascending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,149582,150183,152753,167626,332.93,Melem/s,5252,-1,-1,-1,-1,ok,true,,descending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,pdqsort,std,-O3 -march=native,3,10,41499,42220,45720,59001,1184.27,Melem/s,5252,-1,-1,-1,-1,ok,true,,descending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,491235,506804,515961,614147,98.66,Melem/s,5252,-1,-1,-1,-1,ok,true,,dups
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,pdqsort,std,-O3 -march=native,3,10,77266,77396,77705,80632,646.03,Melem/s,5252,-1,-1,-1,-1,ok,true,,dups
-1,20260620-160201,1781985721,sort-stable-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::stable_sort,std,-O3 -march=native,3,10,2016418,2030314,2029106,2048749,24.63,Melem/s,5252,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sort-f64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,2236704,2252493,2301041,2715134,22.20,Melem/s,5252,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,2254978,2333716,2355749,2621107,21.43,Melem/s,6760,-1,-1,-1,-1,ok,true,,random
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,14076,21230,21964,31870,2355.16,Melem/s,7612,-1,-1,-1,-1,ok,true,,ascending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,21400,21541,24658,37891,2321.16,Melem/s,7964,-1,-1,-1,-1,ok,true,,descending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,75202,76604,79470,97985,652.71,Melem/s,8244,-1,-1,-1,-1,ok,true,,dups
-1,20260620-160201,1781985721,sort-stable-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.SortStableFunc,stdlib,-gcflags,3,10,6072749,6379547,6423500,7475533,7.84,Melem/s,7728,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sort-f64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,2740513,2763866,2866012,3668811,18.09,Melem/s,7896,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,7475492,7646284,7693059,8327908,6.54,Melem/s,13676,-1,-1,-1,-1,ok,true,,random
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,105088,107673,122829,190449,464.37,Melem/s,13676,-1,-1,-1,-1,ok,true,,ascending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,100238,103906,104163,111660,481.20,Melem/s,13676,-1,-1,-1,-1,ok,true,,descending
-1,20260620-160201,1781985721,sort-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,776092,789908,791330,822530,63.30,Melem/s,13676,-1,-1,-1,-1,ok,true,,dups
-1,20260620-160201,1781985721,sort-stable-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,7530596,8526773,8645439,10545406,5.86,Melem/s,13864,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,sort-f64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,4577513,4908626,5105555,6393784,10.19,Melem/s,14092,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-search,string,,360448,,360448,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-find,std,-O3 lto,3,10,20299,20338,21136,28423,16901.9,MB/s,2640,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-search,string,,360448,,360448,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),memchr,std,-O3 lto,3,10,7114,7124,7128,7163,48252.4,MB/s,2724,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-replace,string,,360448,,360448,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-replace,std,-O3 lto,3,10,97504,97814,98180,100620,3514.3,MB/s,3104,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-uppercase,string,,360448,,360448,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-to_uppercase,std,-O3 lto,3,10,14136,14156,14149,14157,24283.0,MB/s,3104,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-build-concat,string,,4000,,4000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),String::push_str,std,-O3 lto,3,10,330,331,365,551,11524.8,MB/s,3104,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-search,string,,360448,,360448,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::string::find,std,-O3 -march=native,3,10,29796,29837,30982,41308,11520.9,MB/s,4244,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-replace,string,,360448,,360448,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std find-loop,std,-O3 -march=native,3,10,96211,96762,97121,100049,3552.5,MB/s,5164,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-uppercase,string,,360448,,360448,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,ascii-toupper,std,-O3 -march=native,3,10,354769,356752,358892,367442,963.6,MB/s,5164,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-build-concat,string,,4000,,4000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::string +=,std,-O3 -march=native,3,10,1703,1733,1749,1874,2201.2,MB/s,5164,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-search,string,,360448,,360448,go,go version go1.26.0 linux/amd64,strings.Index,stdlib,-gcflags,3,10,44113,44193,44887,50996,7778.4,MB/s,3252,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-replace,string,,360448,,360448,go,go version go1.26.0 linux/amd64,strings.ReplaceAll,stdlib,-gcflags,3,10,122330,156485,192845,587647,2196.7,MB/s,6796,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-uppercase,string,,360448,,360448,go,go version go1.26.0 linux/amd64,strings.ToUpper,stdlib,-gcflags,3,10,378513,411886,439483,608496,834.6,MB/s,7916,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-build-concat,string,,4000,,4000,go,go version go1.26.0 linux/amd64,strings.Builder,stdlib,-gcflags,3,10,1142,3817,3157,4929,999.4,MB/s,8096,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-search,string,,360448,,360448,python,Python 3.12.9,str.find,cpython,-OO,3,10,44073,44153,44642,48361,7785.4,MB/s,10872,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-replace,string,,360448,,360448,python,Python 3.12.9,str.replace,cpython,-OO,3,10,335082,338438,342908,383933,1015.7,MB/s,11640,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-uppercase,string,,360448,,360448,python,Python 3.12.9,str.upper,cpython,-OO,3,10,70663,70723,74145,104978,4860.5,MB/s,11640,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,string-build-concat,string,,4000,,4000,python,Python 3.12.9,str.join,cpython,-OO,3,10,9898,10029,10045,10240,380.4,MB/s,11640,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,saxpy,math,,1000000,,1000000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,592857,637020,699372,1226070,3.140,GFLOP/s,33552,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,dot-product,math,,1000000,,1000000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,391418,393511,394260,398501,5.082,GFLOP/s,33620,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,matmul,math,,40000,,40000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,2290425,2294372,2296471,2314580,6.974,GFLOP/s,34568,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,saxpy,math,,1000000,,1000000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,403069,411365,463089,711100,4.862,GFLOP/s,35152,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,dot-product,math,,1000000,,1000000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,642010,645817,645444,649153,3.097,GFLOP/s,34824,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,matmul,math,,40000,,40000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,2460255,2466075,2477361,2559312,6.488,GFLOP/s,34824,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,saxpy,math,,1000000,,1000000,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,407678,417116,419143,446291,4.795,GFLOP/s,35232,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,dot-product,math,,1000000,,1000000,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,389754,394844,408515,511063,5.065,GFLOP/s,35240,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,matmul,math,,40000,,40000,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,3367313,3385096,3392978,3477130,4.727,GFLOP/s,36116,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,saxpy,math,,1000000,,1000000,python,Python 3.12.9,numpy,2.4.6,-OO,3,10,415322,465557,446863,479003,4.296,GFLOP/s,73340,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,dot-product,math,,1000000,,1000000,python,Python 3.12.9,numpy,2.4.6,-OO,3,10,9958,10170,10240,10780,196.657,GFLOP/s,73340,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,matmul,math,,40000,,40000,python,Python 3.12.9,numpy,2.4.6,-OO,3,10,70012,73529,72752,74000,217.601,GFLOP/s,73880,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-int,collection,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-HashMap,std,-O3 lto,3,10,815256,872944,1069360,2379172,57.28,Mop/s,3472,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-int,collection,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),ahash,std,-O3 lto,3,10,275108,277653,278449,290797,180.08,Mop/s,3536,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-string,collection,,30000,,30000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-HashMap,std,-O3 lto,3,10,3113095,3162267,3157059,3219354,9.49,Mop/s,5500,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-string,collection,,30000,,30000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),ahash,std,-O3 lto,3,10,2921804,2959986,2960890,3027824,10.14,Mop/s,5500,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashset-dedup,collection,,100000,,100000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-HashSet,std,-O3 lto,3,10,1239405,1245205,1251389,1312342,80.31,Mop/s,5500,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,arraylist-append,collection,,100000,,100000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),Vec,std,-O3 lto,3,10,26430,26540,26566,26961,3767.90,Mop/s,5500,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-int,collection,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::unordered_map,std,-O3 -march=native,3,10,880539,887782,890838,912539,56.32,Mop/s,5884,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-int,collection,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,ankerl::unordered_dense,std,-O3 -march=native,3,10,181842,185369,185398,193675,269.73,Mop/s,6072,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-string,collection,,30000,,30000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::unordered_map,std,-O3 -march=native,3,10,2737096,2755701,2796067,3188446,10.89,Mop/s,6216,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-string,collection,,30000,,30000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,ankerl::unordered_dense,std,-O3 -march=native,3,10,1484897,1540842,1522721,1556512,19.47,Mop/s,6584,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashset-dedup,collection,,100000,,100000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::unordered_set,std,-O3 -march=native,3,10,961581,981048,987687,1081097,101.93,Mop/s,6928,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,arraylist-append,collection,,100000,,100000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::vector,std,-O3 -march=native,3,10,34505,35868,39059,53661,2788.00,Mop/s,7040,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-int,collection,,50000,,50000,go,go version go1.26.0 linux/amd64,map,stdlib,-gcflags,3,10,867454,1039057,1018570,1306791,48.12,Mop/s,7880,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-string,collection,,30000,,30000,go,go version go1.26.0 linux/amd64,map,stdlib,-gcflags,3,10,2775348,3770353,3646796,4609113,7.96,Mop/s,8244,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashset-dedup,collection,,100000,,100000,go,go version go1.26.0 linux/amd64,map-set,stdlib,-gcflags,3,10,1742172,2100006,2066784,2347863,47.62,Mop/s,8244,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,arraylist-append,collection,,100000,,100000,go,go version go1.26.0 linux/amd64,slice,stdlib,-gcflags,3,10,471699,599419,583156,675824,166.83,Mop/s,10308,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-int,collection,,50000,,50000,python,Python 3.12.9,dict,cpython,-OO,3,10,3371972,3605742,3575911,3687696,13.87,Mop/s,18820,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashmap-string,collection,,30000,,30000,python,Python 3.12.9,dict,cpython,-OO,3,10,6272907,6337588,6762531,9299458,4.73,Mop/s,18820,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,hashset-dedup,collection,,100000,,100000,python,Python 3.12.9,set,cpython,-OO,3,10,3359228,3457603,3461270,3643945,28.92,Mop/s,18820,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,arraylist-append,collection,,100000,,100000,python,Python 3.12.9,list,cpython,-OO,3,10,1715141,1760917,1765308,1865555,56.79,Mop/s,18820,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-mandelbrot,clbg,,640000,,640000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,26736295,27116632,27141061,27612024,,,2276,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-fannkuch-redux,clbg,,10,,10,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,159303761,160795581,160751677,163127093,,,2344,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-spectral-norm,clbg,,100,,100,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,311697,323790,319173,327096,,,2344,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-mandelbrot,clbg,,640000,,640000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,23600438,23860658,23849958,24154020,,,3896,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-fannkuch-redux,clbg,,10,,10,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,158592221,159803122,161266576,170261303,,,4092,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-spectral-norm,clbg,,100,,100,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,136577,136627,137575,142839,,,4096,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-mandelbrot,clbg,,640000,,640000,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,27864561,27931907,27921038,28035152,,,2848,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-fannkuch-redux,clbg,,10,,10,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,148853516,150896123,150954879,152722624,,,2880,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-spectral-norm,clbg,,100,,100,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,317889,329621,327195,334740,,,2924,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-mandelbrot,clbg,,640000,,640000,python,Python 3.12.9,numpy,2.4.6,-OO,3,10,116330960,128040548,127901492,140390693,,,66336,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-fannkuch-redux,clbg,,10,,10,python,Python 3.12.9,cpython,3.12.9,-OO,3,10,4299140133,4411660335,4386196660,4470252710,,,66336,-1,-1,-1,-1,ok,true,,
-1,20260620-160201,1781985721,clbg-spectral-norm,clbg,,100,,100,python,Python 3.12.9,cpython,3.12.9,-OO,3,10,36084895,37405964,37919837,43834454,,,66336,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,,example,scaffold,,-1,,-1,cajeta,,,,,20,200,541,561,597,581,,,3004,-1,-1,-1,152,ok,true,,
+1,20260620-160821,,sum,selftest,,-1,,-1,cajeta,,,,,5,50,3937,3938,3941,3948,,,3044,-1,-1,-1,20,ok,true,,
+1,20260620-160821,,variant-demo,selftest,,-1,,-1,cajeta,,,,,3,20,30,40,36,70,,,3084,-1,-1,-1,20,ok,true,,small
+1,20260620-160821,,variant-demo,selftest,,-1,,-1,cajeta,,,,,3,20,160,170,168,190,,,3124,-1,-1,-1,20,ok,true,,large
+1,20260620-160821,,json-tokenize,codec,,-1,,631514,cajeta,,,,,10,50,1562043,1586689,1596639,1669455,,,4384,-1,-1,-1,620,ok,true,,twitter
+1,20260620-160821,,json-tokenize,codec,,-1,,1727204,cajeta,,,,,10,50,3694983,3843132,3891011,4149419,,,7532,-1,-1,-1,2064,ok,true,,citm_catalog
+1,20260620-160821,,json-tokenize,codec,,-1,,2251051,cajeta,,,,,10,50,8973699,9103723,9115717,9250761,,,9756,-1,-1,-1,3768,ok,true,,canada
+1,20260620-160821,,json-bind-skip,codec,,-1,,631514,cajeta,,,,,10,50,157766,164809,180116,267192,,,9756,-1,-1,-1,2868,ok,true,,twitter
+1,20260620-160821,,json-bind-skip,codec,,-1,,1727204,cajeta,,,,,10,50,355291,373356,373979,386701,,,12260,-1,-1,-1,4,ok,true,,citm_catalog
+1,20260620-160821,,json-bind-skip,codec,,-1,,2251051,cajeta,,,,,10,50,728251,733661,736950,760862,,,14824,-1,-1,-1,4,ok,true,,canada
+1,20260620-160821,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,20260620-160821,,json-dom,codec,,-1,,1727204,cajeta,,,,,5,30,10852685,11470188,11397619,11840064,,,564824,-1,-1,-1,479368,ok,true,,citm_catalog
+1,20260620-160821,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,20260620-160821,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,20260620-160821,,json-serialize,codec,,-1,,1727204,cajeta,,,,,5,30,12255894,14329841,14088686,15809167,,,1312284,-1,-1,-1,595212,ok,true,,citm_catalog
+1,20260620-160821,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,20260620-160821,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,20260620-160821,,json-roundtrip,codec,,-1,,1727204,cajeta,,,,,5,30,34313869,35844793,35709792,37434648,,,2567856,-1,-1,-1,1074740,ok,true,,citm_catalog
+1,20260620-160821,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,20260620-160821,,json-conformance,codec,,-1,,14,cajeta,,,,,3,20,24496,26350,26390,28513,,,2569092,-1,-1,-1,864,ok,true,,
+1,20260620-160821,,base64-encode,codec,,-1,,1048576,cajeta,,,,,20,100,10677724,11566649,11560869,11746247,,,2733996,-1,-1,-1,136556,ok,true,,
+1,20260620-160821,,base64-decode,codec,,-1,,1048576,cajeta,,,,,20,100,11658372,11786022,11855959,12065678,,,2859304,-1,-1,-1,102420,ok,true,,
+1,20260620-160821,,arraylist-append,collection,,-1,,100000,cajeta,,,,,5,50,988723,1018819,1059398,1198066,,,2909228,-1,-1,-1,45368,ok,true,,
+1,20260620-160821,,hashmap-int,collection,,-1,,50000,cajeta,,,,,5,30,2586472,2632539,2664034,2792010,,,2989888,-1,-1,-1,69128,ok,true,,
+1,20260620-160821,,hashmap-string,collection,,-1,,30000,cajeta,,,,,5,30,12010755,12293708,12642392,15474020,,,3385308,-1,-1,-1,338916,ok,true,,
+1,20260620-160821,,hashset-dedup,collection,,-1,,100000,cajeta,,,,,5,30,3330134,3409222,3431434,3596455,,,3439112,-1,-1,-1,46104,ok,true,,
+1,20260620-160821,,linkedlist-insert-traverse,collection,,-1,,40000,cajeta,,,,,5,30,1324385,1355172,1420166,1752571,,,3504772,-1,-1,-1,56268,ok,true,,
+1,20260620-160821,,heap-sort,collection,,-1,,50000,cajeta,,,,,5,30,4426358,4562264,4556119,4753735,,,3520756,-1,-1,-1,13684,ok,true,,
+1,20260620-160821,,redblacktree-insert-lookup,collection,,-1,,20000,cajeta,,,,,3,20,3337858,3408009,3421057,3729045,,,3549540,-1,-1,-1,25016,ok,true,,
+1,20260620-160821,,sort-int64,sort,,-1,,50000,cajeta,,,,,5,30,3053620,3065422,3081266,3205927,,,3564828,-1,-1,-1,11752,ok,true,,random
+1,20260620-160821,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),ascending
+1,20260620-160821,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),descending
+1,20260620-160821,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),dups
+1,20260620-160821,,sort-f64,sort,,-1,,50000,cajeta,,,,,5,30,3275731,3326146,3340199,3434040,,,3580132,-1,-1,-1,11752,ok,true,,
+1,20260620-160821,,sort-stable-int64,sort,,-1,,50000,cajeta,,,,,5,30,3457930,3502305,3540072,3740503,,,3609072,-1,-1,-1,23452,ok,true,,
+1,20260620-160821,,binary-search,sort,,-1,,50000,cajeta,,,,,5,30,5286579,5413849,5436971,5708414,,,3622780,-1,-1,-1,11736,ok,true,,
+1,20260620-160821,,string-build-concat,string,,-1,,4000,cajeta,,,,,5,30,9748614,12666251,12169293,13539996,,,5858912,-1,-1,-1,1891392,ok,true,,
+1,20260620-160821,,string-search,string,,-1,,360448,cajeta,,,,,10,50,211037,211078,211820,214063,,,5860232,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,string-replace,string,,-1,,360448,cajeta,,,,,10,50,1017207,1020813,1028821,1109941,,,5883496,-1,-1,-1,18800,ok,true,,
+1,20260620-160821,,string-uppercase,string,,-1,,360448,cajeta,,,,,10,50,257846,261523,265883,283123,,,5904972,-1,-1,-1,17604,ok,true,,
+1,20260620-160821,,xxhash3,hash,,-1,,1048576,cajeta,,,,,20,100,23444,23494,23601,24045,,,5905996,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,siphash,hash,,-1,,1048576,cajeta,,,,,20,100,246093,246304,247298,249671,,,5907020,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,sha256,hash,,-1,,1048576,cajeta,,,,,10,50,2245630,2263124,2268464,2284724,,,5908044,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,md5,hash,,-1,,1048576,cajeta,,,,,10,50,1642233,1647043,1649278,1664325,,,5909068,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,stream-filter-map-reduce,stream,,-1,,1000000,cajeta,,,,,5,30,74053740,77787905,78037374,81139478,,,5916864,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,stream-parallel-reduce,stream,,-1,,1000000,cajeta,,,,,5,30,33458788,35394886,35219413,36303948,,,5925056,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,saxpy,math,,-1,,1000000,cajeta,,,,,10,50,595652,608496,609636,630898,,,5948492,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,dot-product,math,,-1,,1000000,cajeta,,,,,10,50,390506,393912,394723,400494,,,5964116,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,matmul,math,,-1,,40000,cajeta,,,,,5,20,2871239,2933025,2934017,3034426,,,5965056,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,clbg-mandelbrot,clbg,,-1,,640000,cajeta,,,,,5,20,28665209,28735190,28766998,29481436,,,5965056,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,clbg-fannkuch-redux,clbg,,-1,,10,cajeta,,,,,3,10,160607117,163462716,163185650,165526834,,,5965056,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,clbg-spectral-norm,clbg,,-1,,100,cajeta,,,,,5,30,3804246,3826859,3846729,3968526,,,5965056,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,time-instant-arith,time,,-1,,1000000,cajeta,,,,,10,50,49674245,50838819,50987186,52846060,,,5965056,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,time-localdate-arith,time,,-1,,100000,cajeta,,,,,5,30,5009938,5075061,5099728,5248798,,,5965056,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,atomic-fetchadd,concurrent,,-1,,1000000,cajeta,,,,,10,50,9643767,9662101,9675428,9774693,,,5965056,-1,-1,-1,0,ok,true,,
+1,20260620-160821,,task-spawn-await,concurrent,,-1,,20000,cajeta,,,,,2,3,172030295,182180206,180973285,188709355,,,5965544,-1,-1,-1,0,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),serde_json,1,-O3 lto,3,10,1031343,1166338,1237414,1503863,516.4,MB/s,5488,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),simd-json,0.13,-O3 lto,3,10,719676,727781,780303,1101605,827.5,MB/s,7744,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),serde_json,1,-O3 lto,3,10,2254718,2264957,2266782,2309100,727.3,MB/s,11836,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),simd-json,0.13,-O3 lto,3,10,1569296,1580266,1583837,1619070,1042.3,MB/s,14132,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),serde_json,1,-O3 lto,3,10,4157462,4623429,4734499,6660176,464.3,MB/s,14132,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),simd-json,0.13,-O3 lto,3,10,4071710,4094564,4109130,4267799,524.3,MB/s,22100,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,simdjson,4.6.1,-O3 -march=native,3,10,98665,103575,111246,145625,5814.7,MB/s,7052,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,yyjson,0.10,-O3 -march=native,3,10,143791,144352,144919,149252,4172.2,MB/s,6772,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,simdjson,4.6.1,-O3 -march=native,3,10,272814,274517,276145,284496,6000.3,MB/s,11560,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,yyjson,0.10,-O3 -march=native,3,10,376479,381288,381362,388682,4320.1,MB/s,11200,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,simdjson,4.6.1,-O3 -march=native,3,10,1240698,1507179,1497546,1852299,1424.4,MB/s,17388,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,yyjson,0.10,-O3 -march=native,3,10,1325156,1342209,1378683,1656310,1599.4,MB/s,17388,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,go,go version go1.26.0 linux/amd64,encoding/json,go1.26.0,-gcflags,3,10,3488521,4206364,4179897,5016109,143.2,MB/s,9956,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,go,go version go1.26.0 linux/amd64,goccy/go-json,v0.10.5,-gcflags,3,10,2263895,2716978,2672116,3212882,221.7,MB/s,16524,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,go,go version go1.26.0 linux/amd64,encoding/json,go1.26.0,-gcflags,3,10,8325874,10074708,9670298,11058411,163.5,MB/s,19208,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,go,go version go1.26.0 linux/amd64,goccy/go-json,v0.10.5,-gcflags,3,10,4741742,5889554,5924451,7014383,279.7,MB/s,28800,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,go,go version go1.26.0 linux/amd64,encoding/json,go1.26.0,-gcflags,3,10,15454483,16721490,16786835,18246813,128.4,MB/s,30592,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,go,go version go1.26.0 linux/amd64,goccy/go-json,v0.10.5,-gcflags,3,10,13556016,15448522,15352817,18153257,139.0,MB/s,47764,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,python,Python 3.12.9,json,3.12.9,-OO,3,10,1746460,1761940,1769317,1811111,341.8,MB/s,15744,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,python,Python 3.12.9,orjson,3.11.9,-OO,3,10,693356,713223,730436,873555,844.4,MB/s,17040,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,python,Python 3.12.9,msgspec,0.21.1,-OO,3,10,924602,930733,931437,942515,647.1,MB/s,18364,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,python,Python 3.12.9,ujson,5.13.0,-OO,3,10,1144396,1168220,1176116,1312262,515.5,MB/s,20852,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,python,Python 3.12.9,json,3.12.9,-OO,3,10,3943689,4507992,4615706,6144175,365.4,MB/s,26848,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,python,Python 3.12.9,orjson,3.11.9,-OO,3,10,2050052,2064028,2129771,2700457,798.0,MB/s,29500,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,python,Python 3.12.9,msgspec,0.21.1,-OO,3,10,2663507,2686901,2698612,2804143,613.0,MB/s,29500,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,python,Python 3.12.9,ujson,5.13.0,-OO,3,10,2980735,2996104,3029304,3334201,549.8,MB/s,31548,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,python,Python 3.12.9,json,3.12.9,-OO,3,10,32385847,33038597,33047281,34186660,65.0,MB/s,35644,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,python,Python 3.12.9,orjson,3.11.9,-OO,3,10,5542441,5586113,5592026,5685661,384.3,MB/s,39216,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,python,Python 3.12.9,msgspec,0.21.1,-OO,3,10,5834891,6189339,6193445,6581257,346.8,MB/s,39216,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,python,Python 3.12.9,ujson,5.13.0,-OO,3,10,8634816,8808032,8876346,9498032,243.7,MB/s,39216,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,json-dom,codec,twitter,631514,,631514,java,,jackson,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,requires Maven + Jackson/fastjson2 jars (JDK has no stdlib JSON; not provisioned),
+1,20260620-160821,1781986101,json-dom,codec,citm_catalog,1727204,,1727204,java,,jackson,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,requires Maven + Jackson/fastjson2 jars (JDK has no stdlib JSON; not provisioned),
+1,20260620-160821,1781986101,json-dom,codec,canada,2251051,,2251051,java,,jackson,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,requires Maven + Jackson/fastjson2 jars (JDK has no stdlib JSON; not provisioned),
+1,20260620-160821,1781986101,xxhash3,hash,,1048576,,1048576,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),xxhash-rust,0.8,-O3 lto,3,10,38212,38432,38384,38503,26020.0,MB/s,3340,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sha256,hash,,1048576,,1048576,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),sha2,0.10,-O3 lto,3,10,484382,489953,489620,504641,2041.0,MB/s,3344,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,md5,hash,,1048576,,1048576,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),md-5,0.10,-O3 lto,3,10,1241007,1243242,1247417,1266035,804.3,MB/s,3344,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,xxhash3,hash,,1048576,,1048576,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,xxHash,0.8.3,-O3 -march=native,3,10,7484,7575,7582,7724,132013.2,MB/s,6864,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sha256,hash,,1048576,,1048576,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,openssl,3.5.5,-O3 -march=native,3,10,416915,419581,419311,422626,2383.3,MB/s,9800,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,md5,hash,,1048576,,1048576,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,openssl,3.5.5,-O3 -march=native,3,10,924682,927437,927038,928059,1078.2,MB/s,9804,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,xxhash3,hash,,1048576,,1048576,go,go version go1.26.0 linux/amd64,zeebo/xxh3,v1.0.2,-gcflags,3,10,18164,18445,20119,34685,54215.2,MB/s,4068,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sha256,hash,,1048576,,1048576,go,go version go1.26.0 linux/amd64,crypto/sha256,go1.26.0,-gcflags,3,10,478441,493690,490003,504540,2025.6,MB/s,4092,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,md5,hash,,1048576,,1048576,go,go version go1.26.0 linux/amd64,crypto/md5,go1.26.0,-gcflags,3,10,923650,927638,931429,970277,1078.0,MB/s,4112,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,xxhash3,hash,,1048576,,1048576,python,Python 3.12.9,xxhash,3.7.0,-OO,3,10,23715,26099,25915,28173,38315.6,MB/s,16668,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sha256,hash,,1048576,,1048576,python,Python 3.12.9,hashlib,3.12.9,-OO,3,10,416856,419571,419944,426132,2383.4,MB/s,16668,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,md5,hash,,1048576,,1048576,python,Python 3.12.9,hashlib,3.12.9,-OO,3,10,926084,929000,931261,949699,1076.4,MB/s,16668,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,siphash,hash,,1048576,,1048576,rust,,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,
+1,20260620-160821,1781986101,siphash,hash,,1048576,,1048576,cpp,,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,
+1,20260620-160821,1781986101,siphash,hash,,1048576,,1048576,go,,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,
+1,20260620-160821,1781986101,siphash,hash,,1048576,,1048576,python,,siphash,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,no portable cross-language SipHash with a matching key,
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,340021,373283,367963,436472,133.95,Melem/s,3096,-1,-1,-1,-1,ok,true,,random
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,9809,9828,9822,9829,5087.51,Melem/s,3160,-1,-1,-1,-1,ok,true,,ascending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,13495,13515,13510,13535,3699.59,Melem/s,3160,-1,-1,-1,-1,ok,true,,descending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,85551,86002,91447,111911,581.38,Melem/s,3160,-1,-1,-1,-1,ok,true,,dups
+1,20260620-160821,1781986101,sort-stable-int64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-stable,std,-O3 lto,3,10,581306,589801,591583,613115,84.77,Melem/s,2940,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sort-f64,sort,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-unstable,std,-O3 lto,3,10,738772,745665,746526,765502,67.05,Melem/s,3164,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,1822764,1863019,1883924,2029683,26.84,Melem/s,4688,-1,-1,-1,-1,ok,true,,random
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,pdqsort,std,-O3 -march=native,3,10,713163,721399,723966,741136,69.31,Melem/s,5268,-1,-1,-1,-1,ok,true,,random
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,264258,264358,265602,271762,189.14,Melem/s,5268,-1,-1,-1,-1,ok,true,,ascending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,pdqsort,std,-O3 -march=native,3,10,19617,19717,19719,19818,2535.88,Melem/s,5268,-1,-1,-1,-1,ok,true,,ascending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,157818,157948,158322,159982,316.56,Melem/s,5268,-1,-1,-1,-1,ok,true,,descending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,pdqsort,std,-O3 -march=native,3,10,41077,41298,41400,42400,1210.71,Melem/s,5268,-1,-1,-1,-1,ok,true,,descending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,488811,501294,498021,504821,99.74,Melem/s,5268,-1,-1,-1,-1,ok,true,,dups
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,pdqsort,std,-O3 -march=native,3,10,77236,77426,77484,78478,645.78,Melem/s,5268,-1,-1,-1,-1,ok,true,,dups
+1,20260620-160821,1781986101,sort-stable-int64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::stable_sort,std,-O3 -march=native,3,10,2033971,2044902,2049105,2077754,24.45,Melem/s,5268,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sort-f64,sort,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::sort,std,-O3 -march=native,3,10,2256080,2272701,2279961,2334067,22.00,Melem/s,5268,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,2258465,2396013,2386530,2583918,20.87,Melem/s,6904,-1,-1,-1,-1,ok,true,,random
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,14066,15910,17135,33603,3142.68,Melem/s,7896,-1,-1,-1,-1,ok,true,,ascending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,21421,21500,27002,76353,2325.58,Melem/s,7744,-1,-1,-1,-1,ok,true,,descending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,76284,85170,96634,177665,587.06,Melem/s,8124,-1,-1,-1,-1,ok,true,,dups
+1,20260620-160821,1781986101,sort-stable-int64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.SortStableFunc,stdlib,-gcflags,3,10,6128284,6542495,6548136,7268813,7.64,Melem/s,7824,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sort-f64,sort,,50000,,50000,go,go version go1.26.0 linux/amd64,slices.Sort,stdlib,-gcflags,3,10,2771942,2800075,2829117,3192875,17.86,Melem/s,8076,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,7355616,7573156,7563247,7847343,6.60,Melem/s,14208,-1,-1,-1,-1,ok,true,,random
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,105329,108955,109167,113253,458.91,Melem/s,14208,-1,-1,-1,-1,ok,true,,ascending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,110017,111359,114486,131999,449.00,Melem/s,14208,-1,-1,-1,-1,ok,true,,descending
+1,20260620-160821,1781986101,sort-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,799386,803564,805796,824523,62.22,Melem/s,14208,-1,-1,-1,-1,ok,true,,dups
+1,20260620-160821,1781986101,sort-stable-int64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,7590920,7629572,7640699,7735141,6.55,Melem/s,14208,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,sort-f64,sort,,50000,,50000,python,Python 3.12.9,Timsort,cpython,-OO,3,10,4558116,4610806,4614035,4694683,10.84,Melem/s,14452,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-search,string,,360448,,360448,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-find,std,-O3 lto,3,10,21650,29125,27262,32762,11802.6,MB/s,2648,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-search,string,,360448,,360448,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),memchr,std,-O3 lto,3,10,7594,7594,7596,7614,45266.0,MB/s,2724,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-replace,string,,360448,,360448,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-replace,std,-O3 lto,3,10,104317,104337,105175,112101,3294.6,MB/s,3104,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-uppercase,string,,360448,,360448,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-to_uppercase,std,-O3 lto,3,10,15088,15119,15112,15139,22736.3,MB/s,3104,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-build-concat,string,,4000,,4000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),String::push_str,std,-O3 lto,3,10,350,360,384,581,10596.4,MB/s,3104,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-search,string,,360448,,360448,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::string::find,std,-O3 -march=native,3,10,33743,33773,33780,33884,10178.2,MB/s,4244,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-replace,string,,360448,,360448,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std find-loop,std,-O3 -march=native,3,10,109797,110028,113582,142929,3124.2,MB/s,5164,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-uppercase,string,,360448,,360448,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,ascii-toupper,std,-O3 -march=native,3,10,401948,407036,406468,410082,844.5,MB/s,5164,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-build-concat,string,,4000,,4000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::string +=,std,-O3 -march=native,3,10,1833,1883,1898,2104,2025.9,MB/s,5164,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-search,string,,360448,,360448,go,go version go1.26.0 linux/amd64,strings.Index,stdlib,-gcflags,3,10,46949,47028,47030,47209,7309.5,MB/s,3220,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-replace,string,,360448,,360448,go,go version go1.26.0 linux/amd64,strings.ReplaceAll,stdlib,-gcflags,3,10,122992,196450,203532,597656,1749.8,MB/s,6984,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-uppercase,string,,360448,,360448,go,go version go1.26.0 linux/amd64,strings.ToUpper,stdlib,-gcflags,3,10,376669,430501,436838,583159,798.5,MB/s,7740,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-build-concat,string,,4000,,4000,go,go version go1.26.0 linux/amd64,strings.Builder,stdlib,-gcflags,3,10,942,1723,1788,3516,2214.0,MB/s,7776,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-search,string,,360448,,360448,python,Python 3.12.9,str.find,cpython,-OO,3,10,50255,50405,50937,55775,6819.8,MB/s,11136,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-replace,string,,360448,,360448,python,Python 3.12.9,str.replace,cpython,-OO,3,10,380397,382631,387665,435060,898.4,MB/s,11848,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-uppercase,string,,360448,,360448,python,Python 3.12.9,str.upper,cpython,-OO,3,10,80051,80161,84203,115999,4288.2,MB/s,11972,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,string-build-concat,string,,4000,,4000,python,Python 3.12.9,str.join,cpython,-OO,3,10,11011,11121,11152,11401,343.0,MB/s,11972,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,saxpy,math,,1000000,,1000000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,616782,628614,626126,636820,3.182,GFLOP/s,33528,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,dot-product,math,,1000000,,1000000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,391939,392410,393594,396837,5.097,GFLOP/s,33596,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,matmul,math,,40000,,40000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,2290755,2297829,2298368,2321182,6.963,GFLOP/s,34544,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,saxpy,math,,1000000,,1000000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,448114,454316,465127,563993,4.402,GFLOP/s,35148,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,dot-product,math,,1000000,,1000000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,641779,645045,646809,663460,3.101,GFLOP/s,35080,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,matmul,math,,40000,,40000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,2456467,2463451,2467147,2511511,6.495,GFLOP/s,35080,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,saxpy,math,,1000000,,1000000,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,400955,408039,407822,414691,4.901,GFLOP/s,35340,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,dot-product,math,,1000000,,1000000,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,390967,393852,397363,413128,5.078,GFLOP/s,35348,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,matmul,math,,40000,,40000,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,3384636,3477480,3458287,3614228,4.601,GFLOP/s,36188,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,saxpy,math,,1000000,,1000000,python,Python 3.12.9,numpy,2.4.6,-OO,3,10,454957,466439,467391,481978,4.288,GFLOP/s,73588,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,dot-product,math,,1000000,,1000000,python,Python 3.12.9,numpy,2.4.6,-OO,3,10,3999935,5998369,6197787,9004934,0.333,GFLOP/s,73588,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,matmul,math,,40000,,40000,python,Python 3.12.9,numpy,2.4.6,-OO,3,10,77336,79791,79346,81774,200.524,GFLOP/s,73872,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-int,collection,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-HashMap,std,-O3 lto,3,10,827518,891239,923133,1355433,56.10,Mop/s,3452,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-int,collection,,50000,,50000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),ahash,std,-O3 lto,3,10,275730,277473,279158,294635,180.20,Mop/s,3532,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-string,collection,,30000,,30000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-HashMap,std,-O3 lto,3,10,3136298,4201304,4553291,7226122,7.14,Mop/s,5496,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-string,collection,,30000,,30000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),ahash,std,-O3 lto,3,10,2855760,2877100,2911672,3261905,10.43,Mop/s,5496,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashset-dedup,collection,,100000,,100000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),std-HashSet,std,-O3 lto,3,10,1226370,1234906,1233939,1240567,80.98,Mop/s,5496,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,arraylist-append,collection,,100000,,100000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),Vec,std,-O3 lto,3,10,24536,24857,24765,24977,4023.01,Mop/s,5496,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-int,collection,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::unordered_map,std,-O3 -march=native,3,10,801540,809204,831646,1036022,61.79,Mop/s,5892,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-int,collection,,50000,,50000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,ankerl::unordered_dense,std,-O3 -march=native,3,10,209013,209865,210597,216047,238.25,Mop/s,6080,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-string,collection,,30000,,30000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::unordered_map,std,-O3 -march=native,3,10,2670090,2691550,2707876,2809773,11.15,Mop/s,6224,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-string,collection,,30000,,30000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,ankerl::unordered_dense,std,-O3 -march=native,3,10,1477473,1523631,1515170,1557173,19.69,Mop/s,6592,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashset-dedup,collection,,100000,,100000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::unordered_set,std,-O3 -march=native,3,10,941103,963816,971910,1087829,103.75,Mop/s,6748,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,arraylist-append,collection,,100000,,100000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::vector,std,-O3 -march=native,3,10,34825,35026,35141,35937,2855.02,Mop/s,6868,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-int,collection,,50000,,50000,go,go version go1.26.0 linux/amd64,map,stdlib,-gcflags,3,10,782795,938347,935060,1378757,53.29,Mop/s,8060,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-string,collection,,30000,,30000,go,go version go1.26.0 linux/amd64,map,stdlib,-gcflags,3,10,2879364,3387241,3464358,4605977,8.86,Mop/s,8284,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashset-dedup,collection,,100000,,100000,go,go version go1.26.0 linux/amd64,map-set,stdlib,-gcflags,3,10,1829416,2021388,2048358,2454093,49.47,Mop/s,8128,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,arraylist-append,collection,,100000,,100000,go,go version go1.26.0 linux/amd64,slice,stdlib,-gcflags,3,10,361481,551739,502030,655444,181.25,Mop/s,9388,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-int,collection,,50000,,50000,python,Python 3.12.9,dict,cpython,-OO,3,10,3593169,3633544,3633310,3680744,13.76,Mop/s,19048,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashmap-string,collection,,30000,,30000,python,Python 3.12.9,dict,cpython,-OO,3,10,6112695,6177978,6177371,6245576,4.86,Mop/s,19048,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,hashset-dedup,collection,,100000,,100000,python,Python 3.12.9,set,cpython,-OO,3,10,3820026,3850874,3850652,3890730,25.97,Mop/s,19048,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,arraylist-append,collection,,100000,,100000,python,Python 3.12.9,list,cpython,-OO,3,10,1690826,1938933,1915223,2087783,51.57,Mop/s,19080,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-mandelbrot,clbg,,640000,,640000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,26752115,26814472,26808046,26865619,,,2272,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-fannkuch-redux,clbg,,10,,10,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,158871748,160719128,160448341,163620173,,,2340,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-spectral-norm,clbg,,100,,100,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),scalar,std,-O3 lto,3,10,312228,323239,320155,327476,,,2340,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-mandelbrot,clbg,,640000,,640000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,23572174,23630704,23675556,24127100,,,3896,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-fannkuch-redux,clbg,,10,,10,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,155315969,157064323,157035551,160778490,,,4092,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-spectral-norm,clbg,,100,,100,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,scalar,std,-O3 -march=native,3,10,136407,136547,136929,138952,,,4096,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-mandelbrot,clbg,,640000,,640000,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,27835886,27896411,27905400,28076780,,,2848,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-fannkuch-redux,clbg,,10,,10,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,148950037,149370960,149564027,150693812,,,2880,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-spectral-norm,clbg,,100,,100,go,go version go1.26.0 linux/amd64,scalar,stdlib,-gcflags,3,10,325694,329551,333283,352824,,,2924,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-mandelbrot,clbg,,640000,,640000,python,Python 3.12.9,numpy,2.4.6,-OO,3,10,118987795,124350217,123888086,133633885,,,66304,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-fannkuch-redux,clbg,,10,,10,python,Python 3.12.9,cpython,3.12.9,-OO,3,10,4278844782,4353314806,4350274256,4493723523,,,66304,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,clbg-spectral-norm,clbg,,100,,100,python,Python 3.12.9,cpython,3.12.9,-OO,3,10,36467737,37118934,37064468,37735805,,,66304,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,time-instant-arith,time,,1000000,,1000000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),chrono,0.4,-O3 lto,3,10,6846036,6860513,6863800,6889298,145.76,Mop/s,2288,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,time-localdate-arith,time,,100000,,100000,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),chrono,0.4,-O3 lto,3,10,561237,569633,573532,606833,175.55,Mop/s,2356,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,time-instant-arith,time,,1000000,,1000000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::chrono,std,-O3 -march=native -std=c++20,3,10,111661,111761,112299,117381,8947.67,Mop/s,3888,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,time-localdate-arith,time,,100000,,100000,cpp,g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0,std::chrono,std,-O3 -march=native -std=c++20,3,10,11191,11201,11207,11241,8927.77,Mop/s,4084,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,time-instant-arith,time,,1000000,,1000000,go,go version go1.26.0 linux/amd64,time,stdlib,-gcflags,3,10,2937503,2970075,3010972,3418339,336.69,Mop/s,2820,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,time-localdate-arith,time,,100000,,100000,go,go version go1.26.0 linux/amd64,time,stdlib,-gcflags,3,10,1513040,1516868,1602035,2367189,65.93,Mop/s,2916,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,time-instant-arith,time,,1000000,,1000000,python,Python 3.12.9,datetime,cpython,-OO,3,10,351576269,356046670,358157682,375521746,2.81,Mop/s,11116,-1,-1,-1,-1,ok,true,,
+1,20260620-160821,1781986101,time-localdate-arith,time,,100000,,100000,python,Python 3.12.9,datetime,cpython,-OO,3,10,17266876,17445002,17426928,17557033,5.73,Mop/s,11116,-1,-1,-1,-1,ok,true,,
