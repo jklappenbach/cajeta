@@ -44,6 +44,8 @@ import profile.clbg.FannkuchBench;
 import profile.clbg.SpectralNormBench;
 import profile.time.InstantArithmeticBench;
 import profile.time.LocalDateArithmeticBench;
+import profile.concurrent.AtomicBench;
+import profile.concurrent.TaskSpawnBench;
 import profile.report.Result;
 import profile.report.Report;
 import profile.report.Memory;
@@ -116,6 +118,9 @@ public final class Profile {
         // -- time area (Unit 13) --
         benchmarks.add(heap InstantArithmeticBench());
         benchmarks.add(heap LocalDateArithmeticBench());
+        // -- concurrency area (Unit 14) --
+        benchmarks.add(heap AtomicBench());
+        benchmarks.add(heap TaskSpawnBench());
 
         // Parse the minimal flags so far. (Full selection — --area, --bench,
         // --lang, --no-report — lands in Unit 17.)
