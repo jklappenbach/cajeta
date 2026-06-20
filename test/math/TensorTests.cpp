@@ -683,3 +683,48 @@ TEST(TensorTests, wildcardBoundedFloatingFromProtocol) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 7b — external-producer import via the protocol with the CONTIGUITY contract
+// (fromProtocolContiguous). Two paths in one scope: (1) an AMENABLE (already
+// contiguous) layout is consumed zero-copy — the result is a view, writes show
+// through to the producer; (2) a NON-AMENABLE (transposed / non-contiguous) layout
+// is COPIED into an independent contiguous tensor — not a view, writes don't show
+// through. isView() is how the import "says so". Regression guard for the
+// rebuildShared/rebuildContiguous borrowed-Storage UAF: the copy path materializes
+// directly from the borrow (materializeFrom) and must NOT free the producer buffer.
+TEST(TensorTests, externalProducerZeroCopy) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.TensorProtocol;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float32[] data = { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f };\n"
+        "        int64[] shp = heap int64[2];\n"
+        "        shp[0] = 2;\n"
+        "        shp[1] = 3;\n"
+        "        Tensor<float32> producer = Tensor.of<float32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        // (1) amenable: already contiguous → zero-copy view, writes show through
+        "        TensorProtocol pc = producer.protocol();\n"
+        "        Tensor<?> wc = Tensor.fromProtocolContiguous(pc);\n"
+        "        Tensor<float32> capc = (Tensor<float32>) wc;\n"
+        "        if (!capc.isView()) { return -1; }\n"
+        "        if (capc.get2(1, 2) != 5.0f) { return -2; }\n"
+        "        capc.set2(0, 1, 77.0f);\n"
+        "        if (producer.get2(0, 1) != 77.0f) { return -3; }\n"           // shows through (zero-copy)
+        // (2) non-amenable: transpose → non-contiguous → independent copy
+        "        Tensor<float32> tr = producer.transpose();\n"                  // [3,2], non-contiguous
+        "        TensorProtocol pt = tr.protocol();\n"
+        "        Tensor<?> wt = Tensor.fromProtocolContiguous(pt);\n"
+        "        Tensor<float32> capt = (Tensor<float32>) wt;\n"
+        "        if (capt.isView()) { return -4; }\n"
+        "        if (!capt.isContiguous()) { return -5; }\n"
+        "        if (capt.get2(0, 0) != 0.0f) { return -6; }\n"               // tr[0,0] == producer[0,0]
+        "        if (capt.get2(2, 1) != 5.0f) { return -7; }\n"               // tr[2,1] == producer[1,2]
+        "        capt.set2(0, 0, 99.0f);\n"
+        "        if (producer.get2(0, 0) != 0.0f) { return -8; }\n"           // independent — producer unchanged
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
