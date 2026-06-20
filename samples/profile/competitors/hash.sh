@@ -19,7 +19,7 @@ set -uo pipefail
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 VENDOR="${DIR}/vendor"
-LANGS="${PROFILE_LANGS:-rust cpp go python}"
+LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 N=1048576
 BENCHES="xxhash3 sha256 md5"
@@ -95,6 +95,24 @@ if want python; then
             || skip_lang python python "python hash runner crashed"
     else
         skip_lang python python "python3 not installed"
+    fi
+fi
+
+# ---- java: sha256 + md5 via java.security.MessageDigest (JDK stdlib); xxhash3 skipped (no JDK xxHash) ----
+if want java; then
+    if command -v javac >/dev/null 2>&1; then
+        OUT="$BUILD/java-hash"; SRC="$DIR/java/hash/HashBench.java"
+        if [[ ! -f "$OUT/HashBench.class" || "$SRC" -nt "$OUT/HashBench.class" ]]; then
+            mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-hash-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/HashBench.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" java -cp "$OUT" HashBench \
+                || skip_lang java java "java hash runner crashed"
+        else
+            skip_lang java java "javac build failed (see /tmp/profile-hash-java.log)"
+        fi
+    else
+        skip_lang java java "javac not installed"
     fi
 fi
 

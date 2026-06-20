@@ -16,7 +16,7 @@ set -uo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
-LANGS="${PROFILE_LANGS:-rust cpp go python}"
+LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 
 skip_lang() {
@@ -82,5 +82,23 @@ if want python; then
             || skip_lang python python "python concurrent runner crashed"
     else
         skip_lang python python "python3 not installed"
+    fi
+fi
+
+# ---- java (AtomicLong + virtual threads / Loom) ----
+if want java; then
+    if command -v javac >/dev/null 2>&1; then
+        OUT="$BUILD/java-concurrent"; SRC="$DIR/java/concurrent/ConcurrentBench.java"
+        if [[ ! -f "$OUT/ConcurrentBench.class" || "$SRC" -nt "$OUT/ConcurrentBench.class" ]]; then
+            mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-concurrent-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/ConcurrentBench.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" java -cp "$OUT" ConcurrentBench \
+                || skip_lang java java "java concurrent runner crashed"
+        else
+            skip_lang java java "javac build failed (see /tmp/profile-concurrent-java.log)"
+        fi
+    else
+        skip_lang java java "javac not installed"
     fi
 fi
