@@ -8,9 +8,11 @@ import profile.SumBench;
 import profile.VariantBench;
 import profile.Harness;
 import profile.codec.JsonTokenizeBench;
+import profile.codec.JsonBindBench;
 import profile.codec.JsonDomBench;
 import profile.codec.JsonSerializeBench;
 import profile.codec.JsonRoundtripBench;
+import profile.codec.JsonConformanceBench;
 import profile.codec.Base64EncodeBench;
 import profile.codec.Base64DecodeBench;
 import profile.report.Result;
@@ -41,9 +43,11 @@ public final class Profile {
         benchmarks.add(heap VariantBench());
         // -- codec area (Unit 5) --
         benchmarks.add(heap JsonTokenizeBench());
+        benchmarks.add(heap JsonBindBench());
         benchmarks.add(heap JsonDomBench());
         benchmarks.add(heap JsonSerializeBench());
         benchmarks.add(heap JsonRoundtripBench());
+        benchmarks.add(heap JsonConformanceBench());
         benchmarks.add(heap Base64EncodeBench());
         benchmarks.add(heap Base64DecodeBench());
 
