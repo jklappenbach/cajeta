@@ -21,4 +21,16 @@ public interface Backend {
     public String name();
     /** Does this backend provide the optional capability? (the portable floor is always present.) */
     public boolean supports(Feature feature);
+
+    /**
+     * Request an OS-gated {@link Permission} (mic capture, raw input-device access). Returns the
+     * resulting {@link PermissionState}; a denial is reported as {@code Denied}, never thrown — the
+     * app degrades, it does not crash (spec §6). A platform that does not gate the permission returns
+     * {@code NotRequired}; an async OS prompt may return {@code Pending} until it resolves.
+     */
+    public PermissionState requestPermission(Permission permission);
+
+    /** The current {@link PermissionState} of a permission WITHOUT prompting (the read-only sibling of
+     *  {@link #requestPermission}; {@code NotRequired} where the platform does not gate it). */
+    public PermissionState permissionState(Permission permission);
 }

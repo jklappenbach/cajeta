@@ -14,6 +14,10 @@ public final class NullAudioBackend implements AudioBackend {
     public String  name()     { return "null"; }
     public boolean supports(Feature feature) { return false; }
 
+    // The floor gates nothing and prompts for nothing.
+    public PermissionState requestPermission(Permission permission) { return PermissionState.NotRequired; }
+    public PermissionState permissionState(Permission permission)   { return PermissionState.NotRequired; }
+
     public AudioStream openOutput(uint32 sampleRate, uint32 channels) { return null; }
     public void submit(AudioStream s, float32[] frames) { }
     public void close(AudioStream s) { }

@@ -236,3 +236,155 @@ TEST(IfxFacadeTests, nullFloorProbesViableButSupportsNothing) {
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 1);
 }
+
+// ── Unit 7: capability / permission / lifecycle surface (spec §6) ──────────────────────────────
+
+// 7b -- the null floor gates nothing: requesting any permission yields NotRequired (ordinal 0),
+// never a throw.
+TEST(IfxFacadeTests, nullFloorPermissionIsNotRequired) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.AudioBackend;\n"
+        "import cajeta.ifx.NullAudioBackend;\n"
+        "import cajeta.ifx.Permission;\n"
+        "import cajeta.ifx.PermissionState;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        AudioBackend ab = heap NullAudioBackend();\n"
+        "        return ab.requestPermission(Permission.Microphone);\n"   // NotRequired == 0
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0);
+}
+
+// 7b -- a denied permission is an OBSERVABLE STATE, not a crash: a backend that denies mic capture
+// returns PermissionState.Denied (ordinal 3) from requestPermission without throwing.
+TEST(IfxFacadeTests, deniedPermissionIsObservableStateNotThrow) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.AudioBackend;\n"
+        "import cajeta.ifx.AudioStream;\n"
+        "import cajeta.ifx.Feature;\n"
+        "import cajeta.ifx.Permission;\n"
+        "import cajeta.ifx.PermissionState;\n"
+        "import cajeta.lang.String;\n"
+        "public final class DenyingAudio implements AudioBackend {\n"
+        "    public DenyingAudio() { }\n"
+        "    public boolean probe()    { return true; }\n"
+        "    public int32   priority() { return 5; }\n"
+        "    public String  name()     { return \"denier\"; }\n"
+        "    public boolean supports(Feature feature) { return false; }\n"
+        "    public PermissionState requestPermission(Permission permission) {\n"
+        "        if (permission == Permission.Microphone) { return PermissionState.Denied; }\n"
+        "        return PermissionState.NotRequired;\n"
+        "    }\n"
+        "    public PermissionState permissionState(Permission permission) {\n"
+        "        if (permission == Permission.Microphone) { return PermissionState.Denied; }\n"
+        "        return PermissionState.NotRequired;\n"
+        "    }\n"
+        "    public AudioStream openOutput(uint32 sampleRate, uint32 channels) { return null; }\n"
+        "    public void submit(AudioStream s, float32[] frames) { }\n"
+        "    public void close(AudioStream s) { }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        AudioBackend ab = heap DenyingAudio();\n"
+        "        PermissionState s = ab.requestPermission(Permission.Microphone);\n"  // no throw
+        "        return s;\n"   // PermissionState.Denied == 3
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 3);
+}
+
+// 7c -- the null floor never loses a surface, so pollLifecycle yields no events (null array).
+TEST(IfxFacadeTests, nullFloorDeliversNoLifecycleEvents) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.WindowBackend;\n"
+        "import cajeta.ifx.NullWindowBackend;\n"
+        "import cajeta.ifx.LifecyclePhase;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WindowBackend wb = heap NullWindowBackend();\n"
+        "        LifecyclePhase[] evs = wb.pollLifecycle(null);\n"
+        "        if (evs == null) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1);
+}
+
+// 7c -- surface-lost / surface-recreated are deliverable as LifecyclePhase events: a backend drains
+// {SurfaceLost, SurfaceRecreated} through pollLifecycle and the caller reads them back in order.
+TEST(IfxFacadeTests, lifecycleSurfaceEventsAreDeliverable) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.WindowBackend;\n"
+        "import cajeta.ifx.Window;\n"
+        "import cajeta.ifx.Surface;\n"
+        "import cajeta.ifx.WindowEvent;\n"
+        "import cajeta.ifx.Feature;\n"
+        "import cajeta.ifx.Permission;\n"
+        "import cajeta.ifx.PermissionState;\n"
+        "import cajeta.ifx.LifecyclePhase;\n"
+        "import cajeta.lang.String;\n"
+        "public final class EventfulWindow implements WindowBackend {\n"
+        "    public EventfulWindow() { }\n"
+        "    public boolean probe()    { return true; }\n"
+        "    public int32   priority() { return 5; }\n"
+        "    public String  name()     { return \"eventful\"; }\n"
+        "    public boolean supports(Feature feature) { return false; }\n"
+        "    public PermissionState requestPermission(Permission permission) { return PermissionState.NotRequired; }\n"
+        "    public PermissionState permissionState(Permission permission)   { return PermissionState.NotRequired; }\n"
+        "    public Window createWindow(String title, uint32 width, uint32 height) { return null; }\n"
+        "    public Surface surfaceOf(Window w) { return null; }\n"
+        "    public #WindowEvent[] poll(Window w) { return null; }\n"
+        "    public void destroy(Window w) { }\n"
+        "    public #LifecyclePhase[] pollLifecycle(Window w) {\n"
+        "        #LifecyclePhase[] evs = {LifecyclePhase.SurfaceLost, LifecyclePhase.SurfaceRecreated};\n"
+        "        return evs;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WindowBackend wb = heap EventfulWindow();\n"
+        "        LifecyclePhase[] evs = wb.pollLifecycle(null);\n"
+        "        if (evs.count() == 2\n"
+        "            && evs[0] == LifecyclePhase.SurfaceLost\n"
+        "            && evs[1] == LifecyclePhase.SurfaceRecreated) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1);
+}
+
+// 7b -- IfxInfo.supportsWindow is the app-facing facade over the shared registry: with no OS backend
+// linked (only the auto-registered null floor), every optional feature reads unsupported.
+TEST(IfxFacadeTests, ifxInfoSupportsFacadeRoutesToRegistry) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.ifx.IfxInfo;\n"
+        "import cajeta.ifx.Feature;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        if (IfxInfo.supportsWindow(Feature.MultiWindow)) { return 1; }\n"   // floor → false
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0);
+}

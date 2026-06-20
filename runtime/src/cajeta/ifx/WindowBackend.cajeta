@@ -11,6 +11,17 @@ import cajeta.lang.String;
 public interface WindowBackend extends Backend {
     public Window createWindow(String title, uint32 width, uint32 height);
     public Surface surfaceOf(Window w);
-    public WindowEvent[] poll(Window w);
+    // `#` — the drained event array is freshly allocated and OWNERSHIP-TRANSFERRED to the caller,
+    // which drops it (a backend hands over a new batch each poll). `null` (no events) is a valid `#`.
+    public #WindowEvent[] poll(Window w);
     public void destroy(Window w);
+
+    /**
+     * Drain the window's pending lifecycle / surface-loss transitions ({@link LifecyclePhase}:
+     * suspend/resume, surface lost/recreated). These are MANDATORY contract events — mobile forces
+     * them (Android {@code APP_CMD_TERM_WINDOW}, iOS background) and the gfx swapchain MUST rebuild on
+     * {@code SurfaceRecreated} (spec §6). The headless floor never loses a surface, so it yields none.
+     * Like {@link #poll}, the returned array is owned by the caller (`#` ownership transfer).
+     */
+    public #LifecyclePhase[] pollLifecycle(Window w);
 }

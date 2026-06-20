@@ -46,6 +46,9 @@ std::string withFakes(const std::string& body) {
         "import cajeta.ifx.InputDevice;\n"
         "import cajeta.ifx.AudioStream;\n"
         "import cajeta.ifx.Feature;\n"
+        "import cajeta.ifx.Permission;\n"
+        "import cajeta.ifx.PermissionState;\n"
+        "import cajeta.ifx.LifecyclePhase;\n"
         "import cajeta.ifx.IfxException;\n"
         "import cajeta.lang.String;\n"
         // a fake window backend: caller picks name / priority / viability
@@ -59,11 +62,16 @@ std::string withFakes(const std::string& body) {
         "    public boolean probe()    { return this.viable; }\n"
         "    public int32   priority() { return this.prio; }\n"
         "    public String  name()     { return this.id; }\n"
-        "    public boolean supports(Feature feature) { return false; }\n"
+        // advertises exactly one optional feature (MultiWindow) so a test can prove supports()
+        // delegation distinguishes a provided capability from an unsupported one.
+        "    public boolean supports(Feature feature) { return feature == Feature.MultiWindow; }\n"
+        "    public PermissionState requestPermission(Permission permission) { return PermissionState.NotRequired; }\n"
+        "    public PermissionState permissionState(Permission permission)   { return PermissionState.NotRequired; }\n"
         "    public Window createWindow(String title, uint32 width, uint32 height) { return null; }\n"
         "    public Surface surfaceOf(Window w) { return null; }\n"
-        "    public WindowEvent[] poll(Window w) { return null; }\n"
+        "    public #WindowEvent[] poll(Window w) { return null; }\n"
         "    public void destroy(Window w) { }\n"
+        "    public #LifecyclePhase[] pollLifecycle(Window w) { return null; }\n"
         "}\n"
         // a fake input backend
         "public final class FakeInput implements InputBackend {\n"
@@ -77,6 +85,8 @@ std::string withFakes(const std::string& body) {
         "    public int32   priority() { return this.prio; }\n"
         "    public String  name()     { return this.id; }\n"
         "    public boolean supports(Feature feature) { return false; }\n"
+        "    public PermissionState requestPermission(Permission permission) { return PermissionState.NotRequired; }\n"
+        "    public PermissionState permissionState(Permission permission)   { return PermissionState.NotRequired; }\n"
         "    public int32 gamepadCount() { return 0; }\n"
         "    public InputDevice gamepad(int32 index) { return null; }\n"
         "    public boolean buttonDown(InputDevice d, int32 button) { return false; }\n"
@@ -94,6 +104,8 @@ std::string withFakes(const std::string& body) {
         "    public int32   priority() { return this.prio; }\n"
         "    public String  name()     { return this.id; }\n"
         "    public boolean supports(Feature feature) { return false; }\n"
+        "    public PermissionState requestPermission(Permission permission) { return PermissionState.NotRequired; }\n"
+        "    public PermissionState permissionState(Permission permission)   { return PermissionState.NotRequired; }\n"
         "    public AudioStream openOutput(uint32 sampleRate, uint32 channels) { return null; }\n"
         "    public void submit(AudioStream s, float32[] frames) { }\n"
         "    public void close(AudioStream s) { }\n"
@@ -226,6 +238,49 @@ TEST(IfxRegistryTests, sharedRegistryAutoRegistersInputAndAudioFloor) {
         "AudioBackend a = BackendRegistry.instance().selectAudio();\n"
         "if (i != null && a != null && i.priority() == -1000 && a.priority() == -1000) { return 1; }\n"
         "return 0;\n"), 1);
+}
+
+// 7a -- supports(Feature) wired through the registry: supportsWindow() delegates to the bound
+// backend, distinguishing a provided capability (FakeWindow advertises MultiWindow) from an
+// unsupported one (Touch), independent of the -1000 null floor also being registered.
+TEST(IfxRegistryTests, supportsWindowDelegatesToBoundBackend) {
+    EXPECT_EQ(runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerWindow(heap NullWindowBackend());\n"
+        "r.registerWindow(heap FakeWindow(\"real\", 10, true));\n"   // bound (priority 10)
+        "int32 acc = 0;\n"
+        "if (r.supportsWindow(Feature.MultiWindow)) { acc = acc + 1; }\n"   // +1 (advertised)
+        "if (r.supportsWindow(Feature.Touch))       { acc = acc + 100; }\n" // +0 (not advertised)
+        "return acc;\n"), 1);
+}
+
+// 7a (floor) -- with only the null floor bound in each domain, every optional feature is unsupported.
+TEST(IfxRegistryTests, supportsWindowFalseForNullFloorOnly) {
+    EXPECT_EQ(runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerWindow(heap NullWindowBackend());\n"
+        "r.registerInput(heap NullInputBackend());\n"
+        "r.registerAudio(heap NullAudioBackend());\n"
+        "int32 acc = 0;\n"
+        "if (r.supportsWindow(Feature.MultiWindow)) { acc = acc + 1; }\n"
+        "if (r.supportsInput(Feature.GamepadRumble)) { acc = acc + 1; }\n"
+        "if (r.supportsAudio(Feature.Hdr))           { acc = acc + 1; }\n"
+        "return acc;\n"), 0);   // floor supports nothing across all three domains
+}
+
+// 7a (unregistered domain) -- supports*() is robust when a domain has NO backend registered: it
+// reports false instead of crashing. (Regression: the bound-backend lookup must not null-compare an
+// interface value — comparing an actually-null interface against null miscompiles; supports*()
+// tracks presence with a boolean instead.)
+TEST(IfxRegistryTests, supportsFalseForUnregisteredDomain) {
+    EXPECT_EQ(runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerWindow(heap NullWindowBackend());\n"   // window floor only; input + audio EMPTY
+        "int32 acc = 0;\n"
+        "if (r.supportsInput(Feature.GamepadRumble)) { acc = acc + 1; }\n"   // empty input  → false
+        "if (r.supportsAudio(Feature.Hdr))           { acc = acc + 1; }\n"   // empty audio  → false
+        "if (r.supportsWindow(Feature.MultiWindow))  { acc = acc + 1; }\n"   // floor        → false
+        "return acc;\n"), 0);
 }
 
 // 5b -- instance() is a true process-wide singleton AND is the load-time register() entry external

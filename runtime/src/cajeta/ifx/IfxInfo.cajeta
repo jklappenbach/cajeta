@@ -1,9 +1,8 @@
 package cajeta.ifx;
 
 /**
- * IfxInfo — anchor type for the {@code cajeta.ifx} package (the interface-framework facade for
- * window / input / audio). Parsed on demand by the lazy stdlib loader, like
- * {@link cajeta.math.MathInfo}: a program that never touches windowing pays nothing at compile time.
+ * IfxInfo — anchor type and app-facing facade for the {@code cajeta.ifx} package (the
+ * interface-framework facade for window / input / audio). Eager stdlib package.
  *
  * cajeta.ifx is a PORTABLE CONTRACT only — no FFI, no OS code. OS backends (cajeta-ifx-*) and the
  * capture/replay harness are external libraries that implement the contracts here and register
@@ -12,5 +11,22 @@ package cajeta.ifx;
 public final class IfxInfo {
     public static int32 version() {
         return 1;   // v0.1 — facade surface revision
+    }
+
+    // ── Capability feature-detection (spec §6). Top-level facade over BackendRegistry: an app asks
+    // ifx whether the *bound* backend for a domain provides an optional Feature, and programs to the
+    // floor for the rest. With no OS backend linked, every optional feature is unsupported.
+
+    /** Does the bound window backend provide {@code feature}? */
+    public static boolean supportsWindow(Feature feature) {
+        return BackendRegistry.instance().supportsWindow(feature);
+    }
+    /** Does the bound input backend provide {@code feature}? */
+    public static boolean supportsInput(Feature feature) {
+        return BackendRegistry.instance().supportsInput(feature);
+    }
+    /** Does the bound audio backend provide {@code feature}? */
+    public static boolean supportsAudio(Feature feature) {
+        return BackendRegistry.instance().supportsAudio(feature);
     }
 }

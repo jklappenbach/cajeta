@@ -14,6 +14,10 @@ public final class NullInputBackend implements InputBackend {
     public String  name()     { return "null"; }
     public boolean supports(Feature feature) { return false; }
 
+    // The floor gates nothing and prompts for nothing.
+    public PermissionState requestPermission(Permission permission) { return PermissionState.NotRequired; }
+    public PermissionState permissionState(Permission permission)   { return PermissionState.NotRequired; }
+
     public int32 gamepadCount() { return 0; }
     public InputDevice gamepad(int32 index) { return null; }
     public boolean buttonDown(InputDevice d, int32 button) { return false; }

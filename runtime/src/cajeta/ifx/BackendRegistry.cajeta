@@ -166,6 +166,85 @@ public final class BackendRegistry {
         return best;
     }
 
+    // ── Capability query (spec §6) — wire supports(Feature) through Backend → the bound backend.
+    // Each reports whether the backend its domain would bind (highest-priority viable; the floor at
+    // worst) provides the feature, so an app feature-detects against the *active* stack. With only
+    // the null floor present every feature is unsupported (the floor supports nothing); with NO
+    // backend registered for the domain at all, the answer is simply false.
+    //
+    // These inline the highest-priority-viable scan and track "did we find one?" with a boolean
+    // rather than calling select*() and null-comparing its result: comparing an interface VALUE that
+    // is actually null against `null` miscompiles today (the same interface-value codegen family that
+    // landing the registry already had to work around — see [[refarray-drop-codegen-bug]]). The
+    // boolean-presence shape never holds a null interface to compare, so it is robust for the
+    // unregistered-domain case too.
+
+    /** Does the bound window backend provide {@code feature}? (headless floor → false for all). */
+    public boolean supportsWindow(Feature feature) {
+        WindowBackend best = null;
+        int32 bestPriority = 0;
+        boolean haveBest = false;
+        int32 i = 0;
+        while (i < this.windows.count()) {
+            WindowBackend candidate = this.windows.get(i);
+            if (candidate.probe()) {
+                int32 candidatePriority = candidate.priority();
+                if (!haveBest || candidatePriority > bestPriority) {
+                    best = candidate;
+                    bestPriority = candidatePriority;
+                    haveBest = true;
+                }
+            }
+            i = i + 1;
+        }
+        if (!haveBest) { return false; }
+        return best.supports(feature);
+    }
+
+    /** Does the bound input backend provide {@code feature}? (empty floor → false for all). */
+    public boolean supportsInput(Feature feature) {
+        InputBackend best = null;
+        int32 bestPriority = 0;
+        boolean haveBest = false;
+        int32 i = 0;
+        while (i < this.inputs.count()) {
+            InputBackend candidate = this.inputs.get(i);
+            if (candidate.probe()) {
+                int32 candidatePriority = candidate.priority();
+                if (!haveBest || candidatePriority > bestPriority) {
+                    best = candidate;
+                    bestPriority = candidatePriority;
+                    haveBest = true;
+                }
+            }
+            i = i + 1;
+        }
+        if (!haveBest) { return false; }
+        return best.supports(feature);
+    }
+
+    /** Does the bound audio backend provide {@code feature}? (silent floor → false for all). */
+    public boolean supportsAudio(Feature feature) {
+        AudioBackend best = null;
+        int32 bestPriority = 0;
+        boolean haveBest = false;
+        int32 i = 0;
+        while (i < this.audios.count()) {
+            AudioBackend candidate = this.audios.get(i);
+            if (candidate.probe()) {
+                int32 candidatePriority = candidate.priority();
+                if (!haveBest || candidatePriority > bestPriority) {
+                    best = candidate;
+                    bestPriority = candidatePriority;
+                    haveBest = true;
+                }
+            }
+            i = i + 1;
+        }
+        if (!haveBest) { return false; }
+        return best.supports(feature);
+    }
+
     // The null floor is the contract-stable backend whose name() is "null" (spec §5). Used to tell a
     // real bind from the floor for the window domain's three-cases policy.
     private boolean isNullFloor(String backendName) {
