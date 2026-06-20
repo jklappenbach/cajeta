@@ -1,0 +1,57 @@
+schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes,variant
+1,full-2026-06-20,,example,scaffold,,-1,,-1,cajeta,,,,,20,200,681,701,705,721,,,2908,-1,-1,-1,88,ok,true,,
+1,full-2026-06-20,,sum,selftest,,-1,,-1,cajeta,,,,,5,50,5049,5059,5192,5069,,,2948,-1,-1,-1,20,ok,true,,
+1,full-2026-06-20,,variant-demo,selftest,,-1,,-1,cajeta,,,,,3,20,40,40,47,110,,,2988,-1,-1,-1,20,ok,true,,small
+1,full-2026-06-20,,variant-demo,selftest,,-1,,-1,cajeta,,,,,3,20,220,240,239,250,,,3028,-1,-1,-1,20,ok,true,,large
+1,full-2026-06-20,,json-tokenize,codec,,-1,,631514,cajeta,,,,,10,50,1415260,1460275,1522563,1851962,,,4356,-1,-1,-1,624,ok,true,,twitter
+1,full-2026-06-20,,json-tokenize,codec,,-1,,1727204,cajeta,,,,,10,50,3424436,3557347,3940605,6623226,,,7564,-1,-1,-1,2124,ok,true,,citm_catalog
+1,full-2026-06-20,,json-tokenize,codec,,-1,,2251051,cajeta,,,,,10,50,7853910,8435996,8761573,11379395,,,9672,-1,-1,-1,3712,ok,true,,canada
+1,full-2026-06-20,,json-bind-skip,codec,,-1,,631514,cajeta,,,,,10,50,152952,153854,154656,158643,,,9672,-1,-1,-1,2812,ok,true,,twitter
+1,full-2026-06-20,,json-bind-skip,codec,,-1,,1727204,cajeta,,,,,10,50,374001,661782,677332,1056986,,,12228,-1,-1,-1,0,ok,true,,citm_catalog
+1,full-2026-06-20,,json-bind-skip,codec,,-1,,2251051,cajeta,,,,,10,50,641506,661032,671070,752364,,,14796,-1,-1,-1,4,ok,true,,canada
+1,full-2026-06-20,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,full-2026-06-20,,json-dom,codec,,-1,,1727204,cajeta,,,,,5,30,9846675,10054495,10465461,13955326,,,564768,-1,-1,-1,479344,ok,true,,citm_catalog
+1,full-2026-06-20,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,full-2026-06-20,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,full-2026-06-20,,json-serialize,codec,,-1,,1727204,cajeta,,,,,5,30,12761488,14253396,14988425,22514312,,,1312228,-1,-1,-1,595216,ok,true,,citm_catalog
+1,full-2026-06-20,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,full-2026-06-20,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,full-2026-06-20,,json-roundtrip,codec,,-1,,1727204,cajeta,,,,,5,30,31409337,33661085,34288044,37681571,,,2567812,-1,-1,-1,1074752,ok,true,,citm_catalog
+1,full-2026-06-20,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,full-2026-06-20,,json-conformance,codec,,-1,,14,cajeta,,,,,3,20,24967,26470,26531,29245,,,2569076,-1,-1,-1,864,ok,true,,
+1,full-2026-06-20,,base64-encode,codec,,-1,,1048576,cajeta,,,,,20,100,10807949,10897527,11025243,11395715,,,2733984,-1,-1,-1,136556,ok,true,,
+1,full-2026-06-20,,base64-decode,codec,,-1,,1048576,cajeta,,,,,20,100,11619767,11845952,11897872,12248429,,,2859288,-1,-1,-1,102416,ok,true,,
+1,full-2026-06-20,,arraylist-append,collection,,-1,,100000,cajeta,,,,,5,50,998980,1008748,1021354,1098477,,,2909188,-1,-1,-1,45360,ok,true,,
+1,full-2026-06-20,,hashmap-int,collection,,-1,,50000,cajeta,,,,,5,30,2553154,2574185,2595049,2664434,,,2989848,-1,-1,-1,69128,ok,true,,
+1,full-2026-06-20,,hashmap-string,collection,,-1,,30000,cajeta,,,,,5,30,11412436,11648350,12325968,18901139,,,3385268,-1,-1,-1,338920,ok,true,,
+1,full-2026-06-20,,hashset-dedup,collection,,-1,,100000,cajeta,,,,,5,30,3211734,3309818,3399530,3965002,,,3439072,-1,-1,-1,46104,ok,true,,
+1,full-2026-06-20,,linkedlist-insert-traverse,collection,,-1,,40000,cajeta,,,,,5,30,1243079,1262395,1276814,1339211,,,3504732,-1,-1,-1,56268,ok,true,,
+1,full-2026-06-20,,heap-sort,collection,,-1,,50000,cajeta,,,,,5,30,4442510,4569209,4554247,4618631,,,3520708,-1,-1,-1,13684,ok,true,,
+1,full-2026-06-20,,redblacktree-insert-lookup,collection,,-1,,20000,cajeta,,,,,3,20,3240939,3362828,3367304,3638598,,,3549492,-1,-1,-1,25016,ok,true,,
+1,full-2026-06-20,,sort-int64,sort,,-1,,50000,cajeta,,,,,5,30,3059384,3077889,3086631,3132793,,,3564780,-1,-1,-1,11752,ok,true,,random
+1,full-2026-06-20,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),ascending
+1,full-2026-06-20,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),descending
+1,full-2026-06-20,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),dups
+1,full-2026-06-20,,sort-f64,sort,,-1,,50000,cajeta,,,,,5,30,3306276,3341803,3359195,3435699,,,3580084,-1,-1,-1,11752,ok,true,,
+1,full-2026-06-20,,sort-stable-int64,sort,,-1,,50000,cajeta,,,,,5,30,3538289,3554199,3562572,3645841,,,3609024,-1,-1,-1,23456,ok,true,,
+1,full-2026-06-20,,binary-search,sort,,-1,,50000,cajeta,,,,,5,30,5257584,5363232,5387569,5545065,,,3622728,-1,-1,-1,11732,ok,true,,
+1,full-2026-06-20,,string-build-concat,string,,-1,,4000,cajeta,,,,,5,30,10178965,12697174,12135066,13821079,,,5858864,-1,-1,-1,1891396,ok,true,,
+1,full-2026-06-20,,string-search,string,,-1,,360448,cajeta,,,,,10,50,138260,139613,161747,231936,,,5860184,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,string-replace,string,,-1,,360448,cajeta,,,,,10,50,1146959,1156937,1160960,1204377,,,5883448,-1,-1,-1,18800,ok,true,,
+1,full-2026-06-20,,string-uppercase,string,,-1,,360448,cajeta,,,,,10,50,327236,331384,336983,391898,,,5904920,-1,-1,-1,17600,ok,true,,
+1,full-2026-06-20,,xxhash3,hash,,-1,,1048576,cajeta,,,,,20,100,23525,23594,23898,27231,,,5905944,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,siphash,hash,,-1,,1048576,cajeta,,,,,20,100,246344,246474,247831,252164,,,5906968,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,sha256,hash,,-1,,1048576,cajeta,,,,,10,50,2231950,2252348,2258369,2297453,,,5907992,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,md5,hash,,-1,,1048576,cajeta,,,,,10,50,1719145,1726379,1728005,1743571,,,5909016,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,stream-filter-map-reduce,stream,,-1,,1000000,cajeta,,,,,5,30,71525200,74612770,74825470,77292623,,,5916832,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,stream-parallel-reduce,stream,,-1,,1000000,cajeta,,,,,5,30,32281098,33488060,33790715,35769452,,,5925028,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,saxpy,math,,-1,,1000000,cajeta,,,,,10,50,586093,593347,603947,610779,,,5948468,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,dot-product,math,,-1,,1000000,cajeta,,,,,10,50,390836,392398,392930,395314,,,5964092,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,matmul,math,,-1,,40000,cajeta,,,,,5,20,3139018,3143025,3183991,3599633,,,5965028,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,clbg-mandelbrot,clbg,,-1,,640000,cajeta,,,,,5,20,28682736,28881150,29402296,32230603,,,5965028,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,clbg-fannkuch-redux,clbg,,-1,,10,cajeta,,,,,3,10,161333214,164445981,164132109,168413318,,,5965028,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,clbg-spectral-norm,clbg,,-1,,100,cajeta,,,,,5,30,3405979,3617357,3674000,4421220,,,5965028,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,time-instant-arith,time,,-1,,1000000,cajeta,,,,,10,50,55308051,55790809,56461214,60150573,,,5965028,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,time-localdate-arith,time,,-1,,100000,cajeta,,,,,5,30,5424027,5576464,5567403,5616700,,,5965028,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,atomic-fetchadd,concurrent,,-1,,1000000,cajeta,,,,,10,50,9499727,9536726,9585687,9914157,,,5965028,-1,-1,-1,0,ok,true,,
+1,full-2026-06-20,,task-spawn-await,concurrent,,-1,,20000,cajeta,,,,,2,3,194136785,194811364,217496467,263541254,,,5965520,-1,-1,-1,0,ok,true,,
