@@ -650,15 +650,13 @@ TEST(TensorTests, wildcardCaptureFromProtocol) {
     EXPECT_EQ(runI32(src), 1);
 }
 
-// 7c (bounded) — a Tensor<?> recovered from fromProtocol is admitted by a bounded
+// 7c (bounded) — a Tensor<?> recovered from fromProtocol admits/rejects a bounded
 // NUMERIC wildcard by reified dtype KIND: a float32 tensor ⊨ Tensor<? extends
-// Floating>, then captures to the concrete Tensor<float32> and shares storage.
-// Backed by the runtime numeric-marker conformance in __cajeta_instanceof_bounded
-// (numeric-bounds, now unblocked). The reject-by-kind side (int ⊭ Floating) is
-// covered by ReifiedCaptureTests (Box<? extends Floating>) and NumericBoundsTests
-// (dtypeGenericTensorRoutineRejectsInt); exercising both via two fromProtocol
-// tensors in one scope currently trips a separate interop-drop bug (two shared
-// views + protocols at teardown) — tracked, not a numeric-bounds issue.
+// Floating>, an int32 tensor ⊭ it; the admitted float captures to the concrete
+// Tensor<float32> and shares storage. Backed by the runtime numeric-marker
+// conformance in __cajeta_instanceof_bounded (numeric-bounds). Exercises TWO
+// fromProtocol tensors in one scope — the regression guard for the interop-drop
+// fix (Object-erased TensorProtocol backing, not Storage<?>).
 TEST(TensorTests, wildcardBoundedFloatingFromProtocol) {
     std::string src =
         "package test;\n"
@@ -670,10 +668,16 @@ TEST(TensorTests, wildcardBoundedFloatingFromProtocol) {
         "        Tensor<float32> tf = Tensor.arange<float32>(4);\n"
         "        TensorProtocol pf = tf.protocol();\n"
         "        Tensor<?> wf = Tensor.fromProtocol(pf);\n"
-        "        if (!(wf instanceof Tensor<? extends Floating>)) { return -1; }\n"  // float ⊨ Floating
-        "        Tensor<float32> cap = (Tensor<float32>) wf;\n"                        // capture admitted float
+        "        Tensor<int32> ti = Tensor.arange<int32>(4);\n"
+        "        TensorProtocol pi = ti.protocol();\n"
+        "        Tensor<?> wi = Tensor.fromProtocol(pi);\n"
+        "        int32 r = 0;\n"
+        "        if (wf instanceof Tensor<? extends Floating>) { r = r + 1; }\n"    // float ⊨ Floating
+        "        if (wi instanceof Tensor<? extends Floating>) { r = r + 10; }\n"   // int ⊭ Floating
+        "        if (r != 1) { return -1; }\n"
+        "        Tensor<float32> cap = (Tensor<float32>) wf;\n"        // capture admitted float
         "        cap.set1(0, 9.0f);\n"
-        "        if (tf.get1(0) != 9.0f) { return -2; }\n"                            // zero-copy
+        "        if (tf.get1(0) != 9.0f) { return -2; }\n"            // zero-copy through the chain
         "        return 1;\n"
         "    }\n"
         "}\n";

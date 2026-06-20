@@ -430,8 +430,9 @@ public class Tensor<T> {
             i = i + 1;
         }
         DType d = DType.of<T>();
-        // Widen Storage<T> → Storage<?>: the protocol borrows the backing (shared,
-        // not owned — this tensor keeps ownership; the live-set frees it once).
+        // Upcast Storage<T> → Object (identity, no wildcard proxy): the protocol
+        // borrows the backing (shared, not owned — this tensor keeps ownership; the
+        // live-set frees it once). fromProtocol downcasts it back to Storage<E>.
         return heap TensorProtocol(this.store, this.offsetVal, shp, strd, #d,
                                    this.device(), false);
     }
@@ -473,13 +474,13 @@ public class Tensor<T> {
 
     /**
      * Rebuild a concrete `Tensor<E>` sharing the protocol's borrowed `Storage`
-     * (zero-copy): capture the erased `Storage<?>` back to `Storage<E>` (reified —
-     * sound because the dispatch in {@link #fromProtocol} matched the dtype), then
-     * wrap it as a non-owning shared view. Returned as `#Tensor<?>` (the `Tensor<E>`
-     * widens). Internal — driven by `fromProtocol`'s dtype switch.
+     * (zero-copy): downcast the erased `Object` backing back to `Storage<E>` (sound
+     * because the dispatch in {@link #fromProtocol} matched the dtype), then wrap it
+     * as a non-owning shared view. Returned as `#Tensor<?>` (the `Tensor<E>` widens).
+     * Internal — driven by `fromProtocol`'s dtype switch.
      */
     static #Tensor<?> rebuildShared<E>(TensorProtocol p) {
-        Storage<E> s = (Storage<E>) p.base();      // reified capture (borrow, no copy)
+        Storage<E> s = (Storage<E>) p.base();      // Object → Storage<E> (borrow, no copy)
         int64[] shp = p.shapeCopy();
         int64[] strd = p.strideCopy();
         Tensor<E> t = heap Tensor<E>(s, p.offset(), shp, strd);
