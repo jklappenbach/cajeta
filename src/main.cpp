@@ -10,6 +10,7 @@
 #include "cajeta/cli/ArchiveCommands.h"
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
+#include "cajeta/cli/NativeCommands.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
 #include "cajeta/buildtool/BuildToolCommands.h"
@@ -193,6 +194,14 @@ int main(int argc, const char* argv[]) {
     // developer/diagnostic verb for now.
     if (argc >= 2 && std::string(argv[1]) == "jit-run") {
         return cajeta::jit::dispatchJitRun(argc, argv);
+    }
+
+    // `cajeta fetch` / `cajeta vendor` — native-dependency provisioning
+    // (native-deps unit 14): bring a native artifact into the ~/.cajeta/native
+    // cache (verified) or vendor it into the project native/ dir.
+    if (argc >= 2 && (std::string(argv[1]) == "fetch"
+                   || std::string(argv[1]) == "vendor")) {
+        return cajeta::dispatchNative(argc, argv);
     }
 
     // `cajeta dap` — Debug Adapter Protocol server over stdio (docs/
