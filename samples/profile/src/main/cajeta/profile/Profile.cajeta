@@ -15,6 +15,13 @@ import profile.codec.JsonRoundtripBench;
 import profile.codec.JsonConformanceBench;
 import profile.codec.Base64EncodeBench;
 import profile.codec.Base64DecodeBench;
+import profile.collection.ArrayListAppendBench;
+import profile.collection.HashMapIntBench;
+import profile.collection.HashMapStringBench;
+import profile.collection.HashSetDedupBench;
+import profile.collection.LinkedListBench;
+import profile.collection.HeapSortBench;
+import profile.collection.RedBlackTreeBench;
 import profile.report.Result;
 import profile.report.Report;
 import profile.report.Memory;
@@ -50,6 +57,14 @@ public final class Profile {
         benchmarks.add(heap JsonConformanceBench());
         benchmarks.add(heap Base64EncodeBench());
         benchmarks.add(heap Base64DecodeBench());
+        // -- collection area (Unit 6) --
+        benchmarks.add(heap ArrayListAppendBench());
+        benchmarks.add(heap HashMapIntBench());
+        benchmarks.add(heap HashMapStringBench());
+        benchmarks.add(heap HashSetDedupBench());
+        benchmarks.add(heap LinkedListBench());
+        benchmarks.add(heap HeapSortBench());
+        benchmarks.add(heap RedBlackTreeBench());
 
         // Parse the minimal flags so far. (Full selection — --area, --bench,
         // --lang, --no-report — lands in Unit 17.)

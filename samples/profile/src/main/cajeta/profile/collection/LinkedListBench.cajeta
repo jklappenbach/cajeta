@@ -1,0 +1,53 @@
+package profile.collection;
+
+import cajeta.collection.LinkedList;
+
+import profile.Benchmark;
+
+// Doubly-linked list: N appends then an O(N) contains traversal (search for the
+// last-inserted value). Cross-check: count == N and the value is found.
+public class LinkedListBench extends Benchmark {
+
+    public int32 n;
+    public int64 lastCount;
+    public boolean found;
+
+    public String name() {
+        return "linkedlist-insert-traverse";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 50000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        LinkedList<int32> l = heap LinkedList<int32>();
+        int32 i = 0;
+        while (i < this.n) {
+            l.add(i);
+            i = i + 1;
+        }
+        this.lastCount = l.count();
+        this.found = l.contains(this.n - 1);
+    }
+
+    public boolean checkResult() {
+        return this.lastCount == (int64) this.n && this.found;
+    }
+}
