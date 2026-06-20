@@ -16,9 +16,9 @@
 using cajeta_test::CajetaJit;
 using cajeta::Compiler;
 
-// cajeta.ifx is parsed on demand (lazy stdlib loader): importing IfxInfo triggers exactly that
-// package's parse, and the anchor method runs end-to-end.
-TEST(IfxFacadeTests, ifxPackageParsesOnDemandViaIfxInfo) {
+// cajeta.ifx resolves through the stdlib loader: importing IfxInfo makes the anchor method run
+// end-to-end, and the package reports parsed.
+TEST(IfxFacadeTests, ifxPackageParsesViaIfxInfo) {
     std::string src =
         "package test;\n"
         "import cajeta.ifx.IfxInfo;\n"
@@ -32,6 +32,26 @@ TEST(IfxFacadeTests, ifxPackageParsesOnDemandViaIfxInfo) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 1);   // IfxInfo.version() == 1
+    EXPECT_TRUE(Compiler::stdlibPackageParsed("cajeta.ifx"));
+}
+
+// Unit 6 (stdlib build integration) — cajeta.ifx is an EAGER stdlib package (only cajeta.math is
+// lazy), so the whole package — contract value types + the Backend SPI + the Null* floor +
+// BackendRegistry + IfxException — is prescanned and parsed at Compiler startup, before and without
+// any ifx import. A user program that never mentions ifx still has cajeta.ifx parsed: proof the SPI
+// / floor / registry eager-compile cleanly as part of the embedded stdlib build (no eager crash).
+TEST(IfxFacadeTests, ifxPackageIsEagerlyParsedWithoutImport) {
+    std::string src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 7; }\n"   // deliberately no cajeta.ifx import
+        "}\n";
+
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 7);
+    // Eager: parsed at startup with nothing in the user source referencing it.
     EXPECT_TRUE(Compiler::stdlibPackageParsed("cajeta.ifx"));
 }
 
