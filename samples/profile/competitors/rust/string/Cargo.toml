@@ -1,0 +1,19 @@
+[package]
+name = "profile-string"
+version = "0.1.0"
+edition = "2021"
+
+# String competitors. The stdlib covers find/replace/to_uppercase/builder;
+# memchr is the recognized SOTA substring search (SIMD memmem) — the non-obvious
+# competitor for the search benchmark.
+[dependencies]
+memchr = "2"
+
+[[bin]]
+name = "profile-string"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,76 @@
+package profile.clbg;
+
+import profile.Benchmark;
+
+// Computer Language Benchmarks Game: mandelbrot. Escape-time membership over a
+// W×W grid (50 iterations, escape radius 2). Cross-check: the in-set pixel count
+// is deterministic and within (0, W*W) — the set covers a stable fraction.
+public class MandelbrotBench extends Benchmark {
+
+    public int32 w;
+    public int64 inSet;
+
+    public String name() {
+        return "clbg-mandelbrot";
+    }
+
+    public String area() {
+        return "clbg";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public void setup() {
+        this.w = 800;
+    }
+
+    public int64 inputSize() {
+        return (int64) (this.w * this.w);
+    }
+
+    public void run(int32 iterations) {
+        int32 n = this.w;
+        int64 count = 0;
+        int32 py = 0;
+        while (py < n) {
+            int32 px = 0;
+            while (px < n) {
+                float64 cr = (2.0 * (float64) px / (float64) n) - 1.5;
+                float64 ci = (2.0 * (float64) py / (float64) n) - 1.0;
+                float64 zr = 0.0;
+                float64 zi = 0.0;
+                int32 iter = 0;
+                boolean member = true;
+                while (iter < 50) {
+                    float64 nzr = zr * zr - zi * zi + cr;
+                    float64 nzi = 2.0 * zr * zi + ci;
+                    zr = nzr;
+                    zi = nzi;
+                    if (zr * zr + zi * zi > 4.0) {
+                        member = false;
+                        iter = 50;
+                    } else {
+                        iter = iter + 1;
+                    }
+                }
+                if (member) {
+                    count = count + 1;
+                }
+                px = px + 1;
+            }
+            py = py + 1;
+        }
+        this.inSet = count;
+    }
+
+    public boolean checkResult() {
+        int64 total = (int64) this.w * (int64) this.w;
+        return this.inSet > 0 && this.inSet < total;
+    }
+}

@@ -1,0 +1,95 @@
+package profile.codec;
+
+import cajeta.collection.ArrayList;
+import cajeta.codec.json.Json;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+
+import profile.Benchmark;
+
+// Empty bind target — maps no fields, so Json.parse<BindSkip> structurally walks
+// (and skips) the whole document via the index depth-walk WITHOUT decoding
+// numbers. That's why it runs on the float-bearing files too (unlike the DOM
+// path), and it's the fastest Cajeta JSON path (bench: ~3800 MB/s, directly
+// comparable to serde_json's IgnoredAny).
+final class BindSkip {
+    public BindSkip() {}
+}
+
+// JSON typed-bind (skip-all) throughput on the full corpus. Each trial parses a
+// FRESH buffer (parse takes its input on the one-shot contract — the parsed
+// value frees it on drop, so buffers can't be reused). Read-only baseline
+// subtracted. Cross-check: parse returns non-null.
+public class JsonBindBench extends Benchmark {
+
+    public String path;
+    public int64 fileBytes;
+    public int64 baseNs;
+    public boolean lastOk;
+
+    public String name() {
+        return "json-bind-skip";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public boolean available() {
+        return System.env.get("PROFILE_DATA_DIR") != null;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("twitter");
+        v.add("citm_catalog");
+        v.add("canada");
+        return v;
+    }
+
+    public void prepare(String variant) {
+        String dir = System.env.get("PROFILE_DATA_DIR");
+        if (dir == null) {
+            dir = "datasets/cache";
+        }
+        this.path = dir + "/" + variant + ".json";
+
+        int8[] probe = File.readAllBytes(this.path);
+        this.fileBytes = (int64) probe.count();
+
+        int64 r0 = Clock.nanoTime();
+        int32 k = 0;
+        while (k < 5) {
+            int8[] b2 = File.readAllBytes(this.path);
+            k = k + 1;
+        }
+        this.baseNs = (Clock.nanoTime() - r0) / 5;
+    }
+
+    public int64 baselineNanos() {
+        return this.baseNs;
+    }
+
+    public int64 inputSize() {
+        return this.fileBytes;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int8[] bytes = File.readAllBytes(this.path);
+        int64 len = (int64) bytes.count();
+        BindSkip e = Json.parse<BindSkip>(bytes, len);
+        this.lastOk = (e != null);
+    }
+
+    public boolean checkResult() {
+        return this.lastOk;
+    }
+}

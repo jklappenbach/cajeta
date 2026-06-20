@@ -1,0 +1,17 @@
+[package]
+name = "profile-math"
+version = "0.1.0"
+edition = "2021"
+
+# Scalar f64 kernels — the same algorithm the Cajeta side runs, so the row
+# isolates codegen quality (auto-vectorization) on identical work. The BLAS
+# comparison point is numpy on the Python side.
+
+[[bin]]
+name = "profile-math"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

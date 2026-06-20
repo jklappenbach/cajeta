@@ -1,0 +1,57 @@
+package profile.codec;
+
+import cajeta.codec.Base64;
+
+import profile.Benchmark;
+
+// Base64 encode throughput over a 1 MiB buffer. The output length is a structural
+// cross-check (4*ceil(N/3)). Self-generating, so it needs no dataset.
+public class Base64EncodeBench extends Benchmark {
+
+    public int8[] data;
+    public int64 len;
+    public int64 outLen;
+
+    public String name() {
+        return "base64-encode";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 20;
+    }
+
+    public int32 measuredIters() {
+        return 100;
+    }
+
+    public void setup() {
+        this.len = 1048576;
+        // Allocate straight into the field (a named owning local would drop at
+        // setup-exit and dangle the field's reference).
+        this.data = heap int8[(int32) this.len];
+        int32 i = 0;
+        int32 n = (int32) this.len;
+        while (i < n) {
+            this.data[i] = (int8) ((i * 31 + 7) & 0xFF);
+            i = i + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return this.len;
+    }
+
+    public void run(int32 iterations) {
+        String enc = Base64.encode(this.data, this.len);
+        this.outLen = (int64) enc.count();
+    }
+
+    public boolean checkResult() {
+        int64 expected = ((this.len + 2) / 3) * 4;
+        return this.outLen == expected;
+    }
+}

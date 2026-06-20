@@ -1,0 +1,6 @@
+# Reference datasets — fetched on demand + checksum-verified (spec §1.4, §5).
+# Columns: name<TAB>url<TAB>bytes<TAB>sha256
+# The nativejson-benchmark corpus (the de-facto JSON benchmark inputs).
+twitter	https://raw.githubusercontent.com/miloyip/nativejson-benchmark/master/data/twitter.json	631514	a08b769f32b95f426cbc3abafcec65c1a19d3eb544d4ddf320eae142c99efc5d
+citm_catalog	https://raw.githubusercontent.com/miloyip/nativejson-benchmark/master/data/citm_catalog.json	1727204	a73e7a883f6ea8de113dff59702975e60119b4b58d451d518a929f31c92e2059
+canada	https://raw.githubusercontent.com/miloyip/nativejson-benchmark/master/data/canada.json	2251051	f83b3b354030d5dd58740c68ac4fecef64cb730a0d12a90362a7f23077f50d78

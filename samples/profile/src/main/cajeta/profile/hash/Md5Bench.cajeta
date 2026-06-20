@@ -1,0 +1,54 @@
+package profile.hash;
+
+import cajeta.hash.MD5;
+
+import profile.Benchmark;
+
+// MD5 bulk throughput over a 1 MiB buffer. Cross-check: the digest is the MD5
+// output size (16 bytes).
+public class Md5Bench extends Benchmark {
+
+    public int8[] data;
+    public int64 len;
+    public int64 digestLen;
+
+    public String name() {
+        return "md5";
+    }
+
+    public String area() {
+        return "hash";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void setup() {
+        this.len = 1048576;
+        this.data = heap int8[(int32) this.len];
+        int32 i = 0;
+        int32 n = (int32) this.len;
+        while (i < n) {
+            this.data[i] = (int8) ((i * 31 + 7) & 0xFF);
+            i = i + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return this.len;
+    }
+
+    public void run(int32 iterations) {
+        int8[] d = MD5.hash(this.data, this.len);
+        this.digestLen = (int64) d.count();
+    }
+
+    public boolean checkResult() {
+        return this.digestLen == 16;
+    }
+}

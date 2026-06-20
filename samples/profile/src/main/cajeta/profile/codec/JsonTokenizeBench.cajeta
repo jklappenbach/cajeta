@@ -1,0 +1,109 @@
+package profile.codec;
+
+import cajeta.collection.ArrayList;
+import cajeta.codec.json.JsonReader;
+import cajeta.codec.json.JsonToken;
+import cajeta.io.file.File;
+import cajeta.time.Clock;
+
+import profile.Benchmark;
+
+// JSON streaming tokenization throughput on the nativejson corpus
+// (twitter/citm_catalog/canada), one variant per file. Mirrors the proven
+// bench/JsonBench pattern: each trial reads a FRESH buffer (the reader aliases
+// its input) and the read-only baseline is measured in prepare() and subtracted
+// per trial, isolating tokenization. The token count per file is a structural
+// correctness cross-check (twitter 29573, citm 85035, canada 223236).
+//
+// Requires the corpus fetched into $PROFILE_DATA_DIR (datasets/fetch.sh);
+// available() returns false when that isn't configured so the harness records a
+// skip instead of crashing.
+public class JsonTokenizeBench extends Benchmark {
+
+    public String path;
+    public int64 expectedTokens;
+    public int64 lastTokens;
+    public int64 fileBytes;
+    public int64 baseNs;
+
+    public String name() {
+        return "json-tokenize";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public boolean available() {
+        return System.env.get("PROFILE_DATA_DIR") != null;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("twitter");
+        v.add("citm_catalog");
+        v.add("canada");
+        return v;
+    }
+
+    public void prepare(String variant) {
+        String dir = System.env.get("PROFILE_DATA_DIR");
+        if (dir == null) {
+            dir = "datasets/cache";
+        }
+        this.path = dir + "/" + variant + ".json";
+
+        if (variant.equals("twitter")) {
+            this.expectedTokens = 29573;
+        } else if (variant.equals("citm_catalog")) {
+            this.expectedTokens = 85035;
+        } else {
+            this.expectedTokens = 223236;
+        }
+
+        int8[] probe = File.readAllBytes(this.path);
+        this.fileBytes = (int64) probe.count();
+
+        // Read-only baseline (subtracted per trial to isolate tokenization).
+        int64 r0 = Clock.nanoTime();
+        int32 k = 0;
+        while (k < 5) {
+            int8[] b2 = File.readAllBytes(this.path);
+            k = k + 1;
+        }
+        this.baseNs = (Clock.nanoTime() - r0) / 5;
+    }
+
+    public int64 baselineNanos() {
+        return this.baseNs;
+    }
+
+    public int64 inputSize() {
+        return this.fileBytes;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int8[] bytes = File.readAllBytes(this.path);
+        int64 len = (int64) bytes.count();
+        JsonReader r = heap JsonReader(bytes, len);
+        int64 n = 0;
+        JsonToken t = r.next();
+        while (t != JsonToken.END) {
+            n = n + 1;
+            t = r.next();
+        }
+        this.lastTokens = n;
+    }
+
+    public boolean checkResult() {
+        return this.lastTokens == this.expectedTokens;
+    }
+}

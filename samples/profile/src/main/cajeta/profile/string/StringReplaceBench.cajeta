@@ -1,0 +1,52 @@
+package profile.string;
+
+import profile.Benchmark;
+
+// Global replace: replace every "fox" (3 chars) with "feline" (6) in a ~360 KB
+// text. Cross-check: the output is longer than the input (the replacements grew
+// it), since the base sentence contains a "fox".
+public class StringReplaceBench extends Benchmark {
+
+    public String text;
+    public int64 textLen;
+    public int64 outLen;
+
+    public String name() {
+        return "string-replace";
+    }
+
+    public String area() {
+        return "string";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void setup() {
+        this.text = "the quick brown fox jumps over the lazy dog ";
+        int32 k = 0;
+        while (k < 13) {
+            this.text = this.text + this.text;
+            k = k + 1;
+        }
+        this.textLen = (int64) this.text.count();
+    }
+
+    public int64 inputSize() {
+        return this.textLen;
+    }
+
+    public void run(int32 iterations) {
+        String out = this.text.replace("fox", "feline");
+        this.outLen = (int64) out.count();
+    }
+
+    public boolean checkResult() {
+        return this.outLen > this.textLen;
+    }
+}

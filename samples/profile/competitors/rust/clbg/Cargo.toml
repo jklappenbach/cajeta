@@ -1,0 +1,16 @@
+[package]
+name = "profile-clbg"
+version = "0.1.0"
+edition = "2021"
+
+# The Computer Language Benchmarks Game classics — pure compute, stdlib only.
+# Same problem sizes + canonical checksums as the Cajeta side.
+
+[[bin]]
+name = "profile-clbg"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

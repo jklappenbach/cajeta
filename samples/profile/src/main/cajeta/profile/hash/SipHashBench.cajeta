@@ -1,0 +1,54 @@
+package profile.hash;
+
+import cajeta.hash.SipHash;
+
+import profile.Benchmark;
+
+// SipHash (keyed, DoS-resistant) bulk throughput over a 1 MiB buffer.
+// Cross-check: digest non-zero.
+public class SipHashBench extends Benchmark {
+
+    public int8[] data;
+    public int64 len;
+    public int64 lastHash;
+
+    public String name() {
+        return "siphash";
+    }
+
+    public String area() {
+        return "hash";
+    }
+
+    public int32 warmupIters() {
+        return 20;
+    }
+
+    public int32 measuredIters() {
+        return 100;
+    }
+
+    public void setup() {
+        this.len = 1048576;
+        this.data = heap int8[(int32) this.len];
+        int32 i = 0;
+        int32 n = (int32) this.len;
+        while (i < n) {
+            this.data[i] = (int8) ((i * 31 + 7) & 0xFF);
+            i = i + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return this.len;
+    }
+
+    public void run(int32 iterations) {
+        this.lastHash = SipHash.hashKeyed(this.data, this.len,
+            0x0706050403020100, 0x0f0e0d0c0b0a0908);
+    }
+
+    public boolean checkResult() {
+        return this.lastHash != 0;
+    }
+}

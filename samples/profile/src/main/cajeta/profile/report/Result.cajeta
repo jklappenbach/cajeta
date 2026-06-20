@@ -1,0 +1,117 @@
+package profile.report;
+
+import profile.report.Csv;
+
+// One row of the reproducibility record (spec §3.1). Every field a third party
+// needs to reproduce a measurement: benchmark/language/library identity +
+// versions, build/run flags, the timing distribution, memory, and the
+// correctness cross-check. Emitted as a CSV row; header() and toRow() share a
+// fixed column order keyed by schema_version. Numbers default to -1 ("not
+// measured"); strings default to "".
+public class Result {
+
+    public int32 schemaVersion;
+    public String runId;
+    public String timestampUnix;     // wall-clock stamp, supplied by the driver
+    public String benchmark;
+    public String area;
+    public String datasetName;
+    public int64 datasetBytes;
+    public String datasetSha256;
+    public int64 inputSize;
+    public String language;
+    public String languageVersion;
+    public String library;
+    public String libraryVersion;
+    public String flags;
+    public int32 warmup;
+    public int32 trials;
+    public int64 minNs;
+    public int64 medianNs;
+    public int64 meanNs;
+    public int64 p95Ns;
+    public String throughput;        // string-formatted (no float concat needed)
+    public String throughputUnit;
+    public int64 peakRssKb;          // in-process VmHWM (Memory.peakRssKb)
+    public int64 cgroupPeakKb;       // driver-filled (cgroup memory.peak / time -v)
+    public int64 allocBytes;
+    public int64 allocCount;
+    public int64 workingSetKb;
+    public String status;            // ok | skipped | invalid
+    public boolean checkOk;
+    public String notes;
+    public String variant;           // pattern×prediction / access-pattern label ("" if none)
+
+    public Result() {
+        this.schemaVersion = 1;
+        this.runId = "";
+        this.timestampUnix = "";
+        this.benchmark = "";
+        this.area = "";
+        this.datasetName = "";
+        this.datasetBytes = (int64) -1;
+        this.datasetSha256 = "";
+        this.inputSize = (int64) -1;
+        this.language = "";
+        this.languageVersion = "";
+        this.library = "";
+        this.libraryVersion = "";
+        this.flags = "";
+        this.warmup = 0;
+        this.trials = 0;
+        this.minNs = (int64) -1;
+        this.medianNs = (int64) -1;
+        this.meanNs = (int64) -1;
+        this.p95Ns = (int64) -1;
+        this.throughput = "";
+        this.throughputUnit = "";
+        this.peakRssKb = (int64) -1;
+        this.cgroupPeakKb = (int64) -1;
+        this.allocBytes = (int64) -1;
+        this.allocCount = (int64) -1;
+        this.workingSetKb = (int64) -1;
+        this.status = "ok";
+        this.checkOk = true;
+        this.notes = "";
+        this.variant = "";
+    }
+
+    public static #String header() {
+        return "schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes,variant";
+    }
+
+    public #String toRow() {
+        String s = Csv.field("" + this.schemaVersion);
+        s = s + "," + Csv.field(this.runId);
+        s = s + "," + Csv.field(this.timestampUnix);
+        s = s + "," + Csv.field(this.benchmark);
+        s = s + "," + Csv.field(this.area);
+        s = s + "," + Csv.field(this.datasetName);
+        s = s + "," + Csv.field("" + this.datasetBytes);
+        s = s + "," + Csv.field(this.datasetSha256);
+        s = s + "," + Csv.field("" + this.inputSize);
+        s = s + "," + Csv.field(this.language);
+        s = s + "," + Csv.field(this.languageVersion);
+        s = s + "," + Csv.field(this.library);
+        s = s + "," + Csv.field(this.libraryVersion);
+        s = s + "," + Csv.field(this.flags);
+        s = s + "," + Csv.field("" + this.warmup);
+        s = s + "," + Csv.field("" + this.trials);
+        s = s + "," + Csv.field("" + this.minNs);
+        s = s + "," + Csv.field("" + this.medianNs);
+        s = s + "," + Csv.field("" + this.meanNs);
+        s = s + "," + Csv.field("" + this.p95Ns);
+        s = s + "," + Csv.field(this.throughput);
+        s = s + "," + Csv.field(this.throughputUnit);
+        s = s + "," + Csv.field("" + this.peakRssKb);
+        s = s + "," + Csv.field("" + this.cgroupPeakKb);
+        s = s + "," + Csv.field("" + this.allocBytes);
+        s = s + "," + Csv.field("" + this.allocCount);
+        s = s + "," + Csv.field("" + this.workingSetKb);
+        s = s + "," + Csv.field(this.status);
+        s = s + "," + Csv.field(Csv.boolStr(this.checkOk));
+        s = s + "," + Csv.field(this.notes);
+        s = s + "," + Csv.field(this.variant);
+        return s;
+    }
+}
