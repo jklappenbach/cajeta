@@ -70,7 +70,11 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // interfaces (Encoder/SchemaEncoder/Schema/Compressor/Decompressor) + the CSV
 // codec (cajeta.codec.csv.{CsvIndex,CsvReader,CsvWriter,Csv,CsvParseException})
 // + remaining JSON binding classes (+14 prelude structures).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 342;
+// 2026-06-20: 342 → 374 — cajeta.ifx merge (main into feature/native-deps): the
+// interaction-framework stdlib (Surface/Window/WindowEvent, Input/Audio/Video
+// backends + sinks, capability/permission/lifecycle vocabulary, IfxInfo/
+// IfxException, the Null* floors; +32 prelude structures).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 374;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
