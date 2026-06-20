@@ -1,0 +1,135 @@
+package cajeta.search.ngram;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+import cajeta.collection.HashSet;
+import cajeta.lang.String;
+
+/**
+ * An n-gram inverted index for fuzzy candidate generation
+ * (cajeta.search spec §2). Maps key strings to stored values of type `T`
+ * and answers `candidates(query)` — every value whose key shares at least
+ * one n-gram with the query, deduplicated. This is a recall-oriented
+ * *prefilter*: a superset the caller (or `cajeta.search.fuzzy.Matcher`)
+ * then scores with an edit distance. It is NOT a collection — it is built
+ * over `HashMap`/`ArrayList`/`HashSet`; its contract is retrieval.
+ *
+ * ```cajeta
+ * Index<int32> idx = heap Index<int32>();   // trigrams (n = 3)
+ * idx.add("apple", 1);
+ * idx.add("zebra", 2);
+ * ArrayList<int32> hits = idx.candidates("aple");  // → [1] (shares "ple")
+ * ```
+ *
+ * Gram extraction is lowercased for recall; a key shorter than `n` is
+ * indexed under itself as a single gram. Duplicate grams in one key are
+ * harmless — a value may be added to a bucket more than once, but
+ * `candidates` dedups by value, so each value surfaces once.
+ *
+ * @See cajeta.search.fuzzy.Matcher
+ * @Complexity add O(len(key)); candidates O(sum of matched postings)
+ *
+ * NOTE (UNVERIFIED — built without a toolchain to compile it; see
+ * agents/cajeta-search-plan.md execution constraint). Ownership/lifetime
+ * points to confirm when first built:
+ *   1. Storing a gram `String` (produced by `substring`) as a long-lived
+ *      `HashMap` key — confirm the map takes/retains ownership so the key
+ *      outlives the local gram list.
+ *   2. Moving a `#ArrayList<T>` bucket into the map via `put` — confirm
+ *      the `#` transfer is correct at the call site.
+ *   3. `HashMap<String, V>` relies on `String.hash()` + `==` value
+ *      equality for keys; confirm String keys behave (the HashMap docs
+ *      show `HashMap<String, int32>`, so this is expected to hold).
+ */
+public class Index<T> {
+
+    /** gram → list of values whose key contains that gram. */
+    private HashMap<String, ArrayList<T>> postings;
+    /** gram size (3 = trigrams by default). */
+    private int32 n;
+
+    /** Construct a trigram index (n = 3). */
+    public Index() {
+        this.postings = heap HashMap<String, ArrayList<T>>(64);
+        this.n = 3;
+    }
+
+    /** Construct an index with the given gram size. */
+    public Index(int32 gramSize) {
+        this.postings = heap HashMap<String, ArrayList<T>>(64);
+        this.n = gramSize;
+    }
+
+    /**
+     * Lowercased n-grams of `key`. A key shorter than `n` yields a single
+     * gram (the whole lowercased key); an empty key yields no grams.
+     * Duplicates are not removed here — `candidates` dedups by value.
+     */
+    private #ArrayList<String> grams(String key) {
+        #String lower = key.toLowerCase();
+        #ArrayList<String> out = heap ArrayList<String>();
+        int32 len = (int32) lower.count();
+        if (len <= 0) {
+            return out;
+        }
+        if (len < this.n) {
+            #String whole = lower.substring(0, len);
+            out.add(whole);
+            return out;
+        }
+        int32 i = 0;
+        while (i + this.n <= len) {
+            #String g = lower.substring(i, i + this.n);
+            out.add(g);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /** Index `value` under every n-gram of `key`. */
+    public void add(String key, T value) {
+        #ArrayList<String> gs = this.grams(key);
+        int32 i = 0;
+        while (i < gs.count()) {
+            String g = gs.get(i);
+            if (this.postings.containsKey(g)) {
+                ArrayList<T> bucket = this.postings.get(g);
+                bucket.add(value);
+            } else {
+                #ArrayList<T> bucket = heap ArrayList<T>();
+                bucket.add(value);
+                this.postings.put(g, bucket);
+            }
+            i = i + 1;
+        }
+    }
+
+    /**
+     * Every value whose key shares at least one n-gram with `query`,
+     * deduplicated. Empty when nothing shares a gram. Visits only the
+     * postings of the query's grams (sub-linear in the key count).
+     */
+    public #ArrayList<T> candidates(String query) {
+        #ArrayList<T> out = heap ArrayList<T>();
+        #HashSet<T> seen = heap HashSet<T>(64);
+        #ArrayList<String> gs = this.grams(query);
+        int32 i = 0;
+        while (i < gs.count()) {
+            String g = gs.get(i);
+            if (this.postings.containsKey(g)) {
+                ArrayList<T> bucket = this.postings.get(g);
+                int32 j = 0;
+                while (j < bucket.count()) {
+                    T v = bucket.get(j);
+                    if (seen.contains(v) == false) {
+                        seen.add(v);
+                        out.add(v);
+                    }
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+}
