@@ -649,3 +649,33 @@ TEST(TensorTests, wildcardCaptureFromProtocol) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 7c (bounded) — a Tensor<?> recovered from fromProtocol is admitted by a bounded
+// NUMERIC wildcard by reified dtype KIND: a float32 tensor ⊨ Tensor<? extends
+// Floating>, then captures to the concrete Tensor<float32> and shares storage.
+// Backed by the runtime numeric-marker conformance in __cajeta_instanceof_bounded
+// (numeric-bounds, now unblocked). The reject-by-kind side (int ⊭ Floating) is
+// covered by ReifiedCaptureTests (Box<? extends Floating>) and NumericBoundsTests
+// (dtypeGenericTensorRoutineRejectsInt); exercising both via two fromProtocol
+// tensors in one scope currently trips a separate interop-drop bug (two shared
+// views + protocols at teardown) — tracked, not a numeric-bounds issue.
+TEST(TensorTests, wildcardBoundedFloatingFromProtocol) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.TensorProtocol;\n"
+        "import cajeta.lang.Floating;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> tf = Tensor.arange<float32>(4);\n"
+        "        TensorProtocol pf = tf.protocol();\n"
+        "        Tensor<?> wf = Tensor.fromProtocol(pf);\n"
+        "        if (!(wf instanceof Tensor<? extends Floating>)) { return -1; }\n"  // float ⊨ Floating
+        "        Tensor<float32> cap = (Tensor<float32>) wf;\n"                        // capture admitted float
+        "        cap.set1(0, 9.0f);\n"
+        "        if (tf.get1(0) != 9.0f) { return -2; }\n"                            // zero-copy
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

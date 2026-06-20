@@ -416,3 +416,80 @@ TEST(ReifiedCaptureTests, capturedCastBoundedWildcardThrowsOnNonSubtype) {
         "}\n";
     EXPECT_EQ(runI32(src), 0);
 }
+
+// --- item: NUMERIC-bounded-wildcard capture (capture plan 5c) ---------------
+// The runtime numeric-marker conformance for a bounded wildcard whose bound is a
+// cajeta.lang numeric marker: a PRIMITIVE element carries no class RTTI, so the
+// match checks the reified dtype KIND (float ⊨ Floating, int ⊭ Floating). This is
+// the runtime mirror of numeric-bounds' compile-time satisfiesNumericMarker —
+// what makes `(Box<? extends Floating>) w` over a fully-erased Box<?> sound.
+
+const char* BOXF =
+    "package test;\n"
+    "import cajeta.lang.Floating;\n"
+    "import cajeta.error.ClassCastException;\n"
+    "public class Box<T> {\n"
+    "    T value;\n"
+    "    public Box(T v) { this.value = v; }\n"
+    "    public T get() { return this.value; }\n"
+    "}\n";
+
+// instanceof a numeric-bounded wildcard: true when the reified element dtype is a
+// float (float32 ⊨ Floating), false when it is an int (int32 ⊭ Floating).
+TEST(ReifiedCaptureTests, instanceofBoundedWildcardNumericFloating) {
+    std::string src = std::string(BOXF) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<float32> bf = heap Box<float32>(2.5f);\n"
+        "        Box<?> wf = bf;\n"
+        "        Box<int32> bi = heap Box<int32>(7);\n"
+        "        Box<?> wi = bi;\n"
+        "        int32 r = 0;\n"
+        "        if (wf instanceof Box<? extends Floating>) { r = r + 1; }\n"   // float ⊨ Floating
+        "        if (wi instanceof Box<? extends Floating>) { r = r + 10; }\n"  // int ⊭ Floating
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// checked cast to a numeric-bounded wildcard SUCCEEDS for a float element.
+TEST(ReifiedCaptureTests, capturedCastBoundedWildcardNumericSucceedsOnFloat) {
+    std::string src = std::string(BOXF) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<float32> bf = heap Box<float32>(2.5f);\n"
+        "        Box<?> w = bf;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<?> cap = (Box<? extends Floating>) w;\n"
+        "            result = 1;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 0;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// checked cast to a numeric-bounded wildcard THROWS for an int element (int32 is
+// not Floating) — never hands back a mis-bounded handle.
+TEST(ReifiedCaptureTests, capturedCastBoundedWildcardNumericThrowsOnInt) {
+    std::string src = std::string(BOXF) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> bi = heap Box<int32>(7);\n"
+        "        Box<?> w = bi;\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            Box<?> cap = (Box<? extends Floating>) w;\n"
+        "            result = 1;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            result = 0;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
