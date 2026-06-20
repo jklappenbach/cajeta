@@ -1,0 +1,17 @@
+[package]
+name = "profile-sort"
+version = "0.1.0"
+edition = "2021"
+
+# Sorting competitors use only the standard library: sort_unstable is Rust's
+# ipnsort (pattern-defeating, the headline unstable sort); sort is driftsort
+# (stable, adaptive). No external crate is needed for the reference comparison.
+
+[[bin]]
+name = "profile-sort"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

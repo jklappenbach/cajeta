@@ -1,0 +1,36 @@
+package cajeta.ifx;
+
+import cajeta.lang.String;
+
+/**
+ * Backend — the base ifx service-provider interface. The per-domain backend interfaces
+ * ({@link WindowBackend} / {@link AudioBackend} / {@link InputBackend}) extend it; the OS backends
+ * (cajeta-ifx-*) and the harness implement those and register through the backend registry. ifx
+ * itself depends on no backend (dependency inversion).
+ *
+ * Every backend exposes probe() + priority() so the registry can pick the best viable one at launch
+ * (Wayland vs X11, PipeWire vs ALSA), and supports(Feature) for optional-capability detection.
+ * See documents/cajeta-gfx/cajeta-gfx-spec.md §9.4 / §9.7.
+ */
+public interface Backend {
+    /** Is this backend viable in the current environment? */
+    public boolean probe();
+    /** Selection weight among viable backends (higher wins; the null floor is lowest). */
+    public int32 priority();
+    /** Stable backend name: "win32" | "wayland" | "cocoa" | "harness" | "null" ... */
+    public String name();
+    /** Does this backend provide the optional capability? (the portable floor is always present.) */
+    public boolean supports(Feature feature);
+
+    /**
+     * Request an OS-gated {@link Permission} (mic capture, raw input-device access). Returns the
+     * resulting {@link PermissionState}; a denial is reported as {@code Denied}, never thrown — the
+     * app degrades, it does not crash (spec §6). A platform that does not gate the permission returns
+     * {@code NotRequired}; an async OS prompt may return {@code Pending} until it resolves.
+     */
+    public PermissionState requestPermission(Permission permission);
+
+    /** The current {@link PermissionState} of a permission WITHOUT prompting (the read-only sibling of
+     *  {@link #requestPermission}; {@code NotRequired} where the platform does not gate it). */
+    public PermissionState permissionState(Permission permission);
+}

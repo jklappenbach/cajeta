@@ -1,0 +1,60 @@
+package profile.report;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+
+import profile.report.Csv;
+import profile.report.Result;
+
+// Writes the report CSVs. `writeResults` emits the schema header + one row per
+// Result; `writeEnv` emits a small key,value env.csv capturing the run id plus
+// values the harness can read directly from the environment (System.env.get).
+// The richer hardware block (CPU model, kernel, GPU) is appended by the shell
+// driver, which has the process-exec the language doesn't.
+public class Report {
+
+    public static void writeResults(String path, ArrayList<Result> rows) {
+        FileWriter w = File.openWrite(path, OpenMode.WRITE);
+        w.writeString(Result.header());
+        w.writeString("\n");
+        int32 i = 0;
+        int32 n = rows.count();
+        while (i < n) {
+            Result r = rows.get(i);
+            w.writeString(r.toRow());
+            w.writeString("\n");
+            i = i + 1;
+        }
+        w.flush();
+        w.close();
+    }
+
+    public static void writeEnv(String path, String runId) {
+        FileWriter w = File.openWrite(path, OpenMode.WRITE);
+        w.writeString("key,value\n");
+        w.writeString("run_id," + Csv.field(runId) + "\n");
+
+        String ts = System.env.get("PROFILE_RUN_TS");
+        if (ts == null) {
+            ts = "";
+        }
+        w.writeString("timestamp_unix," + Csv.field(ts) + "\n");
+
+        String cpu = System.env.get("PROFILE_CPU");
+        if (cpu == null) {
+            cpu = "";
+        }
+        w.writeString("cpu," + Csv.field(cpu) + "\n");
+
+        String os = System.env.get("PROFILE_OS");
+        if (os == null) {
+            os = "";
+        }
+        w.writeString("os," + Csv.field(os) + "\n");
+
+        w.flush();
+        w.close();
+    }
+}

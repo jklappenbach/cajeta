@@ -1,0 +1,60 @@
+package profile.concurrent;
+
+import profile.Benchmark;
+
+// Task spawn/await overhead: spawn N trivial async fibers, await each, accumulate
+// the results. Each spawn allocates a stackful fiber; spawning then awaiting
+// immediately keeps only one live at a time (the canonical 1M-LIVE-task footprint
+// is blocked by the 65536 live-allocation cap + fiber memory — see reference).
+// Cross-check: sum of (i+1) == N*(N+1)/2.
+public class TaskSpawnBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public static async int32 leaf(int32 x) {
+        return x + 1;
+    }
+
+    public String name() {
+        return "task-spawn-await";
+    }
+
+    public String area() {
+        return "concurrent";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 3;
+    }
+
+    public void setup() {
+        // ~24.6 µs per spawn+await (stackful fiber); keep N modest so the
+        // benchmark doesn't dominate the run.
+        this.n = 20000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        int64 acc = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            int32 r = await spawn leaf(i);
+            acc = acc + (int64) r;
+            i = i + 1;
+        }
+        this.result = acc;
+    }
+
+    public boolean checkResult() {
+        int64 nn = (int64) this.n;
+        return this.result == nn * (nn + 1) / 2;
+    }
+}

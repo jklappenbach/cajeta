@@ -471,7 +471,16 @@ namespace cajeta {
             bool lhsIsThisOrSuper =
                 dynamic_pointer_cast<ThisExpression>(lhs) != nullptr
                 || dynamic_pointer_cast<SuperExpression>(lhs) != nullptr;
-            if (lhsClass && !lhsIsView && !lhsIsThisOrSuper) {
+            // Interface receivers are 24-byte fat-pointer bodies stored INLINE
+            // (an interface array element / field), so the GEP already points AT
+            // the body — the interface dispatch path (CajetaClass.cpp) GEPs
+            // data/vtable straight from it. Loading through here would read the
+            // body's first word (the data ptr) and dispatch would then deref that
+            // as a body → garbage vtable → crash. (Interface LOCALS are AllocaInst
+            // slots holding a ptr-to-body, loaded correctly by the alloca branch
+            // above; only the inline GEP shape must skip the load.)
+            bool lhsIsInterface = lhsClass && lhsClass->isInterface();
+            if (lhsClass && !lhsIsView && !lhsIsThisOrSuper && !lhsIsInterface) {
                 auto ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 base = module->getBuilder()->CreateLoad(ptrTy, base);
             }

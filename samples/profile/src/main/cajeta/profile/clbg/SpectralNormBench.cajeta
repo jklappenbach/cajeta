@@ -1,0 +1,106 @@
+package profile.clbg;
+
+import cajeta.lang.Math;
+
+import profile.Benchmark;
+
+// Computer Language Benchmarks Game: spectral-norm at N=100. Estimates the
+// largest singular value of the matrix A(i,j) = 1/((i+j)(i+j+1)/2 + i + 1) via
+// 10 power-iterations of AtA. Cross-check: the result ≈ 1.274224 (the known
+// N=100 value) within a small epsilon.
+public class SpectralNormBench extends Benchmark {
+
+    public int32 nDim;
+    public float64 result;
+
+    public String name() {
+        return "clbg-spectral-norm";
+    }
+
+    public String area() {
+        return "clbg";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.nDim = 100;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.nDim;
+    }
+
+    public float64 evalA(int32 i, int32 j) {
+        int32 ij = i + j;
+        int32 d = ij * (ij + 1) / 2 + i + 1;
+        return 1.0 / (float64) d;
+    }
+
+    // tmp = A * v ; out = A^T * tmp  (out = AtA * v)
+    public void atAv(float64[] v, float64[] out, float64[] tmp, int32 n) {
+        int32 i = 0;
+        while (i < n) {
+            float64 sum = 0.0;
+            int32 j = 0;
+            while (j < n) {
+                sum = sum + this.evalA(i, j) * v[j];
+                j = j + 1;
+            }
+            tmp[i] = sum;
+            i = i + 1;
+        }
+        i = 0;
+        while (i < n) {
+            float64 sum = 0.0;
+            int32 j = 0;
+            while (j < n) {
+                sum = sum + this.evalA(j, i) * tmp[j];
+                j = j + 1;
+            }
+            out[i] = sum;
+            i = i + 1;
+        }
+    }
+
+    public void run(int32 iterations) {
+        int32 n = this.nDim;
+        float64[] u = heap float64[n];
+        float64[] v = heap float64[n];
+        float64[] tmp = heap float64[n];
+        int32 i = 0;
+        while (i < n) {
+            u[i] = 1.0;
+            i = i + 1;
+        }
+        int32 it = 0;
+        while (it < 10) {
+            this.atAv(u, v, tmp, n);
+            this.atAv(v, u, tmp, n);
+            it = it + 1;
+        }
+        float64 vBv = 0.0;
+        float64 vv = 0.0;
+        i = 0;
+        while (i < n) {
+            vBv = vBv + u[i] * v[i];
+            vv = vv + v[i] * v[i];
+            i = i + 1;
+        }
+        this.result = Math.sqrt(vBv / vv);
+    }
+
+    public boolean checkResult() {
+        float64 diff = this.result - 1.274224;
+        if (diff < 0.0) {
+            diff = 0.0 - diff;
+        }
+        return diff < 0.001;
+    }
+}

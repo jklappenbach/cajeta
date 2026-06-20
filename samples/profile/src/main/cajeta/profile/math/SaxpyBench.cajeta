@@ -1,0 +1,71 @@
+package profile.math;
+
+import profile.Benchmark;
+
+// SAXPY: z = a*x + y over N float64 (scalar). Writes into a persistent result
+// array (allocated once) and accumulates a checksum. Cross-check: the checksum
+// matches a recomputation in the same accumulation order (exact float match).
+public class SaxpyBench extends Benchmark {
+
+    public float64[] x;
+    public float64[] y;
+    public float64[] z;
+    public int32 n;
+    public float64 a;
+    public float64 checksum;
+
+    public String name() {
+        return "saxpy";
+    }
+
+    public String area() {
+        return "math";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void setup() {
+        this.n = 1000000;
+        this.a = 2.5;
+        this.x = heap float64[this.n];
+        this.y = heap float64[this.n];
+        this.z = heap float64[this.n];
+        int32 i = 0;
+        while (i < this.n) {
+            this.x[i] = (float64) (i % 100);
+            this.y[i] = (float64) (i % 50);
+            i = i + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        float64 sum = 0.0;
+        int32 i = 0;
+        while (i < this.n) {
+            this.z[i] = this.a * this.x[i] + this.y[i];
+            sum = sum + this.z[i];
+            i = i + 1;
+        }
+        this.checksum = sum;
+    }
+
+    public boolean checkResult() {
+        float64 expected = 0.0;
+        int32 i = 0;
+        while (i < this.n) {
+            expected = expected + (this.a * this.x[i] + this.y[i]);
+            i = i + 1;
+        }
+        return this.checksum == expected;
+    }
+}

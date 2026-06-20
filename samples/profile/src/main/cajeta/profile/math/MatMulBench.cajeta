@@ -1,0 +1,97 @@
+package profile.math;
+
+import profile.Benchmark;
+
+// Dense N×N matrix multiply C = A·B (scalar, flat row-major float64 arrays). A is
+// the identity, so C == B — a cheap, exact cross-check (checksum of C == checksum
+// of B) while still doing the full N^3 multiply-add work.
+public class MatMulBench extends Benchmark {
+
+    public float64[] a;
+    public float64[] b;
+    public float64[] c;
+    public int32 nDim;
+    public float64 bSum;
+    public float64 cSum;
+
+    public String name() {
+        return "matmul";
+    }
+
+    public String area() {
+        return "math";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public void setup() {
+        this.nDim = 200;
+        int32 sz = this.nDim * this.nDim;
+        this.a = heap float64[sz];
+        this.b = heap float64[sz];
+        this.c = heap float64[sz];
+        int32 i = 0;
+        while (i < this.nDim) {
+            int32 j = 0;
+            while (j < this.nDim) {
+                int32 idx = i * this.nDim + j;
+                if (i == j) {
+                    this.a[idx] = 1.0;
+                } else {
+                    this.a[idx] = 0.0;
+                }
+                this.b[idx] = (float64) (idx % 100);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        float64 s = 0.0;
+        int32 k = 0;
+        while (k < sz) {
+            s = s + this.b[k];
+            k = k + 1;
+        }
+        this.bSum = s;
+    }
+
+    public int64 inputSize() {
+        return (int64) (this.nDim * this.nDim);
+    }
+
+    public void run(int32 iterations) {
+        int32 nd = this.nDim;
+        int32 i = 0;
+        while (i < nd) {
+            int32 j = 0;
+            while (j < nd) {
+                float64 acc = 0.0;
+                int32 k = 0;
+                while (k < nd) {
+                    acc = acc + this.a[i * nd + k] * this.b[k * nd + j];
+                    k = k + 1;
+                }
+                this.c[i * nd + j] = acc;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        float64 s = 0.0;
+        int32 m = 0;
+        int32 sz = nd * nd;
+        while (m < sz) {
+            s = s + this.c[m];
+            m = m + 1;
+        }
+        this.cSum = s;
+    }
+
+    public boolean checkResult() {
+        return this.cSum == this.bSum;
+    }
+}

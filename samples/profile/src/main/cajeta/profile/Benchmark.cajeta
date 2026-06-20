@@ -1,0 +1,117 @@
+package profile;
+
+import cajeta.collection.ArrayList;
+
+// Base class for every benchmark in the suite. Each benchmark extends
+// Benchmark and overrides the lifecycle methods; the Profile entry point
+// builds an ArrayList<Benchmark>, pushes one instance of every benchmark
+// into it, then walks the list driving each through its lifecycle — so
+// adding a benchmark means writing a new .cajeta file here and one
+// `benchmarks.add(heap NewBenchmark());` line in Profile.cajeta (the same
+// "add a demo" ergonomics as the tour's DemoClass).
+//
+// As in the tour, Cajeta has no formal `abstract` keyword today, so these
+// land as empty/identity concrete methods; subclasses override by signature.
+// The lifecycle the Profile runner invokes, in order, per benchmark:
+//
+//   setup()        — allocate inputs, fetch/checksum datasets (later units)
+//   run(iters)     — execute the measured workload `iters` times
+//   teardown()     — release inputs
+//   checkResult()  — structural correctness cross-check (true = pass)
+//
+// name()/area() identify the benchmark (used by `--list` and, later, as CSV
+// columns); datasetInfo() describes the input (name/size/checksum) for the
+// reproducibility record.
+public class Benchmark {
+
+    // Identity — overridden by every concrete benchmark.
+    public String name() {
+        return "benchmark";
+    }
+
+    public String area() {
+        return "none";
+    }
+
+    // Describes the input dataset (name / size / checksum) for the report.
+    // Empty when the benchmark is self-generating.
+    public String datasetInfo() {
+        return "";
+    }
+
+    // Methodology knobs the measurement loop (Harness, Unit 3) reads. Defaults
+    // match the bench/ precedent; slow benchmarks override with fewer trials.
+    public int32 warmupIters() {
+        return 20;
+    }
+
+    public int32 measuredIters() {
+        return 200;
+    }
+
+    // Nanoseconds of unavoidable per-iteration overhead (allocation / fresh-
+    // buffer read) to subtract from each measured trial — the BindBench pattern.
+    // 0 = nothing to subtract.
+    public int64 baselineNanos() {
+        return (int64) 0;
+    }
+
+    // Input size in bytes/elements for the current variant (lets the report
+    // derive throughput, e.g. MB/s). -1 = not applicable.
+    public int64 inputSize() {
+        return (int64) -1;
+    }
+
+    // Whether this benchmark can run in the current environment. A dataset-backed
+    // benchmark returns false when its corpus isn't configured/fetched, so the
+    // harness records a skipped row instead of crashing on a missing file.
+    public boolean available() {
+        return true;
+    }
+
+    // Whether a specific variant can run. A benchmark with a per-input limitation
+    // (e.g. the v1 JSON DOM not parsing floats, so only integer-only inputs work)
+    // returns false for the unsupported variants; the harness records a skip row
+    // (with skipReason) instead of letting the workload throw.
+    public boolean supportsVariant(String variant) {
+        return true;
+    }
+
+    public String skipReason() {
+        return "variant not supported by this benchmark";
+    }
+
+    // Variant matrix (spec §4.4/§4.5). A benchmark with parameterized inputs —
+    // sort {type×pattern×prediction}, JSON {in-order/out-of-order/missing-key} —
+    // returns one label per variant; the measurement loop produces one result row
+    // per label. Default: a single unlabelled variant. `prepare(variant)` builds
+    // the per-variant input; `runVariant` is the measured body for that variant.
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("");
+        return v;
+    }
+
+    public void prepare(String variant) {
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.run(iterations);
+    }
+
+    // Lifecycle. setup → run → teardown → checkResult, driven by Profile.
+    public void setup() {
+    }
+
+    public void run(int32 iterations) {
+    }
+
+    public void teardown() {
+    }
+
+    // Structural correctness cross-check. true = the workload produced the
+    // expected result this run; false marks the result invalid.
+    public boolean checkResult() {
+        return true;
+    }
+}

@@ -1,0 +1,53 @@
+package profile.stream;
+
+import cajeta.collection.ArrayList;
+
+import profile.Benchmark;
+
+// Parallel reduce via .parallel() (fork/join over Splittable shares). Cross-check:
+// the parallel sum equals the sequential sum (associativity + correct splitting).
+public class StreamParallelReduceBench extends Benchmark {
+
+    public ArrayList<int32> xs;
+    public int32 n;
+    public int32 parResult;
+
+    public String name() {
+        return "stream-parallel-reduce";
+    }
+
+    public String area() {
+        return "stream";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 1000000;
+        this.xs = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < this.n) {
+            this.xs.add(i % 1000);
+            i = i + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        this.parResult = this.xs.stream().parallel().reduce(0, (a, b) -> a + b);
+    }
+
+    public boolean checkResult() {
+        int32 seq = this.xs.stream().reduce(0, (a, b) -> a + b);
+        return this.parResult == seq;
+    }
+}

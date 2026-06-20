@@ -1,0 +1,63 @@
+package profile.collection;
+
+import cajeta.collection.HashMap;
+
+import profile.Benchmark;
+
+// HashMap<String,int32> build + lookup with string keys ("key"+i) — the string
+// hashing/equality cost dominates here, vs the integer-key benchmark. Cross-check:
+// all N lookups hit (return the value put), so hit count == N.
+public class HashMapStringBench extends Benchmark {
+
+    public int32 n;
+    public int64 hits;
+
+    public String name() {
+        return "hashmap-string";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 30000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        HashMap<String, int32> m = heap HashMap<String, int32>(64);
+        int32 i = 0;
+        while (i < this.n) {
+            String k = "key" + i;
+            m.put(k, i);
+            i = i + 1;
+        }
+        int64 h = 0;
+        int32 j = 0;
+        while (j < this.n) {
+            String q = "key" + j;
+            int32 v = m.get(q);
+            if (v == j) {
+                h = h + 1;
+            }
+            j = j + 1;
+        }
+        this.hits = h;
+    }
+
+    public boolean checkResult() {
+        return this.hits == (int64) this.n;
+    }
+}

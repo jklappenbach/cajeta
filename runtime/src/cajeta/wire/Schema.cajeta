@@ -1,0 +1,28 @@
+package cajeta.wire;
+
+/**
+ * The schema a `SchemaEncoder<T>` decodes against. v1 is a deliberately opaque
+ * **carrier** of the schema's raw serialized definition — for Avro that is the
+ * JSON schema text an Object Container File embeds in its header. Structured
+ * field modeling (resolution, aliases, logical types) lands with the first
+ * format that needs it (Avro, Phase 5); until then a `Schema` is just the
+ * owned bytes that describe a record.
+ *
+ * ```cajeta
+ * Schema s = heap Schema(#schemaBytes);
+ * int8[] def = s.definition();   // borrow the raw descriptor
+ * ```
+ */
+public final class Schema {
+    int8[] definition;      // owned raw schema descriptor
+
+    /** Wraps (takes ownership of) the raw schema `definition` bytes. */
+    public Schema(#int8[] definition) {
+        this.definition = definition;
+    }
+
+    /** The raw schema descriptor bytes (borrowed; owned by this `Schema`). */
+    public int8[] definition() {
+        return this.definition;
+    }
+}

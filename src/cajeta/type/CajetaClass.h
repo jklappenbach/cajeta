@@ -424,7 +424,20 @@ namespace cajeta {
         CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
         void setEmitModule(CajetaModulePtr m) { emitModule = m; }
 
-        list<CajetaClassPtr>& getSuperClasses() { return superClasses; }
+        list<CajetaClassPtr>& getSuperClasses() {
+            // Lazy re-resolve: a NAMED parent (qExtended) may not have resolved
+            // into superClasses at prototype time because it loaded LATER (the
+            // stdlib parses a package's files alphabetically, so a sub-interface
+            // sorting before its base — `AudioBackend` < `Backend` — is built
+            // first, leaving its `extends Backend` link empty and cached). Once
+            // the parent registers, this re-resolution picks it up so the
+            // interface vtable synthesis and method-inheritance walks see the
+            // inherited obligations. Idempotent + only fires while short.
+            if (superClasses.size() < qExtended.size()) {
+                resolveSuperClasses();
+            }
+            return superClasses;
+        }
 
         // LLVM struct index for a class field. Class instances reserve LLVM
         // slot 0 for the vtable pointer, so user properties live at LLVM

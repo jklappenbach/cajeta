@@ -313,13 +313,28 @@ namespace cajeta {
         // #63: an interface method (abstract, no body) returning a value-shape
         // class (Optional<T>, etc.) has no body to scan, but the dispatch-site
         // ABI must match the impl's. Impls of such methods use `return stack
-        // X(...)` (the canonical shape) and compile with sret; the interface
-        // decl's prototype must too, or indirect calls via the vtable
-        // misalign args. Force sret on the interface decl based on the
-        // signature alone.
+        // X(...)` (or `return o` for a local value-shape, forced sret via #66
+        // off this very decl) and compile with sret; the interface decl's
+        // prototype must too, or indirect calls via the vtable misalign args.
+        // Force sret on the interface decl based on the signature alone.
+        //
+        // EXCEPTION — a REFERENCE return like cajeta.lang.String is returned by
+        // its impls as a heap POINTER, never sret; forcing sret here mismatches
+        // the impl ABI and crashes on dispatch (the ifx Backend.name() case:
+        // NullWindowBackend::name returns a String pointer while the sret-forced
+        // decl expected `void name(sret, this)`). No prior code dispatched a
+        // String-returning interface method, so excluding it cannot regress the
+        // value-shape (Optional) path the force exists for.
         if (parent && parent->isInterface()) {
-            returnsStackValueCache = 1;
-            return true;
+            QualifiedNamePtr rtName = rtClass->getQName();
+            bool isReferenceReturn = rtName
+                && rtName->getTypeName() == "String"
+                && rtName->getPackageName() == "cajeta.lang";
+            if (!isReferenceReturn) {
+                returnsStackValueCache = 1;
+                return true;
+            }
+            // String reference return: fall through to a pointer return.
         }
         // #66: a class method whose body has no `return stack X(...)` (the
         // canonical PeekStream/SkipStream shape — body is just `return o;`

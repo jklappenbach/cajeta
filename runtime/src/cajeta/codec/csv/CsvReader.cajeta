@@ -1,0 +1,209 @@
+package cajeta.codec.csv;
+
+/**
+ * Streaming RFC-4180 CSV reader over a `CsvIndex`. Constructs the structural
+ * index once, then walks it row by row: `nextRow()` advances to the next record
+ * (false at EOF), `fieldCount()` gives the current row's field count, and
+ * `field(i)` returns the i-th field's *value* bytes — outer quotes stripped, a
+ * doubled `""` collapsed to one `"`, and a trailing `\r` (from a CRLF record
+ * terminator) trimmed. A trailing record terminator does not yield a phantom
+ * empty row.
+ *
+ * The index already excluded delimiters inside quoted fields, so row/field
+ * slicing is pure offset arithmetic; only the per-field unquote walks bytes, and
+ * only for fields that are actually quoted. Pairs with `CsvIndex`; the typed
+ * `Csv.parse<T>` bind (Phase 1.2b) layers on top of this reader.
+ */
+public final class CsvReader {
+    int8[] buf;
+    int64 n;
+    int32[] idx;
+    int32 cnt;
+    int32 di;          // next index entry to consume
+    int64 pos;         // byte offset where the next field/row starts
+
+    int64[] fStart;    // current row: field start offsets
+    int64[] fEnd;      // current row: field end offsets (exclusive, \r-trimmed)
+    int32 fc;          // current row: field count
+
+    public CsvReader(int8[] buf, int64 n) {
+        this.buf = buf;
+        this.n = n;
+        int64 cap = n + 16;
+        this.idx = heap int32[cap];
+        this.cnt = CsvIndex.build(buf, n, this.idx);
+        this.di = 0;
+        this.pos = 0;
+        this.fStart = heap int64[cap];
+        this.fEnd = heap int64[cap];
+        this.fc = 0;
+    }
+
+    /**
+     * Advance to the next record, populating the current-row field spans.
+     * Returns false once every byte and delimiter is consumed (a trailing
+     * record terminator does not produce an extra empty row).
+     */
+    public boolean nextRow() {
+        int32 cnt = this.cnt;
+        int32 di = this.di;
+        int64 pos = this.pos;
+        int64 nn = this.n;
+        int32[] idx = this.idx;
+        int8[] b = this.buf;
+        int64[] fs = this.fStart;
+        int64[] fe = this.fEnd;
+        if (di >= cnt && pos >= nn) { return false; }
+        int32 fc = 0;
+        int64 fieldStart = pos;
+        boolean rowDone = false;
+        while (!rowDone) {
+            if (di < cnt) {
+                int64 dpos = (int64) idx[di];
+                int8 dc = b[dpos];
+                int64 fend = dpos;
+                if (dc == (int8)10) {
+                    if (dpos > fieldStart && b[dpos - 1] == (int8)13) { fend = dpos - 1; }
+                }
+                fs[fc] = fieldStart;
+                fe[fc] = fend;
+                fc = fc + 1;
+                di = di + 1;
+                fieldStart = dpos + 1;
+                if (dc == (int8)10) { rowDone = true; }
+            } else {
+                fs[fc] = fieldStart;
+                fe[fc] = nn;
+                fc = fc + 1;
+                fieldStart = nn;
+                rowDone = true;
+            }
+        }
+        this.di = di;
+        this.pos = fieldStart;
+        this.fc = fc;
+        return true;
+    }
+
+    /** Field count of the current row (valid after a `nextRow()` returning true). */
+    public int32 fieldCount() {
+        return this.fc;
+    }
+
+    /**
+     * Value bytes of the i-th field of the current row: outer quotes stripped
+     * and a doubled `""` collapsed to one `"` if the field is quoted, otherwise
+     * the raw span. Caller owns the returned buffer.
+     */
+    public #int8[] field(int32 i) {
+        int8[] b = this.buf;
+        int64 s = this.fStart[i];
+        int64 e = this.fEnd[i];
+        boolean quoted = false;
+        if (e - s >= 2) {
+            if (b[s] == (int8)34 && b[e - 1] == (int8)34) { quoted = true; }
+        }
+        if (!quoted) {
+            int32 len = (int32)(e - s);
+            int8[] raw = heap int8[len];
+            int32 k = 0;
+            while (k < len) { raw[k] = b[s + (int64)k]; k = k + 1; }
+            return raw;
+        }
+        int64 qs = s + 1;
+        int64 qe = e - 1;
+        int32 outLen = 0;
+        int64 j = qs;
+        while (j < qe) {
+            int8 c = b[j];
+            if (c == (int8)34 && j + 1 < qe && b[j + 1] == (int8)34) { outLen = outLen + 1; j = j + 2; }
+            else { outLen = outLen + 1; j = j + 1; }
+        }
+        int8[] out = heap int8[outLen];
+        int32 w = 0;
+        j = qs;
+        while (j < qe) {
+            int8 c = b[j];
+            if (c == (int8)34 && j + 1 < qe && b[j + 1] == (int8)34) { out[w] = (int8)34; w = w + 1; j = j + 2; }
+            else { out[w] = c; w = w + 1; j = j + 1; }
+        }
+        return out;
+    }
+
+    // -- Field-value decoders (backs the Tier-1 `Csv.parse<T>` synthesizer) --
+    // These parse a whole already-unquoted field value (the int8[] from
+    // `field(i)`) into a primitive. v1 is permissive: non-digit bytes are
+    // skipped rather than rejected — fail-loud parsing lands in 1.2b-b3.
+
+    /** Parse the value bytes as a base-10 int64 (optional leading `-`). */
+    public static int64 parseI64(int8[] s) {
+        int32 n = (int32) s.count();
+        int32 i = 0;
+        boolean negative = false;
+        if (n > 0 && s[0] == (int8)45) { negative = true; i = 1; }
+        int64 acc = (int64) 0;
+        while (i < n) {
+            int8 c = s[i];
+            if (c >= (int8)48 && c <= (int8)57) {
+                acc = acc * (int64)10 + (int64)(((int32) c) - 48);
+            }
+            i = i + 1;
+        }
+        if (negative) { return - acc; }
+        return acc;
+    }
+
+    /** Parse the value bytes as float64 — sign, integer, fraction, exponent. */
+    public static float64 parseF64(int8[] s) {
+        int32 n = (int32) s.count();
+        int32 i = 0;
+        boolean negative = false;
+        if (n > 0 && s[0] == (int8)45) { negative = true; i = 1; }
+        float64 intPart = 0.0;
+        while (i < n) {
+            int8 c = s[i];
+            if (c < (int8)48 || c > (int8)57) { break; }
+            intPart = intPart * 10.0 + (float64)(((int32) c) - 48);
+            i = i + 1;
+        }
+        float64 frac = 0.0;
+        float64 scale = 1.0;
+        if (i < n && s[i] == (int8)46) {
+            i = i + 1;
+            while (i < n) {
+                int8 c = s[i];
+                if (c < (int8)48 || c > (int8)57) { break; }
+                scale = scale * 10.0;
+                frac = frac + ((float64)(((int32) c) - 48)) / scale;
+                i = i + 1;
+            }
+        }
+        float64 r = intPart + frac;
+        if (i < n && (s[i] == (int8)101 || s[i] == (int8)69)) {
+            i = i + 1;
+            boolean expNeg = false;
+            if (i < n && s[i] == (int8)45) { expNeg = true; i = i + 1; }
+            else if (i < n && s[i] == (int8)43) { i = i + 1; }
+            int32 exp = 0;
+            while (i < n) {
+                int8 c = s[i];
+                if (c < (int8)48 || c > (int8)57) { break; }
+                exp = exp * 10 + (((int32) c) - 48);
+                i = i + 1;
+            }
+            float64 pow10 = 1.0;
+            int32 ej = 0;
+            while (ej < exp) { pow10 = pow10 * 10.0; ej = ej + 1; }
+            if (expNeg) { r = r / pow10; } else { r = r * pow10; }
+        }
+        if (negative) { return - r; }
+        return r;
+    }
+
+    /** Parse the value bytes as boolean — true iff it starts with t/T/1. */
+    public static boolean parseBool(int8[] s) {
+        if ((int32) s.count() == 0) { return false; }
+        int8 c = s[0];
+        return c == (int8)116 || c == (int8)84 || c == (int8)49;
+    }
+}
