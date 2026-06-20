@@ -94,4 +94,27 @@ namespace cajeta::buildtool {
         const std::string& platform,
         const std::vector<NativeProvider>& providers);
 
+    // --- Unit 6: default packaging step -----------------------------------
+
+    // Serialize a requirement set to the embedded native-metadata json
+    // ({requires, libraries}) that parseNativeMeta reads. Round-trips.
+    std::string serializeNativeMeta(const NativeRequirementSet& reqs);
+
+    struct NativePackagingResult {
+        std::vector<std::string> baked;    // "<platform>/<lib>" entries baked
+        std::vector<std::string> missing;  // required libs unresolved everywhere
+    };
+
+    // Bake resolved native artifacts into `arc`'s native/ tree (reading each
+    // resolved artifactPath from disk) and embed the metadata json. `slim`
+    // skips baking (no native/), still reporting unresolved-required libs.
+    // Baking is redistributable-agnostic — the `redistributable` flag gates
+    // only Olla mirroring / publisher public bundling (§10), never the app
+    // developer baking a provisioned (embargoed) artifact into their archive.
+    llvm::Expected<NativePackagingResult> bakeNativeArtifacts(
+        cajeta::CajetaArchive& arc,
+        const NativeRequirementSet& reqs,
+        const std::map<std::string, NativeResolution>& perPlatform,
+        bool slim);
+
 } // namespace cajeta::buildtool

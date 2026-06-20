@@ -3,6 +3,11 @@
 #include "NativeResolver.h"
 
 #include <llvm/Support/JSON.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/raw_ostream.h>
+
+#include <filesystem>
+#include <set>
 
 namespace cajeta::buildtool {
 
@@ -192,6 +197,94 @@ namespace cajeta::buildtool {
             }
         }
         return out;
+    }
+
+    // --- Unit 6: default packaging step ----------------------------------
+
+    std::string serializeNativeMeta(const NativeRequirementSet& reqs) {
+        llvm::json::Array req;
+        for (const auto& id : reqs.required) req.push_back(id);
+        llvm::json::Object libs;
+        for (const auto& kv : reqs.libraries) {
+            const NativeLibrary& lib = kv.second;
+            llvm::json::Object o;
+            o["version"] = lib.version;
+            o["license"] = lib.license;
+            o["redistributable"] = lib.redistributable;
+            o["link"] = lib.link;
+            if (!lib.platforms.empty()) {
+                llvm::json::Array ps;
+                for (const auto& p : lib.platforms) ps.push_back(p);
+                o["platforms"] = std::move(ps);
+            }
+            if (!lib.artifacts.empty()) {
+                llvm::json::Object arts;
+                for (const auto& akv : lib.artifacts) {
+                    llvm::json::Object ao;
+                    if (akv.second.url) ao["url"] = *akv.second.url;
+                    if (akv.second.sha256) ao["sha256"] = *akv.second.sha256;
+                    arts[akv.first] = std::move(ao);
+                }
+                o["artifacts"] = std::move(arts);
+            }
+            if (lib.acquire) o["acquire"] = *lib.acquire;
+            libs[kv.first] = std::move(o);
+        }
+        llvm::json::Object root;
+        root["requires"] = std::move(req);
+        root["libraries"] = std::move(libs);
+        std::string s;
+        llvm::raw_string_ostream os(s);
+        os << llvm::json::Value(std::move(root));
+        return os.str();
+    }
+
+    llvm::Expected<NativePackagingResult> bakeNativeArtifacts(
+            cajeta::CajetaArchive& arc,
+            const NativeRequirementSet& reqs,
+            const std::map<std::string, NativeResolution>& perPlatform,
+            bool slim) {
+        NativePackagingResult result;
+
+        // What resolved on at least one platform (independent of slim).
+        std::set<std::string> resolvedAnywhere;
+        for (const auto& plKv : perPlatform)
+            for (const auto& rk : plKv.second.resolved)
+                resolvedAnywhere.insert(rk.second.lib);
+
+        if (!slim) {
+            for (const auto& plKv : perPlatform) {
+                const std::string& platform = plKv.first;
+                for (const auto& rk : plKv.second.resolved) {
+                    const ResolvedNative& rn = rk.second;
+                    auto buf = llvm::MemoryBuffer::getFile(rn.artifactPath);
+                    if (!buf)
+                        return llvm::createStringError(
+                            llvm::inconvertibleErrorCode(),
+                            "cannot read native artifact '" + rn.artifactPath +
+                            "' for " + rn.lib + " (" + platform + "): " +
+                            buf.getError().message());
+                    const char* b = (*buf)->getBufferStart();
+                    const char* e = (*buf)->getBufferEnd();
+                    std::vector<uint8_t> bytes(b, e);
+                    std::string filename =
+                        std::filesystem::path(rn.artifactPath).filename().string();
+                    arc.addNativeArtifact(platform, filename, std::move(bytes));
+                    result.baked.push_back(platform + "/" + rn.lib);
+                }
+            }
+            arc.setNativeLibrariesMeta([&] {
+                std::string j = serializeNativeMeta(reqs);
+                return std::vector<uint8_t>(j.begin(), j.end());
+            }());
+        }
+
+        // Required libs that resolved on no platform are reported (never
+        // silently dropped) — in both slim and baked modes.
+        for (const auto& id : reqs.required) {
+            if (!resolvedAnywhere.count(id)) result.missing.push_back(id);
+        }
+        return result;
     }
 
 } // namespace cajeta::buildtool
