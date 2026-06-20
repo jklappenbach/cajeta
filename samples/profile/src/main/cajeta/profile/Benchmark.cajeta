@@ -1,0 +1,55 @@
+package profile;
+
+// Base class for every benchmark in the suite. Each benchmark extends
+// Benchmark and overrides the lifecycle methods; the Profile entry point
+// builds an ArrayList<Benchmark>, pushes one instance of every benchmark
+// into it, then walks the list driving each through its lifecycle — so
+// adding a benchmark means writing a new .cajeta file here and one
+// `benchmarks.add(heap NewBenchmark());` line in Profile.cajeta (the same
+// "add a demo" ergonomics as the tour's DemoClass).
+//
+// As in the tour, Cajeta has no formal `abstract` keyword today, so these
+// land as empty/identity concrete methods; subclasses override by signature.
+// The lifecycle the Profile runner invokes, in order, per benchmark:
+//
+//   setup()        — allocate inputs, fetch/checksum datasets (later units)
+//   run(iters)     — execute the measured workload `iters` times
+//   teardown()     — release inputs
+//   checkResult()  — structural correctness cross-check (true = pass)
+//
+// name()/area() identify the benchmark (used by `--list` and, later, as CSV
+// columns); datasetInfo() describes the input (name/size/checksum) for the
+// reproducibility record.
+public class Benchmark {
+
+    // Identity — overridden by every concrete benchmark.
+    public String name() {
+        return "benchmark";
+    }
+
+    public String area() {
+        return "none";
+    }
+
+    // Describes the input dataset (name / size / checksum) for the report.
+    // Empty when the benchmark is self-generating.
+    public String datasetInfo() {
+        return "";
+    }
+
+    // Lifecycle. setup → run → teardown → checkResult, driven by Profile.
+    public void setup() {
+    }
+
+    public void run(int32 iterations) {
+    }
+
+    public void teardown() {
+    }
+
+    // Structural correctness cross-check. true = the workload produced the
+    // expected result this run; false marks the result invalid.
+    public boolean checkResult() {
+        return true;
+    }
+}

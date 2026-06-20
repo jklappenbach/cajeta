@@ -1,0 +1,75 @@
+package profile;
+
+import cajeta.collection.ArrayList;
+
+import profile.Benchmark;
+import profile.ExampleBenchmark;
+
+// Entry point for the cross-language benchmark suite. Builds an
+// ArrayList<Benchmark>, pushes one instance of every benchmark into it, then
+// either lists them (`--list`) or drives each through its lifecycle
+// (setup → run → teardown → checkResult). This mirrors the tour's Tour.run():
+// adding a benchmark is a new Benchmark subclass plus one `benchmarks.add(...)`
+// line below — the registered list is the single source of what runs.
+//
+// Unit 1 is the scaffold: the measurement loop, CSV emission, dataset fetch,
+// selection by area/language, and competitor dispatch arrive in later units
+// (see agents/plans/profile-plan.md). Here the lifecycle is invoked once each
+// with a single iteration, enough to prove registration + ordered dispatch.
+public final class Profile {
+
+    public static int32 main(String[] args) {
+        System.stdout.println("=== Cajeta profile — cross-language benchmark suite ===");
+
+        // Register every benchmark. The list owns each element; the drop
+        // chain releases them at scope exit.
+        ArrayList<Benchmark> benchmarks = heap ArrayList<Benchmark>();
+        benchmarks.add(heap ExampleBenchmark());
+
+        // Parse the minimal flags Unit 1 needs. (Full selection — --area,
+        // --bench, --lang, --out, --no-report — lands in Unit 17.)
+        boolean listMode = false;
+        int32 i = 0;
+        while (i < args.count()) {
+            if (args[i].equals("--list")) {
+                listMode = true;
+            }
+            i = i + 1;
+        }
+
+        int32 n = benchmarks.count();
+
+        // `--list`: print each benchmark's name + area, then exit.
+        if (listMode) {
+            System.stdout.println("-- registered benchmarks --");
+            int32 k = 0;
+            while (k < n) {
+                Benchmark b = benchmarks.get(k);
+                System.stdout.println("  " + b.name() + " [" + b.area() + "]");
+                k = k + 1;
+            }
+            System.stdout.println("=== profile complete ===");
+            return 0;
+        }
+
+        // Default: drive each benchmark through its lifecycle, in order.
+        int32 j = 0;
+        while (j < n) {
+            Benchmark b = benchmarks.get(j);
+            System.stdout.println("");
+            System.stdout.println("-- " + b.name() + " [" + b.area() + "] --");
+            b.setup();
+            b.run(1);
+            b.teardown();
+            boolean ok = b.checkResult();
+            if (!ok) {
+                System.stdout.println("  FAILED checkResult: " + b.name());
+            }
+            j = j + 1;
+        }
+
+        System.stdout.println("");
+        System.stdout.println("=== profile complete ===");
+        return 0;
+    }
+}

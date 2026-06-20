@@ -77,8 +77,8 @@ test/cajeta_test*_tests.cmake
 # Generated cajetadoc review dump (output of cajetadoc-pass.workflow.js)
 tools/cajetadoc/flagged.json
 
-# Internal specs / plans / research / design docs — kept LOCAL (in agents/),
-# out of the public repository.
+# Internal plans / research / design docs — kept LOCAL (in agents/), out of the
+# public repository. Specs are tracked (public); only plans and the agents/
+# working tree stay local.
 agents/
-*-spec.md
 *-plan.md
