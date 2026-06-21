@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "../jit/JitTestHelper.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <string>
@@ -301,4 +302,81 @@ TEST(NumpyOpsTests, floorDivAndModMatchNumpy) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 1);
+}
+
+// 4.1.1 — bitwise and/or/xor/shift on integer tensors match numpy, with promotion to
+// the wider result type for mixed-width operands (spec §6 bitwise, Integral domain).
+TEST(NumpyOpsTests, bitwiseMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 12, 10, 6, 5 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s22);\n"
+        "        int32[] db = { 10, 6, 3, 1 };\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s22);\n"
+        "        Tensor<int32> an = Tensor.bitAnd<int32>(a, b);\n"          // 8,2,2,1
+        "        if (an.get2(0,0)!=8 || an.get2(0,1)!=2 || an.get2(1,0)!=2 || an.get2(1,1)!=1) { return -1; }\n"
+        "        Tensor<int32> orr = Tensor.bitOr<int32>(a, b);\n"          // 14,14,7,5
+        "        if (orr.get2(0,0)!=14 || orr.get2(0,1)!=14 || orr.get2(1,0)!=7 || orr.get2(1,1)!=5) { return -2; }\n"
+        "        Tensor<int32> xr = Tensor.bitXor<int32>(a, b);\n"          // 6,12,5,4
+        "        if (xr.get2(0,0)!=6 || xr.get2(0,1)!=12 || xr.get2(1,0)!=5 || xr.get2(1,1)!=4) { return -3; }\n"
+        "        int32[] sh = { 1, 2, 0, 3 };\n"
+        "        Tensor<int32> sht = Tensor.of<int32>(sh, s22);\n"
+        "        Tensor<int32> sl = Tensor.shiftL<int32>(a, sht);\n"        // 24,40,6,40
+        "        if (sl.get2(0,0)!=24 || sl.get2(0,1)!=40 || sl.get2(1,0)!=6 || sl.get2(1,1)!=40) { return -4; }\n"
+        "        Tensor<int32> sr = Tensor.shiftR<int32>(a, sht);\n"        // 6,2,6,0
+        "        if (sr.get2(0,0)!=6 || sr.get2(0,1)!=2 || sr.get2(1,0)!=6 || sr.get2(1,1)!=0) { return -5; }\n"
+        // promotion: int16 ⊕ int32 → int32 (mixed-width operands)
+        "        int16[] d16 = heap int16[4];\n"
+        "        d16[0] = (int16) 12; d16[1] = (int16) 10; d16[2] = (int16) 6; d16[3] = (int16) 5;\n"
+        "        Tensor<int16> a16 = Tensor.of<int16>(d16, s22);\n"
+        "        Tensor<int32> mp = Tensor.bitAnd<int16,int32,int32>(a16, b);\n"  // 8,2,2,1
+        "        if (mp.get2(0,0)!=8 || mp.get2(1,1)!=1) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 4.1.2 — logical and/or/xor/not on boolean tensors match numpy (spec §6 logical).
+TEST(NumpyOpsTests, logicalMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        boolean[] ba = heap boolean[4];\n"
+        "        ba[0] = true; ba[1] = true; ba[2] = false; ba[3] = false;\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<boolean> A = Tensor.of<boolean>(ba, s22);\n"
+        "        boolean[] bb = heap boolean[4];\n"
+        "        bb[0] = true; bb[1] = false; bb[2] = true; bb[3] = false;\n"
+        "        Tensor<boolean> B = Tensor.of<boolean>(bb, s22);\n"
+        "        Tensor<boolean> an = Tensor.and(A, B);\n"                  // T,F,F,F
+        "        if (!an.get2(0,0) || an.get2(0,1) || an.get2(1,0) || an.get2(1,1)) { return -1; }\n"
+        "        Tensor<boolean> orr = Tensor.or(A, B);\n"                  // T,T,T,F
+        "        if (!orr.get2(0,0) || !orr.get2(0,1) || !orr.get2(1,0) || orr.get2(1,1)) { return -2; }\n"
+        "        Tensor<boolean> xr = Tensor.xor(A, B);\n"                  // F,T,T,F
+        "        if (xr.get2(0,0) || !xr.get2(0,1) || !xr.get2(1,0) || xr.get2(1,1)) { return -3; }\n"
+        "        Tensor<boolean> nt = Tensor.not(A);\n"                     // F,F,T,T
+        "        if (nt.get2(0,0) || nt.get2(0,1) || !nt.get2(1,0) || !nt.get2(1,1)) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 4.1.3 — bitwise op on a floating tensor is a compile error (Integral domain bound,
+// spec 6.2.4). Negative test: the JIT compile throws.
+TEST(NumpyOpsTests, bitwiseDomainRejectsFloat) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float32[] fa = { 1.0f, 2.0f };\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(fa, s2);\n"
+        "        Tensor<float32> r = Tensor.bitAnd<float32>(a, a);\n"       // float32 ∉ Integral
+        "        return r.size() > 0 ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_THROW(runI32(src), cajeta::Exception);
 }

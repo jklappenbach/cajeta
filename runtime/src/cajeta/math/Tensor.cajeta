@@ -1336,6 +1336,181 @@ public class Tensor<T> {
         return Tensor.fdivmod<E, E, E>(a, b, 1);
     }
 
+    /**
+     * Shared **bitwise** kernel (spec §6 bitwise, `Integral` domain). Operands are read
+     * by broadcast index, cross-cast to the explicit integral result width `R`, and the
+     * op applied in `R`. `op`: `0`=and `1`=or `2`=xor `3`=shiftL `4`=shiftR (`>>` is
+     * arithmetic for signed `R`, matching numpy). All of `A`,`B`,`R` are bounded
+     * `Integral`, so a floating type argument is a compile-time error (6.2.4).
+     */
+    static #Tensor<R> bitop<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<R> st = heap Storage<R>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            A ra = a.readBroadcast(idx);
+            B rb = b.readBroadcast(idx);
+            R va = (R) ra;
+            R vb = (R) rb;
+            R vc = va & vb;
+            if (op == 1) { vc = va | vb; }
+            if (op == 2) { vc = va ^ vb; }
+            if (op == 3) { vc = va << vb; }
+            if (op == 4) { vc = va >> vb; }
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, rshape, rstrides);
+    }
+
+    /** Cross-dtype bitwise AND; explicit integral result width `R`. */
+    public static #Tensor<R> bitAnd<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 0); }
+    /** Same-dtype bitwise AND. */
+    public static #Tensor<E> bitAnd<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 0);
+    }
+    /** Cross-dtype bitwise OR; explicit integral result width `R`. */
+    public static #Tensor<R> bitOr<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 1); }
+    /** Same-dtype bitwise OR. */
+    public static #Tensor<E> bitOr<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 1);
+    }
+    /** Cross-dtype bitwise XOR; explicit integral result width `R`. */
+    public static #Tensor<R> bitXor<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 2); }
+    /** Same-dtype bitwise XOR. */
+    public static #Tensor<E> bitXor<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 2);
+    }
+    /** Cross-dtype left shift `a << b`; explicit integral result width `R`. */
+    public static #Tensor<R> shiftL<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 3); }
+    /** Same-dtype left shift `a << b`. */
+    public static #Tensor<E> shiftL<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 3);
+    }
+    /** Cross-dtype right shift `a >> b` (arithmetic for signed); explicit width `R`. */
+    public static #Tensor<R> shiftR<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 4); }
+    /** Same-dtype right shift `a >> b` (arithmetic for signed). */
+    public static #Tensor<E> shiftR<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 4);
+    }
+
+    /**
+     * Shared **logical** kernel over `Tensor<boolean>` (spec §6 logical). Reads boolean
+     * operands by broadcast index; `op`: `0`=and (`&&`), `1`=or (`||`), `2`=xor (`!=`).
+     * `boolean` is not `Numeric`, so these are concrete (non-generic) over boolean.
+     */
+    static #Tensor<boolean> logic(Tensor<boolean> a, Tensor<boolean> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<boolean>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<boolean> st = heap Storage<boolean>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean ba = a.readBroadcast(idx);
+            boolean bb = b.readBroadcast(idx);
+            boolean vc = ba && bb;
+            if (op == 1) { vc = ba || bb; }
+            if (op == 2) { vc = ba != bb; }
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<boolean>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise logical AND of two boolean tensors (broadcasting). */
+    public static #Tensor<boolean> and(Tensor<boolean> a, Tensor<boolean> b) {
+        return Tensor.logic(a, b, 0);
+    }
+    /** Elementwise logical OR of two boolean tensors (broadcasting). */
+    public static #Tensor<boolean> or(Tensor<boolean> a, Tensor<boolean> b) {
+        return Tensor.logic(a, b, 1);
+    }
+    /** Elementwise logical XOR of two boolean tensors (broadcasting). */
+    public static #Tensor<boolean> xor(Tensor<boolean> a, Tensor<boolean> b) {
+        return Tensor.logic(a, b, 2);
+    }
+    /** Elementwise logical NOT of a boolean tensor. */
+    public static #Tensor<boolean> not(Tensor<boolean> a) {
+        int32 nd = (int32) a.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = a.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<boolean> st = heap Storage<boolean>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean v = a.readBroadcast(idx);
+            st.set(lin, !v);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<boolean>(#st, 0, rshape, rstrides);
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**
