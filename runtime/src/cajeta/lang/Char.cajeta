@@ -8,7 +8,7 @@ package cajeta.lang;
  * Value equality via the `hash()` override: `Char.of('A') == Char.of('A')`.
  * Boxed value is field index 0. See `plans/lang/wrapper-types-plan.md` (W2).
  */
-public class Char extends Object {
+public final class Char extends Object {
     char value;
 
     public Char(char value) { this.value = value; return; }
@@ -17,8 +17,10 @@ public class Char extends Object {
     public static #Char of(char value) { return heap Char(value); }
 
     /** The wrapped codepoint. */
+    @Inline
     public char value() { return this.value; }
 
     /** Value-based hash → equal codepoints compare equal via Object.operator==. */
+    @Inline
     public int64 hash() { return (int64) this.value; }
 }

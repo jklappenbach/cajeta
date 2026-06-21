@@ -99,7 +99,7 @@ package cajeta.collection;
  * @See cajeta.lang.Object
  * @See cajeta.hash.Hash
  */
-public class HashMap<K, V> {
+public final class HashMap<K, V> {
 
     // Slot states. Inlined as integer literals at the call sites
     // because cajeta lacks `const` / `enum` for class-level constants
@@ -214,6 +214,7 @@ public class HashMap<K, V> {
      * cajeta's drop chain (the local's scope-exit drop would race
      * with the field reassignment).
      */
+    @NoInline
     private void resize() {
         int64 oldCap = this.cap;
         int64 newCap = oldCap * 2;
@@ -341,6 +342,7 @@ public class HashMap<K, V> {
         return false;
     }
 
+    @Inline
     public int64 count() {
         return this.sizeCount;
     }

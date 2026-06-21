@@ -18,7 +18,7 @@ package cajeta.lang.stream;
  * names.forEach((n) -> print(n));
  * ```
  */
-public class MapStream<T, R> extends Stream<R> {
+public final class MapStream<T, R> extends Stream<R> {
     Stream<T> source;
     (T) -> #R fn;
 
@@ -58,6 +58,7 @@ public class MapStream<T, R> extends Stream<R> {
      * walker would terminate at the MapStream, and `.map().parallel()`
      * would fall back to sequential. (Step 5b — template wildcards.)
      */
+    @Inline
     public Stream<?> unwrap() {
         return this.source;
     }

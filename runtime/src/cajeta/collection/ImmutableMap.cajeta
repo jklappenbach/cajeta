@@ -46,7 +46,7 @@ import cajeta.lang.Pair;
  * @See cajeta.collection.HashMap
  * @See cajeta.lang.Pair
  */
-public class ImmutableMap<K, V> {
+public final class ImmutableMap<K, V> {
 
     /** Dense entry storage; live range `[0, entryCount)`. */
     private K[] keyArr;
@@ -168,6 +168,7 @@ public class ImmutableMap<K, V> {
     }
 
     /** Subscript read: `m[key]` → `get(key)`. */
+    @Inline
     public V operator[] (K key) {
         return this.get(key);
     }
@@ -175,11 +176,13 @@ public class ImmutableMap<K, V> {
     /**
      * @returns the number of entries.
      */
+    @Inline
     public int64 count() {
         return (int64) this.entryCount;
     }
 
     /** @returns true iff the map holds no entries. */
+    @Inline
     public boolean isEmpty() {
         return this.entryCount == 0;
     }

@@ -21,7 +21,7 @@ package cajeta.lang.stream;
  * fieldLayoutType rule; the JIT signature for the ctor and method
  * calls follows the same `ptr` convention.
  */
-public class TakeStream<T> extends Stream<T> {
+public final class TakeStream<T> extends Stream<T> {
     Stream<T> source;
     int32 remaining;
 
@@ -63,6 +63,7 @@ public class TakeStream<T> extends Stream<T> {
         return o;
     }
 
+    @Inline
     public Stream<?> unwrap() {
         return this.source;
     }
@@ -71,6 +72,7 @@ public class TakeStream<T> extends Stream<T> {
      * Always `true`: this combinator carries mutable state (`remaining`), so
      * pipeline optimizers must not fuse or reorder it freely.
      */
+    @Inline
     public boolean isStatefulWrapper() {
         return true;
     }

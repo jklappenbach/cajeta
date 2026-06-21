@@ -15,7 +15,7 @@ package cajeta.collection;
  *
  * @See cajeta.collection.RedBlackTree
  */
-public class RedBlackNode<K, V> {
+public final class RedBlackNode<K, V> {
     public K key;
     public V value;
     public RedBlackNode<K, V> left;

@@ -30,7 +30,7 @@ package cajeta.io.net;
  * **Pure logic** — no syscalls, no locking (single-fiber owner per
  * connection). Owned `int8[]` storage, array-dropped on drop.
  */
-public class RingBuffer {
+public final class RingBuffer {
     /** Backing ring storage. Owned; never resized. */
     int8[] data;
 
@@ -86,36 +86,43 @@ public class RingBuffer {
     }
 
     /** Allocated ring capacity in bytes. */
+    @Inline
     public int32 capacity() {
         return this.cap;
     }
 
     /** Bytes currently buffered. */
+    @Inline
     public int32 size() {
         return this.size;
     }
 
     /** Free space: `cap - size`. */
+    @Inline
     public int32 free() {
         return this.cap - this.size;
     }
 
     /** True when no bytes are buffered. */
+    @Inline
     public boolean isEmpty() {
         return this.size == 0;
     }
 
     /** True when the ring holds `cap` bytes. */
+    @Inline
     public boolean isFull() {
         return this.size == this.cap;
     }
 
     /** Configured high watermark. */
+    @Inline
     public int32 highWatermarkLevel() {
         return this.highWatermark;
     }
 
     /** Configured low watermark. */
+    @Inline
     public int32 lowWatermarkLevel() {
         return this.lowWatermark;
     }
@@ -125,6 +132,7 @@ public class RingBuffer {
      * reactor should pause the read registration so the peer feels
      * back-pressure.
      */
+    @Inline
     public boolean isOverHighWatermark() {
         return this.size >= this.highWatermark;
     }
@@ -133,6 +141,7 @@ public class RingBuffer {
      * True when the fill level has fallen to/below the low
      * watermark — the reactor may resume reading.
      */
+    @Inline
     public boolean isUnderLowWatermark() {
         return this.size <= this.lowWatermark;
     }
@@ -192,6 +201,7 @@ public class RingBuffer {
      * `offset` is relative to `head`; the caller checks
      * `offset < size()` first.
      */
+    @Inline
     public int8 peek(int32 offset) {
         int32 idx = this.head + offset;
         if (idx >= this.cap) {
@@ -219,6 +229,7 @@ public class RingBuffer {
     }
 
     /** Drop all buffered bytes and reset the cursors. */
+    @Inline
     public void clear() {
         this.head = 0;
         this.tail = 0;

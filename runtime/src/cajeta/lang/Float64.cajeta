@@ -9,7 +9,7 @@ package cajeta.lang;
  * canonicalizes to `+0.0`; distinct NaN bit patterns hash distinctly. See
  * `plans/lang/wrapper-types-plan.md`.
  */
-public class Float64 extends Number {
+public final class Float64 extends Number {
     float64 value;
 
     @Native("__cajeta_hash_float64")
@@ -21,9 +21,12 @@ public class Float64 extends Number {
     public static #Float64 of(float64 value) { return heap Float64(value); }
 
     /** The wrapped primitive. */
+    @Inline
     public float64 value() { return this.value; }
 
+    @Inline
     public int64   asInt64()   { return (int64) this.value; }
+    @Inline
     public float64 asFloat64() { return this.value; }
 
     /** Bitwise value hash → equal values compare equal via Object.operator==. */

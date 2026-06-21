@@ -5,7 +5,7 @@ package cajeta.lang;
  * for a 64-bit signed integer. Value equality via the `hash()` override (see
  * `Int32` / `plans/lang/wrapper-types-plan.md`). Boxed value is field index 0.
  */
-public class Int64 extends Number {
+public final class Int64 extends Number {
     int64 value;
 
     public Int64(int64 value) { this.value = value; return; }
@@ -14,12 +14,16 @@ public class Int64 extends Number {
     public static #Int64 of(int64 value) { return heap Int64(value); }
 
     /** The wrapped primitive. */
+    @Inline
     public int64 value() { return this.value; }
 
+    @Inline
     public int64   asInt64()   { return this.value; }
+    @Inline
     public float64 asFloat64() { return (float64) this.value; }
 
     /** Value-based hash → equal values compare equal via Object.operator==. */
+    @Inline
     public int64 hash() { return this.value; }
 
     public #String toString() { return this.formatSigned(this.asInt64()); }

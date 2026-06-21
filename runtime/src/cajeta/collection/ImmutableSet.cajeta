@@ -36,7 +36,7 @@ import cajeta.lang.stream.ArrayStream;
  * @See cajeta.collection.HashSet
  * @See cajeta.collection.ArrayList
  */
-public class ImmutableSet<T> {
+public final class ImmutableSet<T> {
 
     /**
      * Unique members in first-seen order. Live range is
@@ -118,10 +118,12 @@ public class ImmutableSet<T> {
     /**
      * @returns the number of unique members.
      */
+    @Inline
     public int64 count() {
         return (int64) this.elemCount;
     }
 
+    @Inline
     public boolean isEmpty() {
         return this.elemCount == 0;
     }

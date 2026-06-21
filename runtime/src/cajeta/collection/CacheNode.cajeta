@@ -10,7 +10,7 @@ package cajeta.collection;
  * public for the cache's straightforward access; a future stdlib
  * pass tightens visibility uniformly.
  */
-public class CacheNode<K, V> {
+public final class CacheNode<K, V> {
     public K key;
     public V value;
     /**

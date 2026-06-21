@@ -23,7 +23,7 @@ package cajeta.lang;
  * fields after construction isn't supported by the surface; if you
  * need a different pair, construct a new one.
  */
-public class Pair<K, V> {
+public final class Pair<K, V> {
     K first;
     V second;
 
@@ -41,6 +41,8 @@ public class Pair<K, V> {
         this.second = second;
     }
 
+    @Inline
     public K first()  { return this.first; }
+    @Inline
     public V second() { return this.second; }
 }

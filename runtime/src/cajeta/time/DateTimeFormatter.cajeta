@@ -89,6 +89,7 @@ public final class DateTimeFormatter {
         return heap DateTimeFormatter(p);
     }
 
+    @Inline
     public String getPattern() {
         return this.pattern;
     }
@@ -133,6 +134,7 @@ public final class DateTimeFormatter {
      * #String out = DateTimeFormatter.ofStandard(FormatStyle.US_DATE).formatDate(d);
      * ```
      */
+    @Inline
     public #String formatDate(LocalDate d) {
         DateTimeFields f = DateTimeFields.ofDate(d);
         return this.format(f);
@@ -145,6 +147,7 @@ public final class DateTimeFormatter {
      * #String out = DateTimeFormatter.ofPattern("%H:%M:%S").formatTime(t);
      * ```
      */
+    @Inline
     public #String formatTime(LocalTime t) {
         DateTimeFields f = DateTimeFields.ofTime(t);
         return this.format(f);
@@ -157,6 +160,7 @@ public final class DateTimeFormatter {
      * #String out = DateTimeFormatter.ofStandard(FormatStyle.SQL_TIMESTAMP).formatDateTime(t);
      * ```
      */
+    @Inline
     public #String formatDateTime(LocalDateTime t) {
         DateTimeFields f = DateTimeFields.ofDateTime(t);
         return this.format(f);
@@ -169,12 +173,14 @@ public final class DateTimeFormatter {
      * #String out = DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S%Z").formatZoned(z);
      * ```
      */
+    @Inline
     public #String formatZoned(ZonedDateTime z) {
         DateTimeFields f = DateTimeFields.ofZoned(z);
         return this.format(f);
     }
 
     /** Render one strftime `code` into `buf` at `p`; returns the new write position. */
+    @NoInline
     static int32 emit(int8[] buf, int32 p, int32 code, DateTimeFields f) {
         if (code == 89) { // Y
             return DateTimeFormatter.writeYear(buf, p, f.year, 4);
@@ -264,6 +270,7 @@ public final class DateTimeFormatter {
     }
 
     /** Write `year` zero-padded to `width`, prefixing `-` for negative (proleptic) years. */
+    @NoInline
     static int32 writeYear(int8[] buf, int32 p, int32 year, int32 width) {
         int32 w = width;
         if (w < 1) {
@@ -279,6 +286,7 @@ public final class DateTimeFormatter {
     }
 
     /** Write the `nano` sub-second fraction truncated to `digits` (clamped to 1..9). */
+    @NoInline
     static int32 writeFraction(int8[] buf, int32 p, int32 nano, int32 digits) {
         int32 d = digits;
         if (d < 1) {
@@ -300,6 +308,7 @@ public final class DateTimeFormatter {
      * Write a UTC offset. `withColon` selects `±HH:MM` (and `Z` for zero) for `%Z`;
      * otherwise `±HHMM` (zero renders `+0000`) for `%z`.
      */
+    @NoInline
     static int32 writeOffset(int8[] buf, int32 p, int32 offsetSeconds, boolean withColon) {
         if (offsetSeconds == 0) {
             if (withColon) {

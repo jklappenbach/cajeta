@@ -107,6 +107,7 @@ public final class Base64 {
      * padding. The result `String` owns a freshly-allocated byte
      * buffer.
      */
+    @Inline
     public static #String encode(int8[] data, int64 len) {
         return Base64.encodeInto(data, len, false, true);
     }
@@ -116,6 +117,7 @@ public final class Base64 {
      * `-`/`_`) **without** `=` padding — the form expected in JWT
      * segments and URL query parameters.
      */
+    @Inline
     public static #String encodeUrlSafe(int8[] data, int64 len) {
         return Base64.encodeInto(data, len, true, false);
     }
@@ -124,6 +126,7 @@ public final class Base64 {
      * General encode. `urlSafe` picks the §5 alphabet; `pad` appends
      * `=` to a multiple-of-4 length when the final group is short.
      */
+    @Inline
     public static #String encode(int8[] data, int64 len,
                                  boolean urlSafe, boolean pad) {
         return Base64.encodeInto(data, len, urlSafe, pad);
@@ -201,6 +204,7 @@ public final class Base64 {
      * `=` padding) to its raw bytes. Throws [[Base64Exception]] on a
      * character outside the alphabet or an impossible length.
      */
+    @Inline
     public static #int8[] decode(String s) {
         return Base64.decodeBytes(s.bytes, (int64) s.byteLength);
     }

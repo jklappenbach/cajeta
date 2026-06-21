@@ -43,7 +43,7 @@ import cajeta.collection.HashMap;
  *
  * @See `HashMap`
  */
-public class HashSet<T> {
+public final class HashSet<T> {
 
     /**
      * Backing storage. The value-side is a 1-byte presence sentinel
@@ -105,6 +105,7 @@ public class HashSet<T> {
     /**
      * @returns the number of unique members currently in the set.
      */
+    @Inline
     public int64 count() {
         return this.map.count();
     }

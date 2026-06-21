@@ -86,6 +86,7 @@ public final class CsvReader {
     }
 
     /** Field count of the current row (valid after a `nextRow()` returning true). */
+    @Inline
     public int32 fieldCount() {
         return this.fc;
     }

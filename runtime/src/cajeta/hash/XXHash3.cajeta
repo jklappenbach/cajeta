@@ -143,6 +143,7 @@ public final class XXHash3 implements Hasher {
      * int64 h = XXHash3.hashSeeded(bytes, bytes.count(), 0xC0FFEEL);
      * ```
      */
+    @Inline
     public static int64 hashSeeded(int8[] data, int64 len, int64 seedArg) {
         return XXHash3.oneshot(data, len, seedArg);
     }
@@ -154,6 +155,7 @@ public final class XXHash3 implements Hasher {
      * int64 h = XXHash3.hashString("hello");
      * ```
      */
+    @Inline
     public static int64 hashString(String s) {
         return XXHash3.oneshot(s.bytes, (int64) s.byteLength, Hash.processSeed());
     }
@@ -165,6 +167,7 @@ public final class XXHash3 implements Hasher {
      * int64 h = XXHash3.hashStringSeeded("hello", 0xC0FFEEL);
      * ```
      */
+    @Inline
     public static int64 hashStringSeeded(String s, int64 seedArg) {
         return XXHash3.oneshot(s.bytes, (int64) s.byteLength, seedArg);
     }
@@ -287,6 +290,7 @@ public final class XXHash3 implements Hasher {
     }
 
     // 64x64 -> 128 multiply, folded: low64(a*b) ^ high64(a*b) (schoolbook, O(1)).
+    @Inline
     public static int64 mulFold(int64 a, int64 b) {
         int64 aLo = a & 0xFFFFFFFFL;
         int64 aHi = a >>> 32;
@@ -302,12 +306,14 @@ public final class XXHash3 implements Hasher {
         return low ^ high;
     }
 
+    @Inline
     public static int64 mix2(int64 a0, int64 a1, int8[] secret, int64 off) {
         int64 x0 = a0 ^ Cajeta.loadU64(secret, off);
         int64 x1 = a1 ^ Cajeta.loadU64(secret, off + 8);
         return XXHash3.mulFold(x0, x1);
     }
 
+    @Inline
     public static int64 avalanche(int64 h) {
         int64 x = h ^ (h >>> 37);
         x = x * 0x165667919E3779F9L;

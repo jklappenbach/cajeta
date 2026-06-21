@@ -28,7 +28,7 @@ import cajeta.lang.String;
  * #ArrayList<String> ks = cfg.keys();
  * ```
  */
-public class JsonObject {
+public final class JsonObject {
     int8[][] keys;
     int32[] keyLens;
     JsonValue[] values;
@@ -52,18 +52,22 @@ public class JsonObject {
         this.sizeCount = 0;
     }
 
+    @Inline
     public int32 count() {
         return this.sizeCount;
     }
 
+    @Inline
     public int8[] keyAt(int32 i) {
         return this.keys[i];
     }
 
+    @Inline
     public int32 keyLenAt(int32 i) {
         return this.keyLens[i];
     }
 
+    @Inline
     public JsonValue valueAt(int32 i) {
         return this.values[i];
     }
@@ -79,6 +83,7 @@ public class JsonObject {
      * if (v != null) { String s = v.asString(); }
      * ```
      */
+    @Inline
     public JsonValue get(String key) {
         return this.get(key.bytes, key.byteLength);
     }

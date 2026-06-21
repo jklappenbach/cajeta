@@ -18,7 +18,7 @@ package cajeta.lang.stream;
  * from the source until either a matching element is found or the
  * source exhausts.
  */
-public class FilterStream<T> extends Stream<T> {
+public final class FilterStream<T> extends Stream<T> {
     Stream<T> source;
     (T) -> boolean pred;
 
@@ -53,6 +53,7 @@ public class FilterStream<T> extends Stream<T> {
         return o;
     }
 
+    @Inline
     public Stream<?> unwrap() {
         return this.source;
     }

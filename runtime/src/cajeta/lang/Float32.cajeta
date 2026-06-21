@@ -10,7 +10,7 @@ package cajeta.lang;
  * `+0.0` and distinct NaN bit patterns hash distinctly (the native's policy).
  * See `plans/lang/wrapper-types-plan.md`.
  */
-public class Float32 extends Number {
+public final class Float32 extends Number {
     float32 value;
 
     // Bit-reinterpreting hash (memcpy to bits, +0/-0 canonicalized, seed-mixed)
@@ -24,9 +24,12 @@ public class Float32 extends Number {
     public static #Float32 of(float32 value) { return heap Float32(value); }
 
     /** The wrapped primitive. */
+    @Inline
     public float32 value() { return this.value; }
 
+    @Inline
     public int64   asInt64()   { return (int64) this.value; }
+    @Inline
     public float64 asFloat64() { return (float64) this.value; }
 
     /** Bitwise value hash → equal values compare equal via Object.operator==. */

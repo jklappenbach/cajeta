@@ -42,6 +42,7 @@ public final class Clock {
      * stack Instant t = Clock.now();
      * ```
      */
+    @Inline
     public static Instant now() {
         int64 ms = Clock.millisTime();
         int64 s = ms / 1000;

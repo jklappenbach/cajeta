@@ -67,7 +67,7 @@ import cajeta.time.Duration;
  * }
  * ```
  */
-public class Cache<K, V> {
+public final class Cache<K, V> {
 
     HashMap<K, CacheNode<K, V>> entries;
     CacheNode<K, V> mruHead;
@@ -111,10 +111,12 @@ public class Cache<K, V> {
         this.maxAgeNanos = maxAge.toNanos();
     }
 
+    @Inline
     public int32 count() {
         return this.entries.count();
     }
 
+    @Inline
     public boolean isEmpty() {
         return this.entries.count() == 0;
     }
@@ -243,12 +245,14 @@ public class Cache<K, V> {
     }
 
     /** TTL test: always `false` when TTL is disabled (`maxAgeNanos == 0`). */
+    @Inline
     boolean isExpired(CacheNode<K, V> node, int64 nowNanos) {
         if (this.maxAgeNanos == 0) { return false; }
         return (nowNanos - node.accessedAt) > this.maxAgeNanos;
     }
 
     /** Splice `node` in as the new MRU head, seeding the tail if empty. */
+    @Inline
     void linkAtHead(CacheNode<K, V> node) {
         node.prev = null;
         node.next = this.mruHead;
@@ -262,6 +266,7 @@ public class Cache<K, V> {
     }
 
     /** Promote `node` to MRU head; no-op when it is already the head. */
+    @Inline
     void moveToHead(CacheNode<K, V> node) {
         if (node == this.mruHead) { return; }
         this.unlinkOnly(node);

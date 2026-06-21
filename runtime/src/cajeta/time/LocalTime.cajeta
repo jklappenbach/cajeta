@@ -31,7 +31,7 @@ import cajeta.lang.Comparable;
  * including the multi-parameter ones — as stack-value returns rather than
  * multi-parameter borrow returns.
  */
-public class LocalTime implements Comparable<LocalTime> {
+public final class LocalTime implements Comparable<LocalTime> {
     int64 nanoOfDay;
 
     /**
@@ -55,6 +55,7 @@ public class LocalTime implements Comparable<LocalTime> {
      * stack LocalTime t = LocalTime.ofHmsn(23, 59, 59, 999999999);
      * ```
      */
+    @NoInline
     public static LocalTime ofHmsn(int32 hour, int32 minute, int32 second, int32 nano) {
         if (hour < 0 || hour > 23) {
             throw heap DateTimeException("LocalTime: hour out of range 0..23");
@@ -82,6 +83,7 @@ public class LocalTime implements Comparable<LocalTime> {
      * stack LocalTime t = LocalTime.of(9, 30);   // 09:30
      * ```
      */
+    @NoInline
     public static LocalTime of(int32 hour, int32 minute) {
         if (hour < 0 || hour > 23) {
             throw heap DateTimeException("LocalTime: hour out of range 0..23");
@@ -100,6 +102,7 @@ public class LocalTime implements Comparable<LocalTime> {
      * stack LocalTime t = LocalTime.ofHms(14, 30, 15);   // 14:30:15
      * ```
      */
+    @NoInline
     public static LocalTime ofHms(int32 hour, int32 minute, int32 second) {
         if (hour < 0 || hour > 23) {
             throw heap DateTimeException("LocalTime: hour out of range 0..23");
@@ -123,6 +126,7 @@ public class LocalTime implements Comparable<LocalTime> {
      * stack LocalTime t = LocalTime.midnight();   // 00:00
      * ```
      */
+    @Inline
     public static LocalTime midnight() {
         return stack LocalTime(0);
     }
@@ -134,6 +138,7 @@ public class LocalTime implements Comparable<LocalTime> {
      * stack LocalTime t = LocalTime.noon();   // 12:00
      * ```
      */
+    @Inline
     public static LocalTime noon() {
         return stack LocalTime(43200000000000);
     }
@@ -146,6 +151,7 @@ public class LocalTime implements Comparable<LocalTime> {
      * stack LocalTime t = LocalTime.ofNanoOfDay(43200000000000);   // 12:00
      * ```
      */
+    @NoInline
     public static LocalTime ofNanoOfDay(int64 nanoOfDay) {
         if (nanoOfDay < 0 || nanoOfDay > 86399999999999) {
             throw heap DateTimeException("LocalTime: nanoOfDay out of range");
@@ -161,6 +167,7 @@ public class LocalTime implements Comparable<LocalTime> {
      * stack LocalTime t = LocalTime.ofSecondOfDay(3661);   // 01:01:01
      * ```
      */
+    @NoInline
     public static LocalTime ofSecondOfDay(int64 secondOfDay) {
         if (secondOfDay < 0 || secondOfDay > 86399) {
             throw heap DateTimeException("LocalTime: secondOfDay out of range");
@@ -168,28 +175,34 @@ public class LocalTime implements Comparable<LocalTime> {
         return stack LocalTime(secondOfDay * 1000000000);
     }
 
+    @Inline
     public int32 getHour() {
         return (int32) (this.nanoOfDay / 3600000000000);
     }
 
+    @Inline
     public int32 getMinute() {
         return (int32) ((this.nanoOfDay / 60000000000) % 60);
     }
 
+    @Inline
     public int32 getSecond() {
         return (int32) ((this.nanoOfDay / 1000000000) % 60);
     }
 
+    @Inline
     public int32 getNano() {
         return (int32) (this.nanoOfDay % 1000000000);
     }
 
     /** Nanoseconds since midnight. */
+    @Inline
     public int64 toNanoOfDay() {
         return this.nanoOfDay;
     }
 
     /** Whole seconds since midnight (drops the nanosecond part). */
+    @Inline
     public int64 toSecondOfDay() {
         return this.nanoOfDay / 1000000000;
     }
@@ -238,6 +251,7 @@ public class LocalTime implements Comparable<LocalTime> {
      * Total order by nanosecond-of-day: negative if this is earlier than
      * `other`, zero if equal, positive if later.
      */
+    @Inline
     public int32 compareTo(LocalTime other) {
         if (this.nanoOfDay < other.nanoOfDay) {
             return -1;
@@ -249,11 +263,13 @@ public class LocalTime implements Comparable<LocalTime> {
     }
 
     /** True iff this time is strictly before `other`. */
+    @Inline
     public boolean isBefore(LocalTime other) {
         return this.nanoOfDay < other.nanoOfDay;
     }
 
     /** True iff this time is strictly after `other`. */
+    @Inline
     public boolean isAfter(LocalTime other) {
         return this.nanoOfDay > other.nanoOfDay;
     }

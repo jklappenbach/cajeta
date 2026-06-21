@@ -69,7 +69,7 @@ package cajeta.lang;
  * pin layout directly. Once methods land, visibility narrows and the
  * pinning shifts to behaviour-level assertions.
  */
-public class String {
+public final class String {
     public int8[] bytes;
     public int32  byteLength;
     public int32  mode;
@@ -236,6 +236,7 @@ public class String {
      * (capacity vs element count depending on the reader's
      * background) and the universal-`count()` convention removes it.
      */
+    @Inline
     public int64 size() {
         return (int64) this.byteLength;
     }
@@ -245,6 +246,7 @@ public class String {
      * `byteLength == 0`. The empty literal `""` and the no-arg ctor
      * both produce empty strings.
      */
+    @Inline
     public boolean isEmpty() {
         return this.byteLength == 0;
     }
@@ -289,6 +291,7 @@ public class String {
      * if the design expands later; for now the two cover distinct
      * use cases (raw byte vs Unicode scalar).
      */
+    @Inline
     public int8 charAt(int32 idx) {
         if (idx < 0 || idx >= this.byteLength) {
             return (int8) 0;
@@ -384,6 +387,7 @@ public class String {
      * payload. Delegates to indexOf and tests for non-negative
      * result.
      */
+    @Inline
     public boolean contains(String needle) {
         return this.indexOf(needle) >= (int64) 0;
     }
@@ -562,6 +566,7 @@ public class String {
      * check (matches the int8[] array-access convention with
      * --bounds=off).
      */
+    @Inline
     public int8 byteAt(int32 index) {
         return this.bytes[index];
     }
