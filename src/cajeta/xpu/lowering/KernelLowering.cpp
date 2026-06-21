@@ -676,8 +676,14 @@ private:
             return;
         }
         if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(node)) {
-            // @Kernel returns void; a @Device helper returns its value.
-            if (fn->getReturnType()->isVoidTy() || !rs->getExpression()) {
+            // @Kernel returns void; a @Device helper returns its value; a
+            // graphics @Vertex/@Fragment shader (void main()) writes its result
+            // into an Output interface variable, then ret void (gfx §4.b).
+            if (rs->getExpression() && target.shaderOutputReturn()) {
+                llvm::Value* v = lowerExpr(rs->getExpression());
+                target.storeShaderOutput(builder, mod, fn, v);
+                builder.CreateRetVoid();
+            } else if (fn->getReturnType()->isVoidTy() || !rs->getExpression()) {
                 builder.CreateRetVoid();
             } else {
                 llvm::Value* v = lowerExpr(rs->getExpression());

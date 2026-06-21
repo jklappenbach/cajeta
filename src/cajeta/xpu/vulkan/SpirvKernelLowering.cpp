@@ -4,6 +4,7 @@
 
 #include "SpirvKernelLowering.h"
 #include "SpirvBackend.h"
+#include "SpirvInterface.h"
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
@@ -1233,6 +1234,73 @@ public:
     }
 };
 
+// The graphics fork of SpirvTarget (cajeta-gfx §4.b): lowers a @Vertex/@Fragment
+// shader instead of a compute kernel. It reuses the entire SpirvTarget body walk
+// (math, control flow, buffers) and forks only the pipeline interface:
+//   - createKernel → `void main()` with the STAGE's hlsl.shader attr (no
+//     numthreads — graphics has no workgroup).
+//   - materializeParam → each non-resource param is a stage INPUT interface
+//     variable (a Location-N global), loaded by value; resource params
+//     (buffers/textures) still bind as descriptors via SpirvTarget.
+//   - the `return` value is stored into an OUTPUT interface variable
+//     (shaderOutputReturn / storeShaderOutput): BuiltIn Position for a vertex
+//     stage, a Location-0 color for a fragment stage.
+class SpirvGraphicsTarget : public SpirvTarget {
+public:
+    explicit SpirvGraphicsTarget(ShaderStage stage) : stage_(stage) {}
+
+    llvm::Function* createKernel(
+        llvm::Module& m, const std::string& kname,
+        const std::vector<KernelParam>& /*params*/) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                             /*vararg=*/false);
+        auto* fn = llvm::Function::Create(fnTy, llvm::Function::ExternalLinkage,
+                                          kname, &m);
+        fn->addFnAttr("hlsl.shader", hlslShaderAttr(stage_));
+        return fn;
+    }
+
+    llvm::Value* materializeParam(llvm::IRBuilderBase& b, llvm::Module& m,
+                                  llvm::Function* fn, unsigned idx,
+                                  const KernelParam& p) override {
+        // Resource params (buffers/textures/images/samplers/accel structs) still
+        // bind as descriptors — only plain value inputs become interface vars.
+        if (p.isBuffer || p.isTexture || p.isImage || p.isSampler ||
+            p.isAccelStruct) {
+            return SpirvTarget::materializeParam(b, m, fn, idx, p);
+        }
+        // A stage input: a Location-N Input interface variable, loaded by value
+        // (the body lowerer stores it into the param's mutable slot).
+        llvm::GlobalVariable* in = createLocationVar(
+            m, p.type, InterfaceStorage::Input, nextInputLocation_++, p.name);
+        return b.CreateLoad(p.type, in, p.name);
+    }
+
+    bool shaderOutputReturn() const override { return true; }
+
+    void storeShaderOutput(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Function* /*fn*/, llvm::Value* value) override {
+        if (!outputVar_) {
+            llvm::Type* ty = value->getType();
+            if (stage_ == ShaderStage::Vertex) {
+                outputVar_ = createBuiltInVar(m, ty, InterfaceStorage::Output,
+                                              SpirvBuiltIn::Position, "gl_Position");
+            } else {
+                // Fragment (and the other stages for now): a Location-0 output.
+                outputVar_ = createLocationVar(m, ty, InterfaceStorage::Output, 0,
+                                               "out_color");
+            }
+        }
+        b.CreateStore(value, outputVar_);
+    }
+
+private:
+    ShaderStage stage_;
+    unsigned nextInputLocation_ = 0;
+    llvm::GlobalVariable* outputVar_ = nullptr;
+};
+
 } // namespace
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
@@ -1242,6 +1310,13 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
         return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
     }
     SpirvTarget target;
+    return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
+}
+
+llvm::Function* lowerGraphicsShader(const MethodPtr& method,
+                                    llvm::Module& deviceModule, ShaderStage stage,
+                                    const std::string& entryName) {
+    SpirvGraphicsTarget target(stage);
     return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
 }
 

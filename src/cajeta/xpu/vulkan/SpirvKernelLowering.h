@@ -26,6 +26,8 @@
 
 #pragma once
 
+#include "SpirvBackend.h"   // ShaderStage
+
 #include <memory>
 #include <string>
 
@@ -54,6 +56,19 @@ namespace vulkan {
                                 llvm::Module& deviceModule,
                                 bool softwareRayQuery = false,
                                 const std::string& entryName = "");
+
+    // Lower a graphics shader method (a @Vertex/@Fragment/… stage) into
+    // `deviceModule` (configured for `stage` via configureDeviceModuleForStage),
+    // returning the created `void main()` entry with the stage's execution model.
+    // The parallel of lowerKernel for the rasterization pipeline (gfx §4.b): the
+    // shared body walk is reused; params become Input interface variables and the
+    // return is stored to an Output interface variable. `entryName` overrides the
+    // entry symbol (default = method name). Throws XPU-N01 on an unsupported
+    // construct. `stage` is SpirvBackend's ShaderStage.
+    llvm::Function* lowerGraphicsShader(const MethodPtr& method,
+                                        llvm::Module& deviceModule,
+                                        ShaderStage stage,
+                                        const std::string& entryName = "");
 
 } // namespace vulkan
 } // namespace xpu

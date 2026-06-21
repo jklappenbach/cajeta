@@ -282,6 +282,25 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Function* fn,
             unsigned idx, const KernelParam& p);
 
+        // --- graphics shader output (cajeta-gfx §4.b) -----------------------
+        //
+        // A compute @Kernel returns void and a @Device helper `ret`s its value,
+        // but a graphics @Vertex/@Fragment shader has a `void main()` entry that
+        // writes its result into an OUTPUT interface variable (gl_Position, a
+        // fragment color, …). When `shaderOutputReturn()` is true the body
+        // lowerer, on a `return <expr>`, evaluates the expression, calls
+        // `storeShaderOutput` to write it to that variable, and emits `ret void`
+        // (instead of `ret <value>`). The default is the compute/helper behavior.
+        virtual bool shaderOutputReturn() const { return false; }
+
+        // Store a graphics shader's evaluated `return` value into its stage
+        // output interface variable (the SpirvGraphicsTarget creates the right
+        // one: BuiltIn Position for a vertex stage, a Location color for a
+        // fragment stage). Only called when shaderOutputReturn() is true.
+        virtual void storeShaderOutput(llvm::IRBuilderBase& /*b*/,
+                                       llvm::Module& /*m*/, llvm::Function* /*fn*/,
+                                       llvm::Value* /*value*/) {}
+
         // Pointer to buffer element `index` of `base` (element type `elemTy`,
         // `index` already widened to i64). Default: an addrspace-preserving GEP
         // (correct for NVPTX/AMDGPU global+shared and for Vulkan shared-mem
