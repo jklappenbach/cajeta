@@ -3,6 +3,8 @@ package cajeta.math;
 import cajeta.gpu.GpuBuffer;
 import cajeta.gpu.GpuStream;
 import cajeta.gpu.GpuThread;
+import cajeta.gpu.Workgroup;
+import cajeta.gpu.xpu.CooperativeMatrix;
 
 /**
  * Elementwise GPU lowering for the `Tensor` ufunc surface (numpy-porting-plan
@@ -151,6 +153,86 @@ public final class Ewise {
             int64 i = 0;
             while (i < m) {
                 out.flatSet(i, t.flatGet(idx.flatGet(i)));
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Tiled float32 GEMM `C = A·B` on the matrix cores (numpy-porting Phase 6, 6e
+     * — the `matmul` GPU lowering). Each workgroup owns one 16x16 output tile,
+     * decoded from {@link Workgroup#x()}: zero an accumulator tile, then K-loop
+     * one `mma` per 16-wide depth slice — the canonical {@link CooperativeMatrix}
+     * matmul. `rows`/`cols`/`depth` (M/N/K) must be multiples of 16. float32 has no
+     * native matrix-core config, so it takes the **portable software tile-matmul
+     * tier** (a `note: [mma-tiering]`) — bit-identical to the CPU floor, and the
+     * SAME kernel auto-promotes to the hardware cores for the configs a backend
+     * exposes (f16/bf16/int8 WMMA on AMD). [[cajeta-kernel-no-generic-monomorph]]
+     */
+    @Kernel
+    public static void matmulF32(GpuBuffer<float32> c, GpuBuffer<float32> a,
+                                 GpuBuffer<float32> b, uint32 rows, uint32 cols, uint32 depth) {
+        uint32 ntiles = cols / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;          // output row-tile
+        uint32 nj = wid % ntiles;          // output col-tile
+        uint32 ktiles = depth / 16;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<float32,16,16,0> ma;
+        CooperativeMatrix<float32,16,16,1> mb;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            ma.load(a, mi * 16 * depth + kk * 16, 0, depth);   // A tile (mi,kk), stride K
+            mb.load(b, kk * 16 * cols + nj * 16, 0, cols);     // B tile (kk,nj), stride N
+            mc.mma(ma, mb);                                     // C += A_k · B_k
+            kk = kk + 1;
+        }
+        mc.store(c, mi * 16 * cols + nj * 16, 0, cols);
+    }
+
+    /**
+     * 2-D float32 matrix product `(m,k)·(k,n) → (m,n)`, routed on placement: both
+     * on-device → the {@link #matmulF32} cooperative-matrix tiled GEMM (one
+     * workgroup per 16x16 output tile); otherwise the CPU triple-loop floor. The
+     * two agree (the Phase-6 contraction cross-check), and the device result equals
+     * the generic {@link Tensor#matmul} floor. The GPU path requires `m`/`n`/`k`
+     * to be multiples of 16 (the tile size); the CPU path has no such restriction.
+     * Returns a fresh C-order `float32` tensor (on the device when the GPU path ran
+     * — call `cpu()` to read it on the host).
+     */
+    public static #Tensor<float32> matmulF32Op(Tensor<float32> a, Tensor<float32> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        if (a.isOnGpu() && b.isOnGpu()) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            uint32 un = (uint32) n;
+            uint32 uk = (uint32) k;
+            GpuStream s = GpuStream.current();
+            matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    float32 acc = 0.0f;
+                    int64 p = 0;
+                    while (p < k) {
+                        acc = acc + a.get2(i, p) * b.get2(p, j);
+                        p = p + 1;
+                    }
+                    out.flatSet(i * n + j, acc);
+                    j = j + 1;
+                }
                 i = i + 1;
             }
         }

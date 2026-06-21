@@ -1413,6 +1413,79 @@ TEST(NumpyOpsTests, innerMatchNumpy) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 6b/6e — matmul GPU lowering: Ewise.matmulF32Op routes on placement, lowering to
+// the CooperativeMatrix tiled GEMM (16x16 tiles, one workgroup per output tile) on
+// device. Cross-check: the device coop-matrix result == the Tensor.matmul CPU floor,
+// bit-exact (small integers exact in float32). 32x32x32 → 2x2 output tiles, 2 K-tiles.
+TEST(NumpyOpsTests, matmulCoopCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        // 32x32 float32, A[i,p]=(i+p)%3, B[p,j]=(2p+j)%2 — products in {0,1,2}, the
+        // 32-term sum <= 64, exact in float32. Tensor.of owns the shape, so each
+        // build gets its own shape array.
+        "    public static #Tensor<float32> mkA() {\n"
+        "        float32[] d = heap float32[1024];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 32) {\n"
+        "            int32 p = 0;\n"
+        "            while (p < 32) { d[i * 32 + p] = (float32) ((i + p) % 3); p = p + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        int64[] s = heap int64[2]; s[0] = 32; s[1] = 32;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static #Tensor<float32> mkB() {\n"
+        "        float32[] d = heap float32[1024];\n"
+        "        int32 p = 0;\n"
+        "        while (p < 32) {\n"
+        "            int32 j = 0;\n"
+        "            while (j < 32) { d[p * 32 + j] = (float32) ((2 * p + j) % 2); j = j + 1; }\n"
+        "            p = p + 1;\n"
+        "        }\n"
+        "        int64[] s = heap int64[2]; s[0] = 32; s[1] = 32;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // CPU floor: the generic Tensor.matmul.
+        "        Tensor<float32> aRef = D.mkA();\n"
+        "        Tensor<float32> bRef = D.mkB();\n"
+        "        Tensor<float32> cpuRef = Tensor.matmul<float32>(aRef, bRef);\n"
+        // Ewise CPU path (host operands) must equal the floor.
+        "        Tensor<float32> aH = D.mkA();\n"
+        "        Tensor<float32> bH = D.mkB();\n"
+        "        Tensor<float32> cHost = Ewise.matmulF32Op(aH, bH);\n"
+        // Ewise GPU path (device operands) → CooperativeMatrix tiled GEMM.
+        "        Tensor<float32> aG = D.mkA();\n"
+        "        Tensor<float32> bG = D.mkB();\n"
+        "        aG.gpu();\n"
+        "        bG.gpu();\n"
+        "        Tensor<float32> cGpu = Ewise.matmulF32Op(aG, bG);\n"
+        "        cGpu.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 32) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 32) {\n"
+        "                float32 want = cpuRef.get2(i, j);\n"
+        "                if (cHost.get2(i, j) != want) { return -1; }\n"          // Ewise CPU == floor
+        "                if (cGpu.get2(i, j) != want) { return -2; }\n"           // coop GPU == floor
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // guard against an all-zero false pass: row 0 of the product has a positive sum.
+        "        float32 total = 0.0f;\n"
+        "        i = 0;\n"
+        "        while (i < 32) { total = total + cpuRef.get2(0, i); i = i + 1; }\n"
+        "        if (total <= 0.0f) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
 // 6c/6f — einsum: parse the subscript spec → contraction plan → nested sum walk.
 // Representative set: transpose, trace, matmul, batched matmul, diagonal, sum-all,
 // row-sum, and the 1-D inner product (dot). Explicit `->` output required.
