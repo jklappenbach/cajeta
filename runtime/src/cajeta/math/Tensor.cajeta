@@ -1150,6 +1150,111 @@ public class Tensor<T> {
         return Tensor.binop<A, B, R>(a, b, 2);
     }
 
+    /**
+     * Shared **comparison** kernel (NEP-50 spec §6). The result is **always**
+     * `Tensor<boolean>` regardless of operand dtypes; each operand is read by broadcast
+     * index and cross-cast to the explicit compare width `C` (`= promote(A,B)` when the
+     * caller picks it), so mixed pairs compare at the promoted value without a
+     * width-induced false mismatch. `op`: `0`=eq `1`=ne `2`=lt `3`=le `4`=gt `5`=ge.
+     */
+    static #Tensor<boolean> cmp<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<C>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<boolean> st = heap Storage<boolean>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            A ra = a.readBroadcast(idx);
+            B rb = b.readBroadcast(idx);
+            C ca = (C) ra;
+            C cb = (C) rb;
+            boolean res = ca == cb;
+            if (op == 1) { res = ca != cb; }
+            if (op == 2) { res = ca < cb; }
+            if (op == 3) { res = ca <= cb; }
+            if (op == 4) { res = ca > cb; }
+            if (op == 5) { res = ca >= cb; }
+            st.set(lin, res);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<boolean>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise `a == b` → `Tensor<boolean>` (same-dtype). See {@link #cmp}. */
+    public static #Tensor<boolean> eq<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 0);
+    }
+    /** Elementwise `a != b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> ne<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 1);
+    }
+    /** Elementwise `a < b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> lt<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 2);
+    }
+    /** Elementwise `a <= b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> le<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 3);
+    }
+    /** Elementwise `a > b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> gt<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 4);
+    }
+    /** Elementwise `a >= b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> ge<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 5);
+    }
+
+    /** Cross-dtype `a == b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> eq<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 0);
+    }
+    /** Cross-dtype `a != b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> ne<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 1);
+    }
+    /** Cross-dtype `a < b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> lt<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 2);
+    }
+    /** Cross-dtype `a <= b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> le<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 3);
+    }
+    /** Cross-dtype `a > b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> gt<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 4);
+    }
+    /** Cross-dtype `a >= b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> ge<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 5);
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**

@@ -173,3 +173,65 @@ TEST(NumpyOpsTests, arithmeticPromotedExplicit) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 2.1.1 — comparison family eq/ne/lt/le/gt/ge over same-dtype tensors yields a
+// Tensor<boolean> matching numpy, with right-aligned broadcasting (spec §6, 6.2.3).
+TEST(NumpyOpsTests, comparisonsMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s23);\n"          // [[1,2,3],[4,5,6]]
+        "        int32[] db = { 1, 9, 3, 4, 0, 6 };\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s23);\n"          // [[1,9,3],[4,0,6]]
+        "        Tensor<boolean> e = Tensor.eq<int32>(a, b);\n"           // [[T,F,T],[T,F,T]]
+        "        if (e.ndim() != 2 || e.shapeAt(0) != 2 || e.shapeAt(1) != 3) { return -1; }\n"
+        "        if (!e.get2(0,0) || e.get2(0,1) || !e.get2(0,2)) { return -2; }\n"
+        "        if (!e.get2(1,0) || e.get2(1,1) || !e.get2(1,2)) { return -3; }\n"
+        "        Tensor<boolean> n = Tensor.ne<int32>(a, b);\n"
+        "        if (n.get2(0,0) || !n.get2(0,1)) { return -4; }\n"
+        "        Tensor<boolean> lt = Tensor.lt<int32>(a, b);\n"          // [[F,T,F],[F,F,F]]
+        "        if (lt.get2(0,0) || !lt.get2(0,1) || lt.get2(1,1)) { return -5; }\n"
+        "        Tensor<boolean> le = Tensor.le<int32>(a, b);\n"          // [[T,T,T],[T,F,T]]
+        "        if (!le.get2(0,0) || !le.get2(0,1) || le.get2(1,1)) { return -6; }\n"
+        "        Tensor<boolean> gt = Tensor.gt<int32>(a, b);\n"          // [[F,F,F],[F,T,F]]
+        "        if (gt.get2(0,0) || !gt.get2(1,1)) { return -7; }\n"
+        "        Tensor<boolean> ge = Tensor.ge<int32>(a, b);\n"          // [[T,F,T],[T,T,T]]
+        "        if (!ge.get2(0,0) || ge.get2(0,1) || !ge.get2(1,1)) { return -8; }\n"
+        // broadcast (2,3) < row (3,): row=[1,5,6] → [[F,T,T],[F,F,F]]
+        "        int32[] dr = { 1, 5, 6 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> row = Tensor.of<int32>(dr, s3);\n"
+        "        Tensor<boolean> br = Tensor.lt<int32>(a, row);\n"
+        "        if (br.ndim() != 2 || br.shapeAt(0) != 2 || br.shapeAt(1) != 3) { return -9; }\n"
+        "        if (br.get2(0,0) || !br.get2(0,1) || !br.get2(0,2)) { return -10; }\n"
+        "        if (br.get2(1,1)) { return -11; }\n"
+        // operands unchanged
+        "        if (a.get2(0,0) != 1 || b.get2(1,2) != 6) { return -12; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 2.1.2 — mixed-dtype comparison compares at the promoted value (explicit compare
+// width C) and returns boolean: int32 vs float32 at float64 (spec 6.2.3, 2.2.5).
+TEST(NumpyOpsTests, comparisonMixedDtype) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 3, 4 };\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<int32> ai = Tensor.of<int32>(da, s2);\n"         // [3, 4]
+        "        float32[] fb = { 3.0f, 3.5f };\n"
+        "        Tensor<float32> bf = Tensor.of<float32>(fb, s2);\n"     // [3.0, 3.5]
+        "        Tensor<boolean> e = Tensor.eq<int32,float32,float64>(ai, bf);\n"  // [T, F]
+        "        if (!e.get1(0) || e.get1(1)) { return -1; }\n"
+        "        Tensor<boolean> g = Tensor.gt<int32,float32,float64>(ai, bf);\n"  // [F, T]
+        "        if (g.get1(0) || !g.get1(1)) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
