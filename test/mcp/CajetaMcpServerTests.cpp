@@ -22,9 +22,9 @@ using cajeta::dap::Json;
 using cajeta::buildtool::runSubprocess;
 using cajeta::buildtool::SubprocessOptions;
 
-namespace {
-
 #ifndef _WIN32
+
+namespace {
 
 namespace fs = std::filesystem;
 

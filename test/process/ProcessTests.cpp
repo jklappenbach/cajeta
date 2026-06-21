@@ -22,9 +22,9 @@
 
 using cajeta_test::CajetaJit;
 
-namespace {
-
 #ifndef _WIN32
+
+namespace {
 
 std::string wrap(const std::string& body) {
     return
