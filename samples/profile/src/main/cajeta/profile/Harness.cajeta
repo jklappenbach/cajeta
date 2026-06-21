@@ -100,6 +100,10 @@ public class Harness {
         r.area = "" + benchArea;
         r.variant = "" + variant;
         r.language = "cajeta";
+        // Built by `cajeta release` with the profile manifest's native flavor
+        // (base release → O3 + --cpu=native); record it so the report shows the
+        // same -march=native footing as the C++/Rust/Go competitors.
+        r.flags = "--release -O3 -march=native";
         r.inputSize = b.inputSize();
         r.warmup = warm;
         r.trials = trials;

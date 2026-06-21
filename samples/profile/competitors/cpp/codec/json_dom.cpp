@@ -24,6 +24,20 @@ static std::string env(const char* k, const char* d) {
     return v ? std::string(v) : std::string(d);
 }
 
+#include <atomic>
+#include <cstdlib>
+#include <new>
+static std::atomic<unsigned long long> _ALLOCED{0};
+static std::atomic<unsigned long long> _LASTALLOC{0};
+void* operator new(std::size_t n) { _ALLOCED += n; void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
+void* operator new[](std::size_t n) { _ALLOCED += n; void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+template <class F> static void _alloc_of(F run) { _ALLOCED = 0; run(); _LASTALLOC = _ALLOCED.load(); }
+static unsigned long long _la() { return _LASTALLOC.load(); }
+
 static long long peak_rss_kb() {
     std::ifstream s("/proc/self/status");
     std::string line;
@@ -52,10 +66,10 @@ static void emit(const std::string& run_id, const std::string& ts, const char* d
     double mbps = s.med > 0 ? (double)bytes / (double)s.med * 1e9 / 1048576.0 : 0.0;
     std::printf(
         "1,%s,%s,json-dom,codec,%s,%zu,,%zu,cpp,%s,%s,%s,-O3 -march=native,%d,%d,"
-        "%lld,%lld,%lld,%lld,%.1f,MB/s,%lld,-1,-1,-1,-1,%s,%s,,\n",
+        "%lld,%lld,%lld,%lld,%.1f,MB/s,%lld,-1,%llu,-1,-1,%s,%s,,\n",
         run_id.c_str(), ts.c_str(), dataset, bytes, bytes,
         env("PROFILE_LANG_VERSION", "").c_str(), lib, ver, warmup, trials,
-        s.mn, s.med, s.mean, s.p95, mbps, peak_rss_kb(), status,
+        s.mn, s.med, s.mean, s.p95, mbps, peak_rss_kb(), (unsigned long long)_la(), status,
         check_ok ? "true" : "false");
 }
 
@@ -115,6 +129,7 @@ int main() {
             bool check = false;
             auto r = parser.parse(ps);
             if (!r.error()) check = simdjson_count(r.value(), c.dataset) == c.expect;
+            _alloc_of([&]{ simdjson::dom::parser p2; auto e2 = p2.parse(ps); (void)e2; });
             for (int i = 0; i < warmup; ++i) { auto e = parser.parse(ps); (void)e; }
             std::vector<long long> samples;
             for (int i = 0; i < trials; ++i) {

@@ -99,6 +99,7 @@ namespace cajeta::buildtool {
         // accepts O0..O3 — so a flavor using `Oz` is rejected at lowering.
         static const std::vector<FlavorPropertySpec> v = {
             {"opt",             K::EnumString, {"O0", "O1", "O2", "O3", "Oz"}, "opt"},
+            {"cpu",             K::EnumString, {"native", "generic"},          "cpu"},
             {"lto",             K::EnumString, {"off", "thin", "full"},        ""},
             {"debug-info",      K::EnumString, {"off", "line", "full"},        ""},
             {"strip-symbols",   K::Boolean,    {},                            ""},

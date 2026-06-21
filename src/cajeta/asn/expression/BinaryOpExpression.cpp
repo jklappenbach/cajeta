@@ -42,6 +42,13 @@ namespace cajeta {
         if (!condTrap) return;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
+        // A per-lane vector trap condition (a `Vector<T,N>` shift/mod/div bound
+        // check yields `<N x i1>`) can't drive a branch — reduce it to a scalar
+        // "any lane traps" i1 first. Without this the verifier rejects
+        // `br <N x i1> ...` (the chained-Vector codegen crash under ub-traps).
+        if (condTrap->getType()->isVectorTy()) {
+            condTrap = b.CreateOrReduce(condTrap);
+        }
         llvm::Function* curFn = b.GetInsertBlock()->getParent();
         auto* trapBB = llvm::BasicBlock::Create(ctx, label + ".trap", curFn);
         auto* okBB = llvm::BasicBlock::Create(ctx, label + ".ok", curFn);

@@ -9,6 +9,7 @@ import os
 import resource
 import sys
 import time
+import tracemalloc
 
 FILES = [
     ("twitter", "twitter.json", 100),
@@ -25,6 +26,20 @@ def env(k, d):
 def peak_rss_kb():
     # ru_maxrss is KB on Linux.
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+
+_ALLOC = -1
+
+
+def alloc_bytes(run):
+    """Peak Python-heap bytes allocated by one execution (tracemalloc). Note: C-
+    extension allocations outside CPython (e.g. numpy buffers) are not traced."""
+    tracemalloc.start()
+    tracemalloc.reset_peak()
+    run()
+    _peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    return _peak
 
 
 def count(v, dataset):
@@ -54,7 +69,7 @@ def row(run_id, ts, dataset, nbytes, lib, ver, warmup, trials, st, check_ok, sta
     return (
         f"1,{run_id},{ts},json-dom,codec,{dataset},{nbytes},,{nbytes},python,{pyver},"
         f"{lib},{ver},{ver_flags},{warmup},{trials},{mn},{med},{mean},{p95},"
-        f"{mbps:.1f},MB/s,{peak_rss_kb()},-1,-1,-1,-1,{status},{str(check_ok).lower()},,"
+        f"{mbps:.1f},MB/s,{peak_rss_kb()},-1,{_ALLOC},-1,-1,{status},{str(check_ok).lower()},,"
     )
 
 
@@ -88,6 +103,7 @@ def loader(lib):
 
 
 def main():
+    global _ALLOC
     data_dir = os.environ.get("PROFILE_DATA_DIR")
     if not data_dir:
         sys.stderr.write("python/codec: PROFILE_DATA_DIR unset — skipping\n")
@@ -118,6 +134,7 @@ def main():
                 check = count(loads(raw), dataset) == expect
             except Exception:
                 check = False
+            _ALLOC = alloc_bytes(lambda: loads(raw))
             for _ in range(warmup):
                 loads(raw)
             samples = []

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"runtime"
 	"fmt"
 	"math"
 	"os"
@@ -73,9 +74,9 @@ func emit(runID, ts, bench string, input, warmup, trials int, samples []int64, o
 		status = "invalid"
 	}
 	fmt.Printf(
-		"1,%s,%s,%s,clbg,,%d,,%d,go,%s,scalar,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,,,%d,-1,-1,-1,-1,%s,%t,,\n",
+		"1,%s,%s,%s,clbg,,%d,,%d,go,%s,scalar,stdlib,GOAMD64=v4,%d,%d,%d,%d,%d,%d,,,%d,-1,%d,-1,-1,%s,%t,,\n",
 		runID, ts, bench, input, input, env("PROFILE_LANG_VERSION", ""),
-		warmup, trials, mn, med, mean, p95, peakRSSKb(), status, ok)
+		warmup, trials, mn, med, mean, p95, peakRSSKb(), gAlloc, status, ok)
 }
 
 func mandelbrot(n int) int64 {
@@ -192,6 +193,16 @@ func spectralNorm(n int) float64 {
 	return math.Sqrt(vbv / vv)
 }
 
+var gAlloc uint64
+
+func measAlloc(run func()) {
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	run()
+	runtime.ReadMemStats(&b)
+	gAlloc = b.TotalAlloc - a.TotalAlloc
+}
+
 func main() {
 	runID := env("PROFILE_RUN_ID", "local")
 	ts := env("PROFILE_RUN_TS", "")
@@ -211,6 +222,7 @@ func main() {
 			samples = append(samples, time.Since(t0).Nanoseconds())
 			ok = r == mandelRef
 		}
+		measAlloc(func() { mandelbrot(mandelN) })
 		emit(runID, ts, "clbg-mandelbrot", mandelN*mandelN, warmup, trials, samples, ok)
 	}
 	// fannkuch
@@ -226,6 +238,7 @@ func main() {
 			samples = append(samples, time.Since(t0).Nanoseconds())
 			ok = mf == 38 && cs == 73196
 		}
+		measAlloc(func() { fannkuch(fannN) })
 		emit(runID, ts, "clbg-fannkuch-redux", fannN, warmup, trials, samples, ok)
 	}
 	// spectral-norm
@@ -241,6 +254,7 @@ func main() {
 			samples = append(samples, time.Since(t0).Nanoseconds())
 			ok = math.Abs(r-spectralRef) < 1e-3
 		}
+		measAlloc(func() { spectralNorm(spectralN) })
 		emit(runID, ts, "clbg-spectral-norm", spectralN, warmup, trials, samples, ok)
 	}
 }

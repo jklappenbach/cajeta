@@ -14,7 +14,7 @@ set -uo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
-LANGS="${PROFILE_LANGS:-rust cpp go python}"
+LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 
 skip_lang() {
@@ -64,7 +64,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/time" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-time-go.log ) \
+        ( cd "$DIR/go/time" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-time-go.log ) \
             || skip_lang go time "go build/run failed (see /tmp/profile-time-go.log)"
     else
         skip_lang go time "go not installed"
@@ -80,5 +80,23 @@ if want python; then
             || skip_lang python datetime "python time runner crashed"
     else
         skip_lang python datetime "python3 not installed"
+    fi
+fi
+
+# ---- java: java.time (Instant/LocalDate immutable value objects, JDK stdlib) ----
+if want java; then
+    if command -v javac >/dev/null 2>&1; then
+        OUT="$BUILD/java-time"; SRC="$DIR/java/time/TimeBench.java"
+        if [[ ! -f "$OUT/TimeBench.class" || "$SRC" -nt "$OUT/TimeBench.class" ]]; then
+            mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-time-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/TimeBench.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" java -cp "$OUT" TimeBench \
+                || skip_lang java java.time "java time runner crashed"
+        else
+            skip_lang java java.time "javac build failed (see /tmp/profile-time-java.log)"
+        fi
+    else
+        skip_lang java java.time "javac not installed"
     fi
 fi

@@ -392,6 +392,110 @@ TEST(VectorTests, componentOutOfRangeRejected) {
     }
 }
 
+// ===== Phase 0.5: chained-op / value-local reassignment codegen =====
+// Regression for the xxhash3 SIMD port: chaining several vector->vector ops
+// (and reassigning a vector local) must produce correct lanes and must not
+// crash codegen. Individual ops were already fine; composing them was not.
+
+// Chained ops, distinct single-assignment locals: a=[1..]; b=a+a; c=b*b -> c[0]=4.
+TEST(VectorTests, chainedOpsInt32) {
+    EXPECT_EQ(runI32(
+        "        Vector<int32,4> a = heap Vector<int32,4>(1, 2, 3, 4);\n"
+        "        Vector<int32,4> b = a + a;\n"
+        "        Vector<int32,4> c = b * b;\n"
+        "        return c[0];\n"), 4);   // (1+1)*(1+1)
+}
+TEST(VectorTests, chainedOpsInt64x8) {
+    EXPECT_EQ(runI32(
+        "        Vector<int64,8> a = heap Vector<int64,8>(1, 2, 3, 4, 5, 6, 7, 8);\n"
+        "        Vector<int64,8> b = a + a;\n"
+        "        Vector<int64,8> c = b * b;\n"
+        "        return (int32) c[3];\n"), 64);  // (4+4)*(4+4)
+}
+// Reassigning the same vector local must persist across statements.
+TEST(VectorTests, reassignVectorLocalPersists) {
+    EXPECT_EQ(runI32(
+        "        Vector<int32,4> a = heap Vector<int32,4>(1, 2, 3, 4);\n"
+        "        a = a + a;\n"   // 2
+        "        a = a + a;\n"   // 4
+        "        return a[0];\n"), 4);
+}
+TEST(VectorTests, reassignVectorLocalPersistsInt64x8) {
+    EXPECT_EQ(runI32(
+        "        Vector<int64,8> a = heap Vector<int64,8>(1, 2, 3, 4, 5, 6, 7, 8);\n"
+        "        a = a + a;\n"
+        "        a = a + a;\n"
+        "        return (int32) a[1];\n"), 8);  // 2*4
+}
+// Self-referential op (v = v + v / w = v * v) must not crash the compiler.
+TEST(VectorTests, selfReferentialVectorOpCompiles) {
+    EXPECT_EQ(runI32(
+        "        Vector<int64,8> v = heap Vector<int64,8>(2, 2, 2, 2, 2, 2, 2, 2);\n"
+        "        Vector<int64,8> w = v * v;\n"
+        "        Vector<int64,8> x = v + v;\n"
+        "        return (int32)(w[0] + x[0]);\n"), 8);  // 4 + 4
+}
+// Many live vector locals + a longer chain (the xxhash accumulate shape).
+TEST(VectorTests, manyLiveVectorLocals) {
+    EXPECT_EQ(runI32(
+        "        Vector<int64,8> a = heap Vector<int64,8>(7, 7, 7, 7, 7, 7, 7, 7);\n"
+        "        Vector<int64,8> k = heap Vector<int64,8>(3, 3, 3, 3, 3, 3, 3, 3);\n"
+        "        Vector<int64,8> key = a ^ k;\n"          // 4
+        "        Vector<int64,8> lo = key & 0xFFFFFFFFL;\n" // 4
+        "        Vector<int64,8> hi = key >>> 1;\n"        // 2
+        "        Vector<int64,8> prod = lo * hi;\n"        // 8
+        "        Vector<int64,8> sum = a + key + prod;\n"  // 7+4+8 = 19
+        "        return (int32) sum[0];\n"), 19);
+}
+
+// Passing a Vector value to a method and reassigning the return must persist
+// across loop iterations (the xxhash3 `acc = accStripe(acc, ...)` shape).
+TEST(VectorTests, methodReturnReassignPersists) {
+    std::string src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static Vector<int64,8> dbl(Vector<int64,8> v) { return v + v; }\n"
+        "    public static int32 run() {\n"
+        "        Vector<int64,8> a = heap Vector<int64,8>(1, 2, 3, 4, 5, 6, 7, 8);\n"
+        "        int32 i = 0;\n"
+        "        while (i < 3) { a = D.dbl(a); i = i + 1; }\n" // ×8
+        "        return (int32) a[0];\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 8);  // 1 * 2^3
+}
+
+// The exact xxhash accStripe shape with the SIMD load/swap intrinsics in a
+// chain: d=vload8i64; key=d^vload8i64; lo=key&m; hi=key>>>32; prod=lo*hi;
+// acc + vswapPairs(d) + prod. d[i]=i, secret=0, acc=0 -> lane[j]=d[j^1].
+TEST(VectorTests, accStripeIntrinsicChain) {
+    std::string src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int8[] zb = heap int8[64];\n"
+        "        int8[] data = heap int8[64];\n"
+        "        int8[] sec = heap int8[64];\n"
+        "        int64 i = 0;\n"
+        "        while (i < 8) { Cajeta.storeU64(zb, i*8, 0L); Cajeta.storeU64(data, i*8, i); Cajeta.storeU64(sec, i*8, 0L); i = i + 1; }\n"
+        "        Vector<int64,8> acc = Cajeta.vload8i64(zb, 0);\n"
+        "        Vector<int64,8> d = Cajeta.vload8i64(data, 0);\n"
+        "        Vector<int64,8> key = d ^ Cajeta.vload8i64(sec, 0);\n"
+        "        Vector<int64,8> lo = key & 0xFFFFFFFFL;\n"
+        "        Vector<int64,8> hi = key >>> 32;\n"
+        "        Vector<int64,8> swapped = Cajeta.vswapPairs(d);\n"
+        "        Vector<int64,8> prod = lo * hi;\n"
+        "        Vector<int64,8> r = acc + swapped + prod;\n"
+        "        return (int32)(Cajeta.vlane(r,0)*1000 + Cajeta.vlane(r,1)*100 + Cajeta.vlane(r,2)*10 + Cajeta.vlane(r,7));\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1036);  // r = [1,0,3,...,6] -> 1*1000+0*100+3*10+6
+}
+
 // Constructor arity must equal N.
 TEST(VectorTests, constructorArityMismatchRejected) {
     try {

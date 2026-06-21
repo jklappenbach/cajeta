@@ -5,6 +5,19 @@
 // (N=100, ≈1.274224). One schema-conformant CSV row per benchmark. Pure scalar
 // stdlib — the row reflects compiler codegen on the canonical algorithm.
 use std::time::Instant;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU64, Ordering as _Ord};
+static _ALLOCED: AtomicU64 = AtomicU64::new(0);
+static _LAST: AtomicU64 = AtomicU64::new(0);
+struct _Counting;
+unsafe impl GlobalAlloc for _Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 { _ALLOCED.fetch_add(l.size() as u64, _Ord::Relaxed); System.alloc(l) }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) { System.dealloc(p, l) }
+}
+#[global_allocator]
+static _GA: _Counting = _Counting;
+fn _alloc_of<F: FnOnce()>(run: F) { _ALLOCED.store(0, _Ord::Relaxed); run(); _LAST.store(_ALLOCED.load(_Ord::Relaxed), _Ord::Relaxed); }
+fn _la() -> u64 { _LAST.load(_Ord::Relaxed) }
 
 const MANDEL_N: usize = 800;
 const MANDEL_REF: i64 = 254_099;
@@ -31,11 +44,11 @@ fn emit(run_id: &str, ts: &str, bench: &str, input: usize,
     // clbg has no natural throughput unit — leave throughput/unit empty; the
     // report derives a rate from input_size/min_ns.
     println!(
-        "1,{run_id},{ts},{bench},clbg,,{input},,{input},rust,{ver},scalar,std,-O3 lto,{warmup},{trials},\
-{mn},{med},{mean},{p95},,,{rss},-1,-1,-1,-1,{status},{check},,",
+        "1,{run_id},{ts},{bench},clbg,,{input},,{input},rust,{ver},scalar,std,-O3 lto target-cpu=native,{warmup},{trials},\
+{mn},{med},{mean},{p95},,,{rss},-1,{alloc},-1,-1,{status},{check},,",
         run_id = run_id, ts = ts, bench = bench, input = input, ver = env("PROFILE_LANG_VERSION", ""),
         warmup = warmup, trials = trials, mn = mn, med = med, mean = mean, p95 = p95,
-        rss = peak_rss_kb(), status = status, check = check_ok);
+        rss = peak_rss_kb(), alloc = _la(), status = status, check = check_ok);
 }
 
 fn bench<T: Copy, F: FnMut() -> T, C: Fn(T) -> bool>(warmup: usize, trials: usize, mut f: F, check: C)
@@ -50,6 +63,7 @@ fn bench<T: Copy, F: FnMut() -> T, C: Fn(T) -> bool>(warmup: usize, trials: usiz
         ok = check(r);
         std::hint::black_box(r);
     }
+    _alloc_of(|| { let _ = f(); });
     (s, ok)
 }
 

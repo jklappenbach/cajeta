@@ -348,6 +348,7 @@ namespace cajeta {
 
         void setCpu(const string& cpu) {
             this->cpu = cpu;
+            rebuildTargetMachine(); // CPU feeds the subtarget — rebuild like setTargetTriple
         }
 
         const string& getFeatures() const {
@@ -356,6 +357,7 @@ namespace cajeta {
 
         void setFeatures(const string& features) {
             this->features = features;
+            rebuildTargetMachine();
         }
 
         // Install (or clear, with nullptr) the process-global shared LLVMContext

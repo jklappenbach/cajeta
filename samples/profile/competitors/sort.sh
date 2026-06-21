@@ -18,7 +18,7 @@ set -uo pipefail
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 VENDOR="${DIR}/vendor"
-LANGS="${PROFILE_LANGS:-rust cpp go python}"
+LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 N=50000
 
@@ -70,7 +70,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/sort" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-sort-go.log ) \
+        ( cd "$DIR/go/sort" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-sort-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-sort-go.log)"
     else
         skip_lang go go "go not installed"
@@ -86,5 +86,23 @@ if want python; then
             || skip_lang python python "python sort runner crashed"
     else
         skip_lang python python "python3 not installed"
+    fi
+fi
+
+# ---- java: java.util.Arrays.sort (dual-pivot quicksort + Timsort, JDK stdlib) ----
+if want java; then
+    if command -v javac >/dev/null 2>&1; then
+        OUT="$BUILD/java-sort"; SRC="$DIR/java/sort/SortBench.java"
+        if [[ ! -f "$OUT/SortBench.class" || "$SRC" -nt "$OUT/SortBench.class" ]]; then
+            mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-sort-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/SortBench.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" java -cp "$OUT" SortBench \
+                || skip_lang java java "java sort runner crashed"
+        else
+            skip_lang java java "javac build failed (see /tmp/profile-sort-java.log)"
+        fi
+    else
+        skip_lang java java "javac not installed"
     fi
 fi
