@@ -7565,6 +7565,367 @@ void __cajeta_file_close(int32_t fd) {
     close(fd);
 }
 
+// ===========================================================================
+// cajeta.process — subprocess control.
+//
+// One-shot `Command.run()` (U1) here; streaming `spawn()` lands in U2. The C
+// bridge BUILDS the cajeta `ProcessResult` object directly — it is handed the
+// result class's vtable + DataLayout field offsets and the `String` class's
+// stride + field offsets, so no cajeta ABI is hardcoded (mirrors
+// __cajeta_args_make). It also does ALL marshalling: it reads the cajeta
+// `String[]` argv/env and `String` cwd straight out of the heap and copies
+// each into NUL-terminated C strings, so the codegen side is just "load the
+// Command fields, gather layout constants, one call".
+//
+// posix_spawn-based (spec §8.3): posix_spawnp resolves argv[0] against PATH and
+// reports exec failures (ENOENT/EACCES) via its return value — that drives the
+// `launched == false` result (spec §8.2, result-flag, no throw). stdout/stderr
+// captures are drained concurrently with poll() so a child filling both pipe
+// buffers can't deadlock (spec §3.2.4).
+// ===========================================================================
+#if !defined(_WIN32)
+#include <spawn.h>
+#include <poll.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <time.h>
+extern char** environ;
+#if defined(__linux__)
+// addchdir_np needs _GNU_SOURCE, which this TU deliberately does not set;
+// forward-declare it (present in glibc >= 2.29).
+extern int posix_spawn_file_actions_addchdir_np(
+    posix_spawn_file_actions_t*, const char*);
+#endif
+
+// Capture flag bits (must match cajeta.process.Stdio packing).
+#define CJ_PROC_CAP_STDOUT 1
+#define CJ_PROC_CAP_STDERR 2
+
+// Growable byte buffer for draining a captured stream.
+typedef struct { char* data; size_t len; size_t cap; } cj_proc_buf;
+
+static int cj_proc_buf_append(cj_proc_buf* b, const char* src, size_t n) {
+    if (b->len + n > b->cap) {
+        size_t nc = b->cap ? b->cap : 4096;
+        while (nc < b->len + n) nc *= 2;
+        char* nd = (char*) realloc(b->data, nc);
+        if (!nd) return -1;
+        b->data = nd;
+        b->cap = nc;
+    }
+    memcpy(b->data + b->len, src, n);
+    b->len += n;
+    return 0;
+}
+
+// Copy a cajeta `String*`'s bytes into a fresh NUL-terminated C string.
+// String layout: vtable@0, bytes(int8[])@off_bytes, byteLength(int32)@off_len.
+// The int8[] payload begins 8 bytes past the array header (the count word).
+static char* cj_proc_str_dup(void* str, int64_t off_bytes, int64_t off_len) {
+    if (!str) return NULL;
+    void* bytes = *(void**) ((char*) str + off_bytes);
+    int32_t len = *(int32_t*) ((char*) str + off_len);
+    if (len < 0) len = 0;
+    char* s = (char*) malloc((size_t) len + 1);
+    if (!s) return NULL;
+    if (len > 0 && bytes) memcpy(s, (char*) bytes + 8, (size_t) len);
+    s[len] = '\0';
+    return s;
+}
+
+// Marshal a cajeta `String[]` into a NULL-terminated char** (each element a
+// freshly malloc'd NUL-terminated copy). Element stride is the full String
+// struct size; each slot holds a String* in its first 8 bytes (see
+// __cajeta_args_make). Returns NULL with *out_n=0 for a null/empty array.
+static char** cj_proc_strarr_dup(void* arr, int64_t str_size,
+                                 int64_t off_bytes, int64_t off_len,
+                                 int64_t* out_n) {
+    *out_n = 0;
+    if (!arr) return NULL;
+    int64_t n = *(int64_t*) arr;          // count word @ 0
+    if (n < 0) n = 0;
+    char** v = (char**) malloc(sizeof(char*) * (size_t) (n + 1));
+    if (!v) return NULL;
+    char* base = (char*) arr + 8;
+    for (int64_t i = 0; i < n; i++) {
+        void* str = *(void**) (base + (size_t) i * (size_t) str_size);
+        char* dup = cj_proc_str_dup(str, off_bytes, off_len);
+        v[i] = dup ? dup : strdup("");
+    }
+    v[n] = NULL;
+    *out_n = n;
+    return v;
+}
+
+static void cj_proc_strarr_free(char** v) {
+    if (!v) return;
+    for (char** p = v; *p; p++) free(*p);
+    free(v);
+}
+
+// Build a cajeta int8[] { i64 count, [count x i8] } holding `len` bytes.
+static void* cj_proc_bytes_to_array(const char* data, size_t len) {
+    void* hdr = __cajeta_new_array_header(8, 1, (uint64_t) len);
+    if (!hdr) return NULL;            // len==0 → NULL header is fine for cajeta
+    if (len > 0 && data) memcpy((char*) hdr + 8, data, len);
+    return hdr;
+}
+
+// Allocate + populate the cajeta ProcessResult instance from raw field values.
+static void* cj_proc_build_result(
+        void* vtable, int64_t res_size,
+        int32_t launched, int32_t exited, int32_t exit_code,
+        int32_t signaled, int32_t sig, int32_t timed_out,
+        void* out_arr, void* err_arr,
+        int64_t off_launched, int64_t off_exited, int64_t off_exitcode,
+        int64_t off_signaled, int64_t off_signal, int64_t off_timedout,
+        int64_t off_stdout, int64_t off_stderr) {
+    void* r = __cajeta_alloc((uint64_t) res_size);
+    *(void**)   ((char*) r)                = vtable;       // vtable @ 0
+    *(int32_t*) ((char*) r + off_launched) = launched;
+    *(int32_t*) ((char*) r + off_exited)   = exited;
+    *(int32_t*) ((char*) r + off_exitcode) = exit_code;
+    *(int32_t*) ((char*) r + off_signaled) = signaled;
+    *(int32_t*) ((char*) r + off_signal)   = sig;
+    *(int32_t*) ((char*) r + off_timedout) = timed_out;
+    *(void**)   ((char*) r + off_stdout)   = out_arr;      // may be NULL
+    *(void**)   ((char*) r + off_stderr)   = err_arr;
+    return r;
+}
+
+static long cj_proc_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long) ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+// One-shot run. See the section banner. Returns a heap ProcessResult*.
+void* __cajeta_proc_run(
+        void* argv_arr,          // cajeta String[] (non-null, non-empty)
+        void* cwd_str,           // cajeta String* or NULL (inherit cwd)
+        void* env_arr,           // cajeta String[] "KEY=VALUE" or NULL (inherit)
+        void* stdin_arr,         // cajeta int8[] or NULL (inherit stdin)
+        int32_t stdin_len,
+        int32_t capture_flags,   // CJ_PROC_CAP_*
+        int64_t timeout_ms,      // <= 0 : no timeout
+        int64_t str_size, int64_t str_off_bytes, int64_t str_off_len,
+        void* result_vtable, int64_t res_size,
+        int64_t off_launched, int64_t off_exited, int64_t off_exitcode,
+        int64_t off_signaled, int64_t off_signal, int64_t off_timedout,
+        int64_t off_stdout, int64_t off_stderr) {
+#define CJ_FAILRES() cj_proc_build_result(result_vtable, res_size, \
+        0, 0, -1, 0, 0, 0, NULL, NULL, \
+        off_launched, off_exited, off_exitcode, off_signaled, off_signal, \
+        off_timedout, off_stdout, off_stderr)
+
+    int cap_out = (capture_flags & CJ_PROC_CAP_STDOUT) != 0;
+    int cap_err = (capture_flags & CJ_PROC_CAP_STDERR) != 0;
+    const char* cwd = NULL;
+    char* cwd_dup = NULL;
+    if (cwd_str) {
+        cwd_dup = cj_proc_str_dup(cwd_str, str_off_bytes, str_off_len);
+        cwd = cwd_dup;
+    }
+    int want_stdin = (stdin_arr != NULL && stdin_len > 0);
+
+    int64_t argc = 0;
+    char** cargv = cj_proc_strarr_dup(argv_arr, str_size,
+                                      str_off_bytes, str_off_len, &argc);
+    if (!cargv || argc == 0) {
+        cj_proc_strarr_free(cargv);
+        free(cwd_dup);
+        return CJ_FAILRES();
+    }
+    int64_t envc = 0;
+    char** cenv_built = cj_proc_strarr_dup(env_arr, str_size,
+                                           str_off_bytes, str_off_len, &envc);
+    char** cenv = cenv_built ? cenv_built : environ;
+
+    int in_pipe[2]  = {-1, -1};
+    int out_pipe[2] = {-1, -1};
+    int err_pipe[2] = {-1, -1};
+    if ((want_stdin && pipe(in_pipe) != 0) ||
+        (cap_out && pipe(out_pipe) != 0) ||
+        (cap_err && pipe(err_pipe) != 0)) {
+        goto fail;
+    }
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (want_stdin) {
+        posix_spawn_file_actions_adddup2(&fa, in_pipe[0], 0);
+        posix_spawn_file_actions_addclose(&fa, in_pipe[0]);
+        posix_spawn_file_actions_addclose(&fa, in_pipe[1]);
+    }
+    if (cap_out) {
+        posix_spawn_file_actions_adddup2(&fa, out_pipe[1], 1);
+        posix_spawn_file_actions_addclose(&fa, out_pipe[0]);
+        posix_spawn_file_actions_addclose(&fa, out_pipe[1]);
+    }
+    if (cap_err) {
+        posix_spawn_file_actions_adddup2(&fa, err_pipe[1], 2);
+        posix_spawn_file_actions_addclose(&fa, err_pipe[0]);
+        posix_spawn_file_actions_addclose(&fa, err_pipe[1]);
+    }
+    if (cwd) {
+#if defined(__linux__)
+        if (posix_spawn_file_actions_addchdir_np(&fa, cwd) != 0) {
+            posix_spawn_file_actions_destroy(&fa);
+            goto fail;
+        }
+#else
+        posix_spawn_file_actions_destroy(&fa);   // cwd unsupported on this OS
+        goto fail;
+#endif
+    }
+
+    pid_t pid;
+    int rc = posix_spawnp(&pid, cargv[0], &fa, NULL, cargv, cenv);
+    posix_spawn_file_actions_destroy(&fa);
+
+    // Close child ends in the parent.
+    if (want_stdin) { close(in_pipe[0]); in_pipe[0] = -1; }
+    if (cap_out)    { close(out_pipe[1]); out_pipe[1] = -1; }
+    if (cap_err)    { close(err_pipe[1]); err_pipe[1] = -1; }
+
+    if (rc != 0) {
+        if (in_pipe[1]  >= 0) close(in_pipe[1]);
+        if (out_pipe[0] >= 0) close(out_pipe[0]);
+        if (err_pipe[0] >= 0) close(err_pipe[0]);
+        goto fail;                       // launch failure → launched=false
+    }
+
+    // Write stdin fully then close. v1 assumes stdin fits the pipe/program
+    // without a parallel drain — large streaming stdin is the U2 spawn() path.
+    if (want_stdin) {
+        const char* p = (const char*) stdin_arr + 8;   // past count word
+        int64_t rem = stdin_len;
+        while (rem > 0) {
+            ssize_t n = write(in_pipe[1], p, (size_t) rem);
+            if (n < 0) { if (errno == EINTR) continue; break; }
+            p += n; rem -= n;
+        }
+        close(in_pipe[1]); in_pipe[1] = -1;
+    }
+
+    // Concurrently drain stdout + stderr so neither pipe buffer wedges the
+    // child (spec §3.2.4). poll deadline doubles as the run timeout.
+    cj_proc_buf ob = {0, 0, 0}, eb = {0, 0, 0};
+    int timed_out = 0;
+    long deadline = (timeout_ms > 0) ? cj_proc_now_ms() + (long) timeout_ms : 0;
+    char tmp[8192];
+    while ((cap_out && out_pipe[0] >= 0) || (cap_err && err_pipe[0] >= 0)) {
+        struct pollfd pfds[2];
+        int oi = -1, ei = -1;
+        nfds_t nf = 0;
+        if (cap_out && out_pipe[0] >= 0) {
+            pfds[nf].fd = out_pipe[0]; pfds[nf].events = POLLIN; oi = (int) nf++;
+        }
+        if (cap_err && err_pipe[0] >= 0) {
+            pfds[nf].fd = err_pipe[0]; pfds[nf].events = POLLIN; ei = (int) nf++;
+        }
+        int timeout_arg = -1;
+        if (timeout_ms > 0) {
+            long remaining = deadline - cj_proc_now_ms();
+            if (remaining <= 0) { timed_out = 1; break; }
+            timeout_arg = (int) remaining;
+        }
+        int pr = poll(pfds, nf, timeout_arg);
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+        if (pr == 0) { timed_out = 1; break; }
+        if (oi >= 0 && (pfds[oi].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(out_pipe[0], tmp, sizeof tmp);
+            if (n > 0) cj_proc_buf_append(&ob, tmp, (size_t) n);
+            else { close(out_pipe[0]); out_pipe[0] = -1; }
+        }
+        if (ei >= 0 && (pfds[ei].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(err_pipe[0], tmp, sizeof tmp);
+            if (n > 0) cj_proc_buf_append(&eb, tmp, (size_t) n);
+            else { close(err_pipe[0]); err_pipe[0] = -1; }
+        }
+    }
+    if (out_pipe[0] >= 0) { close(out_pipe[0]); out_pipe[0] = -1; }
+    if (err_pipe[0] >= 0) { close(err_pipe[0]); err_pipe[0] = -1; }
+
+    if (timed_out) kill(pid, SIGKILL);
+
+    // If there was nothing to drain but a deadline applies, enforce it now.
+    if (!timed_out && timeout_ms > 0 && !cap_out && !cap_err) {
+        for (;;) {
+            int st;
+            pid_t w = waitpid(pid, &st, WNOHANG);
+            if (w == pid) break;
+            if (w < 0) { if (errno == EINTR) continue; break; }
+            if (cj_proc_now_ms() >= deadline) {
+                kill(pid, SIGKILL); timed_out = 1; break;
+            }
+            struct timespec nap = {0, 2 * 1000 * 1000};   // 2 ms
+            nanosleep(&nap, NULL);
+        }
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { /* retry */ }
+
+    int exited = 0, exit_code = -1, signaled = 0, sig = 0;
+    if (WIFEXITED(status))   { exited = 1;   exit_code = WEXITSTATUS(status); }
+    if (WIFSIGNALED(status)) { signaled = 1; sig = WTERMSIG(status); }
+
+    void* out_arr = cap_out ? cj_proc_bytes_to_array(ob.data, ob.len) : NULL;
+    void* err_arr = cap_err ? cj_proc_bytes_to_array(eb.data, eb.len) : NULL;
+    free(ob.data);
+    free(eb.data);
+
+    cj_proc_strarr_free(cargv);
+    cj_proc_strarr_free(cenv_built);
+    free(cwd_dup);
+    return cj_proc_build_result(result_vtable, res_size,
+        1, exited, exit_code, signaled, sig, timed_out, out_arr, err_arr,
+        off_launched, off_exited, off_exitcode, off_signaled, off_signal,
+        off_timedout, off_stdout, off_stderr);
+
+fail:
+    if (in_pipe[0]  >= 0) close(in_pipe[0]);
+    if (in_pipe[1]  >= 0) close(in_pipe[1]);
+    if (out_pipe[0] >= 0) close(out_pipe[0]);
+    if (out_pipe[1] >= 0) close(out_pipe[1]);
+    if (err_pipe[0] >= 0) close(err_pipe[0]);
+    if (err_pipe[1] >= 0) close(err_pipe[1]);
+    cj_proc_strarr_free(cargv);
+    cj_proc_strarr_free(cenv_built);
+    free(cwd_dup);
+    return CJ_FAILRES();
+#undef CJ_FAILRES
+}
+#else
+// Windows: CreateProcess-based bridge lands with the Windows runtime port.
+// v1 stub reports launched=false so cajeta callers get a clean result.
+void* __cajeta_proc_run(
+        void* argv_arr, void* cwd_str, void* env_arr, void* stdin_arr,
+        int32_t stdin_len, int32_t capture_flags, int64_t timeout_ms,
+        int64_t str_size, int64_t str_off_bytes, int64_t str_off_len,
+        void* result_vtable, int64_t res_size,
+        int64_t off_launched, int64_t off_exited, int64_t off_exitcode,
+        int64_t off_signaled, int64_t off_signal, int64_t off_timedout,
+        int64_t off_stdout, int64_t off_stderr) {
+    (void) argv_arr; (void) cwd_str; (void) env_arr; (void) stdin_arr;
+    (void) stdin_len; (void) capture_flags; (void) timeout_ms;
+    (void) str_size; (void) str_off_bytes; (void) str_off_len;
+    void* r = __cajeta_alloc((uint64_t) res_size);
+    *(void**)   ((char*) r)                = result_vtable;
+    *(int32_t*) ((char*) r + off_launched) = 0;
+    *(int32_t*) ((char*) r + off_exited)   = 0;
+    *(int32_t*) ((char*) r + off_exitcode) = -1;
+    *(int32_t*) ((char*) r + off_signaled) = 0;
+    *(int32_t*) ((char*) r + off_signal)   = 0;
+    *(int32_t*) ((char*) r + off_timedout) = 0;
+    *(void**)   ((char*) r + off_stdout)   = NULL;
+    *(void**)   ((char*) r + off_stderr)   = NULL;
+    return r;
+}
+#endif  // !_WIN32
+
 // Phase C — stat-touching helpers. POSIX-only.
 //
 // Each helper takes (bytes, length) — the Path's raw int8[] bytes

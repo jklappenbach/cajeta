@@ -5606,6 +5606,110 @@ namespace cajeta {
             }
         }
 
+        // ----- cajeta.process.Command.run() intrinsic (cajeta-process U1) -----
+        //
+        // Lowers `Command.run()` to a single `__cajeta_proc_run` call. The C
+        // bridge does all marshalling and BUILDS the ProcessResult object,
+        // handed (a) the String class's stride + bytes/byteLength offsets so it
+        // can read the argv/env String[] and cwd String, and (b) the
+        // ProcessResult class's vtable + every field offset (DataLayout) so it
+        // can populate the result — mirroring __cajeta_args_make. Command field
+        // ABI: argv@1, cwd@2, env@3, stdinData@4, stdinLen@5, stdioFlags@6,
+        // timeoutMs@7 (see Command.cajeta).
+        if (thisValue && targetClass && targetClass->getQName()) {
+            const std::string procCanonical = targetClass->getQName()->toCanonical();
+            if (procCanonical == "cajeta.process.Command"
+                    && methodCallName == "run" && parameters.empty()) {
+                llvm::Function* runFn =
+                    module->getRuntimeFunction("__cajeta_proc_run");
+                auto* cmdStructTy =
+                    llvm::dyn_cast<llvm::StructType>(targetClass->getLlvmType());
+                auto& cmap = CajetaType::getCanonicalMap();
+                CajetaClassPtr strClass;
+                {
+                    auto it = cmap.find("cajeta.lang.String");
+                    if (it == cmap.end()) it = cmap.find("String");
+                    if (it != cmap.end())
+                        strClass = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                }
+                CajetaClassPtr prClass;
+                {
+                    auto it = cmap.find("cajeta.process.ProcessResult");
+                    if (it == cmap.end()) it = cmap.find("ProcessResult");
+                    if (it != cmap.end())
+                        prClass = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                }
+                auto* strStructTy = strClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(strClass->getLlvmType())
+                    : nullptr;
+                auto* prStructTy = prClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(prClass->getLlvmType())
+                    : nullptr;
+                if (runFn && cmdStructTy && strStructTy && prStructTy) {
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                    auto i64c = [&](uint64_t v) {
+                        return llvm::ConstantInt::get(i64Ty, v);
+                    };
+                    auto loadPtrField = [&](unsigned idx, const char* n) {
+                        llvm::Value* slot = builder->CreateStructGEP(
+                            cmdStructTy, thisValue, idx, n);
+                        return builder->CreateLoad(ptrTy, slot, n);
+                    };
+                    llvm::Value* argvArr = loadPtrField(1, "cmd.argv");
+                    llvm::Value* cwdStr  = loadPtrField(2, "cmd.cwd");
+                    llvm::Value* envArr  = loadPtrField(3, "cmd.env");
+                    llvm::Value* stdinArr = loadPtrField(4, "cmd.stdin");
+                    llvm::Value* stdinLen = builder->CreateLoad(i32Ty,
+                        builder->CreateStructGEP(cmdStructTy, thisValue, 5,
+                            "cmd.stdinLen.slot"), "cmd.stdinLen");
+                    llvm::Value* flags = builder->CreateLoad(i32Ty,
+                        builder->CreateStructGEP(cmdStructTy, thisValue, 6,
+                            "cmd.flags.slot"), "cmd.flags");
+                    llvm::Value* timeout = builder->CreateLoad(i64Ty,
+                        builder->CreateStructGEP(cmdStructTy, thisValue, 7,
+                            "cmd.timeout.slot"), "cmd.timeout");
+
+                    const llvm::DataLayout& dl =
+                        module->getLlvmModule()->getDataLayout();
+                    const llvm::StructLayout* sSl = dl.getStructLayout(strStructTy);
+                    const llvm::StructLayout* pSl = dl.getStructLayout(prStructTy);
+                    // String layout: 0 vtable, 1 bytes, 2 byteLength.
+                    llvm::Value* strSize    = i64c(dl.getTypeAllocSize(strStructTy));
+                    llvm::Value* strOffBytes = i64c(sSl->getElementOffset(1));
+                    llvm::Value* strOffLen   = i64c(sSl->getElementOffset(2));
+                    // ProcessResult layout: 0 vtable, then the 8 ABI fields.
+                    llvm::Value* resSize = i64c(dl.getTypeAllocSize(prStructTy));
+                    llvm::Value* offLaunched = i64c(pSl->getElementOffset(1));
+                    llvm::Value* offExited   = i64c(pSl->getElementOffset(2));
+                    llvm::Value* offExitCode = i64c(pSl->getElementOffset(3));
+                    llvm::Value* offSignaled = i64c(pSl->getElementOffset(4));
+                    llvm::Value* offSignal   = i64c(pSl->getElementOffset(5));
+                    llvm::Value* offTimedOut = i64c(pSl->getElementOffset(6));
+                    llvm::Value* offStdout   = i64c(pSl->getElementOffset(7));
+                    llvm::Value* offStderr   = i64c(pSl->getElementOffset(8));
+
+                    llvm::Constant* prVtable =
+                        llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy));
+                    if (auto* vt = prClass->getVirtualTableGlobal()) {
+                        prVtable = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), vt);
+                    }
+
+                    llvm::Value* result = builder->CreateCall(runFn, {
+                        argvArr, cwdStr, envArr, stdinArr, stdinLen, flags,
+                        timeout, strSize, strOffBytes, strOffLen,
+                        prVtable, resSize, offLaunched, offExited, offExitCode,
+                        offSignaled, offSignal, offTimedOut, offStdout, offStderr
+                    }, "cmd.run");
+                    resolvedType = prClass;
+                    return result;
+                }
+            }
+        }
+
         // ----- TcpStream / TcpListener instance-method intrinsic (NET-1.3 / NET-1.4 / b1) -----
         //
         // Mirrors the File instance lowering above: the cajeta-side bodies are

@@ -1,0 +1,106 @@
+package cajeta.process;
+
+/**
+ * Outcome of a finished subprocess (`cajeta.process.Command.run()`).
+ *
+ * The `__cajeta_proc_run` runtime bridge allocates and populates this
+ * instance directly — it is handed this class's vtable and the byte
+ * offset of every field (computed from LLVM's DataLayout at the call
+ * site, like `__cajeta_args_make` does for `String`), so the field
+ * order below IS the ABI. Do not reorder fields without updating the
+ * intrinsic lowering in `MethodCallExpression.cpp`.
+ *
+ * A non-zero exit is a normal result, not an error: inspect `code()`.
+ * A failure to *launch* the program (e.g. not found) comes back with
+ * `launched() == false` and `code() == -1` — never a throw (spec §8.2).
+ *
+ * ```cajeta
+ * Command cmd = heap Command(argv);
+ * cmd.captureStdout();
+ * ProcessResult r = cmd.run();
+ * if (r.launched() && r.code() == 0) {
+ *     int8[] out = r.stdout();
+ * }
+ * ```
+ */
+public class ProcessResult {
+    // Pinned ABI order (after vtable@0): the bridge writes each by offset.
+    public int32 launchedFlag;
+    public int32 exitedFlag;
+    public int32 exitCodeVal;
+    public int32 signaledFlag;
+    public int32 signalVal;
+    public int32 timedOutFlag;
+    public int8[] outBytes;
+    public int8[] errBytes;
+
+    /**
+     * Default-construct an empty result. The bridge bypasses this ctor
+     * (it writes fields directly), but `run()`'s parser-only stub body
+     * constructs one, so it must exist and type-check.
+     */
+    public ProcessResult() {
+        this.launchedFlag = 0;
+        this.exitedFlag = 0;
+        this.exitCodeVal = -1;
+        this.signaledFlag = 0;
+        this.signalVal = 0;
+        this.timedOutFlag = 0;
+        this.outBytes = null;
+        this.errBytes = null;
+    }
+
+    /** Whether the program was successfully started. */
+    public boolean launched() {
+        return this.launchedFlag != 0;
+    }
+
+    /** Whether the child exited normally (vs. signal-killed). */
+    public boolean exited() {
+        return this.exitedFlag != 0;
+    }
+
+    /** Raw exit code from a normal exit (meaningful when `exited()`). */
+    public int32 exitCode() {
+        return this.exitCodeVal;
+    }
+
+    /** Whether the child was terminated by a signal (POSIX). */
+    public boolean signaled() {
+        return this.signaledFlag != 0;
+    }
+
+    /** Terminating signal number (meaningful when `signaled()`). */
+    public int32 signal() {
+        return this.signalVal;
+    }
+
+    /** Whether the run hit its timeout and the child was killed. */
+    public boolean timedOut() {
+        return this.timedOutFlag != 0;
+    }
+
+    /** Captured stdout bytes (only when stdout capture was requested). */
+    public int8[] stdout() {
+        return this.outBytes;
+    }
+
+    /** Captured stderr bytes (only when stderr capture was requested). */
+    public int8[] stderr() {
+        return this.errBytes;
+    }
+
+    /**
+     * Normalized status: exit code on a normal exit, `128 + signal`
+     * when signal-killed, `-1` when the program never launched.
+     */
+    public int32 code() {
+        if (this.exitedFlag != 0) {
+            return this.exitCodeVal;
+        }
+        if (this.signaledFlag != 0) {
+            return 128 + this.signalVal;
+        }
+        return -1;
+    }
+}
