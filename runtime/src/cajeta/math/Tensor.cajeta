@@ -1696,6 +1696,79 @@ public class Tensor<T> {
         return #result;
     }
 
+    /**
+     * General tensor contraction over the **last `naxes`** of `a` and the **first
+     * `naxes`** of `b` (numpy `tensordot` with an integer `axes`): result shape is
+     * `a.shape[:-naxes] ++ b.shape[naxes:]`, with `out[ia, ib] = Σ_k a[ia, k]*b[k, ib]`
+     * over the shared contracted block `k`. `naxes == 1` over `(m,k)·(k,n)` reproduces
+     * `matmul`. The contracted dims of `a` and `b` must match.
+     */
+    public static #Tensor<E> tensordot<E extends Numeric>(Tensor<E> a, Tensor<E> b, int32 naxes) {
+        int32 ndA = a.ndim();
+        int32 ndB = b.ndim();
+        int32 freeAn = ndA - naxes;
+        int32 freeBn = ndB - naxes;
+        int64 contractN = 1;
+        int64[] cShape = heap int64[naxes];
+        int32 t = 0;
+        while (t < naxes) {
+            int64 dimv = a.shapeAt(freeAn + t);
+            cShape[t] = dimv;
+            contractN = contractN * dimv;
+            t = t + 1;
+        }
+        int32 outNd = freeAn + freeBn;
+        int64[] outShape = heap int64[outNd];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < freeAn) { outShape[w] = a.shapeAt(i); w = w + 1; i = i + 1; }
+        i = 0;
+        while (i < freeBn) { outShape[w] = b.shapeAt(naxes + i); w = w + 1; i = i + 1; }
+        int64 outN = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] oidx = heap int64[outNd];
+        int64[] aIdx = heap int64[ndA];
+        int64[] bIdx = heap int64[ndB];
+        int64[] kIdx = heap int64[naxes];
+        int32 z = 0;
+        while (z < outNd) { oidx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < outN) {
+            int32 d = 0;
+            while (d < freeAn) { aIdx[d] = oidx[d]; d = d + 1; }
+            d = 0;
+            while (d < freeBn) { bIdx[naxes + d] = oidx[freeAn + d]; d = d + 1; }
+            E acc = (E) 0;
+            int32 kz = 0;
+            while (kz < naxes) { kIdx[kz] = 0; kz = kz + 1; }
+            int64 kl = 0;
+            while (kl < contractN) {
+                int32 c = 0;
+                while (c < naxes) { aIdx[freeAn + c] = kIdx[c]; bIdx[c] = kIdx[c]; c = c + 1; }
+                acc = acc + a.getAt(aIdx) * b.getAt(bIdx);
+                kl = kl + 1;
+                int32 ka = naxes - 1;
+                boolean kcarry = true;
+                while (ka >= 0 && kcarry) {
+                    kIdx[ka] = kIdx[ka] + 1;
+                    if (kIdx[ka] >= cShape[ka]) { kIdx[ka] = 0; ka = ka - 1; }
+                    else { kcarry = false; }
+                }
+            }
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = outNd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= outShape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**

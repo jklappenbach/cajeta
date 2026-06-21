@@ -1336,3 +1336,45 @@ TEST(NumpyOpsTests, traceKronPowerMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 6a — tensordot (integer axes): contracts last `naxes` of a with first `naxes` of b.
+// naxes=1 over (m,k)·(k,n) reproduces matmul; (m,k)·(k,) gives matrix-vector.
+TEST(NumpyOpsTests, tensordotMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // (2,3)·(3,2) naxes=1 → (2,2) == matmul → [[58,64],[139,154]]
+        "        int32[] de = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<int32> e = Tensor.of<int32>(de, s23);\n"
+        "        int32[] df = { 7, 8, 9, 10, 11, 12 };\n"
+        "        int64[] s32 = heap int64[2]; s32[0] = 3; s32[1] = 2;\n"
+        "        Tensor<int32> f = Tensor.of<int32>(df, s32);\n"
+        "        Tensor<int32> g = Tensor.tensordot<int32>(e, f, 1);\n"
+        "        if (g.ndim() != 2 || g.shapeAt(0) != 2 || g.shapeAt(1) != 2) { return -1; }\n"
+        "        if (g.get2(0, 0) != 58 || g.get2(0, 1) != 64 || g.get2(1, 0) != 139 || g.get2(1, 1) != 154) { return -2; }\n"
+        // (2,3)·(3,) naxes=1 → (2,) matrix-vector; b=[1,1,1] → [6,15]
+        "        int32[] dv = { 1, 1, 1 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> v = Tensor.of<int32>(dv, s3);\n"
+        "        Tensor<int32> mv = Tensor.tensordot<int32>(e, v, 1);\n"
+        "        if (mv.ndim() != 1 || mv.shapeAt(0) != 2) { return -3; }\n"
+        "        if (mv.get1(0) != 6 || mv.get1(1) != 15) { return -4; }\n"
+        // 3-D · 2-D, naxes=1: (2,2,3)·(3,4) → (2,2,4); spot-check via copy/flatGet
+        "        int32[] d12 = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1 };\n"   // (2,2,3)
+        "        int64[] s223 = heap int64[3]; s223[0] = 2; s223[1] = 2; s223[2] = 3;\n"
+        "        Tensor<int32> a3 = Tensor.of<int32>(d12, s223);\n"
+        "        int32[] dB = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };\n"  // (3,4)
+        "        int64[] s34 = heap int64[2]; s34[0] = 3; s34[1] = 4;\n"
+        "        Tensor<int32> b34 = Tensor.of<int32>(dB, s34);\n"
+        "        Tensor<int32> t3 = Tensor.tensordot<int32>(a3, b34, 1);\n"  // (2,2,4)
+        "        if (t3.ndim() != 3 || t3.shapeAt(0) != 2 || t3.shapeAt(1) != 2 || t3.shapeAt(2) != 4) { return -5; }\n"
+        // row [1,0,0]·b = b row0 = [1,2,3,4]; row [1,1,1]·b = col sums = [15,18,21,24]
+        "        Tensor<int32> t3c = t3.copy();\n"
+        "        if (t3c.flatGet(0) != 1 || t3c.flatGet(3) != 4) { return -6; }\n"          // a3[0,0]=[1,0,0]
+        "        if (t3c.flatGet(12) != 15 || t3c.flatGet(15) != 24) { return -7; }\n"      // a3[1,1]=[1,1,1]
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
