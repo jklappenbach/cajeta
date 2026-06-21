@@ -199,6 +199,101 @@ namespace cajeta {
         return os.str();
     }
 
+    // Collect the bindable @ProtoField fields of T (shared by encode + decode).
+    std::vector<Bind> collectBinds(const CajetaClassPtr& T) {
+        std::vector<Bind> binds;
+        for (auto& prop : T->getPropertyList()) {
+            if (!prop) continue;
+            int number = protoFieldNumber(prop);
+            if (number < 0) continue;
+            auto ty = prop->getType();
+            if (!ty || !ty->getQName()) continue;
+            const std::string canon = ty->getQName()->toCanonical();
+            Decode d = classify(ty, canon);
+            if (d == Decode::Unsupported) continue;
+            binds.push_back({number, prop->getName(), canon, d});
+        }
+        return binds;
+    }
+
+    // Synthesize `toBytes(T value) -> #int8[]` for message T — the encode mirror
+    // of synthesizeMessageParseBody. Field accesses are hoisted to locals before
+    // the writer call (the field-arg-as-method-arg codegen gotcha).
+    std::string synthesizeMessageEncodeBody(const CajetaClassPtr& T) {
+        const std::string Tc = T->getQName()->toCanonical();
+        std::vector<Bind> binds = collectBinds(T);
+        const std::string PW = "dev.cajeta.codec.protobuf.ProtobufWriter";
+        std::ostringstream os;
+        os << "public static #int8[] toBytes(" << Tc << " value) {\n";
+        os << "    " << PW << " w = heap " << PW << "();\n";
+        for (auto& b : binds) {
+            const std::string fv = "f_" + b.name;
+            const std::string tag = "(int32) " + std::to_string(b.number);
+            switch (b.decode) {
+                case Decode::IntVarint:
+                    os << "    int64 " << fv << " = (int64) value." << b.name << ";\n";
+                    os << "    w.writeVarintField(" << tag << ", " << fv << ");\n";
+                    break;
+                case Decode::BoolVarint:
+                    // `if`, not a ternary — `boolean ? intLit : intLit` miscompiles.
+                    os << "    int64 " << fv << " = (int64) 0;\n";
+                    os << "    if (value." << b.name << ") { " << fv << " = (int64) 1; }\n";
+                    os << "    w.writeVarintField(" << tag << ", " << fv << ");\n";
+                    break;
+                case Decode::StringLen:
+                    os << "    cajeta.lang.String " << fv << " = value." << b.name << ";\n";
+                    os << "    if (" << fv << " != null) {\n";
+                    os << "        int8[] sb_" << b.name << " = " << fv << ".bytes;\n";
+                    os << "        w.writeLenField(" << tag << ", sb_" << b.name
+                       << ", (int32) sb_" << b.name << ".count());\n";
+                    os << "    }\n";
+                    break;
+                case Decode::BytesLen:
+                    os << "    int8[] " << fv << " = value." << b.name << ";\n";
+                    os << "    if (" << fv << " != null) {\n";
+                    os << "        w.writeLenField(" << tag << ", " << fv
+                       << ", (int32) " << fv << ".count());\n";
+                    os << "    }\n";
+                    break;
+                case Decode::MessageLen:
+                    os << "    " << b.canon << " " << fv << " = value." << b.name << ";\n";
+                    os << "    if (" << fv << " != null) {\n";
+                    os << "        int8[] mb_" << b.name << " = Protobuf.toBytes<"
+                       << b.canon << ">(" << fv << ");\n";
+                    os << "        w.writeLenField(" << tag << ", mb_" << b.name
+                       << ", (int32) mb_" << b.name << ".count());\n";
+                    os << "    }\n";
+                    break;
+                case Decode::Unsupported:
+                    break;
+            }
+        }
+        os << "    return w.toBytes();\n";
+        os << "}\n";
+        return os.str();
+    }
+
+    // Synthesize `toBytes(E[] values) -> #int8[]` — encode each element and frame
+    // it length-delimited (the stream mirror of synthesizeStreamParseBody).
+    std::string synthesizeStreamEncodeBody(const CajetaClassPtr& E) {
+        const std::string Ec = E->getQName()->toCanonical();
+        const std::string PW = "dev.cajeta.codec.protobuf.ProtobufWriter";
+        std::ostringstream os;
+        os << "public static #int8[] toBytes(" << Ec << "[] values) {\n";
+        os << "    " << PW << " w = heap " << PW << "();\n";
+        os << "    int32 n = (int32) values.count();\n";
+        os << "    int32 i = 0;\n";
+        os << "    while (i < n) {\n";
+        os << "        " << Ec << " ev = values[i];\n";
+        os << "        int8[] mb = Protobuf.toBytes<" << Ec << ">(ev);\n";
+        os << "        w.writeDelimited(mb, (int32) mb.count());\n";
+        os << "        i = i + 1;\n";
+        os << "    }\n";
+        os << "    return w.toBytes();\n";
+        os << "}\n";
+        return os.str();
+    }
+
     } // namespace
 
     bool synthesizeProtobufMethodSource(
@@ -212,30 +307,39 @@ namespace cajeta {
                 != "dev.cajeta.codec.protobuf.Protobuf") {
             return false;
         }
-        if (methodName != "parse") return false;
         if (args.size() != 1) return false;
-        if (paramTypes.size() != 2
-                || paramCanonAt(paramTypes, 0) != "int8[]"
-                || paramCanonAt(paramTypes, 1) != "int64") {
-            return false;
+        const bool isParse = (methodName == "parse");
+        const bool isEncode = (methodName == "toBytes");
+        if (!isParse && !isEncode) return false;
+        // parse(int8[], int64); toBytes(T) — one value param matching args[0].
+        if (isParse) {
+            if (paramTypes.size() != 2
+                    || paramCanonAt(paramTypes, 0) != "int8[]"
+                    || paramCanonAt(paramTypes, 1) != "int64") {
+                return false;
+            }
+        } else {
+            if (paramTypes.size() != 1) return false;
         }
-        // T[] (array) → length-delimited stream of T; T (class) → one message.
+        // T[] (array) → length-delimited stream; T (class) → one message.
         std::string label;
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(args[0])) {
             auto E = std::dynamic_pointer_cast<CajetaClass>(arr->getElementType());
             if (!E || !E->getQName()) return false;
-            out = synthesizeStreamParseBody(E);
+            out = isParse ? synthesizeStreamParseBody(E)
+                          : synthesizeStreamEncodeBody(E);
             label = E->getQName()->toCanonical() + "[]";
         } else {
             auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
             if (!T || !T->getQName()) return false;
-            out = synthesizeMessageParseBody(T);
+            out = isParse ? synthesizeMessageParseBody(T)
+                          : synthesizeMessageEncodeBody(T);
             label = T->getQName()->toCanonical();
         }
         if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
             if (dump[0] == '1') {
-                std::cerr << "[ProtobufSynthesizer] parse<" << label << ">:\n"
-                          << out << "\n";
+                std::cerr << "[ProtobufSynthesizer] " << methodName << "<"
+                          << label << ">:\n" << out << "\n";
             }
         }
         return true;
