@@ -1,0 +1,8 @@
+# Build every Rust competitor for the host CPU (AVX2/AVX-512/FMA on this
+# machine), matching the C++ side's `-march=native` and the Cajeta side's
+# `--cpu=native`. Cargo discovers this config by walking up from each
+# rust/<area>/ project dir, so it applies to all ten without per-project files.
+# Without it, cargo's release build targets baseline x86-64 (SSE2) — the same
+# generic handicap the Cajeta side used to have.
+[build]
+rustflags = ["-C", "target-cpu=native"]

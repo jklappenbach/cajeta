@@ -5,6 +5,19 @@
 use md5::Digest as _;
 use sha2::Digest as _;
 use std::time::Instant;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU64, Ordering as _Ord};
+static _ALLOCED: AtomicU64 = AtomicU64::new(0);
+static _LAST: AtomicU64 = AtomicU64::new(0);
+struct _Counting;
+unsafe impl GlobalAlloc for _Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 { _ALLOCED.fetch_add(l.size() as u64, _Ord::Relaxed); System.alloc(l) }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) { System.dealloc(p, l) }
+}
+#[global_allocator]
+static _GA: _Counting = _Counting;
+fn _alloc_of<F: FnOnce()>(run: F) { _ALLOCED.store(0, _Ord::Relaxed); run(); _LAST.store(_ALLOCED.load(_Ord::Relaxed), _Ord::Relaxed); }
+fn _la() -> u64 { _LAST.load(_Ord::Relaxed) }
 
 const N: usize = 1_048_576;
 const SHA256_REF: &str = "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83";
@@ -31,6 +44,7 @@ fn bench<F: FnMut() -> u64>(buf: &[u8], warmup: usize, trials: usize, mut f: F) 
         std::hint::black_box(last);
     }
     let _ = buf;
+    _alloc_of(|| { let _ = f(); });
     (s, last)
 }
 
@@ -44,12 +58,12 @@ fn emit(run_id: &str, ts: &str, bench: &str, lib: &str, ver: &str, warmup: usize
     let mbps = if med > 0 { N as f64 / med as f64 * 1e9 / 1_048_576.0 } else { 0.0 };
     let status = if check_ok { "ok" } else { "invalid" };
     println!(
-        "1,{run_id},{ts},{bench},hash,,{N},,{N},rust,{ver_lang},{lib},{ver},-O3 lto,{warmup},{trials},\
-{mn},{med},{mean},{p95},{mbps:.1},MB/s,{rss},-1,-1,-1,-1,{status},{check},,",
+        "1,{run_id},{ts},{bench},hash,,{N},,{N},rust,{ver_lang},{lib},{ver},-O3 lto target-cpu=native,{warmup},{trials},\
+{mn},{med},{mean},{p95},{mbps:.1},MB/s,{rss},-1,{alloc},-1,-1,{status},{check},,",
         run_id = run_id, ts = ts, bench = bench, N = N,
         ver_lang = env("PROFILE_LANG_VERSION", ""), lib = lib, ver = ver,
         warmup = warmup, trials = trials, mn = mn, med = med, mean = mean, p95 = p95,
-        mbps = mbps, rss = peak_rss_kb(), status = status, check = check_ok);
+        mbps = mbps, rss = peak_rss_kb(), alloc = _la(), status = status, check = check_ok);
 }
 
 fn main() {

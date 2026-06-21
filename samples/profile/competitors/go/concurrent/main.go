@@ -7,6 +7,7 @@
 package main
 
 import (
+	"runtime"
 	"fmt"
 	"os"
 	"sort"
@@ -76,9 +77,9 @@ func emit(runID, ts, bench, lib string, input, warmup, trials int, samples []int
 		status = "invalid"
 	}
 	fmt.Printf(
-		"1,%s,%s,%s,concurrent,,%d,,%d,go,%s,%s,stdlib,-gcflags,%d,%d,%d,%d,%d,%d,%.3f,Mop/s,%d,-1,-1,-1,-1,%s,%t,,\n",
+		"1,%s,%s,%s,concurrent,,%d,,%d,go,%s,%s,stdlib,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.3f,Mop/s,%d,-1,%d,-1,-1,%s,%t,,\n",
 		runID, ts, bench, input, input, env("PROFILE_LANG_VERSION", ""), lib,
-		warmup, trials, mn, med, mean, p95, mops, peakRSSKb(), status, ok)
+		warmup, trials, mn, med, mean, p95, mops, peakRSSKb(), gAlloc, status, ok)
 }
 
 func benchI64(warmup, trials int, f func() int64, check func(int64) bool) ([]int64, bool) {
@@ -93,7 +94,18 @@ func benchI64(warmup, trials int, f func() int64, check func(int64) bool) ([]int
 		samples = append(samples, time.Since(t0).Nanoseconds())
 		ok = check(r)
 	}
+	measAlloc(func() { f() })
 	return samples, ok
+}
+
+var gAlloc uint64
+
+func measAlloc(run func()) {
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	run()
+	runtime.ReadMemStats(&b)
+	gAlloc = b.TotalAlloc - a.TotalAlloc
 }
 
 func main() {

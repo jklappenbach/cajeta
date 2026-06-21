@@ -107,21 +107,23 @@ TEST(FlavorTests, missingBaseInCustomErrors) {
 
 // ─── Phase 8: property vocabulary + load-time validation ──────────
 
-TEST(FlavorTests, vocabularyHasAllThirteenKeys) {
+TEST(FlavorTests, vocabularyHasAllFourteenKeys) {
     using cajeta::buildtool::flavorPropertyVocab;
     const auto& v = flavorPropertyVocab();
-    EXPECT_EQ(v.size(), 13u);
-    // Spot-check a key from each major group: optimization,
+    EXPECT_EQ(v.size(), 14u);
+    // Spot-check a key from each major group: optimization, target,
     // safety, sanitizer, instrumentation.
-    bool sawOpt = false, sawBoundsCheck = false, sawAsan = false,
-         sawSourceTags = false;
+    bool sawOpt = false, sawCpu = false, sawBoundsCheck = false,
+         sawAsan = false, sawSourceTags = false;
     for (const auto& s : v) {
         if (s.key == "opt") sawOpt = true;
+        if (s.key == "cpu") sawCpu = true;
         if (s.key == "bounds-check") sawBoundsCheck = true;
         if (s.key == "asan") sawAsan = true;
         if (s.key == "source-tags") sawSourceTags = true;
     }
     EXPECT_TRUE(sawOpt);
+    EXPECT_TRUE(sawCpu);
     EXPECT_TRUE(sawBoundsCheck);
     EXPECT_TRUE(sawAsan);
     EXPECT_TRUE(sawSourceTags);

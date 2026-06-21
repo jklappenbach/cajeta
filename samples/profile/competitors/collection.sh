@@ -17,7 +17,7 @@ set -uo pipefail
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
 VENDOR="${DIR}/vendor"
-LANGS="${PROFILE_LANGS:-rust cpp go python}"
+LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 
 skip_lang() {
@@ -67,7 +67,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/collection" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-coll-go.log ) \
+        ( cd "$DIR/go/collection" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-coll-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-coll-go.log)"
     else
         skip_lang go go "go not installed"
@@ -83,5 +83,23 @@ if want python; then
             || skip_lang python python "python collection runner crashed"
     else
         skip_lang python python "python3 not installed"
+    fi
+fi
+
+# ---- java: java.util.HashMap / HashSet / ArrayList (JDK stdlib) ----
+if want java; then
+    if command -v javac >/dev/null 2>&1; then
+        OUT="$BUILD/java-collection"; SRC="$DIR/java/collection/CollectionBench.java"
+        if [[ ! -f "$OUT/CollectionBench.class" || "$SRC" -nt "$OUT/CollectionBench.class" ]]; then
+            mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-collection-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/CollectionBench.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" java -cp "$OUT" CollectionBench \
+                || skip_lang java java "java collection runner crashed"
+        else
+            skip_lang java java "javac build failed (see /tmp/profile-collection-java.log)"
+        fi
+    else
+        skip_lang java java "javac not installed"
     fi
 fi

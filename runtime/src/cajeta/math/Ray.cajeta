@@ -1,0 +1,49 @@
+package cajeta.math;
+
+/**
+ * Ray — a half-line `origin + t * direction` for `t >= 0`, the parametric query
+ * primitive shared by picking, culling, and the software ray-query paths
+ * (cajeta-gfx plan §1). A value type over the builtin `Vector<float32,3>`:
+ * stack-allocated by default, no heap, no drop chain — same model as
+ * {@link cajeta.lang.Optional}.
+ *
+ * `direction` is stored as-given; intersection helpers that assume a unit
+ * direction (e.g. {@link cajeta.math.Sphere#intersectsRay}) document that
+ * requirement. Construct one with `stack Ray(origin, direction)`.
+ *
+ * ```cajeta
+ * Vector<float32,3> o = stack Vector<float32,3>(0.0f, 0.0f, 0.0f);
+ * Vector<float32,3> d = stack Vector<float32,3>(0.0f, 0.0f, 1.0f);
+ * Ray r = stack Ray(o, d);
+ * Vector<float32,3> p = r.at(5.0f);   // (0, 0, 5)
+ * ```
+ */
+@ValueType public final class Ray {
+    public Vector<float32,3> origin;
+    public Vector<float32,3> direction;
+
+    public Ray(Vector<float32,3> origin, Vector<float32,3> direction) {
+        this.origin = origin;
+        this.direction = direction;
+    }
+
+    /** The ray's start point. */
+    public Vector<float32,3> origin() {
+        return this.origin;
+    }
+
+    /** The ray's direction (stored as given; not auto-normalized). */
+    public Vector<float32,3> direction() {
+        return this.direction;
+    }
+
+    /** The point `origin + t * direction`. */
+    public Vector<float32,3> at(float32 t) {
+        // One Vector operator per expression: a COMPOUND Vector expression
+        // (e.g. `origin + direction * t` in a single statement) crashes host
+        // codegen today (cajeta-gfx §1 finding); splitting into single-operator
+        // steps with an intermediate local is the supported path.
+        Vector<float32,3> scaled = this.direction * t;
+        return this.origin + scaled;
+    }
+}

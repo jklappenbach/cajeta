@@ -1216,10 +1216,20 @@ namespace cajeta {
         llvm::Type* opType = op->getType();
         if (opType->getTypeID() == llvm::Type::StructTyID) {
             return STRUCT_TYPE_ID;
-        } else {
-            CajetaTypePtr ptr = llvmTypeIdMap[op->getType()->getTypeID()];
-            return llvmTypeIdMap[opType->getTypeID()]->typeFlags;
         }
+        // Vector value types (Vector<T,N> -> <N x T>): key on the ELEMENT type —
+        // per-lane arithmetic follows the element's signedness/width. Without
+        // this, llvmTypeIdMap has no entry for the vector type id and operator[]
+        // default-inserts a null CajetaTypePtr, so `->typeFlags` null-derefs.
+        // That was the crash behind chained / reassigned Vector codegen
+        // (e.g. `v = v + v`, the xxhash3 accumulate). getScalarType() returns the
+        // element type for vectors and the type itself for scalars.
+        opType = opType->getScalarType();
+        auto it = llvmTypeIdMap.find(opType->getTypeID());
+        if (it == llvmTypeIdMap.end() || !it->second) {
+            return STRUCT_TYPE_ID; // safe fallback for any otherwise-unmapped type
+        }
+        return it->second->typeFlags;
     }
 
     llvm::Value* CajetaType::normalize(llvm::Value* op, CajetaModulePtr module) {

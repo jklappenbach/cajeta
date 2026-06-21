@@ -1,0 +1,119 @@
+package cajeta.process;
+
+import cajeta.lang.String;
+
+/**
+ * A subprocess command: a program + args, optional working directory,
+ * environment, stdin bytes, capture/timeout settings — run to completion
+ * with `run()` (one-shot). Streaming `spawn()` lands in a later unit.
+ *
+ * Construction performs no OS work; `run()` is what touches the OS. A
+ * `Command` may be run more than once.
+ *
+ * The field order below IS the ABI the `run()` intrinsic lowering reads
+ * (`MethodCallExpression.cpp`): argv@1, cwd@2, env@3, stdinData@4,
+ * stdinLen@5, stdioFlags@6, timeoutMs@7. Do not reorder.
+ *
+ * ```cajeta
+ * String[] argv = heap String[2];
+ * argv[0] = "/bin/echo";
+ * argv[1] = "hello";
+ * Command cmd = heap Command(argv);
+ * cmd.captureStdout();
+ * ProcessResult r = cmd.run();
+ * ```
+ */
+public class Command {
+    public String[] argv;
+    public String cwd;
+    public String[] env;
+    public int8[] stdinData;
+    public int32 stdinLen;
+    public int32 stdioFlags;
+    public int64 timeoutMs;
+
+    /**
+     * Build a command from a non-empty `argv` (argv[0] is the program,
+     * resolved against PATH). Ownership of `argv` moves into the command.
+     * An empty `argv` is tolerated and surfaces as a launch failure
+     * (`launched() == false`) at `run()` time.
+     */
+    public Command(#String[] argv) {
+        this.argv = argv;
+        this.cwd = null;
+        this.env = null;
+        this.stdinData = null;
+        this.stdinLen = 0;
+        this.stdioFlags = 0;
+        this.timeoutMs = 0;
+    }
+
+    /** Run the child in `dir` instead of inheriting the parent's cwd. */
+    public void workingDir(#String dir) {
+        this.cwd = dir;
+    }
+
+    /**
+     * Replace the child's environment with `entries` ("KEY=VALUE"
+     * strings). Without this call the child inherits the parent's env.
+     */
+    public void environment(#String[] entries) {
+        this.env = entries;
+    }
+
+    /** Feed `data[0..len)` to the child's stdin (read to completion). */
+    public void stdinBytes(#int8[] data, int32 len) {
+        this.stdinData = data;
+        this.stdinLen = len;
+    }
+
+    /** Capture the child's stdout into the result. */
+    public void captureStdout() {
+        this.stdioFlags = this.stdioFlags | 1;
+    }
+
+    /** Capture the child's stderr into the result. */
+    public void captureStderr() {
+        this.stdioFlags = this.stdioFlags | 2;
+    }
+
+    /** Kill the child and flag `timedOut` if it runs past `ms`. */
+    public void timeoutMillis(int64 ms) {
+        this.timeoutMs = ms;
+    }
+
+    /** Wire the child's stdin to a pipe (for streaming `spawn()`). */
+    public void pipeStdin() {
+        this.stdioFlags = this.stdioFlags | 8;
+    }
+
+    /** Wire the child's stdout to a pipe (for streaming `spawn()`). */
+    public void pipeStdout() {
+        this.stdioFlags = this.stdioFlags | 16;
+    }
+
+    /** Wire the child's stderr to a pipe (for streaming `spawn()`). */
+    public void pipeStderr() {
+        this.stdioFlags = this.stdioFlags | 32;
+    }
+
+    /**
+     * Spawn the child, perform the configured stdio, wait for exit, and
+     * return the result. Intrinsic-lowered to `__cajeta_proc_run`
+     * (`MethodCallExpression.cpp`); this stub body exists only for the
+     * parser/typechecker.
+     */
+    public #ProcessResult run() {
+        return heap ProcessResult();
+    }
+
+    /**
+     * Spawn the child without waiting and return a `Process` handle exposing
+     * its piped stdio plus wait/kill/pid. (Named `start()` rather than
+     * `spawn()` because `spawn` is a reserved fiber keyword.) Intrinsic-lowered
+     * to `__cajeta_proc_spawn`; this stub body exists only for the parser.
+     */
+    public #Process start() {
+        return heap Process();
+    }
+}

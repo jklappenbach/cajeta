@@ -8,6 +8,7 @@
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <filesystem>
 #include <set>
 #include <string>
 
@@ -439,6 +440,12 @@ namespace cajeta::buildtool {
                 buf.getError().message());
         }
         return loadManifestString((*buf)->getBuffer().str(), path);
+    }
+
+    std::string projectRootFromManifest(const Manifest& m) {
+        if (m.sourcePath.empty()) return ".";
+        auto parent = std::filesystem::path(m.sourcePath).parent_path();
+        return parent.empty() ? "." : parent.string();
     }
 
 } // namespace cajeta::buildtool

@@ -224,6 +224,11 @@ namespace cajeta {
 
         llvm::AllocaInst* getScopeWatermark() const { return scopeWatermark; }
 
+        // SIMD plan Phase 0.6: true iff the body lexically contains a
+        // spawn/detach/scope and therefore needs the per-method scope frame.
+        // Spawn-free bodies elide it (the frame heap-allocs + churns per call).
+        bool bodyNeedsScopeFrame();
+
         const vector<QualifiedNamePtr>& getThrowsList() const { return throwsList; }
         void setThrowsList(vector<QualifiedNamePtr> list) { throwsList = std::move(list); }
 

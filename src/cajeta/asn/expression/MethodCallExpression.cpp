@@ -2518,6 +2518,24 @@ namespace cajeta {
                     ld->setAlignment(llvm::Align(1));
                     return ld;
                 }
+                // storeU64(int8[] buf, int64 off, int64 val): the write dual of
+                // loadU64 — unaligned little-endian 64-bit store at byte offset
+                // `off`. Used to materialize i64 constant tables (e.g. XXH3's
+                // 192-byte secret) into a byte buffer. Caller keeps off in
+                // [0, count-8].
+                if (ns == "Cajeta" && methodCallName == "storeU64" && parameters.size() == 3) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    llvm::Value* hdr = loadValue(0);
+                    llvm::Value* off = loadValue(1);
+                    llvm::Value* val = loadValue(2);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "buf_data");
+                    llvm::Value* eltPtr = builder->CreateGEP(
+                        i8Ty, data, off, "buf_word_ptr");
+                    llvm::StoreInst* st = builder->CreateStore(val, eltPtr);
+                    st->setAlignment(llvm::Align(1));
+                    return st;
+                }
                 // ctz64(int64 x): count trailing zero bits, 0..64 (x==0 -> 64).
                 // Maps to @llvm.cttz.i64; result truncated to int32.
                 if (ns == "Cajeta" && methodCallName == "ctz64" && parameters.size() == 1) {
@@ -2546,6 +2564,60 @@ namespace cajeta {
                     llvm::LoadInst* ld = builder->CreateLoad(v16, ptr, "vload16");
                     ld->setAlignment(llvm::Align(1));
                     return ld;
+                }
+                // --- Wide SIMD primitives (Vector<int64,8> = 512-bit / AVX-512) --
+                // The XXH3 bulk-hash path lives on these: a 64-byte stripe is 8
+                // i64 lanes, the accumulate is `acc += swapPairs(data); acc +=
+                // (key&0xffffffff)*(key>>32)`, and the final merge reads lanes.
+                // vload8i64(int8[] buf, int64 off) -> Vector<int64,8>: unaligned
+                // 64-byte load as 8 i64 lanes (one stripe / one secret window).
+                if (ns == "Cajeta" && methodCallName == "vload8i64" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* v8 = llvm::FixedVectorType::get(builder->getInt64Ty(), 8);
+                    llvm::Value* hdr = loadValue(0);
+                    llvm::Value* off = loadValue(1);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "buf_data");
+                    llvm::Value* ptr = builder->CreateGEP(i8Ty, data, off, "v8_blk_ptr");
+                    llvm::LoadInst* ld = builder->CreateLoad(v8, ptr, "vload8i64");
+                    ld->setAlignment(llvm::Align(1));
+                    resolvedType = CajetaVector::validateAndCreate(
+                        module, CajetaType::of("int64"), 8);
+                    return ld;
+                }
+                // vstore8i64(Vector<int64,8> v, int8[] buf, int64 off): the dual of
+                // vload8i64 — unaligned 64-byte store of 8 i64 lanes (used to
+                // materialize the seeded secret + the accumulators for merge).
+                if (ns == "Cajeta" && methodCallName == "vstore8i64" && parameters.size() == 3) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    llvm::Value* vec = loadValue(0);
+                    llvm::Value* hdr = loadValue(1);
+                    llvm::Value* off = loadValue(2);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "buf_data");
+                    llvm::Value* ptr = builder->CreateGEP(i8Ty, data, off, "v8_st_ptr");
+                    llvm::StoreInst* st = builder->CreateStore(vec, ptr);
+                    st->setAlignment(llvm::Align(1));
+                    return st;
+                }
+                // vswapPairs(Vector<int64,8> v) -> Vector<int64,8>: swap adjacent
+                // lanes (0<->1, 2<->3, 4<->5, 6<->7) — XXH3's `acc[lane^1]` swap.
+                if (ns == "Cajeta" && methodCallName == "vswapPairs" && parameters.size() == 1) {
+                    llvm::Value* vec = loadValue(0);
+                    int maskArr[8] = {1, 0, 3, 2, 5, 4, 7, 6};
+                    llvm::SmallVector<int, 8> mask(maskArr, maskArr + 8);
+                    llvm::Value* sw = builder->CreateShuffleVector(vec, vec, mask, "vswapPairs");
+                    resolvedType = CajetaVector::validateAndCreate(
+                        module, CajetaType::of("int64"), 8);
+                    return sw;
+                }
+                // vlane(Vector<int64,8> v, int32 i) -> int64: extract lane i
+                // (the final mergeAccs reads the eight accumulators pairwise).
+                if (ns == "Cajeta" && methodCallName == "vlane" && parameters.size() == 2) {
+                    llvm::Value* vec = loadValue(0);
+                    llvm::Value* idx = loadValue(1);
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateExtractElement(vec, idx, "vlane");
                 }
                 // popcount64(int64 x) -> int32: set-bit count via @llvm.ctpop.i64.
                 // Counts bits in a SIMD mask (e.g. structural/quote/scalar masks).
@@ -5606,6 +5678,288 @@ namespace cajeta {
                         if (fn) {
                             llvm::Value* fd = loadFd();
                             builder->CreateCall(fn, {fd});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ----- cajeta.process.Command.run() intrinsic (cajeta-process U1) -----
+        //
+        // Lowers `Command.run()` to a single `__cajeta_proc_run` call. The C
+        // bridge does all marshalling and BUILDS the ProcessResult object,
+        // handed (a) the String class's stride + bytes/byteLength offsets so it
+        // can read the argv/env String[] and cwd String, and (b) the
+        // ProcessResult class's vtable + every field offset (DataLayout) so it
+        // can populate the result — mirroring __cajeta_args_make. Command field
+        // ABI: argv@1, cwd@2, env@3, stdinData@4, stdinLen@5, stdioFlags@6,
+        // timeoutMs@7 (see Command.cajeta).
+        if (thisValue && targetClass && targetClass->getQName()) {
+            const std::string procCanonical = targetClass->getQName()->toCanonical();
+            if (procCanonical == "cajeta.process.Command"
+                    && methodCallName == "run" && parameters.empty()) {
+                llvm::Function* runFn =
+                    module->getRuntimeFunction("__cajeta_proc_run");
+                auto* cmdStructTy =
+                    llvm::dyn_cast<llvm::StructType>(targetClass->getLlvmType());
+                auto& cmap = CajetaType::getCanonicalMap();
+                CajetaClassPtr strClass;
+                {
+                    auto it = cmap.find("cajeta.lang.String");
+                    if (it == cmap.end()) it = cmap.find("String");
+                    if (it != cmap.end())
+                        strClass = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                }
+                CajetaClassPtr prClass;
+                {
+                    auto it = cmap.find("cajeta.process.ProcessResult");
+                    if (it == cmap.end()) it = cmap.find("ProcessResult");
+                    if (it != cmap.end())
+                        prClass = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                }
+                auto* strStructTy = strClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(strClass->getLlvmType())
+                    : nullptr;
+                auto* prStructTy = prClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(prClass->getLlvmType())
+                    : nullptr;
+                if (runFn && cmdStructTy && strStructTy && prStructTy) {
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                    auto i64c = [&](uint64_t v) {
+                        return llvm::ConstantInt::get(i64Ty, v);
+                    };
+                    auto loadPtrField = [&](unsigned idx, const char* n) {
+                        llvm::Value* slot = builder->CreateStructGEP(
+                            cmdStructTy, thisValue, idx, n);
+                        return builder->CreateLoad(ptrTy, slot, n);
+                    };
+                    llvm::Value* argvArr = loadPtrField(1, "cmd.argv");
+                    llvm::Value* cwdStr  = loadPtrField(2, "cmd.cwd");
+                    llvm::Value* envArr  = loadPtrField(3, "cmd.env");
+                    llvm::Value* stdinArr = loadPtrField(4, "cmd.stdin");
+                    llvm::Value* stdinLen = builder->CreateLoad(i32Ty,
+                        builder->CreateStructGEP(cmdStructTy, thisValue, 5,
+                            "cmd.stdinLen.slot"), "cmd.stdinLen");
+                    llvm::Value* flags = builder->CreateLoad(i32Ty,
+                        builder->CreateStructGEP(cmdStructTy, thisValue, 6,
+                            "cmd.flags.slot"), "cmd.flags");
+                    llvm::Value* timeout = builder->CreateLoad(i64Ty,
+                        builder->CreateStructGEP(cmdStructTy, thisValue, 7,
+                            "cmd.timeout.slot"), "cmd.timeout");
+
+                    const llvm::DataLayout& dl =
+                        module->getLlvmModule()->getDataLayout();
+                    const llvm::StructLayout* sSl = dl.getStructLayout(strStructTy);
+                    const llvm::StructLayout* pSl = dl.getStructLayout(prStructTy);
+                    // String layout: 0 vtable, 1 bytes, 2 byteLength.
+                    llvm::Value* strSize    = i64c(dl.getTypeAllocSize(strStructTy));
+                    llvm::Value* strOffBytes = i64c(sSl->getElementOffset(1));
+                    llvm::Value* strOffLen   = i64c(sSl->getElementOffset(2));
+                    // ProcessResult layout: 0 vtable, then the 8 ABI fields.
+                    llvm::Value* resSize = i64c(dl.getTypeAllocSize(prStructTy));
+                    llvm::Value* offLaunched = i64c(pSl->getElementOffset(1));
+                    llvm::Value* offExited   = i64c(pSl->getElementOffset(2));
+                    llvm::Value* offExitCode = i64c(pSl->getElementOffset(3));
+                    llvm::Value* offSignaled = i64c(pSl->getElementOffset(4));
+                    llvm::Value* offSignal   = i64c(pSl->getElementOffset(5));
+                    llvm::Value* offTimedOut = i64c(pSl->getElementOffset(6));
+                    llvm::Value* offStdout   = i64c(pSl->getElementOffset(7));
+                    llvm::Value* offStderr   = i64c(pSl->getElementOffset(8));
+
+                    llvm::Constant* prVtable =
+                        llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy));
+                    if (auto* vt = prClass->getVirtualTableGlobal()) {
+                        prVtable = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), vt);
+                    }
+
+                    llvm::Value* result = builder->CreateCall(runFn, {
+                        argvArr, cwdStr, envArr, stdinArr, stdinLen, flags,
+                        timeout, strSize, strOffBytes, strOffLen,
+                        prVtable, resSize, offLaunched, offExited, offExitCode,
+                        offSignaled, offSignal, offTimedOut, offStdout, offStderr
+                    }, "cmd.run");
+                    resolvedType = prClass;
+                    return result;
+                }
+            }
+        }
+
+        // ----- cajeta.process streaming: Command.spawn() + Process.* (U2) -----
+        //
+        // spawn() mirrors run(): the C bridge builds the Process object (handle
+        // as int64 + the three pipe fds). Process.waitFor()/waitMillis() build a
+        // ProcessResult; kill()/pid()/close() operate on the handle. The pipe
+        // accessors (stdin/stdout/stderr) are plain cajeta (heap FileReader/
+        // FileWriter over the stored fds), so they are NOT intercepted here.
+        if (thisValue && targetClass && targetClass->getQName()) {
+            const std::string pc = targetClass->getQName()->toCanonical();
+            const bool isCmd2  = pc == "cajeta.process.Command";
+            const bool isProc2 = pc == "cajeta.process.Process";
+            const bool wantSpawn = isCmd2 && methodCallName == "start"
+                                   && parameters.empty();
+            const bool wantWaitFor = isProc2 && methodCallName == "waitFor"
+                                     && parameters.empty();
+            const bool wantWaitMs = isProc2 && methodCallName == "waitMillis"
+                                    && parameters.size() == 1;
+            const bool wantKill = isProc2 && methodCallName == "kill"
+                                  && parameters.empty();
+            const bool wantPid = isProc2 && methodCallName == "pid"
+                                 && parameters.empty();
+            const bool wantClose = isProc2 && methodCallName == "close"
+                                   && parameters.empty();
+            if (wantSpawn || wantWaitFor || wantWaitMs || wantKill || wantPid
+                    || wantClose) {
+                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                auto i64c = [&](uint64_t v) {
+                    return llvm::ConstantInt::get(i64Ty, v);
+                };
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto findClass = [&](const char* canon,
+                                     const char* shortName) -> CajetaClassPtr {
+                    auto it = cmap.find(canon);
+                    if (it == cmap.end()) it = cmap.find(shortName);
+                    return it != cmap.end()
+                        ? std::dynamic_pointer_cast<CajetaClass>(it->second)
+                        : nullptr;
+                };
+                CajetaClassPtr strClass = findClass("cajeta.lang.String", "String");
+                CajetaClassPtr prClass =
+                    findClass("cajeta.process.ProcessResult", "ProcessResult");
+                CajetaClassPtr procClass =
+                    findClass("cajeta.process.Process", "Process");
+                auto* strStructTy = strClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(strClass->getLlvmType())
+                    : nullptr;
+                auto* prStructTy = prClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(prClass->getLlvmType())
+                    : nullptr;
+                auto* procStructTy = procClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(procClass->getLlvmType())
+                    : nullptr;
+                auto* recvStructTy =
+                    llvm::dyn_cast<llvm::StructType>(targetClass->getLlvmType());
+                const llvm::DataLayout& dl =
+                    module->getLlvmModule()->getDataLayout();
+
+                // ProcessResult layout args (shared by waitFor/waitMillis).
+                auto prLayoutArgs = [&](std::vector<llvm::Value*>& args) {
+                    const llvm::StructLayout* pSl = dl.getStructLayout(prStructTy);
+                    llvm::Constant* prVtable = llvm::ConstantPointerNull::get(
+                        llvm::cast<llvm::PointerType>(ptrTy));
+                    if (auto* vt = prClass->getVirtualTableGlobal())
+                        prVtable = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), vt);
+                    args.push_back(prVtable);
+                    args.push_back(i64c(dl.getTypeAllocSize(prStructTy)));
+                    for (unsigned i = 1; i <= 8; i++)
+                        args.push_back(i64c(pSl->getElementOffset(i)));
+                };
+
+                if (wantSpawn && recvStructTy && strStructTy && procStructTy) {
+                    llvm::Function* fn =
+                        module->getRuntimeFunction("__cajeta_proc_spawn");
+                    if (fn) {
+                        auto loadPtr = [&](unsigned idx, const char* n) {
+                            return builder->CreateLoad(ptrTy,
+                                builder->CreateStructGEP(recvStructTy, thisValue,
+                                    idx, n), n);
+                        };
+                        llvm::Value* argvArr = loadPtr(1, "cmd.argv");
+                        llvm::Value* cwdStr  = loadPtr(2, "cmd.cwd");
+                        llvm::Value* envArr  = loadPtr(3, "cmd.env");
+                        llvm::Value* flags = builder->CreateLoad(i32Ty,
+                            builder->CreateStructGEP(recvStructTy, thisValue, 6,
+                                "cmd.flags.slot"), "cmd.flags");
+                        const llvm::StructLayout* sSl =
+                            dl.getStructLayout(strStructTy);
+                        const llvm::StructLayout* pcSl =
+                            dl.getStructLayout(procStructTy);
+                        llvm::Constant* procVtable =
+                            llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(ptrTy));
+                        if (auto* vt = procClass->getVirtualTableGlobal())
+                            procVtable = CajetaModule::ensureGlobalInModule(
+                                module->getLlvmModule(), vt);
+                        llvm::Value* result = builder->CreateCall(fn, {
+                            argvArr, cwdStr, envArr, flags,
+                            i64c(dl.getTypeAllocSize(strStructTy)),
+                            i64c(sSl->getElementOffset(1)),
+                            i64c(sSl->getElementOffset(2)),
+                            procVtable, i64c(dl.getTypeAllocSize(procStructTy)),
+                            i64c(pcSl->getElementOffset(1)),   // handleVal
+                            i64c(pcSl->getElementOffset(2)),   // stdinFd
+                            i64c(pcSl->getElementOffset(3)),   // stdoutFd
+                            i64c(pcSl->getElementOffset(4))    // stderrFd
+                        }, "cmd.spawn");
+                        resolvedType = procClass;
+                        return result;
+                    }
+                }
+
+                // Process.* — load the int64 handle from field 1.
+                if (isProc2 && recvStructTy) {
+                    auto loadHandle = [&]() {
+                        return builder->CreateLoad(i64Ty,
+                            builder->CreateStructGEP(recvStructTy, thisValue, 1,
+                                "proc.handle.slot"), "proc.handle");
+                    };
+                    if ((wantWaitFor || wantWaitMs) && prStructTy) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_proc_wait");
+                        if (fn) {
+                            llvm::Value* handle = loadHandle();
+                            llvm::Value* ms = i64c((uint64_t) -1);
+                            if (wantWaitMs) {
+                                ms = parameters[0].expression->generateCode(module);
+                                if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(ms))
+                                    ms = builder->CreateLoad(a->getAllocatedType(), a);
+                                if (ms && ms->getType() != i64Ty
+                                        && ms->getType()->isIntegerTy())
+                                    ms = builder->CreateIntCast(ms, i64Ty, true);
+                            }
+                            std::vector<llvm::Value*> args{handle, ms};
+                            prLayoutArgs(args);
+                            llvm::Value* result =
+                                builder->CreateCall(fn, args, "proc.wait");
+                            resolvedType = prClass;
+                            return result;
+                        }
+                    }
+                    if (wantKill) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_proc_kill");
+                        if (fn) {
+                            builder->CreateCall(fn, {loadHandle()});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (wantPid) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_proc_pid");
+                        if (fn) {
+                            resolvedType = CajetaType::of("int32");
+                            return builder->CreateCall(fn, {loadHandle()},
+                                "proc.pid");
+                        }
+                    }
+                    if (wantClose) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_proc_release");
+                        if (fn) {
+                            builder->CreateCall(fn, {loadHandle()});
+                            // Zero the handle so a second close() is a no-op.
+                            builder->CreateStore(i64c(0),
+                                builder->CreateStructGEP(recvStructTy, thisValue,
+                                    1, "proc.handle.clear"));
                             resolvedType = CajetaType::of("void");
                             return nullptr;
                         }

@@ -13,7 +13,7 @@ set -uo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
-LANGS="${PROFILE_LANGS:-rust cpp go python}"
+LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 
 skip_lang() {
@@ -63,7 +63,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/clbg" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-clbg-go.log ) \
+        ( cd "$DIR/go/clbg" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-clbg-go.log ) \
             || skip_lang go scalar "go build/run failed (see /tmp/profile-clbg-go.log)"
     else
         skip_lang go scalar "go not installed"
@@ -79,5 +79,23 @@ if want python; then
             || skip_lang python cpython "python clbg runner crashed"
     else
         skip_lang python cpython "python3 not installed"
+    fi
+fi
+
+# ---- java: pure JDK stdlib (java.lang.Math) scalar mandelbrot/fannkuch/spectral ----
+if want java; then
+    if command -v javac >/dev/null 2>&1; then
+        OUT="$BUILD/java-clbg"; SRC="$DIR/java/clbg/ClbgBench.java"
+        if [[ ! -f "$OUT/ClbgBench.class" || "$SRC" -nt "$OUT/ClbgBench.class" ]]; then
+            mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-clbg-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/ClbgBench.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" java -cp "$OUT" ClbgBench \
+                || skip_lang java stdlib "java clbg runner crashed"
+        else
+            skip_lang java stdlib "javac build failed (see /tmp/profile-clbg-java.log)"
+        fi
+    else
+        skip_lang java stdlib "javac not installed"
     fi
 fi

@@ -102,9 +102,19 @@ func emit(runID, ts, dataset string, bytes int, lib, ver string, warmup, trials 
 		mbps = float64(bytes) / float64(s.med) * 1e9 / 1048576.0
 	}
 	fmt.Printf(
-		"1,%s,%s,json-dom,codec,%s,%d,,%d,go,%s,%s,%s,-gcflags,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,-1,-1,-1,%s,%t,,\n",
+		"1,%s,%s,json-dom,codec,%s,%d,,%d,go,%s,%s,%s,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,%d,-1,-1,%s,%t,,\n",
 		runID, ts, dataset, bytes, bytes, env("PROFILE_LANG_VERSION", ""), lib, ver,
-		warmup, trials, s.mn, s.med, s.mean, s.p95, mbps, peakRSSKb(), status, checkOK)
+		warmup, trials, s.mn, s.med, s.mean, s.p95, mbps, peakRSSKb(), gAlloc, status, checkOK)
+}
+
+var gAlloc uint64
+
+func measAlloc(run func()) {
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	run()
+	runtime.ReadMemStats(&b)
+	gAlloc = b.TotalAlloc - a.TotalAlloc
 }
 
 func main() {
@@ -154,6 +164,7 @@ func runOne(runID, ts string, c corpus, raw []byte, n int, lib, ver string, warm
 	for i := 0; i < warmup; i++ {
 		parse(raw)
 	}
+	measAlloc(func() { parse(raw) })
 	samples := make([]int64, 0, trials)
 	for i := 0; i < trials; i++ {
 		t0 := time.Now()

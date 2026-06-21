@@ -311,12 +311,8 @@ namespace cajeta::buildtool {
             // local artifact cache lives. Skip cleanly when no deps
             // declared; surface any resolver error as a build failure.
             if (ctx.manifest()) {
-                std::string projectRoot = ".";
-                if (!ctx.manifest()->sourcePath.empty()) {
-                    auto parent = fs::path(ctx.manifest()->sourcePath)
-                                      .parent_path();
-                    if (!parent.empty()) projectRoot = parent.string();
-                }
+                std::string projectRoot =
+                    projectRootFromManifest(*ctx.manifest());
                 auto resolved = resolveProjectDependencies(
                     *ctx.manifest(), projectRoot);
                 if (!resolved) return resolved.takeError();
@@ -339,20 +335,24 @@ namespace cajeta::buildtool {
             // is fixed (vocabulary-order, not host-locale-dependent)
             // so the argv we emit hashes the same across hosts.
             {
-                std::string projectRootForRepro = ".";
-                if (ctx.manifest() && !ctx.manifest()->sourcePath.empty()) {
-                    auto parent = fs::path(ctx.manifest()->sourcePath)
-                                      .parent_path();
-                    if (!parent.empty()) {
-                        projectRootForRepro = parent.string();
-                    }
-                }
+                std::string projectRootForRepro =
+                    ctx.manifest() ? projectRootFromManifest(*ctx.manifest())
+                                   : std::string(".");
                 for (auto& f : reproducibilityFlags(
                                    ctx.properties(),
                                    projectRootForRepro)) {
                     argv.push_back(std::move(f));
                 }
             }
+            // Point skill embedding (skill-discovery D.3) at the PROJECT root
+            // (where cajeta.json and the hand-authored skills/ dir live) — the
+            // positional source root below is the deeper src/main/cajeta, which
+            // has no skills/.
+            if (ctx.manifest()) {
+                argv.push_back("--skill-root=" +
+                               projectRootFromManifest(*ctx.manifest()));
+            }
+
             // Positional args: <entry-method> <source-root> <archive-root>
             argv.push_back(entry->empty() ? std::string("*") : *entry);
             argv.push_back(sourceRoot);

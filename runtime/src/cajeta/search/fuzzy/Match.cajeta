@@ -1,0 +1,31 @@
+package cajeta.search.fuzzy;
+
+import cajeta.lang.String;
+
+/**
+ * One fuzzy-match result (cajeta.search spec §4): the stored `value`, the
+ * `key` it was indexed under, and the edit `distance` from the query. Returned
+ * by `Matcher.match`, ranked closest-first. Owns its own copy of the key, so a
+ * result list outlives the `Matcher` that produced it.
+ *
+ * @See cajeta.search.fuzzy.Matcher
+ */
+public class Match<T> {
+    T value;
+    String key;
+    int32 distance;
+
+    /** Build a match. `key` ownership transfers in (pass a `#`-moved copy). */
+    public Match(T value, String key, int32 distance) {
+        this.value = value;
+        this.key = key;
+        this.distance = distance;
+    }
+
+    /** The matched value. */
+    public T value() { return this.value; }
+    /** The key the value was indexed under. */
+    public String key() { return this.key; }
+    /** Edit distance from the query (0 = exact). */
+    public int32 distance() { return this.distance; }
+}

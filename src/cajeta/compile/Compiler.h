@@ -160,6 +160,19 @@ namespace cajeta {
         // emitCMainShim after Phase-2 codegen, when binary emit is on.
         string entryMethod;
 
+        // Package source root (trailing-slash normalized) — set by
+        // Compiler::compile(...) so emitArchive can locate the package's
+        // `skills/` dir and embed skill members into the `.cja` (skill-discovery
+        // D.3). Empty when compile() hasn't run (e.g. unit tests).
+        string skillSourceRoot;
+
+        // Optional override (via `--skill-root=<dir>`) for where the package's
+        // `skills/` dir lives. The build tool sets this to the PROJECT root
+        // (where `cajeta.json` and `skills/` sit), since the compile source
+        // root is the deeper `src/main/cajeta`. Empty → fall back to the
+        // compile source root (the low-level `cajeta <entry> <src> <arc>` form).
+        string skillRootOverride;
+
         // Collected .o paths from Obj/Exe emissions, fed to the linker for Exe mode.
         std::vector<string> objectFiles;
 
@@ -335,6 +348,7 @@ namespace cajeta {
 
         void setCpu(const string& cpu) {
             this->cpu = cpu;
+            rebuildTargetMachine(); // CPU feeds the subtarget — rebuild like setTargetTriple
         }
 
         const string& getFeatures() const {
@@ -343,6 +357,7 @@ namespace cajeta {
 
         void setFeatures(const string& features) {
             this->features = features;
+            rebuildTargetMachine();
         }
 
         // Install (or clear, with nullptr) the process-global shared LLVMContext
@@ -437,6 +452,7 @@ namespace cajeta {
         // knows about reflective / dynamic-dispatch paths the bitcode
         // scan can't see.
         void setPruneUber(bool v) { pruneUber = v; }
+        void setSkillRootOverride(string s) { skillRootOverride = std::move(s); }
         bool getPruneUber() const { return pruneUber; }
 
         const string& getOutputPath() const { return outputPath; }

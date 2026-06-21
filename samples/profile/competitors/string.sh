@@ -16,7 +16,7 @@ set -uo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
-LANGS="${PROFILE_LANGS:-rust cpp go python}"
+LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 TEXTLEN=360448
 BUILDLEN=4000
@@ -69,7 +69,7 @@ fi
 # ---- go ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/string" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-string-go.log ) \
+        ( cd "$DIR/go/string" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-string-go.log ) \
             || skip_lang go go "go build/run failed (see /tmp/profile-string-go.log)"
     else
         skip_lang go go "go not installed"
@@ -85,5 +85,23 @@ if want python; then
             || skip_lang python python "python string runner crashed"
     else
         skip_lang python python "python3 not installed"
+    fi
+fi
+
+# ---- java: String idioms (indexOf / replace / toUpperCase / StringBuilder, JDK stdlib) ----
+if want java; then
+    if command -v javac >/dev/null 2>&1; then
+        OUT="$BUILD/java-string"; SRC="$DIR/java/string/StringBench.java"
+        if [[ ! -f "$OUT/StringBench.class" || "$SRC" -nt "$OUT/StringBench.class" ]]; then
+            mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-string-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/StringBench.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" java -cp "$OUT" StringBench \
+                || skip_lang java java "java string runner crashed"
+        else
+            skip_lang java java "javac build failed (see /tmp/profile-string-java.log)"
+        fi
+    else
+        skip_lang java java "javac not installed"
     fi
 fi

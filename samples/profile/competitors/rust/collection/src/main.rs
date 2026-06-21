@@ -7,6 +7,19 @@
 use ahash::AHashMap;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU64, Ordering as _Ord};
+static _ALLOCED: AtomicU64 = AtomicU64::new(0);
+static _LAST: AtomicU64 = AtomicU64::new(0);
+struct _Counting;
+unsafe impl GlobalAlloc for _Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 { _ALLOCED.fetch_add(l.size() as u64, _Ord::Relaxed); System.alloc(l) }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) { System.dealloc(p, l) }
+}
+#[global_allocator]
+static _GA: _Counting = _Counting;
+fn _alloc_of<F: FnOnce()>(run: F) { _ALLOCED.store(0, _Ord::Relaxed); run(); _LAST.store(_ALLOCED.load(_Ord::Relaxed), _Ord::Relaxed); }
+fn _la() -> u64 { _LAST.load(_Ord::Relaxed) }
 
 const N_INT: usize = 50_000;
 const N_STR: usize = 30_000;
@@ -34,11 +47,11 @@ fn emit(run_id: &str, ts: &str, bench: &str, lib: &str, input: usize,
     let mops = if med > 0 { input as f64 / med as f64 * 1e9 / 1e6 } else { 0.0 };
     let status = if check_ok { "ok" } else { "invalid" };
     println!(
-        "1,{run_id},{ts},{bench},collection,,{input},,{input},rust,{ver},{lib},std,-O3 lto,{warmup},{trials},\
-{mn},{med},{mean},{p95},{mops:.2},Mop/s,{rss},-1,-1,-1,-1,{status},{check},,",
+        "1,{run_id},{ts},{bench},collection,,{input},,{input},rust,{ver},{lib},std,-O3 lto target-cpu=native,{warmup},{trials},\
+{mn},{med},{mean},{p95},{mops:.2},Mop/s,{rss},-1,{alloc},-1,-1,{status},{check},,",
         run_id = run_id, ts = ts, bench = bench, input = input, ver = env("PROFILE_LANG_VERSION", ""),
         lib = lib, warmup = warmup, trials = trials, mn = mn, med = med, mean = mean, p95 = p95,
-        mops = mops, rss = peak_rss_kb(), status = status, check = check_ok);
+        mops = mops, rss = peak_rss_kb(), alloc = _la(), status = status, check = check_ok);
 }
 
 fn bench<T, F: FnMut() -> T, C: Fn(&T) -> bool>(warmup: usize, trials: usize, mut f: F, check: C)
@@ -53,6 +66,7 @@ fn bench<T, F: FnMut() -> T, C: Fn(&T) -> bool>(warmup: usize, trials: usize, mu
         ok = check(&r);
         std::hint::black_box(&r);
     }
+    _alloc_of(|| { let _ = f(); });
     (s, ok)
 }
 

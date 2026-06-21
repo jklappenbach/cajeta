@@ -16,7 +16,7 @@ set -uo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILD="${DIR}/.build"; mkdir -p "$BUILD"
-LANGS="${PROFILE_LANGS:-rust cpp go python}"
+LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 
 skip_lang() {
@@ -66,7 +66,7 @@ fi
 # ---- go (scalar) ----
 if want go; then
     if command -v go >/dev/null 2>&1; then
-        ( cd "$DIR/go/math" && PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-math-go.log ) \
+        ( cd "$DIR/go/math" && GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>/tmp/profile-math-go.log ) \
             || skip_lang go scalar "go build/run failed (see /tmp/profile-math-go.log)"
     else
         skip_lang go scalar "go not installed"
@@ -82,5 +82,23 @@ if want python; then
             || skip_lang python numpy "python math runner crashed"
     else
         skip_lang python numpy "python3 not installed"
+    fi
+fi
+
+# ---- java (scalar; JIT auto-vectorized double[] loops, JDK stdlib) ----
+if want java; then
+    if command -v javac >/dev/null 2>&1; then
+        OUT="$BUILD/java-math"; SRC="$DIR/java/math/MathBench.java"
+        if [[ ! -f "$OUT/MathBench.class" || "$SRC" -nt "$OUT/MathBench.class" ]]; then
+            mkdir -p "$OUT"; javac -d "$OUT" "$SRC" >/tmp/profile-math-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/MathBench.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" java -cp "$OUT" MathBench \
+                || skip_lang java scalar "java math runner crashed"
+        else
+            skip_lang java scalar "javac build failed (see /tmp/profile-math-java.log)"
+        fi
+    else
+        skip_lang java scalar "javac not installed"
     fi
 fi

@@ -1,0 +1,115 @@
+package cajeta.math;
+
+/**
+ * Aabb — an axis-aligned bounding box `[min, max]` over `Vector<float32,3>`, the
+ * coarse-bounds primitive for culling and BVH leaves (cajeta-gfx plan §1). A
+ * value type (stack by default), built on the builtin vector arithmetic.
+ *
+ * Invariant: each component of `min` is <= the matching component of `max`.
+ * Construct with `stack Aabb(min, max)`.
+ *
+ * ```cajeta
+ * Vector<float32,3> lo = stack Vector<float32,3>(0.0f, 0.0f, 0.0f);
+ * Vector<float32,3> hi = stack Vector<float32,3>(2.0f, 2.0f, 2.0f);
+ * Aabb b = stack Aabb(lo, hi);
+ * boolean in = b.contains(b.center());   // true
+ * ```
+ */
+@ValueType public final class Aabb {
+    public Vector<float32,3> min;
+    public Vector<float32,3> max;
+
+    public Aabb(Vector<float32,3> min, Vector<float32,3> max) {
+        this.min = min;
+        this.max = max;
+    }
+
+    /** Lower corner. */
+    public Vector<float32,3> min() {
+        return this.min;
+    }
+
+    /** Upper corner. */
+    public Vector<float32,3> max() {
+        return this.max;
+    }
+
+    /** Box center, `(min + max) / 2`. */
+    public Vector<float32,3> center() {
+        // One Vector operator per expression — compound Vector expressions crash
+        // host codegen (see Ray.at).
+        Vector<float32,3> sum = this.min + this.max;
+        return sum * 0.5f;
+    }
+
+    /** Half-size along each axis, `(max - min) / 2`. */
+    public Vector<float32,3> extent() {
+        Vector<float32,3> diff = this.max - this.min;
+        return diff * 0.5f;
+    }
+
+    /** True if `p` lies within (or on) the box on every axis. */
+    public boolean contains(Vector<float32,3> p) {
+        return p.x >= this.min.x && p.y >= this.min.y && p.z >= this.min.z
+            && p.x <= this.max.x && p.y <= this.max.y && p.z <= this.max.z;
+    }
+
+    /** True if this box overlaps `o` (touching counts). */
+    public boolean intersectsAabb(Aabb o) {
+        return this.min.x <= o.max.x && this.max.x >= o.min.x
+            && this.min.y <= o.max.y && this.max.y >= o.min.y
+            && this.min.z <= o.max.z && this.max.z >= o.min.z;
+    }
+
+    /**
+     * Slab test: true if the ray (for some `t >= 0`) enters the box. An axis
+     * whose direction component is zero is handled explicitly (the ray is
+     * parallel to that pair of slabs, so it can only hit if the origin already
+     * lies between them) rather than relying on a divide-by-zero producing IEEE
+     * infinities — the float codegen here does not guarantee that.
+     */
+    public boolean intersectsRay(Ray r) {
+        Vector<float32,3> o = r.origin();
+        Vector<float32,3> dir = r.direction();
+        float32 t0 = 0.0f;                 // ray: t >= 0
+        float32 t1 = 100000000.0f;
+
+        if (dir.x == 0.0f) {
+            if (o.x < this.min.x || o.x > this.max.x) { return false; }
+        } else {
+            float32 ivx = 1.0f / dir.x;
+            float32 ax = (this.min.x - o.x) * ivx;
+            float32 bx = (this.max.x - o.x) * ivx;
+            if (ax > bx) { float32 sx = ax; ax = bx; bx = sx; }
+            if (ax > t0) { t0 = ax; }
+            if (bx < t1) { t1 = bx; }
+            if (t0 > t1) { return false; }
+        }
+
+        if (dir.y == 0.0f) {
+            if (o.y < this.min.y || o.y > this.max.y) { return false; }
+        } else {
+            float32 ivy = 1.0f / dir.y;
+            float32 ay = (this.min.y - o.y) * ivy;
+            float32 by = (this.max.y - o.y) * ivy;
+            if (ay > by) { float32 sy = ay; ay = by; by = sy; }
+            if (ay > t0) { t0 = ay; }
+            if (by < t1) { t1 = by; }
+            if (t0 > t1) { return false; }
+        }
+
+        if (dir.z == 0.0f) {
+            if (o.z < this.min.z || o.z > this.max.z) { return false; }
+        } else {
+            float32 ivz = 1.0f / dir.z;
+            float32 az = (this.min.z - o.z) * ivz;
+            float32 bz = (this.max.z - o.z) * ivz;
+            if (az > bz) { float32 sz = az; az = bz; bz = sz; }
+            if (az > t0) { t0 = az; }
+            if (bz < t1) { t1 = bz; }
+            if (t0 > t1) { return false; }
+        }
+
+        return true;
+    }
+}

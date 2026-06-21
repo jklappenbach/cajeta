@@ -8,6 +8,7 @@ import os
 import resource
 import sys
 import time
+import tracemalloc
 
 BASE = "the quick brown fox jumps over the lazy dog "
 REPEAT = 8192
@@ -24,6 +25,20 @@ def peak_rss_kb():
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
 
+_ALLOC = -1
+
+
+def alloc_bytes(run):
+    """Peak Python-heap bytes allocated by one execution (tracemalloc). Note: C-
+    extension allocations outside CPython (e.g. numpy buffers) are not traced."""
+    tracemalloc.start()
+    tracemalloc.reset_peak()
+    run()
+    _peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    return _peak
+
+
 def stats(samples):
     s = sorted(samples)
     n = len(s)
@@ -38,7 +53,7 @@ def emit(run_id, ts, bench, lib, nbytes, warmup, trials, st, ok):
     return (
         f"1,{run_id},{ts},{bench},string,,{nbytes},,{nbytes},python,{pyver},{lib},cpython,-OO,"
         f"{warmup},{trials},{mn},{med},{mean},{p95},{mbps:.1f},MB/s,{peak_rss_kb()},"
-        f"-1,-1,-1,-1,{status},{str(ok).lower()},,"
+        f"-1,{_ALLOC},-1,-1,{status},{str(ok).lower()},,"
     )
 
 
@@ -52,6 +67,8 @@ def bench(warmup, trials, f, check):
         r = f()
         samples.append(time.perf_counter_ns() - t0)
         ok = check(r)
+    global _ALLOC
+    _ALLOC = alloc_bytes(f)
     return samples, ok
 
 

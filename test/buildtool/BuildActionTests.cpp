@@ -17,6 +17,7 @@
 
 using cajeta::buildtool::ActionRegistry;
 using cajeta::buildtool::loadManifestString;
+using cajeta::buildtool::projectRootFromManifest;
 using cajeta::buildtool::parseSettingsBuild;
 using cajeta::buildtool::resolveProperties;
 using cajeta::buildtool::TaskContext;
@@ -223,4 +224,30 @@ TEST(BuildActionTests, binaryParamRequiresManifest) {
     auto err = invokeAndExpectError(registry, ctx, params);
     auto msg = errorText(std::move(err));
     EXPECT_NE(msg.find("requires a manifest"), std::string::npos);
+}
+
+// ─── project-root derivation (skill-discovery D.3 regression) ──────────
+//
+// The build action embeds a package's hand-authored skills/ from the PROJECT
+// root (the dir holding cajeta.json) and passes it via --skill-root. A prior
+// bug pointed skill embedding at the deeper compile source root
+// (src/main/cajeta), which has no skills/, so built .cja's carried no skills.
+// Guard the derivation the fix depends on.
+
+TEST(BuildActionTests, projectRootIsManifestDirNotSourceRoot) {
+    auto m = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" }
+    })");
+    m.sourcePath = "/home/u/myproj/cajeta.json";
+    // The project root is where skills/ and cajeta.json live — NOT the deeper
+    // compile source root.
+    EXPECT_EQ(projectRootFromManifest(m), "/home/u/myproj");
+    EXPECT_NE(projectRootFromManifest(m), "/home/u/myproj/src/main/cajeta");
+}
+
+TEST(BuildActionTests, projectRootDefaultsToDotWhenUnset) {
+    cajeta::buildtool::Manifest m;            // empty sourcePath
+    EXPECT_EQ(projectRootFromManifest(m), ".");
+    m.sourcePath = "cajeta.json";             // bare filename, no parent dir
+    EXPECT_EQ(projectRootFromManifest(m), ".");
 }

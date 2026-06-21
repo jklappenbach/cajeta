@@ -1,0 +1,151 @@
+package cajeta.search.distance;
+
+import cajeta.lang.String;
+
+/**
+ * String edit-distance functions (cajeta.search spec §3) — the scoring half of
+ * fuzzy matching. Both are pure, symmetric in their arguments, and allocate
+ * only `O(min-axis)` working rows.
+ *
+ * - `levenshtein` — classic edit distance (insert / delete / substitute).
+ * - `damerau` — optimal string alignment (OSA): adjacent transpositions cost
+ *   1, so `damerau("flie", "file") == 1` while `levenshtein` is 2. OSA (not
+ *   the unrestricted Damerau-Levenshtein) — a substring is edited at most
+ *   once — which is the right, cheap model for typo-tolerant lookup.
+ *
+ * Distances are computed over the string's `char` (byte) surface; good enough
+ * for identifier- and title-style keys (spec §1.4 non-goal: Unicode collation).
+ *
+ * ```cajeta
+ * int32 d = Distance.damerau("kitten", "sitting");   // 3
+ * ```
+ *
+ * @See cajeta.search.fuzzy.Matcher
+ */
+public class Distance {
+
+    /**
+     * Levenshtein edit distance between `a` and `b` (insert/delete/substitute,
+     * each cost 1). Two rolling rows → O(len(b)) space.
+     */
+    public static int32 levenshtein(String a, String b) {
+        int32 n = (int32) a.count();
+        int32 m = (int32) b.count();
+        if (n == 0) {
+            return m;
+        }
+        if (m == 0) {
+            return n;
+        }
+        int32[] prev = heap int32[m + 1];
+        int32[] curr = heap int32[m + 1];
+        int32 j = 0;
+        while (j <= m) {
+            prev[j] = j;
+            j = j + 1;
+        }
+        int32 i = 1;
+        while (i <= n) {
+            curr[0] = i;
+            int8 ca = a.charAt(i - 1);
+            int32 k = 1;
+            while (k <= m) {
+                int8 cb = b.charAt(k - 1);
+                int32 cost = 1;
+                if (ca == cb) {
+                    cost = 0;
+                }
+                int32 best = prev[k] + 1;          // deletion
+                int32 ins = curr[k - 1] + 1;       // insertion
+                if (ins < best) {
+                    best = ins;
+                }
+                int32 sub = prev[k - 1] + cost;    // substitution
+                if (sub < best) {
+                    best = sub;
+                }
+                curr[k] = best;
+                k = k + 1;
+            }
+            int32 c = 0;
+            while (c <= m) {
+                prev[c] = curr[c];
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return prev[m];
+    }
+
+    /**
+     * Optimal-string-alignment (Damerau) distance: like `levenshtein` but an
+     * adjacent transposition costs 1. Three rolling rows (needs row i-2 for
+     * the transposition term) → O(len(b)) space.
+     */
+    public static int32 damerau(String a, String b) {
+        int32 n = (int32) a.count();
+        int32 m = (int32) b.count();
+        if (n == 0) {
+            return m;
+        }
+        if (m == 0) {
+            return n;
+        }
+        int32[] prevPrev = heap int32[m + 1];
+        int32[] prev = heap int32[m + 1];
+        int32[] curr = heap int32[m + 1];
+        int32 j = 0;
+        while (j <= m) {
+            prev[j] = j;
+            j = j + 1;
+        }
+        int32 i = 1;
+        while (i <= n) {
+            curr[0] = i;
+            int8 ca = a.charAt(i - 1);
+            int32 k = 1;
+            while (k <= m) {
+                int8 cb = b.charAt(k - 1);
+                int32 cost = 1;
+                if (ca == cb) {
+                    cost = 0;
+                }
+                int32 best = prev[k] + 1;          // deletion
+                int32 ins = curr[k - 1] + 1;       // insertion
+                if (ins < best) {
+                    best = ins;
+                }
+                int32 sub = prev[k - 1] + cost;    // substitution
+                if (sub < best) {
+                    best = sub;
+                }
+                if (i > 1) {
+                    if (k > 1) {
+                        int8 ca2 = a.charAt(i - 2);
+                        int8 cb2 = b.charAt(k - 2);
+                        if (ca == cb2) {
+                            if (ca2 == cb) {
+                                int32 trans = prevPrev[k - 2] + 1;
+                                if (trans < best) {
+                                    best = trans;
+                                }
+                            }
+                        }
+                    }
+                }
+                curr[k] = best;
+                k = k + 1;
+            }
+            // Shift rows down: prevPrev <- prev <- curr (read prev[c] into
+            // prevPrev[c] before overwriting it).
+            int32 c = 0;
+            while (c <= m) {
+                prevPrev[c] = prev[c];
+                prev[c] = curr[c];
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return prev[m];
+    }
+}

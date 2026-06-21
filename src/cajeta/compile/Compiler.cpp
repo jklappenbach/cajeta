@@ -4,6 +4,7 @@
 
 #include "Compiler.h"
 #include "CajetaArchive.h"
+#include "cajeta/buildtool/skill/SkillPackager.h"
 #include "CajetaModule.h"
 #include "NativeLink.h"
 #include "CajetaLlvmVisitor.h"
@@ -15,6 +16,8 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/SubtargetFeature.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
@@ -149,7 +152,21 @@ namespace cajeta {
         // registration ctors) silently never fired. clang/llc set this; we must
         // too for the --emit=obj/exe path to honor static initializers.
         opt.UseInitArray     = true;
-        targetMachine = target->createTargetMachine(triple, cpu, features, opt, effectiveRM);
+        // `--cpu=native` resolves to the host's LLVM CPU name plus its detected
+        // feature set — the equivalent of clang/gcc `-march=native`. Without
+        // this the default `generic` target only emits the baseline ISA (e.g.
+        // x86-64 SSE2), leaving AVX2/AVX-512/FMA on the table; resolving native
+        // lets the optimizer's loop/SLP vectorizers use the host's wide vectors.
+        std::string effectiveCpu = cpu;
+        std::string effectiveFeatures = features;
+        if (cpu == "native") {
+            effectiveCpu = llvm::sys::getHostCPUName().str();
+            llvm::SubtargetFeatures feats(features); // seed with any explicit --features
+            for (const auto& f : llvm::sys::getHostCPUFeatures())
+                feats.AddFeature(f.first(), f.second);
+            effectiveFeatures = feats.getString();
+        }
+        targetMachine = target->createTargetMachine(triple, effectiveCpu, effectiveFeatures, opt, effectiveRM);
     }
 
     // ANTLR-based pre-scan visitor. Walks the parse tree shallowly
@@ -937,6 +954,16 @@ namespace cajeta {
         if (archiveRootPath[archiveRootPath.size() - 1] != '/') {
             archiveRootPath.append("/");
         }
+
+        // Remember where the package's hand-authored skills/ lives so
+        // emitArchive can embed them into the .cja (skill-discovery D.3). The
+        // build tool passes --skill-root=<project-root> (skills/ sits next to
+        // cajeta.json, not under the deeper src/main/cajeta source root); the
+        // low-level compile form has no override and falls back to the source
+        // root.
+        this->skillSourceRoot =
+            this->skillRootOverride.empty() ? sourceRootPath
+                                            : this->skillRootOverride;
 
 //        std::filesystem::path cwd = std::filesystem::current_path();
 
@@ -2694,6 +2721,12 @@ namespace cajeta {
             }
             arc.setDeps(std::move(kept));
         }
+
+        // Embed the package's hand-authored skills (skill-discovery D.3): a
+        // no-op when there is no skills/ dir; throws a clear error on an invalid
+        // skill. Uber archives carry the consuming project's own skills only —
+        // each dependency already ships its skills inside its own .cja.
+        buildtool::skill::addSkillMembersToArchiveOrThrow(arc, skillSourceRoot);
 
         // Native-deps unit 13: default packaging step — bundle the resolved
         // native artifacts for the live @Native libs into the archive's native/

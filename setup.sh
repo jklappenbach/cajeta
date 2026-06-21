@@ -30,6 +30,16 @@
 
 set -euo pipefail
 
+# Optional per-checkout LLVM pin. If scripts/llvm-env.local.sh exists (gitignored,
+# machine-specific) it is sourced here, BEFORE LLVM_DIR is defaulted below, so a
+# local toolchain (e.g. the cajeta-llvm fork) wins over the stock default and over
+# any vendor LLVM on PATH. Absent on CI / fresh clones, so the default path holds.
+_CAJETA_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${_CAJETA_SETUP_DIR}/scripts/llvm-env.local.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${_CAJETA_SETUP_DIR}/scripts/llvm-env.local.sh"
+fi
+
 LLVM_VER="${CAJETA_LLVM_VERSION:-23}"
 
 # macOS Homebrew formula for LLVM. Homebrew keeps the newest LLVM as the

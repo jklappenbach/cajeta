@@ -9,6 +9,7 @@ import os
 import resource
 import sys
 import time
+import tracemalloc
 
 N = 1048576
 SHA256_REF = "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83"
@@ -25,6 +26,20 @@ def peak_rss_kb():
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
 
+_ALLOC = -1
+
+
+def alloc_bytes(run):
+    """Peak Python-heap bytes allocated by one execution (tracemalloc). Note: C-
+    extension allocations outside CPython (e.g. numpy buffers) are not traced."""
+    tracemalloc.start()
+    tracemalloc.reset_peak()
+    run()
+    _peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    return _peak
+
+
 def stats(samples):
     s = sorted(samples)
     n = len(s)
@@ -38,7 +53,7 @@ def row(run_id, ts, bench, lib, ver, warmup, trials, st, check_ok, status):
     return (
         f"1,{run_id},{ts},{bench},hash,,{N},,{N},python,{pyver},{lib},{ver},-OO,"
         f"{warmup},{trials},{mn},{med},{mean},{p95},{mbps:.1f},MB/s,{peak_rss_kb()},"
-        f"-1,-1,-1,-1,{status},{str(check_ok).lower()},,"
+        f"-1,{_ALLOC},-1,-1,{status},{str(check_ok).lower()},,"
     )
 
 
@@ -58,6 +73,8 @@ def bench(buf, warmup, trials, f):
         t0 = time.perf_counter_ns()
         f(buf)
         samples.append(time.perf_counter_ns() - t0)
+    global _ALLOC
+    _ALLOC = alloc_bytes(lambda: f(buf))
     return samples
 
 

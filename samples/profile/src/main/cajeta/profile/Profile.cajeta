@@ -297,7 +297,7 @@ public final class Profile {
         ok.language = "cajeta";
         ok.languageVersion = cajVer;
         ok.library = "stdlib";
-        ok.flags = "--release -march=native";
+        ok.flags = "--release -O3 -march=native";
         ok.warmup = 20;
         ok.trials = 200;
         ok.minNs = 1000;

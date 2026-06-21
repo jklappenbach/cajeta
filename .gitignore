@@ -82,4 +82,7 @@ tools/cajetadoc/flagged.json
 # working tree stay local.
 agents/
 *-plan.md
+
+# Machine-specific LLVM toolchain pin (sourced by setup.sh) — local only.
+scripts/llvm-env.local.sh
 build-three/

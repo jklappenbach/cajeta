@@ -15,6 +15,7 @@ parses today keeps parsing tomorrow unless its `schema-version` opts in.**
 | Repository wire   | `repository-protocol-v1.md`      | `src/cajeta/buildtool/repo/`        |
 | Plugin protocol   | `extension-api-v1.md`            | `src/cajeta/buildtool/PluginRuntime.{h,cpp}` |
 | Toolchain registry| `toolchain-registry-v1.md`       | `src/cajeta/buildtool/Toolchain.{h,cpp}` |
+| Skill index       | `skill-index-v1` (in-archive)    | `src/cajeta/buildtool/skill/SkillIndex.cpp` |
 
 Each shipped artifact carries a major version in its `$id` / title. v1 is
 the first stable line.

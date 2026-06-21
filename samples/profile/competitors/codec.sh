@@ -80,7 +80,7 @@ fi
 if want go; then
     if command -v go >/dev/null 2>&1; then
         if ( cd "$DIR/go/codec" && go mod tidy >/tmp/profile-codec-go.log 2>&1 && \
-             PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-codec-go.log ); then
+             GOAMD64=v4 PROFILE_LANG_VERSION="$(go version | strip)" go run . 2>>/tmp/profile-codec-go.log ); then
             :
         else
             skip_lang go go "go build/run failed (see /tmp/profile-codec-go.log)"
@@ -102,7 +102,31 @@ if want python; then
     fi
 fi
 
-# ---- java: no stdlib JSON; Jackson/fastjson2 need Maven (not provisioned) ----
+# ---- java: jackson-databind DOM (JDK has no stdlib JSON; jars vendored) ----
 if want java; then
-    skip_lang java jackson "requires Maven + Jackson/fastjson2 jars (JDK has no stdlib JSON; not provisioned)"
+    JJARS="$VENDOR/jackson"
+    JCP="$JJARS/jackson-databind-2.22.0.jar:$JJARS/jackson-core-2.22.0.jar:$JJARS/jackson-annotations-2.22.jar"
+    # Fetch the jars on demand (recorded in vendor/jackson.lock) if missing + network is up.
+    if [[ ! -f "$JJARS/jackson-databind-2.22.0.jar" ]] && command -v curl >/dev/null 2>&1; then
+        mkdir -p "$JJARS"; B=https://repo1.maven.org/maven2/com/fasterxml/jackson/core
+        curl -sSfL -o "$JJARS/jackson-core-2.22.0.jar"        "$B/jackson-core/2.22.0/jackson-core-2.22.0.jar"               2>/dev/null || true
+        curl -sSfL -o "$JJARS/jackson-databind-2.22.0.jar"    "$B/jackson-databind/2.22.0/jackson-databind-2.22.0.jar"       2>/dev/null || true
+        curl -sSfL -o "$JJARS/jackson-annotations-2.22.jar"   "$B/jackson-annotations/2.22/jackson-annotations-2.22.jar"     2>/dev/null || true
+    fi
+    if command -v javac >/dev/null 2>&1 && [[ -f "$JJARS/jackson-databind-2.22.0.jar" ]]; then
+        OUT="$BUILD/java-codec"; SRC="$DIR/java/codec/JsonDom.java"
+        if [[ ! -f "$OUT/JsonDom.class" || "$SRC" -nt "$OUT/JsonDom.class" ]]; then
+            mkdir -p "$OUT"; javac -cp "$JCP" -d "$OUT" "$SRC" >/tmp/profile-codec-java.log 2>&1 || true
+        fi
+        if [[ -f "$OUT/JsonDom.class" ]]; then
+            PROFILE_LANG_VERSION="$(java -version 2>&1 | head -1 | strip)" PROFILE_JACKSON_VERSION=2.22.0 \
+                java -cp "$OUT:$JCP" JsonDom || skip_lang java jackson-databind "java codec runner crashed"
+        else
+            skip_lang java jackson-databind "javac build failed (see /tmp/profile-codec-java.log)"
+        fi
+    elif ! command -v javac >/dev/null 2>&1; then
+        skip_lang java jackson-databind "javac not installed"
+    else
+        skip_lang java jackson-databind "jackson jars missing (vendor/jackson; needs network to fetch)"
+    fi
 fi
