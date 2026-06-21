@@ -8,27 +8,40 @@ package cajeta.lang;
  * `StringBuilder` instead and materialize once with `toString()`.
  *
  * ```cajeta
- * StringBuilder sb = heap StringBuilder();
+ * StringBuilder sb = stack StringBuilder();
  * sb.append("Hello, ");
  * sb.append("world");
  * #String s = sb.toString();        // "Hello, world"
  * ```
  *
- * Backed by a `int8[]` that doubles on demand. The hot `append` path is
- * `@Inline` (it folds into the caller's build loop); the rare doubling is the
- * `@NoInline grow()` cold path, so `append` stays small enough to inline — the
- * same hot/cold split `ArrayList.add`/`grow` use.
+ * Small-string optimization (SSO): the first 64 bytes live in an inline buffer
+ * embedded in the object (`int8[64] small`), so a `stack StringBuilder()` build
+ * of <= 64 bytes does ZERO heap allocation during the build — the bytes live on
+ * the stack until `toString()` materializes the escaping result. A build that
+ * exceeds 64 bytes spills ONCE to a doubling heap buffer (`int8[] large`) and
+ * continues with byte-identical output. Exactly one of {small, large} holds the
+ * live bytes, selected by `spilled`; `cap` is 64 while inline and the heap
+ * size once spilled.
+ *
+ * The hot `append` path is `@Inline`; the rare spill/doubling is the
+ * `@NoInline grow()` cold path — the same hot/cold split `ArrayList.add`/`grow`
+ * use. The inline path writes bytes scalar (a <= 64-byte buffer is small); the
+ * spilled path uses the 8-byte `blit` over the heap buffer.
  */
 public final class StringBuilder {
-    int8[] buf;
-    int32 len;     // bytes used
-    int32 cap;     // buffer capacity in bytes
+    int8[64] small;   // inline SSO buffer (the build-time bytes while !spilled)
+    int8[] large;     // heap spill buffer (null until the build exceeds 64 bytes)
+    int32 len;        // bytes used (in whichever buffer is live)
+    int32 cap;        // 64 while inline; the heap buffer's size once spilled
+    boolean spilled;  // false => bytes in `small`; true => bytes in `large`
 
-    /** Create an empty builder with a small initial backing buffer. */
+    /** Create an empty builder. No heap allocation — the inline buffer is used
+     *  until/unless the build exceeds 64 bytes. */
     public StringBuilder() {
-        this.cap = 16;
-        this.buf = heap int8[16];
         this.len = 0;
+        this.cap = 64;
+        this.spilled = false;
+        this.large = null;
     }
 
     /** Number of UTF-8 bytes accumulated so far. */
@@ -42,7 +55,7 @@ public final class StringBuilder {
     }
 
     /**
-     * Append the UTF-8 bytes of `s`. Amortized O(len(s)); the backing buffer
+     * Append the UTF-8 bytes of `s`. Amortized O(len(s)); the buffer spills /
      * doubles (out-of-line in `grow`) only when it would overflow.
      */
     @Inline
@@ -54,14 +67,24 @@ public final class StringBuilder {
         if (this.len + add > this.cap) {
             this.grow(this.len + add);
         }
-        StringBuilder.blit(this.buf, (int64) this.len, s.bytes, 0, (int64) add);
+        if (this.spilled) {
+            StringBuilder.blit(this.large, (int64) this.len, s.bytes, 0, (int64) add);
+        } else {
+            int8[] src = s.bytes;
+            int32 base = this.len;
+            int32 i = 0;
+            while (i < add) {
+                this.small[base + i] = src[i];
+                i = i + 1;
+            }
+        }
         this.len = this.len + add;
     }
 
     /**
      * Append `len` bytes from `src` starting at `off`. The bulk primitive behind
      * segment copies (e.g. `String.replace` emitting the text between matches);
-     * amortized O(len), doubling out-of-line in `grow`.
+     * amortized O(len), spilling/doubling out-of-line in `grow`.
      */
     @Inline
     public void appendBytes(int8[] src, int32 off, int32 len) {
@@ -71,12 +94,23 @@ public final class StringBuilder {
         if (this.len + len > this.cap) {
             this.grow(this.len + len);
         }
-        StringBuilder.blit(this.buf, (int64) this.len, src, (int64) off, (int64) len);
+        if (this.spilled) {
+            StringBuilder.blit(this.large, (int64) this.len, src, (int64) off, (int64) len);
+        } else {
+            int32 base = this.len;
+            int32 i = 0;
+            while (i < len) {
+                this.small[base + i] = src[off + i];
+                i = i + 1;
+            }
+        }
         this.len = this.len + len;
     }
 
     // Copy `len` bytes src[s..] -> dst[d..], 8 bytes per store (the 8-byte chunk
     // window never exceeds `len`, so neither buffer is overrun) + scalar tail.
+    // Used only on the heap buffer (`large`); the inline buffer is written
+    // scalar in append/appendBytes (it can't decay to an int8[] argument).
     @Inline
     private static void blit(int8[] dst, int64 d, int8[] src, int64 s, int64 len) {
         int64 k = 0;
@@ -90,39 +124,63 @@ public final class StringBuilder {
         }
     }
 
-    // Cold, out-of-line: grow the backing buffer to at least `need` bytes
-    // (doubling), copying the live bytes over. Split out of `append` so the
-    // common in-capacity case stays branch-cold and `append` stays inlinable.
+    // Cold, out-of-line: ensure room for at least `need` bytes. The first
+    // overflow spills the inline buffer to a fresh heap buffer (one-way,
+    // copying the live bytes over); later overflows double the heap buffer.
+    // Split out of `append` so the common in-capacity case stays branch-cold
+    // and `append` stays inlinable.
     @NoInline
     private void grow(int32 need) {
-        int32 newCap = this.cap * 2;
+        // First overflow (inline) starts the heap buffer at 128 (double the
+        // 64-byte inline cap); a later overflow doubles the current heap cap.
+        int32 newCap = 128;
+        if (this.spilled) {
+            newCap = this.cap * 2;
+        }
         while (newCap < need) {
             newCap = newCap * 2;
         }
         int8[] grown = heap int8[newCap];
+        // Copy the live bytes over from whichever buffer currently holds them.
         int32 i = 0;
-        while (i < this.len) {
-            grown[i] = this.buf[i];
-            i = i + 1;
+        if (this.spilled) {
+            while (i < this.len) {
+                grown[i] = this.large[i];
+                i = i + 1;
+            }
+        } else {
+            while (i < this.len) {
+                grown[i] = this.small[i];
+                i = i + 1;
+            }
         }
         // `#grown` transfers ownership into the field — same pattern as
         // ArrayList.grow / HashMap.rehash; without it the local's scope-exit
-        // drop would free the buffer we just installed.
-        this.buf = #grown;
+        // drop would free the buffer we just installed. One-way: once spilled,
+        // the build stays on the heap buffer.
+        this.large = #grown;
         this.cap = newCap;
+        this.spilled = true;
     }
 
     /**
      * Materialize the accumulated bytes into a fresh owned `String` (one final
-     * copy of exactly `count()` bytes). The builder is left usable for more
-     * appends.
+     * copy of exactly `count()` bytes from the live buffer). The builder is left
+     * usable for more appends.
      */
     public #String toString() {
         int8[] out = heap int8[this.len];
         int32 i = 0;
-        while (i < this.len) {
-            out[i] = this.buf[i];
-            i = i + 1;
+        if (this.spilled) {
+            while (i < this.len) {
+                out[i] = this.large[i];
+                i = i + 1;
+            }
+        } else {
+            while (i < this.len) {
+                out[i] = this.small[i];
+                i = i + 1;
+            }
         }
         return heap String(#out, this.len);
     }
