@@ -2105,6 +2105,243 @@ public class Tensor<T> {
         return acc / (R) n;
     }
 
+    // Axis reductions (Phase 4 unit 2). Each reduces a single `axis` (negative wraps),
+    // producing a `Tensor`: with `keepdims=false` the axis is removed (`ndim-1`); with
+    // `keepdims=true` it becomes size 1 (`ndim` preserved, broadcastable back). The
+    // outer walk advances every dim EXCEPT the reduced axis in C-order, so the
+    // sequential output index matches the C-contiguous result layout; the inner loop
+    // folds along the axis. Correct for strided views (reads via `readBroadcast`).
+
+    /** Result shape for reducing `ax` of `shape` (`ax` already normalized): the axis
+     *  removed, or set to 1 when `keepdims`. */
+    static #int64[] reducedShape(int64[] shape, int32 ax, boolean keepdims) {
+        int32 nd = (int32) shape.count();
+        int32 outNd = nd - 1;
+        if (keepdims) { outNd = nd; }
+        int64[] out = heap int64[outNd];
+        if (keepdims) {
+            int32 i = 0;
+            while (i < nd) {
+                if (i == ax) { out[i] = 1; } else { out[i] = shape[i]; }
+                i = i + 1;
+            }
+        } else {
+            int32 w = 0;
+            int32 i = 0;
+            while (i < nd) {
+                if (i != ax) { out[w] = shape[i]; w = w + 1; }
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /** Σ along `axis` accumulated in `R` (numpy `a.sum(axis=, dtype=R, keepdims=)`). */
+    public static #Tensor<R> sumAxis<E extends Numeric, R extends Numeric>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<R> st = heap Storage<R>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            R acc = (R) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc + (R) e;
+                j = j + 1;
+            }
+            st.set(outLin, acc);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
+    /** Π along `axis` accumulated in `R` (numpy `a.prod(axis=, dtype=R, keepdims=)`). */
+    public static #Tensor<R> prodAxis<E extends Numeric, R extends Numeric>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<R> st = heap Storage<R>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            R acc = (R) 1;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc * (R) e;
+                j = j + 1;
+            }
+            st.set(outLin, acc);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
+    /** Minimum along `axis` (numpy `a.min(axis=, keepdims=)`); requires axis length >= 1. */
+    public static #Tensor<E> minAxis<E extends Numeric>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            E acc = (E) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                if (j == 0) { acc = e; } else { acc = Math.min(acc, e); }
+                j = j + 1;
+            }
+            st.set(outLin, acc);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Maximum along `axis` (numpy `a.max(axis=, keepdims=)`); requires axis length >= 1. */
+    public static #Tensor<E> maxAxis<E extends Numeric>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            E acc = (E) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                if (j == 0) { acc = e; } else { acc = Math.max(acc, e); }
+                j = j + 1;
+            }
+            st.set(outLin, acc);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Arithmetic mean along `axis` in floating `R` (numpy `a.mean(axis=, dtype=R,
+     *  keepdims=)`): `Σ / axisLen`. */
+    public static #Tensor<R> meanAxis<E extends Numeric, R extends Floating>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<R> st = heap Storage<R>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            R acc = (R) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc + (R) e;
+                j = j + 1;
+            }
+            st.set(outLin, acc / (R) axisLen);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**

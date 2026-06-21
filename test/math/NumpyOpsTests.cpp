@@ -767,3 +767,50 @@ TEST(NumpyOpsTests, reductionsFullMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 4a — axis reductions (numpy a.sum(axis=)/prod/min/max/mean, keepdims + negative
+// axis). keepdims=false removes the axis (ndim-1); keepdims=true keeps it as size 1.
+TEST(NumpyOpsTests, reductionsAxisMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] d2 = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] sb = heap int64[2]; sb[0] = 2; sb[1] = 3;\n"
+        "        Tensor<int32> b = Tensor.of<int32>(d2, sb);\n"            // [[1,2,3],[4,5,6]]
+        "        Tensor<int32> s0 = Tensor.sumAxis<int32, int32>(b, 0, false);\n"   // [5,7,9]
+        "        if (s0.ndim() != 1 || s0.shapeAt(0) != 3) { return -1; }\n"
+        "        if (s0.get1(0) != 5 || s0.get1(1) != 7 || s0.get1(2) != 9) { return -2; }\n"
+        "        Tensor<int32> s1 = Tensor.sumAxis<int32, int32>(b, 1, false);\n"   // [6,15]
+        "        if (s1.shapeAt(0) != 2 || s1.get1(0) != 6 || s1.get1(1) != 15) { return -3; }\n"
+        "        Tensor<int32> s0k = Tensor.sumAxis<int32, int32>(b, 0, true);\n"   // (1,3)
+        "        if (s0k.ndim() != 2 || s0k.shapeAt(0) != 1 || s0k.shapeAt(1) != 3) { return -4; }\n"
+        "        if (s0k.get2(0, 0) != 5 || s0k.get2(0, 2) != 9) { return -5; }\n"
+        "        Tensor<int32> s1k = Tensor.sumAxis<int32, int32>(b, 1, true);\n"   // (2,1)
+        "        if (s1k.shapeAt(0) != 2 || s1k.shapeAt(1) != 1) { return -6; }\n"
+        "        if (s1k.get2(0, 0) != 6 || s1k.get2(1, 0) != 15) { return -7; }\n"
+        "        Tensor<int32> neg = Tensor.sumAxis<int32, int32>(b, -1, false);\n" // axis -1 == 1
+        "        if (neg.get1(0) != 6 || neg.get1(1) != 15) { return -8; }\n"
+        "        Tensor<int32> p0 = Tensor.prodAxis<int32, int32>(b, 0, false);\n"  // [4,10,18]
+        "        if (p0.get1(0) != 4 || p0.get1(1) != 10 || p0.get1(2) != 18) { return -9; }\n"
+        "        Tensor<int32> p1 = Tensor.prodAxis<int32, int32>(b, 1, false);\n"  // [6,120]
+        "        if (p1.get1(0) != 6 || p1.get1(1) != 120) { return -10; }\n"
+        "        Tensor<int32> mn0 = Tensor.minAxis<int32>(b, 0, false);\n"         // [1,2,3]
+        "        if (mn0.get1(0) != 1 || mn0.get1(1) != 2 || mn0.get1(2) != 3) { return -11; }\n"
+        "        Tensor<int32> mx1 = Tensor.maxAxis<int32>(b, 1, false);\n"         // [3,6]
+        "        if (mx1.get1(0) != 3 || mx1.get1(1) != 6) { return -12; }\n"
+        "        Tensor<float64> me0 = Tensor.meanAxis<int32, float64>(b, 0, false);\n" // [2.5,3.5,4.5]
+        "        if (me0.get1(0) != 2.5 || me0.get1(1) != 3.5 || me0.get1(2) != 4.5) { return -13; }\n"
+        "        Tensor<float64> me1 = Tensor.meanAxis<int32, float64>(b, 1, false);\n" // [2.0,5.0]
+        "        if (me1.get1(0) != 2.0 || me1.get1(1) != 5.0) { return -14; }\n"
+        // 3-D middle-axis reduction exercises the skip-axis C-order walk
+        "        int32[] d3 = { 0, 1, 2, 3, 4, 5, 6, 7 };\n"
+        "        int64[] sc = heap int64[3]; sc[0] = 2; sc[1] = 2; sc[2] = 2;\n"
+        "        Tensor<int32> c = Tensor.of<int32>(d3, sc);\n"
+        "        Tensor<int32> cm = Tensor.sumAxis<int32, int32>(c, 1, false);\n"   // (2,2) [[2,4],[10,12]]
+        "        if (cm.ndim() != 2 || cm.shapeAt(0) != 2 || cm.shapeAt(1) != 2) { return -15; }\n"
+        "        if (cm.get2(0, 0) != 2 || cm.get2(0, 1) != 4 || cm.get2(1, 0) != 10 || cm.get2(1, 1) != 12) { return -16; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
