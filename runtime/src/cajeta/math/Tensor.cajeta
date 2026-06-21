@@ -1455,6 +1455,84 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
+    // Conditional / fancy selection (Phase 5 unit 5). Boolean-mask compaction read
+    // (`maskedSelect`) and write (`maskedAssign`) already exist; these add `compress`
+    // (keep slices along an axis where a 1-D condition is true) and `choose` (pick
+    // each element from one of several choice tensors by an index tensor).
+
+    /** Keep the slices of `t` along `axis` where the 1-D boolean `cond` (length =
+     *  `t.shapeAt(axis)`) is true (numpy `compress`): a fresh copy whose `axis`
+     *  extent is the number of true entries. */
+    public static #Tensor<E> compress<E>(Tensor<E> t, Tensor<boolean> cond, int32 axis) {
+        int32 nd = t.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 len = t.shapeAt(ax);
+        int64 keptN = 0;
+        int64 i = 0;
+        while (i < len) { if (cond.get1(i)) { keptN = keptN + 1; } i = i + 1; }
+        int64[] keep = heap int64[keptN];
+        int64 w = 0;
+        i = 0;
+        while (i < len) { if (cond.get1(i)) { keep[w] = i; w = w + 1; } i = i + 1; }
+        int64[] outShape = heap int64[nd];
+        int32 j = 0;
+        while (j < nd) { outShape[j] = t.shapeAt(j); j = j + 1; }
+        outShape[ax] = keptN;
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int32 d = 0;
+            while (d < nd) { lidx[d] = idx[d]; d = d + 1; }
+            lidx[ax] = keep[idx[ax]];
+            E e = t.getAt(lidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Pick each element from one of `choices` by an `indices` tensor (numpy `choose`):
+     *  all same shape; `out[e] = choices[indices[e]][e]`. Fresh copy. */
+    public static #Tensor<E> choose<E>(Tensor<int64> indices, Tensor<E>[] choices) {
+        int32 nd = indices.ndim();
+        int64[] outShape = Tensor.shapeOf<int64>(indices);
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int32 ci = (int32) indices.getAt(idx);
+            E e = choices[ci].getAt(idx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**

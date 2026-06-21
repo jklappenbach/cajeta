@@ -1132,3 +1132,52 @@ TEST(NumpyOpsTests, diagTriMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 5b — conditional/fancy selection: compress (keep axis slices where a 1-D mask is
+// true) and choose (per-element pick from choice tensors by an index tensor). Plus a
+// round-trip of the existing maskedSelect/maskedAssign compaction read/write.
+TEST(NumpyOpsTests, compressChooseMaskMatchNumpy) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // compress rows of [[1,2],[3,4],[5,6]] by [true,false,true] → [[1,2],[5,6]]
+        "        int32[] d = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s32 = heap int64[2]; s32[0] = 3; s32[1] = 2;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(d, s32);\n"
+        "        boolean[] cb = { true, false, true };\n"
+        "        int64[] sc = heap int64[1]; sc[0] = 3;\n"
+        "        Tensor<boolean> cond = Tensor.of<boolean>(cb, sc);\n"
+        "        Tensor<int32> cp = Tensor.compress<int32>(a, cond, 0);\n"   // (2,2)
+        "        if (cp.shapeAt(0) != 2 || cp.shapeAt(1) != 2) { return -1; }\n"
+        "        if (cp.get2(0, 0) != 1 || cp.get2(0, 1) != 2 || cp.get2(1, 0) != 5 || cp.get2(1, 1) != 6) { return -2; }\n"
+        // choose: indices [0,1,0,1] pick between choices c0=[10,11,12,13], c1=[20,21,22,23]
+        "        int64[] di = { 0, 1, 0, 1 };\n"
+        "        int64[] s4 = heap int64[1]; s4[0] = 4;\n"
+        "        Tensor<int64> ix = Tensor.of<int64>(di, s4);\n"
+        "        int64[] dc0 = { 10, 11, 12, 13 };\n"
+        "        int64[] s4a = heap int64[1]; s4a[0] = 4;\n"
+        "        int64[] dc1 = { 20, 21, 22, 23 };\n"
+        "        int64[] s4b = heap int64[1]; s4b[0] = 4;\n"
+        "        Tensor<int64>[] ch = heap Tensor<int64>[2];\n"
+        "        ch[0] = Tensor.of<int64>(dc0, s4a);\n"
+        "        ch[1] = Tensor.of<int64>(dc1, s4b);\n"
+        "        Tensor<int64> co = Tensor.choose<int64>(ix, ch);\n"        // [10,21,12,23]
+        "        if (co.get1(0) != 10 || co.get1(1) != 21 || co.get1(2) != 12 || co.get1(3) != 23) { return -3; }\n"
+        // maskedSelect/maskedAssign round-trip
+        "        int32[] dm = { 1, 2, 3, 4 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> m = Tensor.of<int32>(dm, s22);\n"
+        "        boolean[] bm = { true, false, false, true };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<boolean> mask = Tensor.of<boolean>(bm, s22b);\n"
+        "        Tensor<int32> sel = m.maskedSelect(mask);\n"               // [1,4]
+        "        if (sel.size() != 2 || sel.get1(0) != 1 || sel.get1(1) != 4) { return -4; }\n"
+        "        m.maskedAssign(mask, 0);\n"                                 // [[0,2],[3,0]]
+        "        if (m.get2(0, 0) != 0 || m.get2(0, 1) != 2 || m.get2(1, 0) != 3 || m.get2(1, 1) != 0) { return -5; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
