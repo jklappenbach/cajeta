@@ -2,13 +2,22 @@
 
 #include "cajeta/buildtool/ArtifactCache.h"
 #include "cajeta/buildtool/Lockfile.h"
+#include "cajeta/buildtool/Subprocess.h"
+#include "cajeta/buildtool/repo/TarZstd.h"
 #include "cajeta/buildtool/skill/SkillCli.h"
 
+#include <llvm/Support/Base64.h>
 #include <llvm/Support/Error.h>
 
+#include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
+#include <unistd.h>
 
 namespace cajeta::mcp {
+
+    namespace fs = std::filesystem;
 
     namespace {
 
@@ -16,6 +25,69 @@ namespace cajeta::mcp {
         constexpr const char* kProtocolVersion = "2024-11-05";
         constexpr const char* kServerName = "cajeta";
         constexpr const char* kServerVersion = "0.1.0";
+
+        // Resolve this process's own executable path (the cajeta binary in
+        // production). Linux: /proc/self/exe; fallback to argv0.
+        std::string resolveSelfExe(const char* argv0) {
+            std::error_code ec;
+            fs::path p = fs::read_symlink("/proc/self/exe", ec);
+            if (!ec && !p.empty()) return p.string();
+            return argv0 ? std::string(argv0) : std::string("cajeta");
+        }
+
+        // Make a fresh unique temp directory under the system temp dir.
+        fs::path makeTempDir(const std::string& tag) {
+            static std::atomic<unsigned> counter{0};
+            fs::path base = fs::temp_directory_path();
+            fs::path dir = base / ("cajeta_mcp_" + tag + "_"
+                + std::to_string((long long) ::getpid()) + "_"
+                + std::to_string(counter.fetch_add(1)));
+            std::error_code ec;
+            fs::create_directories(dir, ec);
+            return dir;
+        }
+
+        // Decode a base64 tar.zstd archive into its entries. Returns false with
+        // *err set on a malformed archive.
+        bool decodeArchive(const std::string& b64,
+                           std::vector<buildtool::TarEntry>* out,
+                           std::string* err) {
+            std::vector<char> raw;
+            if (llvm::Error e = llvm::decodeBase64(b64, raw)) {
+                *err = "base64: " + llvm::toString(std::move(e));
+                return false;
+            }
+            auto entries = buildtool::readTarZstd(std::string(raw.begin(), raw.end()));
+            if (!entries) {
+                *err = "tar.zstd: " + llvm::toString(entries.takeError());
+                return false;
+            }
+            *out = std::move(*entries);
+            return true;
+        }
+
+        // Write archive entries under `root`, creating parent dirs.
+        void writeEntries(const fs::path& root,
+                          const std::vector<buildtool::TarEntry>& entries) {
+            for (const auto& e : entries) {
+                fs::path target = root / e.name;
+                std::error_code ec;
+                fs::create_directories(target.parent_path(), ec);
+                std::ofstream f(target, std::ios::binary);
+                f.write(e.data.data(), (std::streamsize) e.data.size());
+            }
+        }
+
+        // Split captured stderr into one diagnostic string per non-empty line.
+        Json diagnosticsFrom(const std::string& stderrText) {
+            Json arr = Json::array();
+            std::istringstream ss(stderrText);
+            std::string line;
+            while (std::getline(ss, line)) {
+                if (!line.empty()) arr.push_back(line);
+            }
+            return arr;
+        }
 
         const char* tierToString(buildtool::skill::MatchTier t) {
             using buildtool::skill::MatchTier;
@@ -116,22 +188,97 @@ namespace cajeta::mcp {
     }
 
     McpServer::McpServer() {
+        compilerExePath_ = resolveSelfExe(nullptr);
         installDefaultSkillBackend();
         registerSkillTools();
+        registerCompileTool();
 
-        // compile / jit_execute remain stubs until their units land; registering
-        // them here keeps tools/list complete.
+        // jit_execute remains a stub until its unit lands; registering it here
+        // keeps tools/list complete.
         Json objectSchema = Json::object();
         objectSchema["type"] = "object";
-        auto stub = [](const Json&) -> Json {
-            return textContent("not implemented", /*isError=*/true);
-        };
-        registerTool("compile",
-            "Compile a base64 tar.zstd source archive; return diagnostics.",
-            objectSchema, stub);
         registerTool("jit_execute",
             "Compile and JIT-execute a source archive (process-per-execute).",
-            objectSchema, stub);
+            objectSchema, [](const Json&) -> Json {
+                return textContent("not implemented", /*isError=*/true);
+            });
+    }
+
+    void McpServer::registerCompileTool() {
+        Json schema = Json::object();
+        schema["type"] = "object";
+        {
+            Json props = Json::object();
+            Json archiveProp = Json::object();
+            archiveProp["type"] = "string";
+            archiveProp["description"] = "base64-encoded tar.zstd source tree";
+            props["archive"] = archiveProp;
+            schema["properties"] = props;
+            Json req = Json::array();
+            req.push_back(std::string("archive"));
+            schema["required"] = req;
+        }
+        registerTool("compile",
+            "Compile a base64 tar.zstd source archive; return diagnostics + artifact.",
+            schema, [this](const Json& args) -> Json {
+                if (!args.isObject() || !args.has("archive")
+                        || !args.at("archive").isString()) {
+                    throw McpError{-32602, "compile requires base64 'archive'"};
+                }
+                std::vector<buildtool::TarEntry> entries;
+                std::string err;
+                if (!decodeArchive(args.at("archive").asString(), &entries, &err)) {
+                    throw McpError{-32602, "invalid archive: " + err};
+                }
+                if (entries.empty()) {
+                    throw McpError{-32602, "archive is empty"};
+                }
+                const std::string emit = optStr(args, "emit").value_or("cja");
+                const std::string entry = optStr(args, "entryMethod").value_or("");
+
+                fs::path src = makeTempDir("compile_src");
+                fs::path out = makeTempDir("compile_out");
+                writeEntries(src, entries);
+
+                std::string outData, errData;
+                buildtool::SubprocessOptions opt;
+                opt.argv = {compilerExePath_, "--emit=" + emit, entry,
+                            src.string(), out.string()};
+                opt.outData = &outData;
+                opt.errData = &errData;
+                buildtool::SubprocessResult res = runSubprocess(opt);
+
+                // Collect the emitted .cja (if any) as a base64 artifact.
+                std::optional<std::string> artifact;
+                if (res.launched && res.code() == 0) {
+                    std::error_code ec;
+                    for (auto& de : fs::directory_iterator(out, ec)) {
+                        if (de.path().extension() == ".cja") {
+                            std::ifstream f(de.path(), std::ios::binary);
+                            std::string bytes((std::istreambuf_iterator<char>(f)),
+                                              std::istreambuf_iterator<char>());
+                            artifact = llvm::encodeBase64(bytes);
+                            break;
+                        }
+                    }
+                }
+
+                std::error_code ec;
+                fs::remove_all(src, ec);
+                fs::remove_all(out, ec);
+
+                if (!res.launched) {
+                    throw McpError{-32603, "failed to launch compiler: " + res.error};
+                }
+                const int status = res.code();
+                Json body = textContent(
+                    status == 0 ? "compiled" : errData,
+                    /*isError=*/status != 0);
+                body["exitStatus"] = status;
+                body["diagnostics"] = diagnosticsFrom(errData);
+                if (artifact) body["artifact"] = *artifact;
+                return body;
+            });
     }
 
     void McpServer::setSkillBackend(SkillBackend backend) {
@@ -330,9 +477,8 @@ namespace cajeta::mcp {
     }
 
     int dispatchMcp(int argc, const char* argv[]) {
-        (void) argc;
-        (void) argv;
         McpServer server;
+        server.setCompilerExePath(resolveSelfExe(argc > 0 ? argv[0] : nullptr));
         return server.run(std::cin, std::cout);
     }
 

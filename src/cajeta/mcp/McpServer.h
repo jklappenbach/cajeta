@@ -66,6 +66,13 @@ namespace cajeta::mcp {
         // Override the skill backend (tests inject fixtures).
         void setSkillBackend(SkillBackend backend);
 
+        // Path to the `cajeta` executable the compile/jit_execute tools shell out
+        // to (process-per-execute). Defaults to this process's own exe; tests
+        // point it at the built binary.
+        void setCompilerExePath(std::string path) {
+            compilerExePath_ = std::move(path);
+        }
+
     private:
         // A registered tool: its advertised schema + the handler that runs it.
         // The handler receives the call `arguments` object and returns the
@@ -84,6 +91,8 @@ namespace cajeta::mcp {
         void registerSkillTools();
         // Bind skill_ to the default lockfile/ArtifactCache-backed cores.
         void installDefaultSkillBackend();
+        // Register the `compile` tool (shells out to the cajeta CLI).
+        void registerCompileTool();
 
         Json initializeResult() const;
         Json toolsList() const;
@@ -92,6 +101,7 @@ namespace cajeta::mcp {
         std::map<std::string, Tool> tools_;
         SkillBackend skill_;
         std::string projectRoot_ = ".";
+        std::string compilerExePath_;   // resolved in the constructor
     };
 
     // `cajeta mcp` subcommand entry point.

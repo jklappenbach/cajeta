@@ -4,7 +4,11 @@
 
 #include "gtest/gtest.h"
 #include "cajeta/mcp/McpServer.h"
+#include "cajeta/buildtool/repo/TarZstd.h"
 
+#include <llvm/Support/Base64.h>
+
+#include <filesystem>
 #include <set>
 #include <sstream>
 #include <string>
@@ -195,6 +199,81 @@ TEST(McpServerTests, skillToolMissingRequiredParamIsInvalidParams) {
     McpServer server;
     server.setSkillBackend(fixtureBackend());
     Json resp = toolCall(server, "searchSkills", Json::object());  // no name
+    ASSERT_TRUE(resp.has("error"));
+    EXPECT_EQ(resp.at("error").at("code").asInt(), -32602);
+}
+
+// ---- U3: compile tool --------------------------------------------------
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// The built `cajeta` binary sits next to the test binary's parent: the test is
+// at <build>/test/cajeta_test, the compiler at <build>/src/cajeta.
+std::string cajetaExe() {
+    fs::path self = fs::canonical("/proc/self/exe");
+    return (self.parent_path().parent_path() / "src" / "cajeta").string();
+}
+
+// base64(tar.zstd) of the given entries — the `compile`/`jit_execute` archive
+// wire form.
+std::string buildArchive(const std::vector<cajeta::buildtool::TarEntry>& entries) {
+    auto z = cajeta::buildtool::writeTarZstd(entries);
+    EXPECT_TRUE((bool) z);
+    if (!z) { consumeError(z.takeError()); return ""; }
+    return llvm::encodeBase64(*z);
+}
+
+McpServer compileServer() {
+    McpServer s;
+    s.setCompilerExePath(cajetaExe());
+    return s;
+}
+
+} // namespace
+
+// 3.1.1
+TEST(McpServerTests, compileValidArchiveSucceeds) {
+    std::vector<cajeta::buildtool::TarEntry> entries = {
+        {"test/Foo.cajeta",
+         "package test;\npublic class Foo {\n"
+         "    public static int32 answer() { return 42; }\n}\n"}};
+    Json args = Json::object();
+    args["archive"] = buildArchive(entries);
+    args["emit"] = "cja";
+    McpServer s = compileServer();
+    Json resp = toolCall(s, "compile", args);
+    const Json& res = resp.at("result");
+    EXPECT_EQ(res.at("exitStatus").asInt(), 0);
+    EXPECT_EQ(res.at("diagnostics").size(), 0u);
+    EXPECT_TRUE(res.has("artifact"));
+    EXPECT_FALSE(res.at("artifact").asString().empty());
+}
+
+// 3.1.2
+TEST(McpServerTests, compileBadSourceReportsDiagnostics) {
+    std::vector<cajeta::buildtool::TarEntry> entries = {
+        {"test/Bad.cajeta",
+         "package test;\npublic class Bad {\n"
+         "    public static int32 answer() { return notAThing + 1; }\n}\n"}};
+    Json args = Json::object();
+    args["archive"] = buildArchive(entries);
+    args["emit"] = "cja";
+    McpServer s = compileServer();
+    Json resp = toolCall(s, "compile", args);
+    const Json& res = resp.at("result");
+    EXPECT_NE(res.at("exitStatus").asInt(), 0);
+    EXPECT_GT(res.at("diagnostics").size(), 0u);
+}
+
+// 3.1.3
+TEST(McpServerTests, malformedArchiveIsInvalidParams) {
+    // Valid base64, but not a tar.zstd archive → invalid params.
+    Json args = Json::object();
+    args["archive"] = llvm::encodeBase64(std::string("not an archive"));
+    McpServer s = compileServer();
+    Json resp = toolCall(s, "compile", args);
     ASSERT_TRUE(resp.has("error"));
     EXPECT_EQ(resp.at("error").at("code").asInt(), -32602);
 }
