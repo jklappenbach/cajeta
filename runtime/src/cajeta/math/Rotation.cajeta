@@ -1,0 +1,66 @@
+package cajeta.math;
+
+import cajeta.lang.Math;
+
+/**
+ * Rotation — the quaternion construction ergonomics a renderer and a scene graph
+ * need (cajeta-gfx plan §1.a). A pure static-utility class (no instance state,
+ * like {@link cajeta.lang.Math}): each method returns a unit
+ * `Quaternion<float32>` ready to feed {@link cajeta.math.Transform} or the
+ * builtin rotate-vector form `q * v`.
+ *
+ * The builtin `Quaternion<float32>` already provides the algebra — Hamilton
+ * product `q * q`, vector rotation `q * v`, `conjugate()`, `slerp`, `nlerp`,
+ * `dot`, `length`. What it lacks is a way to BUILD a rotation from an
+ * axis+angle or Euler angles without hand-computing the half-angle sin/cos;
+ * that is what this class adds. Quaternion storage is `(w, x, y, z)`.
+ *
+ * ```cajeta
+ * Vector<float32,3> up = stack Vector<float32,3>(0.0f, 1.0f, 0.0f);
+ * Quaternion<float32> yaw = Rotation.fromAxisAngle(up, 0.7853982f);  // 45 deg
+ * Vector<float32,3> v = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
+ * Vector<float32,3> r = yaw * v;   // builtin rotate-vector
+ * ```
+ */
+public class Rotation {
+
+    /** The identity rotation (no rotation): the unit quaternion (1,0,0,0). */
+    public static Quaternion<float32> identity() {
+        return stack Quaternion<float32>(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    /**
+     * A rotation of `angleRadians` about `axis` (right-handed). The axis is
+     * normalized internally, so a non-unit axis is fine. Closed form:
+     * `q = (cos(θ/2), sin(θ/2) * axis)`.
+     */
+    public static Quaternion<float32> fromAxisAngle(Vector<float32,3> axis, float32 angleRadians) {
+        float32 half = angleRadians * 0.5f;
+        float32 s = Math.sin(half);
+        float32 c = Math.cos(half);
+        Vector<float32,3> n = axis.normalize();
+        float32 x = n.x * s;
+        float32 y = n.y * s;
+        float32 z = n.z * s;
+        return stack Quaternion<float32>(c, x, y, z);
+    }
+
+    /**
+     * A rotation from Euler angles (radians), applied in the order roll (about
+     * +z), then yaw (about +y), then pitch (about +x): `q = qZ * qY * qX`. Each
+     * component is built with {@link #fromAxisAngle}.
+     */
+    public static Quaternion<float32> fromEuler(float32 pitchX, float32 yawY, float32 rollZ) {
+        // Single Quaternion operator per statement (the §1 compound-expression
+        // codegen finding) — and store each fromAxisAngle result in a local
+        // before using it as an operand (the cross-method-call-result finding).
+        Vector<float32,3> ax = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
+        Vector<float32,3> ay = stack Vector<float32,3>(0.0f, 1.0f, 0.0f);
+        Vector<float32,3> az = stack Vector<float32,3>(0.0f, 0.0f, 1.0f);
+        Quaternion<float32> qx = Rotation.fromAxisAngle(ax, pitchX);
+        Quaternion<float32> qy = Rotation.fromAxisAngle(ay, yawY);
+        Quaternion<float32> qz = Rotation.fromAxisAngle(az, rollZ);
+        Quaternion<float32> zy = qz * qy;
+        return zy * qx;
+    }
+}

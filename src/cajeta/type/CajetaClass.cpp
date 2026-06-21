@@ -3415,6 +3415,44 @@ namespace cajeta {
             if (iface->isPlaceholder()) return false;
             if (!iface->prototypeBuilt) return false;
         }
+        // Defer until every @ValueType referenced by a method signature
+        // (parameter or return type) is laid out as a real struct rather than a
+        // forward-reference placeholder. A value type passes BY VALUE — its flat
+        // struct LLVM type is baked into the method's llvm::Function signature,
+        // which is created exactly once (Method::generatePrototype reuses an
+        // existing Function by name) and never rebuilt. If the value type's
+        // declaring file hasn't been parsed yet (sources compile in directory/
+        // alphabetical order: e.g. `Aabb` before `Ray`), its placeholder lowers
+        // to `ptr`, so the frozen signature wrongly takes the value type BY
+        // POINTER while the body later spills it as a struct — corrupting the
+        // parameter (reads of its fields return pointer bits). buildPendingProto-
+        // types retries this class after all files parse, when the dependency is
+        // real, laid out, and flagged. Gating on isPlaceholder() (not
+        // prototypeBuilt) keeps this deadlock-free and lets a self-referential
+        // value-type method through — the class's own canonical is filled in
+        // before tryGeneratePrototype and is laid out by generatePrototype before
+        // its method prototypes are built. See plans/value-type-overloading-plan.md.
+        auto valueTypePlaceholder = [](const CajetaTypePtr& t) -> bool {
+            if (!t || !t->getQName()) return false;
+            const std::string canonical = t->getQName()->toCanonical();
+            if (!t->isValueType()
+                    && !CajetaType::isArchiveValueType(canonical)) {
+                return false;
+            }
+            auto& cmap = CajetaType::getCanonicalMap();
+            auto it = cmap.find(canonical);
+            if (it == cmap.end() || !it->second) return true;
+            auto cls = std::dynamic_pointer_cast<CajetaClass>(it->second);
+            return cls && cls->isPlaceholder();
+        };
+        for (auto& methodEntry : methods) {
+            auto& method = methodEntry.second;
+            if (!method) continue;
+            if (valueTypePlaceholder(method->getReturnType())) return false;
+            for (auto& p : method->getParameterList()) {
+                if (p && valueTypePlaceholder(p->getType())) return false;
+            }
+        }
         generatePrototype();
         return true;
     }

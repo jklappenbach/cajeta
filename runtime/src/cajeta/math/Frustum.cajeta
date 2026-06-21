@@ -1,0 +1,143 @@
+package cajeta.math;
+
+/**
+ * Frustum — the six clip planes of a camera, the culling primitive a renderer
+ * uses to reject off-screen geometry (cajeta-gfx plan §1.e). A value type over
+ * the builtin `Vector<float32,4>`: each plane is stored as `(nx, ny, nz, d)` with
+ * the convention that a point `p` is INSIDE the half-space when
+ * `nx*p.x + ny*p.y + nz*p.z + d >= 0` (i.e. `plane · (p, 1) >= 0`). Planes are
+ * normalized (unit `n`) so the dot product is a signed metric distance.
+ *
+ * Built from a view-projection matrix with {@link #fromViewProjection} using the
+ * Gribb-Hartmann row combinations, adapted to the convention of
+ * {@link cajeta.math.Camera} (right-handed, clip-space depth [0,1],
+ * column-vector `m * v`, row-major storage):
+ *
+ *   left   = row0 + row3      right = row3 - row0
+ *   bottom = row1 + row3      top   = row3 - row1
+ *   near   = row2             far   = row3 - row2   (near uses row2 alone for [0,1] depth)
+ *
+ * ```cajeta
+ * Matrix<float32,4,4> vp = proj * view;       // builtin matrix multiply
+ * Frustum fr = Frustum.fromViewProjection(vp);
+ * boolean visible = fr.intersectsSphere(bounds);
+ * ```
+ */
+@ValueType public final class Frustum {
+    public Vector<float32,4> left;
+    public Vector<float32,4> right;
+    public Vector<float32,4> bottom;
+    public Vector<float32,4> top;
+    public Vector<float32,4> near;
+    public Vector<float32,4> far;
+
+    public Frustum(Vector<float32,4> left, Vector<float32,4> right,
+                   Vector<float32,4> bottom, Vector<float32,4> top,
+                   Vector<float32,4> near, Vector<float32,4> far) {
+        this.left = left;
+        this.right = right;
+        this.bottom = bottom;
+        this.top = top;
+        this.near = near;
+        this.far = far;
+    }
+
+    /** Normalize a plane `(nx,ny,nz,d)` by the length of its normal so the dot
+     *  with a homogeneous point is a signed metric distance. */
+    public static Vector<float32,4> normalizePlane(Vector<float32,4> p) {
+        Vector<float32,3> n = stack Vector<float32,3>(p.x, p.y, p.z);
+        float32 len = n.length();
+        return p / len;
+    }
+
+    /**
+     * Extract the six normalized clip planes from a view-projection matrix
+     * (Gribb-Hartmann; RH, clip depth [0,1], column-vector convention).
+     */
+    public static Frustum fromViewProjection(Matrix<float32,4,4> vp) {
+        // One operator/method per statement (the §1 compound-expression codegen
+        // finding); each fromXxx result stored in a local before reuse.
+        Vector<float32,4> r0 = vp.row(0);
+        Vector<float32,4> r1 = vp.row(1);
+        Vector<float32,4> r2 = vp.row(2);
+        Vector<float32,4> r3 = vp.row(3);
+
+        Vector<float32,4> lRaw = r0 + r3;
+        Vector<float32,4> l = Frustum.normalizePlane(lRaw);
+        Vector<float32,4> rRaw = r3 - r0;
+        Vector<float32,4> r = Frustum.normalizePlane(rRaw);
+        Vector<float32,4> bRaw = r1 + r3;
+        Vector<float32,4> b = Frustum.normalizePlane(bRaw);
+        Vector<float32,4> tRaw = r3 - r1;
+        Vector<float32,4> t = Frustum.normalizePlane(tRaw);
+        Vector<float32,4> n = Frustum.normalizePlane(r2);
+        Vector<float32,4> fRaw = r3 - r2;
+        Vector<float32,4> f = Frustum.normalizePlane(fRaw);
+
+        return stack Frustum(l, r, b, t, n, f);
+    }
+
+    /** True iff the point is inside (or on) all six half-spaces. */
+    public boolean containsPoint(Vector<float32,3> p) {
+        Vector<float32,4> ph = stack Vector<float32,4>(p.x, p.y, p.z, 1.0f);
+        float32 dl = this.left.dot(ph);
+        if (dl < 0.0f) { return false; }
+        float32 dr = this.right.dot(ph);
+        if (dr < 0.0f) { return false; }
+        float32 db = this.bottom.dot(ph);
+        if (db < 0.0f) { return false; }
+        float32 dt = this.top.dot(ph);
+        if (dt < 0.0f) { return false; }
+        float32 dn = this.near.dot(ph);
+        if (dn < 0.0f) { return false; }
+        float32 df = this.far.dot(ph);
+        if (df < 0.0f) { return false; }
+        return true;
+    }
+
+    /** True unless the sphere lies entirely outside one of the six planes. */
+    public boolean intersectsSphere(Sphere s) {
+        Vector<float32,3> c = s.center();
+        float32 radius = s.radius();
+        float32 negR = 0.0f - radius;
+        Vector<float32,4> ch = stack Vector<float32,4>(c.x, c.y, c.z, 1.0f);
+        float32 dl = this.left.dot(ch);
+        if (dl < negR) { return false; }
+        float32 dr = this.right.dot(ch);
+        if (dr < negR) { return false; }
+        float32 db = this.bottom.dot(ch);
+        if (db < negR) { return false; }
+        float32 dt = this.top.dot(ch);
+        if (dt < negR) { return false; }
+        float32 dn = this.near.dot(ch);
+        if (dn < negR) { return false; }
+        float32 df = this.far.dot(ch);
+        if (df < negR) { return false; }
+        return true;
+    }
+
+    /** The AABB's positive vertex (corner furthest along the plane normal) is
+     *  behind the plane => the whole box is outside that plane. */
+    public boolean aabbOutside(Vector<float32,4> plane, Vector<float32,3> mn,
+                               Vector<float32,3> mx) {
+        float32 px = plane.x >= 0.0f ? mx.x : mn.x;
+        float32 py = plane.y >= 0.0f ? mx.y : mn.y;
+        float32 pz = plane.z >= 0.0f ? mx.z : mn.z;
+        Vector<float32,4> pv = stack Vector<float32,4>(px, py, pz, 1.0f);
+        float32 d = plane.dot(pv);
+        return d < 0.0f;
+    }
+
+    /** Conservative AABB cull: false only if the box is fully outside a plane. */
+    public boolean intersectsAabb(Aabb b) {
+        Vector<float32,3> mn = b.min();
+        Vector<float32,3> mx = b.max();
+        if (this.aabbOutside(this.left, mn, mx)) { return false; }
+        if (this.aabbOutside(this.right, mn, mx)) { return false; }
+        if (this.aabbOutside(this.bottom, mn, mx)) { return false; }
+        if (this.aabbOutside(this.top, mn, mx)) { return false; }
+        if (this.aabbOutside(this.near, mn, mx)) { return false; }
+        if (this.aabbOutside(this.far, mn, mx)) { return false; }
+        return true;
+    }
+}

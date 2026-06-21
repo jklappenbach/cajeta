@@ -74,6 +74,10 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // interaction-framework stdlib (Surface/Window/WindowEvent, Input/Audio/Video
 // backends + sinks, capability/permission/lifecycle vocabulary, IfxInfo/
 // IfxException, the Null* floors; +32 prelude structures).
+// 2026-06-21: still 374 — cajeta-gfx §1 added the graphics math value types
+// (cajeta.math.{Ray,Aabb,Sphere,Plane,Transform,Camera,Rotation,Frustum,Color}),
+// but cajeta.math is LAZILY parsed (loads only when imported), so it does not
+// change the fresh-process prelude count this test anchors to.
 static constexpr size_t STDLIB_STRUCTURE_COUNT = 374;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {

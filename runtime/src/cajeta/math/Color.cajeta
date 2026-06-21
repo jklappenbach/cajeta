@@ -1,0 +1,90 @@
+package cajeta.math;
+
+import cajeta.lang.Math;
+
+/**
+ * Color — an RGBA color, the value type a renderer passes between sRGB-encoded
+ * texture/UI space and linear light space (cajeta-gfx plan §1.d). A value type
+ * over four `float32` channels (r, g, b, a), each in [0,1].
+ *
+ * sRGB is a non-linear encoding: shading must happen in LINEAR light, but
+ * textures and UI colors are usually sRGB-encoded. `toLinear()` decodes sRGB ->
+ * linear; `toSrgb()` encodes linear -> sRGB. Both use the standard IEC
+ * 61966-2-1 piecewise transfer function (a small linear segment near black, a
+ * gamma-2.4 power curve above). Alpha is linear and passes through unchanged.
+ *
+ * ```cajeta
+ * Color albedo = stack Color(0.5f, 0.25f, 0.1f, 1.0f);  // sRGB from a texture
+ * Color lit = albedo.toLinear();                        // shade in linear light
+ * Color out = lit.toSrgb();                             // encode for the display
+ * ```
+ */
+@ValueType public final class Color {
+    public float32 r;
+    public float32 g;
+    public float32 b;
+    public float32 a;
+
+    public Color(float32 r, float32 g, float32 b, float32 a) {
+        this.r = r;
+        this.g = g;
+        this.b = b;
+        this.a = a;
+    }
+
+    /** Red channel. */
+    public float32 r() {
+        return this.r;
+    }
+
+    /** Green channel. */
+    public float32 g() {
+        return this.g;
+    }
+
+    /** Blue channel. */
+    public float32 b() {
+        return this.b;
+    }
+
+    /** Alpha channel. */
+    public float32 a() {
+        return this.a;
+    }
+
+    /** Decode one sRGB-encoded channel to linear light. */
+    public static float32 srgbToLinearChannel(float32 c) {
+        if (c <= 0.04045f) {
+            return c / 12.92f;
+        }
+        float32 num = c + 0.055f;
+        float32 base = num / 1.055f;
+        return Math.pow(base, 2.4f);
+    }
+
+    /** Encode one linear-light channel to sRGB. */
+    public static float32 linearToSrgbChannel(float32 c) {
+        if (c <= 0.0031308f) {
+            return c * 12.92f;
+        }
+        float32 p = Math.pow(c, 0.41666667f);   // 1 / 2.4
+        float32 s = 1.055f * p;
+        return s - 0.055f;
+    }
+
+    /** This color decoded from sRGB to linear light (alpha unchanged). */
+    public Color toLinear() {
+        float32 lr = Color.srgbToLinearChannel(this.r);
+        float32 lg = Color.srgbToLinearChannel(this.g);
+        float32 lb = Color.srgbToLinearChannel(this.b);
+        return stack Color(lr, lg, lb, this.a);
+    }
+
+    /** This color encoded from linear light to sRGB (alpha unchanged). */
+    public Color toSrgb() {
+        float32 sr = Color.linearToSrgbChannel(this.r);
+        float32 sg = Color.linearToSrgbChannel(this.g);
+        float32 sb = Color.linearToSrgbChannel(this.b);
+        return stack Color(sr, sg, sb, this.a);
+    }
+}
