@@ -726,3 +726,44 @@ TEST(NumpyOpsTests, elementwiseCpuGpuAgree) {
         "}\n";
     EXPECT_EQ(runI32Xpu(src), 1);
 }
+
+// 4a — full-array reductions to a scalar (numpy a.sum()/prod()/min()/max()/mean()
+// with no axis). Explicit accumulator dtype R (numpy dtype= kwarg); walks the full
+// multi-index so it is correct for n-D tensors. Values chosen exact.
+TEST(NumpyOpsTests, reductionsFullMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] d1 = { 1, 2, 3, 4 };\n"
+        "        int64[] sa = heap int64[1]; sa[0] = 4;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(d1, sa);\n"               // [1,2,3,4]
+        "        if (Tensor.sum<int32, int32>(a) != 10) { return -1; }\n"
+        "        if (Tensor.prod<int32, int32>(a) != 24) { return -2; }\n"
+        "        if (Tensor.min<int32>(a) != 1) { return -3; }\n"
+        "        if (Tensor.max<int32>(a) != 4) { return -4; }\n"
+        "        if (Tensor.mean<int32, float64>(a) != 2.5) { return -5; }\n"
+        "        int32[] d2 = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] sb = heap int64[2]; sb[0] = 2; sb[1] = 3;\n"
+        "        Tensor<int32> b = Tensor.of<int32>(d2, sb);\n"             // [[1,2,3],[4,5,6]]
+        "        if (Tensor.sum<int32, int32>(b) != 21) { return -6; }\n"     // n-D walk
+        "        if (Tensor.prod<int32, int32>(b) != 720) { return -7; }\n"
+        "        if (Tensor.min<int32>(b) != 1) { return -8; }\n"
+        "        if (Tensor.max<int32>(b) != 6) { return -9; }\n"
+        "        if (Tensor.mean<int32, float64>(b) != 3.5) { return -10; }\n"
+        "        float32[] d3 = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64[] sc = heap int64[1]; sc[0] = 4;\n"                    // own shape (not shared with a)
+        "        Tensor<float32> c = Tensor.of<float32>(d3, sc);\n"
+        "        if (Tensor.sum<float32, float32>(c) != 10.0f) { return -11; }\n"
+        "        if (Tensor.mean<float32, float32>(c) != 2.5f) { return -12; }\n"
+        "        if (Tensor.min<float32>(c) != 1.0f) { return -13; }\n"
+        "        if (Tensor.max<float32>(c) != 4.0f) { return -14; }\n"
+        // accumulator upcast: int8 elements summed into int64 (sum overflows int8)
+        "        int8[] d4 = { 100, 100, 100 };\n"
+        "        int64[] sd = heap int64[1]; sd[0] = 3;\n"
+        "        Tensor<int8> e = Tensor.of<int8>(d4, sd);\n"
+        "        if (Tensor.sum<int8, int64>(e) != 300) { return -15; }\n"    // 300 > int8 max
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

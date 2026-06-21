@@ -1974,6 +1974,137 @@ public class Tensor<T> {
         return Tensor.scalarOpF<E>(t, s, 2);
     }
 
+    // ────────────────────────────── reductions (Phase 4) ─────────────────────
+    //
+    // Full-array reductions to a scalar (numpy `a.sum()` etc. with no axis — cajeta
+    // has no 0-d scalar tensor in v1, so a whole-tensor reduction returns a value).
+    // Each walks the full multi-index in C-order, so it is correct for strided
+    // **views**, not just contiguous tensors. The accumulator dtype `R` is explicit
+    // (numpy's `dtype=` kwarg / default-accumulator rule): pass a wider `R` than the
+    // element dtype `E` to avoid overflow (e.g. `sum<int8, int64>`). Axis/keepdims
+    // and nan-variants are later units.
+
+    /** Σ of all elements, accumulated in `R` (numpy `a.sum(dtype=R)`). Empty → `0`. */
+    public static R sum<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        R acc = (R) 0;
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc + (R) e;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Π of all elements, accumulated in `R` (numpy `a.prod(dtype=R)`). Empty → `1`. */
+    public static R prod<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        R acc = (R) 1;
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc * (R) e;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Minimum over all elements (numpy `a.min()`). Requires a non-empty tensor. */
+    public static E min<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E acc = (E) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (lin == 0) { acc = e; } else { acc = Math.min(acc, e); }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Maximum over all elements (numpy `a.max()`). Requires a non-empty tensor. */
+    public static E max<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E acc = (E) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (lin == 0) { acc = e; } else { acc = Math.max(acc, e); }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Arithmetic mean over all elements in floating `R` (numpy `a.mean(dtype=R)`):
+     *  `Σ / n`. Empty → `0/0` (nan), matching numpy's empty-mean. */
+    public static R mean<E extends Numeric, R extends Floating>(Tensor<E> t) {
+        R acc = (R) 0;
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc + (R) e;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc / (R) n;
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**
