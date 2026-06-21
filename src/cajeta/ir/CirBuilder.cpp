@@ -155,7 +155,11 @@ namespace {
             // §2.4.1: a non-capturing lambda has a statically-known unique target.
             // Captures aren't enumerated in Phase A (only knownness matters).
             inst->targetKnown = !lam->getHasBorrowCaptures();
-            auto r = fresh(cirTypeOf(lam->getResolvedType()), CirOwnership::Value);
+            // Carry a function-typed spelling so the value reads as a closure even
+            // when an elided-param lambda leaves resolvedType unset.
+            CirType ct = cirTypeOf(lam->getResolvedType());
+            if (!ct.resolved) ct.spelling = "(closure)->?";
+            auto r = fresh(ct, CirOwnership::Value);
             inst->result = r;
             emit(inst);
             return r;
