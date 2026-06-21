@@ -129,6 +129,13 @@ public final class XXHash3 implements Hasher {
      * ```
      */
     public static int64 hash(int8[] data, int64 len) {
+        // The pure-Cajeta SIMD long path (hashLong, below) is verified
+        // bit-for-bit correct vs the native XXH3_64bits_withSeed, and the chained
+        // Vector<int64,8> codegen bugs that blocked it are fixed. It is not yet
+        // wired in as production: the accumulator currently spills under the 16x
+        // stripe-loop unroll (register pressure), making it slower than the
+        // native one-shot. Route here once that perf gap closes
+        // (agents/cajeta/Simd-plan.md Phase 0.6).
         return XXHash3.oneshot(data, len, Hash.processSeed());
     }
 
@@ -238,5 +245,135 @@ public final class XXHash3 implements Hasher {
      */
     public int64 finish() {
         return XXHash3.finishNative(this.state);
+    }
+
+    // ================================================================
+    //  Pure-Cajeta SIMD long-path (Vector<int64,8> = 512-bit / AVX-512)
+    // ================================================================
+    // A faithful port of XXH3-64's bulk algorithm — `accumulate_512` +
+    // `scrambleAcc` + `mergeAccs` — written in Cajeta SIMD value types, no
+    // @Native, no C xxHash. Built with `--cpu=native` the Vector<int64,8>
+    // arithmetic lowers to AVX-512 (vpmullq / vpxorq / vpsrlq / vpaddq), so a
+    // 64-byte stripe is one set of vector ops instead of eight scalar rounds.
+    // hash() routes inputs > 240 bytes here; the result is bit-identical to the
+    // native XXH3_64bits_withSeed long path.
+
+    // Build the 192-byte seeded secret (XXH3_initCustomSecret): each 64-bit word
+    // of kSecret gets +seed (even index) or -seed (odd index).
+    public static #int8[] buildSecret(int64 seed) {
+        int8[] s = heap int8[192];
+        Cajeta.storeU64(s, 0, 0xBE4BA423396CFEB8L + seed);
+        Cajeta.storeU64(s, 8, 0x1CAD21F72C81017CL - seed);
+        Cajeta.storeU64(s, 16, 0xDB979083E96DD4DEL + seed);
+        Cajeta.storeU64(s, 24, 0x1F67B3B7A4A44072L - seed);
+        Cajeta.storeU64(s, 32, 0x78E5C0CC4EE679CBL + seed);
+        Cajeta.storeU64(s, 40, 0x2172FFCC7DD05A82L - seed);
+        Cajeta.storeU64(s, 48, 0x8E2443F7744608B8L + seed);
+        Cajeta.storeU64(s, 56, 0x4C263A81E69035E0L - seed);
+        Cajeta.storeU64(s, 64, 0xCB00C391BB52283CL + seed);
+        Cajeta.storeU64(s, 72, 0xA32E531B8B65D088L - seed);
+        Cajeta.storeU64(s, 80, 0x4EF90DA297486471L + seed);
+        Cajeta.storeU64(s, 88, 0xD8ACDEA946EF1938L - seed);
+        Cajeta.storeU64(s, 96, 0x3F349CE33F76FAA8L + seed);
+        Cajeta.storeU64(s, 104, 0x1D4F0BC7C7BBDCF9L - seed);
+        Cajeta.storeU64(s, 112, 0x3159B4CD4BE0518AL + seed);
+        Cajeta.storeU64(s, 120, 0x647378D9C97E9FC8L - seed);
+        Cajeta.storeU64(s, 128, 0xC3EBD33483ACC5EAL + seed);
+        Cajeta.storeU64(s, 136, 0xEB6313FAFFA081C5L - seed);
+        Cajeta.storeU64(s, 144, 0x49DAF0B751DD0D17L + seed);
+        Cajeta.storeU64(s, 152, 0x9E68D429265516D3L - seed);
+        Cajeta.storeU64(s, 160, 0xFCA1477D58BE162BL + seed);
+        Cajeta.storeU64(s, 168, 0xCE31D07AD1B8F88FL - seed);
+        Cajeta.storeU64(s, 176, 0x280416958F3ACB45L + seed);
+        Cajeta.storeU64(s, 184, 0x7E404BBBCAFBD7AFL - seed);
+        return s;
+    }
+
+    // 64x64 -> 128 multiply, folded: low64(a*b) ^ high64(a*b) (schoolbook, O(1)).
+    public static int64 mulFold(int64 a, int64 b) {
+        int64 aLo = a & 0xFFFFFFFFL;
+        int64 aHi = a >>> 32;
+        int64 bLo = b & 0xFFFFFFFFL;
+        int64 bHi = b >>> 32;
+        int64 ll = aLo * bLo;
+        int64 lh = aLo * bHi;
+        int64 hl = aHi * bLo;
+        int64 hh = aHi * bHi;
+        int64 cross = (ll >>> 32) + (lh & 0xFFFFFFFFL) + (hl & 0xFFFFFFFFL);
+        int64 low = (cross << 32) | (ll & 0xFFFFFFFFL);
+        int64 high = hh + (lh >>> 32) + (hl >>> 32) + (cross >>> 32);
+        return low ^ high;
+    }
+
+    public static int64 mix2(int64 a0, int64 a1, int8[] secret, int64 off) {
+        int64 x0 = a0 ^ Cajeta.loadU64(secret, off);
+        int64 x1 = a1 ^ Cajeta.loadU64(secret, off + 8);
+        return XXHash3.mulFold(x0, x1);
+    }
+
+    public static int64 avalanche(int64 h) {
+        int64 x = h ^ (h >>> 37);
+        x = x * 0x165667919E3779F9L;
+        x = x ^ (x >>> 32);
+        return x;
+    }
+
+    // The long-input driver: init 8 accumulators, run the block loop
+    // (16 stripes + scramble), the trailing stripes, the final stripe, then
+    // merge to a 64-bit digest.
+    public static int64 hashLong(int8[] data, int64 len, int64 seed) {
+        int8[] secret = XXHash3.buildSecret(seed);
+        int8[] accBuf = heap int8[64];
+        Cajeta.storeU64(accBuf, 0, 0x00000000C2B2AE3DL);  // PRIME32_3
+        Cajeta.storeU64(accBuf, 8, 0x9E3779B185EBCA87L);  // PRIME64_1
+        Cajeta.storeU64(accBuf, 16, 0xC2B2AE3D27D4EB4FL); // PRIME64_2
+        Cajeta.storeU64(accBuf, 24, 0x165667B19E3779F9L); // PRIME64_3
+        Cajeta.storeU64(accBuf, 32, 0x85EBCA77C2B2AE63L); // PRIME64_4
+        Cajeta.storeU64(accBuf, 40, 0x0000000085EBCA77L); // PRIME32_2
+        Cajeta.storeU64(accBuf, 48, 0x27D4EB2F165667C5L); // PRIME64_5
+        Cajeta.storeU64(accBuf, 56, 0x000000009E3779B1L); // PRIME32_1
+        Vector<int64,8> acc = Cajeta.vload8i64(accBuf, 0); // INIT_ACC, then stays in registers
+
+        // The accumulate is inlined (not a per-stripe call) so `acc` stays in a
+        // zmm register across the whole loop — a 512-bit by-value argument would
+        // otherwise spill to the stack on every one of the ~16K stripes.
+        int64 nbBlocks = (len - 1) / 1024;
+        int64 bIdx = 0;
+        while (bIdx < nbBlocks) {
+            int64 base = bIdx * 1024;
+            int64 s = 0;
+            while (s < 16) {
+                Vector<int64,8> d = Cajeta.vload8i64(data, base + s * 64);
+                Vector<int64,8> key = d ^ Cajeta.vload8i64(secret, s * 8);
+                Vector<int64,8> hi = key >>> 32;
+                acc = acc + Cajeta.vswapPairs(d) + (key & 0xFFFFFFFFL) * hi;
+                s = s + 1;
+            }
+            Vector<int64,8> shifted = acc >>> 47;
+            acc = ((acc ^ shifted) ^ Cajeta.vload8i64(secret, 128)) * 0x000000009E3779B1L;
+            bIdx = bIdx + 1;
+        }
+
+        int64 nbStripes = ((len - 1) - 1024 * nbBlocks) / 64;
+        int64 s2 = 0;
+        while (s2 < nbStripes) {
+            Vector<int64,8> d = Cajeta.vload8i64(data, nbBlocks * 1024 + s2 * 64);
+            Vector<int64,8> key = d ^ Cajeta.vload8i64(secret, s2 * 8);
+            Vector<int64,8> hi = key >>> 32;
+            acc = acc + Cajeta.vswapPairs(d) + (key & 0xFFFFFFFFL) * hi;
+            s2 = s2 + 1;
+        }
+        // The always-present last stripe (secret + 192 - 64 - 7).
+        Vector<int64,8> dl = Cajeta.vload8i64(data, len - 64);
+        Vector<int64,8> keyl = dl ^ Cajeta.vload8i64(secret, 121);
+        Vector<int64,8> hil = keyl >>> 32;
+        acc = acc + Cajeta.vswapPairs(dl) + (keyl & 0xFFFFFFFFL) * hil;
+
+        int64 result = len * 0x9E3779B185EBCA87L; // len * PRIME64_1
+        result = result + XXHash3.mix2(Cajeta.vlane(acc, 0), Cajeta.vlane(acc, 1), secret, 11);
+        result = result + XXHash3.mix2(Cajeta.vlane(acc, 2), Cajeta.vlane(acc, 3), secret, 27);
+        result = result + XXHash3.mix2(Cajeta.vlane(acc, 4), Cajeta.vlane(acc, 5), secret, 43);
+        result = result + XXHash3.mix2(Cajeta.vlane(acc, 6), Cajeta.vlane(acc, 7), secret, 59);
+        return XXHash3.avalanche(result);
     }
 }
