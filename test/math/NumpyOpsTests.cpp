@@ -948,3 +948,35 @@ TEST(NumpyOpsTests, scansMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 4c — reductionsCpuGpuAgree: the stdlib GPU reduction (Ewise.sumF32, atomic
+// parallel sum) routes on placement — on-device → atomicAdd reduction; host → CPU
+// loop — and the two agree, and agree with the generic CPU Tensor.sum. Integer-
+// valued floats (sum 36 < 2^24) → exact regardless of atomic order. cajeta.gpu CPU
+// backend in-process (no GPU required).
+TEST(NumpyOpsTests, reductionsCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> mk() {\n"
+        "        float32[] d = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };\n"
+        "        int64[] s = heap int64[1]; s[0] = 8;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> a = D.mk();\n"
+        "        float32 cpu = Ewise.sumF32(a);\n"             // host path
+        "        if (cpu != 36.0f) { return -1; }\n"
+        "        Tensor<float32> b = D.mk();\n"
+        "        b.gpu();\n"
+        "        float32 gpu = Ewise.sumF32(b);\n"             // device path (atomic)
+        "        if (gpu != cpu) { return -2; }\n"             // GPU agrees with CPU
+        "        Tensor<float32> c = D.mk();\n"
+        "        if (Tensor.sum<float32, float32>(c) != gpu) { return -3; }\n"  // and with generic reduction
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}

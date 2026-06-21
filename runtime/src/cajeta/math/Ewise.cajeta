@@ -74,4 +74,47 @@ public final class Ewise {
         }
         return #out;
     }
+
+    /**
+     * Atomic parallel-sum reduction kernel: every thread adds its element into the
+     * single accumulator `out[0]` via `atomicAdd` (numpy-porting Phase 4, 4e — the
+     * GPU reduction primitive; the cajeta.gpu CPU backend lowers it to a native
+     * atomic RMW). The accumulator must be pre-zeroed.
+     */
+    @Kernel
+    public static void reduceSumF32(GpuBuffer<float32> out, GpuBuffer<float32> in, uint32 n) {
+        uint32 i = GpuThread.globalIdX();
+        if (i < n) { out.atomicAdd(0, in[i]); }
+    }
+
+    /**
+     * Full-array sum of a **contiguous** `float32` tensor, routed on placement: when
+     * on-device → the {@link #reduceSumF32} atomic GPU reduction over a 1-element
+     * accumulator; otherwise the CPU loop. The two agree (the Phase-4 reduction
+     * cross-check). Sum is exact (order-independent) for integer-valued floats whose
+     * total stays below 2^24, so the atomic order does not perturb agreement there.
+     */
+    public static float32 sumF32(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            int64[] os = heap int64[1];
+            os[0] = 1;
+            Tensor<float32> acc = Tensor.zeros<float32>(os);   // accumulator out[0] = 0
+            acc.gpu();
+            uint32 un = (uint32) n;
+            GpuStream s = GpuStream.current();
+            reduceSumF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (acc.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+            acc.cpu();
+            return acc.get1(0);
+        }
+        float32 sum = 0.0f;
+        int64 i = 0;
+        while (i < n) {
+            sum = sum + t.flatGet(i);
+            i = i + 1;
+        }
+        return sum;
+    }
 }
