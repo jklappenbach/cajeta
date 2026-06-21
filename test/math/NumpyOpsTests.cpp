@@ -1061,3 +1061,44 @@ TEST(NumpyOpsTests, joinSplitMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 5a — replication/shift/pad: tile (per-axis reps), repeat (each elem n× along axis),
+// pad (constant), roll (cyclic shift). All produce fresh copies.
+TEST(NumpyOpsTests, replicateShiftPadMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] d = { 1, 2, 3 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(d, s3);\n"           // [1,2,3]
+        // tile by 2 → [1,2,3,1,2,3]
+        "        int64[] reps = heap int64[1]; reps[0] = 2;\n"
+        "        Tensor<int32> ti = Tensor.tile<int32>(a, reps);\n"
+        "        if (ti.size() != 6 || ti.get1(0) != 1 || ti.get1(3) != 1 || ti.get1(5) != 3) { return -1; }\n"
+        // repeat each elem 2× → [1,1,2,2,3,3]
+        "        Tensor<int32> rp = Tensor.repeat<int32>(a, 2, 0);\n"
+        "        if (rp.size() != 6 || rp.get1(0) != 1 || rp.get1(1) != 1 || rp.get1(2) != 2 || rp.get1(5) != 3) { return -2; }\n"
+        // pad (1 before, 2 after) value 0 → [0,1,2,3,0,0]
+        "        int64[] bef = heap int64[1]; bef[0] = 1;\n"
+        "        int64[] aft = heap int64[1]; aft[0] = 2;\n"
+        "        Tensor<int32> pd = Tensor.pad<int32>(a, bef, aft, 0);\n"
+        "        if (pd.size() != 6 || pd.get1(0) != 0 || pd.get1(1) != 1 || pd.get1(3) != 3 || pd.get1(4) != 0 || pd.get1(5) != 0) { return -3; }\n"
+        // roll by 1 → [3,1,2]
+        "        Tensor<int32> rl = Tensor.roll<int32>(a, 1, 0);\n"
+        "        if (rl.get1(0) != 3 || rl.get1(1) != 1 || rl.get1(2) != 2) { return -4; }\n"
+        // roll by -1 → [2,3,1]
+        "        Tensor<int32> rln = Tensor.roll<int32>(a, -1, 0);\n"
+        "        if (rln.get1(0) != 2 || rln.get1(1) != 3 || rln.get1(2) != 1) { return -5; }\n"
+        // 2-D tile: [[1,2],[3,4]] tiled (2,1) → (4,2)
+        "        int32[] d4 = { 1, 2, 3, 4 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> m = Tensor.of<int32>(d4, s22);\n"
+        "        int64[] reps2 = heap int64[2]; reps2[0] = 2; reps2[1] = 1;\n"
+        "        Tensor<int32> tm = Tensor.tile<int32>(m, reps2);\n"      // (4,2)
+        "        if (tm.shapeAt(0) != 4 || tm.shapeAt(1) != 2) { return -6; }\n"
+        "        if (tm.get2(0, 0) != 1 || tm.get2(2, 0) != 1 || tm.get2(3, 1) != 4) { return -7; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

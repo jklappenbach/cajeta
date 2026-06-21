@@ -1231,6 +1231,152 @@ public class Tensor<T> {
         return #out;
     }
 
+    // Replication / shift / pad (Phase 5 unit 3) — copy-producing ops that remap each
+    // output multi-index back into the source (modulo, divide, offset, or wrap). All
+    // walk the output in C-order and read the source via `readBroadcast`.
+
+    /** Tile `t` by `reps[i]` along each axis (numpy `tile`, per-axis reps matching
+     *  ndim): result axis `i` has extent `shape[i] * reps[i]`; element wraps modulo. */
+    public static #Tensor<E> tile<E>(Tensor<E> t, int64[] reps) {
+        int32 nd = t.ndim();
+        int64[] outShape = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) { outShape[i] = t.shapeAt(i) * reps[i]; i = i + 1; }
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int32 d = 0;
+            while (d < nd) { lidx[d] = idx[d] % t.shapeAt(d); d = d + 1; }
+            E e = t.readBroadcast(lidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Repeat each element `n` times along `axis` (numpy `repeat`): result axis extent
+     *  is `shape[axis] * n`; output index `j` maps to source `j / n`. */
+    public static #Tensor<E> repeat<E>(Tensor<E> t, int32 n, int32 axis) {
+        int32 nd = t.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64[] outShape = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) { outShape[i] = t.shapeAt(i); i = i + 1; }
+        outShape[ax] = t.shapeAt(ax) * (int64) n;
+        int64 cnt = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(cnt);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < cnt) {
+            int32 d = 0;
+            while (d < nd) { lidx[d] = idx[d]; d = d + 1; }
+            lidx[ax] = idx[ax] / (int64) n;
+            E e = t.readBroadcast(lidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Constant-pad each axis by `before[i]`/`after[i]` with `value` (numpy `pad`,
+     *  mode='constant'): result axis extent is `before[i] + shape[i] + after[i]`. */
+    public static #Tensor<E> pad<E>(Tensor<E> t, int64[] before, int64[] after, E value) {
+        int32 nd = t.ndim();
+        int64[] outShape = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) { outShape[i] = before[i] + t.shapeAt(i) + after[i]; i = i + 1; }
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean inside = true;
+            int32 d = 0;
+            while (d < nd) {
+                int64 li = idx[d] - before[d];
+                if (li < 0 || li >= t.shapeAt(d)) { inside = false; }
+                lidx[d] = li;
+                d = d + 1;
+            }
+            E e = value;
+            if (inside) { e = t.readBroadcast(lidx); }
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Cyclically shift elements by `shift` along `axis` (numpy `roll`): output index
+     *  `j` maps to source `(j - shift) mod L`. Same shape as the input. */
+    public static #Tensor<E> roll<E>(Tensor<E> t, int64 shift, int32 axis) {
+        int32 nd = t.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 len = t.shapeAt(ax);
+        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int32 d = 0;
+            while (d < nd) { lidx[d] = idx[d]; d = d + 1; }
+            int64 src = ((idx[ax] - shift) % len + len) % len;
+            lidx[ax] = src;
+            E e = t.readBroadcast(lidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**
