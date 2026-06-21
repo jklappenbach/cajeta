@@ -485,19 +485,20 @@ bool injectUserSpecConstants(std::vector<uint8_t>& bytes) {
     return any;
 }
 
-} // namespace
-
+// Build a SPIR-V TargetMachine from an explicit triple string. Self-initializes
+// the target registry. The per-stage and compute entry points both funnel here,
+// so the lookup/createTargetMachine logic lives in one place.
 std::unique_ptr<llvm::TargetMachine>
-createSpirvTargetMachine(const std::string& /*arch*/) {
+createTargetMachineForTriple(const std::string& tripleStr) {
     ensureTargetsInitialized();
 
-    llvm::Triple triple(kSpirvTriple);
+    llvm::Triple triple(tripleStr);
     std::string error;
     const llvm::Target* target =
         llvm::TargetRegistry::lookupTarget(triple, error);
     if (!target) {
-        llvm::errs() << "cajeta.xpu.vulkan: spirv target not available: "
-                     << error << "\n";
+        llvm::errs() << "cajeta.xpu.vulkan: spirv target not available for "
+                     << tripleStr << ": " << error << "\n";
         return nullptr;
     }
 
@@ -509,8 +510,50 @@ createSpirvTargetMachine(const std::string& /*arch*/) {
     return std::unique_ptr<llvm::TargetMachine>(tm);
 }
 
+} // namespace
+
+std::unique_ptr<llvm::TargetMachine>
+createSpirvTargetMachine(const std::string& /*arch*/) {
+    return createTargetMachineForTriple(kSpirvTriple);
+}
+
 void configureDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     m.setTargetTriple(llvm::Triple(kSpirvTriple));
+    m.setDataLayout(tm.createDataLayout());
+}
+
+const char* spirvStageEnv(ShaderStage stage) {
+    switch (stage) {
+        case ShaderStage::Compute:     return "compute";
+        case ShaderStage::Vertex:      return "vertex";
+        case ShaderStage::Fragment:    return "pixel";
+        case ShaderStage::Geometry:    return "geometry";
+        case ShaderStage::TessControl: return "hull";
+        case ShaderStage::TessEval:    return "domain";
+        case ShaderStage::Mesh:        return "mesh";
+        case ShaderStage::Task:        return "amplification";
+    }
+    return "compute";
+}
+
+std::string spirvStageTriple(ShaderStage stage, const std::string& arch) {
+    return std::string("spirv-unknown-") + arch + "-" + spirvStageEnv(stage);
+}
+
+const char* hlslShaderAttr(ShaderStage stage) {
+    // The hlsl.shader attribute spelling coincides with the triple env token
+    // (both are the LLVM/HLSL stage names the in-tree backend recognizes).
+    return spirvStageEnv(stage);
+}
+
+std::unique_ptr<llvm::TargetMachine>
+createSpirvTargetMachineForStage(ShaderStage stage, const std::string& arch) {
+    return createTargetMachineForTriple(spirvStageTriple(stage, arch));
+}
+
+void configureDeviceModuleForStage(llvm::Module& m, llvm::TargetMachine& tm,
+                                   ShaderStage stage, const std::string& arch) {
+    m.setTargetTriple(llvm::Triple(spirvStageTriple(stage, arch)));
     m.setDataLayout(tm.createDataLayout());
 }
 
