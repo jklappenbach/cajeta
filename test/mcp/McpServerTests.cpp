@@ -264,3 +264,49 @@ TEST(McpServerTests, malformedArchiveIsInvalidParams) {
     ASSERT_TRUE(resp.has("error"));
     EXPECT_EQ(resp.at("error").at("code").asInt(), -32602);
 }
+
+// ---- U4: jit_execute tool (process-per-execute) ------------------------
+
+// 4.1.1 — JIT-execute a program: capture its stdout + its int32 return.
+TEST(McpServerTests, jitExecuteRunsAndCaptures) {
+    std::vector<cajeta::buildtool::TarEntry> entries = {
+        {"test/Run.cajeta",
+         "package test;\npublic class Run {\n"
+         "    public static int32 main() {\n"
+         "        System.stdout.println(\"hello-jit\");\n"
+         "        return 42;\n"
+         "    }\n}\n"}};
+    Json args = Json::object();
+    args["archive"] = buildArchive(entries);
+    args["entryMethod"] = "test.Run.main";
+    McpServer s = compileServer();
+    Json resp = toolCall(s, "jit_execute", args);
+    const Json& res = resp.at("result");
+    EXPECT_EQ(res.at("exitStatus").asInt(), 42);
+    EXPECT_EQ(res.at("returnValue").asInt(), 42);
+    EXPECT_NE(res.at("stdout").asString().find("hello-jit"), std::string::npos);
+}
+
+// 4.1.2 — each execute is a fresh process, so a static counter never bleeds.
+TEST(McpServerTests, jitExecuteIsolatedPerCall) {
+    std::vector<cajeta::buildtool::TarEntry> entries = {
+        {"test/Run.cajeta",
+         "package test;\npublic class Run {\n"
+         "    public static int32 counter;\n"
+         "    public static int32 main() {\n"
+         "        Run.counter = Run.counter + 1;\n"
+         "        return Run.counter;\n"
+         "    }\n}\n"}};
+    Json args = Json::object();
+    args["archive"] = buildArchive(entries);
+    args["entryMethod"] = "test.Run.main";
+    McpServer s = compileServer();
+    Json r1 = toolCall(s, "jit_execute", args);
+    Json r2 = toolCall(s, "jit_execute", args);
+    // Fresh process each time → counter starts at 0, increments to 1 both runs.
+    EXPECT_EQ(r1.at("result").at("exitStatus").asInt(), 1);
+    EXPECT_EQ(r2.at("result").at("exitStatus").asInt(), 1);
+}
+
+// 4.1.3 timeout/kill — DEFERRED: the host Subprocess has no timeout field; a
+// SubprocessOptions.timeoutMs (poll/WNOHANG + kill) is the follow-up.

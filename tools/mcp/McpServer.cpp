@@ -269,11 +269,66 @@ namespace cajeta::mcp {
                 return body;
             });
 
-        // jit_execute lands in U4; stub keeps tools/list complete.
+        Json jitSchema = Json::object();
+        jitSchema["type"] = "object";
+        {
+            Json props = Json::object();
+            Json archiveProp = Json::object();
+            archiveProp["type"] = "string";
+            props["archive"] = archiveProp;
+            Json entryProp = Json::object();
+            entryProp["type"] = "string";
+            entryProp["description"] = "dotted entry, e.g. pkg.Class.method";
+            props["entryMethod"] = entryProp;
+            jitSchema["properties"] = props;
+            Json req = Json::array();
+            req.push_back(std::string("archive"));
+            req.push_back(std::string("entryMethod"));
+            jitSchema["required"] = req;
+        }
         registerTool("jit_execute",
             "Compile and JIT-execute a source archive (process-per-execute).",
-            obj, [](const Json&) -> Json {
-                return textContent("not implemented", /*isError=*/true);
+            jitSchema, [this](const Json& args) -> Json {
+                if (!args.isObject() || !args.has("archive")
+                        || !args.at("archive").isString()) {
+                    throw McpError{-32602, "jit_execute requires base64 'archive'"};
+                }
+                if (!args.has("entryMethod") || !args.at("entryMethod").isString()) {
+                    throw McpError{-32602,
+                        "jit_execute requires 'entryMethod' (pkg.Class.method)"};
+                }
+                std::vector<buildtool::TarEntry> entries;
+                std::string err;
+                if (!decodeArchive(args.at("archive").asString(), &entries, &err)) {
+                    throw McpError{-32602, "invalid archive: " + err};
+                }
+                if (entries.empty()) throw McpError{-32602, "archive is empty"};
+
+                const std::string entry = args.at("entryMethod").asString();
+                fs::path src = makeTempDir("jit_src");
+                writeEntries(src, entries);
+
+                // process-per-execute: a fresh `cajeta jit-run` child each call,
+                // so no JIT/global state bleeds between executions (spec §5).
+                CliResult r = cli_({"jit-run", src.string(), entry});
+
+                std::error_code ec;
+                fs::remove_all(src, ec);
+
+                if (!r.launched) {
+                    throw McpError{-32603, "failed to launch cajeta: " + r.err};
+                }
+                // jit-run propagates the entry's int32 return as its exit code,
+                // and writes its own diagnostics to stderr (program stdout stays
+                // clean in r.out).
+                Json body = textContent(r.out, /*isError=*/r.exitCode != 0);
+                body["exitStatus"] = r.exitCode;
+                body["returnValue"] = r.exitCode;
+                body["stdout"] = r.out;
+                body["stderr"] = r.err;
+                body["diagnostics"] = diagnosticsFrom(r.err);
+                body["cacheHit"] = false;
+                return body;
             });
     }
 
