@@ -9,10 +9,14 @@
 #include "cajeta/buildtool/Subprocess.h"
 #include "cajeta/dap/Json.h"
 
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 #include <vector>
+
+#include <unistd.h>   // environ
 
 using cajeta::dap::Json;
 using cajeta::buildtool::runSubprocess;
@@ -50,16 +54,8 @@ bool ensureServerBuilt() {
     return state == 1;
 }
 
-// Feed `requests` to the server on stdin; return parsed response objects.
-std::vector<Json> drive(const std::string& requests) {
-    std::string out, err;
-    SubprocessOptions opt;
-    opt.argv = {mcpExe(), "--cajeta=" + cajetaExe()};
-    opt.stdinData = &requests;
-    opt.outData = &out;
-    opt.errData = &err;
-    auto r = runSubprocess(opt);
-    EXPECT_TRUE(r.launched) << "spawn failed: " << err;
+// Parse newline-delimited JSON-RPC responses out of the server's stdout.
+std::vector<Json> parseResponses(const std::string& out) {
     std::vector<Json> responses;
     std::string line;
     for (char c : out) {
@@ -75,6 +71,47 @@ std::vector<Json> drive(const std::string& requests) {
         }
     }
     return responses;
+}
+
+// Drive the server with extra CLI args + an optional replacement env (which
+// MUST include PATH — the server shells out to sh/printenv/date/stat).
+std::vector<Json> driveArgs(const std::string& requests,
+                            const std::vector<std::string>& extraArgs,
+                            const std::vector<std::string>* env = nullptr) {
+    std::string out, err;
+    SubprocessOptions opt;
+    opt.argv = {mcpExe(), "--cajeta=" + cajetaExe()};
+    for (auto& a : extraArgs) opt.argv.push_back(a);
+    opt.stdinData = &requests;
+    opt.outData = &out;
+    opt.errData = &err;
+    opt.env = env;
+    auto r = runSubprocess(opt);
+    EXPECT_TRUE(r.launched) << "spawn failed: " << err;
+    return parseResponses(out);
+}
+
+// Default driver: caching OFF so C1–C4 stay deterministic and isolated.
+std::vector<Json> drive(const std::string& requests) {
+    return driveArgs(requests, {"--no-cache"});
+}
+
+// A fresh, empty cache directory unique to one test invocation.
+fs::path freshCacheDir(const std::string& tag) {
+    static int counter = 0;
+    auto p = fs::temp_directory_path()
+           / ("cajeta_mcp_cache_" + tag + "_" + std::to_string(++counter));
+    fs::remove_all(p);
+    fs::create_directories(p);
+    return p;
+}
+
+// The parent environment as KEY=VALUE pairs (so PATH etc. survive), plus extras.
+std::vector<std::string> envWith(const std::vector<std::string>& extra) {
+    std::vector<std::string> e;
+    for (char** p = environ; p && *p; ++p) e.emplace_back(*p);
+    for (auto& x : extra) e.push_back(x);
+    return e;
 }
 
 } // namespace
@@ -264,6 +301,142 @@ TEST(CajetaMcpServerTests, jitExecuteIsolatesProcessState) {
     ASSERT_EQ(r.size(), 2u);
     EXPECT_EQ(r[0].at("result").at("returnValue").asInt(), 1);
     EXPECT_EQ(r[1].at("result").at("returnValue").asInt(), 1);   // not 2 — fresh process
+}
+
+// A small jit_execute fixture (returns 5, prints "hi").
+static const std::vector<std::pair<std::string, std::string>> kHelloFiles = {
+    {"demo/Hello.cajeta",
+     "package demo;\n"
+     "import cajeta.lang.System;\n"
+     "public final class Hello {\n"
+     "    public static int32 run() { System.stdout.println(\"hi\"); return 5; }\n"
+     "}\n"}};
+
+// C5.1.1 / C5.3.1 — same submission twice ⇒ second is a cache hit, and the
+// on-disk cache survives a server RESTART (two separate processes, one dir).
+TEST(CajetaMcpServerTests, cacheHitOnRepeatSubmission) {
+    if (!ensureServerBuilt()) return;
+    auto dir = freshCacheDir("hit");
+    // first process: cold miss, writes the cache entry
+    auto r1 = driveArgs(jitRequest(1, kHelloFiles, "demo.Hello.run"),
+                        {"--cache-dir=" + dir.string()});
+    ASSERT_EQ(r1.size(), 1u);
+    EXPECT_FALSE(r1[0].at("result").at("cacheHit").asBool());
+    // second process (restart): hit from the on-disk entry
+    auto r2 = driveArgs(jitRequest(2, kHelloFiles, "demo.Hello.run"),
+                        {"--cache-dir=" + dir.string()});
+    ASSERT_EQ(r2.size(), 1u);
+    EXPECT_TRUE(r2[0].at("result").at("cacheHit").asBool());
+    EXPECT_EQ(r2[0].at("result").at("returnValue").asInt(), 5);
+    fs::remove_all(dir);
+}
+
+// C5.1.2 — different inputs ⇒ cache miss (distinct keys).
+TEST(CajetaMcpServerTests, cacheMissOnDifferentInputs) {
+    if (!ensureServerBuilt()) return;
+    auto dir = freshCacheDir("miss");
+    const std::vector<std::pair<std::string, std::string>> other = {
+        {"demo/Hello.cajeta",
+         "package demo;\n"
+         "public final class Hello {\n"
+         "    public static int32 run() { return 9; }\n"
+         "}\n"}};
+    auto r = driveArgs(jitRequest(1, kHelloFiles, "demo.Hello.run")
+                     + jitRequest(2, other, "demo.Hello.run"),
+                       {"--cache-dir=" + dir.string()});
+    ASSERT_EQ(r.size(), 2u);
+    EXPECT_FALSE(r[0].at("result").at("cacheHit").asBool());
+    EXPECT_FALSE(r[1].at("result").at("cacheHit").asBool());   // different source
+    fs::remove_all(dir);
+}
+
+// C5.1.3 — caps + TTL: entries-cap eviction, byte-cap eviction, TTL expiry.
+TEST(CajetaMcpServerTests, cacheCapsAndTtl) {
+    if (!ensureServerBuilt()) return;
+    const std::vector<std::pair<std::string, std::string>> a = kHelloFiles;
+    const std::vector<std::pair<std::string, std::string>> b = {
+        {"demo/Hello.cajeta",
+         "package demo;\n"
+         "public final class Hello {\n"
+         "    public static int32 run() { return 3; }\n"
+         "}\n"}};
+
+    // (a) max-entries=1: A, B (evicts A), A again ⇒ A is a miss.
+    {
+        auto dir = freshCacheDir("entries");
+        auto r = driveArgs(jitRequest(1, a, "demo.Hello.run")
+                         + jitRequest(2, b, "demo.Hello.run")
+                         + jitRequest(3, a, "demo.Hello.run"),
+                           {"--cache-dir=" + dir.string(), "--cache-max-entries=1"});
+        ASSERT_EQ(r.size(), 3u);
+        EXPECT_TRUE(r[2].at("result").at("cacheHit").asBool() == false);   // A evicted
+        fs::remove_all(dir);
+    }
+
+    // (b) max-bytes=1: every entry exceeds the cap and is evicted immediately,
+    //     so a repeat submission still misses.
+    {
+        auto dir = freshCacheDir("bytes");
+        auto r = driveArgs(jitRequest(1, a, "demo.Hello.run")
+                         + jitRequest(2, a, "demo.Hello.run"),
+                           {"--cache-dir=" + dir.string(), "--cache-max-bytes=1"});
+        ASSERT_EQ(r.size(), 2u);
+        EXPECT_FALSE(r[1].at("result").at("cacheHit").asBool());
+        fs::remove_all(dir);
+    }
+
+    // (c) TTL: cache A, backdate the entry past the TTL, re-submit ⇒ miss.
+    {
+        auto dir = freshCacheDir("ttl");
+        auto r1 = driveArgs(jitRequest(1, a, "demo.Hello.run"),
+                            {"--cache-dir=" + dir.string()});
+        ASSERT_EQ(r1.size(), 1u);
+        EXPECT_FALSE(r1[0].at("result").at("cacheHit").asBool());
+        // backdate every cache file by an hour
+        for (auto& e : fs::directory_iterator(dir)) {
+            auto t = fs::file_time_type::clock::now() - std::chrono::hours(1);
+            fs::last_write_time(e.path(), t);
+        }
+        auto r2 = driveArgs(jitRequest(2, a, "demo.Hello.run"),
+                            {"--cache-dir=" + dir.string(), "--cache-ttl=5"});
+        ASSERT_EQ(r2.size(), 1u);
+        EXPECT_FALSE(r2[0].at("result").at("cacheHit").asBool());   // expired
+        fs::remove_all(dir);
+    }
+}
+
+// C5.1.4 — config precedence: CLI > env > --config file > default.
+TEST(CajetaMcpServerTests, configPrecedence) {
+    if (!ensureServerBuilt()) return;
+    const std::string init = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
+
+    auto ttlOf = [&](const std::vector<std::string>& args,
+                     const std::vector<std::string>* env) {
+        auto r = driveArgs(init, args, env);
+        EXPECT_EQ(r.size(), 1u);
+        return r[0].at("result").at("cacheConfig").at("ttl").asInt();
+    };
+
+    // default
+    EXPECT_EQ(ttlOf({"--no-cache"}, nullptr), 3600);
+
+    // --config file with ttl=111
+    auto cfgDir = freshCacheDir("cfg");
+    auto cfgPath = (cfgDir / "config.json").string();
+    {
+        std::ofstream o(cfgPath);
+        o << "{\"cache\":{\"ttl\":111}}";
+    }
+    EXPECT_EQ(ttlOf({"--no-cache", "--config=" + cfgPath}, nullptr), 111);
+
+    // env overrides file
+    auto env222 = envWith({"CAJETA_MCP_CACHE_TTL=222"});
+    EXPECT_EQ(ttlOf({"--no-cache", "--config=" + cfgPath}, &env222), 222);
+
+    // CLI overrides env + file
+    EXPECT_EQ(ttlOf({"--no-cache", "--config=" + cfgPath, "--cache-ttl=333"}, &env222), 333);
+
+    fs::remove_all(cfgDir);
 }
 
 #endif // !_WIN32
