@@ -156,6 +156,40 @@ namespace cajeta {
         return os.str();
     }
 
+    // Synthesize `parse(int8[] bytes, int64 length) -> #E[]` for a stream of
+    // back-to-back top-level E structs (Ion's analog of protobuf's delimited
+    // framing — Ion values are self-delimiting via their type-descriptor length).
+    // A SINGLE cursor (one shared symbol table) walks the stream with
+    // `nextTopLevel()`; `reset()` rewinds for the count pass. Assumes ≥1
+    // top-level value.
+    std::string synthesizeStreamParseBody(const CajetaClassPtr& E) {
+        const std::string Ec = E->getQName()->toCanonical();
+        const std::string IC = "dev.cajeta.codec.ion.IonCursor";
+        std::ostringstream os;
+        os << "public static #" << Ec << "[] parse(int8[] bytes, int64 length) {\n";
+        os << "    " << IC << " cur = heap " << IC << "(bytes, length);\n";
+        // Pass 1: count top-level values.
+        os << "    int32 count = 1;\n";
+        os << "    while (cur.nextTopLevel()) {\n";
+        os << "        count = count + 1;\n";
+        os << "    }\n";
+        os << "    cur.reset();\n";
+        // Pass 2: allocate + bind each.
+        os << "    " << Ec << "[] outv = heap " << Ec << "[count];\n";
+        os << "    int32 i = 0;\n";
+        os << "    boolean more = true;\n";
+        os << "    while (more) {\n";
+        os << "        " << Ec << " e = heap " << Ec << "();\n";
+        emitStructBind(os, E, "cur", "e", "");
+        os << "        outv[i] = e;\n";
+        os << "        i = i + 1;\n";
+        os << "        more = cur.nextTopLevel();\n";
+        os << "    }\n";
+        os << "    return outv;\n";
+        os << "}\n";
+        return os.str();
+    }
+
     } // namespace
 
     bool synthesizeIonMethodSource(
@@ -176,16 +210,24 @@ namespace cajeta {
                 || paramCanonAt(paramTypes, 1) != "int64") {
             return false;
         }
-        // T[] (stream) → 3.2d (not yet); T (class) → one struct.
-        if (std::dynamic_pointer_cast<CajetaArray>(args[0])) return false;
-        auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
-        if (!T || !T->getQName()) return false;
-        out = synthesizeStructParseBody(T);
+        // T[] (stream) → back-to-back top-level structs; T (class) → one struct.
+        std::string label;
+        if (auto arr = std::dynamic_pointer_cast<CajetaArray>(args[0])) {
+            auto E = std::dynamic_pointer_cast<CajetaClass>(arr->getElementType());
+            if (!E || !E->getQName()) return false;
+            out = synthesizeStreamParseBody(E);
+            label = E->getQName()->toCanonical() + "[]";
+        } else {
+            auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            if (!T || !T->getQName()) return false;
+            out = synthesizeStructParseBody(T);
+            label = T->getQName()->toCanonical();
+        }
 
         if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
             if (dump[0] == '1') {
                 std::cerr << "[IonSynthesizer] " << methodName << "<"
-                          << T->getQName()->toCanonical() << ">:\n" << out << "\n";
+                          << label << ">:\n" << out << "\n";
             }
         }
         return true;
