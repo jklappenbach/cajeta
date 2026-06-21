@@ -1102,3 +1102,33 @@ TEST(NumpyOpsTests, replicateShiftPadMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 5a — matrix extraction: diagonal (k-th diagonal → 1-D), tril/triu (lower/upper
+// triangle with the rest zeroed).
+TEST(NumpyOpsTests, diagTriMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] d = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(d, s33);\n"          // [[1,2,3],[4,5,6],[7,8,9]]
+        "        Tensor<int32> dg = Tensor.diagonal<int32>(a, 0);\n"      // [1,5,9]
+        "        if (dg.size() != 3 || dg.get1(0) != 1 || dg.get1(1) != 5 || dg.get1(2) != 9) { return -1; }\n"
+        "        Tensor<int32> dgu = Tensor.diagonal<int32>(a, 1);\n"     // [2,6]
+        "        if (dgu.size() != 2 || dgu.get1(0) != 2 || dgu.get1(1) != 6) { return -2; }\n"
+        "        Tensor<int32> dgl = Tensor.diagonal<int32>(a, -1);\n"    // [4,8]
+        "        if (dgl.size() != 2 || dgl.get1(0) != 4 || dgl.get1(1) != 8) { return -3; }\n"
+        "        Tensor<int32> lo = Tensor.tril<int32>(a, 0);\n"          // [[1,0,0],[4,5,0],[7,8,9]]
+        "        if (lo.get2(0, 0) != 1 || lo.get2(0, 1) != 0 || lo.get2(0, 2) != 0) { return -4; }\n"
+        "        if (lo.get2(1, 0) != 4 || lo.get2(1, 1) != 5 || lo.get2(1, 2) != 0) { return -5; }\n"
+        "        if (lo.get2(2, 2) != 9) { return -6; }\n"
+        "        Tensor<int32> up = Tensor.triu<int32>(a, 0);\n"          // [[1,2,3],[0,5,6],[0,0,9]]
+        "        if (up.get2(0, 0) != 1 || up.get2(1, 0) != 0 || up.get2(2, 0) != 0 || up.get2(2, 1) != 0) { return -7; }\n"
+        "        if (up.get2(1, 1) != 5 || up.get2(0, 2) != 3) { return -8; }\n"
+        "        Tensor<int32> lo1 = Tensor.tril<int32>(a, 1);\n"         // keeps c<=r+1
+        "        if (lo1.get2(0, 1) != 2 || lo1.get2(0, 2) != 0 || lo1.get2(1, 2) != 6) { return -9; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

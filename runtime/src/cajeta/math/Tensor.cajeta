@@ -1377,6 +1377,84 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, outShape, outStrides);
     }
 
+    // Matrix extraction (Phase 5 unit 4) — 2-D. `diagonal` copies the k-th diagonal
+    // into a 1-D tensor; `tril`/`triu` copy the matrix with the elements above/below
+    // the k-th diagonal zeroed. (numpy gives a diagonal view; we copy.)
+
+    /** The `offset`-th diagonal of a 2-D tensor as a 1-D **copy** (numpy `diagonal`):
+     *  `offset > 0` is above the main diagonal, `< 0` below. */
+    public static #Tensor<E> diagonal<E>(Tensor<E> t, int64 offset) {
+        int64 m = t.shapeAt(0);
+        int64 n = t.shapeAt(1);
+        int64 r0 = 0;
+        int64 c0 = 0;
+        if (offset >= 0) { c0 = offset; } else { r0 = -offset; }
+        int64 len = m - r0;
+        if (n - c0 < len) { len = n - c0; }
+        if (len < 0) { len = 0; }
+        Storage<E> st = heap Storage<E>(len);
+        int64 i = 0;
+        while (i < len) {
+            st.set(i, t.get2(r0 + i, c0 + i));
+            i = i + 1;
+        }
+        int64[] shp = heap int64[1];
+        shp[0] = len;
+        int64[] strd = heap int64[1];
+        strd[0] = 1;
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** Lower triangle of a 2-D tensor (numpy `tril`): elements with `col <= row + k`
+     *  are kept, the rest zeroed. Fresh copy, same shape. */
+    public static #Tensor<E> tril<E extends Numeric>(Tensor<E> t, int64 k) {
+        int64 m = t.shapeAt(0);
+        int64 n = t.shapeAt(1);
+        Storage<E> st = heap Storage<E>(m * n);
+        E zero = (E) 0;
+        int64 r = 0;
+        while (r < m) {
+            int64 c = 0;
+            while (c < n) {
+                E v = zero;
+                if (c <= r + k) { v = t.get2(r, c); }
+                st.set(r * n + c, v);
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** Upper triangle of a 2-D tensor (numpy `triu`): elements with `col >= row + k`
+     *  are kept, the rest zeroed. Fresh copy, same shape. */
+    public static #Tensor<E> triu<E extends Numeric>(Tensor<E> t, int64 k) {
+        int64 m = t.shapeAt(0);
+        int64 n = t.shapeAt(1);
+        Storage<E> st = heap Storage<E>(m * n);
+        E zero = (E) 0;
+        int64 r = 0;
+        while (r < m) {
+            int64 c = 0;
+            while (c < n) {
+                E v = zero;
+                if (c >= r + k) { v = t.get2(r, c); }
+                st.set(r * n + c, v);
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**
