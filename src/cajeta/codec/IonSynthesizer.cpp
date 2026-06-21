@@ -38,9 +38,10 @@ namespace cajeta {
     };
 
     struct Bind {
-        std::string name;      // field name == Ion symbol name (name-based bind)
-        std::string canon;     // field type canonical (for the width cast)
+        std::string name;          // field name == Ion symbol name (name-based bind)
+        std::string canon;         // field type canonical (for the width cast)
         Decode decode;
+        CajetaClassPtr nested;     // the field's class (Message only); else null
     };
 
     // Classify a field's type into a decode strategy.
@@ -75,56 +76,81 @@ namespace cajeta {
             const std::string canon = ty->getQName()->toCanonical();
             Decode d = classify(ty, canon);
             if (d == Decode::Unsupported) continue;
-            binds.push_back({prop->getName(), canon, d});
+            CajetaClassPtr nested;
+            if (d == Decode::Message) {
+                nested = std::dynamic_pointer_cast<CajetaClass>(ty);
+            }
+            binds.push_back({prop->getName(), canon, d, nested});
         }
         return binds;
     }
 
-    // Synthesize `parse(int8[] bytes, int64 length) -> #T` for struct T.
-    std::string synthesizeStructParseBody(const CajetaClassPtr& T) {
-        const std::string Tc = T->getQName()->toCanonical();
+    // Emit the field binds of struct `T` against cursor `cursorVar`, setting them
+    // on `objVar`. `path` keeps emitted locals unique across nesting depth. A
+    // nested struct field descends with `stepIn` / `stepOut` on the SAME cursor —
+    // the single-cursor / shared-symbol-table model (see codecs-plan §3.2c).
+    void emitStructBind(std::ostringstream& os, const CajetaClassPtr& T,
+                        const std::string& cursorVar, const std::string& objVar,
+                        const std::string& path) {
         std::vector<Bind> binds = collectBinds(T);
-
-        const std::string IC = "dev.cajeta.codec.ion.IonCursor";
-        std::ostringstream os;
-        os << "public static #" << Tc << " parse(int8[] bytes, int64 length) {\n";
-        os << "    " << IC << " cur = heap " << IC << "(bytes, length);\n";
-        os << "    " << Tc << " e = heap " << Tc << "();\n";
         for (auto& b : binds) {
-            if (b.decode == Decode::Message) continue;   // nested → 3.2c
-            const std::string slot = "s_" + b.name;
-            os << "    int32 " << slot << " = cur.slotOf(\"" << b.name << "\");\n";
+            const std::string slot = "s" + path + "_" + b.name;
+            os << "    int32 " << slot << " = " << cursorVar << ".slotOf(\""
+               << b.name << "\");\n";
             os << "    if (" << slot << " >= (int32) 0) {\n";
-            os << "        if (!cur.isNull(" << slot << ")) {\n";
+            os << "        if (!" << cursorVar << ".isNull(" << slot << ")) {\n";
             switch (b.decode) {
                 case Decode::Int:
                     if (b.canon == "int64") {
-                        os << "            e." << b.name << " = cur.readInt("
-                           << slot << ");\n";
+                        os << "            " << objVar << "." << b.name << " = "
+                           << cursorVar << ".readInt(" << slot << ");\n";
                     } else {
-                        os << "            e." << b.name << " = (" << b.canon
-                           << ") cur.readInt(" << slot << ");\n";
+                        os << "            " << objVar << "." << b.name << " = ("
+                           << b.canon << ") " << cursorVar << ".readInt("
+                           << slot << ");\n";
                     }
                     break;
                 case Decode::Bool:
-                    os << "            e." << b.name << " = cur.readBool("
-                       << slot << ");\n";
+                    os << "            " << objVar << "." << b.name << " = "
+                       << cursorVar << ".readBool(" << slot << ");\n";
                     break;
                 case Decode::Str:
-                    os << "            e." << b.name << " = cur.readString("
-                       << slot << ");\n";
+                    os << "            " << objVar << "." << b.name << " = "
+                       << cursorVar << ".readString(" << slot << ");\n";
                     break;
                 case Decode::Bytes:
-                    os << "            e." << b.name << " = cur.readBytes("
-                       << slot << ");\n";
+                    os << "            " << objVar << "." << b.name << " = "
+                       << cursorVar << ".readBytes(" << slot << ");\n";
                     break;
-                case Decode::Message:
+                case Decode::Message: {
+                    const std::string childPath = path + "_" + b.name;
+                    const std::string childObj = "o" + childPath;
+                    os << "            " << cursorVar << ".stepIn(" << slot << ");\n";
+                    os << "            " << b.canon << " " << childObj << " = heap "
+                       << b.canon << "();\n";
+                    emitStructBind(os, b.nested, cursorVar, childObj, childPath);
+                    os << "            " << cursorVar << ".stepOut();\n";
+                    os << "            " << objVar << "." << b.name << " = "
+                       << childObj << ";\n";
+                    break;
+                }
                 case Decode::Unsupported:
                     break;
             }
             os << "        }\n";
             os << "    }\n";
         }
+    }
+
+    // Synthesize `parse(int8[] bytes, int64 length) -> #T` for struct T.
+    std::string synthesizeStructParseBody(const CajetaClassPtr& T) {
+        const std::string Tc = T->getQName()->toCanonical();
+        const std::string IC = "dev.cajeta.codec.ion.IonCursor";
+        std::ostringstream os;
+        os << "public static #" << Tc << " parse(int8[] bytes, int64 length) {\n";
+        os << "    " << IC << " cur = heap " << IC << "(bytes, length);\n";
+        os << "    " << Tc << " e = heap " << Tc << "();\n";
+        emitStructBind(os, T, "cur", "e", "");
         os << "    return #e;\n";
         os << "}\n";
         return os.str();
