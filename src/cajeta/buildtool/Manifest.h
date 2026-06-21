@@ -160,4 +160,12 @@ namespace cajeta::buildtool {
         const std::string& source,
         const std::string& sourceLabel = "<inline>");
 
+    // The package's project root: the directory holding `cajeta.json` (the
+    // parent of `manifest.sourcePath`), or "." when the source path is unset.
+    // This is the root that carries `skills/` (skill-discovery D.3) and the
+    // local artifact cache — NOT the deeper compile source root
+    // (`src/main/cajeta`). Returns "." rather than "" so it is always a usable
+    // path argument.
+    std::string projectRootFromManifest(const Manifest& m);
+
 } // namespace cajeta::buildtool
