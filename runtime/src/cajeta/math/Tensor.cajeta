@@ -1117,6 +1117,120 @@ public class Tensor<T> {
         return this.makeView(newOff, ns, nst);
     }
 
+    // Join / split (Phase 5 unit 2) — these produce fresh C-contiguous storage
+    // (numpy concatenate/stack copy; split returns views, but we return copies to
+    // avoid shared-Storage drop hazards). Inputs/outputs are passed as `Tensor<E>[]`.
+
+    /** Join `parts` along an existing `axis` (numpy `concatenate`): every part must
+     *  match on all other axes; the result's `axis` extent is the sum. Fresh copy. */
+    public static #Tensor<E> concatenate<E>(Tensor<E>[] parts, int32 axis) {
+        int32 np = (int32) parts.count();
+        Tensor<E> p0 = parts[0];
+        int32 nd = p0.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisTotal = 0;
+        int32 q = 0;
+        while (q < np) { axisTotal = axisTotal + parts[q].shapeAt(ax); q = q + 1; }
+        int64[] outShape = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) { outShape[i] = p0.shapeAt(i); i = i + 1; }
+        outShape[ax] = axisTotal;
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int64 a = idx[ax];
+            int32 pk = 0;
+            while (a >= parts[pk].shapeAt(ax)) { a = a - parts[pk].shapeAt(ax); pk = pk + 1; }
+            int64 saved = idx[ax];
+            idx[ax] = a;
+            E e = parts[pk].readBroadcast(idx);
+            idx[ax] = saved;
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 ax2 = nd - 1;
+            boolean carry = true;
+            while (ax2 >= 0 && carry) {
+                idx[ax2] = idx[ax2] + 1;
+                if (idx[ax2] >= outShape[ax2]) { idx[ax2] = 0; ax2 = ax2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Join equal-shaped `parts` along a **new** `axis` (numpy `stack`): result ndim
+     *  is one more than the inputs, the new axis having extent `parts.count()`. */
+    public static #Tensor<E> stackTensors<E>(Tensor<E>[] parts, int32 axis) {
+        int32 np = (int32) parts.count();
+        Tensor<E> p0 = parts[0];
+        int32 m = p0.ndim();
+        int32 outNd = m + 1;
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + outNd; }
+        int64[] outShape = heap int64[outNd];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < outNd) {
+            if (i == ax) { outShape[i] = (int64) np; }
+            else { outShape[i] = p0.shapeAt(w); w = w + 1; }
+            i = i + 1;
+        }
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[outNd];
+        int32 z = 0;
+        while (z < outNd) { idx[z] = 0; z = z + 1; }
+        int64[] pidx = heap int64[m];
+        int64 lin = 0;
+        while (lin < n) {
+            int32 pk = (int32) idx[ax];
+            int32 pw = 0;
+            int32 d = 0;
+            while (d < outNd) {
+                if (d != ax) { pidx[pw] = idx[d]; pw = pw + 1; }
+                d = d + 1;
+            }
+            E e = parts[pk].readBroadcast(pidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 ax2 = outNd - 1;
+            boolean carry = true;
+            while (ax2 >= 0 && carry) {
+                idx[ax2] = idx[ax2] + 1;
+                if (idx[ax2] >= outShape[ax2]) { idx[ax2] = 0; ax2 = ax2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Split `t` into `nparts` equal sections along `axis` (numpy `split`): returns an
+     *  array of independent copies; `axis` extent must be divisible by `nparts`. */
+    public static #Tensor<E>[] split<E>(Tensor<E> t, int32 nparts, int32 axis) {
+        int32 nd = t.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeAt(ax);
+        int64 partLen = axisLen / (int64) nparts;
+        Tensor<E>[] out = heap Tensor<E>[nparts];
+        int32 k = 0;
+        while (k < nparts) {
+            int64 start = (int64) k * partLen;
+            // inline the slice borrow (don't bind to a droppable local — a bound view
+            // can free the shared Storage early; see the borrowed-Storage drop hazard)
+            out[k] = t.slice(ax, start, start + partLen).copy();
+            k = k + 1;
+        }
+        return #out;
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**

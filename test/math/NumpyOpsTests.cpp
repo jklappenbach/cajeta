@@ -1020,3 +1020,44 @@ TEST(NumpyOpsTests, shapeViewOpsMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 5a — join/split: concatenate (existing axis), stack (new axis), split (equal parts).
+TEST(NumpyOpsTests, joinSplitMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static #Tensor<int32> mk2x2(int32 base) {\n"
+        "        int32[] d = heap int32[4];\n"
+        "        d[0] = base; d[1] = base + 1; d[2] = base + 2; d[3] = base + 3;\n"
+        "        int64[] s = heap int64[2]; s[0] = 2; s[1] = 2;\n"
+        "        return Tensor.of<int32>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<int32>[] ps = heap Tensor<int32>[2];\n"
+        "        ps[0] = D.mk2x2(1);\n"   // [[1,2],[3,4]]
+        "        ps[1] = D.mk2x2(5);\n"   // [[5,6],[7,8]]
+        "        Tensor<int32> c0 = Tensor.concatenate<int32>(ps, 0);\n"   // (4,2) [[1,2],[3,4],[5,6],[7,8]]
+        "        if (c0.shapeAt(0) != 4 || c0.shapeAt(1) != 2) { return -1; }\n"
+        "        if (c0.get2(0, 0) != 1 || c0.get2(2, 0) != 5 || c0.get2(3, 1) != 8) { return -2; }\n"
+        "        Tensor<int32>[] ps2 = heap Tensor<int32>[2];\n"
+        "        ps2[0] = D.mk2x2(1); ps2[1] = D.mk2x2(5);\n"
+        "        Tensor<int32> c1 = Tensor.concatenate<int32>(ps2, 1);\n"  // (2,4) [[1,2,5,6],[3,4,7,8]]
+        "        if (c1.shapeAt(0) != 2 || c1.shapeAt(1) != 4) { return -3; }\n"
+        "        if (c1.get2(0, 2) != 5 || c1.get2(1, 3) != 8 || c1.get2(0, 1) != 2) { return -4; }\n"
+        "        Tensor<int32>[] ps3 = heap Tensor<int32>[2];\n"
+        "        ps3[0] = D.mk2x2(1); ps3[1] = D.mk2x2(5);\n"
+        "        Tensor<int32> st = Tensor.stackTensors<int32>(ps3, 0);\n"        // (2,2,2)
+        "        if (st.ndim() != 3 || st.shapeAt(0) != 2 || st.shapeAt(1) != 2 || st.shapeAt(2) != 2) { return -5; }\n"
+        "        Tensor<int32> stc = st.copy();\n"                          // C-order [1,2,3,4,5,6,7,8]
+        "        if (stc.flatGet(0) != 1 || stc.flatGet(3) != 4 || stc.flatGet(4) != 5 || stc.flatGet(7) != 8) { return -6; }\n"
+        // split c0 (4,2) into 2 parts along axis 0 → two (2,2)
+        "        Tensor<int32>[] sp = Tensor.split<int32>(c0, 2, 0);\n"
+        "        Tensor<int32> s0 = sp[0];\n"
+        "        Tensor<int32> s1 = sp[1];\n"
+        "        if (s0.shapeAt(0) != 2 || s0.shapeAt(1) != 2) { return -7; }\n"
+        "        if (s0.get2(0, 0) != 1 || s0.get2(1, 1) != 4) { return -8; }\n"
+        "        if (s1.get2(0, 0) != 5 || s1.get2(1, 1) != 8) { return -9; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
