@@ -122,3 +122,54 @@ TEST(NumpyOpsTests, elementwiseArithmeticMatchesNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 1.1.1 — bounded cross-cast kernel: add<A,B,R> on a MIXED dtype pair. Inputs are
+// marker-bounded (A,B extends Numeric), the result is an explicit width R; each operand
+// is cross-cast (R) and the op performed in R, producing a statically-typed Tensor<R>.
+// int32 ⊕ float32 with R=float64 → exact (float64)ai + (float64)bf, no runtime dispatch.
+TEST(NumpyOpsTests, boundedCrossCastKernel) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> ai = Tensor.of<int32>(da, s22);\n"          // [[1,2],[3,4]]
+        "        float32[] fb = { 0.5f, 0.5f, 0.5f, 0.5f };\n"
+        "        Tensor<float32> bf = Tensor.of<float32>(fb, s22);\n"      // [[.5,.5],[.5,.5]]
+        "        Tensor<float64> r = Tensor.add<int32,float32,float64>(ai, bf);\n"
+        "        if (r.ndim() != 2 || r.shapeAt(0) != 2 || r.shapeAt(1) != 2) { return -1; }\n"
+        "        if (r.get2(0,0) != 1.5) { return -2; }\n"                 // (float64)1 + (float64).5
+        "        if (r.get2(0,1) != 2.5) { return -3; }\n"
+        "        if (r.get2(1,0) != 3.5) { return -4; }\n"
+        "        if (r.get2(1,1) != 4.5) { return -5; }\n"
+        // operands unchanged (read-only; no early free)
+        "        if (ai.get2(0,0) != 1 || ai.get2(1,1) != 4) { return -6; }\n"
+        "        if (bf.get2(0,0) != 0.5f || bf.get2(1,1) != 0.5f) { return -7; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 1.1.3 — sub/mul in the explicit <A,B,R> form on a mixed pair with R = promote(A,B)
+// match numpy values + dtype. int32 ⊕ float32 → float64 (NEP-50 §2.2.5).
+TEST(NumpyOpsTests, arithmeticPromotedExplicit) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> ai = Tensor.of<int32>(da, s22);\n"          // [[1,2],[3,4]]
+        "        float32[] fb = { 0.5f, 0.5f, 0.5f, 0.5f };\n"
+        "        Tensor<float32> bf = Tensor.of<float32>(fb, s22);\n"
+        "        Tensor<float64> d = Tensor.sub<float32,int32,float64>(bf, ai);\n"  // .5 - {1,2,3,4}
+        "        if (d.get2(0,0) != -0.5) { return -1; }\n"
+        "        if (d.get2(1,1) != -3.5) { return -2; }\n"
+        "        Tensor<float64> p = Tensor.mul<int32,float32,float64>(ai, bf);\n"  // {1,2,3,4} * .5
+        "        if (p.get2(0,0) != 0.5) { return -3; }\n"
+        "        if (p.get2(1,1) != 2.0) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

@@ -1082,6 +1082,74 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
+    /**
+     * Shared bounded **cross-cast** binary kernel (NEP-50 spec §3). Inputs are
+     * marker-bounded (`A`,`B extends Numeric`); the result element type `R` is an
+     * explicit (caller-supplied) width. Each operand is read by broadcast index,
+     * cross-cast to `R`, and the op (`0`=add, `1`=sub, `2`=mul) performed **in `R`** —
+     * a static method-type-param op with `R` concrete at the call, so `+`/`-`/`*` select
+     * the correct typed instruction (no symbolic-integer mis-emit). Operands are read
+     * directly; only the fresh C-contiguous `Tensor<R>` owns storage. One kernel covers
+     * every numeric `(A,B,R)`; only those instantiated are monomorphized.
+     */
+    static #Tensor<R> binop<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<R> st = heap Storage<R>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            A ra = a.readBroadcast(idx);
+            B rb = b.readBroadcast(idx);
+            R va = (R) ra;
+            R vb = (R) rb;
+            R vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, rshape, rstrides);
+    }
+
+    /** Cross-dtype `a + b` with broadcasting; result element type `R` is explicit
+     *  (NEP-50 `R = promote(A,B)` when the caller passes it). See {@link #binop}. */
+    public static #Tensor<R> add<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.binop<A, B, R>(a, b, 0);
+    }
+
+    /** Cross-dtype `a - b` with broadcasting; explicit result width `R`. See {@link #binop}. */
+    public static #Tensor<R> sub<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.binop<A, B, R>(a, b, 1);
+    }
+
+    /** Cross-dtype `a * b` with broadcasting; explicit result width `R`. See {@link #binop}. */
+    public static #Tensor<R> mul<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.binop<A, B, R>(a, b, 2);
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**
