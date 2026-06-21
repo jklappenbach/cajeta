@@ -13,6 +13,7 @@
 #include "cajeta/cli/NativeCommands.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
+#include "cajeta/mcp/McpServer.h"
 #include "cajeta/buildtool/BuildToolCommands.h"
 
 // CAJETA_VERSION and CAJETA_GIT_HASH are stamped at configure time by the
@@ -211,6 +212,12 @@ int main(int argc, const char* argv[]) {
     if (argc >= 2 && std::string(argv[1]) == "dap") {
         cajeta::dap::DapServer server;
         return server.run(std::cin, std::cout);
+    }
+
+    // `cajeta mcp` — Model Context Protocol server over stdio (docs/specs/
+    // cajeta-mcp-spec.md). Exposes skill-discovery + compiler tools to agents.
+    if (argc >= 2 && std::string(argv[1]) == "mcp") {
+        return cajeta::mcp::dispatchMcp(argc, argv);
     }
 
     // `cajeta doc <source-root> [...]` — documentation generator
