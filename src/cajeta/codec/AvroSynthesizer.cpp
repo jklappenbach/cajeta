@@ -162,6 +162,137 @@ namespace cajeta {
         return os.str();
     }
 
+    // ---- encode (5.3) ------------------------------------------------------
+
+    std::string simpleName(const CajetaClassPtr& T) {
+        const std::string c = T->getQName()->toCanonical();
+        auto p = c.rfind('.');
+        return p == std::string::npos ? c : c.substr(p + 1);
+    }
+
+    // Emit positional writes of T's fields against writer `w` from `objVar`.
+    // `path` keeps hoisted array-field locals unique across nesting.
+    void emitRecordEncode(std::ostringstream& os, const CajetaClassPtr& T,
+                          const std::string& w, const std::string& objVar,
+                          const std::string& path) {
+        // Every field is hoisted to a local before being passed — reading a
+        // field off an array-element alias and passing it directly as a method
+        // arg miscompiles (matches the proven Ion stream-encode pattern).
+        std::vector<Bind> binds = collectBinds(T);
+        for (auto& b : binds) {
+            const std::string lv = "av" + path + "_" + b.name;
+            switch (b.decode) {
+                case Decode::Long:
+                    os << "    int64 " << lv << " = (int64) " << objVar << "."
+                       << b.name << ";\n";
+                    os << "    " << w << ".writeLong(" << lv << ");\n";
+                    break;
+                case Decode::Bool:
+                    os << "    boolean " << lv << " = " << objVar << "."
+                       << b.name << ";\n";
+                    os << "    " << w << ".writeBoolean(" << lv << ");\n";
+                    break;
+                case Decode::Str:
+                    os << "    cajeta.lang.String " << lv << " = " << objVar
+                       << "." << b.name << ";\n";
+                    os << "    " << w << ".writeString(" << lv << ");\n";
+                    break;
+                case Decode::Bytes:
+                    os << "    int8[] " << lv << " = " << objVar << "."
+                       << b.name << ";\n";
+                    os << "    " << w << ".writeBytes(" << lv << ", (int32) "
+                       << lv << ".count());\n";
+                    break;
+                case Decode::Record:
+                    emitRecordEncode(os, b.nested, w,
+                                     objVar + "." + b.name, path + "_" + b.name);
+                    break;
+                case Decode::Unsupported:
+                    break;
+            }
+        }
+    }
+
+    std::string buildSchemaJson(const CajetaClassPtr& T);
+
+    std::string avroTypeJson(const Bind& b) {
+        switch (b.decode) {
+            case Decode::Long: return "\"long\"";
+            case Decode::Bool: return "\"boolean\"";
+            case Decode::Str:  return "\"string\"";
+            case Decode::Bytes: return "\"bytes\"";
+            case Decode::Record: return buildSchemaJson(b.nested);
+            default: return "\"null\"";
+        }
+    }
+
+    // Real Avro record schema JSON — makes the written OCF ecosystem-readable.
+    std::string buildSchemaJson(const CajetaClassPtr& T) {
+        std::ostringstream js;
+        js << "{\"type\":\"record\",\"name\":\"" << simpleName(T)
+           << "\",\"fields\":[";
+        std::vector<Bind> binds = collectBinds(T);
+        bool first = true;
+        for (auto& b : binds) {
+            if (!first) js << ",";
+            first = false;
+            js << "{\"name\":\"" << b.name << "\",\"type\":"
+               << avroTypeJson(b) << "}";
+        }
+        js << "]}";
+        return js.str();
+    }
+
+    // Escape a string for embedding as a Cajeta double-quoted literal.
+    std::string escapeForCajeta(const std::string& s) {
+        std::string out;
+        out.reserve(s.size() + 8);
+        for (char c : s) {
+            if (c == '\\' || c == '"') out.push_back('\\');
+            out.push_back(c);
+        }
+        return out;
+    }
+
+    std::string synthesizeRecordEncodeBody(const CajetaClassPtr& T) {
+        const std::string Tc = T->getQName()->toCanonical();
+        const std::string AW = "dev.cajeta.codec.avro.AvroWriter";
+        std::ostringstream os;
+        os << "public static #int8[] toBytes(" << Tc << " value) {\n";
+        os << "    " << AW << " w = heap " << AW << "();\n";
+        emitRecordEncode(os, T, "w", "value", "");
+        os << "    return w.result();\n";
+        os << "}\n";
+        return os.str();
+    }
+
+    std::string synthesizeContainerEncodeBody(const CajetaClassPtr& E) {
+        const std::string Ec = E->getQName()->toCanonical();
+        const std::string AW = "dev.cajeta.codec.avro.AvroWriter";
+        const std::string ACW = "dev.cajeta.codec.avro.AvroContainerWriter";
+        const std::string schema = escapeForCajeta(buildSchemaJson(E));
+        std::ostringstream os;
+        os << "public static #int8[] toBytes(" << Ec << "[] value) {\n";
+        os << "    " << AW << " body = heap " << AW << "();\n";
+        os << "    int32 n = (int32) value.count();\n";
+        os << "    int32 i = 0;\n";
+        os << "    while (i < n) {\n";
+        os << "        " << Ec << " e = value[i];\n";
+        emitRecordEncode(os, E, "body", "e", "");
+        os << "        i = i + 1;\n";
+        os << "    }\n";
+        os << "    int8[] data = body.result();\n";
+        os << "    int64 dlen = body.size();\n";
+        os << "    cajeta.lang.String schema = \"" << schema << "\";\n";
+        // A FQ static call corrupts synthesized codegen (P-COMPILER-FQN); build
+        // the OCF via a FQ constructor instead.
+        os << "    " << ACW << " cw = heap " << ACW
+           << "(data, dlen, (int64) n, schema);\n";
+        os << "    return cw.result();\n";
+        os << "}\n";
+        return os.str();
+    }
+
     } // namespace
 
     bool synthesizeAvroMethodSource(
@@ -175,22 +306,30 @@ namespace cajeta {
             return false;
         }
         if (args.size() != 1) return false;
-        if (methodName != "parse") return false;
-        if (paramTypes.size() != 2
-                || paramCanonAt(paramTypes, 0) != "int8[]"
-                || paramCanonAt(paramTypes, 1) != "int64") {
-            return false;
+        const bool isParse = (methodName == "parse");
+        const bool isEncode = (methodName == "toBytes");
+        if (!isParse && !isEncode) return false;
+        if (isParse) {
+            if (paramTypes.size() != 2
+                    || paramCanonAt(paramTypes, 0) != "int8[]"
+                    || paramCanonAt(paramTypes, 1) != "int64") {
+                return false;
+            }
+        } else {
+            if (paramTypes.size() != 1) return false;
         }
         std::string label;
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(args[0])) {
             auto E = std::dynamic_pointer_cast<CajetaClass>(arr->getElementType());
             if (!E || !E->getQName()) return false;
-            out = synthesizeContainerParseBody(E);
+            out = isParse ? synthesizeContainerParseBody(E)
+                          : synthesizeContainerEncodeBody(E);
             label = E->getQName()->toCanonical() + "[]";
         } else {
             auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
             if (!T || !T->getQName()) return false;
-            out = synthesizeRecordParseBody(T);
+            out = isParse ? synthesizeRecordParseBody(T)
+                          : synthesizeRecordEncodeBody(T);
             label = T->getQName()->toCanonical();
         }
         if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
