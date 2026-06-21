@@ -1627,6 +1627,95 @@ public class Tensor<T> {
     /** Elementwise absolute value (any numeric). */
     public static #Tensor<E> abs<E extends Numeric>(Tensor<E> a) { return Tensor.unum<E>(a, 1); }
 
+    /**
+     * Elementwise select (spec §6 `where`): `result = cond ? a : b`, with three-way
+     * right-aligned broadcasting of `cond`/`a`/`b`. The chosen operand is cross-cast to
+     * the explicit result width `R` (`= promote(A,B)` when the caller picks it). Both
+     * operands are read each step (cheap) so the result is definitely assigned on both
+     * branches; operands are read directly (no early free).
+     */
+    public static #Tensor<R> where<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<boolean> cond, Tensor<A> a, Tensor<B> b) {
+        int64[] s1 = Tensor.broadcastShape<R>(cond.shapeDims, a.shapeDims);
+        int64[] rshape = Tensor.broadcastShape<R>(s1, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<R> st = heap Storage<R>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean cv = cond.readBroadcast(idx);
+            A av = a.readBroadcast(idx);
+            B bv = b.readBroadcast(idx);
+            R rv = (R) bv;
+            if (cv) { rv = (R) av; }
+            st.set(lin, rv);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Elementwise clamp (spec §6 `clip`): each element is bounded to `[lo, hi]`, keeping
+     * the operand dtype `E`. Inlined `< / >` compares (no nested `Math.clamp` generic).
+     */
+    public static #Tensor<E> clip<E extends Numeric>(Tensor<E> t, E lo, E hi) {
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = t.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = t.readBroadcast(idx);
+            E r = v;
+            if (r < lo) { r = lo; }
+            if (r > hi) { r = hi; }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**

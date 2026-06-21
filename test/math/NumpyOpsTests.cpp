@@ -437,3 +437,54 @@ TEST(NumpyOpsTests, unaryDomainRejectsInt) {
         "}\n";
     EXPECT_THROW(runI32(src), cajeta::Exception);
 }
+
+// 6.1.1 — where(cond, a, b) selects elementwise with broadcasting; result dtype is the
+// explicit promote(A,B) width (spec §6 where).
+TEST(NumpyOpsTests, whereMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        boolean[] cd = heap boolean[4];\n"
+        "        cd[0] = true; cd[1] = false; cd[2] = true; cd[3] = false;\n"
+        "        Tensor<boolean> cond = Tensor.of<boolean>(cd, s22);\n"
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s22);\n"
+        "        int32[] db = { 10, 20, 30, 40 };\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s22);\n"
+        "        Tensor<int32> w = Tensor.where<int32,int32,int32>(cond, a, b);\n"  // 1,20,3,40
+        "        if (w.get2(0,0)!=1 || w.get2(0,1)!=20 || w.get2(1,0)!=3 || w.get2(1,1)!=40) { return -1; }\n"
+        // mixed dtype → float64, cond broadcasts (2,1) → (2,2)
+        "        boolean[] cc = heap boolean[2]; cc[0] = true; cc[1] = false;\n"
+        "        int64[] s21 = heap int64[2]; s21[0] = 2; s21[1] = 1;\n"
+        "        Tensor<boolean> cond2 = Tensor.of<boolean>(cc, s21);\n"
+        "        float32[] fb = { 0.5f, 0.5f, 0.5f, 0.5f };\n"
+        "        Tensor<float32> bf = Tensor.of<float32>(fb, s22);\n"
+        "        Tensor<float64> w2 = Tensor.where<int32,float32,float64>(cond2, a, bf);\n"
+        // row0 cond=true → a [1,2]; row1 cond=false → bf [0.5,0.5]
+        "        if (w2.get2(0,0)!=1.0 || w2.get2(0,1)!=2.0 || w2.get2(1,0)!=0.5 || w2.get2(1,1)!=0.5) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 6.1.2 — clip(t, lo, hi) clamps elementwise, keeping t's dtype (spec §6 clip).
+TEST(NumpyOpsTests, clipMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        int32[] da = { -5, 3, 20, 8 };\n"
+        "        Tensor<int32> t = Tensor.of<int32>(da, s22);\n"
+        "        Tensor<int32> c = Tensor.clip<int32>(t, 0, 10);\n"        // 0,3,10,8
+        "        if (c.get2(0,0)!=0 || c.get2(0,1)!=3 || c.get2(1,0)!=10 || c.get2(1,1)!=8) { return -1; }\n"
+        "        float32[] fa = { -1.5f, 0.5f, 2.5f, 1.0f };\n"
+        "        Tensor<float32> tf = Tensor.of<float32>(fa, s22);\n"
+        "        Tensor<float32> cf = Tensor.clip<float32>(tf, 0.0f, 1.0f);\n"  // 0,0.5,1,1
+        "        if (cf.get2(0,0)!=0.0f || cf.get2(0,1)!=0.5f || cf.get2(1,0)!=1.0f || cf.get2(1,1)!=1.0f) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
