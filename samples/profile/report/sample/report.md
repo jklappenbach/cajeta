@@ -144,10 +144,10 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| string-build-concat |  | cajeta | stdlib | 4000 | 9.774 | 12.547 | 409.25K/s | 1866304 | ok |
-| string-search |  | cajeta | stdlib | 360448 | 0.142 | 0.143 | 2.53G/s | 0 | ok |
-| string-replace |  | cajeta | stdlib | 360448 | 0.612 | 0.618 | 588.54M/s | 18800 | ok |
-| string-uppercase |  | cajeta | stdlib | 360448 | 0.221 | 0.292 | 1.63G/s | 17600 | ok |
+| string-build-concat |  | cajeta | stdlib | 4000 | 0.052 | 0.055 | 76.88M/s | 2264 | ok |
+| string-search |  | cajeta | stdlib | 360448 | 0.028 | 0.038 | 13.10G/s | 176 | ok |
+| string-replace |  | cajeta | stdlib | 360448 | 0.269 | 0.272 | 1.34G/s | 19028 | ok |
+| string-uppercase |  | cajeta | stdlib | 360448 | 0.320 | 0.324 | 1.13G/s | 17604 | ok |
 | string-search |  | rust | std-find | 360448 | 0.021 | 0.021 | 17.08G/s | -1 | ok |
 | string-search |  | rust | memchr | 360448 | 0.004 | 0.004 | 81.59G/s | -1 | ok |
 | string-replace |  | rust | std-replace | 360448 | 0.095 | 0.097 | 3.80G/s | -1 | ok |
