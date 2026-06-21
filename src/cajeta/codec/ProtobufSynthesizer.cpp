@@ -154,6 +154,51 @@ namespace cajeta {
         return os.str();
     }
 
+    // Synthesize `parse(int8[] bytes, int64 length) -> #E[]` for a length-
+    // delimited stream of E messages (each a varint-length-prefixed frame — the
+    // de-facto protobuf "delimited" framing). Two passes: count frames, then bind
+    // each via the single-message `parse<E>` over a copied slice.
+    std::string synthesizeStreamParseBody(const CajetaClassPtr& E) {
+        const std::string Ec = E->getQName()->toCanonical();
+        std::ostringstream os;
+        os << "public static #" << Ec << "[] parse(int8[] bytes, int64 length) {\n";
+        // Pass 1: count frames.
+        os << "    int32 count = 0;\n";
+        os << "    int64 p = (int64) 0;\n";
+        os << "    while (p < length) {\n";
+        os << "        int64 fl = ProtobufWire.decodeVarint(bytes, p);\n";
+        os << "        int64 hl = ProtobufWire.varintLen(bytes, p);\n";
+        os << "        p = p + hl + fl;\n";
+        os << "        count = count + 1;\n";
+        os << "    }\n";
+        // Pass 2: allocate + bind each frame.
+        os << "    " << Ec << "[] outv = heap " << Ec << "[count];\n";
+        os << "    p = (int64) 0;\n";
+        os << "    int32 i = 0;\n";
+        os << "    while (p < length) {\n";
+        os << "        int64 fl = ProtobufWire.decodeVarint(bytes, p);\n";
+        os << "        int64 hl = ProtobufWire.varintLen(bytes, p);\n";
+        os << "        int64 start = p + hl;\n";
+        os << "        int32 fln = (int32) fl;\n";
+        os << "        int8[] frame = heap int8[fln];\n";
+        os << "        int32 k = 0;\n";
+        os << "        while (k < fln) {\n";
+        // hoist the compound index to a named local (inline `bytes[start+(cast)k]`
+        // in a hot loop miscompiles — the compound-index-expr gotcha).
+        os << "            int64 si = start + (int64) k;\n";
+        os << "            int8 fb = bytes[si];\n";
+        os << "            frame[k] = fb;\n";
+        os << "            k = k + 1;\n";
+        os << "        }\n";
+        os << "        outv[i] = Protobuf.parse<" << Ec << ">(frame, fl);\n";
+        os << "        i = i + 1;\n";
+        os << "        p = start + fl;\n";
+        os << "    }\n";
+        os << "    return outv;\n";
+        os << "}\n";
+        return os.str();
+    }
+
     } // namespace
 
     bool synthesizeProtobufMethodSource(
@@ -174,17 +219,22 @@ namespace cajeta {
                 || paramCanonAt(paramTypes, 1) != "int64") {
             return false;
         }
-        // Single-message form: args[0] == T (a class). The T[] length-delimited
-        // stream form (2.3d) routes through the array branch — added later.
-        if (std::dynamic_pointer_cast<CajetaArray>(args[0])) return false;
-        auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
-        if (!T || !T->getQName()) return false;
-
-        out = synthesizeMessageParseBody(T);
+        // T[] (array) → length-delimited stream of T; T (class) → one message.
+        std::string label;
+        if (auto arr = std::dynamic_pointer_cast<CajetaArray>(args[0])) {
+            auto E = std::dynamic_pointer_cast<CajetaClass>(arr->getElementType());
+            if (!E || !E->getQName()) return false;
+            out = synthesizeStreamParseBody(E);
+            label = E->getQName()->toCanonical() + "[]";
+        } else {
+            auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            if (!T || !T->getQName()) return false;
+            out = synthesizeMessageParseBody(T);
+            label = T->getQName()->toCanonical();
+        }
         if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
             if (dump[0] == '1') {
-                std::cerr << "[ProtobufSynthesizer] parse<"
-                          << T->getQName()->toCanonical() << ">:\n"
+                std::cerr << "[ProtobufSynthesizer] parse<" << label << ">:\n"
                           << out << "\n";
             }
         }
