@@ -1828,9 +1828,23 @@ namespace cajeta {
             for (auto& variableModifierContext: ctx->variableModifier()) {
                 modifiers.insert(Modifiable::toModifier(variableModifierContext->getText()));
             }
+            // Fail loud on an explicit-but-unresolvable type. `var` decls have a
+            // null typeType() (inference fills the type later), so guard on it —
+            // only an explicit type that resolves to null is an error. Without
+            // this, a null type flows into generateCode and SIGSEGVs at the first
+            // deref (e.g. type->hasValueSemantics()). A stale name (a renamed
+            // class still spelled the old way) should be a clean diagnostic.
+            auto* typeCtx = ctx->typeType();
+            CajetaTypePtr declType = CajetaType::fromContext(typeCtx, pModule);
+            if (typeCtx != nullptr && !declType) {
+                throw Exception(
+                    "unresolved type '" + typeCtx->getText()
+                        + "' in local variable declaration",
+                    "CAJETA_ERROR_UNRESOLVED_TYPE");
+            }
             return static_pointer_cast<BlockStatement>(make_shared<LocalVariableDeclaration>(
                 modifiers,
-                CajetaType::fromContext(ctx->typeType(), pModule),
+                declType,
                 any_cast<list<VariableDeclaratorPtr>>(visitVariableDeclarators(ctx->variableDeclarators())),
                 ctx->getStart()));
         }

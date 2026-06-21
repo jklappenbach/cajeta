@@ -6,8 +6,8 @@
 // reference resolves to the flat row-major CajetaMatrix representation
 // (`<R*C x T>`), distinct per (T, R, C), admitted only for non-bool numeric T
 // and positive constant R, C. Resolution + layout are forced the same way the
-// Vector tests do it — wrapping the matrix as a Buffer<T> element so
-// Buffer<Matrix<...>> monomorphizes and lays out the matrix's LLVM type; the
+// Vector tests do it — wrapping the matrix as a GpuBuffer<T> element so
+// GpuBuffer<Matrix<...>> monomorphizes and lays out the matrix's LLVM type; the
 // 2-arg Buffer ctor stores a handle/count without touching a device, so it runs
 // under the host JIT. Construction / m[r][c] / arithmetic / matmul land in the
 // later stages (S2+).
@@ -47,7 +47,7 @@ TEST(MatrixTests, typeResolvesAsBufferElement) {
     std::string src = std::string("package test;\n") + IMPORTS +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Buffer<Matrix<float32,2,3>> b = heap Buffer<Matrix<float32,2,3>>(0, 5);\n"
+        "        GpuBuffer<Matrix<float32,2,3>> b = heap GpuBuffer<Matrix<float32,2,3>>(0, 5);\n"
         "        return (int32) b.length();\n"
         "    }\n"
         "}\n";
@@ -60,9 +60,9 @@ TEST(MatrixTests, typeMultipleShapesResolveDistinctly) {
     std::string src = std::string("package test;\n") + IMPORTS +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Buffer<Matrix<float32,2,3>> a = heap Buffer<Matrix<float32,2,3>>(0, 2);\n"
-        "        Buffer<Matrix<int32,3,2>>   b = heap Buffer<Matrix<int32,3,2>>(0, 3);\n"
-        "        Buffer<Matrix<float32,2,3>> c = heap Buffer<Matrix<float32,2,3>>(0, 5);\n"
+        "        GpuBuffer<Matrix<float32,2,3>> a = heap GpuBuffer<Matrix<float32,2,3>>(0, 2);\n"
+        "        GpuBuffer<Matrix<int32,3,2>>   b = heap GpuBuffer<Matrix<int32,3,2>>(0, 3);\n"
+        "        GpuBuffer<Matrix<float32,2,3>> c = heap GpuBuffer<Matrix<float32,2,3>>(0, 5);\n"
         "        return (int32)(a.length() + b.length() + c.length());\n"
         "    }\n"
         "}\n";
@@ -75,7 +75,7 @@ TEST(MatrixTests, typeSquareShapeResolves) {
     std::string src = std::string("package test;\n") + IMPORTS +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Buffer<Matrix<float32,4,4>> b = heap Buffer<Matrix<float32,4,4>>(0, 7);\n"
+        "        GpuBuffer<Matrix<float32,4,4>> b = heap GpuBuffer<Matrix<float32,4,4>>(0, 7);\n"
         "        return (int32) b.length();\n"
         "    }\n"
         "}\n";
@@ -88,7 +88,7 @@ TEST(MatrixTests, typeNonNumericElementRejected) {
         "public class Thing { public Thing() { return; } }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Buffer<Matrix<Thing,2,2>> b = heap Buffer<Matrix<Thing,2,2>>(0, 1);\n"
+        "        GpuBuffer<Matrix<Thing,2,2>> b = heap GpuBuffer<Matrix<Thing,2,2>>(0, 1);\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
@@ -105,7 +105,7 @@ TEST(MatrixTests, typeBooleanElementRejected) {
     std::string src = std::string("package test;\n") + IMPORTS +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Buffer<Matrix<boolean,2,2>> b = heap Buffer<Matrix<boolean,2,2>>(0, 1);\n"
+        "        GpuBuffer<Matrix<boolean,2,2>> b = heap GpuBuffer<Matrix<boolean,2,2>>(0, 1);\n"
         "        return 0;\n"
         "    }\n"
         "}\n";

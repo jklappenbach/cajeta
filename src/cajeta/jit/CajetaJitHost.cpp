@@ -22,12 +22,17 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/NativeLink.h"
+#include "cajeta/buildtool/NativeProvision.h"
+#include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaType.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
@@ -203,6 +208,19 @@ BuiltJit buildJit(const JitRunOptions& opts) {
         for (auto& [name, klass] : m->getStructures())
             if (klass) klass->generateStaticInitializers();
 
+    // REFL-2 — fill the reflective invoke-adapter bodies + finalize/register
+    // #ClassObjects now that every method's LLVM function exists. Mirrors
+    // Compiler::compile's AOT pass and the JitTestHelper pipeline; WITHOUT it
+    // the `__cajeta_*_reflect_invoke/new` thunks stay undefined and the JIT
+    // materialization fails ("Symbols not found"). Idempotent.
+    for (auto& [key, type] : cajeta::CajetaType::getCanonicalMap()) {
+        if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(type)) {
+            klass->emitReflectInvokeBody();
+            klass->emitReflectNewBody();
+            klass->finalizeClassObject();
+        }
+    }
+
     for (auto& m : compiler->getModules()) {
         if (m == primary) continue;
         std::unique_ptr<llvm::Module> donor(m->getLlvmModule());
@@ -261,6 +279,13 @@ BuiltJit buildJit(const JitRunOptions& opts) {
         out.errorCode = 1;
         return out;
     }
+    // Native-dependency requirements (native-deps unit 8): read the live
+    // @Native libs from the module BEFORE it is moved into the JIT. ORC
+    // generators (added after the process generator below) are lazy, so DCE is
+    // automatic — a generator is consulted only for a symbol actually
+    // materialized. The JIT NEVER fetches at run time; artifacts must be local.
+    std::set<std::string> liveNativeLibs = cajeta::collectLiveNativeLibs(**parsed);
+
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
 
     auto jitOrErr = llvm::orc::LLJITBuilder().create();
@@ -321,6 +346,39 @@ BuiltJit buildJit(const JitRunOptions& opts) {
             }
             cajeta::jit::cantFail(
                 mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
+        }
+    }
+
+    // Native-dependency JIT generators (native-deps unit 8). For each
+    // referenced @Native lib, resolve a LOCAL artifact (.cja native/ extraction
+    // / CAJETA_NATIVE_PATH / ~/.cajeta/native — never the network) and add an
+    // ORC generator so its symbols resolve at materialization. Lazy → a lib
+    // whose symbols are never materialized is never loaded (DCE for JIT). A
+    // genuinely-referenced-but-absent lib surfaces as an undefined symbol at
+    // materialization (precise placement message lands in unit 11).
+    if (!liveNativeLibs.empty()) {
+        auto& execSession = out.jit->getExecutionSession();
+        const char prefix = out.jit->getDataLayout().getGlobalPrefix();
+        const std::string platform = cajeta::hostNativePlatform();
+        const std::vector<std::string> dirs = cajeta::nativeLinkSearchDirs();
+        for (const auto& lib : liveNativeLibs) {
+            auto art = cajeta::findNativeJitArtifact(lib, platform, dirs);
+            if (!art) continue;  // absent → lazy lookup fails loud only if needed
+            if (art->isStatic) {
+                auto gen = llvm::orc::StaticLibraryDefinitionGenerator::Load(
+                    out.jit->getObjLinkingLayer(), art->path.c_str());
+                if (gen) mainDylib.addGenerator(std::move(*gen));
+                else std::cerr << "cajeta jit: native lib '" << lib
+                               << "' load failed: "
+                               << cajeta::jit::toString(gen.takeError()) << "\n";
+            } else {
+                auto gen = llvm::orc::DynamicLibrarySearchGenerator::Load(
+                    art->path.c_str(), prefix);
+                if (gen) mainDylib.addGenerator(std::move(*gen));
+                else std::cerr << "cajeta jit: native lib '" << lib
+                               << "' load failed: "
+                               << cajeta::jit::toString(gen.takeError()) << "\n";
+            }
         }
     }
     // NOTE: the fp128 soft-float helpers (__trunctfdf2, __fixtfdi, ...) that the
@@ -416,6 +474,12 @@ std::string entryTargetFromDotted(const std::string& dotted) {
 int runJit(const JitRunOptions& opts, JitRunResult* result) {
     BuiltJit built = buildJit(opts);
     if (built.errorCode != 0 || !built.jit) return built.errorCode;
+
+    // Native-deps unit 16: native resolution/provisioning is done (buildJit);
+    // entering the execution phase. The net seam now hard-fails any native
+    // network op for the remainder of the run (spec INV-2). Belt-and-suspenders:
+    // the JIT resolves only local artifacts, so nothing here reaches out.
+    cajeta::buildtool::setNativePhase(cajeta::buildtool::NativePhase::Execution);
 
     llvm::orc::LLJIT* jit = built.jit.get();
     if (result) result->entrySafepointsEmitted = built.entrySafepointsEmitted;

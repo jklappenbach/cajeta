@@ -31,6 +31,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -56,6 +57,8 @@ namespace cajeta {
             ClassSource   = 3,   // Original .cajeta source bytes — used by
                                  // classpath ingestion to re-parse a dep's
                                  // classes into the consumer's compile.
+            NativeArtifact = 4,  // per-platform native lib / header / metadata
+                                 // under the `native/` tree (native-deps).
         };
 
         // Origin tags written as a single byte on each entry. Cja
@@ -100,6 +103,30 @@ namespace cajeta {
         // Add one entry. Takes ownership of the entry's data vector
         // (move-into). The order added is the order written.
         void addEntry(struct CajetaArchiveEntry entry);
+
+        // --- Native artifacts (native-deps subsystem, spec §3) ------------
+        // A .cja carries native C/C++ artifacts under a `native/` tree:
+        //   native/<os>-<arch>/<file>     per-platform linker inputs (.a/.so/…)
+        //   native/include/<file>         shared headers / glue
+        //   native/native-libraries.json  embedded native-library metadata
+        // All tagged EntryKind::NativeArtifact.
+        void addNativeArtifact(const std::string& platform,
+                               const std::string& filename,
+                               std::vector<uint8_t> data);
+        void addNativeHeader(const std::string& filename,
+                             std::vector<uint8_t> data);
+        void setNativeLibrariesMeta(std::vector<uint8_t> json);
+
+        // Platform triples with at least one native artifact.
+        std::set<std::string> nativePlatforms() const;
+        // Native linker artifacts for `platform` (empty if none — the named
+        // "unsupported platform" error is the resolver's, not the reader's).
+        std::vector<const CajetaArchiveEntry*>
+            nativeArtifactsFor(const std::string& platform) const;
+        // Shared native headers (native/include/…).
+        std::vector<const CajetaArchiveEntry*> nativeHeaders() const;
+        // Embedded native-library metadata entry, or null when slim.
+        const CajetaArchiveEntry* nativeLibrariesMeta() const;
 
         // Serialize to `path`. Creates parent directories if needed.
         // Throws std::runtime_error on I/O failure.

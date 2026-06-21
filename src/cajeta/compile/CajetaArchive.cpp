@@ -178,6 +178,80 @@ namespace cajeta {
         entries.push_back(std::move(entry));
     }
 
+    // --- Native artifacts (native-deps subsystem) -------------------------
+
+    void CajetaArchive::addNativeArtifact(const std::string& platform,
+                                          const std::string& filename,
+                                          std::vector<uint8_t> data) {
+        CajetaArchiveEntry e;
+        e.name = "native/" + platform + "/" + filename;
+        e.originTag = (uint8_t) Origin::User;
+        e.kindTag = EntryKind::NativeArtifact;
+        e.data = std::move(data);
+        addEntry(std::move(e));
+    }
+
+    void CajetaArchive::addNativeHeader(const std::string& filename,
+                                        std::vector<uint8_t> data) {
+        CajetaArchiveEntry e;
+        e.name = "native/include/" + filename;
+        e.originTag = (uint8_t) Origin::User;
+        e.kindTag = EntryKind::NativeArtifact;
+        e.data = std::move(data);
+        addEntry(std::move(e));
+    }
+
+    void CajetaArchive::setNativeLibrariesMeta(std::vector<uint8_t> json) {
+        CajetaArchiveEntry e;
+        e.name = "native/native-libraries.json";
+        e.originTag = (uint8_t) Origin::User;
+        e.kindTag = EntryKind::NativeArtifact;
+        e.data = std::move(json);
+        addEntry(std::move(e));
+    }
+
+    std::set<std::string> CajetaArchive::nativePlatforms() const {
+        std::set<std::string> out;
+        const std::string prefix = "native/";
+        for (const auto& e : entries) {
+            if (e.kindTag != EntryKind::NativeArtifact) continue;
+            if (e.name.rfind(prefix, 0) != 0) continue;
+            std::string rest = e.name.substr(prefix.size());
+            auto slash = rest.find('/');
+            if (slash == std::string::npos) continue;  // e.g. native-libraries.json
+            std::string platform = rest.substr(0, slash);
+            if (platform == "include") continue;        // headers, not a platform
+            out.insert(platform);
+        }
+        return out;
+    }
+
+    std::vector<const CajetaArchiveEntry*>
+    CajetaArchive::nativeArtifactsFor(const std::string& platform) const {
+        std::vector<const CajetaArchiveEntry*> out;
+        const std::string prefix = "native/" + platform + "/";
+        for (const auto& e : entries) {
+            if (e.kindTag != EntryKind::NativeArtifact) continue;
+            if (e.name.rfind(prefix, 0) == 0) out.push_back(&e);
+        }
+        return out;
+    }
+
+    std::vector<const CajetaArchiveEntry*>
+    CajetaArchive::nativeHeaders() const {
+        std::vector<const CajetaArchiveEntry*> out;
+        const std::string prefix = "native/include/";
+        for (const auto& e : entries) {
+            if (e.kindTag != EntryKind::NativeArtifact) continue;
+            if (e.name.rfind(prefix, 0) == 0) out.push_back(&e);
+        }
+        return out;
+    }
+
+    const CajetaArchiveEntry* CajetaArchive::nativeLibrariesMeta() const {
+        return findEntry("native/native-libraries.json");
+    }
+
     std::string CajetaArchive::buildManifest() const {
         // Minimal compact JSON — no library dependency, no escapes needed
         // because name/version/kind are all controlled inputs and the
