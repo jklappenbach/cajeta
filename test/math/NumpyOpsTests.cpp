@@ -899,3 +899,52 @@ TEST(NumpyOpsTests, varStdNanMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 4b — scans: cumsum/cumprod flattened (numpy cumsum(a)) and along an axis
+// (cumsum(a, axis=)). Flattened forms return 1-D; axis forms keep the input shape.
+TEST(NumpyOpsTests, scansMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] d1 = { 1, 2, 3, 4 };\n"
+        "        int64[] s4 = heap int64[1]; s4[0] = 4;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(d1, s4);\n"
+        "        Tensor<int32> cs = Tensor.cumsum<int32, int32>(a);\n"        // [1,3,6,10]
+        "        if (cs.ndim() != 1 || cs.size() != 4) { return -1; }\n"
+        "        if (cs.get1(0) != 1 || cs.get1(1) != 3 || cs.get1(2) != 6 || cs.get1(3) != 10) { return -2; }\n"
+        "        Tensor<int32> cp = Tensor.cumprod<int32, int32>(a);\n"       // [1,2,6,24]
+        "        if (cp.get1(0) != 1 || cp.get1(1) != 2 || cp.get1(2) != 6 || cp.get1(3) != 24) { return -3; }\n"
+        // 2-D flatten cumsum
+        "        int32[] d2 = { 1, 2, 3, 4 };\n"
+        "        int64[] sm = heap int64[2]; sm[0] = 2; sm[1] = 2;\n"
+        "        Tensor<int32> m = Tensor.of<int32>(d2, sm);\n"             // [[1,2],[3,4]]
+        "        Tensor<int32> fcs = Tensor.cumsum<int32, int32>(m);\n"       // flat [1,3,6,10]
+        "        if (fcs.ndim() != 1 || fcs.get1(3) != 10) { return -4; }\n"
+        // axis cumsum
+        "        int32[] d3 = { 1, 2, 3, 4 };\n"
+        "        int64[] sm2 = heap int64[2]; sm2[0] = 2; sm2[1] = 2;\n"
+        "        Tensor<int32> m2 = Tensor.of<int32>(d3, sm2);\n"           // [[1,2],[3,4]]
+        "        Tensor<int32> a0 = Tensor.cumsumAxis<int32, int32>(m2, 0);\n" // [[1,2],[4,6]]
+        "        if (a0.ndim() != 2 || a0.shapeAt(0) != 2 || a0.shapeAt(1) != 2) { return -5; }\n"
+        "        if (a0.get2(0, 0) != 1 || a0.get2(0, 1) != 2 || a0.get2(1, 0) != 4 || a0.get2(1, 1) != 6) { return -6; }\n"
+        "        int32[] d4 = { 1, 2, 3, 4 };\n"
+        "        int64[] sm3 = heap int64[2]; sm3[0] = 2; sm3[1] = 2;\n"
+        "        Tensor<int32> m3 = Tensor.of<int32>(d4, sm3);\n"
+        "        Tensor<int32> a1 = Tensor.cumsumAxis<int32, int32>(m3, 1);\n" // [[1,3],[3,7]]
+        "        if (a1.get2(0, 0) != 1 || a1.get2(0, 1) != 3 || a1.get2(1, 0) != 3 || a1.get2(1, 1) != 7) { return -7; }\n"
+        // axis cumprod
+        "        int32[] d5 = { 1, 2, 3, 4 };\n"
+        "        int64[] sm4 = heap int64[2]; sm4[0] = 2; sm4[1] = 2;\n"
+        "        Tensor<int32> m4 = Tensor.of<int32>(d5, sm4);\n"
+        "        Tensor<int32> p0 = Tensor.cumprodAxis<int32, int32>(m4, 0);\n" // [[1,2],[3,8]]
+        "        if (p0.get2(0, 0) != 1 || p0.get2(0, 1) != 2 || p0.get2(1, 0) != 3 || p0.get2(1, 1) != 8) { return -8; }\n"
+        "        int32[] d6 = { 1, 2, 3, 4 };\n"
+        "        int64[] sm5 = heap int64[2]; sm5[0] = 2; sm5[1] = 2;\n"
+        "        Tensor<int32> m5 = Tensor.of<int32>(d6, sm5);\n"
+        "        Tensor<int32> p1 = Tensor.cumprodAxis<int32, int32>(m5, 1);\n" // [[1,2],[3,12]]
+        "        if (p1.get2(0, 0) != 1 || p1.get2(0, 1) != 2 || p1.get2(1, 0) != 3 || p1.get2(1, 1) != 12) { return -9; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

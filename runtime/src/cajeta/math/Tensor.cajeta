@@ -2587,6 +2587,165 @@ public class Tensor<T> {
         return acc / (R) cnt;
     }
 
+    // Scans (Phase 4 unit 5) — cumulative sum/product. The flattened forms (no axis)
+    // walk the full C-order traversal into a 1-D result (numpy `cumsum(a)`); the axis
+    // forms keep the input shape and run the scan along one axis (numpy
+    // `cumsum(a, axis=)`), writing every prefix.
+
+    /** Cumulative sum over the C-order flattening, in `R` (numpy `cumsum(a)`): a 1-D
+     *  result of length `size`. */
+    public static #Tensor<R> cumsum<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        Storage<R> st = heap Storage<R>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R acc = (R) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc + (R) e;
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = n;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<R>(#st, 0, shape, strides);
+    }
+
+    /** Cumulative product over the C-order flattening, in `R` (numpy `cumprod(a)`):
+     *  a 1-D result of length `size`. */
+    public static #Tensor<R> cumprod<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        Storage<R> st = heap Storage<R>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R acc = (R) 1;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc * (R) e;
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = n;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<R>(#st, 0, shape, strides);
+    }
+
+    /** Cumulative sum along `axis` in `R` (numpy `cumsum(a, axis=)`): same shape as
+     *  the input, each position holding the prefix sum along the axis. */
+    public static #Tensor<R> cumsumAxis<E extends Numeric, R extends Numeric>(Tensor<E> t, int32 axis) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<R> st = heap Storage<R>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lines = 1;
+        if (axisLen > 0) { lines = n / axisLen; }
+        int64 lc = 0;
+        while (lc < lines) {
+            R acc = (R) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc + (R) e;
+                int64 ofs = 0;
+                int32 d = 0;
+                while (d < nd) { ofs = ofs + idx[d] * outStrides[d]; d = d + 1; }
+                st.set(ofs, acc);
+                j = j + 1;
+            }
+            idx[ax] = 0;
+            lc = lc + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
+    /** Cumulative product along `axis` in `R` (numpy `cumprod(a, axis=)`): same shape
+     *  as the input, each position holding the prefix product along the axis. */
+    public static #Tensor<R> cumprodAxis<E extends Numeric, R extends Numeric>(Tensor<E> t, int32 axis) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<R> st = heap Storage<R>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lines = 1;
+        if (axisLen > 0) { lines = n / axisLen; }
+        int64 lc = 0;
+        while (lc < lines) {
+            R acc = (R) 1;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc * (R) e;
+                int64 ofs = 0;
+                int32 d = 0;
+                while (d < nd) { ofs = ofs + idx[d] * outStrides[d]; d = d + 1; }
+                st.set(ofs, acc);
+                j = j + 1;
+            }
+            idx[ax] = 0;
+            lc = lc + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**
