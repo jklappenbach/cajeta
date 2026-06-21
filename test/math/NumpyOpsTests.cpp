@@ -488,3 +488,75 @@ TEST(NumpyOpsTests, clipMatchesNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+const char* PRE7 =
+    "package test;\n"
+    "import cajeta.math.Tensor;\n"
+    "import cajeta.lang.Numeric;\n"
+    "import cajeta.lang.Floating;\n";
+
+// 7.1.1 — auto-promote add (no explicit R): mixed int32/float32 returns a bounded
+// wildcard Tensor<? extends Numeric> whose runtime dtype is promote(int32,float32)=
+// float64, capturable as (Tensor<float64>) r (spec 5.2.1).
+TEST(NumpyOpsTests, autoPromoteAddMixed) {
+    std::string src = std::string(PRE7) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        Tensor<int32> ai = Tensor.of<int32>(da, s22);\n"
+        "        float32[] fb = { 0.5f, 0.5f, 0.5f, 0.5f };\n"
+        "        Tensor<float32> bf = Tensor.of<float32>(fb, s22);\n"
+        "        Tensor<? extends Numeric> r = Tensor.add(ai, bf);\n"      // inference → auto-promote
+        "        if (!(r instanceof Tensor<float64>)) { return -1; }\n"    // runtime dtype float64
+        "        if (r instanceof Tensor<float32>) { return -2; }\n"
+        "        Tensor<float64> rc = (Tensor<float64>) r;\n"
+        "        if (rc.get2(0,0)!=1.5 || rc.get2(0,1)!=2.5 || rc.get2(1,0)!=3.5 || rc.get2(1,1)!=4.5) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 7.1.2 — auto-promote div is always floating: int/int returns Tensor<? extends
+// Floating> with runtime dtype float64 (spec 5.2.2).
+TEST(NumpyOpsTests, autoPromoteDivIsFloating) {
+    std::string src = std::string(PRE7) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        int32[] da = { 6, 7, 8, 9 };\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s22);\n"
+        "        int32[] db = { 4, 2, 8, 3 };\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s22);\n"
+        "        Tensor<? extends Floating> r = Tensor.div(a, b);\n"       // int/int → floating
+        "        if (!(r instanceof Tensor<float64>)) { return -1; }\n"
+        "        Tensor<float64> rc = (Tensor<float64>) r;\n"
+        "        if (rc.get2(0,0)!=1.5 || rc.get2(0,1)!=3.5 || rc.get2(1,0)!=1.0 || rc.get2(1,1)!=3.0) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 7.1.3 — the bounded-wildcard result discriminates dtype cleanly via the reified
+// airlock: a wrong-dtype instanceof is false (no UB), only the true dtype matches
+// (spec 5.2.4).
+TEST(NumpyOpsTests, autoPromoteCaptureMismatchClean) {
+    std::string src = std::string(PRE7) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        Tensor<int32> ai = Tensor.of<int32>(da, s22);\n"
+        "        float32[] fb = { 0.5f, 0.5f, 0.5f, 0.5f };\n"
+        "        Tensor<float32> bf = Tensor.of<float32>(fb, s22);\n"
+        "        Tensor<? extends Numeric> r = Tensor.add(ai, bf);\n"      // float64
+        "        if (r instanceof Tensor<int32>) { return -1; }\n"        // wrong dtype rejected
+        "        if (r instanceof Tensor<float32>) { return -2; }\n"      // wrong dtype rejected
+        "        if (!(r instanceof Tensor<float64>)) { return -3; }\n"   // true dtype matched
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

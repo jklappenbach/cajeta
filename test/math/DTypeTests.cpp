@@ -135,9 +135,9 @@ TEST(DTypeTests, promotionMatchesNep50) {
         "        #DType r5 = DType.promote(DType.i32(), DType.u8());\n"
         "        if (!(r5.kind() == 1 && r5.bits() == 32)) { return -5; }\n"        // int32
         "        #DType r6 = DType.promote(DType.f32(), DType.i64());\n"
-        "        if (!(r6.kind() == 3 && r6.bits() == 32)) { return -6; }\n"        // float32 (NEP-50 keeps float)
+        "        if (!(r6.kind() == 3 && r6.bits() == 64)) { return -6; }\n"        // float64 (numpy/NEP-50: int64 needs >float32)
         "        #DType r7 = DType.promote(DType.f16(), DType.i64());\n"
-        "        if (!(r7.kind() == 3 && r7.bits() == 16)) { return -7; }\n"        // float16
+        "        if (!(r7.kind() == 3 && r7.bits() == 64)) { return -7; }\n"        // float64 (int64 ⊕ float16)
         "        #DType r8 = DType.promote(DType.f32(), DType.f64());\n"
         "        if (!(r8.kind() == 3 && r8.bits() == 64)) { return -8; }\n"        // float64
         "        #DType r9 = DType.promote(DType.boolType(), DType.i8());\n"
@@ -156,6 +156,14 @@ TEST(DTypeTests, promotionMatchesNep50) {
         "        if (!(r15.kind() == 3 && r15.bits() == 32)) { return -15; }\n"     // float32
         "        #DType r16 = DType.promote(DType.u8(), DType.i8());\n"
         "        if (!(r16.kind() == 1 && r16.bits() == 16)) { return -16; }\n"     // int16 (commutative)
+        "        #DType r17 = DType.promote(DType.i32(), DType.f32());\n"
+        "        if (!(r17.kind() == 3 && r17.bits() == 64)) { return -17; }\n"     // float64 (int32 needs >float32)
+        "        #DType r18 = DType.promote(DType.i16(), DType.f32());\n"
+        "        if (!(r18.kind() == 3 && r18.bits() == 32)) { return -18; }\n"     // float32 (int16 fits float32)
+        "        #DType r19 = DType.promote(DType.i8(), DType.f16());\n"
+        "        if (!(r19.kind() == 3 && r19.bits() == 16)) { return -19; }\n"     // float16 (int8 fits float16)
+        "        #DType r20 = DType.promote(DType.i64(), DType.f64());\n"
+        "        if (!(r20.kind() == 3 && r20.bits() == 64)) { return -20; }\n"     // float64
         "        return 1;\n"
         "    }\n"
         "}\n";

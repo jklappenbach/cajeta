@@ -969,6 +969,79 @@ public class Tensor<T> {
     }
 
     /**
+     * Auto-promote dispatch for arithmetic (NEP-50 spec §5). Computes the result dtype
+     * `R = DType.promote(of<A>(), of<B>())` at **runtime**, switches to the matching
+     * `binop<A,B,Rconcrete>` instantiation, and returns a **bounded wildcard**
+     * `Tensor<? extends Numeric>` (kind static, exact width runtime — the value→type gap).
+     * Callers capture to the concrete dtype (`(Tensor<float64>) r`). `op`: 0=add 1=sub
+     * 2=mul. Mirrors `fromProtocol`'s dtype switch. `null` for a dtype outside the set.
+     *
+     * Declared **before** the same-dtype `add<E>`/explicit `add<A,B,R>`: the 2-type-param
+     * inference candidate must precede the 1-param shorthand because the resolver's
+     * method-template unifier lets `add<E>` accept a mixed `(int32,float32)` pair (it binds
+     * `E` from the first arg and defers — "first binding wins"), so the bare `add(a,b)`
+     * call must reach this 2-param overload first. Explicit-type-arg calls (`add<int32>`,
+     * `add<int32,float32,float64>`) still resolve by arity regardless of order.
+     */
+    static #Tensor<? extends Numeric> autoBinop<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        DType rr = DType.promote(DType.of<A>(), DType.of<B>());
+        int32 k = rr.kind();
+        int32 bits = rr.bits();
+        int32 var = rr.variant();
+        if (k == DType.KIND_INT) {
+            if (bits == 8)  { return Tensor.binop<A, B, int8>(a, b, op); }
+            if (bits == 16) { return Tensor.binop<A, B, int16>(a, b, op); }
+            if (bits == 32) { return Tensor.binop<A, B, int32>(a, b, op); }
+            if (bits == 64) { return Tensor.binop<A, B, int64>(a, b, op); }
+        }
+        if (k == DType.KIND_UINT) {
+            if (bits == 8)  { return Tensor.binop<A, B, uint8>(a, b, op); }
+            if (bits == 16) { return Tensor.binop<A, B, uint16>(a, b, op); }
+            if (bits == 32) { return Tensor.binop<A, B, uint32>(a, b, op); }
+            if (bits == 64) { return Tensor.binop<A, B, uint64>(a, b, op); }
+        }
+        if (k == DType.KIND_FLOAT && var == DType.VAR_STD) {
+            if (bits == 32) { return Tensor.binop<A, B, float32>(a, b, op); }
+            if (bits == 64) { return Tensor.binop<A, B, float64>(a, b, op); }
+        }
+        return null;
+    }
+
+    /**
+     * Auto-promote dispatch for true division (NEP-50 spec §5 + §6 true-div). Result is
+     * **floating**: a float promote keeps its width; an integer (or other) promote bumps
+     * to `float64`. Returns `Tensor<? extends Floating>`.
+     */
+    static #Tensor<? extends Floating> autoDiv<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        DType pr = DType.promote(DType.of<A>(), DType.of<B>());
+        int32 k = pr.kind();
+        int32 bits = pr.bits();
+        int32 var = pr.variant();
+        if (k == DType.KIND_FLOAT && var == DType.VAR_STD) {
+            if (bits == 32) { return Tensor.binop<A, B, float32>(a, b, 3); }
+            if (bits == 64) { return Tensor.binop<A, B, float64>(a, b, 3); }
+        }
+        return Tensor.binop<A, B, float64>(a, b, 3);
+    }
+
+    /** Auto-promote `a + b` (NEP-50): result dtype `= promote(A,B)`, returned as a bounded
+     *  wildcard. Capture to the concrete dtype, e.g. `(Tensor<float64>) Tensor.add(ai, bf)`. */
+    public static #Tensor<? extends Numeric> add<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.autoBinop<A, B>(a, b, 0); }
+    /** Auto-promote `a - b` (NEP-50); bounded-wildcard result. */
+    public static #Tensor<? extends Numeric> sub<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.autoBinop<A, B>(a, b, 1); }
+    /** Auto-promote `a * b` (NEP-50); bounded-wildcard result. */
+    public static #Tensor<? extends Numeric> mul<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.autoBinop<A, B>(a, b, 2); }
+    /** Auto-promote true division `a / b` (NEP-50); `Tensor<? extends Floating>` result
+     *  (int/int → float64). */
+    public static #Tensor<? extends Floating> div<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.autoDiv<A, B>(a, b); }
+
+    /**
      * Elementwise `a + b` with right-aligned broadcasting (numpy `+`), producing a
      * fresh C-contiguous `Tensor<E>`. A **static method-type-param** op: the dtype `E`
      * must be concrete at the call (`Tensor.add<float32>(a, b)`) so the `+` selects the

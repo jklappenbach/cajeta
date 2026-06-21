@@ -205,11 +205,19 @@ public class DType {
                 }
                 return heap DType(DType.KIND_FLOAT, nextW, DType.VAR_STD);
             }
-            // One float, one int → NEP-50 keeps the float.
-            if (aFloat) {
-                return heap DType(DType.KIND_FLOAT, aw, a.variantCode);
-            }
-            return heap DType(DType.KIND_FLOAT, bw, b.variantCode);
+            // One float, one int → numpy/NEP-50: a float wide enough to hold the
+            // int's precision. Result width = max(floatWidth, min(64, 2*intWidth)),
+            // so int8→float16, int16→float32, int32/int64→float64 floors apply:
+            // int32⊕float32→float64, int16⊕float32→float32, int8⊕float16→float16.
+            // Variant normalizes to standard (matching the same-width float bump).
+            int32 fw = aw;
+            int32 iw = bw;
+            if (bFloat) { fw = bw; iw = aw; }
+            int32 minF = iw * 2;
+            if (minF > 64) { minF = 64; }
+            int32 rfw = fw;
+            if (minF > rfw) { rfw = minF; }
+            return heap DType(DType.KIND_FLOAT, rfw, DType.VAR_STD);
         }
 
         // Both integers.
