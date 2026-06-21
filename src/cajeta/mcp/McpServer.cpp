@@ -1,5 +1,11 @@
 #include "cajeta/mcp/McpServer.h"
 
+#include "cajeta/buildtool/ArtifactCache.h"
+#include "cajeta/buildtool/Lockfile.h"
+#include "cajeta/buildtool/skill/SkillCli.h"
+
+#include <llvm/Support/Error.h>
+
 #include <sstream>
 
 namespace cajeta::mcp {
@@ -10,6 +16,24 @@ namespace cajeta::mcp {
         constexpr const char* kProtocolVersion = "2024-11-05";
         constexpr const char* kServerName = "cajeta";
         constexpr const char* kServerVersion = "0.1.0";
+
+        const char* tierToString(buildtool::skill::MatchTier t) {
+            using buildtool::skill::MatchTier;
+            switch (t) {
+                case MatchTier::Exact:            return "exact";
+                case MatchTier::Descendant:       return "descendant";
+                case MatchTier::AncestorOverview: return "ancestorOverview";
+            }
+            return "unknown";
+        }
+
+        // Optional string param: present + string → its value, else nullopt.
+        std::optional<std::string> optStr(const Json& args, const std::string& k) {
+            if (args.isObject() && args.has(k) && args.at(k).isString()) {
+                return args.at(k).asString();
+            }
+            return std::nullopt;
+        }
 
         Json makeResult(const Json& id, Json result) {
             Json r = Json::object();
@@ -45,29 +69,164 @@ namespace cajeta::mcp {
 
     } // namespace
 
+    // Default skill backend: load <projectRoot_>/cajeta.lock + the ArtifactCache
+    // and call the real cores. Lambdas capture `this` so they read projectRoot_
+    // live (setProjectRoot takes effect without rebinding). Throws McpError when
+    // the project context is missing.
+    void McpServer::installDefaultSkillBackend() {
+        namespace bt = cajeta::buildtool;
+        namespace sk = cajeta::buildtool::skill;
+        auto loadContext = [this]() -> sk::SkillSearchContext {
+            auto lf = bt::readLockfile(projectRoot_ + "/cajeta.lock");
+            if (!lf) {
+                llvm::consumeError(lf.takeError());
+                throw McpError{-32603, "cajeta.lock not found under " + projectRoot_};
+            }
+            bt::ArtifactCache cache(projectRoot_);
+            auto ctx = sk::loadSkillSearchContext(
+                lf->packagesTyped,
+                [&](llvm::StringRef s) { return cache.lookup(s.str()); });
+            if (!ctx) {
+                llvm::consumeError(ctx.takeError());
+                throw McpError{-32603, "failed to load skill context"};
+            }
+            return std::move(*ctx);
+        };
+        skill_.search = [this, loadContext](const std::string& name,
+                                 std::optional<std::string> version,
+                                 std::optional<std::string> from,
+                                 sk::MatchOptions opts) {
+            return sk::searchSkills(name, version, from, loadContext(), opts);
+        };
+        skill_.list = [loadContext](std::optional<std::string> scope,
+                               std::optional<std::string> version,
+                               std::optional<std::string> from) {
+            return sk::listSkills(scope, version, from, loadContext());
+        };
+        skill_.get = [this](const std::vector<std::string>& uris) {
+            auto lf = bt::readLockfile(projectRoot_ + "/cajeta.lock");
+            if (!lf) {
+                llvm::consumeError(lf.takeError());
+                throw McpError{-32603, "cajeta.lock not found under " + projectRoot_};
+            }
+            bt::ArtifactCache cache(projectRoot_);
+            return sk::getSkills(uris, lf->packagesTyped,
+                [&](llvm::StringRef s) { return cache.lookup(s.str()); });
+        };
+    }
+
     McpServer::McpServer() {
-        // U1 registers all five spec tools as stubs so tools/list is complete;
-        // later units replace the handlers with real implementations.
+        installDefaultSkillBackend();
+        registerSkillTools();
+
+        // compile / jit_execute remain stubs until their units land; registering
+        // them here keeps tools/list complete.
         Json objectSchema = Json::object();
         objectSchema["type"] = "object";
         auto stub = [](const Json&) -> Json {
             return textContent("not implemented", /*isError=*/true);
         };
-        registerTool("searchSkills",
-            "Search skills by canonical name (fuzzy, typo-tolerant).",
-            objectSchema, stub);
-        registerTool("getSkills",
-            "Fetch skill payloads by cja-skill:// URI.",
-            objectSchema, stub);
-        registerTool("listSkills",
-            "List the available skills catalog.",
-            objectSchema, stub);
         registerTool("compile",
             "Compile a base64 tar.zstd source archive; return diagnostics.",
             objectSchema, stub);
         registerTool("jit_execute",
             "Compile and JIT-execute a source archive (process-per-execute).",
             objectSchema, stub);
+    }
+
+    void McpServer::setSkillBackend(SkillBackend backend) {
+        skill_ = std::move(backend);
+        registerSkillTools();
+    }
+
+    void McpServer::registerSkillTools() {
+        Json nameSchema = Json::object();
+        nameSchema["type"] = "object";
+        {
+            Json props = Json::object();
+            Json nameProp = Json::object();
+            nameProp["type"] = "string";
+            props["name"] = nameProp;
+            nameSchema["properties"] = props;
+            Json req = Json::array();
+            req.push_back(std::string("name"));
+            nameSchema["required"] = req;
+        }
+
+        registerTool("searchSkills",
+            "Search skills by canonical name (fuzzy, typo-tolerant).",
+            nameSchema, [this](const Json& args) -> Json {
+                if (!args.isObject() || !args.has("name")
+                        || !args.at("name").isString()) {
+                    throw McpError{-32602, "searchSkills requires string 'name'"};
+                }
+                buildtool::skill::MatchOptions opts;
+                opts.exact = args.has("exact") && args.at("exact").asBool();
+                auto results = skill_.search(args.at("name").asString(),
+                    optStr(args, "version"), optStr(args, "from"), opts);
+                Json arr = Json::array();
+                for (const auto& r : results) {
+                    Json o = Json::object();
+                    o["uri"] = r.uri;
+                    o["matchedName"] = r.matchedName;
+                    o["tier"] = std::string(tierToString(r.tier));
+                    o["distance"] = r.distance;
+                    arr.push_back(std::move(o));
+                }
+                Json body = textContent(
+                    std::to_string(results.size()) + " skill(s) found");
+                body["results"] = std::move(arr);
+                return body;
+            });
+
+        registerTool("listSkills",
+            "List the available skills catalog.",
+            Json::object(), [this](const Json& args) -> Json {
+                auto entries = skill_.list(optStr(args, "scope"),
+                    optStr(args, "version"), optStr(args, "from"));
+                Json arr = Json::array();
+                for (const auto& e : entries) {
+                    Json o = Json::object();
+                    o["uri"] = e.uri;
+                    o["title"] = e.title;
+                    Json names = Json::array();
+                    for (const auto& n : e.names) names.push_back(n);
+                    o["names"] = std::move(names);
+                    arr.push_back(std::move(o));
+                }
+                Json body = textContent(
+                    std::to_string(entries.size()) + " skill(s)");
+                body["skills"] = std::move(arr);
+                return body;
+            });
+
+        registerTool("getSkills",
+            "Fetch skill payloads by cja-skill:// URI.",
+            Json::object(), [this](const Json& args) -> Json {
+                if (!args.isObject() || !args.has("uris")
+                        || !args.at("uris").isArray()) {
+                    throw McpError{-32602, "getSkills requires array 'uris'"};
+                }
+                const Json& uriArr = args.at("uris");
+                std::vector<std::string> uris;
+                for (size_t i = 0; i < uriArr.size(); i++) {
+                    if (uriArr[i].isString()) uris.push_back(uriArr[i].asString());
+                }
+                auto results = skill_.get(uris);
+                Json arr = Json::array();
+                for (const auto& r : results) {
+                    Json o = Json::object();
+                    o["uri"] = r.uri;
+                    o["ok"] = r.ok();
+                    if (r.ok()) o["payload"] = r.payload;
+                    else o["error"] = r.error;
+                    arr.push_back(std::move(o));
+                }
+                Json body = textContent(
+                    std::to_string(results.size()) + " result(s)");
+                body["skills"] = std::move(arr);
+                return body;
+            });
     }
 
     void McpServer::registerTool(const std::string& name,
