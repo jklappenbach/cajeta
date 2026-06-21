@@ -98,6 +98,25 @@ std::string compileRequest(int id, const std::vector<std::pair<std::string, std:
     return req.dump() + "\n";
 }
 
+// Build a single `tools/call jit_execute` request line for `files`+`entry`.
+std::string jitRequest(int id, const std::vector<std::pair<std::string, std::string>>& files,
+                       const std::string& entry) {
+    Json args = Json::object();
+    Json fmap = Json::object();
+    for (auto& kv : files) fmap[kv.first] = Json(kv.second);
+    args["files"] = fmap;
+    args["entry"] = Json(entry);
+    Json params = Json::object();
+    params["name"] = Json("jit_execute");
+    params["arguments"] = args;
+    Json req = Json::object();
+    req["jsonrpc"] = Json("2.0");
+    req["id"] = Json(id);
+    req["method"] = Json("tools/call");
+    req["params"] = params;
+    return req.dump() + "\n";
+}
+
 // C1.1.1 / C1.1.2 / C1.1.3 — lifecycle handshake + error envelopes.
 TEST(CajetaMcpServerTests, lifecycleAndErrors) {
     if (!ensureServerBuilt()) return;
@@ -199,6 +218,52 @@ TEST(CajetaMcpServerTests, compileMissingParamsIsInvalid) {
     EXPECT_EQ(r[0].at("error").at("code").asInt(), -32602);   // missing files
     EXPECT_EQ(r[1].at("error").at("code").asInt(), -32602);   // empty files
     EXPECT_EQ(r[2].at("error").at("code").asInt(), -32602);   // missing entry
+}
+
+// C4.1.1 — jit_execute returns the entry's value + captured stdout; the
+// program's stdout is clean (jit-run chatter lands on stderr).
+TEST(CajetaMcpServerTests, jitExecuteCapturesReturnAndStdout) {
+    if (!ensureServerBuilt()) return;
+    auto r = drive(jitRequest(1,
+        {{"demo/Hello.cajeta",
+          "package demo;\n"
+          "import cajeta.lang.System;\n"
+          "public final class Hello {\n"
+          "    public static int32 run() {\n"
+          "        System.stdout.println(\"hello-from-jit\");\n"
+          "        return 7;\n"
+          "    }\n"
+          "}\n"}},
+        "demo.Hello.run"));
+    ASSERT_EQ(r.size(), 1u);
+    const Json& res = r[0].at("result");
+    EXPECT_EQ(res.at("returnValue").asInt(), 7);
+    EXPECT_EQ(res.at("exitStatus").asInt(), 7);
+    EXPECT_FALSE(res.at("cacheHit").asBool());
+    const std::string out = res.at("stdout").asString();
+    EXPECT_NE(out.find("hello-from-jit"), std::string::npos);   // program output
+    EXPECT_EQ(out.find("[jit-run]"), std::string::npos);        // chatter NOT on stdout
+}
+
+// C4.1.2 — process-per-execute isolation: a static-counter program run twice
+// returns the same value (each call is a fresh process, no shared state).
+TEST(CajetaMcpServerTests, jitExecuteIsolatesProcessState) {
+    if (!ensureServerBuilt()) return;
+    const std::vector<std::pair<std::string, std::string>> files = {
+        {"demo/Counter.cajeta",
+         "package demo;\n"
+         "public final class Counter {\n"
+         "    public static int32 n;\n"
+         "    public static int32 run() {\n"
+         "        Counter.n = Counter.n + 1;\n"
+         "        return Counter.n;\n"
+         "    }\n"
+         "}\n"}};
+    auto r = drive(jitRequest(1, files, "demo.Counter.run")
+                 + jitRequest(2, files, "demo.Counter.run"));
+    ASSERT_EQ(r.size(), 2u);
+    EXPECT_EQ(r[0].at("result").at("returnValue").asInt(), 1);
+    EXPECT_EQ(r[1].at("result").at("returnValue").asInt(), 1);   // not 2 — fresh process
 }
 
 #endif // !_WIN32

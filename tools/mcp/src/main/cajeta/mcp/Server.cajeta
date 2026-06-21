@@ -369,8 +369,9 @@ public class Server {
             Server.runSkill(out, id, a, 3, "skills");
         } else if (name.equals("compile")) {
             Server.writeCompile(out, toolArgs, id);
+        } else if (name.equals("jit_execute")) {
+            Server.writeJitExecute(out, toolArgs, id);
         } else {
-            // jit_execute (C4): stub.
             Server.writeStub(out, id);
         }
     }
@@ -664,6 +665,112 @@ public class Server {
     }
 
     /**
+     * `mktemp -d`, create `<tmp>/src`, and materialize each `files` entry
+     * (path->content) under it (decoding JSON-string escapes, creating package
+     * subdirs). Returns the temp root (caller runs the compiler against
+     * `<tmp>/src` and cleans up with `rmrf`), or null if the temp dir failed.
+     */
+    public static #String materializeToTemp(JsonObject files) {
+        String tmpRoot = Server.makeTempDir();
+        if (tmpRoot == null) {
+            return null;
+        }
+        String srcRoot = Server.joinPath(tmpRoot, "src");
+        Server.mkdirp(srcRoot);
+        int32 fn = files.count();
+        int32 fi = 0;
+        while (fi < fn) {
+            String rel = Server.decodeJsonString(files.keyAt(fi), files.keyLenAt(fi));
+            String full = Server.joinPath(srcRoot, rel);
+            String parent = Server.parentDir(full);
+            Server.mkdirp(parent);
+            JsonValue cv = files.valueAt(fi);
+            int8[] raw = cv.asBytes();
+            if (raw == null) {
+                int8[] empty = heap int8[0];
+                File.writeAllBytes(full, empty, 0);
+            } else {
+                String decoded = Server.decodeJsonString(raw, cv.asBytesLength());
+                // File.writeAllBytes' intrinsic lowering only loads alloca
+                // (local) args — a struct field passed directly (decoded.bytes
+                // / decoded.byteLength) reaches the runtime as a raw pointer,
+                // so copy both into locals first.
+                int8[] dbytes = decoded.bytes;
+                int32 dlen = decoded.byteLength;
+                File.writeAllBytes(full, dbytes, dlen);
+            }
+            fi = fi + 1;
+        }
+        return tmpRoot;
+    }
+
+    /** Lowercase hex digit for `v` in 0..15. */
+    public static int32 hexDigit(int32 v) {
+        if (v < 10) {
+            return 48 + v;
+        }
+        return 87 + v;
+    }
+
+    /**
+     * Build a fully JSON-escaped string token (with surrounding quotes) for
+     * `bytes[0..n)`. The stdlib `JsonWriter.writeString` only escapes `"` and
+     * `\` — NOT control bytes — so captured program output (which contains
+     * newlines) must be escaped here and emitted via `writeRaw`.
+     */
+    public static #String jsonEscape(int8[] bytes, int32 n) {
+        int8[] buf = heap int8[n * 6 + 2];
+        int32 o = 0;
+        buf[o] = (int8) 34;
+        o = o + 1;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = ((int32) bytes[i]) & 255;
+            if (c == 34) {
+                buf[o] = (int8) 92; o = o + 1; buf[o] = (int8) 34; o = o + 1;
+            } else if (c == 92) {
+                buf[o] = (int8) 92; o = o + 1; buf[o] = (int8) 92; o = o + 1;
+            } else if (c == 10) {
+                buf[o] = (int8) 92; o = o + 1; buf[o] = (int8) 110; o = o + 1;
+            } else if (c == 13) {
+                buf[o] = (int8) 92; o = o + 1; buf[o] = (int8) 114; o = o + 1;
+            } else if (c == 9) {
+                buf[o] = (int8) 92; o = o + 1; buf[o] = (int8) 116; o = o + 1;
+            } else if (c == 8) {
+                buf[o] = (int8) 92; o = o + 1; buf[o] = (int8) 98; o = o + 1;
+            } else if (c == 12) {
+                buf[o] = (int8) 92; o = o + 1; buf[o] = (int8) 102; o = o + 1;
+            } else if (c < 32) {
+                buf[o] = (int8) 92; o = o + 1;
+                buf[o] = (int8) 117; o = o + 1;
+                buf[o] = (int8) 48; o = o + 1;
+                buf[o] = (int8) 48; o = o + 1;
+                buf[o] = (int8) Server.hexDigit(c / 16); o = o + 1;
+                buf[o] = (int8) Server.hexDigit(c % 16); o = o + 1;
+            } else {
+                buf[o] = (int8) c; o = o + 1;
+            }
+            i = i + 1;
+        }
+        buf[o] = (int8) 34;
+        o = o + 1;
+        return heap String(#buf, o);
+    }
+
+    /** Emit `"<key>": "<JSON-escaped bytes>"` (handles control chars + null). */
+    public static void writeStringField(JsonWriter w, String key, int8[] bytes) {
+        w.key(key);
+        int32 n = 0;
+        if (bytes != null) {
+            n = (int32) bytes.count();
+        }
+        String tok = Server.jsonEscape(bytes, n);
+        int8[] tb = tok.bytes;
+        int32 tl = tok.byteLength;
+        w.writeRaw(tb, tl);
+    }
+
+    /**
      * compile: materialize a `files` map (path->content) under a temp source
      * root, run `cajeta --emit=cja <entry> <srcRoot> <outDir>`, and return
      * `{exitStatus, diagnostics:[stderr lines], artifact?}` (base64 .cja).
@@ -690,40 +797,14 @@ public class Server {
         }
         String entry = entryV.asString();
 
-        String tmpRoot = Server.makeTempDir();
+        String tmpRoot = Server.materializeToTemp(files);
         if (tmpRoot == null) {
             Server.writeError(out, id, -32603, "failed to create temp dir");
             return;
         }
         String srcRoot = Server.joinPath(tmpRoot, "src");
         String outDir = Server.joinPath(tmpRoot, "out");
-        Server.mkdirp(srcRoot);
         Server.mkdirp(outDir);
-
-        int32 fn = files.count();
-        int32 fi = 0;
-        while (fi < fn) {
-            String rel = Server.decodeJsonString(files.keyAt(fi), files.keyLenAt(fi));
-            String full = Server.joinPath(srcRoot, rel);
-            String parent = Server.parentDir(full);
-            Server.mkdirp(parent);
-            JsonValue cv = files.valueAt(fi);
-            int8[] raw = cv.asBytes();
-            if (raw == null) {
-                int8[] empty = heap int8[0];
-                File.writeAllBytes(full, empty, 0);
-            } else {
-                String decoded = Server.decodeJsonString(raw, cv.asBytesLength());
-                // File.writeAllBytes' intrinsic lowering only loads alloca
-                // (local) args — a struct field passed directly (decoded.bytes
-                // / decoded.byteLength) reaches the runtime as a raw pointer,
-                // so copy both into locals first.
-                int8[] dbytes = decoded.bytes;
-                int32 dlen = decoded.byteLength;
-                File.writeAllBytes(full, dbytes, dlen);
-            }
-            fi = fi + 1;
-        }
 
         String[] cargs = heap String[4];
         cargs[0] = "--emit=cja";
@@ -758,6 +839,73 @@ public class Server {
                 w.writeString(b64);
             }
         }
+        w.endObject();
+        w.endObject();
+        w.writeLineTo(out);
+
+        Server.rmrf(tmpRoot);
+    }
+
+    /**
+     * jit_execute: materialize a `files` map, run `cajeta jit-run <srcRoot>
+     * <entry>` (a fresh process each call), and return `{returnValue,
+     * exitStatus, stdout, stderr, cacheHit:false}`. The entry's int32 return
+     * becomes the process exit code; the program's stdout is clean (jit-run
+     * chatter is on stderr).
+     */
+    public static void writeJitExecute(FileWriter out, JsonObject toolArgs, JsonValue id) {
+        if (toolArgs == null) {
+            Server.writeError(out, id, -32602, "jit_execute requires 'files'");
+            return;
+        }
+        JsonValue filesV = toolArgs.get("files");
+        if (filesV == null || filesV.kind() != JsonValue.OBJECT) {
+            Server.writeError(out, id, -32602, "jit_execute requires a 'files' object");
+            return;
+        }
+        JsonObject files = filesV.asObject();
+        if (files.count() == 0) {
+            Server.writeError(out, id, -32602, "jit_execute 'files' must be non-empty");
+            return;
+        }
+        JsonValue entryV = toolArgs.get("entry");
+        if (entryV == null || entryV.kind() != JsonValue.STRING) {
+            Server.writeError(out, id, -32602, "jit_execute requires an 'entry' string");
+            return;
+        }
+        String entry = entryV.asString();
+
+        String tmpRoot = Server.materializeToTemp(files);
+        if (tmpRoot == null) {
+            Server.writeError(out, id, -32603, "failed to create temp dir");
+            return;
+        }
+        String srcRoot = Server.joinPath(tmpRoot, "src");
+
+        String[] jargs = heap String[3];
+        jargs[0] = "jit-run";
+        jargs[1] = srcRoot;
+        jargs[2] = entry;
+        ProcessResult r = Server.runCajeta(jargs, 3);
+        if (r.launched() == false) {
+            Server.rmrf(tmpRoot);
+            Server.writeError(out, id, -32603, "failed to launch cajeta");
+            return;
+        }
+        int32 code = r.exitCode();
+
+        JsonWriter w = heap JsonWriter();
+        Server.writeHead(w, id);
+        w.key("result");
+        w.beginObject();
+        w.key("returnValue");
+        w.writeNumber((int64) code);
+        w.key("exitStatus");
+        w.writeNumber((int64) code);
+        Server.writeStringField(w, "stdout", r.stdout());
+        Server.writeStringField(w, "stderr", r.stderr());
+        w.key("cacheHit");
+        w.writeBoolean(false);
         w.endObject();
         w.endObject();
         w.writeLineTo(out);
