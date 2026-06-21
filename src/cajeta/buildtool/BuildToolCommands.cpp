@@ -2641,15 +2641,21 @@ namespace cajeta::buildtool {
             bool json = takeJsonFlag(tail);
             auto a = skill::parseSearchSkillArgs(tail);
             if (!a.valid) { std::cerr << skill::searchSkillUsage(); return 2; }
-            auto lf = readLockfile("./cajeta.lock");
-            if (!lf) {
-                std::cerr << "cajeta search-skill: " << llvm::toString(lf.takeError())
-                          << "\n";
-                return 1;
+            // Lockfile is optional: with none, discovery still returns the
+            // always-available embedded stdlib skills (spec §2.5).
+            std::vector<ResolvedPackageEntry> packages;
+            if (std::filesystem::exists("./cajeta.lock")) {
+                auto lf = readLockfile("./cajeta.lock");
+                if (!lf) {
+                    std::cerr << "cajeta search-skill: " << llvm::toString(lf.takeError())
+                              << "\n";
+                    return 1;
+                }
+                packages = std::move(lf->packagesTyped);
             }
             ArtifactCache cache(".");
             auto ctx = skill::loadSkillSearchContext(
-                lf->packagesTyped,
+                packages,
                 [&](llvm::StringRef s) { return cache.lookup(s.str()); });
             if (!ctx) {
                 std::cerr << "cajeta search-skill: " << llvm::toString(ctx.takeError())
@@ -2669,15 +2675,20 @@ namespace cajeta::buildtool {
             bool json = takeJsonFlag(tail);
             auto a = skill::parseListSkillsArgs(tail);
             if (!a.valid) { std::cerr << skill::listSkillsUsage(); return 2; }
-            auto lf = readLockfile("./cajeta.lock");
-            if (!lf) {
-                std::cerr << "cajeta list-skills: " << llvm::toString(lf.takeError())
-                          << "\n";
-                return 1;
+            // Lockfile optional (spec §2.5): embedded stdlib skills always listed.
+            std::vector<ResolvedPackageEntry> packages;
+            if (std::filesystem::exists("./cajeta.lock")) {
+                auto lf = readLockfile("./cajeta.lock");
+                if (!lf) {
+                    std::cerr << "cajeta list-skills: " << llvm::toString(lf.takeError())
+                              << "\n";
+                    return 1;
+                }
+                packages = std::move(lf->packagesTyped);
             }
             ArtifactCache cache(".");
             auto ctx = skill::loadSkillSearchContext(
-                lf->packagesTyped,
+                packages,
                 [&](llvm::StringRef s) { return cache.lookup(s.str()); });
             if (!ctx) {
                 std::cerr << "cajeta list-skills: " << llvm::toString(ctx.takeError())
@@ -2696,15 +2707,20 @@ namespace cajeta::buildtool {
             if (tail.size() < 2) { std::cerr << skill::getSkillsUsage(); return 2; }
             auto uris = skill::splitCommaUris(tail[1]);
             if (uris.empty()) { std::cerr << skill::getSkillsUsage(); return 2; }
-            auto lf = readLockfile("./cajeta.lock");
-            if (!lf) {
-                std::cerr << "cajeta get-skills: " << llvm::toString(lf.takeError())
-                          << "\n";
-                return 1;
+            // Lockfile optional (spec §2.5): embedded stdlib URIs resolve with none.
+            std::vector<ResolvedPackageEntry> packages;
+            if (std::filesystem::exists("./cajeta.lock")) {
+                auto lf = readLockfile("./cajeta.lock");
+                if (!lf) {
+                    std::cerr << "cajeta get-skills: " << llvm::toString(lf.takeError())
+                              << "\n";
+                    return 1;
+                }
+                packages = std::move(lf->packagesTyped);
             }
             ArtifactCache cache(".");
             auto results = skill::getSkills(
-                uris, lf->packagesTyped,
+                uris, packages,
                 [&](llvm::StringRef s) { return cache.lookup(s.str()); });
             bool anyErr = false;
             for (const auto& r : results) if (!r.ok()) anyErr = true;

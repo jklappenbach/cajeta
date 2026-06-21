@@ -111,12 +111,20 @@ TEST(SkillCliTests, loadsContextFromArchives) {
 
     auto ctx = loadSkillSearchContext(pkgs, lookup);
     ASSERT_TRUE((bool)ctx);
-    ASSERT_EQ(ctx->archives.size(), 1u);
-    EXPECT_EQ(ctx->archives[0].library, "cajeta.io");
-    EXPECT_EQ(ctx->archives[0].version, "1.0.0");
-    auto ids = ctx->archives[0].index.query("cajeta/io/File", false);
-    ASSERT_EQ(ids.size(), 1u);
-    EXPECT_EQ(ids[0], "alpha");
+    // The context is always seeded with the embedded stdlib archives (spec
+    // §2.5), so the lockfile-resolved cajeta.io@1.0.0 is found among them
+    // (distinct from the embedded stdlib cajeta.io@1.0).
+    EXPECT_GT(ctx->archives.size(), 1u);
+    bool foundResolved = false;
+    for (const auto& a : ctx->archives) {
+        if (a.library == "cajeta.io" && a.version == "1.0.0") {
+            foundResolved = true;
+            auto ids = a.index.query("cajeta/io/File", false);
+            ASSERT_EQ(ids.size(), 1u);
+            EXPECT_EQ(ids[0], "alpha");
+        }
+    }
+    EXPECT_TRUE(foundResolved) << "lockfile-resolved cajeta.io@1.0.0 must be present";
     // memberOwner → moduleVersions.
     EXPECT_EQ(ctx->moduleVersions["app"]["cajeta.io"], "1.0.0");
 
