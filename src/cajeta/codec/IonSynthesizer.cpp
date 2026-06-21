@@ -190,6 +190,126 @@ namespace cajeta {
         return os.str();
     }
 
+    // Emit `w.intern("...")` for every bindable field name of T, recursing into
+    // nested struct types — interning must populate the symbol table BEFORE the
+    // LST is written.
+    void emitInternNames(std::ostringstream& os, const CajetaClassPtr& T,
+                         const std::string& w) {
+        std::vector<Bind> binds = collectBinds(T);
+        for (auto& b : binds) {
+            os << "    " << w << ".intern(\"" << b.name << "\");\n";
+            if (b.decode == Decode::Message && b.nested) {
+                emitInternNames(os, b.nested, w);
+            }
+        }
+    }
+
+    // Emit the field encodes of struct `T` against writer `w`, reading from
+    // `objVar`. Field reads are hoisted to locals (the field-arg codegen gotcha);
+    // a nested struct descends with `beginContainer`/`endContainer(13)` reusing
+    // the same shared interned SIDs. `path` keeps locals unique across depth.
+    void emitStructEncode(std::ostringstream& os, const CajetaClassPtr& T,
+                          const std::string& w, const std::string& objVar,
+                          const std::string& path) {
+        std::vector<Bind> binds = collectBinds(T);
+        for (auto& b : binds) {
+            const std::string vloc = "v" + path + "_" + b.name;
+            const std::string sid = w + ".intern(\"" + b.name + "\")";
+            switch (b.decode) {
+                case Decode::Int:
+                    os << "    int64 " << vloc << " = (int64) " << objVar << "."
+                       << b.name << ";\n";
+                    os << "    " << w << ".writeFieldSid(" << sid << ");\n";
+                    os << "    " << w << ".writeIntValue(" << vloc << ");\n";
+                    break;
+                case Decode::Bool:
+                    os << "    boolean " << vloc << " = " << objVar << "."
+                       << b.name << ";\n";
+                    os << "    " << w << ".writeFieldSid(" << sid << ");\n";
+                    os << "    " << w << ".writeBoolValue(" << vloc << ");\n";
+                    break;
+                case Decode::Str:
+                    os << "    cajeta.lang.String " << vloc << " = " << objVar
+                       << "." << b.name << ";\n";
+                    os << "    if (" << vloc << " != null) {\n";
+                    os << "        " << w << ".writeFieldSid(" << sid << ");\n";
+                    os << "        int8[] sb" << path << "_" << b.name << " = "
+                       << vloc << ".bytes;\n";
+                    os << "        " << w << ".writeStringValue(sb" << path << "_"
+                       << b.name << ", (int32) sb" << path << "_" << b.name
+                       << ".count());\n";
+                    os << "    }\n";
+                    break;
+                case Decode::Bytes:
+                    os << "    int8[] " << vloc << " = " << objVar << "."
+                       << b.name << ";\n";
+                    os << "    if (" << vloc << " != null) {\n";
+                    os << "        " << w << ".writeFieldSid(" << sid << ");\n";
+                    os << "        " << w << ".writeBytesValue(" << vloc
+                       << ", (int32) " << vloc << ".count());\n";
+                    os << "    }\n";
+                    break;
+                case Decode::Message: {
+                    const std::string childPath = path + "_" + b.name;
+                    os << "    " << b.canon << " " << vloc << " = " << objVar
+                       << "." << b.name << ";\n";
+                    os << "    if (" << vloc << " != null) {\n";
+                    os << "        " << w << ".writeFieldSid(" << sid << ");\n";
+                    os << "        " << w << ".beginContainer();\n";
+                    emitStructEncode(os, b.nested, w, vloc, childPath);
+                    os << "        " << w << ".endContainer(13);\n";
+                    os << "    }\n";
+                    break;
+                }
+                case Decode::Unsupported:
+                    break;
+            }
+        }
+    }
+
+    // Synthesize `toBytes(T value) -> #int8[]` for struct T.
+    std::string synthesizeStructEncodeBody(const CajetaClassPtr& T) {
+        const std::string Tc = T->getQName()->toCanonical();
+        const std::string IWr = "dev.cajeta.codec.ion.IonWriter";
+        std::ostringstream os;
+        os << "public static #int8[] toBytes(" << Tc << " value) {\n";
+        os << "    " << IWr << " w = heap " << IWr << "();\n";
+        emitInternNames(os, T, "w");
+        os << "    w.writeBvm();\n";
+        os << "    w.writeLocalSymbolTable();\n";
+        os << "    w.beginContainer();\n";
+        emitStructEncode(os, T, "w", "value", "");
+        os << "    w.endContainer(13);\n";
+        os << "    return w.toBytes();\n";
+        os << "}\n";
+        return os.str();
+    }
+
+    // Synthesize `toBytes(E[] values) -> #int8[]` — BVM + LST once (interning the
+    // element type's names), then each struct back-to-back.
+    std::string synthesizeStreamEncodeBody(const CajetaClassPtr& E) {
+        const std::string Ec = E->getQName()->toCanonical();
+        const std::string IWr = "dev.cajeta.codec.ion.IonWriter";
+        std::ostringstream os;
+        os << "public static #int8[] toBytes(" << Ec << "[] values) {\n";
+        os << "    " << IWr << " w = heap " << IWr << "();\n";
+        emitInternNames(os, E, "w");
+        os << "    w.writeBvm();\n";
+        os << "    w.writeLocalSymbolTable();\n";
+        os << "    int32 n = (int32) values.count();\n";
+        os << "    int32 i = 0;\n";
+        os << "    while (i < n) {\n";
+        os << "        " << Ec << " ev = values[i];\n";
+        os << "        w.beginContainer();\n";
+        emitStructEncode(os, E, "w", "ev", "_e");
+        os << "        w.endContainer(13);\n";
+        os << "        i = i + 1;\n";
+        os << "    }\n";
+        os << "    return w.toBytes();\n";
+        os << "}\n";
+        return os.str();
+    }
+
     } // namespace
 
     bool synthesizeIonMethodSource(
@@ -204,23 +324,31 @@ namespace cajeta {
             return false;
         }
         if (args.size() != 1) return false;
-        if (methodName != "parse") return false;
-        if (paramTypes.size() != 2
-                || paramCanonAt(paramTypes, 0) != "int8[]"
-                || paramCanonAt(paramTypes, 1) != "int64") {
-            return false;
+        const bool isParse = (methodName == "parse");
+        const bool isEncode = (methodName == "toBytes");
+        if (!isParse && !isEncode) return false;
+        if (isParse) {
+            if (paramTypes.size() != 2
+                    || paramCanonAt(paramTypes, 0) != "int8[]"
+                    || paramCanonAt(paramTypes, 1) != "int64") {
+                return false;
+            }
+        } else {
+            if (paramTypes.size() != 1) return false;
         }
         // T[] (stream) → back-to-back top-level structs; T (class) → one struct.
         std::string label;
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(args[0])) {
             auto E = std::dynamic_pointer_cast<CajetaClass>(arr->getElementType());
             if (!E || !E->getQName()) return false;
-            out = synthesizeStreamParseBody(E);
+            out = isParse ? synthesizeStreamParseBody(E)
+                          : synthesizeStreamEncodeBody(E);
             label = E->getQName()->toCanonical() + "[]";
         } else {
             auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
             if (!T || !T->getQName()) return false;
-            out = synthesizeStructParseBody(T);
+            out = isParse ? synthesizeStructParseBody(T)
+                          : synthesizeStructEncodeBody(T);
             label = T->getQName()->toCanonical();
         }
 
