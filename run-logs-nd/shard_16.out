@@ -1,0 +1,38 @@
+[==========] 28 tests from 1 test suite ran. (886321 ms total)
+[  PASSED  ] 28 tests.
+[==========] 18 tests from 1 test suite ran. (597106 ms total)
+[  PASSED  ] 18 tests.
+[==========] 14 tests from 1 test suite ran. (979 ms total)
+[  PASSED  ] 14 tests.
+[==========] 12 tests from 1 test suite ran. (168549 ms total)
+[  PASSED  ] 12 tests.
+[==========] 9 tests from 1 test suite ran. (111413 ms total)
+[  PASSED  ] 9 tests.
+[CajetaException] CAJETA_ERROR_QUATERNION_ELEMENT_TYPE: Quaternion element type must be a floating-point primitive (got 'int32')
+[==========] 9 tests from 1 test suite ran. (255412 ms total)
+[  PASSED  ] 9 tests.
+[==========] 7 tests from 1 test suite ran. (205204 ms total)
+[  PASSED  ] 7 tests.
+cajeta: drop chain (head first, 32 entries max shown):
+  [0] obj=0x5fddb3a40ce0 drop_fn=0x7248fc161020 active=1   alloc=/tmp/cajeta_multi_4083138956657698648/test/D.cajeta:8
+  [1] obj=0x5fddb6263de0 drop_fn=0x7248fc161020 active=1   alloc=/tmp/cajeta_multi_4083138956657698648/test/D.cajeta:7
+  [2] obj=0x5fddb6268e80 drop_fn=0x7248fc161020 active=1   alloc=/tmp/cajeta_multi_4083138956657698648/test/D.cajeta:6
+[==========] 6 tests from 1 test suite ran. (147821 ms total)
+[  PASSED  ] 6 tests.
+[==========] 6 tests from 1 test suite ran. (100 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (96826 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (86079 ms total)
+[  PASSED  ] 4 tests.
+[==========] 4 tests from 1 test suite ran. (89602 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (299 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (271 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (74377 ms total)
+[  PASSED  ] 2 tests.
+/tmp/cajeta_rq_12851435506103482008/spatial_index.comp
+[==========] 1 test from 1 test suite ran. (326 ms total)
+[  PASSED  ] 1 test.

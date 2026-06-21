@@ -1,0 +1,381 @@
+>>> BATCH-FALLBACK ReflectionTests (suite process exit 124; re-running 97 test(s) individually)
+>> ReflectionTests.getClassFieldCount ... PASS
+[==========] 1 test from 1 test suite ran. (23397 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.getClassMethodCountNonZero ... PASS
+[==========] 1 test from 1 test suite ran. (21100 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.getNameMatchesCanonical ... PASS
+[==========] 1 test from 1 test suite ran. (20549 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classIsPublic ... PASS
+[==========] 1 test from 1 test suite ran. (21652 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.firstFieldNameIsId ... PASS
+[==========] 1 test from 1 test suite ran. (20885 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.instanceSizeNonZero ... PASS
+[==========] 1 test from 1 test suite ran. (20831 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldOffsetsAreSaneAndAligned ... PASS
+[==========] 1 test from 1 test suite ran. (20721 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldTypeFlagsCarryPrimitiveBit ... PASS
+[==========] 1 test from 1 test suite ran. (20453 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeReachesNoArgMethod ... PASS
+[==========] 1 test from 1 test suite ran. (19646 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldInt32Roundtrip ... PASS
+[==========] 1 test from 1 test suite ran. (21325 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldInt64Roundtrip ... PASS
+[==========] 1 test from 1 test suite ran. (20905 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldBooleanRoundtrip ... PASS
+[==========] 1 test from 1 test suite ran. (21260 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldFloat32Roundtrip ... PASS
+[==========] 1 test from 1 test suite ran. (21056 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldFloat64Roundtrip ... PASS
+[==========] 1 test from 1 test suite ran. (20468 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldObjectFloat32Roundtrip ... PASS
+[==========] 1 test from 1 test suite ran. (17197 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.reflectiveSetVisibleToReflectiveInvoke ... PASS
+[==========] 1 test from 1 test suite ran. (21010 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldObjectRoundtrip ... PASS
+[==========] 1 test from 1 test suite ran. (20606 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldObjectName ... PASS
+[==========] 1 test from 1 test suite ran. (21016 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.methodObjectInvoke ... PASS
+[==========] 1 test from 1 test suite ran. (19633 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.parameterIntrospection ... PASS
+[==========] 1 test from 1 test suite ran. (18903 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.constructorObjectHeapInstance ... PASS
+[==========] 1 test from 1 test suite ran. (21628 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.constructorCountIsTwo ... PASS
+[==========] 1 test from 1 test suite ran. (21175 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.methodInvokeWithArg ... PASS
+[==========] 1 test from 1 test suite ran. (18016 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.methodInvokeStackArg1 ... PASS
+[==========] 1 test from 1 test suite ran. (21536 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.methodInvokeStackArgsMulti ... PASS
+[==========] 1 test from 1 test suite ran. (21488 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.constructorHeapInstanceWithArg ... PASS
+[==========] 1 test from 1 test suite ran. (17305 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.heapInstanceProducesValidObject ... PASS
+[==========] 1 test from 1 test suite ran. (19912 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.heapInstanceObjectIsFunctional ... PASS
+[==========] 1 test from 1 test suite ran. (22191 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeFloat64ReturnsRealValue ... PASS
+[==========] 1 test from 1 test suite ran. (21517 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeFloat32ReturnsRealValue ... PASS
+[==========] 1 test from 1 test suite ran. (18478 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeInt32Narrows ... PASS
+[==========] 1 test from 1 test suite ran. (22641 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.sealedPrivateFieldThrows ... PASS
+[==========] 1 test from 1 test suite ran. (16965 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.sealedPublicFieldStillReadable ... PASS
+[==========] 1 test from 1 test suite ran. (15567 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.sealedPrivateFieldIndexFormThrows ... PASS
+[==========] 1 test from 1 test suite ran. (22456 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.unsealedPrivateFieldReadable ... PASS
+[==========] 1 test from 1 test suite ran. (20542 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.sealedPrivateMethodInvokeThrows ... PASS
+[==========] 1 test from 1 test suite ran. (21809 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.sealedPrivateConstructorThrows ... PASS
+[==========] 1 test from 1 test suite ran. (18520 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeObjectReturnsReference ... PASS
+[==========] 1 test from 1 test suite ran. (18632 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeBoxedPrimitiveReturns ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'of' inside a loop in run returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'of' inside a loop in run returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'of' inside a loop in run returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (21651 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeBoxedReferenceAndVoid ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'of' inside a loop in run returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (16377 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeBoxedUnsupportedThrows ... PASS
+[==========] 1 test from 1 test suite ran. (22632 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.getBoxedPrimitiveFields ... PASS
+[==========] 1 test from 1 test suite ran. (31863 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.getBoxedReferenceFieldThrows ... PASS
+[==========] 1 test from 1 test suite ran. (29587 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.invokeBoxedW2Returns ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'of' inside a loop in run returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'of' inside a loop in run returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'of' inside a loop in run returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (27935 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.getBoxedW2Fields ... PASS
+[==========] 1 test from 1 test suite ran. (28301 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classAnnotationName ... PASS
+[==========] 1 test from 1 test suite ran. (22667 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classHasAnnotation ... PASS
+[==========] 1 test from 1 test suite ran. (26933 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.annotationObjectName ... PASS
+[==========] 1 test from 1 test suite ran. (17800 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classNoAnnotationsZeroCount ... PASS
+[==========] 1 test from 1 test suite ran. (14354 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldAnnotationName ... PASS
+[==========] 1 test from 1 test suite ran. (14358 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.methodAnnotationName ... PASS
+[==========] 1 test from 1 test suite ran. (13790 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.constructorAnnotationName ... PASS
+[==========] 1 test from 1 test suite ran. (14122 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.parameterAnnotationName ... PASS
+[==========] 1 test from 1 test suite ran. (14454 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.multipleClassAnnotations ... PASS
+[==========] 1 test from 1 test suite ran. (13824 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classAnnotationIntArg ... PASS
+[==========] 1 test from 1 test suite ran. (13678 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classAnnotationNamedStringArg ... PASS
+[==========] 1 test from 1 test suite ran. (14142 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classAnnotationUnnamedStringArg ... PASS
+[==========] 1 test from 1 test suite ran. (14065 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classAnnotationBoolArg ... PASS
+[==========] 1 test from 1 test suite ran. (13695 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classAnnotationClassRefArg ... PASS
+[==========] 1 test from 1 test suite ran. (13730 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.annotationArgByIndex ... PASS
+[==========] 1 test from 1 test suite ran. (13314 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.annotationArgWrongKindFallback ... PASS
+[==========] 1 test from 1 test suite ran. (13228 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.fieldAnnotationArg ... PASS
+[==========] 1 test from 1 test suite ran. (13168 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.methodAnnotationArg ... PASS
+[==========] 1 test from 1 test suite ran. (13276 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.annotationMultipleNamedArgs ... PASS
+[==========] 1 test from 1 test suite ran. (13110 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.annotationNoArgsZeroCount ... PASS
+[==========] 1 test from 1 test suite ran. (13482 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.parameterAnnotationArg ... PASS
+[==========] 1 test from 1 test suite ran. (13213 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.annotationStringListArg ... PASS
+[==========] 1 test from 1 test suite ran. (13222 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.annotationIntListArg ... PASS
+[==========] 1 test from 1 test suite ran. (13062 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.annotationBoolListArg ... PASS
+[==========] 1 test from 1 test suite ran. (13124 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.templateArguments ... PASS
+[==========] 1 test from 1 test suite ran. (13025 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.templateParameters ... PASS
+[==========] 1 test from 1 test suite ran. (13202 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.nonTemplateClassZero ... PASS
+[==========] 1 test from 1 test suite ran. (13105 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.forNameResolvesClass ... PASS
+[==========] 1 test from 1 test suite ran. (13026 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.forNameAbsentEmpty ... PASS
+[==========] 1 test from 1 test suite ran. (13017 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.forNameRoundTrip ... PASS
+[==========] 1 test from 1 test suite ran. (13115 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.forNameStdlibClass ... PASS
+[==========] 1 test from 1 test suite ran. (12835 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.boundedHeapInstanceSubtypeResolves ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in allClasses returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (13107 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.boundedHeapInstanceExactTypeResolves ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in allClasses returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (13287 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.boundedHeapInstanceNonSubtypeEmpty ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in allClasses returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (13378 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.boundedHeapInstanceUnknownEmpty ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in allClasses returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (12975 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.boundedSubtypesClosure ... PASS
+line 19:25 no viable alternative at input '#Class<?>[] subs ='
+line 19:25 no viable alternative at input '#Class<?>[] subs ='
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in allClasses returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (12990 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.boundedSubtypesLeafIsSelf ... PASS
+line 19:25 no viable alternative at input '#Class<?>[] subs ='
+line 19:25 no viable alternative at input '#Class<?>[] subs ='
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in allClasses returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (12942 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.templateArgGetTypeResolvesClass ... PASS
+[==========] 1 test from 1 test suite ran. (12365 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.templateArgGetTypePrimitiveThrows ... PASS
+[==========] 1 test from 1 test suite ran. (12351 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.allClassesFindsRegistered ... PASS
+[==========] 1 test from 1 test suite ran. (12231 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classesInPackageFilters ... PASS
+[==========] 1 test from 1 test suite ran. (12418 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classesAnnotatedFilters ... PASS
+[==========] 1 test from 1 test suite ran. (12344 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classesAnnotatedTokenForm ... PASS
+[==========] 1 test from 1 test suite ran. (12217 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.foldFinalFieldCount ... PASS
+[==========] 1 test from 1 test suite ran. (12218 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.foldFinalFieldLoad ... PASS
+[==========] 1 test from 1 test suite ran. (12456 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.foldDeclinesNonFinal ... PASS
+[==========] 1 test from 1 test suite ran. (12250 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.foldDeclinesSealedPrivate ... PASS
+[==========] 1 test from 1 test suite ran. (12021 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.modifiersObjectClassFlags ... PASS
+[==========] 1 test from 1 test suite ran. (11937 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.modifiersObjectFieldFlags ... PASS
+[==========] 1 test from 1 test suite ran. (11905 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.getClassMethodReturnsClass ... PASS
+[==========] 1 test from 1 test suite ran. (11950 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classLiteralResolvesClass ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in allClasses returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (12204 ms total)
+[  PASSED  ] 1 test.
+>> ReflectionTests.classLiteralAndGetClassAgree ... PASS
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in allClasses returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesAnnotated returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in classesInPackage returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+warning: [wildcard-crosses-hot-boundary] call to 'registryAt' inside a loop in subtypes returns wildcard-typed cajeta.reflect.Class<?> — the receive site can't be specialized at the call boundary; restructure to concrete or suppress with @SuppressLint("wildcard-crosses-hot-boundary").
+[==========] 1 test from 1 test suite ran. (12008 ms total)
+[  PASSED  ] 1 test.
+[==========] 6 tests from 1 test suite ran. (12 ms total)
+[  PASSED  ] 6 tests.
+[==========] 6 tests from 1 test suite ran. (76764 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (63819 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (18823 ms total)
+[  PASSED  ] 4 tests.
+[==========] 4 tests from 1 test suite ran. (51954 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (37412 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (36443 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (24701 ms total)
+[  PASSED  ] 2 tests.
+/home/julian/code/cpp/cajeta-two/test/xpu/XpuHostLaunchDeviceTests.cpp:52: Skipped
+no CUDA device/driver available
+
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 0 tests.
+[  SKIPPED ] 1 test.

@@ -1,0 +1,42 @@
+[CajetaException] CAJETA_ERROR_TOSTRING_BAD_FORMAT: @ToString(format=TO_STRING_NONSENSE) on `test.P` is not a recognized format; supported in v1: TO_STRING_PROPERTIES, TO_STRING_JSON
+[CajetaException] CAJETA_ERROR_TOSTRING_UNKNOWN_FIELD: @ToString(of={...}) on `test.P` names unknown field `nope`. Allowlisted field names must match a non-static field declared on the class.
+[==========] 22 tests from 1 test suite ran. (655067 ms total)
+[  PASSED  ] 22 tests.
+payload
+produced
+left
+right
+produced
+hello, world
+[==========] 21 tests from 1 test suite ran. (88 ms total)
+[  PASSED  ] 21 tests.
+[CajetaException] CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED: class 'test.Bad' inherits abstract method 'test.Base::must(pointer)' from 'test.Base' but does not override it
+[CajetaException] CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED: class 'test.Mute' implements interface 'test.Speaker' but does not provide 'test.Speaker::speak(pointer)'
+[==========] 15 tests from 1 test suite ran. (457621 ms total)
+[  PASSED  ] 15 tests.
+[==========] 13 tests from 1 test suite ran. (2 ms total)
+[  PASSED  ] 13 tests.
+[==========] 10 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 10 tests.
+[==========] 8 tests from 1 test suite ran. (247536 ms total)
+[  PASSED  ] 8 tests.
+[==========] 7 tests from 1 test suite ran. (214863 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (194950 ms total)
+[  PASSED  ] 6 tests.
+[==========] 6 tests from 1 test suite ran. (167420 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (135906 ms total)
+[  PASSED  ] 5 tests.
+[==========] 5 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 5 tests.
+[==========] 3 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (38508 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (74160 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 2 tests.
+[==========] 1 test from 1 test suite ran. (10881 ms total)
+[  PASSED  ] 1 test.

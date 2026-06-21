@@ -1,0 +1,40 @@
+[==========] 49 tests from 1 test suite ran. (1730409 ms total)
+[  PASSED  ] 49 tests.
+cajeta.xpu: no available backend among {}; rebuild with `cpu` to enable CPU fallback
+[==========] 14 tests from 1 test suite ran. (466922 ms total)
+[  PASSED  ] 14 tests.
+[==========] 11 tests from 1 test suite ran. (260540 ms total)
+[  PASSED  ] 11 tests.
+[CajetaException] CAJETA_ERROR_VIEW_AS_CLASS_FIELD: view type 'test.Pt' cannot be used as a class field (class 'test.Holder', field 'p'). Views are buffer overlays with borrowed lifetime — see docs/specification/lang/Views.md (Errors caught statically). Workaround: store the underlying byte[] in the class and construct the view per access; or pass the view by value across method boundaries without storing it.
+[CajetaException] CAJETA_ERROR_VIEW_AS_CLASS_FIELD: view type 'test.Pt' cannot be used as a class field (class 'test.Holder', field 'arr'). Views are buffer overlays with borrowed lifetime — see docs/specification/lang/Views.md (Errors caught statically). Workaround: store the underlying byte[] in the class and construct the view per access; or pass the view by value across method boundaries without storing it.
+[CajetaException] CAJETA_ERROR_VIEW_AS_CLASS_FIELD: view type 'test.Pt' cannot be used as a class field (class 'cajeta.lang.Optional<test.Pt>', field 'value'). Views are buffer overlays with borrowed lifetime — see docs/specification/lang/Views.md (Errors caught statically). Workaround: store the underlying byte[] in the class and construct the view per access; or pass the view by value across method boundaries without storing it.
+[CajetaException] CAJETA_ERROR_VIEW_AS_CLASS_FIELD: view type 'test.Pt' cannot be used as a class field (class 'cajeta.lang.Optional<test.Pt>', field 'value'). Views are buffer overlays with borrowed lifetime — see docs/specification/lang/Views.md (Errors caught statically). Workaround: store the underlying byte[] in the class and construct the view per access; or pass the view by value across method boundaries without storing it.
+[CajetaException] CAJETA_ERROR_VIEW_AS_CLASS_FIELD: view type 'test.Pt' cannot be used as a class field (class 'cajeta.lang.Optional<test.Pt>', field 'value'). Views are buffer overlays with borrowed lifetime — see docs/specification/lang/Views.md (Errors caught statically). Workaround: store the underlying byte[] in the class and construct the view per access; or pass the view by value across method boundaries without storing it.
+[CajetaException] CAJETA_ERROR_VIEW_AS_CLASS_FIELD: view type 'test.Pt' cannot be used as a class field (class 'cajeta.lang.Optional<test.Pt>', field 'value'). Views are buffer overlays with borrowed lifetime — see docs/specification/lang/Views.md (Errors caught statically). Workaround: store the underlying byte[] in the class and construct the view per access; or pass the view by value across method boundaries without storing it.
+[CajetaException] CAJETA_ERROR_VIEW_AS_CLASS_FIELD: view type 'test.Pt' cannot be used as a class field (class 'cajeta.lang.Optional<test.Pt>', field 'value'). Views are buffer overlays with borrowed lifetime — see docs/specification/lang/Views.md (Errors caught statically). Workaround: store the underlying byte[] in the class and construct the view per access; or pass the view by value across method boundaries without storing it.
+[==========] 9 tests from 1 test suite ran. (114408 ms total)
+[  PASSED  ] 9 tests.
+[==========] 8 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 8 tests.
+[==========] 7 tests from 1 test suite ran. (221651 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (100859 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (37383 ms total)
+[  PASSED  ] 5 tests.
+[==========] 5 tests from 1 test suite ran. (77264 ms total)
+[  PASSED  ] 5 tests.
+warning: class 'test.Vec2' defines operator== but does not override hash(). HashMap<this, V> will mis-key two ==-equal instances with different identity hashes. Fix: add `@AutoHash` to the class to synthesize structural hash, or override hash() manually. See docs/OperatorOverloading.md §7. [CAJETA_WARN_HASH_EQUALS_MISMATCH]
+warning: class 'test.Vec2' defines operator== but does not override hash(). HashMap<this, V> will mis-key two ==-equal instances with different identity hashes. Fix: add `@AutoHash` to the class to synthesize structural hash, or override hash() manually. See docs/OperatorOverloading.md §7. [CAJETA_WARN_HASH_EQUALS_MISMATCH]
+[==========] 4 tests from 1 test suite ran. (28583 ms total)
+[  PASSED  ] 4 tests.
+[==========] 4 tests from 1 test suite ran. (58429 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (20797 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (43019 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (28412 ms total)
+[  PASSED  ] 2 tests.
+[==========] 1 test from 1 test suite ran. (6530 ms total)
+[  PASSED  ] 1 test.
