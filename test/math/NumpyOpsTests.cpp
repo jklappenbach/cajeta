@@ -560,3 +560,48 @@ TEST(NumpyOpsTests, autoPromoteCaptureMismatchClean) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 8.1.1 — weak scalar of same-or-lower category adopts the tensor's dtype (NEP-50,
+// spec 7.2.1/7.2.2): int8 + 5 → Tensor<int8> (value irrelevant, no widening); float32 +
+// 1.0 → Tensor<float32> (not float64). Static result types confirm no widening.
+TEST(NumpyOpsTests, scalarSameOrLowerCategory) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        int8[] d8 = heap int8[4];\n"
+        "        d8[0] = (int8) 10; d8[1] = (int8) 20; d8[2] = (int8) 30; d8[3] = (int8) 40;\n"
+        "        Tensor<int8> t8 = Tensor.of<int8>(d8, s22);\n"
+        "        Tensor<int8> r8 = Tensor.addScalar<int8>(t8, (int8) 5);\n"   // 15,25,35,45 (int8)
+        "        if (r8.get2(0,0) != (int8) 15 || r8.get2(1,1) != (int8) 45) { return -1; }\n"
+        "        float32[] fa = { 1.5f, 2.5f, 3.5f, 4.5f };\n"
+        "        Tensor<float32> tf = Tensor.of<float32>(fa, s22);\n"
+        "        Tensor<float32> rf = Tensor.addScalar<float32>(tf, 1.0f);\n" // 2.5,3.5,4.5,5.5 (float32)
+        "        if (rf.get2(0,0) != 2.5f || rf.get2(1,1) != 5.5f) { return -2; }\n"
+        "        Tensor<float32> mf = Tensor.mulScalar<float32>(tf, 2.0f);\n" // 3,5,7,9
+        "        if (mf.get2(0,0) != 3.0f || mf.get2(1,1) != 9.0f) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 8.1.2 — a weak float scalar over an int tensor bumps to the default float (float64):
+// int32 + 2.0 → Tensor<float64> (NEP-50 category bump, spec 7.2.3). Static Tensor<float64>
+// result type confirms the bump.
+TEST(NumpyOpsTests, scalarCategoryBump) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        Tensor<int32> t = Tensor.of<int32>(da, s22);\n"
+        "        Tensor<float64> r = Tensor.addScalarF<int32>(t, 2.0);\n"     // 3.0,4.0,5.0,6.0
+        "        if (r.get2(0,0) != 3.0 || r.get2(0,1) != 4.0 || r.get2(1,0) != 5.0 || r.get2(1,1) != 6.0) { return -1; }\n"
+        "        Tensor<float64> m = Tensor.mulScalarF<int32>(t, 0.5);\n"     // 0.5,1.0,1.5,2.0
+        "        if (m.get2(0,0) != 0.5 || m.get2(1,1) != 2.0) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

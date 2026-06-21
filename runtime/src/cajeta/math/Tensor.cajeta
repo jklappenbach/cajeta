@@ -1789,6 +1789,127 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
+    /**
+     * Shared **weak-scalar** kernel for the same-or-lower category case (NEP-50 §7,
+     * spec 7.2.1/7.2.2): a tensor combined with a bare literal whose category is ≤ the
+     * tensor's adopts the tensor's dtype `E` — the scalar is converted to `E` inline (no
+     * `DType.promote`, no dispatch). `op`: `0`=add `1`=sub `2`=mul. Value-irrelevant: an
+     * out-of-range int literal simply wraps (NEP-50 weak semantics).
+     */
+    static #Tensor<E> scalarOp<E extends Numeric>(Tensor<E> t, E s, int32 op) {
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = t.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = t.readBroadcast(idx);
+            E r = v + s;
+            if (op == 1) { r = v - s; }
+            if (op == 2) { r = v * s; }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Shared **weak-scalar category-bump** kernel (NEP-50 §7, spec 7.2.3): a weak **float**
+     * literal over an **integer** tensor bumps the result to the default float `float64`.
+     * Each int element is widened to `float64`, combined with the `float64` scalar. `op`:
+     * `0`=add `1`=sub `2`=mul. `E` is `Integral` (the float-tensor + float-scalar case is the
+     * same-category {@link #scalarOp}).
+     */
+    static #Tensor<float64> scalarOpF<E extends Integral>(Tensor<E> t, float64 s, int32 op) {
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = t.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<float64> st = heap Storage<float64>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = t.readBroadcast(idx);
+            float64 fv = (float64) v;
+            float64 r = fv + s;
+            if (op == 1) { r = fv - s; }
+            if (op == 2) { r = fv * s; }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<float64>(#st, 0, rshape, rstrides);
+    }
+
+    /** Weak scalar `t + s` (same/lower category → keeps `E`). See {@link #scalarOp}. */
+    public static #Tensor<E> addScalar<E extends Numeric>(Tensor<E> t, E s) {
+        return Tensor.scalarOp<E>(t, s, 0);
+    }
+    /** Weak scalar `t - s` (keeps `E`). */
+    public static #Tensor<E> subScalar<E extends Numeric>(Tensor<E> t, E s) {
+        return Tensor.scalarOp<E>(t, s, 1);
+    }
+    /** Weak scalar `t * s` (keeps `E`). */
+    public static #Tensor<E> mulScalar<E extends Numeric>(Tensor<E> t, E s) {
+        return Tensor.scalarOp<E>(t, s, 2);
+    }
+    /** Weak **float** scalar over an integer tensor `t + s` → `Tensor<float64>` (category
+     *  bump). See {@link #scalarOpF}. */
+    public static #Tensor<float64> addScalarF<E extends Integral>(Tensor<E> t, float64 s) {
+        return Tensor.scalarOpF<E>(t, s, 0);
+    }
+    /** Weak float scalar over an int tensor `t - s` → `Tensor<float64>`. */
+    public static #Tensor<float64> subScalarF<E extends Integral>(Tensor<E> t, float64 s) {
+        return Tensor.scalarOpF<E>(t, s, 1);
+    }
+    /** Weak float scalar over an int tensor `t * s` → `Tensor<float64>`. */
+    public static #Tensor<float64> mulScalarF<E extends Integral>(Tensor<E> t, float64 s) {
+        return Tensor.scalarOpF<E>(t, s, 2);
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**
