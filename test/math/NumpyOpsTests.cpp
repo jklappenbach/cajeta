@@ -11,6 +11,7 @@
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/xpu/XpuTarget.h"
 
 #include <cstdint>
 #include <string>
@@ -21,6 +22,18 @@ namespace {
 
 int32_t runI32(const std::string& src) {
     auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+
+// 3c — the GPU-lowering tests need the XPU backend enabled so @Kernel lowers and
+// launches (on the portable CPU backend in-process, same discipline as
+// TensorTests::runI32Xpu). The Tensor op routes on placement; the kernel runs
+// through the real launch FFI either way.
+int32_t runI32Xpu(const std::string& src) {
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(src, "test.D", o);
     auto fn = jit->lookup<int32_t (*)()>("run");
     return fn();
 }
@@ -660,4 +673,56 @@ TEST(NumpyOpsTests, scalarCategoryBump) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 1);
+}
+
+// 3c — elementwiseCpuGpuAgree: the stdlib elementwise lowering (cajeta.math.Ewise)
+// routes on placement — both operands on-device → the float32 GPU @Kernel; host
+// operands → the CPU loop — and the two paths agree (the cross-check). Proven over
+// the full arithmetic family (add/sub/mul/div) against a host oracle. Values chosen
+// so every op is exact in float32, so agreement is bit-exact. Runs on the cajeta.gpu
+// CPU backend in-process (no GPU required); on-device validation rides device gates.
+TEST(NumpyOpsTests, elementwiseCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        // fresh equal-shaped float32 operands (Tensor.of takes ownership of the
+        // shape array, so each tensor gets its own).
+        "    public static #Tensor<float32> mk(float32[] d) {\n"
+        "        int64[] shp = heap int64[1]; shp[0] = 8;\n"
+        "        return Tensor.of<float32>(d, shp);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float32[] da = { 2.0f, 4.0f, 6.0f, 8.0f, 12.0f, 16.0f, 20.0f, 24.0f };\n"
+        "        float32[] db = { 1.0f, 2.0f, 3.0f, 4.0f,  6.0f,  8.0f, 10.0f, 12.0f };\n"
+        "        int32 op = 0;\n"
+        "        while (op < 4) {\n"
+        "            Tensor<float32> a = D.mk(da);\n"
+        "            Tensor<float32> b = D.mk(db);\n"
+        "            Tensor<float32> cCpu = Ewise.arithF32Op(a, b, op);\n"      // both host → CPU path
+        "            Tensor<float32> a2 = D.mk(da);\n"
+        "            Tensor<float32> b2 = D.mk(db);\n"
+        "            a2.gpu();\n"
+        "            b2.gpu();\n"
+        "            Tensor<float32> cGpu = Ewise.arithF32Op(a2, b2, op);\n"    // both device → GPU path
+        "            cGpu.cpu();\n"
+        "            int64 i = 0;\n"
+        "            while (i < 8) {\n"
+        "                float32 x = da[(int32) i];\n"
+        "                float32 y = db[(int32) i];\n"
+        "                float32 want = x + y;\n"
+        "                if (op == 1) { want = x - y; }\n"
+        "                if (op == 2) { want = x * y; }\n"
+        "                if (op == 3) { want = x / y; }\n"
+        "                if (cCpu.get1(i) != want) { return -1 - op * 10; }\n"  // CPU matches oracle
+        "                if (cGpu.get1(i) != cCpu.get1(i)) { return -2 - op * 10; }\n"  // GPU agrees with CPU
+        "                i = i + 1;\n"
+        "            }\n"
+        "            op = op + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
 }

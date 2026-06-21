@@ -1,0 +1,77 @@
+package cajeta.math;
+
+import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.GpuStream;
+import cajeta.gpu.GpuThread;
+
+/**
+ * Elementwise GPU lowering for the `Tensor` ufunc surface (numpy-porting-plan
+ * Phase 3, deliverable 3f) — a `cajeta.gpu` device kernel plus the portable CPU
+ * floor, the two cross-checked (3c). It is the reusable op+lowering pattern every
+ * later kernel-expressible phase follows: an op routes on **operand placement** —
+ * both tensors on-device → the GPU kernel over their device buffers; otherwise the
+ * CPU loop — and a `cajeta.gpu` CPU backend backs the buffer when no GPU is present,
+ * so it runs everywhere.
+ *
+ * The lowering is **per-concrete-dtype**: a generic `@Kernel` does not monomorphize
+ * at the launch site (the launch receiver takes no explicit type args, and an
+ * inferred generic instantiation lowers to a no-op), so each dtype family member is
+ * its own kernel. `float32` is the first member — the workhorse dtype. The generic,
+ * broadcasting, dtype-promoting surface stays the `Tensor` CPU binop family; this
+ * fast-path requires **equal-shaped** operands (no broadcast, contiguous).
+ *
+ * `op` selects the arithmetic: `0`=add, `1`=sub, `2`=mul, `3`=div — the same op
+ * codes as the CPU `Tensor.binop`, so device and host compute the identical IEEE
+ * operation and agree bit-for-bit on the exact ops (and to the last ULP on div).
+ */
+public final class Ewise {
+
+    /** Fused float32 elementwise-arithmetic kernel: `out[i] = a[i] <op> b[i]`. */
+    @Kernel
+    public static void arithF32(GpuBuffer<float32> out, GpuBuffer<float32> a,
+                                GpuBuffer<float32> b, uint32 n, int32 op) {
+        uint32 i = GpuThread.globalIdX();
+        if (i < n) {
+            float32 va = a[i];
+            float32 vb = b[i];
+            float32 vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            out[i] = vc;
+        }
+    }
+
+    /**
+     * Elementwise arithmetic on two equal-shaped `float32` tensors, routed on
+     * placement: both on-device → the {@link #arithF32} GPU kernel; otherwise the
+     * CPU loop. Returns a fresh C-order `float32` tensor (on the device when the
+     * GPU path ran — call {@code cpu()} to read it on the host). `op`: 0=add,
+     * 1=sub, 2=mul, 3=div.
+     */
+    public static #Tensor<float32> arithF32Op(Tensor<float32> a, Tensor<float32> b, int32 op) {
+        Tensor<float32> out = Tensor.zerosLike<float32>(a);
+        int64 n = a.size();
+        if (a.isOnGpu() && b.isOnGpu()) {
+            out.gpu();
+            uint32 un = (uint32) n;
+            GpuStream s = GpuStream.current();
+            arithF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < n) {
+                float32 va = a.flatGet(i);
+                float32 vb = b.flatGet(i);
+                float32 vc = va + vb;
+                if (op == 1) { vc = va - vb; }
+                if (op == 2) { vc = va * vb; }
+                if (op == 3) { vc = va / vb; }
+                out.flatSet(i, vc);
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+}
