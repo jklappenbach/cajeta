@@ -4672,8 +4672,16 @@ namespace cajeta {
         bool floatingParamsLint = true;
         for (auto& p : entries) if (p.label.empty()) { floatingParamsLint = false; break; }
         vector<ParameterEntry> entriesCopy = entries;
+        // Pass the active codegen `module`: this advisory lint resolve runs during
+        // generateCode and can INSTANTIATE a method template whose T is inferable
+        // from the value args (e.g. `Protobuf.toBytes<T>(T value)`), which brings
+        // it to life here. Without the active module, the insert-point save/restore
+        // in bringMethodTemplateInstantiationToLife falls back to the emit module's
+        // (dangling) builder → freed-builder SEGV. See memory
+        // method-template-tparam-in-param-heapcorrupt.
         MethodPtr targetMethod = targetClass->resolveMethod(
-            methodCallName, entriesCopy, /*isConstructor=*/false, floatingParamsLint);
+            methodCallName, entriesCopy, /*isConstructor=*/false,
+            floatingParamsLint, {}, module);
         if (targetMethod) {
             auto& throwsList = targetMethod->getThrowsList();
             if (!throwsList.empty()) {

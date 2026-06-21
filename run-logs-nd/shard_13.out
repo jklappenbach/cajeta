@@ -1,0 +1,35 @@
+[==========] 30 tests from 1 test suite ran. (947709 ms total)
+[  PASSED  ] 30 tests.
+[==========] 17 tests from 1 test suite ran. (561853 ms total)
+[  PASSED  ] 17 tests.
+[==========] 14 tests from 1 test suite ran. (228004 ms total)
+[  PASSED  ] 14 tests.
+[==========] 12 tests from 1 test suite ran. (365833 ms total)
+[  PASSED  ] 12 tests.
+[==========] 9 tests from 1 test suite ran. (247313 ms total)
+[  PASSED  ] 9 tests.
+[==========] 8 tests from 1 test suite ran. (188128 ms total)
+[  PASSED  ] 8 tests.
+[CajetaException @ codegen] CAJETA_ERROR_NOT_AN_ANCESTOR: 'Unrelated' is not an ancestor of 'test.C'; the parent-view selector (this<Unrelated> / super<Unrelated>) requires a real ancestor  (method=oops)
+[CajetaException @ codegen] CAJETA_ERROR_NOT_AN_ANCESTOR: 'Unrelated' is not an ancestor of 'test.C'; the parent-view selector (this<Unrelated> / super<Unrelated>) requires a real ancestor  (method=C)
+[==========] 7 tests from 1 test suite ran. (228015 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (120129 ms total)
+[  PASSED  ] 6 tests.
+[==========] 6 tests from 1 test suite ran. (44795 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (74789 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (73853 ms total)
+[  PASSED  ] 4 tests.
+[==========] 4 tests from 1 test suite ran. (13028 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (23088 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 3 tests.
+warning: [heap-optional-return] test.Wrapper.getOpt returns #Optional<...> but every return is a scope-bounded `heap Optional<...>(...)`. Consider dropping `#` from the return type and switching to `return stack Optional<...>(...)` — the value lands in the caller's slot by copy (sret), avoiding a heap allocation per call. Suppress with @HeapReturn when the caller really needs heap ownership.
+[==========] 2 tests from 1 test suite ran. (27818 ms total)
+[  PASSED  ] 2 tests.
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.

@@ -1,0 +1,36 @@
+oops
+[==========] 25 tests from 1 test suite ran. (813830 ms total)
+[  PASSED  ] 25 tests.
+[==========] 18 tests from 1 test suite ran. (591608 ms total)
+[  PASSED  ] 18 tests.
+[==========] 16 tests from 1 test suite ran. (512596 ms total)
+[  PASSED  ] 16 tests.
+[==========] 12 tests from 1 test suite ran. (378435 ms total)
+[  PASSED  ] 12 tests.
+[==========] 10 tests from 1 test suite ran. (256460 ms total)
+[  PASSED  ] 10 tests.
+[==========] 9 tests from 1 test suite ran. (273415 ms total)
+[  PASSED  ] 9 tests.
+[CajetaException] CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM: multi-parameter free function 'pick' cannot return a borrow; use `#String` to return ownership, or reduce to a single parameter
+[CajetaException] CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM: multi-parameter free function 'first' cannot return a borrow; use `#String` to return ownership, or reduce to a single parameter
+[CajetaException] CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM: multi-parameter free function 'describe' cannot return a borrow; use `#String` to return ownership, or reduce to a single parameter
+[==========] 7 tests from 1 test suite ran. (87150 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (103467 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (73889 ms total)
+[  PASSED  ] 5 tests.
+[==========] 5 tests from 1 test suite ran. (72960 ms total)
+[  PASSED  ] 5 tests.
+[==========] 5 tests from 1 test suite ran. (72381 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (55248 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (66765 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 3 tests.
+[CajetaException @ codegen] CAJETA_ERROR_NOT_IMPLEMENTED: lambda expression (this form needs var-list params, still unsupported in L2) is not yet implemented (source line 4, column 36)  (method=run)
+[CajetaException @ codegen] CAJETA_ERROR_NOT_IMPLEMENTED: method reference '::' toString' did not resolve to a known method  (method=run)
+[==========] 2 tests from 1 test suite ran. (17794 ms total)
+[  PASSED  ] 2 tests.

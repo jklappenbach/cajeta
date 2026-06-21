@@ -1,0 +1,33 @@
+[==========] 25 tests from 1 test suite ran. (836551 ms total)
+[  PASSED  ] 25 tests.
+[==========] 19 tests from 1 test suite ran. (629535 ms total)
+[  PASSED  ] 19 tests.
+[==========] 15 tests from 1 test suite ran. (486544 ms total)
+[  PASSED  ] 15 tests.
+[==========] 12 tests from 1 test suite ran. (343467 ms total)
+[  PASSED  ] 12 tests.
+[==========] 10 tests from 1 test suite ran. (254665 ms total)
+[  PASSED  ] 10 tests.
+[==========] 9 tests from 1 test suite ran. (2201 ms total)
+[  PASSED  ] 9 tests.
+[==========] 7 tests from 1 test suite ran. (195022 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (60029 ms total)
+[  PASSED  ] 6 tests.
+[CajetaException @ codegen] LANG-NAMEDARG: named arguments must form a trailing group: positional argument follows a named argument  (method=run)
+[==========] 6 tests from 1 test suite ran. (92217 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (62950 ms total)
+[  PASSED  ] 4 tests.
+[==========] 4 tests from 1 test suite ran. (58567 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (43334 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (28416 ms total)
+[  PASSED  ] 2 tests.
+[==========] 1 test from 1 test suite ran. (13292 ms total)
+[  PASSED  ] 1 test.

@@ -1,0 +1,38 @@
+line 24:30 no viable alternative at input '#LifecyclePhase[] evs ='
+line 24:30 no viable alternative at input '#LifecyclePhase[] evs ='
+[==========] 22 tests from 1 test suite ran. (668551 ms total)
+[  PASSED  ] 22 tests.
+[==========] 21 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 21 tests.
+[==========] 15 tests from 1 test suite ran. (483441 ms total)
+[  PASSED  ] 15 tests.
+[==========] 13 tests from 1 test suite ran. (415277 ms total)
+[  PASSED  ] 13 tests.
+[==========] 10 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 10 tests.
+[==========] 8 tests from 1 test suite ran. (250795 ms total)
+[  PASSED  ] 8 tests.
+[==========] 7 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (80276 ms total)
+[  PASSED  ] 6 tests.
+[==========] 6 tests from 1 test suite ran. (171872 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (149675 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (105607 ms total)
+[  PASSED  ] 4 tests.
+[==========] 4 tests from 1 test suite ran. (85847 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (58289 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (68684 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (44570 ms total)
+[  PASSED  ] 2 tests.
+/home/julian/code/cpp/cajeta-two/test/xpu/XpuLoopDeviceTests.cpp:77: Skipped
+no CUDA device/driver available
+
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 0 tests.
+[  SKIPPED ] 1 test.

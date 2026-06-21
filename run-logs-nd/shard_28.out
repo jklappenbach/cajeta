@@ -1,0 +1,39 @@
+[==========] 22 tests from 1 test suite ran. (684573 ms total)
+[  PASSED  ] 22 tests.
+[==========] 21 tests from 1 test suite ran. (682369 ms total)
+[  PASSED  ] 21 tests.
+warning: class 'test.Tag' defines operator== but does not override hash(). HashMap<this, V> will mis-key two ==-equal instances with different identity hashes. Fix: add `@AutoHash` to the class to synthesize structural hash, or override hash() manually. See docs/OperatorOverloading.md §7. [CAJETA_WARN_HASH_EQUALS_MISMATCH]
+[CajetaException] CAJETA_ERROR_OPERATOR_NOT_INSTANCE: 'operator++' must be declared as an instance method (no `static` modifier) with 0 parameters. Mutating unary, indexed access, and compound assignment operators have a privileged receiver — the host IS the target. See docs/OperatorOverloading.md §§4-6.
+line 8:24 extraneous input 'override' expecting {'throws', '{', '[', ';'}
+line 8:24 extraneous input 'override' expecting {'throws', '{', '[', ';'}
+[CajetaException] CAJETA_ERROR_OPERATOR_NE_WITHOUT_EQ: class 'test.Tag' declares operator!= but not operator==. Cajeta derives `a != b` from `operator==` automatically (returns the negation); standalone operator!= is almost always a mistake. Fix: define operator== too, and remove operator!= unless its behavior genuinely differs from `!(a == b)`. See docs/OperatorOverloading.md §7.
+[CajetaException] CAJETA_ERROR_OPERATOR_NOT_STATIC: 'operator+' must be declared `public static` with one or two parameters (unary or binary form). Cajeta's binary / non-mutating-unary operator overloads are static — both operands are explicit, neither is mutated, the return is a fresh value. See docs/OperatorOverloading.md §2-3. Fix: rewrite as `public static T operator+ (...)`.
+[==========] 15 tests from 1 test suite ran. (437176 ms total)
+[  PASSED  ] 15 tests.
+[==========] 13 tests from 1 test suite ran. (394633 ms total)
+[  PASSED  ] 13 tests.
+[CajetaException @ codegen] CAJETA_ERROR_BORROW_ESCAPE: cannot return closure 'fn' — it captures one or more outer locals by borrow, and those borrows would dangle past the function return; transfer the captures via `#name` to give the closure ownership it can carry past this scope  (method=mkFn)
+[==========] 10 tests from 1 test suite ran. (237802 ms total)
+[  PASSED  ] 10 tests.
+[==========] 8 tests from 1 test suite ran. (388698 ms total)
+[  PASSED  ] 8 tests.
+[==========] 7 tests from 1 test suite ran. (128795 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (92369 ms total)
+[  PASSED  ] 6 tests.
+[==========] 6 tests from 1 test suite ran. (87774 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (73325 ms total)
+[  PASSED  ] 5 tests.
+[==========] 5 tests from 1 test suite ran. (71387 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (58231 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (41800 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (25629 ms total)
+[  PASSED  ] 2 tests.
+[==========] 2 tests from 1 test suite ran. (7254 ms total)
+[  PASSED  ] 2 tests.
+[==========] 1 test from 1 test suite ran. (7330 ms total)
+[  PASSED  ] 1 test.

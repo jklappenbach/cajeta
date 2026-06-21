@@ -1,0 +1,41 @@
+cajeta.xpu: no available backend among {cpu}; rebuild with `cpu` to enable CPU fallback
+[==========] 48 tests from 1 test suite ran. (1636366 ms total)
+[  PASSED  ] 48 tests.
+[==========] 14 tests from 1 test suite ran. (433349 ms total)
+[  PASSED  ] 14 tests.
+[==========] 11 tests from 1 test suite ran. (16 ms total)
+[  PASSED  ] 11 tests.
+[==========] 9 tests from 1 test suite ran. (125633 ms total)
+[  PASSED  ] 9 tests.
+[CajetaException @ codegen] CAJETA_ERROR_METHOD_TEMPLATE_BOUND: method template 'pick': argument 'int32' does not satisfy numeric bound 'Floating' on parameter 'T'  (method=run)
+[CajetaException @ codegen] CAJETA_ERROR_METHOD_TEMPLATE_BOUND: method template 'elems': argument 'int32' does not satisfy numeric bound 'Floating' on parameter 'T'  (method=run)
+[CajetaException] CAJETA_ERROR_TYPE_PARAMETER_BOUND: template test.Cell: argument 'test.Plain' does not satisfy bound Numeric on parameter 'T' — Numeric admits a primitive numeric type (any integer or floating-point primitive), or a class implementing cajeta.lang.Numeric
+[CajetaException] CAJETA_ERROR_TYPE_PARAMETER_BOUND: template test.Cell: argument 'boolean' does not satisfy bound Numeric on parameter 'T' — Numeric admits a primitive numeric type (any integer or floating-point primitive), or a class implementing cajeta.lang.Numeric
+[==========] 8 tests from 1 test suite ran. (158720 ms total)
+[  PASSED  ] 8 tests.
+[CajetaException @ codegen] CAJETA_ERROR_USE_AFTER_MOVE: use-after-move: path 's.foo' was transferred via `#` and cannot be read here  (method=run)
+[CajetaException @ codegen] CAJETA_ERROR_USE_AFTER_MOVE: use-after-move: path 's.foo' was transferred via `#` and cannot be read here  (method=run)
+[CajetaException @ codegen] CAJETA_ERROR_USE_AFTER_MOVE: use-after-move: path 's.foo' was transferred via `#` and cannot be read here  (method=run)
+[CajetaException @ codegen] CAJETA_ERROR_USE_AFTER_MOVE: use-after-move: path 's.foo.bar' was transferred via `#` and cannot be read here  (method=run)
+[CajetaException @ codegen] CAJETA_ERROR_USE_AFTER_MOVE: use-after-move: path 's.foo.bar' was transferred via `#` and cannot be read here  (method=run)
+[==========] 7 tests from 1 test suite ran. (151141 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 6 tests.
+[==========] 6 tests from 1 test suite ran. (128148 ms total)
+[  PASSED  ] 6 tests.
+[CajetaException] CAJETA_ERROR_VIEW_RECURSIVE: view 'test.Bad' has field 'child' of its own type; recursive views are forbidden (would have infinite size). Use a class reference if you need recursive structure.
+[==========] 5 tests from 1 test suite ran. (173494 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (64265 ms total)
+[  PASSED  ] 4 tests.
+[==========] 4 tests from 1 test suite ran. (61236 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (26363 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (42725 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (28233 ms total)
+[  PASSED  ] 2 tests.
+[==========] 1 test from 1 test suite ran. (6765 ms total)
+[  PASSED  ] 1 test.

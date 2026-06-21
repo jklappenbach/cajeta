@@ -1,0 +1,218 @@
+>>> BATCH-FALLBACK MatrixTests (suite process exit 139; re-running 31 test(s) individually)
+>> MatrixTests.typeResolvesAsBufferElement ... CRASH (exit 139)
+
+cajeta: SIGSEGV caught — fault addr 0x118
+cajeta: carrier=-1 fiber=0
+build/test/cajeta_test(+0x25db53e) [0x5a0698b8b53e]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x45cb0) [0x783380a45cb0]
+build/test/cajeta_test(_ZN6cajeta10CajetaType17hasValueSemanticsEv+0x10) [0x5a069898e420]
+build/test/cajeta_test(_ZN6cajeta24LocalVariableDeclaration12generateCodeESt10shared_ptrINS_12CajetaModuleEE+0x9b) [0x5a0698bbdfaf]
+build/test/cajeta_test(_ZN6cajeta5Block12generateCodeESt10shared_ptrINS_12CajetaModuleEE+0x1bc) [0x5a0698bbbd16]
+build/test/cajeta_test(_ZN6cajeta6Method12generateCodeEv+0x3a0f) [0x5a06989a1309]
+build/test/cajeta_test(+0x1a54256) [0x5a0698004256]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKSt3mapINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_St4lessIS7_ESaISt4pairIKS7_S7_EEERSB_RKNS0_7OptionsE+0xbee) [0x5a0698007ac6]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_RKNS0_7OptionsE+0x67) [0x5a069800683b]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_+0xb1) [0x5a0698006713]
+build/test/cajeta_test(+0x193345f) [0x5a0697ee345f]
+build/test/cajeta_test(_ZN44MatrixTests_typeResolvesAsBufferElement_Test8TestBodyEv+0xc8) [0x5a0697ee3836]
+build/test/cajeta_test(_ZN7testing8internal35HandleExceptionsInMethodIfSupportedINS_4TestEvEET0_PT_MS4_FS3_vEPKc+0x87) [0x5a0698c9beb7]
+build/test/cajeta_test(_ZN7testing4Test3RunEv+0xee) [0x5a0698c82dee]
+build/test/cajeta_test(_ZN7testing8TestInfo3RunEv+0x165) [0x5a0698c82f75]
+build/test/cajeta_test(_ZN7testing9TestSuite3RunEv+0x1d7) [0x5a0698c8dd87]
+build/test/cajeta_test(_ZN7testing8internal12UnitTestImpl11RunAllTestsEv+0x5ec) [0x5a0698c92efc]
+build/test/cajeta_test(_ZN7testing8internal35HandleExceptionsInMethodIfSupportedINS0_12UnitTestImplEbEET0_PT_MS4_FS3_vEPKc+0x87) [0x5a0698c9c517]
+build/test/cajeta_test(_ZN7testing8UnitTest3RunEv+0x8a) [0x5a0698c8300a]
+build/test/cajeta_test(_Z13RUN_ALL_TESTSv+0x15) [0x5a069802025c]
+build/test/cajeta_test(main+0x2b) [0x5a0698020230]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x2a601) [0x783380a2a601]
+/usr/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x783380a2a718]
+build/test/cajeta_test(_start+0x25) [0x5a0697b46525]
+cajeta: drop chain (head first, 32 entries max shown):
+>>> CRASH MatrixTests.typeResolvesAsBufferElement (exit 139)
+>> MatrixTests.typeMultipleShapesResolveDistinctly ... CRASH (exit 139)
+
+cajeta: SIGSEGV caught — fault addr 0x118
+cajeta: carrier=-1 fiber=0
+build/test/cajeta_test(+0x25db53e) [0x5e8de2d2253e]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x45cb0) [0x75dcd7c45cb0]
+build/test/cajeta_test(_ZN6cajeta10CajetaType17hasValueSemanticsEv+0x10) [0x5e8de2b25420]
+build/test/cajeta_test(_ZN6cajeta24LocalVariableDeclaration12generateCodeESt10shared_ptrINS_12CajetaModuleEE+0x9b) [0x5e8de2d54faf]
+build/test/cajeta_test(_ZN6cajeta5Block12generateCodeESt10shared_ptrINS_12CajetaModuleEE+0x1bc) [0x5e8de2d52d16]
+build/test/cajeta_test(_ZN6cajeta6Method12generateCodeEv+0x3a0f) [0x5e8de2b38309]
+build/test/cajeta_test(+0x1a54256) [0x5e8de219b256]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKSt3mapINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_St4lessIS7_ESaISt4pairIKS7_S7_EEERSB_RKNS0_7OptionsE+0xbee) [0x5e8de219eac6]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_RKNS0_7OptionsE+0x67) [0x5e8de219d83b]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_+0xb1) [0x5e8de219d713]
+build/test/cajeta_test(+0x193345f) [0x5e8de207a45f]
+build/test/cajeta_test(_ZN52MatrixTests_typeMultipleShapesResolveDistinctly_Test8TestBodyEv+0xc8) [0x5e8de207aade]
+build/test/cajeta_test(_ZN7testing8internal35HandleExceptionsInMethodIfSupportedINS_4TestEvEET0_PT_MS4_FS3_vEPKc+0x87) [0x5e8de2e32eb7]
+build/test/cajeta_test(_ZN7testing4Test3RunEv+0xee) [0x5e8de2e19dee]
+build/test/cajeta_test(_ZN7testing8TestInfo3RunEv+0x165) [0x5e8de2e19f75]
+build/test/cajeta_test(_ZN7testing9TestSuite3RunEv+0x1d7) [0x5e8de2e24d87]
+build/test/cajeta_test(_ZN7testing8internal12UnitTestImpl11RunAllTestsEv+0x5ec) [0x5e8de2e29efc]
+build/test/cajeta_test(_ZN7testing8internal35HandleExceptionsInMethodIfSupportedINS0_12UnitTestImplEbEET0_PT_MS4_FS3_vEPKc+0x87) [0x5e8de2e33517]
+build/test/cajeta_test(_ZN7testing8UnitTest3RunEv+0x8a) [0x5e8de2e1a00a]
+build/test/cajeta_test(_Z13RUN_ALL_TESTSv+0x15) [0x5e8de21b725c]
+build/test/cajeta_test(main+0x2b) [0x5e8de21b7230]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x2a601) [0x75dcd7c2a601]
+/usr/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x75dcd7c2a718]
+build/test/cajeta_test(_start+0x25) [0x5e8de1cdd525]
+cajeta: drop chain (head first, 32 entries max shown):
+>>> CRASH MatrixTests.typeMultipleShapesResolveDistinctly (exit 139)
+>> MatrixTests.typeSquareShapeResolves ... CRASH (exit 139)
+
+cajeta: SIGSEGV caught — fault addr 0x118
+cajeta: carrier=-1 fiber=0
+build/test/cajeta_test(+0x25db53e) [0x603fb58ac53e]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x45cb0) [0x7b38d1e45cb0]
+build/test/cajeta_test(_ZN6cajeta10CajetaType17hasValueSemanticsEv+0x10) [0x603fb56af420]
+build/test/cajeta_test(_ZN6cajeta24LocalVariableDeclaration12generateCodeESt10shared_ptrINS_12CajetaModuleEE+0x9b) [0x603fb58defaf]
+build/test/cajeta_test(_ZN6cajeta5Block12generateCodeESt10shared_ptrINS_12CajetaModuleEE+0x1bc) [0x603fb58dcd16]
+build/test/cajeta_test(_ZN6cajeta6Method12generateCodeEv+0x3a0f) [0x603fb56c2309]
+build/test/cajeta_test(+0x1a54256) [0x603fb4d25256]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKSt3mapINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_St4lessIS7_ESaISt4pairIKS7_S7_EEERSB_RKNS0_7OptionsE+0xbee) [0x603fb4d28ac6]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_RKNS0_7OptionsE+0x67) [0x603fb4d2783b]
+build/test/cajeta_test(_ZN11cajeta_test9CajetaJit7compileERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_+0xb1) [0x603fb4d27713]
+build/test/cajeta_test(+0x193345f) [0x603fb4c0445f]
+build/test/cajeta_test(_ZN40MatrixTests_typeSquareShapeResolves_Test8TestBodyEv+0xc8) [0x603fb4c04d86]
+build/test/cajeta_test(_ZN7testing8internal35HandleExceptionsInMethodIfSupportedINS_4TestEvEET0_PT_MS4_FS3_vEPKc+0x87) [0x603fb59bceb7]
+build/test/cajeta_test(_ZN7testing4Test3RunEv+0xee) [0x603fb59a3dee]
+build/test/cajeta_test(_ZN7testing8TestInfo3RunEv+0x165) [0x603fb59a3f75]
+build/test/cajeta_test(_ZN7testing9TestSuite3RunEv+0x1d7) [0x603fb59aed87]
+build/test/cajeta_test(_ZN7testing8internal12UnitTestImpl11RunAllTestsEv+0x5ec) [0x603fb59b3efc]
+build/test/cajeta_test(_ZN7testing8internal35HandleExceptionsInMethodIfSupportedINS0_12UnitTestImplEbEET0_PT_MS4_FS3_vEPKc+0x87) [0x603fb59bd517]
+build/test/cajeta_test(_ZN7testing8UnitTest3RunEv+0x8a) [0x603fb59a400a]
+build/test/cajeta_test(_Z13RUN_ALL_TESTSv+0x15) [0x603fb4d4125c]
+build/test/cajeta_test(main+0x2b) [0x603fb4d41230]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x2a601) [0x7b38d1e2a601]
+/usr/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x88) [0x7b38d1e2a718]
+build/test/cajeta_test(_start+0x25) [0x603fb4867525]
+cajeta: drop chain (head first, 32 entries max shown):
+>>> CRASH MatrixTests.typeSquareShapeResolves (exit 139)
+>> MatrixTests.typeNonNumericElementRejected ... PASS
+[CajetaException] CAJETA_ERROR_MATRIX_ELEMENT_TYPE: Matrix element type must be a non-bool numeric primitive (got 'test.Thing')
+[==========] 1 test from 1 test suite ran. (11474 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.typeBooleanElementRejected ... PASS
+[CajetaException] CAJETA_ERROR_MATRIX_ELEMENT_TYPE: Matrix element type must be a non-bool numeric primitive (got 'boolean')
+[==========] 1 test from 1 test suite ran. (11115 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.constructAndIndexReadRowMajor ... PASS
+[==========] 1 test from 1 test suite ran. (22732 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.indexWriteUpdatesElement ... PASS
+[==========] 1 test from 1 test suite ran. (20822 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.dynamicIndexRead ... PASS
+[==========] 1 test from 1 test suite ran. (20455 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.constructWrongArgCountRejected ... PASS
+[CajetaException @ codegen] CAJETA_ERROR_MATRIX_CONSTRUCT: Matrix<...,2,2> needs 4 arguments (got 2)  (method=run)
+[==========] 1 test from 1 test suite ran. (15227 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.elementwiseAdd ... PASS
+[==========] 1 test from 1 test suite ran. (21389 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.elementwiseSubDiv ... PASS
+[==========] 1 test from 1 test suite ran. (21467 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.scalarScale ... PASS
+[==========] 1 test from 1 test suite ran. (20415 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.equalsMaskAllAny ... PASS
+[==========] 1 test from 1 test suite ran. (20812 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.determinant2x2And3x3 ... PASS
+[==========] 1 test from 1 test suite ran. (51823 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.determinant4x4 ... PASS
+[==========] 1 test from 1 test suite ran. (20864 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.inverse2x2RoundTrip ... PASS
+[==========] 1 test from 1 test suite ran. (20155 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.inverse3x3RoundTrip ... PASS
+[==========] 1 test from 1 test suite ran. (20224 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.inverseNonSquareRejected ... PASS
+[CajetaException @ codegen] CAJETA_ERROR_MATRIX_METHOD: Matrix.inverse requires a square 2x2, 3x3, or 4x4 matrix (got Matrix<float32,2,3>)  (method=run)
+[==========] 1 test from 1 test suite ran. (14622 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.thresholdScalarMaskSelect ... PASS
+[==========] 1 test from 1 test suite ran. (20542 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.maskSelect ... PASS
+[==========] 1 test from 1 test suite ran. (20662 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.matrixMultiply ... PASS
+[==========] 1 test from 1 test suite ran. (21766 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.matrixVectorMultiply ... PASS
+[==========] 1 test from 1 test suite ran. (20941 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.matmulShapeMismatchRejected ... PASS
+[CajetaException @ codegen] CAJETA_ERROR_MATRIX_SHAPE: Matrix multiply shape mismatch: Matrix<float32,2,3> * Matrix<float32,2,2> (inner dimensions 3 and 2 must match)  (method=run)
+[==========] 1 test from 1 test suite ran. (14974 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.transpose ... PASS
+[==========] 1 test from 1 test suite ran. (20473 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.identity ... PASS
+[==========] 1 test from 1 test suite ran. (21404 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.rowAndCol ... PASS
+[==========] 1 test from 1 test suite ran. (21283 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.hadamard ... PASS
+[==========] 1 test from 1 test suite ran. (20683 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.zeroDimensionRejected ... PASS
+[CajetaException] CAJETA_ERROR_MATRIX_DIMENSIONS: Matrix dimensions R and C must be positive integer constants (got 0x2)
+[==========] 1 test from 1 test suite ran. (10689 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.unknownMethodRejected ... PASS
+[CajetaException @ codegen] CAJETA_ERROR_MATRIX_METHOD: Matrix has no method 'bogus'  (method=run)
+[==========] 1 test from 1 test suite ran. (17173 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.identityNonSquareRejected ... PASS
+[CajetaException @ codegen] CAJETA_ERROR_MATRIX_METHOD: Matrix.identity requires a square matrix (got Matrix<float32,2,3>)  (method=run)
+[==========] 1 test from 1 test suite ran. (16645 ms total)
+[  PASSED  ] 1 test.
+>> MatrixTests.elementwiseShapeMismatchRejected ... PASS
+[CajetaException @ codegen] CAJETA_ERROR_MATRIX_SHAPE: Matrix element-wise op requires operands of the same shape (got Matrix<float32,2,2> and Matrix<float32,2,3>)  (method=run)
+[==========] 1 test from 1 test suite ran. (15362 ms total)
+[  PASSED  ] 1 test.
+[==========] 17 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 17 tests.
+warning: dep 'acme.lib': consumer pins '1.4.0' but melt 'platform.melt@1.0.0' curates '1.2.5' — using consumer's
+[==========] 14 tests from 1 test suite ran. (3 ms total)
+[  PASSED  ] 14 tests.
+[==========] 11 tests from 1 test suite ran. (340711 ms total)
+[  PASSED  ] 11 tests.
+[==========] 9 tests from 1 test suite ran. (317040 ms total)
+[  PASSED  ] 9 tests.
+[CajetaException] CAJETA_ERROR_AMBIGUOUS_METHOD_DISPATCH: class 'test.C': call to 'kind(pointer)' is ambiguous; both 'test.A::kind(pointer)' and 'test.B::kind(pointer)' reach this class through different parents. Resolve by either (1) overriding 'kind(pointer)' in 'test.C' or (2) qualifying the call via 'super<Base>.kind(pointer)' (MultiClassing Phase 2)
+[CajetaException @ codegen] CAJETA_ERROR_AMBIGUOUS_FIELD_ACCESS: field access 'total' on class 'test.C' is ambiguous; both 'test.A.total' and 'test.B.total' reach this class through different parents. Resolve by either (1) declaring 'total' on 'test.C' to shadow both or (2) qualifying the access via 'this<Base>.total' (MultiClassing Phase 2)  (method=run)
+[CajetaException] CAJETA_ERROR_RETURN_TYPE_COLLISION: class 'test.C': method 'fn(pointer)' is declared with conflicting return types — 'test.A' returns 'void' but 'test.B' returns 'int32'. Cajeta allows covariant overrides (subclass narrows the return type) but unrelated types cannot share a vtable slot
+[==========] 8 tests from 1 test suite ran. (209918 ms total)
+[  PASSED  ] 8 tests.
+[==========] 7 tests from 1 test suite ran. (218895 ms total)
+[  PASSED  ] 7 tests.
+[==========] 6 tests from 1 test suite ran. (80212 ms total)
+[  PASSED  ] 6 tests.
+[==========] 6 tests from 1 test suite ran. (75 ms total)
+[  PASSED  ] 6 tests.
+[==========] 5 tests from 1 test suite ran. (139992 ms total)
+[  PASSED  ] 5 tests.
+[==========] 4 tests from 1 test suite ran. (103736 ms total)
+[  PASSED  ] 4 tests.
+[==========] 4 tests from 1 test suite ran. (2 ms total)
+[  PASSED  ] 4 tests.
+[==========] 3 tests from 1 test suite ran. (82522 ms total)
+[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (79278 ms total)
+[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (47357 ms total)
+[  PASSED  ] 2 tests.
+[==========] 1 test from 1 test suite ran. (5 ms total)
+[  PASSED  ] 1 test.
