@@ -1450,12 +1450,18 @@ namespace cajeta {
         };
         for (auto& module : modules) {
             std::vector<MethodPtr> kernels;
+            std::vector<MethodPtr> shaders;
             for (auto& method : module->getAllMethods()) {
-                if (method && cajeta::xpu::isKernel(*method)) {
+                if (!method) continue;
+                if (cajeta::xpu::isKernel(*method)) {
                     kernels.push_back(method);
+                } else if (cajeta::xpu::isGraphicsShader(*method)) {
+                    // @Vertex/@Fragment/… — the rasterization parallel of a
+                    // @Kernel; registered alongside kernels (Vulkan-only).
+                    shaders.push_back(method);
                 }
             }
-            if (kernels.empty()) {
+            if (kernels.empty() && shaders.empty()) {
                 continue;
             }
             // Per-kernel artifact base: the module's IR output path
@@ -1480,6 +1486,10 @@ namespace cajeta {
                 std::string arch = singleBackend ? xpuArch : defaultArch(cb);
                 cajeta::xpu::emitKernelRegistration(
                     backend, kernels, *module->getLlvmModule(), arch);
+                // Graphics shaders register alongside kernels — a no-op for the
+                // non-Vulkan backends (no raster pipeline). Rides the same build.
+                cajeta::xpu::emitGraphicsRegistration(
+                    backend, shaders, *module->getLlvmModule(), arch);
 
                 if (xpuEmit == XpuEmit::None) {
                     continue;

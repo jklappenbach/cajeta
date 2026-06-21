@@ -38,6 +38,17 @@ namespace vulkan {
                                llvm::Module& hostModule,
                                const std::string& arch = "vulkan1.3");
 
+    // Emit SPIR-V constants + registration ctors into `hostModule` for each
+    // graphics-shader method (@Vertex/@Fragment/…) in `shaders` — the
+    // rasterization parallel of emitKernelRegistration. Each is lowered on its
+    // own per-stage SPIR-V TargetMachine and registered under its entry name, so
+    // graphics shaders ride the normal build exactly like @Kernels. Returns the
+    // number embedded (0 if none / a stage's target env is unavailable). Stages
+    // using an unsupported construct (XPU-N01) are skipped, never fatal.
+    int emitGraphicsRegistration(const std::vector<MethodPtr>& shaders,
+                                 llvm::Module& hostModule,
+                                 const std::string& arch = "vulkan1.3");
+
 } // namespace vulkan
 } // namespace xpu
 } // namespace cajeta
