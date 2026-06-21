@@ -1,0 +1,119 @@
+package cajeta.math;
+
+/**
+ * Transform — a TRS (translate / rotate / scale) rigid+scale transform, the
+ * object-placement value type a scene graph and a renderer's model matrix are
+ * built from (cajeta-gfx plan §1.a). A value type over the builtin
+ * `Vector<float32,3>` (translation, scale) and `Quaternion<float32>` (rotation):
+ * stack-allocated by default, no heap, no drop chain — same model as
+ * {@link cajeta.math.Ray} and {@link cajeta.lang.Optional}.
+ *
+ * Applied to a point, the order is SCALE, then ROTATE, then TRANSLATE:
+ *
+ *   transformPoint(p) = translation + rotation * (scale ⊙ p)
+ *
+ * where `⊙` is the component-wise (Hadamard) product and `rotation * v` rotates
+ * the vector by the unit quaternion. `transformVector` drops the translation (a
+ * direction has no position). `compose(child)` returns the transform that
+ * applies `child` first and then `this`; `inverse()` returns the transform that
+ * undoes `this`.
+ *
+ * Compose and inverse keep the TRS form exactly for UNIFORM scale (and for any
+ * scale when the rotation is identity); a non-uniform scale combined with a
+ * rotation is not closed under the TRS form (the general case needs a full 4x4 /
+ * polar decomposition) — that is a documented limitation, not a bug.
+ *
+ * ```cajeta
+ * Vector<float32,3> tr = stack Vector<float32,3>(0.0f, 0.0f, 5.0f);
+ * Quaternion<float32> rot = stack Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);
+ * Vector<float32,3> sc = stack Vector<float32,3>(2.0f, 2.0f, 2.0f);
+ * Transform t = stack Transform(tr, rot, sc);
+ * Vector<float32,3> p = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
+ * Vector<float32,3> w = t.transformPoint(p);   // (0, 2, 5)
+ * ```
+ */
+@ValueType public final class Transform {
+    public Vector<float32,3> translation;
+    public Quaternion<float32> rotation;
+    public Vector<float32,3> scale;
+
+    public Transform(Vector<float32,3> translation, Quaternion<float32> rotation,
+                     Vector<float32,3> scale) {
+        this.translation = translation;
+        this.rotation = rotation;
+        this.scale = scale;
+    }
+
+    /** The identity transform: no translation, no rotation, unit scale. */
+    public static Transform identity() {
+        Vector<float32,3> zero = stack Vector<float32,3>(0.0f, 0.0f, 0.0f);
+        Quaternion<float32> rot = stack Quaternion<float32>(1.0f, 0.0f, 0.0f, 0.0f);
+        Vector<float32,3> one = stack Vector<float32,3>(1.0f, 1.0f, 1.0f);
+        return stack Transform(zero, rot, one);
+    }
+
+    /** The translation component. */
+    public Vector<float32,3> translation() {
+        return this.translation;
+    }
+
+    /** The rotation component (a unit quaternion). */
+    public Quaternion<float32> rotation() {
+        return this.rotation;
+    }
+
+    /** The scale component. */
+    public Vector<float32,3> scale() {
+        return this.scale;
+    }
+
+    /** Map a point through the transform: translate(rotate(scale(p))). */
+    public Vector<float32,3> transformPoint(Vector<float32,3> p) {
+        // One operator per expression: a compound Vector/Quaternion expression
+        // in a single statement crashes host codegen today (cajeta-gfx §1
+        // finding); single-operator steps with intermediate locals is the
+        // supported path.
+        Vector<float32,3> scaled = this.scale * p;
+        Vector<float32,3> rotated = this.rotation * scaled;
+        return this.translation + rotated;
+    }
+
+    /** Map a direction through the transform: rotate(scale(v)) — no translation. */
+    public Vector<float32,3> transformVector(Vector<float32,3> v) {
+        Vector<float32,3> scaled = this.scale * v;
+        return this.rotation * scaled;
+    }
+
+    /**
+     * The transform that applies `child` first, then `this`:
+     * `this.compose(child).transformPoint(p) == this.transformPoint(child.transformPoint(p))`
+     * (exact for uniform scale).
+     */
+    public Transform compose(Transform child) {
+        Quaternion<float32> childRot = child.rotation();
+        Quaternion<float32> rot = this.rotation * childRot;
+        Vector<float32,3> childScale = child.scale();
+        Vector<float32,3> scl = this.scale * childScale;
+        Vector<float32,3> childTr = child.translation();
+        Vector<float32,3> scaledChildTr = this.scale * childTr;
+        Vector<float32,3> rotatedChildTr = this.rotation * scaledChildTr;
+        Vector<float32,3> tr = this.translation + rotatedChildTr;
+        return stack Transform(tr, rot, scl);
+    }
+
+    /**
+     * The inverse transform: `inverse().transformPoint(transformPoint(p)) == p`
+     * (exact for uniform scale). For a unit quaternion the inverse rotation is
+     * the conjugate, and the inverse scale is the per-component reciprocal.
+     */
+    public Transform inverse() {
+        Quaternion<float32> invRot = this.rotation.conjugate();
+        Vector<float32,3> one = stack Vector<float32,3>(1.0f, 1.0f, 1.0f);
+        Vector<float32,3> invScale = one / this.scale;
+        Vector<float32,3> zero = stack Vector<float32,3>(0.0f, 0.0f, 0.0f);
+        Vector<float32,3> negTr = zero - this.translation;
+        Vector<float32,3> scaledNegTr = invScale * negTr;
+        Vector<float32,3> invTr = invRot * scaledNegTr;
+        return stack Transform(invTr, invRot, invScale);
+    }
+}
