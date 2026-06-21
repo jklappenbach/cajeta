@@ -309,14 +309,22 @@ public final class String {
      * is a follow-up once the search/replace path becomes a hotspot.
      */
     public int64 indexOf(String needle) {
+        return this.indexOfFrom(needle, 0);
+    }
+
+    // SWAR substring search starting at byte offset `start`. `indexOf` is
+    // `indexOfFrom(needle, 0)`; `replace` walks matches by re-calling with
+    // `start` past the last hit (the scans cover disjoint regions, so total work
+    // stays ~O(haystack)).
+    public int64 indexOfFrom(String needle, int64 start) {
         if (needle == null) {
             return (int64) -1;
         }
         int32 nlen = needle.byteLength;
         if (nlen == 0) {
-            return (int64) 0;
+            return start;
         }
-        if (nlen > this.byteLength) {
+        if ((int64) nlen > (int64) this.byteLength - start) {
             return (int64) -1;
         }
         int64 hlen = (int64) this.byteLength;
@@ -330,7 +338,7 @@ public final class String {
         uint64 ones = 0x0101010101010101;
         uint64 high = 0x8080808080808080;
         uint64 cc = ((uint64) ((int32) first & 0xFF)) * ones;
-        int64 i = 0;
+        int64 i = start;
         int64 scanEnd = hlen - 8;                  // last offset with a full 8-byte load
         while (i <= scanEnd) {
             uint64 w = (uint64) Cajeta.loadU64(this.bytes, i);
@@ -359,6 +367,7 @@ public final class String {
     // Verify `needle[0..nlen)` occurs at byte offset `at`. (The first byte is
     // already known to match at SWAR candidates, but we re-check all bytes so
     // the scalar tail and any SWAR false positive are handled uniformly.)
+    @Inline
     private boolean regionMatches(int64 at, String needle, int32 nlen) {
         int32 j = 0;
         while (j < nlen) {
@@ -536,59 +545,57 @@ public final class String {
         if (flen == 0) {
             return this;
         }
-        int32 tlen = repl.byteLength;
-        int32 occurrences = 0;
-        int32 i = 0;
-        int32 limit = this.byteLength - flen;
-        while (i <= limit) {
-            int32 j = 0;
-            boolean match = true;
-            while (j < flen && match) {
-                if (this.bytes[i + j] != from.bytes[j]) {
-                    match = false;
-                }
-                j = j + 1;
-            }
-            if (match) {
-                occurrences = occurrences + 1;
-                i = i + flen;
-            } else {
-                i = i + 1;
-            }
+        int64 tlen = (int64) repl.byteLength;
+        int64 hlen = (int64) this.byteLength;
+        int64 flen64 = (int64) flen;
+        // Pass 1: count occurrences with the fast SWAR indexOfFrom (no copying)
+        // to size the output EXACTLY — one allocation, no growth churn, no final
+        // copy, and no over-allocation slack in the returned String. (A
+        // StringBuilder is slower here: replace is copy-bound, and its growth +
+        // toString copy cost more than this second SWAR scan, which is cheap.)
+        int64 count = 0;
+        int64 p = this.indexOfFrom(from, 0);
+        while (p >= (int64) 0) {
+            count = count + 1;
+            p = this.indexOfFrom(from, p + flen64);
         }
-        int32 outLen = this.byteLength + occurrences * (tlen - flen);
-        int8[] out = heap int8[outLen];
-        int32 src = 0;
-        int32 dst = 0;
-        while (src <= limit) {
-            int32 j = 0;
-            boolean match = true;
-            while (j < flen && match) {
-                if (this.bytes[src + j] != from.bytes[j]) {
-                    match = false;
-                }
-                j = j + 1;
-            }
-            if (match) {
-                int32 k = 0;
-                while (k < tlen) {
-                    out[dst] = repl.bytes[k];
-                    dst = dst + 1;
-                    k = k + 1;
-                }
-                src = src + flen;
-            } else {
-                out[dst] = this.bytes[src];
-                dst = dst + 1;
-                src = src + 1;
-            }
+        if (count == 0) {
+            return this;        // no match — hand back the receiver unchanged
         }
-        while (src < this.byteLength) {
-            out[dst] = this.bytes[src];
-            dst = dst + 1;
-            src = src + 1;
+        int64 outLen = hlen + count * (tlen - flen64);
+        int8[] out = heap int8[(int32) outLen];
+        // Pass 2: SWAR-walk the matches, bulk-copying each segment + replacement
+        // straight into the exact buffer (8 bytes per store, inlined copyRange).
+        int64 src = 0;
+        int64 dst = 0;
+        int64 at = this.indexOfFrom(from, 0);
+        while (at >= (int64) 0) {
+            int64 seg = at - src;
+            String.copyRange(out, dst, this.bytes, src, seg);
+            dst = dst + seg;
+            String.copyRange(out, dst, repl.bytes, 0, tlen);
+            dst = dst + tlen;
+            src = at + flen64;
+            at = this.indexOfFrom(from, src);
         }
-        return heap String(#out, outLen);
+        String.copyRange(out, dst, this.bytes, src, hlen - src);
+        return heap String(#out, (int32) outLen);
+    }
+
+    // Copy `len` bytes from `src[s..]` to `dst[d..]`, 8 bytes per store (the
+    // 8-byte chunk window never exceeds `len`, so neither buffer is overrun) with
+    // a scalar tail. Static — takes both arrays explicitly.
+    @Inline
+    private static void copyRange(int8[] dst, int64 d, int8[] src, int64 s, int64 len) {
+        int64 k = 0;
+        while (k + 8 <= len) {
+            Cajeta.storeU64(dst, d + k, Cajeta.loadU64(src, s + k));
+            k = k + 8;
+        }
+        while (k < len) {
+            dst[d + k] = src[s + k];
+            k = k + 1;
+        }
     }
 
     /**

@@ -64,6 +64,28 @@ public final class StringBuilder {
         this.len = base + add;
     }
 
+    /**
+     * Append `len` bytes from `src` starting at `off`. The bulk primitive behind
+     * segment copies (e.g. `String.replace` emitting the text between matches);
+     * amortized O(len), doubling out-of-line in `grow`.
+     */
+    @Inline
+    public void appendBytes(int8[] src, int32 off, int32 len) {
+        if (len <= 0) {
+            return;
+        }
+        if (this.len + len > this.cap) {
+            this.grow(this.len + len);
+        }
+        int32 i = 0;
+        int32 base = this.len;
+        while (i < len) {
+            this.buf[base + i] = src[off + i];
+            i = i + 1;
+        }
+        this.len = base + len;
+    }
+
     // Cold, out-of-line: grow the backing buffer to at least `need` bytes
     // (doubling), copying the live bytes over. Split out of `append` so the
     // common in-capacity case stays branch-cold and `append` stays inlinable.
