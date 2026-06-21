@@ -1181,3 +1181,44 @@ TEST(NumpyOpsTests, compressChooseMaskMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 5b/5c — gatherCpuGpuAgree: the stdlib GPU gather (Ewise.takeF32) routes on
+// placement — on-device → the gatherF32 kernel (out[i]=in[idx[i]]); host → CPU
+// loop — and the two agree. cajeta.gpu CPU backend in-process (no GPU required).
+TEST(NumpyOpsTests, gatherCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> data() {\n"
+        "        float32[] d = { 10.0f, 20.0f, 30.0f, 40.0f };\n"
+        "        int64[] s = heap int64[1]; s[0] = 4;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static #Tensor<int64> idx() {\n"
+        "        int64[] d = { 3, 1, 0, 2 };\n"
+        "        int64[] s = heap int64[1]; s[0] = 4;\n"
+        "        return Tensor.of<int64>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> tc = D.data();\n"
+        "        Tensor<int64> ic = D.idx();\n"
+        "        Tensor<float32> cpu = Ewise.takeF32(tc, ic);\n"           // host → [40,20,10,30]
+        "        if (cpu.get1(0) != 40.0f || cpu.get1(1) != 20.0f || cpu.get1(2) != 10.0f || cpu.get1(3) != 30.0f) { return -1; }\n"
+        "        Tensor<float32> tg = D.data();\n"
+        "        Tensor<int64> ig = D.idx();\n"
+        "        tg.gpu();\n"
+        "        ig.gpu();\n"
+        "        Tensor<float32> gpu = Ewise.takeF32(tg, ig);\n"           // device → gather kernel
+        "        gpu.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            if (gpu.get1(i) != cpu.get1(i)) { return -2; }\n"     // GPU agrees with CPU
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}

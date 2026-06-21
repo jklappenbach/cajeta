@@ -117,4 +117,43 @@ public final class Ewise {
         }
         return sum;
     }
+
+    /**
+     * Gather kernel: `out[i] = in[idx[i]]` (numpy-porting Phase 5, 5e — the GPU
+     * indexing primitive; each thread reads one source element through its index).
+     */
+    @Kernel
+    public static void gatherF32(GpuBuffer<float32> out, GpuBuffer<float32> in,
+                                 GpuBuffer<int64> idx, uint32 n) {
+        uint32 i = GpuThread.globalIdX();
+        if (i < n) { out[i] = in[idx[i]]; }
+    }
+
+    /**
+     * Gather along axis 0 of a **contiguous** `float32` tensor by an index tensor
+     * (numpy `take`), routed on placement: both on-device → the {@link #gatherF32}
+     * GPU kernel; otherwise the CPU loop. The two agree (the Phase-5 indexing
+     * cross-check). Returns a 1-D `float32` tensor of length `idx.size()`.
+     */
+    public static #Tensor<float32> takeF32(Tensor<float32> t, Tensor<int64> idx) {
+        int64 m = idx.size();
+        int64[] os = heap int64[1];
+        os[0] = m;
+        Tensor<float32> out = Tensor.zeros<float32>(os);
+        if (t.isOnGpu() && idx.isOnGpu()) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            GpuStream s = GpuStream.current();
+            gatherF32.launch(s, grid: [(um + 63) / 64], block: [64])
+                (out.deviceBuffer(), t.deviceBuffer(), idx.deviceBuffer(), um);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < m) {
+                out.flatSet(i, t.flatGet(idx.flatGet(i)));
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
 }
