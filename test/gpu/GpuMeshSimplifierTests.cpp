@@ -150,3 +150,79 @@ TEST(GpuMeshSimplifierTests, edgeCollapseCombinesEndpointQuadrics) {
         "        if (cost < -0.01f || cost > 0.01f) { return -2; }\n"
         "        return 0;\n"), 0);
 }
+
+// A flat 3x3 vertex grid (z=0), triangulated into 8 triangles, with the index
+// list defining the two-triangles-per-cell mesh below:
+//   6--7--8
+//   | /| /|
+//   3--4--5
+//   | /| /|
+//   0--1--2
+// Positions are x=i%3, y=i/3, z=0. Shared by the driver tests.
+static const char* GRID_3X3 =
+    "        float32[] pos = heap float32[27];\n"
+    "        pos[0]=0.0f;  pos[1]=0.0f;  pos[2]=0.0f;\n"
+    "        pos[3]=1.0f;  pos[4]=0.0f;  pos[5]=0.0f;\n"
+    "        pos[6]=2.0f;  pos[7]=0.0f;  pos[8]=0.0f;\n"
+    "        pos[9]=0.0f;  pos[10]=1.0f; pos[11]=0.0f;\n"
+    "        pos[12]=1.0f; pos[13]=1.0f; pos[14]=0.0f;\n"
+    "        pos[15]=2.0f; pos[16]=1.0f; pos[17]=0.0f;\n"
+    "        pos[18]=0.0f; pos[19]=2.0f; pos[20]=0.0f;\n"
+    "        pos[21]=1.0f; pos[22]=2.0f; pos[23]=0.0f;\n"
+    "        pos[24]=2.0f; pos[25]=2.0f; pos[26]=0.0f;\n"
+    "        int32[] idx = heap int32[24];\n"
+    "        idx[0]=0;  idx[1]=1;  idx[2]=4;\n"
+    "        idx[3]=0;  idx[4]=4;  idx[5]=3;\n"
+    "        idx[6]=1;  idx[7]=2;  idx[8]=5;\n"
+    "        idx[9]=1;  idx[10]=5; idx[11]=4;\n"
+    "        idx[12]=3; idx[13]=4; idx[14]=7;\n"
+    "        idx[15]=3; idx[16]=7; idx[17]=6;\n"
+    "        idx[18]=4; idx[19]=5; idx[20]=8;\n"
+    "        idx[21]=4; idx[22]=8; idx[23]=7;\n";
+
+// 2a (driver) — simplifying a flat sheet collapses it down to (at most) the
+// target triangle count at zero geometric cost: every surviving vertex stays on
+// the z=0 plane (the flat quadric's optimal collapse falls back to the in-plane
+// midpoint), and no degenerate triangle survives in the output.
+TEST(GpuMeshSimplifierTests, simplifyReducesFlatSheetPreservingPlane) {
+    EXPECT_EQ(runI32(IMP, std::string(GRID_3X3) +
+        "        int32[] out = MeshSimplifier.simplify(pos, idx, 9, 2);\n"
+        "        int32 rc = (int32) (out.count() / 3);\n"
+        "        if (rc < 1 || rc > 2) { return -1; }\n"          // reduced 8 -> <= target
+        "        int32 i = 0;\n"
+        "        while (i < rc) {\n"
+        "            int32 a = out[i*3];\n"
+        "            int32 b = out[i*3+1];\n"
+        "            int32 c = out[i*3+2];\n"
+        "            if (a == b || b == c || a == c) { return -2; }\n"   // non-degenerate
+        "            float32 za = pos[a*3+2];\n"
+        "            float32 zb = pos[b*3+2];\n"
+        "            float32 zc = pos[c*3+2];\n"
+        "            if (za < -0.01f || za > 0.01f) { return -3; }\n"    // planarity preserved
+        "            if (zb < -0.01f || zb > 0.01f) { return -4; }\n"
+        "            if (zc < -0.01f || zc > 0.01f) { return -5; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 0;\n"), 0);
+}
+
+// 2a (driver) — simplify is a no-op when the target is already met: a target at
+// or above the input triangle count leaves all 8 triangles intact.
+TEST(GpuMeshSimplifierTests, simplifyIsNoOpWhenTargetMet) {
+    EXPECT_EQ(runI32(IMP, std::string(GRID_3X3) +
+        "        int32[] out = MeshSimplifier.simplify(pos, idx, 9, 100);\n"
+        "        int32 rc = (int32) (out.count() / 3);\n"
+        "        if (rc != 8) { return -1; }\n"
+        "        return 0;\n"), 0);
+}
+
+// 2a (driver) — the collapse loop terminates and fully decimates at target 0:
+// every triangle is eventually collapsed away, leaving an empty index list (and
+// no infinite loop / crash on the degenerate extreme).
+TEST(GpuMeshSimplifierTests, simplifyFullyDecimatesAtTargetZero) {
+    EXPECT_EQ(runI32(IMP, std::string(GRID_3X3) +
+        "        int32[] out = MeshSimplifier.simplify(pos, idx, 9, 0);\n"
+        "        int32 rc = (int32) (out.count() / 3);\n"
+        "        if (rc != 0) { return -1; }\n"
+        "        return 0;\n"), 0);
+}
