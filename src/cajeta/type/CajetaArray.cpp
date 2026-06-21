@@ -38,9 +38,19 @@ namespace cajeta {
         return elementType->getLlvmType();
     }
 
-    CajetaArray::CajetaArray(CajetaModulePtr module, CajetaTypePtr elementType) : CajetaClass(module) {
+    llvm::Type* CajetaArray::getInlineLlvmType(llvm::LLVMContext* ctx) const {
+        return llvm::ArrayType::get(getElementLlvmType(ctx),
+                                    fixedLength >= 0 ? (uint64_t) fixedLength : 0);
+    }
+
+    CajetaArray::CajetaArray(CajetaModulePtr module, CajetaTypePtr elementType,
+                             int32_t fixedLength) : CajetaClass(module) {
         this->elementType = elementType;
-        string typeName = elementType->toCanonical() + "[]";
+        this->fixedLength = fixedLength;
+        // The canonical name encodes a fixed length so `int8[64]` (inline) and
+        // `int8[]` (heap reference) are distinct types in the structures map.
+        string typeName = elementType->toCanonical()
+            + (fixedLength >= 0 ? ("[" + std::to_string(fixedLength) + "]") : "[]");
         qName = QualifiedName::getOrCreate(typeName);
         canonical = qName->toCanonical();
 

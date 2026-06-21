@@ -919,7 +919,13 @@ namespace cajeta {
                         + "'; not a primitive, native, or user-defined type",
                     "CAJETA_ERROR_UNKNOWN_TYPE");
             }
-            if (dynamic_pointer_cast<CajetaArray>(t)) {
+            if (auto arr = dynamic_pointer_cast<CajetaArray>(t)) {
+                // Fixed-size inline array field `T[N]`: N elements stored
+                // inline in the object body (`[N x T]`), no pointer slot.
+                if (arr->isInlineArray()) {
+                    return arr->getInlineLlvmType(lctx);
+                }
+                // Heap reference `T[]`: a pointer to the heap header.
                 return llvm::PointerType::get(*lctx, 0);
             }
             if (auto cls = dynamic_pointer_cast<CajetaClass>(t)) {

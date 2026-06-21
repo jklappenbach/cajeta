@@ -654,13 +654,28 @@ namespace cajeta {
         //     the header pointer.
         llvm::Value* arrayVal = children[0]->generateCode(module);
         auto lhsExpr = dynamic_pointer_cast<Expression>(children[0]);
-        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(arrayVal)) {
+
+        // Fixed-size inline array field (`obj.f[i]` where f is `T[N]`): the
+        // field slot GEP from DotExpression ALREADY points at the inline
+        // `[N x T]` storage embedded in the object — there is no header
+        // pointer to load through. Loading it (as the heap-`T[]` path does)
+        // would read the first inline element as a pointer and SIGSEGV.
+        bool inlineArrayAccess = false;
+        if (lhsExpr) {
+            if (!lhsExpr->getResolvedType()) lhsExpr->resolveTypes(module);
+            if (auto la = dynamic_pointer_cast<CajetaArray>(lhsExpr->getResolvedType())) {
+                inlineArrayAccess = la->isInlineArray();
+            }
+        }
+
+        if (inlineArrayAccess) {
+            // arrayVal already addresses the inline storage; do not load it.
+        } else if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(arrayVal)) {
             arrayVal = builder->CreateLoad(a->getAllocatedType(), a);
         } else if (lhsExpr && dynamic_pointer_cast<ArrayIndexExpression>(lhsExpr)) {
             arrayVal = builder->CreateLoad(
                 llvm::PointerType::get(ctx, 0), arrayVal);
         } else if (lhsExpr && dynamic_pointer_cast<DotExpression>(lhsExpr)) {
-            if (!lhsExpr->getResolvedType()) lhsExpr->resolveTypes(module);
             if (dynamic_pointer_cast<CajetaArray>(lhsExpr->getResolvedType())) {
                 arrayVal = builder->CreateLoad(
                     llvm::PointerType::get(ctx, 0), arrayVal);
@@ -701,6 +716,43 @@ namespace cajeta {
         idx = loadIfLValue(module, idx, idxAst);
         if (idx->getType() != i64Ty) {
             idx = builder->CreateIntCast(idx, i64Ty, /*isSigned=*/true);
+        }
+
+        // Inline fixed-size array field (`T[N]`): address the element directly
+        // in the embedded `[N x T]` storage — `&inline[idx]` via GEP {0, idx},
+        // no header, no DATA_FIELD indirection. Bounds are against the
+        // compile-time constant N.
+        if (arrayType->isInlineArray()) {
+            int64_t n = arrayType->getFixedLength();
+            BoundsCheck boundsMode = module->getFlags().bounds;
+            if (boundsMode != BoundsCheck::Off) {
+                llvm::Value* size = llvm::ConstantInt::get(i64Ty, (uint64_t) n);
+                llvm::Value* outOfBounds = builder->CreateICmpUGE(idx, size);
+                llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                llvm::BasicBlock* failBB = llvm::BasicBlock::Create(ctx, "bounds_fail", parentFn);
+                llvm::BasicBlock* okBB = llvm::BasicBlock::Create(ctx, "bounds_ok", parentFn);
+                builder->CreateCondBr(outOfBounds, failBB, okBB);
+                builder->SetInsertPoint(failBB);
+                if (boundsMode == BoundsCheck::Trap) {
+                    llvm::Function* trapFn = llvm::Intrinsic::getOrInsertDeclaration(
+                        module->getLlvmModule(), llvm::Intrinsic::trap);
+                    builder->CreateCall(trapFn);
+                } else {
+                    llvm::Function* boundsFail =
+                        module->getRuntimeFunction("__cajeta_array_bounds_fail");
+                    if (boundsFail) {
+                        builder->CreateCall(boundsFail, {idx, size});
+                    }
+                }
+                builder->CreateUnreachable();
+                builder->SetInsertPoint(okBB);
+            }
+            llvm::Type* inlineTy = arrayType->getInlineLlvmType(&ctx);
+            vector<llvm::Value*> inlineGep = {
+                llvm::ConstantInt::get(i64Ty, 0),
+                idx,
+            };
+            return builder->CreateGEP(inlineTy, arrayVal, inlineGep);
         }
 
         // Bounds check (when enabled by the compiler flag and the runtime helper is

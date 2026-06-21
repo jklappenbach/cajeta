@@ -573,6 +573,28 @@ namespace cajeta {
         return type;
     }
 
+    // Parse a `T[N]` bracket size literal into a fixed inline length. Returns
+    // the value for a plain non-negative integer literal (decimal or `0x` hex,
+    // underscores allowed); -1 for anything non-constant (a named const, an
+    // arithmetic expression, a `new`-time size) — those stay heap references.
+    static int32_t parseConstantArrayLength(const std::string& text) {
+        std::string s;
+        for (char c : text) {
+            if (c != '_') s += c;
+        }
+        if (s.empty()) return -1;
+        try {
+            size_t pos = 0;
+            int base = (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? 16 : 10;
+            long v = std::stol(s, &pos, base);
+            if (pos != s.size()) return -1;       // trailing junk => not a plain literal
+            if (v < 0 || v > 0x7fffffff) return -1;
+            return static_cast<int32_t>(v);
+        } catch (...) {
+            return -1;
+        }
+    }
+
     cajeta::CajetaTypePtr cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
         // Fall back to the active module set during the walk — many parse-time
         // call sites don't have a `module` to pass. See CajetaModule::activeModule.
@@ -1142,11 +1164,20 @@ namespace cajeta {
             }
         }
         // Each `[]` pair wraps the type in another CajetaArray. `int[]` -> CajetaArray<int>;
-        // `int[][]` -> CajetaArray<CajetaArray<int>>. The size expressions (when present)
-        // are allocation-time concerns; they don't change the type.
+        // `int[][]` -> CajetaArray<CajetaArray<int>>. A bracket carrying a
+        // CONSTANT integer size (`int8[64]`) is a fixed-size INLINE array field
+        // (stored inline in the enclosing object, no heap); an empty `[]` or a
+        // non-constant size stays a heap reference (size is then an
+        // allocation-time concern that doesn't change the type).
         int bracketPairs = static_cast<int>(ctx->LBRACK().size());
         for (int i = 0; i < bracketPairs; i++) {
-            type = make_shared<CajetaArray>(module, type);
+            int32_t fixedLength = -1;
+            if (i < static_cast<int>(ctx->expression().size())) {
+                if (auto* sizeExpr = ctx->expression(i)) {
+                    fixedLength = parseConstantArrayLength(sizeExpr->getText());
+                }
+            }
+            type = make_shared<CajetaArray>(module, type, fixedLength);
             module->getStructures()[type->toCanonical()] = static_pointer_cast<CajetaClass>(type);
         }
 
