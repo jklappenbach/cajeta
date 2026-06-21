@@ -1,0 +1,156 @@
+package cajeta.search.fuzzy;
+
+import cajeta.search.ngram.Index;
+import cajeta.search.distance.Distance;
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+
+/**
+ * Typo-tolerant key→value lookup (cajeta.search spec §4): composes an
+ * `ngram.Index` (recall prefilter) with `Distance.damerau` (scoring) and a
+ * length-scaled threshold, returning results ranked closest-first.
+ *
+ * `add(key, value)` feeds the index and remembers the `(key, value)` so a
+ * candidate can be scored against its key. `match(query)` prefilters via the
+ * index, scores each candidate, drops anything past the threshold, and returns
+ * the survivors ordered by ascending distance, then key (so identical inputs
+ * always produce identical output — exact matches, distance 0, rank first).
+ *
+ * The index uses **bigrams** (n = 2): a single adjacent transposition (the
+ * common typo `Fiel`→`File`) destroys every trigram of a short key but leaves
+ * a shared bigram, so bigrams keep recall on exactly the typos `damerau`
+ * scores as distance 1.
+ *
+ * ```cajeta
+ * Matcher<int32> m = heap Matcher<int32>();
+ * m.add("File", 10);
+ * ArrayList<Match<int32>> hits = m.match("Fiel");  // [File, distance 1]
+ * ```
+ *
+ * @See cajeta.search.ngram.Index
+ * @See cajeta.search.distance.Distance
+ */
+public class Matcher<T> {
+
+    /** gram → entry id (index into `keys`/`values`). */
+    private Index<int32> index;
+    /** entry id → key (owned). */
+    private ArrayList<String> keys;
+    /** entry id → value. */
+    private ArrayList<T> values;
+
+    /** Construct an empty matcher (bigram index for transposition recall). */
+    public Matcher() {
+        this.index = heap Index<int32>(2);
+        this.keys = heap ArrayList<String>();
+        this.values = heap ArrayList<T>();
+    }
+
+    /** Index `value` under `key`, remembering the key for later scoring. */
+    public void add(String key, T value) {
+        int32 id = (int32) this.keys.count();
+        String owned = key.substring(0, (int32) key.count());
+        this.keys.add(#owned);
+        this.values.add(value);
+        this.index.add(key, id);
+    }
+
+    /**
+     * Every stored value whose key is within the (length-scaled) edit-distance
+     * threshold of `query`, ranked by ascending distance then key. Empty when
+     * nothing is close enough.
+     */
+    public #ArrayList<Match<T>> match(String query) {
+        int32 threshold = (int32) query.count() / 2;
+        if (threshold < 1) {
+            threshold = 1;
+        }
+        // Prefilter to candidate ids, then keep those within threshold —
+        // collecting parallel id/distance arrays of int32 (cheap to sort
+        // without touching owned Match objects).
+        ArrayList<int32> cand = this.index.candidates(query);
+        ArrayList<int32> ids = heap ArrayList<int32>();
+        ArrayList<int32> dists = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < cand.count()) {
+            int32 id = cand.get(i);
+            int32 d = Distance.damerau(query, this.keys.get(id));
+            if (d <= threshold) {
+                ids.add(id);
+                dists.add(d);
+            }
+            i = i + 1;
+        }
+        // Selection sort the parallel arrays by (distance asc, key asc).
+        int32 n = ids.count();
+        int32 a = 0;
+        while (a < n) {
+            int32 best = a;
+            int32 b = a + 1;
+            while (b < n) {
+                boolean better = false;
+                int32 db = dists.get(b);
+                int32 dbest = dists.get(best);
+                if (db < dbest) {
+                    better = true;
+                } else {
+                    if (db == dbest) {
+                        if (this.keyLess(ids.get(b), ids.get(best))) {
+                            better = true;
+                        }
+                    }
+                }
+                if (better) {
+                    best = b;
+                }
+                b = b + 1;
+            }
+            if (best != a) {
+                int32 ti = ids.get(a);
+                ids.set(a, ids.get(best));
+                ids.set(best, ti);
+                int32 td = dists.get(a);
+                dists.set(a, dists.get(best));
+                dists.set(best, td);
+            }
+            a = a + 1;
+        }
+        // Build the ranked result, each Match owning a copy of its key.
+        ArrayList<Match<T>> out = heap ArrayList<Match<T>>();
+        int32 r = 0;
+        while (r < n) {
+            int32 id = ids.get(r);
+            String k = this.keys.get(id);
+            String kc = k.substring(0, (int32) k.count());
+            Match<T> hit = heap Match<T>(this.values.get(id), #kc, dists.get(r));
+            out.add(#hit);
+            r = r + 1;
+        }
+        return out;
+    }
+
+    /** True if `keys[ida]` sorts before `keys[idb]` lexicographically (bytes). */
+    private boolean keyLess(int32 ida, int32 idb) {
+        String x = this.keys.get(ida);
+        String y = this.keys.get(idb);
+        int32 lx = (int32) x.count();
+        int32 ly = (int32) y.count();
+        int32 lim = lx;
+        if (ly < lim) {
+            lim = ly;
+        }
+        int32 i = 0;
+        while (i < lim) {
+            int8 cx = x.charAt(i);
+            int8 cy = y.charAt(i);
+            if (cx < cy) {
+                return true;
+            }
+            if (cx > cy) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return lx < ly;
+    }
+}
