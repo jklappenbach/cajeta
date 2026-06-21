@@ -221,3 +221,19 @@ exposes the capability unguarded and documents the exposure.
 - Unblocks the **cajeta-written** `cajeta-mcp` server (`cajeta-mcp-spec.md`): once this
   lands, that server can orchestrate the toolchain subcommands and run process-per-execute
   entirely in cajeta.
+
+## 11. Implemented v1 API (as shipped)
+Reference: `docs/specification/process/Process.md`; tests: `test/process/ProcessTests.cpp`.
+A few names diverge from the prose above for concrete reasons:
+- **`Command.start()`** is the streaming launcher (this spec's `spawn()`) — `spawn` is a
+  reserved fiber keyword in cajeta.
+- **`Process.waitFor()`** (blocking) and **`Process.waitMillis(int64)`** (timeout) stand in
+  for `wait()` / `wait(Duration)`; the `Duration` overload is deferred to avoid the
+  `cajeta.time` coupling in v1.
+- **Reaping is via `Process.close()`**, not a destructor (§5.1 "drop"): cajeta has no
+  auto-close-on-drop destructor for stdlib classes yet (same as `FileReader`/`FileWriter`).
+  `close()` kills a still-running child then reaps it, so no zombie leaks.
+- **Launch failure is a result flag** (`launched()==false` / `code()==-1`), never a throw —
+  see §8.2.
+- **`waitFor()`/`run()` block the carrier thread** in v1, not the fiber (§6 fiber-yield
+  deferred). Windows is a `launched()==false` stub pending the `CreateProcess` port.
