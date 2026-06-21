@@ -1,11 +1,13 @@
 # Native Dependency Subsystem — Specification
 
-> Status: **draft** (design). How Cajeta libraries declare, distribute, resolve,
-> and link native C/C++ libraries — with **zero developer declaration** and
-> **offline / airgapped / JIT safety**. A build-tool + Olla + `.cja`-format +
-> `@Native`-resolver capability. First consumer: the codec library's compression
-> layer (zstd/zlib/brotli). Open calls awaiting developer confirmation are marked
-> **⟨CONFIRM⟩**.
+> Status: **approved / implemented** (2026-06-21). How Cajeta libraries declare,
+> distribute, resolve, and link native C/C++ libraries — with **zero developer
+> declaration** and **offline / airgapped / JIT safety**. A build-tool + Olla +
+> `.cja`-format + `@Native`-resolver capability. First consumer: the codec
+> library's compression layer (zstd/zlib/brotli). Built on branch
+> `feature/native-deps` per `agents/cajeta/buildtool/native-deps-plan.md` (all 16
+> units complete; ~45 native-deps tests). The previously-open design calls were
+> resolved as recorded inline below (marked **⟨RESOLVED⟩**).
 
 ---
 
@@ -83,11 +85,12 @@ carries, resolved automatically, with the artifacts available offline.
 
 ### 2.1 Requirements
 - A binding references a native **symbol** and the **library id** that provides
-  it. **⟨CONFIRM 2.A⟩** Recommended shape:
+  it. **⟨RESOLVED 2.A⟩** Shape:
   `@Native(symbol = "ZSTD_compress", lib = "zstd")` — symbol + lib-id only; the
-  heavy metadata is *not* repeated per binding.
+  heavy metadata is *not* repeated per binding. (Bare-string `@Native("…")` stays
+  back-compatible for runtime symbols.)
 - The library's own `cajeta.json` carries a **`native-libraries`** block
-  **⟨CONFIRM 2.B: section name⟩**, keyed by lib-id, holding: default version
+  **⟨RESOLVED 2.B⟩**, keyed by lib-id, holding: default version
   constraint, supported platforms, link mode (§5), artifact source/coordinates,
   `sha256`, SPDX license, a `redistributable` boolean, and (for
   non-redistributable) human acquisition instructions.
@@ -113,15 +116,14 @@ carries, resolved automatically, with the artifacts available offline.
 ### 3.1 Requirements
 - A `.cja` gains a **`native/`** tree: `native/<os>-<arch>/` holding the linker
   artifacts per platform, plus a shared **`include/`** for headers/glue.
-  **⟨CONFIRM 3.A: platform-triple naming⟩** (e.g. `linux-x64`, `linux-arm64`,
-  `macos-arm64`, `windows-x64`).
+  **⟨RESOLVED 3.A⟩** platform triples: `linux-x64`, `linux-arm64`, `macos-arm64`,
+  `windows-x64`.
 - The **publishing** library's build fetches/builds the **redistributable**
   artifacts per target platform and bundles them into its `.cja/native/`. A
   consumer links straight from there — **downloads nothing**.
-- **⟨CONFIRM 3.B: bundle breadth default⟩** — bundle-all-supported-platforms
-  (max portability, larger `.cja`) vs bundle-host-only vs slim-`.cja`+fetch.
-  Recommended default: **bundle all platforms the publisher targets**; allow a
-  slim opt-out.
+- **⟨RESOLVED 3.B⟩** bundle breadth default: **bundle all platforms the publisher
+  targets** (max portability), with a `--slim` opt-out (no `native/`; consumers
+  resolve at provision time).
 - **Embargoed** artifacts are never placed in a *publicly distributed* `.cja` and
   never mirrored on Olla — but they **are** baked into the **downstream app's**
   `.cja` / ubercja by the packaging step (§3.3), within the app developer's
@@ -180,9 +182,9 @@ carries, resolved automatically, with the artifacts available offline.
   5. **provision-time** fetch (Olla mirror / declared source) if redistributable
      or license already accepted
   6. else → **fail loud** (§9)
-- **⟨CONFIRM 4.A: version-conflict policy⟩** when two deps require different
-  versions of the same lib. Recommended: highest-compatible (semver) wins; an
-  explicit developer override always wins; incompatible majors → fail-loud.
+- **⟨RESOLVED 4.A⟩** version-conflict policy when two deps require different
+  versions of the same lib: **highest-compatible (semver) wins**; an explicit
+  developer override always wins; incompatible majors → fail-loud.
 
 ### 4.2 Use cases
 - **4.2.1** As an app developer, when I add a `.cja` that transitively needs
@@ -201,9 +203,8 @@ carries, resolved automatically, with the artifacts available offline.
 ## 5. Linking — AOT vs JIT, static vs dynamic
 
 ### 5.1 Requirements
-- **⟨CONFIRM 5.A: default link mode⟩** Recommended: **static by default**
-  (self-contained, offline-portable binaries); **dynamic** is opt-in for
-  system-provided libs.
+- **⟨RESOLVED 5.A⟩** default link mode: **static by default** (self-contained,
+  offline-portable binaries); **dynamic** is opt-in for system-provided libs.
 - **AOT `--emit=exe`** resolves at build time and statically links → the exe is
   self-contained and needs nothing at run time.
 - **JIT** links/`dlopen`s the artifact from the `.cja`'s `native/`, the vendored
@@ -309,5 +310,12 @@ carries, resolved automatically, with the artifacts available offline.
   reopens native binding for the **format readers** (Parquet/ORC/Avro) or stays
   **compression-only** is a *codec-plan* decision, not settled here. This
   subsystem is agnostic to it.
-- **10.2** Confirm items **2.A/2.B, 3.A/3.B, 4.A, 5.A** above.
+- **10.2 Design calls — resolved.** 2.A/2.B, 3.A/3.B, 4.A, 5.A were confirmed and
+  implemented (see the ⟨RESOLVED⟩ markers inline).
 - **10.3** Building native artifacts from source (publisher side) — future.
+- **10.4 Parked implementation follow-ups** (off the critical path; tracked in the
+  plan): **ND-F6** — route the AOT link through the full version-aware resolver +
+  versioned cache (today unit-7 link uses a flat `CAJETA_NATIVE_PATH` search).
+  **ND-F7** — thread the precise `nativeMissingMessage` into the JIT ORC path
+  (a referenced-but-absent lib currently surfaces ORC's own "Symbols not found"
+  rather than the actionable placement message).
