@@ -2759,7 +2759,12 @@ namespace cajeta {
             if (!fieldType) continue;
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
 
-            if (dynamic_pointer_cast<CajetaArray>(fieldType)) {
+            if (auto arrField = dynamic_pointer_cast<CajetaArray>(fieldType)) {
+                // Fixed-size inline array field (`T[N]`): inline storage, not a
+                // heap allocation — there is nothing to free. Loading the slot
+                // as a pointer and calling __cajeta_free_array would free the
+                // inline bytes interpreted as an address (invalid free / UAF).
+                if (arrField->isInlineArray()) continue;
                 if (!freeArrayFn) {
                     freeArrayFn = cajModule->getRuntimeFunction("__cajeta_free_array", bodyModule);
                 }
