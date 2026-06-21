@@ -1,0 +1,103 @@
+package cajeta.lang;
+
+/**
+ * Growable UTF-8 byte buffer for building a String in amortized O(N) — the
+ * counterpart to Rust `String::push_str`, Java `StringBuilder`, Go
+ * `strings.Builder`. Repeated `s = s + chunk` on an immutable `String` is
+ * O(N^2) (every `+` copies the whole accumulator); accumulate into a
+ * `StringBuilder` instead and materialize once with `toString()`.
+ *
+ * ```cajeta
+ * StringBuilder sb = heap StringBuilder();
+ * sb.append("Hello, ");
+ * sb.append("world");
+ * #String s = sb.toString();        // "Hello, world"
+ * ```
+ *
+ * Backed by a `int8[]` that doubles on demand. The hot `append` path is
+ * `@Inline` (it folds into the caller's build loop); the rare doubling is the
+ * `@NoInline grow()` cold path, so `append` stays small enough to inline — the
+ * same hot/cold split `ArrayList.add`/`grow` use.
+ */
+public final class StringBuilder {
+    int8[] buf;
+    int32 len;     // bytes used
+    int32 cap;     // buffer capacity in bytes
+
+    /** Create an empty builder with a small initial backing buffer. */
+    public StringBuilder() {
+        this.cap = 16;
+        this.buf = heap int8[16];
+        this.len = 0;
+    }
+
+    /** Number of UTF-8 bytes accumulated so far. */
+    public int32 count() {
+        return this.len;
+    }
+
+    /** `true` when nothing has been appended yet. */
+    public boolean isEmpty() {
+        return this.len == 0;
+    }
+
+    /**
+     * Append the UTF-8 bytes of `s`. Amortized O(len(s)); the backing buffer
+     * doubles (out-of-line in `grow`) only when it would overflow.
+     */
+    @Inline
+    public void append(String s) {
+        int32 add = s.byteLength;
+        if (add == 0) {
+            return;
+        }
+        if (this.len + add > this.cap) {
+            this.grow(this.len + add);
+        }
+        int8[] src = s.bytes;
+        int32 i = 0;
+        int32 base = this.len;
+        while (i < add) {
+            this.buf[base + i] = src[i];
+            i = i + 1;
+        }
+        this.len = base + add;
+    }
+
+    // Cold, out-of-line: grow the backing buffer to at least `need` bytes
+    // (doubling), copying the live bytes over. Split out of `append` so the
+    // common in-capacity case stays branch-cold and `append` stays inlinable.
+    @NoInline
+    private void grow(int32 need) {
+        int32 newCap = this.cap * 2;
+        while (newCap < need) {
+            newCap = newCap * 2;
+        }
+        int8[] grown = heap int8[newCap];
+        int32 i = 0;
+        while (i < this.len) {
+            grown[i] = this.buf[i];
+            i = i + 1;
+        }
+        // `#grown` transfers ownership into the field — same pattern as
+        // ArrayList.grow / HashMap.rehash; without it the local's scope-exit
+        // drop would free the buffer we just installed.
+        this.buf = #grown;
+        this.cap = newCap;
+    }
+
+    /**
+     * Materialize the accumulated bytes into a fresh owned `String` (one final
+     * copy of exactly `count()` bytes). The builder is left usable for more
+     * appends.
+     */
+    public #String toString() {
+        int8[] out = heap int8[this.len];
+        int32 i = 0;
+        while (i < this.len) {
+            out[i] = this.buf[i];
+            i = i + 1;
+        }
+        return heap String(#out, this.len);
+    }
+}
