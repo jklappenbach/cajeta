@@ -24,6 +24,7 @@
 #include "../codec/CsvSynthesizer.h"
 #include "../codec/ProtobufSynthesizer.h"
 #include "../codec/IonSynthesizer.h"
+#include "../codec/AvroSynthesizer.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/CajetaLlvmVisitor.h"
 #include "../compile/Compiler.h"
@@ -316,6 +317,9 @@ namespace cajeta {
                     paramTypes, synthesized)) {
                 effectiveSource = std::move(synthesized);
             } else if (synthesizeIonMethodSource(parent, name, args,
+                    paramTypes, synthesized)) {
+                effectiveSource = std::move(synthesized);
+            } else if (synthesizeAvroMethodSource(parent, name, args,
                     paramTypes, synthesized)) {
                 effectiveSource = std::move(synthesized);
             }
