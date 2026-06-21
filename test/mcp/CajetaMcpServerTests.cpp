@@ -54,7 +54,7 @@ bool ensureServerBuilt() {
 std::vector<Json> drive(const std::string& requests) {
     std::string out, err;
     SubprocessOptions opt;
-    opt.argv = {mcpExe()};
+    opt.argv = {mcpExe(), "--cajeta=" + cajetaExe()};
     opt.stdinData = &requests;
     opt.outData = &out;
     opt.errData = &err;
@@ -108,6 +108,25 @@ TEST(CajetaMcpServerTests, lifecycleAndErrors) {
     // unknown method → -32601; bad JSON → -32700
     EXPECT_EQ(r[2].at("error").at("code").asInt(), -32601);
     EXPECT_EQ(r[3].at("error").at("code").asInt(), -32700);
+}
+
+// C2.1.3 + mechanism — skill tools validate params and return well-formed,
+// shape-correct results. (A real-uri assertion needs an on-disk skill fixture
+// with a cajeta.lock; without one in cwd the cores return empty sets, which is
+// what we assert here. Real-fixture coverage is a follow-up.)
+TEST(CajetaMcpServerTests, skillToolsValidationAndShape) {
+    if (!ensureServerBuilt()) return;
+    auto r = drive(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"searchSkills\",\"arguments\":{}}}\n"
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"searchSkills\",\"arguments\":{\"name\":\"cajeta/io/File\"}}}\n"
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"getSkills\",\"arguments\":{}}}\n");
+    ASSERT_EQ(r.size(), 3u);
+    EXPECT_EQ(r[0].at("error").at("code").asInt(), -32602);   // missing name
+    EXPECT_TRUE(r[1].at("result").at("results").isArray());   // well-formed shape
+    EXPECT_EQ(r[2].at("error").at("code").asInt(), -32602);   // missing uris
 }
 
 #endif // !_WIN32
