@@ -1087,10 +1087,12 @@ public class Tensor<T> {
      * marker-bounded (`A`,`B extends Numeric`); the result element type `R` is an
      * explicit (caller-supplied) width. Each operand is read by broadcast index,
      * cross-cast to `R`, and the op (`0`=add, `1`=sub, `2`=mul) performed **in `R`** —
-     * a static method-type-param op with `R` concrete at the call, so `+`/`-`/`*` select
-     * the correct typed instruction (no symbolic-integer mis-emit). Operands are read
-     * directly; only the fresh C-contiguous `Tensor<R>` owns storage. One kernel covers
-     * every numeric `(A,B,R)`; only those instantiated are monomorphized.
+     * a static method-type-param op with `R` concrete at the call, so `+`/`-`/`*`/`/`
+     * select the correct typed instruction (no symbolic-integer mis-emit). `op`: `0`=add
+     * `1`=sub `2`=mul `3`=div (true division — `/` is `fdiv` only when `R` is floating, so
+     * the public `div` bounds `R extends Floating`). Operands are read directly; only the
+     * fresh C-contiguous `Tensor<R>` owns storage. One kernel covers every numeric
+     * `(A,B,R)`; only those instantiated are monomorphized.
      */
     static #Tensor<R> binop<A extends Numeric, B extends Numeric, R extends Numeric>(
             Tensor<A> a, Tensor<B> b, int32 op) {
@@ -1113,6 +1115,7 @@ public class Tensor<T> {
             R vc = va + vb;
             if (op == 1) { vc = va - vb; }
             if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
             st.set(lin, vc);
             lin = lin + 1;
             int32 ax = nd - 1;
@@ -1253,6 +1256,84 @@ public class Tensor<T> {
     public static #Tensor<boolean> ge<A extends Numeric, B extends Numeric, C extends Numeric>(
             Tensor<A> a, Tensor<B> b) {
         return Tensor.cmp<A, B, C>(a, b, 5);
+    }
+
+    /** True division `a / b` with broadcasting; result `R` is **floating** (NEP-50 true
+     *  division — `int/int → float`, spec 6.2.1). Cross-dtype explicit width; for the
+     *  same-dtype float case use `div<E,E,E>` (no `div<E>` shorthand — a `Floating`-bounded
+     *  1-param overload is hard-rejected when the resolver unification-tests it against
+     *  integer operands during type-pinning; the explicit 3-param form is unambiguous). */
+    public static #Tensor<R> div<A extends Numeric, B extends Numeric, R extends Floating>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.binop<A, B, R>(a, b, 3);
+    }
+
+    /**
+     * Shared **floor-division / mod** kernel (numpy `//` / `%` semantics, spec 6.2.2).
+     * numpy floors toward −∞ (not C's truncate-toward-zero) and `mod` takes the sign of
+     * the **divisor**. Computed uniformly for integral and floating `R` via a float64
+     * intermediate: `fd = (R) floor((float64)a / (float64)b)`; `op 0` = `fd` (floorDiv),
+     * `op 1` = `a − fd*b` (mod). The float64 mediation is exact for the int magnitudes a
+     * CPU floor cares about (< 2^53); wider exactness is a later refinement. Operands are
+     * read directly; only the fresh `Tensor<R>` owns storage.
+     */
+    static #Tensor<R> fdivmod<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<R> st = heap Storage<R>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            A ra = a.readBroadcast(idx);
+            B rb = b.readBroadcast(idx);
+            R va = (R) ra;
+            R vb = (R) rb;
+            float64 qf = Math.floor(((float64) va) / ((float64) vb));
+            R fd = (R) qf;
+            R vc = fd;
+            if (op == 1) { vc = va - fd * vb; }
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, rshape, rstrides);
+    }
+
+    /** Cross-dtype floor division `a // b` (toward −∞); explicit result width `R`. */
+    public static #Tensor<R> floorDiv<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.fdivmod<A, B, R>(a, b, 0);
+    }
+    /** Same-dtype floor division `a // b`. See {@link #fdivmod}. */
+    public static #Tensor<E> floorDiv<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.fdivmod<E, E, E>(a, b, 0);
+    }
+    /** Cross-dtype modulo `a % b` (sign of divisor); explicit result width `R`. */
+    public static #Tensor<R> mod<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.fdivmod<A, B, R>(a, b, 1);
+    }
+    /** Same-dtype modulo `a % b` (sign of divisor). See {@link #fdivmod}. */
+    public static #Tensor<E> mod<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.fdivmod<E, E, E>(a, b, 1);
     }
 
     // ────────────────────────────── indexing (Phase 5) ───────────────────────

@@ -235,3 +235,70 @@ TEST(NumpyOpsTests, comparisonMixedDtype) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 3.1.1 — true division: int/int → float64 (NEP-50 true div, spec 6.2.1); float
+// same-dtype div<E extends Floating> stays E (spec 2.2.5).
+TEST(NumpyOpsTests, trueDivMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 6, 7, 8, 9 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s22);\n"
+        "        int32[] db = { 4, 2, 8, 3 };\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s22);\n"
+        "        Tensor<float64> q = Tensor.div<int32,int32,float64>(a, b);\n"   // [1.5,3.5,1.0,3.0]
+        "        if (q.get2(0,0) != 1.5) { return -1; }\n"
+        "        if (q.get2(0,1) != 3.5) { return -2; }\n"
+        "        if (q.get2(1,0) != 1.0) { return -3; }\n"
+        "        if (q.get2(1,1) != 3.0) { return -4; }\n"
+        "        float32[] fa = { 1.0f, 3.0f, 7.0f, 9.0f };\n"
+        "        Tensor<float32> fA = Tensor.of<float32>(fa, s22);\n"
+        "        float32[] fb = { 2.0f, 2.0f, 2.0f, 2.0f };\n"
+        "        Tensor<float32> fB = Tensor.of<float32>(fb, s22);\n"
+        "        Tensor<float32> fq = Tensor.div<float32,float32,float32>(fA, fB);\n"  // [0.5,1.5,3.5,4.5]
+        "        if (fq.get2(0,0) != 0.5f) { return -5; }\n"
+        "        if (fq.get2(1,1) != 4.5f) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 3.1.2 — floor-division (toward −∞) and mod (sign of divisor): numpy //, % rules
+// incl. negative operands; ints stay int, floats match np.floor_divide/np.mod (6.2.2).
+TEST(NumpyOpsTests, floorDivAndModMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 7, -7, 7, -7 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s22);\n"
+        "        int32[] db = { 2, 2, -2, -2 };\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s22);\n"
+        // numpy: 7//2=3, -7//2=-4, 7//-2=-4, -7//-2=3
+        "        Tensor<int32> fd = Tensor.floorDiv<int32>(a, b);\n"
+        "        if (fd.get2(0,0) != 3 || fd.get2(0,1) != -4) { return -1; }\n"
+        "        if (fd.get2(1,0) != -4 || fd.get2(1,1) != 3) { return -2; }\n"
+        // numpy mod (sign of divisor): 7%2=1, -7%2=1, 7%-2=-1, -7%-2=-1
+        "        Tensor<int32> m = Tensor.mod<int32>(a, b);\n"
+        "        if (m.get2(0,0) != 1 || m.get2(0,1) != 1) { return -3; }\n"
+        "        if (m.get2(1,0) != -1 || m.get2(1,1) != -1) { return -4; }\n"
+        // float floor_divide/mod
+        "        float32[] fa = { -7.0f, 7.5f, -7.5f, 8.0f };\n"
+        "        Tensor<float32> fA = Tensor.of<float32>(fa, s22);\n"
+        "        float32[] fbv = { 2.0f, 2.0f, 2.0f, 3.0f };\n"
+        "        Tensor<float32> fB = Tensor.of<float32>(fbv, s22);\n"
+        // floor_divide: -7/2→-4, 7.5/2→3, -7.5/2→-4, 8/3→2
+        "        Tensor<float32> ffd = Tensor.floorDiv<float32>(fA, fB);\n"
+        "        if (ffd.get2(0,0) != -4.0f || ffd.get2(0,1) != 3.0f) { return -5; }\n"
+        "        if (ffd.get2(1,0) != -4.0f || ffd.get2(1,1) != 2.0f) { return -6; }\n"
+        // mod: np.mod(-7,2)=1, np.mod(7.5,2)=1.5, np.mod(-7.5,2)=0.5, np.mod(8,3)=2
+        "        Tensor<float32> fm = Tensor.mod<float32>(fA, fB);\n"
+        "        if (fm.get2(0,0) != 1.0f || fm.get2(0,1) != 1.5f) { return -7; }\n"
+        "        if (fm.get2(1,0) != 0.5f || fm.get2(1,1) != 2.0f) { return -8; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
