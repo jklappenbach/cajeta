@@ -1,18 +1,263 @@
 package mcp;
 
 import cajeta.lang.String;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.codec.json.JsonReader;
+import cajeta.codec.json.JsonValue;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonWriter;
+import cajeta.codec.json.JsonParseException;
 
 /**
  * cajeta-mcp — an MCP (Model Context Protocol) server written in cajeta.
  *
  * Speaks JSON-RPC 2.0 over stdio (one JSON object per line) and implements its
- * tools by shelling out to the `cajeta` compiler via `cajeta.process`. Built
- * with the cajeta build tool: `cajeta build` → `build/cajeta-mcp`.
+ * tools by shelling out to the `cajeta` compiler via `cajeta.process` (later
+ * units). Built with the cajeta build tool: `cajeta build` -> `build/cajeta-mcp`.
  *
- * C1: skeleton — the stdio JSON-RPC loop + lifecycle land next.
+ * C1: the stdio JSON-RPC loop + lifecycle (initialize / tools.list / tools.call)
+ * with the five tools registered as stubs.
  */
 public class Server {
+
     public static int32 main(String[] args) {
+        FileReader in = heap FileReader(0);
+        FileWriter out = heap FileWriter(1);
+
+        // Pending-bytes buffer (grows on demand). Newline-delimited framing:
+        // accumulate reads, dispatch each complete line, shift the rest down.
+        int8[] buf = heap int8[65536];
+        int32 cap = 65536;
+        int32 buflen = 0;
+        int8[] chunk = heap int8[65536];
+
+        boolean running = true;
+        while (running) {
+            int32 nl = Server.findNewline(buf, buflen);
+            if (nl < 0) {
+                int32 n = in.read(chunk, 65536);
+                if (n <= 0) {
+                    running = false;
+                } else {
+                    if (buflen + n > cap) {
+                        int32 newCap = cap * 2;
+                        while (newCap < buflen + n) {
+                            newCap = newCap * 2;
+                        }
+                        int8[] grown = heap int8[newCap];
+                        int32 k = 0;
+                        while (k < buflen) {
+                            grown[k] = buf[k];
+                            k = k + 1;
+                        }
+                        buf = #grown;
+                        cap = newCap;
+                    }
+                    int32 i = 0;
+                    while (i < n) {
+                        buf[buflen + i] = chunk[i];
+                        i = i + 1;
+                    }
+                    buflen = buflen + n;
+                }
+            } else {
+                if (nl > 0) {
+                    Server.handleLine(buf, nl, out);
+                }
+                int32 rem = buflen - (nl + 1);
+                int32 s = 0;
+                while (s < rem) {
+                    buf[s] = buf[nl + 1 + s];
+                    s = s + 1;
+                }
+                buflen = rem;
+            }
+        }
         return 0;
+    }
+
+    /** Index of the first '\n' in `buf[0..len)`, or -1. */
+    public static int32 findNewline(int8[] buf, int32 len) {
+        int32 i = 0;
+        while (i < len) {
+            if (((int32) buf[i]) == 10) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /** Parse one JSON-RPC request (`bytes[0..len)`) and write its response. */
+    public static void handleLine(int8[] bytes, int32 len, FileWriter out) {
+        // Hand the reader a fresh, owned copy of the line — the persistent
+        // input `buf` must survive across requests.
+        int8[] lineCopy = heap int8[len];
+        int32 c = 0;
+        while (c < len) {
+            lineCopy[c] = bytes[c];
+            c = c + 1;
+        }
+        try {
+            JsonReader r = heap JsonReader(#lineCopy, (int64) len);
+            JsonValue req = r.readValue();
+            Server.dispatch(req, out);
+        } catch (JsonParseException e) {
+            Server.writeError(out, null, -32700, "Parse error");
+        }
+    }
+
+    /** Dispatch a parsed JSON-RPC request object to its method handler. */
+    public static void dispatch(JsonValue req, FileWriter out) {
+        if (req == null || req.kind() != JsonValue.OBJECT) {
+            Server.writeError(out, null, -32600, "Invalid Request");
+            return;
+        }
+        JsonObject obj = req.asObject();
+        JsonValue id = obj.get("id");
+        JsonValue methodV = obj.get("method");
+        if (methodV == null || methodV.kind() != JsonValue.STRING) {
+            Server.writeError(out, null, -32600, "Invalid Request");
+            return;
+        }
+        String method = methodV.asString();
+        if (method.equals("initialize")) {
+            Server.writeInitialize(out, id);
+        } else if (method.equals("notifications/initialized")
+                || method.equals("initialized")) {
+            // notification: no response
+        } else if (method.equals("tools/list")) {
+            Server.writeToolsList(out, id);
+        } else if (method.equals("tools/call")) {
+            Server.writeToolCall(out, obj, id);
+        } else {
+            if (id != null) {
+                Server.writeError(out, id, -32601, "Method not found");
+            }
+        }
+    }
+
+    /** Write `{"jsonrpc":"2.0","id":<id|null>` onto `w` (object left open). */
+    public static void writeHead(JsonWriter w, JsonValue id) {
+        w.beginObject();
+        w.key("jsonrpc");
+        w.writeString("2.0");
+        w.key("id");
+        if (id == null) {
+            w.writeNull();
+        } else {
+            w.writeValue(id);
+        }
+    }
+
+    public static void writeError(FileWriter out, JsonValue id, int32 code,
+                                  String message) {
+        JsonWriter w = heap JsonWriter();
+        Server.writeHead(w, id);
+        w.key("error");
+        w.beginObject();
+        w.key("code");
+        w.writeNumber((int64) code);
+        w.key("message");
+        w.writeString(message);
+        w.endObject();
+        w.endObject();
+        w.writeLineTo(out);
+    }
+
+    public static void writeInitialize(FileWriter out, JsonValue id) {
+        JsonWriter w = heap JsonWriter();
+        Server.writeHead(w, id);
+        w.key("result");
+        w.beginObject();
+        w.key("protocolVersion");
+        w.writeString("2024-11-05");
+        w.key("capabilities");
+        w.beginObject();
+        w.key("tools");
+        w.beginObject();
+        w.endObject();
+        w.endObject();
+        w.key("serverInfo");
+        w.beginObject();
+        w.key("name");
+        w.writeString("cajeta-mcp");
+        w.key("version");
+        w.writeString("0.1.0");
+        w.endObject();
+        w.endObject();
+        w.endObject();
+        w.writeLineTo(out);
+    }
+
+    /** One tool descriptor: {name, description, inputSchema:{type:object}}. */
+    public static void writeToolDesc(JsonWriter w, String name, String desc) {
+        w.beginObject();
+        w.key("name");
+        w.writeString(name);
+        w.key("description");
+        w.writeString(desc);
+        w.key("inputSchema");
+        w.beginObject();
+        w.key("type");
+        w.writeString("object");
+        w.endObject();
+        w.endObject();
+    }
+
+    public static void writeToolsList(FileWriter out, JsonValue id) {
+        JsonWriter w = heap JsonWriter();
+        Server.writeHead(w, id);
+        w.key("result");
+        w.beginObject();
+        w.key("tools");
+        w.beginArray();
+        Server.writeToolDesc(w, "searchSkills",
+            "Search skills by canonical name (fuzzy, typo-tolerant).");
+        Server.writeToolDesc(w, "listSkills",
+            "List the available skills catalog.");
+        Server.writeToolDesc(w, "getSkills",
+            "Fetch skill payloads by cja-skill:// URI.");
+        Server.writeToolDesc(w, "compile",
+            "Compile a cajeta source file-map; return diagnostics + artifact.");
+        Server.writeToolDesc(w, "jit_execute",
+            "Compile and JIT-execute a source file-map (process-per-execute).");
+        w.endArray();
+        w.endObject();
+        w.endObject();
+        w.writeLineTo(out);
+    }
+
+    public static void writeToolCall(FileWriter out, JsonObject req, JsonValue id) {
+        JsonValue params = req.get("params");
+        if (params == null || params.kind() != JsonValue.OBJECT) {
+            Server.writeError(out, id, -32602, "tools/call requires params");
+            return;
+        }
+        JsonValue nameV = params.asObject().get("name");
+        if (nameV == null || nameV.kind() != JsonValue.STRING) {
+            Server.writeError(out, id, -32602, "tools/call requires a name");
+            return;
+        }
+        // C1: every tool is a stub.
+        JsonWriter w = heap JsonWriter();
+        Server.writeHead(w, id);
+        w.key("result");
+        w.beginObject();
+        w.key("content");
+        w.beginArray();
+        w.beginObject();
+        w.key("type");
+        w.writeString("text");
+        w.key("text");
+        w.writeString("not implemented");
+        w.endObject();
+        w.endArray();
+        w.key("isError");
+        w.writeBoolean(true);
+        w.endObject();
+        w.endObject();
+        w.writeLineTo(out);
     }
 }
