@@ -4,13 +4,11 @@
 // / push-larger range stack) produces a non-decreasing permutation for
 // ascending / descending / dups / random / organ-pipe inputs.
 //
-// Sizes are kept JIT-safe (n=2000 balanced, n=128 organ-pipe): at -O0 the JIT
-// does NOT promote per-iteration loop-local allocas to registers, so a
-// comparator-heavy sort (O(n log n) / O(n^2) cmp calls) accumulates stack
-// allocas and overflows the native stack at large n. That is a SEPARATE O0
-// codegen issue (release -O3 sorts n=50000 of every pattern fine — see the
-// `sort-int64` benchmark, all variants check=true). Scale is verified there;
-// these tests verify CORRECTNESS.
+// Runs at n=50000 (the bench scale). The earlier O0 loop-local-alloca bug — the
+// JIT allocated per-iteration loop locals, so a comparator-heavy sort overflowed
+// the native stack at large n — is fixed (plan `o0-loop-alloca`: slots now live
+// in the entry block), so the full-scale sort runs under the JIT too. Organ-pipe
+// stays moderate (n=2000) because it is O(n^2) comparisons (slow, not unsafe).
 //
 
 #include "gtest/gtest.h"
@@ -38,22 +36,22 @@ const char* kProgram =
     "        return 0;\n"
     "    }\n"
     "    public static int32 ascending() {\n"
-    "        int32 n = 2000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
+    "        int32 n = 50000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
     "        while (i < n) { w[i] = (int64) i; sum = sum + (int64) i; i = i + 1; }\n"
     "        return check(w, n, sum);\n"
     "    }\n"
     "    public static int32 descending() {\n"
-    "        int32 n = 2000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
+    "        int32 n = 50000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
     "        while (i < n) { int64 v = (int64)(n - 1 - i); w[i] = v; sum = sum + v; i = i + 1; }\n"
     "        return check(w, n, sum);\n"
     "    }\n"
     "    public static int32 dups() {\n"
-    "        int32 n = 2000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
+    "        int32 n = 50000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
     "        while (i < n) { int64 v = (int64)(i % 100); w[i] = v; sum = sum + v; i = i + 1; }\n"
     "        return check(w, n, sum);\n"
     "    }\n"
     "    public static int32 random() {\n"
-    "        int32 n = 2000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
+    "        int32 n = 50000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
     "        int64 x = 88172645;\n"
     "        while (i < n) {\n"
     "            x = (x * 1103515245 + 12345) & 0x7FFFFFFF;\n"
@@ -62,9 +60,9 @@ const char* kProgram =
     "        return check(w, n, sum);\n"
     "    }\n"
     // Organ-pipe (0..peak..0): a maximally-imbalanced shape for a single-element
-    // pivot. Small n keeps the O(n^2) cmp count under the O0 stack-alloca limit.
+    // pivot. Moderate n because it is O(n^2) comparisons (slow, not unsafe).
     "    public static int32 organpipe() {\n"
-    "        int32 n = 128; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0; int32 half = n / 2;\n"
+    "        int32 n = 2000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0; int32 half = n / 2;\n"
     "        while (i < n) {\n"
     "            int64 v; if (i < half) { v = (int64) i; } else { v = (int64)(n - 1 - i); }\n"
     "            w[i] = v; sum = sum + v; i = i + 1;\n"

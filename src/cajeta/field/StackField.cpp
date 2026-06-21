@@ -36,10 +36,13 @@ namespace cajeta {
             // primitives AND @ValueType PODs live INLINE in the slot (the
             // value itself), loaded/stored whole. Reference types (classes,
             // arrays) keep a `ptr` slot holding the heap body pointer.
+            // The slot alloca goes in the function ENTRY block (not the current
+            // point): a local declared inside a loop body would otherwise
+            // re-allocate native stack every iteration -> overflow at -O0.
             if (type->hasValueSemantics()) {
-                alloca = module->getBuilder()->CreateAlloca(type->getLlvmType());
+                alloca = module->createEntryAlloca(type->getLlvmType());
             } else {
-                alloca = module->getBuilder()->CreateAlloca(
+                alloca = module->createEntryAlloca(
                     llvm::PointerType::get(*module->getLlvmContext(), 0));
             }
             if (initializer != nullptr) {

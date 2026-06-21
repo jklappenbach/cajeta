@@ -334,6 +334,15 @@ namespace cajeta {
             return this->builder;
         }
 
+        // Allocate a stack slot in the CURRENT function's ENTRY block, not at
+        // the builder's current insertion point. Local-variable slots must use
+        // this: an `alloca` emitted inside a loop body re-allocates native
+        // stack on every iteration at runtime (it is not reclaimed until the
+        // function returns), so a hot loop overflows the stack at -O0 (-O3
+        // hides it via mem2reg). Entry-block allocas execute once. Falls back
+        // to the current point only when there's no active function/block.
+        llvm::AllocaInst* createEntryAlloca(llvm::Type* ty, const std::string& name = "");
+
         CajetaTypePtr getInitializerType() const;
 
         void setInitializerType(CajetaTypePtr initializerType);
