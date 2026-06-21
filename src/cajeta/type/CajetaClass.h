@@ -909,9 +909,16 @@ namespace cajeta {
         // necessary when inference can't reach a binding from the
         // value args alone (e.g. `Optional.<int32>None()` has no value
         // args to infer T from).
+        // `activeModule` (default null) is the module whose codegen is in flight
+        // at the call site. When a method-template instantiation is brought to
+        // life during codegen, its IRBuilder insert-point save/restore must use
+        // the ACTIVE module's builder, not the instantiation's emit module (which
+        // can differ — and yield a freed insert block — when the template lives in
+        // a classpath .cja). resolveTypes-phase callers leave it null.
         MethodPtr resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
             bool isConstructor, bool floatingParams,
-            const vector<CajetaTypePtr>& explicitMethodTypeArgs = {});
+            const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
+            CajetaModulePtr activeModule = nullptr);
 
         // Named arguments — option C (positional prefix + named suffix). When a
         // call mixes positional and named args (`f(a, b, x: 1, y: 2)`), reorder
