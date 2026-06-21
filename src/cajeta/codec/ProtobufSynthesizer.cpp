@@ -32,6 +32,7 @@ namespace cajeta {
         BoolVarint,   // boolean — readVarint != 0
         StringLen,    // cajeta.lang.String — readBytes → String
         BytesLen,     // int8[] — readBytes directly
+        MessageLen,   // nested message (a class) — readBytes → recurse parse<Sub>
         Unsupported
     };
 
@@ -60,6 +61,11 @@ namespace cajeta {
                 || canon == "uint32" || canon == "uint64") {
             return Decode::IntVarint;
         }
+        // A non-String class field is a nested message — decode its LEN payload
+        // and recurse through the synthesizer (Protobuf.parse<Sub>). Primitives
+        // (already handled above) are not CajetaClass, so they don't reach here;
+        // float32/float64 fall through to Unsupported (deferred — IEEE-754 bits).
+        if (std::dynamic_pointer_cast<CajetaClass>(ty)) return Decode::MessageLen;
         return Decode::Unsupported;
     }
 
@@ -126,6 +132,18 @@ namespace cajeta {
                     os << "        e." << b.name << " = cur.readBytes("
                        << slot << ");\n";
                     break;
+                case Decode::MessageLen: {
+                    // Nested message: read the LEN payload, recurse through the
+                    // synthesizer. Same-class static call → short `Protobuf`
+                    // receiver (a fully-qualified static call NULL_OPERANDs).
+                    const std::string bv = "b_" + b.name;
+                    os << "        int8[] " << bv << " = cur.readBytes("
+                       << slot << ");\n";
+                    os << "        e." << b.name << " = Protobuf.parse<"
+                       << b.canon << ">(" << bv << ", (int64) " << bv
+                       << ".count());\n";
+                    break;
+                }
                 case Decode::Unsupported:
                     break;
             }
