@@ -8,6 +8,8 @@ import cajeta.codec.json.JsonValue;
 import cajeta.codec.json.JsonObject;
 import cajeta.codec.json.JsonWriter;
 import cajeta.codec.json.JsonParseException;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
 
 /**
  * cajeta-mcp — an MCP (Model Context Protocol) server written in cajeta.
@@ -21,7 +23,11 @@ import cajeta.codec.json.JsonParseException;
  */
 public class Server {
 
+    /** Path to the `cajeta` compiler the tools shell out to. */
+    public static String cajetaBin;
+
     public static int32 main(String[] args) {
+        Server.cajetaBin = Server.resolveCajetaBin(args);
         FileReader in = heap FileReader(0);
         FileWriter out = heap FileWriter(1);
 
@@ -229,18 +235,127 @@ public class Server {
         w.writeLineTo(out);
     }
 
+    /** Resolve the cajeta exe path from `--cajeta=PATH`, else "cajeta". */
+    public static #String resolveCajetaBin(String[] args) {
+        int32 i = 0;
+        while (i < args.count()) {
+            String a = args[i];
+            if (a.startsWith("--cajeta=")) {
+                return a.substring(9, (int32) a.count());
+            }
+            i = i + 1;
+        }
+        return "cajeta";
+    }
+
+    /** Run `cajeta <args[0..argc)>` with captured stdout/stderr. */
+    public static #ProcessResult runCajeta(String[] args, int32 argc) {
+        String[] argv = heap String[argc + 1];
+        String bin = Server.cajetaBin;
+        argv[0] = bin.substring(0, (int32) bin.count());
+        int32 i = 0;
+        while (i < argc) {
+            String a = args[i];
+            argv[i + 1] = a.substring(0, (int32) a.count());
+            i = i + 1;
+        }
+        Command cmd = heap Command(#argv);
+        cmd.captureStdout();
+        cmd.captureStderr();
+        return cmd.run();
+    }
+
+    /** Parse `bytes[0..len)` as JSON (owned copy for the reader); null on error. */
+    public static #JsonValue parseJsonCopy(int8[] bytes, int32 len) {
+        int8[] copy = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            copy[i] = bytes[i];
+            i = i + 1;
+        }
+        try {
+            JsonReader r = heap JsonReader(#copy, (int64) len);
+            return r.readValue();
+        } catch (JsonParseException e) {
+            return null;
+        }
+    }
+
+    /** Run a skill subcommand and wrap its parsed JSON array under `field`. */
+    public static void runSkill(FileWriter out, JsonValue id, String[] args,
+                                int32 argc, String field) {
+        ProcessResult r = Server.runCajeta(args, argc);
+        if (r.launched() == false) {
+            Server.writeError(out, id, -32603, "failed to launch cajeta");
+            return;
+        }
+        int8[] outBytes = r.stdout();
+        JsonValue arr = null;
+        if (outBytes != null && outBytes.count() > 0) {
+            arr = Server.parseJsonCopy(outBytes, (int32) outBytes.count());
+        }
+        JsonWriter w = heap JsonWriter();
+        Server.writeHead(w, id);
+        w.key("result");
+        w.beginObject();
+        w.key(field);
+        if (arr == null) {
+            w.beginArray();
+            w.endArray();
+        } else {
+            w.writeValue(arr);
+        }
+        w.endObject();
+        w.endObject();
+        w.writeLineTo(out);
+    }
+
     public static void writeToolCall(FileWriter out, JsonObject req, JsonValue id) {
         JsonValue params = req.get("params");
         if (params == null || params.kind() != JsonValue.OBJECT) {
             Server.writeError(out, id, -32602, "tools/call requires params");
             return;
         }
-        JsonValue nameV = params.asObject().get("name");
+        JsonObject p = params.asObject();
+        JsonValue nameV = p.get("name");
         if (nameV == null || nameV.kind() != JsonValue.STRING) {
             Server.writeError(out, id, -32602, "tools/call requires a name");
             return;
         }
-        // C1: every tool is a stub.
+        String name = nameV.asString();
+        JsonValue argsV = p.get("arguments");
+        JsonObject toolArgs = null;
+        if (argsV != null && argsV.kind() == JsonValue.OBJECT) {
+            toolArgs = argsV.asObject();
+        }
+
+        if (name.equals("searchSkills")) {
+            if (toolArgs == null || toolArgs.containsKey("name") == false) {
+                Server.writeError(out, id, -32602, "searchSkills requires 'name'");
+                return;
+            }
+            JsonValue nv = toolArgs.get("name");
+            if (nv == null || nv.kind() != JsonValue.STRING) {
+                Server.writeError(out, id, -32602, "searchSkills 'name' must be a string");
+                return;
+            }
+            String[] a = heap String[3];
+            a[0] = "search-skill";
+            a[1] = nv.asString();
+            a[2] = "--json";
+            Server.runSkill(out, id, a, 3, "results");
+        } else if (name.equals("listSkills")) {
+            String[] a = heap String[2];
+            a[0] = "list-skills";
+            a[1] = "--json";
+            Server.runSkill(out, id, a, 2, "skills");
+        } else {
+            // getSkills (C2 follow-up), compile (C3), jit_execute (C4): stub.
+            Server.writeStub(out, id);
+        }
+    }
+
+    public static void writeStub(FileWriter out, JsonValue id) {
         JsonWriter w = heap JsonWriter();
         Server.writeHead(w, id);
         w.key("result");
