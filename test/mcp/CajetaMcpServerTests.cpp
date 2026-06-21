@@ -79,6 +79,25 @@ std::vector<Json> drive(const std::string& requests) {
 
 } // namespace
 
+// Build a single `tools/call compile` request line for `files`+`entry`.
+std::string compileRequest(int id, const std::vector<std::pair<std::string, std::string>>& files,
+                           const std::string& entry, bool withEntry = true) {
+    Json args = Json::object();
+    Json fmap = Json::object();
+    for (auto& kv : files) fmap[kv.first] = Json(kv.second);
+    args["files"] = fmap;
+    if (withEntry) args["entry"] = Json(entry);
+    Json params = Json::object();
+    params["name"] = Json("compile");
+    params["arguments"] = args;
+    Json req = Json::object();
+    req["jsonrpc"] = Json("2.0");
+    req["id"] = Json(id);
+    req["method"] = Json("tools/call");
+    req["params"] = params;
+    return req.dump() + "\n";
+}
+
 // C1.1.1 / C1.1.2 / C1.1.3 — lifecycle handshake + error envelopes.
 TEST(CajetaMcpServerTests, lifecycleAndErrors) {
     if (!ensureServerBuilt()) return;
@@ -127,6 +146,59 @@ TEST(CajetaMcpServerTests, skillToolsValidationAndShape) {
     EXPECT_EQ(r[0].at("error").at("code").asInt(), -32602);   // missing name
     EXPECT_TRUE(r[1].at("result").at("results").isArray());   // well-formed shape
     EXPECT_EQ(r[2].at("error").at("code").asInt(), -32602);   // missing uris
+}
+
+// C3.1.1 — compile of a valid package ⇒ exitStatus 0, empty diagnostics, artifact present.
+TEST(CajetaMcpServerTests, compileValidProducesArtifact) {
+    if (!ensureServerBuilt()) return;
+    auto r = drive(compileRequest(1,
+        {{"demo/Hello.cajeta",
+          "package demo;\n"
+          "public final class Hello {\n"
+          "    public static int32 run() { return 0; }\n"
+          "}\n"}},
+        "demo.Hello.run"));
+    ASSERT_EQ(r.size(), 1u);
+    const Json& res = r[0].at("result");
+    EXPECT_EQ(res.at("exitStatus").asInt(), 0);
+    ASSERT_TRUE(res.at("diagnostics").isArray());
+    EXPECT_EQ(res.at("diagnostics").size(), 0u);
+    ASSERT_TRUE(res.has("artifact"));
+    EXPECT_FALSE(res.at("artifact").asString().empty());   // base64 .cja
+}
+
+// C3.1.2 — bad source ⇒ non-zero exitStatus + diagnostics, no artifact.
+TEST(CajetaMcpServerTests, compileBadSourceReturnsDiagnostics) {
+    if (!ensureServerBuilt()) return;
+    auto r = drive(compileRequest(1,
+        {{"demo/Bad.cajeta",
+          "package demo;\n"
+          "public final class Bad { this is not valid cajeta\n"}},
+        "demo.Bad.run"));
+    ASSERT_EQ(r.size(), 1u);
+    const Json& res = r[0].at("result");
+    EXPECT_NE(res.at("exitStatus").asInt(), 0);
+    ASSERT_TRUE(res.at("diagnostics").isArray());
+    EXPECT_GT(res.at("diagnostics").size(), 0u);
+    EXPECT_FALSE(res.has("artifact"));
+}
+
+// C3.1.3 — missing/empty files or entry ⇒ -32602.
+TEST(CajetaMcpServerTests, compileMissingParamsIsInvalid) {
+    if (!ensureServerBuilt()) return;
+    auto r = drive(
+        // no files at all
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"compile\",\"arguments\":{}}}\n"
+        // empty files map
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"compile\",\"arguments\":{\"files\":{},\"entry\":\"a.B.c\"}}}\n"
+        // files present but no entry
+        + compileRequest(3, {{"demo/Hello.cajeta", "package demo;\n"}}, "", false));
+    ASSERT_EQ(r.size(), 3u);
+    EXPECT_EQ(r[0].at("error").at("code").asInt(), -32602);   // missing files
+    EXPECT_EQ(r[1].at("error").at("code").asInt(), -32602);   // empty files
+    EXPECT_EQ(r[2].at("error").at("code").asInt(), -32602);   // missing entry
 }
 
 #endif // !_WIN32

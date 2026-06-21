@@ -1,8 +1,10 @@
 package mcp;
 
 import cajeta.lang.String;
+import cajeta.io.file.File;
 import cajeta.io.file.FileReader;
 import cajeta.io.file.FileWriter;
+import cajeta.codec.Base64;
 import cajeta.codec.json.JsonReader;
 import cajeta.codec.json.JsonValue;
 import cajeta.codec.json.JsonObject;
@@ -365,8 +367,10 @@ public class Server {
             a[1] = Server.joinUris(uv.asArray());
             a[2] = "--json";
             Server.runSkill(out, id, a, 3, "skills");
+        } else if (name.equals("compile")) {
+            Server.writeCompile(out, toolArgs, id);
         } else {
-            // compile (C3), jit_execute (C4): stub.
+            // jit_execute (C4): stub.
             Server.writeStub(out, id);
         }
     }
@@ -412,6 +416,353 @@ public class Server {
             i = i + 1;
         }
         return heap String(#buf, total);
+    }
+
+    // ---- C3: compile tool (filesystem ops shell out via cajeta.process) ----
+
+    /** Owned copy of `s` (cajeta has no String concat / copy primitive). */
+    public static #String dup(String s) {
+        return s.substring(0, s.byteLength);
+    }
+
+    /**
+     * Owned String from `b[start..end)`, null-terminated. Strings handed to
+     * the `File.*` path intrinsics must be NUL-terminated (the runtime does
+     * `strlen(path)`); only literals get that for free, so every path String
+     * we build carries an explicit terminator past its `byteLength`.
+     */
+    public static #String rangeToString(int8[] b, int32 start, int32 end) {
+        int32 len = end - start;
+        int8[] buf = heap int8[len + 1];
+        int32 i = 0;
+        while (i < len) {
+            buf[i] = b[start + i];
+            i = i + 1;
+        }
+        buf[len] = (int8) 0;
+        return heap String(#buf, len);
+    }
+
+    /** "a/b" (null-terminated). */
+    public static #String joinPath(String a, String b) {
+        int32 alen = a.byteLength;
+        int32 blen = b.byteLength;
+        int32 total = alen + 1 + blen;
+        int8[] buf = heap int8[total + 1];
+        int32 i = 0;
+        while (i < alen) {
+            buf[i] = a.bytes[i];
+            i = i + 1;
+        }
+        buf[alen] = (int8) 47;
+        int32 j = 0;
+        while (j < blen) {
+            buf[alen + 1 + j] = b.bytes[j];
+            j = j + 1;
+        }
+        buf[total] = (int8) 0;
+        return heap String(#buf, total);
+    }
+
+    /** "a"+"b" (null-terminated). */
+    public static #String concat(String a, String b) {
+        int32 alen = a.byteLength;
+        int32 blen = b.byteLength;
+        int32 total = alen + blen;
+        int8[] buf = heap int8[total + 1];
+        int32 i = 0;
+        while (i < alen) {
+            buf[i] = a.bytes[i];
+            i = i + 1;
+        }
+        int32 j = 0;
+        while (j < blen) {
+            buf[alen + j] = b.bytes[j];
+            j = j + 1;
+        }
+        buf[total] = (int8) 0;
+        return heap String(#buf, total);
+    }
+
+    /** One hex digit's value, or -1. */
+    public static int32 hexVal(int32 c) {
+        if (c >= 48 && c <= 57) {
+            return c - 48;
+        }
+        if (c >= 97 && c <= 102) {
+            return c - 87;
+        }
+        if (c >= 65 && c <= 70) {
+            return c - 55;
+        }
+        return -1;
+    }
+
+    /**
+     * Decode a JSON string body `raw[0..len)` (escapes kept verbatim by the
+     * cajeta reader) into its actual bytes. Handles \n \t \r \" \\ \/ \b \f
+     * and \uXXXX (BMP, UTF-8 encoded). Decoded length never exceeds `len`.
+     */
+    public static #String decodeJsonString(int8[] raw, int32 len) {
+        int8[] buf = heap int8[len + 1];
+        int32 o = 0;
+        int32 i = 0;
+        while (i < len) {
+            int32 c = ((int32) raw[i]) & 255;
+            if (c == 92 && i + 1 < len) {
+                int32 e = ((int32) raw[i + 1]) & 255;
+                if (e == 110) { buf[o] = (int8) 10; o = o + 1; i = i + 2; }
+                else if (e == 116) { buf[o] = (int8) 9; o = o + 1; i = i + 2; }
+                else if (e == 114) { buf[o] = (int8) 13; o = o + 1; i = i + 2; }
+                else if (e == 34) { buf[o] = (int8) 34; o = o + 1; i = i + 2; }
+                else if (e == 92) { buf[o] = (int8) 92; o = o + 1; i = i + 2; }
+                else if (e == 47) { buf[o] = (int8) 47; o = o + 1; i = i + 2; }
+                else if (e == 98) { buf[o] = (int8) 8; o = o + 1; i = i + 2; }
+                else if (e == 102) { buf[o] = (int8) 12; o = o + 1; i = i + 2; }
+                else if (e == 117 && i + 5 < len) {
+                    int32 h0 = Server.hexVal(((int32) raw[i + 2]) & 255);
+                    int32 h1 = Server.hexVal(((int32) raw[i + 3]) & 255);
+                    int32 h2 = Server.hexVal(((int32) raw[i + 4]) & 255);
+                    int32 h3 = Server.hexVal(((int32) raw[i + 5]) & 255);
+                    if (h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0) {
+                        buf[o] = raw[i]; o = o + 1; i = i + 1;
+                    } else {
+                        int32 cp = (h0 * 4096) + (h1 * 256) + (h2 * 16) + h3;
+                        if (cp < 128) {
+                            buf[o] = (int8) cp; o = o + 1;
+                        } else if (cp < 2048) {
+                            buf[o] = (int8) (192 + (cp / 64)); o = o + 1;
+                            buf[o] = (int8) (128 + (cp & 63)); o = o + 1;
+                        } else {
+                            buf[o] = (int8) (224 + (cp / 4096)); o = o + 1;
+                            buf[o] = (int8) (128 + ((cp / 64) & 63)); o = o + 1;
+                            buf[o] = (int8) (128 + (cp & 63)); o = o + 1;
+                        }
+                        i = i + 6;
+                    }
+                } else {
+                    buf[o] = raw[i]; o = o + 1; i = i + 1;
+                }
+            } else {
+                buf[o] = raw[i]; o = o + 1; i = i + 1;
+            }
+        }
+        buf[o] = (int8) 0;
+        return heap String(#buf, o);
+    }
+
+    /** Run argv[0..] (PATH-resolved) capturing stdout+stderr. */
+    public static #ProcessResult runArgv(#String[] argv) {
+        Command cmd = heap Command(#argv);
+        cmd.captureStdout();
+        cmd.captureStderr();
+        return cmd.run();
+    }
+
+    /** `mktemp -d` -> the new dir path, or null on failure. */
+    public static #String makeTempDir() {
+        String[] argv = heap String[2];
+        argv[0] = Server.dup("mktemp");
+        argv[1] = Server.dup("-d");
+        ProcessResult r = Server.runArgv(#argv);
+        if (r.launched() == false || r.exitCode() != 0) {
+            return null;
+        }
+        int8[] o = r.stdout();
+        if (o == null) {
+            return null;
+        }
+        int32 len = (int32) o.count();
+        while (len > 0 && ((int32) o[len - 1]) == 10) {
+            len = len - 1;
+        }
+        return Server.rangeToString(o, 0, len);
+    }
+
+    /** `mkdir -p <dir>` (best-effort). */
+    public static void mkdirp(String dir) {
+        String[] argv = heap String[3];
+        argv[0] = Server.dup("mkdir");
+        argv[1] = Server.dup("-p");
+        argv[2] = Server.dup(dir);
+        ProcessResult r = Server.runArgv(#argv);
+    }
+
+    /** `rm -rf <dir>` (best-effort cleanup). */
+    public static void rmrf(String dir) {
+        String[] argv = heap String[3];
+        argv[0] = Server.dup("rm");
+        argv[1] = Server.dup("-rf");
+        argv[2] = Server.dup(dir);
+        ProcessResult r = Server.runArgv(#argv);
+    }
+
+    /** Directory component of `path` (before the last '/'), or "." if none. */
+    public static #String parentDir(String path) {
+        int32 n = path.byteLength;
+        int32 slash = -1;
+        int32 i = 0;
+        while (i < n) {
+            if (((int32) path.bytes[i]) == 47) {
+                slash = i;
+            }
+            i = i + 1;
+        }
+        if (slash < 0) {
+            return Server.dup(".");
+        }
+        return Server.rangeToString(path.bytes, 0, slash);
+    }
+
+    /** `pkg.Class.method` -> `Class.cja` (artifact filename for --emit=cja). */
+    public static #String artifactName(String entry) {
+        int32 n = entry.byteLength;
+        int32 d1 = -1;
+        int32 d2 = -1;
+        int32 i = 0;
+        while (i < n) {
+            if (((int32) entry.bytes[i]) == 46) {
+                d2 = d1;
+                d1 = i;
+            }
+            i = i + 1;
+        }
+        int32 begin = 0;
+        int32 end = n;
+        if (d1 >= 0 && d2 < 0) {
+            end = d1;
+        } else if (d1 >= 0) {
+            begin = d2 + 1;
+            end = d1;
+        }
+        String simple = entry.substring(begin, end);
+        return Server.concat(simple, ".cja");
+    }
+
+    /** Write each non-empty line of `bytes` (split on '\n') as a JSON string. */
+    public static void writeLines(JsonWriter w, int8[] bytes) {
+        if (bytes == null) {
+            return;
+        }
+        int32 n = (int32) bytes.count();
+        int32 start = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (((int32) bytes[i]) == 10) {
+                if (i > start) {
+                    String line = Server.rangeToString(bytes, start, i);
+                    w.writeString(line);
+                }
+                start = i + 1;
+            }
+            i = i + 1;
+        }
+        if (n > start) {
+            String line = Server.rangeToString(bytes, start, n);
+            w.writeString(line);
+        }
+    }
+
+    /**
+     * compile: materialize a `files` map (path->content) under a temp source
+     * root, run `cajeta --emit=cja <entry> <srcRoot> <outDir>`, and return
+     * `{exitStatus, diagnostics:[stderr lines], artifact?}` (base64 .cja).
+     */
+    public static void writeCompile(FileWriter out, JsonObject toolArgs, JsonValue id) {
+        if (toolArgs == null) {
+            Server.writeError(out, id, -32602, "compile requires 'files'");
+            return;
+        }
+        JsonValue filesV = toolArgs.get("files");
+        if (filesV == null || filesV.kind() != JsonValue.OBJECT) {
+            Server.writeError(out, id, -32602, "compile requires a 'files' object");
+            return;
+        }
+        JsonObject files = filesV.asObject();
+        if (files.count() == 0) {
+            Server.writeError(out, id, -32602, "compile 'files' must be non-empty");
+            return;
+        }
+        JsonValue entryV = toolArgs.get("entry");
+        if (entryV == null || entryV.kind() != JsonValue.STRING) {
+            Server.writeError(out, id, -32602, "compile requires an 'entry' string");
+            return;
+        }
+        String entry = entryV.asString();
+
+        String tmpRoot = Server.makeTempDir();
+        if (tmpRoot == null) {
+            Server.writeError(out, id, -32603, "failed to create temp dir");
+            return;
+        }
+        String srcRoot = Server.joinPath(tmpRoot, "src");
+        String outDir = Server.joinPath(tmpRoot, "out");
+        Server.mkdirp(srcRoot);
+        Server.mkdirp(outDir);
+
+        int32 fn = files.count();
+        int32 fi = 0;
+        while (fi < fn) {
+            String rel = Server.decodeJsonString(files.keyAt(fi), files.keyLenAt(fi));
+            String full = Server.joinPath(srcRoot, rel);
+            String parent = Server.parentDir(full);
+            Server.mkdirp(parent);
+            JsonValue cv = files.valueAt(fi);
+            int8[] raw = cv.asBytes();
+            if (raw == null) {
+                int8[] empty = heap int8[0];
+                File.writeAllBytes(full, empty, 0);
+            } else {
+                String decoded = Server.decodeJsonString(raw, cv.asBytesLength());
+                // File.writeAllBytes' intrinsic lowering only loads alloca
+                // (local) args — a struct field passed directly (decoded.bytes
+                // / decoded.byteLength) reaches the runtime as a raw pointer,
+                // so copy both into locals first.
+                int8[] dbytes = decoded.bytes;
+                int32 dlen = decoded.byteLength;
+                File.writeAllBytes(full, dbytes, dlen);
+            }
+            fi = fi + 1;
+        }
+
+        String[] cargs = heap String[4];
+        cargs[0] = "--emit=cja";
+        cargs[1] = entry;
+        cargs[2] = srcRoot;
+        cargs[3] = outDir;
+        ProcessResult r = Server.runCajeta(cargs, 4);
+        if (r.launched() == false) {
+            Server.rmrf(tmpRoot);
+            Server.writeError(out, id, -32603, "failed to launch cajeta");
+            return;
+        }
+        int32 code = r.exitCode();
+
+        JsonWriter w = heap JsonWriter();
+        Server.writeHead(w, id);
+        w.key("result");
+        w.beginObject();
+        w.key("exitStatus");
+        w.writeNumber((int64) code);
+        w.key("diagnostics");
+        w.beginArray();
+        Server.writeLines(w, r.stderr());
+        w.endArray();
+        if (code == 0) {
+            String aname = Server.artifactName(entry);
+            String apath = Server.joinPath(outDir, aname);
+            int8[] cja = File.readAllBytes(apath);
+            if (cja != null) {
+                String b64 = Base64.encode(cja, cja.count());
+                w.key("artifact");
+                w.writeString(b64);
+            }
+        }
+        w.endObject();
+        w.endObject();
+        w.writeLineTo(out);
+
+        Server.rmrf(tmpRoot);
     }
 
     public static void writeStub(FileWriter out, JsonValue id) {
