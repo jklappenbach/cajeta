@@ -943,6 +943,145 @@ public class Tensor<T> {
         return this.makeView(this.offsetVal, ns, nst);
     }
 
+    // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
+
+    /**
+     * Read the element of `this` that broadcasts to result multi-index `idx` (length
+     * = `rshape.count()`, right-aligned). Axes `this` lacks, or where its extent is 1,
+     * contribute 0 offset (stride-0 broadcast). Reads **directly** from `this.store` —
+     * no intermediate `broadcastTo` view (which, dropped early, would free the shared
+     * `Storage`; see tensor-plan §8 borrowed-Storage UAF).
+     */
+    T readBroadcast(int64[] idx) {
+        int32 nd = (int32) idx.count();
+        int32 xnd = (int32) this.shapeDims.count();
+        int32 lead = nd - xnd;
+        int64 off = this.offsetVal;
+        int32 ax = lead;
+        while (ax < nd) {
+            int32 xax = ax - lead;
+            if (this.shapeDims[xax] != 1) {
+                off = off + idx[ax] * this.strideDims[xax];
+            }
+            ax = ax + 1;
+        }
+        return this.store.get(off);
+    }
+
+    /**
+     * Elementwise `a + b` with right-aligned broadcasting (numpy `+`), producing a
+     * fresh C-contiguous `Tensor<E>`. A **static method-type-param** op: the dtype `E`
+     * must be concrete at the call (`Tensor.add<float32>(a, b)`) so the `+` selects the
+     * correct typed operator — arithmetic on the bare class param `T` inside `Tensor<T>`
+     * stays symbolic and mis-emits integer ops. Operands are read directly (broadcast),
+     * never wrapped in droppable views (no early free of the inputs' `Storage`).
+     */
+    public static #Tensor<E> add<E>(Tensor<E> a, Tensor<E> b) {
+        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E va = a.readBroadcast(idx);
+            E vb = b.readBroadcast(idx);
+            E vc = va + vb;
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise `a - b` with broadcasting (numpy `-`). See {@link #add} on why the
+     *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
+    public static #Tensor<E> sub<E>(Tensor<E> a, Tensor<E> b) {
+        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E va = a.readBroadcast(idx);
+            E vb = b.readBroadcast(idx);
+            E vc = va - vb;
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise `a * b` with broadcasting (numpy `*`). See {@link #add} on why the
+     *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
+    public static #Tensor<E> mul<E>(Tensor<E> a, Tensor<E> b) {
+        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E va = a.readBroadcast(idx);
+            E vb = b.readBroadcast(idx);
+            E vc = va * vb;
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**
