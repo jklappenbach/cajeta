@@ -48,6 +48,27 @@ public class Qem {
             a*d, b*d, c*d, d*d);
     }
 
+    /**
+     * The fundamental error quadric of a triangle `(a, b, c)`: the quadric of
+     * the triangle's supporting plane, with the outward unit normal
+     * `n = normalize((b-a) × (c-a))` and offset `d = -n·a`. Summing the
+     * `faceQuadric`s of every triangle incident to a vertex gives that vertex's
+     * accumulated quadric (the Garland–Heckbert per-vertex error metric); the
+     * collapse cost of an edge is then `edgeCollapseCost` of its endpoints'
+     * accumulated quadrics. Degenerate (zero-area) triangles yield a NaN normal
+     * and should be filtered by the caller.
+     */
+    public static Matrix<float32,4,4> faceQuadric(Vector<float32,3> a,
+                                                  Vector<float32,3> b,
+                                                  Vector<float32,3> c) {
+        Vector<float32,3> e1 = b - a;
+        Vector<float32,3> e2 = c - a;
+        Vector<float32,3> nRaw = e1.cross(e2);
+        Vector<float32,3> n = nRaw.normalize();
+        float32 d = 0.0f - n.dot(a);
+        return Qem.planeQuadric(n, d);
+    }
+
     /** The quadric error at a point: `vᵀ Q v` with `v = (p.x, p.y, p.z, 1)`. */
     public static float32 error(Matrix<float32,4,4> q, Vector<float32,3> p) {
         Vector<float32,4> vh = stack Vector<float32,4>(p.x, p.y, p.z, 1.0f);

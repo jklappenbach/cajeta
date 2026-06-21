@@ -1,0 +1,113 @@
+package cajeta.gpu;
+
+import cajeta.math.Matrix;
+import cajeta.gpu.Qem;
+
+/**
+ * MeshSimplifier — the appearance-preserving Garland–Heckbert edge-collapse
+ * mesh simplifier (cajeta-gfx plan §2.a), built on {@link cajeta.gpu.Qem}.
+ * Promoted to `cajeta.gpu` because physics, canela, and gfx all consume one
+ * remeshing toolbox (spec §8.7).
+ *
+ * A mesh is an indexed triangle soup in the canonical vertex-buffer layout: a
+ * flat `float32[]` of vertex positions (x, y, z interleaved, three entries per
+ * vertex) and an `int32[]` of triangle corner indices (three per triangle).
+ * Flat primitive arrays are used because a `Vector[]` / `Matrix[]` cannot be
+ * allocated — `heap Vector[n]` default-constructs its elements and neither type
+ * has a nullary constructor (CAJETA_ERROR_VECTOR_CONSTRUCT / _MATRIX_CONSTRUCT).
+ * The simplifier proceeds in the classic two phases:
+ *
+ *  1. **Accumulate** a per-vertex error quadric — `accumulateQuadrics` sums the
+ *     {@link cajeta.gpu.Qem#faceQuadric} of every triangle incident to a vertex.
+ *     `Q[v]` measures the summed squared distance from a candidate position to
+ *     all planes meeting at `v`.
+ *  2. **Collapse** the cheapest edge repeatedly — the cost of collapsing edge
+ *     `(u, v)` is {@link cajeta.gpu.Qem#edgeCollapseCost} of `Q[u]` and `Q[v]`,
+ *     placing the new vertex at the error-minimizing position. (The iterative
+ *     collapse driver lands in the next §2.a slice; this slice is the
+ *     accumulation phase the cube/fan golden tests pin down.)
+ *
+ * **Quadric storage.** A quadric IS a `Matrix<float32,4,4>`, but a `Matrix[]`
+ * cannot be allocated — `heap Matrix[n]` default-constructs its elements and
+ * `Matrix` has no nullary constructor (CAJETA_ERROR_MATRIX_CONSTRUCT). So the
+ * per-vertex quadrics live in a flat, zero-initialized `float32[]` (16 entries
+ * per vertex, row-major); `vertexQuadric` reconstructs a `Matrix` on demand
+ * through the runtime-argument constructor (which, unlike a literal-only one,
+ * compiles fine). A pure static-utility class, like {@link cajeta.gpu.Qem}.
+ */
+public class MeshSimplifier {
+
+    /**
+     * Accumulate a Garland–Heckbert error quadric per vertex into a flat
+     * `float32[]` (16 row-major entries per vertex; entry `v*16 + r*4 + c` is
+     * row `r`, column `c` of vertex `v`'s quadric). For each triangle
+     * `(i0, i1, i2)` the triangle's `faceQuadric` is added to each corner's
+     * quadric. `positions` holds the vertex positions flat (x, y, z per vertex),
+     * `vertexCount` their number, and `indices` is a flat triangle list (length
+     * a multiple of 3). Read a vertex's quadric back with {@link #vertexQuadric}.
+     */
+    public static #float32[] accumulateQuadrics(float32[] positions,
+                                                int32[] indices,
+                                                int32 vertexCount) {
+        float32[] quadrics = heap float32[vertexCount * 16];
+        int32 triCount = (int32) (indices.count() / 3);
+        int32 t = 0;
+        while (t < triCount) {
+            int32 base = t * 3;
+            int32 i0 = indices[base];
+            int32 i1 = indices[base + 1];
+            int32 i2 = indices[base + 2];
+            int32 p0 = i0 * 3;
+            int32 p1 = i1 * 3;
+            int32 p2 = i2 * 3;
+            Vector<float32,3> a = stack Vector<float32,3>(positions[p0], positions[p0 + 1], positions[p0 + 2]);
+            Vector<float32,3> b = stack Vector<float32,3>(positions[p1], positions[p1 + 1], positions[p1 + 2]);
+            Vector<float32,3> c = stack Vector<float32,3>(positions[p2], positions[p2 + 1], positions[p2 + 2]);
+            Matrix<float32,4,4> fq = Qem.faceQuadric(a, b, c);
+            MeshSimplifier.addInto(quadrics, i0, fq);
+            MeshSimplifier.addInto(quadrics, i1, fq);
+            MeshSimplifier.addInto(quadrics, i2, fq);
+            t = t + 1;
+        }
+        return #quadrics;
+    }
+
+    /**
+     * Reconstruct vertex `v`'s accumulated quadric as a `Matrix<float32,4,4>`
+     * from the flat store produced by {@link #accumulateQuadrics}. Feed the
+     * result to {@link cajeta.gpu.Qem#error} / {@link cajeta.gpu.Qem#edgeCollapseCost}.
+     */
+    public static Matrix<float32,4,4> vertexQuadric(float32[] quadrics, int32 v) {
+        int32 b = v * 16;
+        return stack Matrix<float32,4,4>(
+            quadrics[b + 0],  quadrics[b + 1],  quadrics[b + 2],  quadrics[b + 3],
+            quadrics[b + 4],  quadrics[b + 5],  quadrics[b + 6],  quadrics[b + 7],
+            quadrics[b + 8],  quadrics[b + 9],  quadrics[b + 10], quadrics[b + 11],
+            quadrics[b + 12], quadrics[b + 13], quadrics[b + 14], quadrics[b + 15]);
+    }
+
+    /**
+     * Add the 16 components of face quadric `f` into vertex `v`'s slot of the
+     * flat store. Unrolled with constant matrix indices (`f[r][c]`), the form
+     * proven by `Qem.optimalPosition`; variable matrix indices are avoided.
+     */
+    private static void addInto(float32[] q, int32 v, Matrix<float32,4,4> f) {
+        int32 b = v * 16;
+        q[b + 0]  = q[b + 0]  + f[0][0];
+        q[b + 1]  = q[b + 1]  + f[0][1];
+        q[b + 2]  = q[b + 2]  + f[0][2];
+        q[b + 3]  = q[b + 3]  + f[0][3];
+        q[b + 4]  = q[b + 4]  + f[1][0];
+        q[b + 5]  = q[b + 5]  + f[1][1];
+        q[b + 6]  = q[b + 6]  + f[1][2];
+        q[b + 7]  = q[b + 7]  + f[1][3];
+        q[b + 8]  = q[b + 8]  + f[2][0];
+        q[b + 9]  = q[b + 9]  + f[2][1];
+        q[b + 10] = q[b + 10] + f[2][2];
+        q[b + 11] = q[b + 11] + f[2][3];
+        q[b + 12] = q[b + 12] + f[3][0];
+        q[b + 13] = q[b + 13] + f[3][1];
+        q[b + 14] = q[b + 14] + f[3][2];
+        q[b + 15] = q[b + 15] + f[3][3];
+    }
+}
