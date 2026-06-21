@@ -236,6 +236,53 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shp, strides);
     }
 
+    /**
+     * `num` evenly spaced samples over the **closed** interval `[start, stop]`
+     * (numpy `linspace`, endpoint=true): `step = (stop-start)/(num-1)`, the last
+     * sample is `stop` exactly. `num == 1` → `[start]`. Computed in `float64` then
+     * cast to `E`, so it is meaningful for numeric element types.
+     */
+    public static #Tensor<E> linspace<E>(E start, E stop, int64 num) {
+        Storage<E> st = heap Storage<E>(num);
+        if (num == 1) {
+            st.set(0, start);
+        } else {
+            float64 a = (float64) start;
+            float64 b = (float64) stop;
+            float64 step = (b - a) / (float64) (num - 1);
+            int64 i = 0;
+            while (i < num) {
+                float64 val = a + (float64) i * step;
+                E v = (E) val;
+                st.set(i, v);
+                i = i + 1;
+            }
+            st.set(num - 1, stop);   // endpoint exact (no rounding drift)
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = num;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /** `n` x `n` identity matrix — `1` on the main diagonal, `0` elsewhere
+     *  (numpy `eye(n)`). C-order. */
+    public static #Tensor<E> eye<E>(int64 n) {
+        int64[] shape = heap int64[2];
+        shape[0] = n;
+        shape[1] = n;
+        Storage<E> st = heap Storage<E>(n * n);   // calloc → off-diagonal already 0
+        E one = (E) 1;
+        int64 i = 0;
+        while (i < n) {
+            st.set(i * n + i, one);                // flat C-order index of [i][i]
+            i = i + 1;
+        }
+        int64[] strides = Tensor.contigStrides(shape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
     // ────────────────────────────── accessors ────────────────────────────────
 
     /** Number of dimensions. */
