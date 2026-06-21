@@ -814,3 +814,56 @@ TEST(NumpyOpsTests, reductionsAxisMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 4a — index/predicate reductions: argmin/argmax (C-order flat index, first on ties),
+// count_nonzero, any/all (numeric truthiness), and boolean-mask anyTrue/allTrue.
+TEST(NumpyOpsTests, argAnyAllCountMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 3, 1, 4, 1, 5, 9, 2, 6 };\n"
+        "        int64[] sa = heap int64[1]; sa[0] = 8;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, sa);\n"
+        "        if (Tensor.argmin<int32>(a) != 1) { return -1; }\n"          // first min(1) at idx 1
+        "        if (Tensor.argmax<int32>(a) != 5) { return -2; }\n"          // max(9) at idx 5
+        "        if (Tensor.countNonzero<int32>(a) != 8) { return -3; }\n"
+        "        if (!Tensor.any<int32>(a)) { return -4; }\n"
+        "        if (!Tensor.all<int32>(a)) { return -5; }\n"
+        "        int32[] dz = { 0, 3, 0, 2 };\n"
+        "        int64[] sz = heap int64[1]; sz[0] = 4;\n"
+        "        Tensor<int32> z = Tensor.of<int32>(dz, sz);\n"
+        "        if (Tensor.countNonzero<int32>(z) != 2) { return -6; }\n"
+        "        if (!Tensor.any<int32>(z)) { return -7; }\n"
+        "        if (Tensor.all<int32>(z)) { return -8; }\n"                  // has a zero
+        "        if (Tensor.argmin<int32>(z) != 0) { return -9; }\n"         // min(0) at idx 0
+        "        int32[] d0 = { 0, 0, 0 };\n"
+        "        int64[] s0 = heap int64[1]; s0[0] = 3;\n"
+        "        Tensor<int32> zero = Tensor.of<int32>(d0, s0);\n"
+        "        if (Tensor.any<int32>(zero)) { return -10; }\n"
+        "        if (Tensor.all<int32>(zero)) { return -11; }\n"
+        "        if (Tensor.countNonzero<int32>(zero) != 0) { return -12; }\n"
+        // 2-D argmin/argmax return the flattened C-order index
+        "        int32[] dm = { 5, 2, 8, 1 };\n"
+        "        int64[] sm = heap int64[2]; sm[0] = 2; sm[1] = 2;\n"
+        "        Tensor<int32> m = Tensor.of<int32>(dm, sm);\n"             // [[5,2],[8,1]]
+        "        if (Tensor.argmin<int32>(m) != 3) { return -13; }\n"        // 1 at flat idx 3
+        "        if (Tensor.argmax<int32>(m) != 2) { return -14; }\n"        // 8 at flat idx 2
+        // boolean masks
+        "        boolean[] bm1 = { true, false, true };\n"
+        "        int64[] sb1 = heap int64[1]; sb1[0] = 3;\n"
+        "        Tensor<boolean> m1 = Tensor.of<boolean>(bm1, sb1);\n"
+        "        if (!Tensor.anyTrue(m1)) { return -15; }\n"
+        "        if (Tensor.allTrue(m1)) { return -16; }\n"                  // has a false
+        "        boolean[] bm2 = { true, true, true };\n"
+        "        int64[] sb2 = heap int64[1]; sb2[0] = 3;\n"
+        "        Tensor<boolean> m2 = Tensor.of<boolean>(bm2, sb2);\n"
+        "        if (!Tensor.allTrue(m2)) { return -17; }\n"
+        "        boolean[] bm3 = { false, false };\n"
+        "        int64[] sb3 = heap int64[1]; sb3[0] = 2;\n"
+        "        Tensor<boolean> m3 = Tensor.of<boolean>(bm3, sb3);\n"
+        "        if (Tensor.anyTrue(m3)) { return -18; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

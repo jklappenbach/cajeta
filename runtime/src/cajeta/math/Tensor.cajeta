@@ -2342,6 +2342,147 @@ public class Tensor<T> {
         return heap Tensor<R>(#st, 0, outShape, outStrides);
     }
 
+    // Index/predicate reductions (Phase 4 unit 3) — full-array, scalar result. arg*
+    // return the C-order **flattened** index (numpy `a.argmin()`/`argmax()` with no
+    // axis); ties resolve to the first occurrence. `any`/`all`/`countNonzero` use the
+    // numeric nonzero test (`e != 0`, so NaN counts as truthy, matching numpy);
+    // `anyTrue`/`allTrue` reduce a boolean mask (the `(a > b).any()` case).
+
+    /** Flattened (C-order) index of the minimum element (numpy `a.argmin()`); first
+     *  occurrence on ties. Requires a non-empty tensor. */
+    public static int64 argmin<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E best = (E) 0;
+        int64 bestIdx = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (lin == 0) { best = e; bestIdx = 0; }
+            else { if (e < best) { best = e; bestIdx = lin; } }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return bestIdx;
+    }
+
+    /** Flattened (C-order) index of the maximum element (numpy `a.argmax()`); first
+     *  occurrence on ties. Requires a non-empty tensor. */
+    public static int64 argmax<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E best = (E) 0;
+        int64 bestIdx = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (lin == 0) { best = e; bestIdx = 0; }
+            else { if (e > best) { best = e; bestIdx = lin; } }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return bestIdx;
+    }
+
+    /** Count of nonzero elements (numpy `count_nonzero(a)`). */
+    public static int64 countNonzero<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E zero = (E) 0;
+        int64 cnt = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (e != zero) { cnt = cnt + 1; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return cnt;
+    }
+
+    /** `true` iff any element is nonzero (numpy `a.any()`). Empty → `false`. */
+    public static boolean any<E extends Numeric>(Tensor<E> t) {
+        return Tensor.countNonzero<E>(t) > 0;
+    }
+
+    /** `true` iff every element is nonzero (numpy `a.all()`). Empty → `true`. */
+    public static boolean all<E extends Numeric>(Tensor<E> t) {
+        return Tensor.countNonzero<E>(t) == Tensor.productOf(t.shapeDims);
+    }
+
+    /** `true` iff any element of a boolean mask is `true` (numpy `(a > b).any()`). */
+    public static boolean anyTrue(Tensor<boolean> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean e = t.readBroadcast(idx);
+            if (e) { return true; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return false;
+    }
+
+    /** `true` iff every element of a boolean mask is `true` (numpy `(a > b).all()`). */
+    public static boolean allTrue(Tensor<boolean> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean e = t.readBroadcast(idx);
+            if (!e) { return false; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return true;
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**
