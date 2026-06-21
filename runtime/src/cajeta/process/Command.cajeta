@@ -82,6 +82,21 @@ public class Command {
         this.timeoutMs = ms;
     }
 
+    /** Wire the child's stdin to a pipe (for streaming `spawn()`). */
+    public void pipeStdin() {
+        this.stdioFlags = this.stdioFlags | 8;
+    }
+
+    /** Wire the child's stdout to a pipe (for streaming `spawn()`). */
+    public void pipeStdout() {
+        this.stdioFlags = this.stdioFlags | 16;
+    }
+
+    /** Wire the child's stderr to a pipe (for streaming `spawn()`). */
+    public void pipeStderr() {
+        this.stdioFlags = this.stdioFlags | 32;
+    }
+
     /**
      * Spawn the child, perform the configured stdio, wait for exit, and
      * return the result. Intrinsic-lowered to `__cajeta_proc_run`
@@ -90,5 +105,15 @@ public class Command {
      */
     public #ProcessResult run() {
         return heap ProcessResult();
+    }
+
+    /**
+     * Spawn the child without waiting and return a `Process` handle exposing
+     * its piped stdio plus wait/kill/pid. (Named `start()` rather than
+     * `spawn()` because `spawn` is a reserved fiber keyword.) Intrinsic-lowered
+     * to `__cajeta_proc_spawn`; this stub body exists only for the parser.
+     */
+    public #Process start() {
+        return heap Process();
     }
 }

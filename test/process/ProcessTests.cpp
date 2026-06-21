@@ -13,9 +13,12 @@
 #include "../jit/JitTestHelper.h"
 #include "cajeta/buildtool/Subprocess.h"
 
+#include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <unistd.h>
 
 using cajeta_test::CajetaJit;
 
@@ -28,6 +31,9 @@ std::string wrap(const std::string& body) {
         "package test;\n"
         "import cajeta.process.Command;\n"
         "import cajeta.process.ProcessResult;\n"
+        "import cajeta.process.Process;\n"
+        "import cajeta.io.file.FileReader;\n"
+        "import cajeta.io.file.FileWriter;\n"
         "import cajeta.lang.String;\n"
         "public class P {\n"
         "    public static int32 entry() {\n"
@@ -214,6 +220,91 @@ TEST(ProcessTests, hostParityExitCode) {
     SubprocessOptions optF; optF.argv = {"/bin/false"};
     EXPECT_EQ(runEntry(wrap(kTrueBody)),  runSubprocess(optT).code());
     EXPECT_EQ(runEntry(wrap(kFalseBody)), runSubprocess(optF).code());
+}
+
+// ---- U2: streaming spawn() + Process handle ----------------------------
+
+// 2.1.1 — spawn /bin/cat piped, write stdin, read echoed stdout, waitFor.
+TEST(ProcessTests, spawnWriteReadWait) {
+    std::string body =
+        "        String[] argv = heap String[1];\n"
+        "        argv[0] = \"/bin/cat\";\n"
+        "        Command cmd = heap Command(#argv);\n"
+        "        cmd.pipeStdin();\n"
+        "        cmd.pipeStdout();\n"
+        "        Process p = cmd.start();\n"
+        "        if (p.launched() == false) { return 100; }\n"
+        "        FileWriter w = p.stdin();\n"
+        "        w.writeString(\"ping\\n\");\n"
+        "        w.close();\n"
+        "        FileReader rd = p.stdout();\n"
+        "        String s = rd.readString(64);\n"
+        "        ProcessResult res = p.waitFor();\n"
+        "        p.close();\n"
+        "        if (res.code() != 0) { return 1; }\n"
+        "        if (s.count() != 5) { return 2; }\n"
+        "        if ((int32) s.charAt(0) != 112) { return 3; }\n"   // 'p'
+        "        if ((int32) s.charAt(4) != 10) { return 4; }\n"    // '\n'
+        "        return 0;\n";
+    EXPECT_EQ(runEntry(wrap(body)), 0);
+}
+
+// 2.1.2 — wait with timeout reports timedOut (no kill); explicit kill then
+// waitFor reports signaled.
+TEST(ProcessTests, waitTimeoutThenKill) {
+    std::string body =
+        "        String[] argv = heap String[2];\n"
+        "        argv[0] = \"/bin/sleep\";\n"
+        "        argv[1] = \"30\";\n"
+        "        Command cmd = heap Command(#argv);\n"
+        "        Process p = cmd.start();\n"
+        "        if (p.launched() == false) { return 100; }\n"
+        "        ProcessResult t = p.waitMillis(50);\n"
+        "        if (t.timedOut() == false) { return 1; }\n"
+        "        if (t.exited() != false) { return 2; }\n"
+        "        p.kill();\n"
+        "        ProcessResult r = p.waitFor();\n"
+        "        p.close();\n"
+        "        if (r.signaled() == false) { return 3; }\n"
+        "        return 0;\n";
+    EXPECT_EQ(runEntry(wrap(body)), 0);
+}
+
+// 2.1.3 — pid() is positive for a live child.
+TEST(ProcessTests, pidIsPositiveWhileLive) {
+    std::string body =
+        "        String[] argv = heap String[2];\n"
+        "        argv[0] = \"/bin/sleep\";\n"
+        "        argv[1] = \"5\";\n"
+        "        Command cmd = heap Command(#argv);\n"
+        "        Process p = cmd.start();\n"
+        "        if (p.launched() == false) { return 100; }\n"
+        "        int32 id = p.pid();\n"
+        "        p.kill();\n"
+        "        p.close();\n"
+        "        if (id <= 0) { return 1; }\n"
+        "        return 0;\n";
+    EXPECT_EQ(runEntry(wrap(body)), 0);
+}
+
+// 2.1.4 — close() reaps a still-running child (no zombie): the returned pid is
+// gone afterwards.
+TEST(ProcessTests, closeReapsChild) {
+    std::string body =
+        "        String[] argv = heap String[2];\n"
+        "        argv[0] = \"/bin/sleep\";\n"
+        "        argv[1] = \"30\";\n"
+        "        Command cmd = heap Command(#argv);\n"
+        "        Process p = cmd.start();\n"
+        "        if (p.launched() == false) { return -100; }\n"
+        "        int32 id = p.pid();\n"
+        "        p.close();\n"
+        "        return id;\n";
+    int32_t pid = runEntry(wrap(body));
+    ASSERT_GT(pid, 0);
+    // close() did a blocking reap, so the pid must no longer exist.
+    EXPECT_EQ(::kill((pid_t) pid, 0), -1);
+    EXPECT_EQ(errno, ESRCH);
 }
 
 #endif // !_WIN32

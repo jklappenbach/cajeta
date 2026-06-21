@@ -1,0 +1,109 @@
+package cajeta.process;
+
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+
+/**
+ * A spawned, still-running child (`cajeta.process.Command.spawn()`).
+ *
+ * Wired pipe streams are exposed as `File`-backed handles: write requests to
+ * `stdin()`, read responses from `stdout()`/`stderr()` incrementally while the
+ * child runs, then `waitFor()` (or `waitMillis()`) for the result.
+ *
+ * There is no auto-close-on-drop destructor in cajeta yet (same limitation as
+ * `FileReader`/`FileWriter`): call `close()` (or a blocking `waitFor()`) to
+ * reap the child. `close()` kills a still-running child before reaping, so it
+ * never leaks a zombie.
+ *
+ * Field order is the ABI the spawn/wait/kill/pid/close intrinsic lowering reads
+ * (`MethodCallExpression.cpp`): handleVal@1, stdinFd@2, stdoutFd@3, stderrFd@4.
+ *
+ * ```cajeta
+ * Command cmd = heap Command(#argv);
+ * cmd.pipeStdin();
+ * cmd.pipeStdout();
+ * Process p = cmd.start();
+ * FileWriter w = p.stdin();
+ * w.writeString("ping\n");
+ * w.close();
+ * FileReader r = p.stdout();
+ * String line = r.readString(64);
+ * ProcessResult res = p.waitFor();
+ * p.close();
+ * ```
+ */
+public class Process {
+    // Opaque C handle (cj_proc_handle*) stored as an int64; 0 once closed or
+    // when the spawn failed.
+    public int64 handleVal;
+    public int32 stdinFd;
+    public int32 stdoutFd;
+    public int32 stderrFd;
+
+    /**
+     * Default-construct an unspawned handle. The spawn bridge bypasses this
+     * ctor (it writes fields directly), but `spawn()`'s parser-only stub body
+     * constructs one, so it must exist and type-check.
+     */
+    public Process() {
+        this.handleVal = 0;
+        this.stdinFd = -1;
+        this.stdoutFd = -1;
+        this.stderrFd = -1;
+    }
+
+    /** Whether the child was successfully started. */
+    public boolean launched() {
+        return this.handleVal != 0;
+    }
+
+    /** A writer over the child's stdin pipe (when stdin was piped). */
+    public #FileWriter stdin() {
+        return heap FileWriter(this.stdinFd);
+    }
+
+    /** A reader over the child's stdout pipe (when stdout was piped). */
+    public #FileReader stdout() {
+        return heap FileReader(this.stdoutFd);
+    }
+
+    /** A reader over the child's stderr pipe (when stderr was piped). */
+    public #FileReader stderr() {
+        return heap FileReader(this.stderrFd);
+    }
+
+    /**
+     * Block until the child exits and return its result. Intrinsic-lowered to
+     * `__cajeta_proc_wait`; this stub body exists only for the parser.
+     */
+    public #ProcessResult waitFor() {
+        return heap ProcessResult();
+    }
+
+    /**
+     * Wait up to `ms` milliseconds. If the child is still running at the
+     * deadline the returned result has `timedOut() == true` and the child is
+     * left running (call `kill()` to terminate it). Intrinsic-lowered.
+     */
+    public #ProcessResult waitMillis(int64 ms) {
+        return heap ProcessResult();
+    }
+
+    /** Terminate the child (SIGKILL). Intrinsic-lowered. */
+    public void kill() {
+        return;
+    }
+
+    /** The child's process id, or -1. Intrinsic-lowered. */
+    public int32 pid() {
+        return -1;
+    }
+
+    /**
+     * Reap the child (killing it first if still running) and release the
+     * handle. Idempotent. Intrinsic-lowered to `__cajeta_proc_release`.
+     */
+    public void close() {
+        return;
+    }
+}

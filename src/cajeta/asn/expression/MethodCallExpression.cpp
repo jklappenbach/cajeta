@@ -5710,6 +5710,184 @@ namespace cajeta {
             }
         }
 
+        // ----- cajeta.process streaming: Command.spawn() + Process.* (U2) -----
+        //
+        // spawn() mirrors run(): the C bridge builds the Process object (handle
+        // as int64 + the three pipe fds). Process.waitFor()/waitMillis() build a
+        // ProcessResult; kill()/pid()/close() operate on the handle. The pipe
+        // accessors (stdin/stdout/stderr) are plain cajeta (heap FileReader/
+        // FileWriter over the stored fds), so they are NOT intercepted here.
+        if (thisValue && targetClass && targetClass->getQName()) {
+            const std::string pc = targetClass->getQName()->toCanonical();
+            const bool isCmd2  = pc == "cajeta.process.Command";
+            const bool isProc2 = pc == "cajeta.process.Process";
+            const bool wantSpawn = isCmd2 && methodCallName == "start"
+                                   && parameters.empty();
+            const bool wantWaitFor = isProc2 && methodCallName == "waitFor"
+                                     && parameters.empty();
+            const bool wantWaitMs = isProc2 && methodCallName == "waitMillis"
+                                    && parameters.size() == 1;
+            const bool wantKill = isProc2 && methodCallName == "kill"
+                                  && parameters.empty();
+            const bool wantPid = isProc2 && methodCallName == "pid"
+                                 && parameters.empty();
+            const bool wantClose = isProc2 && methodCallName == "close"
+                                   && parameters.empty();
+            if (wantSpawn || wantWaitFor || wantWaitMs || wantKill || wantPid
+                    || wantClose) {
+                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                auto i64c = [&](uint64_t v) {
+                    return llvm::ConstantInt::get(i64Ty, v);
+                };
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto findClass = [&](const char* canon,
+                                     const char* shortName) -> CajetaClassPtr {
+                    auto it = cmap.find(canon);
+                    if (it == cmap.end()) it = cmap.find(shortName);
+                    return it != cmap.end()
+                        ? std::dynamic_pointer_cast<CajetaClass>(it->second)
+                        : nullptr;
+                };
+                CajetaClassPtr strClass = findClass("cajeta.lang.String", "String");
+                CajetaClassPtr prClass =
+                    findClass("cajeta.process.ProcessResult", "ProcessResult");
+                CajetaClassPtr procClass =
+                    findClass("cajeta.process.Process", "Process");
+                auto* strStructTy = strClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(strClass->getLlvmType())
+                    : nullptr;
+                auto* prStructTy = prClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(prClass->getLlvmType())
+                    : nullptr;
+                auto* procStructTy = procClass
+                    ? llvm::dyn_cast_or_null<llvm::StructType>(procClass->getLlvmType())
+                    : nullptr;
+                auto* recvStructTy =
+                    llvm::dyn_cast<llvm::StructType>(targetClass->getLlvmType());
+                const llvm::DataLayout& dl =
+                    module->getLlvmModule()->getDataLayout();
+
+                // ProcessResult layout args (shared by waitFor/waitMillis).
+                auto prLayoutArgs = [&](std::vector<llvm::Value*>& args) {
+                    const llvm::StructLayout* pSl = dl.getStructLayout(prStructTy);
+                    llvm::Constant* prVtable = llvm::ConstantPointerNull::get(
+                        llvm::cast<llvm::PointerType>(ptrTy));
+                    if (auto* vt = prClass->getVirtualTableGlobal())
+                        prVtable = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), vt);
+                    args.push_back(prVtable);
+                    args.push_back(i64c(dl.getTypeAllocSize(prStructTy)));
+                    for (unsigned i = 1; i <= 8; i++)
+                        args.push_back(i64c(pSl->getElementOffset(i)));
+                };
+
+                if (wantSpawn && recvStructTy && strStructTy && procStructTy) {
+                    llvm::Function* fn =
+                        module->getRuntimeFunction("__cajeta_proc_spawn");
+                    if (fn) {
+                        auto loadPtr = [&](unsigned idx, const char* n) {
+                            return builder->CreateLoad(ptrTy,
+                                builder->CreateStructGEP(recvStructTy, thisValue,
+                                    idx, n), n);
+                        };
+                        llvm::Value* argvArr = loadPtr(1, "cmd.argv");
+                        llvm::Value* cwdStr  = loadPtr(2, "cmd.cwd");
+                        llvm::Value* envArr  = loadPtr(3, "cmd.env");
+                        llvm::Value* flags = builder->CreateLoad(i32Ty,
+                            builder->CreateStructGEP(recvStructTy, thisValue, 6,
+                                "cmd.flags.slot"), "cmd.flags");
+                        const llvm::StructLayout* sSl =
+                            dl.getStructLayout(strStructTy);
+                        const llvm::StructLayout* pcSl =
+                            dl.getStructLayout(procStructTy);
+                        llvm::Constant* procVtable =
+                            llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(ptrTy));
+                        if (auto* vt = procClass->getVirtualTableGlobal())
+                            procVtable = CajetaModule::ensureGlobalInModule(
+                                module->getLlvmModule(), vt);
+                        llvm::Value* result = builder->CreateCall(fn, {
+                            argvArr, cwdStr, envArr, flags,
+                            i64c(dl.getTypeAllocSize(strStructTy)),
+                            i64c(sSl->getElementOffset(1)),
+                            i64c(sSl->getElementOffset(2)),
+                            procVtable, i64c(dl.getTypeAllocSize(procStructTy)),
+                            i64c(pcSl->getElementOffset(1)),   // handleVal
+                            i64c(pcSl->getElementOffset(2)),   // stdinFd
+                            i64c(pcSl->getElementOffset(3)),   // stdoutFd
+                            i64c(pcSl->getElementOffset(4))    // stderrFd
+                        }, "cmd.spawn");
+                        resolvedType = procClass;
+                        return result;
+                    }
+                }
+
+                // Process.* — load the int64 handle from field 1.
+                if (isProc2 && recvStructTy) {
+                    auto loadHandle = [&]() {
+                        return builder->CreateLoad(i64Ty,
+                            builder->CreateStructGEP(recvStructTy, thisValue, 1,
+                                "proc.handle.slot"), "proc.handle");
+                    };
+                    if ((wantWaitFor || wantWaitMs) && prStructTy) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_proc_wait");
+                        if (fn) {
+                            llvm::Value* handle = loadHandle();
+                            llvm::Value* ms = i64c((uint64_t) -1);
+                            if (wantWaitMs) {
+                                ms = parameters[0].expression->generateCode(module);
+                                if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(ms))
+                                    ms = builder->CreateLoad(a->getAllocatedType(), a);
+                                if (ms && ms->getType() != i64Ty
+                                        && ms->getType()->isIntegerTy())
+                                    ms = builder->CreateIntCast(ms, i64Ty, true);
+                            }
+                            std::vector<llvm::Value*> args{handle, ms};
+                            prLayoutArgs(args);
+                            llvm::Value* result =
+                                builder->CreateCall(fn, args, "proc.wait");
+                            resolvedType = prClass;
+                            return result;
+                        }
+                    }
+                    if (wantKill) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_proc_kill");
+                        if (fn) {
+                            builder->CreateCall(fn, {loadHandle()});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (wantPid) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_proc_pid");
+                        if (fn) {
+                            resolvedType = CajetaType::of("int32");
+                            return builder->CreateCall(fn, {loadHandle()},
+                                "proc.pid");
+                        }
+                    }
+                    if (wantClose) {
+                        llvm::Function* fn =
+                            module->getRuntimeFunction("__cajeta_proc_release");
+                        if (fn) {
+                            builder->CreateCall(fn, {loadHandle()});
+                            // Zero the handle so a second close() is a no-op.
+                            builder->CreateStore(i64c(0),
+                                builder->CreateStructGEP(recvStructTy, thisValue,
+                                    1, "proc.handle.clear"));
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                }
+            }
+        }
+
         // ----- TcpStream / TcpListener instance-method intrinsic (NET-1.3 / NET-1.4 / b1) -----
         //
         // Mirrors the File instance lowering above: the cajeta-side bodies are

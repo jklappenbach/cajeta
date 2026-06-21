@@ -7898,6 +7898,203 @@ fail:
     return CJ_FAILRES();
 #undef CJ_FAILRES
 }
+
+// ---- Streaming spawn (cajeta-process U2) --------------------------------
+// A long-lived child whose stdin/stdout/stderr can be wired to live pipes the
+// program reads/writes incrementally, plus wait / wait-with-timeout / kill /
+// pid. There is no auto-close-on-drop destructor in cajeta yet (same as
+// FileReader/FileWriter), so reaping is via an explicit close() (or a blocking
+// wait()) — close() kill()s a still-running child then reaps it (no zombie).
+// v1 wait() blocks the carrier thread; fiber-yielding is a follow-up (spec §6).
+
+#define CJ_PROC_PIPE_STDIN  8
+#define CJ_PROC_PIPE_STDOUT 16
+#define CJ_PROC_PIPE_STDERR 32
+
+typedef struct {
+    pid_t pid;
+    int stdin_fd;    // parent's write end, or -1
+    int stdout_fd;   // parent's read end, or -1
+    int stderr_fd;   // parent's read end, or -1
+    int reaped;      // 1 once waitpid has collected it
+    int status;      // cached wait status once reaped
+} cj_proc_handle;
+
+// Spawn and BUILD the cajeta Process object (handle as int64, plus the three
+// parent-side pipe fds). On launch failure: handle field 0, fds -1.
+void* __cajeta_proc_spawn(
+        void* argv_arr, void* cwd_str, void* env_arr,
+        int32_t stdio_flags,
+        int64_t str_size, int64_t str_off_bytes, int64_t str_off_len,
+        void* proc_vtable, int64_t proc_size,
+        int64_t off_handle, int64_t off_stdin_fd,
+        int64_t off_stdout_fd, int64_t off_stderr_fd) {
+    int pipe_in  = (stdio_flags & CJ_PROC_PIPE_STDIN)  != 0;
+    int pipe_out = (stdio_flags & CJ_PROC_PIPE_STDOUT) != 0;
+    int pipe_err = (stdio_flags & CJ_PROC_PIPE_STDERR) != 0;
+
+    int64_t argc = 0;
+    char** cargv = cj_proc_strarr_dup(argv_arr, str_size,
+                                      str_off_bytes, str_off_len, &argc);
+    char* cwd_dup = cwd_str
+        ? cj_proc_str_dup(cwd_str, str_off_bytes, str_off_len) : NULL;
+    int64_t envc = 0;
+    char** cenv_built = cj_proc_strarr_dup(env_arr, str_size,
+                                           str_off_bytes, str_off_len, &envc);
+    char** cenv = cenv_built ? cenv_built : environ;
+
+    int in_pipe[2]  = {-1, -1};
+    int out_pipe[2] = {-1, -1};
+    int err_pipe[2] = {-1, -1};
+    int ok = (cargv && argc > 0);
+    if (ok && pipe_in  && pipe(in_pipe)  != 0) ok = 0;
+    if (ok && pipe_out && pipe(out_pipe) != 0) ok = 0;
+    if (ok && pipe_err && pipe(err_pipe) != 0) ok = 0;
+
+    pid_t pid = -1;
+    int spawned = 0;
+    if (ok) {
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        if (pipe_in) {
+            posix_spawn_file_actions_adddup2(&fa, in_pipe[0], 0);
+            posix_spawn_file_actions_addclose(&fa, in_pipe[0]);
+            posix_spawn_file_actions_addclose(&fa, in_pipe[1]);
+        }
+        if (pipe_out) {
+            posix_spawn_file_actions_adddup2(&fa, out_pipe[1], 1);
+            posix_spawn_file_actions_addclose(&fa, out_pipe[0]);
+            posix_spawn_file_actions_addclose(&fa, out_pipe[1]);
+        }
+        if (pipe_err) {
+            posix_spawn_file_actions_adddup2(&fa, err_pipe[1], 2);
+            posix_spawn_file_actions_addclose(&fa, err_pipe[0]);
+            posix_spawn_file_actions_addclose(&fa, err_pipe[1]);
+        }
+        int cwd_ok = 1;
+        if (cwd_dup) {
+#if defined(__linux__)
+            cwd_ok = (posix_spawn_file_actions_addchdir_np(&fa, cwd_dup) == 0);
+#else
+            cwd_ok = 0;
+#endif
+        }
+        if (cwd_ok) {
+            spawned = (posix_spawnp(&pid, cargv[0], &fa, NULL, cargv, cenv) == 0);
+        }
+        posix_spawn_file_actions_destroy(&fa);
+    }
+
+    // Close the child ends in the parent regardless of outcome.
+    if (in_pipe[0]  >= 0) close(in_pipe[0]);
+    if (out_pipe[1] >= 0) close(out_pipe[1]);
+    if (err_pipe[1] >= 0) close(err_pipe[1]);
+
+    cj_proc_handle* h = NULL;
+    if (spawned) {
+        h = (cj_proc_handle*) malloc(sizeof(cj_proc_handle));
+        if (h) {
+            h->pid = pid;
+            h->stdin_fd  = pipe_in  ? in_pipe[1]  : -1;
+            h->stdout_fd = pipe_out ? out_pipe[0] : -1;
+            h->stderr_fd = pipe_err ? err_pipe[0] : -1;
+            h->reaped = 0;
+            h->status = 0;
+        }
+    }
+    if (!h) {
+        // Launch failed (or OOM): close any parent ends we opened.
+        if (in_pipe[1]  >= 0) close(in_pipe[1]);
+        if (out_pipe[0] >= 0) close(out_pipe[0]);
+        if (err_pipe[0] >= 0) close(err_pipe[0]);
+    }
+
+    cj_proc_strarr_free(cargv);
+    cj_proc_strarr_free(cenv_built);
+    free(cwd_dup);
+
+    void* p = __cajeta_alloc((uint64_t) proc_size);
+    *(void**)   ((char*) p)                 = proc_vtable;
+    *(int64_t*) ((char*) p + off_handle)    = (int64_t) (intptr_t) h;  // 0 on failure
+    *(int32_t*) ((char*) p + off_stdin_fd)  = h ? h->stdin_fd  : -1;
+    *(int32_t*) ((char*) p + off_stdout_fd) = h ? h->stdout_fd : -1;
+    *(int32_t*) ((char*) p + off_stderr_fd) = h ? h->stderr_fd : -1;
+    return p;
+}
+
+int32_t __cajeta_proc_pid(int64_t handle_i) {
+    cj_proc_handle* h = (cj_proc_handle*) (intptr_t) handle_i;
+    return h ? (int32_t) h->pid : -1;
+}
+
+void __cajeta_proc_kill(int64_t handle_i) {
+    cj_proc_handle* h = (cj_proc_handle*) (intptr_t) handle_i;
+    if (h && !h->reaped) kill(h->pid, SIGKILL);
+}
+
+// Wait (timeout_ms <= 0 blocks until exit and reaps; > 0 polls up to the
+// deadline and, on timeout, returns timedOut WITHOUT killing — the caller
+// decides whether to kill()). Builds + returns a ProcessResult (no captures;
+// streaming output is read through the pipe handles).
+void* __cajeta_proc_wait(
+        int64_t handle_i, int64_t timeout_ms,
+        void* result_vtable, int64_t res_size,
+        int64_t off_launched, int64_t off_exited, int64_t off_exitcode,
+        int64_t off_signaled, int64_t off_signal, int64_t off_timedout,
+        int64_t off_stdout, int64_t off_stderr) {
+    cj_proc_handle* h = (cj_proc_handle*) (intptr_t) handle_i;
+    if (!h) {
+        return cj_proc_build_result(result_vtable, res_size,
+            0, 0, -1, 0, 0, 0, NULL, NULL,
+            off_launched, off_exited, off_exitcode, off_signaled,
+            off_signal, off_timedout, off_stdout, off_stderr);
+    }
+    int st = h->status;
+    int timed_out = 0;
+    if (!h->reaped) {
+        if (timeout_ms > 0) {
+            long deadline = cj_proc_now_ms() + (long) timeout_ms;
+            for (;;) {
+                pid_t w = waitpid(h->pid, &st, WNOHANG);
+                if (w == h->pid) { h->reaped = 1; h->status = st; break; }
+                if (w < 0) { if (errno == EINTR) continue; break; }
+                if (cj_proc_now_ms() >= deadline) { timed_out = 1; break; }
+                struct timespec nap = {0, 2 * 1000 * 1000};   // 2 ms
+                nanosleep(&nap, NULL);
+            }
+        } else {
+            while (waitpid(h->pid, &st, 0) < 0 && errno == EINTR) { /* retry */ }
+            h->reaped = 1; h->status = st;
+        }
+    }
+    int exited = 0, exit_code = -1, signaled = 0, sig = 0;
+    if (h->reaped) {
+        if (WIFEXITED(h->status))   { exited = 1;   exit_code = WEXITSTATUS(h->status); }
+        if (WIFSIGNALED(h->status)) { signaled = 1; sig = WTERMSIG(h->status); }
+    }
+    return cj_proc_build_result(result_vtable, res_size,
+        1, exited, exit_code, signaled, sig, timed_out, NULL, NULL,
+        off_launched, off_exited, off_exitcode, off_signaled, off_signal,
+        off_timedout, off_stdout, off_stderr);
+}
+
+// Reap + free. Kills a still-running child first so drop/close never leaks a
+// zombie. Closes any open pipe fds. Idempotent on the cajeta side (close()
+// zeroes the handle field after calling this).
+void __cajeta_proc_release(int64_t handle_i) {
+    cj_proc_handle* h = (cj_proc_handle*) (intptr_t) handle_i;
+    if (!h) return;
+    if (!h->reaped) {
+        kill(h->pid, SIGKILL);
+        int st;
+        while (waitpid(h->pid, &st, 0) < 0 && errno == EINTR) { /* retry */ }
+        h->reaped = 1;
+    }
+    if (h->stdin_fd  >= 0) close(h->stdin_fd);
+    if (h->stdout_fd >= 0) close(h->stdout_fd);
+    if (h->stderr_fd >= 0) close(h->stderr_fd);
+    free(h);
+}
 #else
 // Windows: CreateProcess-based bridge lands with the Windows runtime port.
 // v1 stub reports launched=false so cajeta callers get a clean result.
@@ -7924,6 +8121,46 @@ void* __cajeta_proc_run(
     *(void**)   ((char*) r + off_stderr)   = NULL;
     return r;
 }
+
+// Windows streaming stubs — report no child (handle 0, fds -1).
+void* __cajeta_proc_spawn(
+        void* argv_arr, void* cwd_str, void* env_arr, int32_t stdio_flags,
+        int64_t str_size, int64_t str_off_bytes, int64_t str_off_len,
+        void* proc_vtable, int64_t proc_size,
+        int64_t off_handle, int64_t off_stdin_fd,
+        int64_t off_stdout_fd, int64_t off_stderr_fd) {
+    (void) argv_arr; (void) cwd_str; (void) env_arr; (void) stdio_flags;
+    (void) str_size; (void) str_off_bytes; (void) str_off_len;
+    void* p = __cajeta_alloc((uint64_t) proc_size);
+    *(void**)   ((char*) p)                 = proc_vtable;
+    *(int64_t*) ((char*) p + off_handle)    = 0;
+    *(int32_t*) ((char*) p + off_stdin_fd)  = -1;
+    *(int32_t*) ((char*) p + off_stdout_fd) = -1;
+    *(int32_t*) ((char*) p + off_stderr_fd) = -1;
+    return p;
+}
+int32_t __cajeta_proc_pid(int64_t handle_i) { (void) handle_i; return -1; }
+void __cajeta_proc_kill(int64_t handle_i) { (void) handle_i; }
+void* __cajeta_proc_wait(
+        int64_t handle_i, int64_t timeout_ms,
+        void* result_vtable, int64_t res_size,
+        int64_t off_launched, int64_t off_exited, int64_t off_exitcode,
+        int64_t off_signaled, int64_t off_signal, int64_t off_timedout,
+        int64_t off_stdout, int64_t off_stderr) {
+    (void) handle_i; (void) timeout_ms;
+    void* r = __cajeta_alloc((uint64_t) res_size);
+    *(void**)   ((char*) r)                = result_vtable;
+    *(int32_t*) ((char*) r + off_launched) = 0;
+    *(int32_t*) ((char*) r + off_exited)   = 0;
+    *(int32_t*) ((char*) r + off_exitcode) = -1;
+    *(int32_t*) ((char*) r + off_signaled) = 0;
+    *(int32_t*) ((char*) r + off_signal)   = 0;
+    *(int32_t*) ((char*) r + off_timedout) = 0;
+    *(void**)   ((char*) r + off_stdout)   = NULL;
+    *(void**)   ((char*) r + off_stderr)   = NULL;
+    return r;
+}
+void __cajeta_proc_release(int64_t handle_i) { (void) handle_i; }
 #endif  // !_WIN32
 
 // Phase C — stat-touching helpers. POSIX-only.
