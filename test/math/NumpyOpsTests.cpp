@@ -1299,3 +1299,40 @@ TEST(NumpyOpsTests, vdotOuterMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 6a — trace (diagonal sum), kron (Kronecker product), matrix_power (repeated matmul).
+TEST(NumpyOpsTests, traceKronPowerMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] d9 = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(d9, s33);\n"
+        "        if (Tensor.trace<int32>(a, 0) != 15) { return -1; }\n"     // 1+5+9
+        "        if (Tensor.trace<int32>(a, 1) != 8) { return -2; }\n"      // 2+6
+        // kron [[1,2],[3,4]] ⊗ [[10,20],[30,40]] → (4,4)
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> ka = Tensor.of<int32>(da, s22);\n"
+        "        int32[] dbk = { 10, 20, 30, 40 };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<int32> kb = Tensor.of<int32>(dbk, s22b);\n"
+        "        Tensor<int32> kr = Tensor.kron<int32>(ka, kb);\n"
+        "        if (kr.shapeAt(0) != 4 || kr.shapeAt(1) != 4) { return -3; }\n"
+        "        if (kr.get2(0, 0) != 10 || kr.get2(0, 2) != 20 || kr.get2(2, 0) != 30 || kr.get2(3, 3) != 160) { return -4; }\n"
+        "        if (kr.get2(1, 1) != 40 || kr.get2(0, 1) != 20) { return -5; }\n"
+        // matrix_power of [[1,1],[0,1]]: ^2 → [[1,2],[0,1]], ^3 → [[1,3],[0,1]], ^0 → I
+        "        int32[] dp = { 1, 1, 0, 1 };\n"
+        "        int64[] s22c = heap int64[2]; s22c[0] = 2; s22c[1] = 2;\n"
+        "        Tensor<int32> m = Tensor.of<int32>(dp, s22c);\n"
+        "        Tensor<int32> m2 = Tensor.matrixPower<int32>(m, 2);\n"
+        "        if (m2.get2(0, 1) != 2 || m2.get2(0, 0) != 1 || m2.get2(1, 0) != 0 || m2.get2(1, 1) != 1) { return -6; }\n"
+        "        Tensor<int32> m3 = Tensor.matrixPower<int32>(m, 3);\n"
+        "        if (m3.get2(0, 1) != 3) { return -7; }\n"
+        "        Tensor<int32> m0 = Tensor.matrixPower<int32>(m, 0);\n"
+        "        if (m0.get2(0, 0) != 1 || m0.get2(0, 1) != 0 || m0.get2(1, 1) != 1) { return -8; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

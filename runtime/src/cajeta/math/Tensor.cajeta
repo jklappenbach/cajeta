@@ -1626,6 +1626,76 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
+    /** Sum of the `offset`-th diagonal of a 2-D tensor as a scalar (numpy `trace`). */
+    public static E trace<E extends Numeric>(Tensor<E> a, int64 offset) {
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        int64 r0 = 0;
+        int64 c0 = 0;
+        if (offset >= 0) { c0 = offset; } else { r0 = -offset; }
+        int64 len = m - r0;
+        if (n - c0 < len) { len = n - c0; }
+        if (len < 0) { len = 0; }
+        E acc = (E) 0;
+        int64 i = 0;
+        while (i < len) {
+            acc = acc + a.get2(r0 + i, c0 + i);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    /** Kronecker product of two 2-D tensors `(m,n)⊗(p,q) → (m*p, n*q)` (numpy `kron`):
+     *  `out[i*p+r, j*q+s] = a[i,j] * b[r,s]`. */
+    public static #Tensor<E> kron<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        int64 p = b.shapeAt(0);
+        int64 q = b.shapeAt(1);
+        int64 oc = n * q;
+        Storage<E> st = heap Storage<E>(m * p * n * q);
+        int64 i = 0;
+        while (i < m) {
+            int64 j = 0;
+            while (j < n) {
+                E av = a.get2(i, j);
+                int64 r = 0;
+                while (r < p) {
+                    int64 s = 0;
+                    while (s < q) {
+                        int64 row = i * p + r;
+                        int64 col = j * q + s;
+                        st.set(row * oc + col, av * b.get2(r, s));
+                        s = s + 1;
+                    }
+                    r = r + 1;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m * p;
+        shp[1] = oc;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** Integer matrix power of a square 2-D tensor (numpy `matrix_power`, `n >= 0`):
+     *  `n == 0` is the identity; otherwise repeated `matmul`. (Negative powers need the
+     *  inverse — Phase 11.) */
+    public static #Tensor<E> matrixPower<E extends Numeric>(Tensor<E> a, int32 n) {
+        int64 d = a.shapeAt(0);
+        if (n == 0) { return Tensor.eye<E>(d); }
+        Tensor<E> result = a.copy();
+        int32 step = 1;
+        while (step < n) {
+            result = Tensor.matmul<E>(result, a);
+            step = step + 1;
+        }
+        return #result;
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**
