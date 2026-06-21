@@ -1,0 +1,55 @@
+package cajeta.math;
+
+/**
+ * Plane — an oriented plane `{ x : normal·x + d = 0 }`, the half-space primitive
+ * the {@link cajeta.math.Frustum} is built from (cajeta-gfx plan §1). A value
+ * type (stack by default).
+ *
+ * `signedDistance(p)` is positive on the side `normal` points toward, negative
+ * on the other, zero on the plane — the convention frustum culling relies on
+ * (all six planes' normals point inward, so "inside" is "non-negative on every
+ * plane"). For a meaningful distance the normal should be unit length;
+ * {@link #fromPointNormal} stores the normal as given (normalize beforehand if
+ * the magnitude matters). Construct directly with `stack Plane(normal, d)` or via
+ * the point/normal factory.
+ *
+ * ```cajeta
+ * Vector<float32,3> n = stack Vector<float32,3>(0.0f, 1.0f, 0.0f);
+ * Plane ground = stack Plane(n, 0.0f);            // the y = 0 plane
+ * float32 h = ground.signedDistance(stack Vector<float32,3>(0.0f, 3.0f, 0.0f)); // 3
+ * ```
+ */
+@ValueType public final class Plane {
+    public Vector<float32,3> normal;
+    public float32 d;
+
+    public Plane(Vector<float32,3> normal, float32 d) {
+        this.normal = normal;
+        this.d = d;
+    }
+
+    /**
+     * The plane through `point` with the given `normal`: `d = -(normal·point)`,
+     * so `point` itself has signed distance 0.
+     */
+    public static Plane fromPointNormal(Vector<float32,3> point,
+                                        Vector<float32,3> normal) {
+        float32 d = 0.0f - normal.dot(point);
+        return stack Plane(normal, d);
+    }
+
+    /** Plane normal. */
+    public Vector<float32,3> normal() {
+        return this.normal;
+    }
+
+    /** Plane constant `d` in `normal·x + d = 0`. */
+    public float32 constant() {
+        return this.d;
+    }
+
+    /** Signed distance from `p` to the plane (positive toward `normal`). */
+    public float32 signedDistance(Vector<float32,3> p) {
+        return this.normal.dot(p) + this.d;
+    }
+}

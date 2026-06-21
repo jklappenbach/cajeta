@@ -1,0 +1,71 @@
+package cajeta.math;
+
+/**
+ * Sphere — a bounding sphere `{ x : |x - center| <= radius }`, the rotation-
+ * invariant bounds primitive complementing {@link cajeta.math.Aabb}
+ * (cajeta-gfx plan §1). A value type (stack by default).
+ *
+ * Containment and sphere/sphere tests use squared distances (no `sqrt`). The
+ * ray test is the analytic quadratic; it assumes the ray direction is unit
+ * length (the `a == 1` simplification) and avoids `sqrt` by reasoning on the
+ * discriminant and root signs. Construct with `stack Sphere(center, radius)`.
+ *
+ * ```cajeta
+ * Vector<float32,3> c = stack Vector<float32,3>(0.0f, 0.0f, 0.0f);
+ * Sphere s = stack Sphere(c, 1.0f);
+ * Vector<float32,3> p = stack Vector<float32,3>(0.5f, 0.0f, 0.0f);
+ * boolean in = s.contains(p);   // true
+ * ```
+ */
+@ValueType public final class Sphere {
+    public Vector<float32,3> center;
+    public float32 radius;
+
+    public Sphere(Vector<float32,3> center, float32 radius) {
+        this.center = center;
+        this.radius = radius;
+    }
+
+    /** Center point. */
+    public Vector<float32,3> center() {
+        return this.center;
+    }
+
+    /** Radius. */
+    public float32 radius() {
+        return this.radius;
+    }
+
+    /** True if `p` is within (or on) the sphere. Squared distance, no sqrt. */
+    public boolean contains(Vector<float32,3> p) {
+        Vector<float32,3> d = p - this.center;
+        return d.dot(d) <= this.radius * this.radius;
+    }
+
+    /** True if this sphere overlaps `o` (touching counts). Squared distance. */
+    public boolean intersectsSphere(Sphere o) {
+        Vector<float32,3> d = this.center - o.center;
+        float32 rsum = this.radius + o.radius;
+        return d.dot(d) <= rsum * rsum;
+    }
+
+    /**
+     * True if the ray (for some `t >= 0`) meets the sphere. Assumes a unit-length
+     * ray direction. With `oc = origin - center`, `b = oc·dir`, `c = oc·oc - r^2`,
+     * the roots are real iff `b^2 - c >= 0`, and the farther root is non-negative
+     * iff `b <= 0` (sphere ahead) or `c <= 0` (origin inside). No sqrt needed.
+     */
+    public boolean intersectsRay(Ray r) {
+        // Pull the ray's accessor results into locals before using them as
+        // operator/intrinsic operands: a method-call result used inline as an
+        // operand crashes host codegen here (cajeta-gfx §1 finding) — the same
+        // family as compound Vector expressions (see Ray.at).
+        Vector<float32,3> o = r.origin();
+        Vector<float32,3> dir = r.direction();
+        Vector<float32,3> oc = o - this.center;
+        float32 b = oc.dot(dir);
+        float32 c = oc.dot(oc) - this.radius * this.radius;
+        float32 disc = b * b - c;
+        return disc >= 0.0f && (b <= 0.0f || c <= 0.0f);
+    }
+}
