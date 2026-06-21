@@ -50,8 +50,19 @@ adapter, plus the compiler surface that makes the server worth running.
 
 ## 2. Transport & lifecycle
 
+> **Substrate (decided during implementation):** the server is a **standalone executable
+> `cajeta-mcp` under `tools/mcp/`** that **wraps the `cajeta` compiler** — every tool is
+> implemented by shelling out to a `cajeta` subcommand (skills → `search-skill`/
+> `list-skills`/`get-skills --json`; compile/execute → `--emit`/`jit-run`). It is NOT a
+> `cajeta` subcommand and does NOT link the compiler (`cajeta_lib`); it reuses only small
+> utility TUs (Json, Subprocess, TarZstd) + LLVMSupport + zstd. The `cajeta` binary is
+> located via `--cajeta=PATH`, `$CAJETA_BIN`, or `cajeta` on `PATH`. Rationale: keeps the
+> server decoupled from compiler internals (depends on the stable CLI), gives per-call
+> process isolation for free, and keeps the build tiny. (A cajeta-written server is a
+> future dogfood, unblocked by `cajeta.process`.)
+
 ### 2.1 Requirements
-- `cajeta mcp` starts a server that reads JSON-RPC 2.0 requests on stdin and writes
+- `cajeta-mcp` starts a server that reads JSON-RPC 2.0 requests on stdin and writes
   responses on stdout (one message per line / framed per the MCP stdio convention),
   logging diagnostics to stderr only (never stdout, which is the protocol channel).
 - It implements the MCP handshake: `initialize` (declaring `tools` capability and server

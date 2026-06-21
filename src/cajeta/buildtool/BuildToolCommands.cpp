@@ -20,6 +20,7 @@
 #include "cajeta/buildtool/Workspace.h"
 #include "cajeta/buildtool/skill/SkillCli.h"
 #include "cajeta/buildtool/skill/SkillGet.h"
+#include "cajeta/dap/Json.h"
 #include "cajeta/cli/SignatureVerify.h"
 #include "cajeta/cli/TrustStore.h"
 
@@ -2575,8 +2576,70 @@ namespace cajeta::buildtool {
             return out; // out[0] is the subcommand name
         }
 
+        // --json structured output for the skill subcommands (consumed by the
+        // standalone tools/mcp wrapper). Removes "--json" from `tail`, returns
+        // whether it was present.
+        bool takeJsonFlag(std::vector<std::string>& tail) {
+            for (auto it = tail.begin(); it != tail.end(); ++it) {
+                if (*it == "--json") { tail.erase(it); return true; }
+            }
+            return false;
+        }
+
+        const char* skillTierName(skill::MatchTier t) {
+            switch (t) {
+                case skill::MatchTier::Exact:            return "exact";
+                case skill::MatchTier::Descendant:       return "descendant";
+                case skill::MatchTier::AncestorOverview: return "ancestorOverview";
+            }
+            return "unknown";
+        }
+
+        std::string searchResultsJson(
+                llvm::ArrayRef<skill::SkillSearchResult> rs) {
+            cajeta::dap::Json arr = cajeta::dap::Json::array();
+            for (const auto& r : rs) {
+                cajeta::dap::Json o = cajeta::dap::Json::object();
+                o["uri"] = r.uri;
+                o["matchedName"] = r.matchedName;
+                o["tier"] = std::string(skillTierName(r.tier));
+                o["distance"] = r.distance;
+                arr.push_back(o);
+            }
+            return arr.dump();
+        }
+
+        std::string listEntriesJson(llvm::ArrayRef<skill::SkillListEntry> es) {
+            cajeta::dap::Json arr = cajeta::dap::Json::array();
+            for (const auto& e : es) {
+                cajeta::dap::Json o = cajeta::dap::Json::object();
+                o["uri"] = e.uri;
+                o["title"] = e.title;
+                cajeta::dap::Json names = cajeta::dap::Json::array();
+                for (const auto& n : e.names) names.push_back(n);
+                o["names"] = names;
+                arr.push_back(o);
+            }
+            return arr.dump();
+        }
+
+        std::string getResultsJson(llvm::ArrayRef<skill::SkillGetResult> rs) {
+            cajeta::dap::Json arr = cajeta::dap::Json::array();
+            for (const auto& r : rs) {
+                cajeta::dap::Json o = cajeta::dap::Json::object();
+                o["uri"] = r.uri;
+                o["ok"] = r.ok();
+                if (r.ok()) o["payload"] = r.payload;
+                else o["error"] = r.error;
+                arr.push_back(o);
+            }
+            return arr.dump();
+        }
+
         int searchSkillCommand(int argc, const char* argv[]) {
-            auto a = skill::parseSearchSkillArgs(skillArgvTail(argc, argv));
+            auto tail = skillArgvTail(argc, argv);
+            bool json = takeJsonFlag(tail);
+            auto a = skill::parseSearchSkillArgs(tail);
             if (!a.valid) { std::cerr << skill::searchSkillUsage(); return 2; }
             auto lf = readLockfile("./cajeta.lock");
             if (!lf) {
@@ -2596,12 +2659,15 @@ namespace cajeta::buildtool {
             skill::MatchOptions opts;
             opts.exact = a.exact;
             auto results = skill::searchSkills(a.name, a.version, a.from, *ctx, opts);
-            std::cout << skill::formatSearchResults(results);
+            if (json) std::cout << searchResultsJson(results) << "\n";
+            else std::cout << skill::formatSearchResults(results);
             return results.empty() ? 1 : 0;
         }
 
         int listSkillsCommand(int argc, const char* argv[]) {
-            auto a = skill::parseListSkillsArgs(skillArgvTail(argc, argv));
+            auto tail = skillArgvTail(argc, argv);
+            bool json = takeJsonFlag(tail);
+            auto a = skill::parseListSkillsArgs(tail);
             if (!a.valid) { std::cerr << skill::listSkillsUsage(); return 2; }
             auto lf = readLockfile("./cajeta.lock");
             if (!lf) {
@@ -2618,14 +2684,17 @@ namespace cajeta::buildtool {
                           << "\n";
                 return 1;
             }
-            std::cout << skill::formatListEntries(
-                skill::listSkills(a.scope, a.version, a.from, *ctx));
+            auto entries = skill::listSkills(a.scope, a.version, a.from, *ctx);
+            if (json) std::cout << listEntriesJson(entries) << "\n";
+            else std::cout << skill::formatListEntries(entries);
             return 0;
         }
 
         int getSkillsCommand(int argc, const char* argv[]) {
-            if (argc < 3) { std::cerr << skill::getSkillsUsage(); return 2; }
-            auto uris = skill::splitCommaUris(argv[2]);
+            auto tail = skillArgvTail(argc, argv);   // tail[0] == "get-skills"
+            bool json = takeJsonFlag(tail);
+            if (tail.size() < 2) { std::cerr << skill::getSkillsUsage(); return 2; }
+            auto uris = skill::splitCommaUris(tail[1]);
             if (uris.empty()) { std::cerr << skill::getSkillsUsage(); return 2; }
             auto lf = readLockfile("./cajeta.lock");
             if (!lf) {
@@ -2638,6 +2707,11 @@ namespace cajeta::buildtool {
                 uris, lf->packagesTyped,
                 [&](llvm::StringRef s) { return cache.lookup(s.str()); });
             bool anyErr = false;
+            for (const auto& r : results) if (!r.ok()) anyErr = true;
+            if (json) {
+                std::cout << getResultsJson(results) << "\n";
+                return anyErr ? 1 : 0;
+            }
             for (const auto& r : results) {
                 std::cout << "# " << r.uri << "\n";
                 if (r.ok()) {
@@ -2645,7 +2719,6 @@ namespace cajeta::buildtool {
                 } else {
                     std::cerr << "cajeta get-skills: " << r.uri << ": " << r.error
                               << "\n";
-                    anyErr = true;
                 }
             }
             return anyErr ? 1 : 0;

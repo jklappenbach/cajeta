@@ -3,7 +3,7 @@
 // notifications/initialized / tools/list), and error envelopes.
 
 #include "gtest/gtest.h"
-#include "cajeta/mcp/McpServer.h"
+#include "McpServer.h"
 #include "cajeta/buildtool/repo/TarZstd.h"
 
 #include <llvm/Support/Base64.h>
@@ -50,7 +50,7 @@ TEST(McpServerTests, initializeReturnsServerInfo) {
     const Json& res = r[0].at("result");
     EXPECT_TRUE(res.has("protocolVersion"));
     EXPECT_TRUE(res.at("capabilities").has("tools"));
-    EXPECT_EQ(res.at("serverInfo").at("name").asString(), "cajeta");
+    EXPECT_EQ(res.at("serverInfo").at("name").asString(), "cajeta-mcp");
 }
 
 // 1.1.2
@@ -94,45 +94,32 @@ TEST(McpServerTests, notificationsInitializedIsAccepted) {
 
 namespace {
 
-using cajeta::mcp::SkillBackend;
-namespace sk = cajeta::buildtool::skill;
+using cajeta::mcp::CliResult;
+using cajeta::mcp::CliRunner;
 
-// A backend returning fixtures so the tests exercise the MCP marshalling layer
-// (the cores have their own suites).
-SkillBackend fixtureBackend() {
-    SkillBackend b;
-    b.search = [](const std::string&, std::optional<std::string>,
-                  std::optional<std::string>, sk::MatchOptions) {
-        sk::SkillSearchResult r{};
-        r.uri = "cja-skill://cajeta.io@1.0.0/file-overview";
-        r.matchedName = "cajeta/io/File";
-        r.tier = sk::MatchTier::Exact;
-        r.distance = 0;
-        return std::vector<sk::SkillSearchResult>{r};
-    };
-    b.list = [](std::optional<std::string>, std::optional<std::string>,
-                std::optional<std::string>) {
-        sk::SkillListEntry e{};
-        e.uri = "cja-skill://cajeta.io@1.0.0/file-overview";
-        e.names = {"cajeta/io/File"};
-        e.title = "File I/O overview";
-        return std::vector<sk::SkillListEntry>{e};
-    };
-    b.get = [](const std::vector<std::string>& uris) {
-        std::vector<sk::SkillGetResult> out;
-        for (const auto& u : uris) {
-            sk::SkillGetResult r{};
-            r.uri = u;
-            if (u == "cja-skill://cajeta.io@1.0.0/file-overview") {
-                r.payload = "# File\nbody";
-            } else {
-                r.error = "unknown uri";
-            }
-            out.push_back(r);
+// A CLI runner stub returning the JSON the real `cajeta <skill-cmd> --json`
+// would print, so the tests exercise the MCP wrapper's parse+marshal layer
+// (the cores + the CLI --json emitters have their own coverage).
+CliRunner skillStub() {
+    return [](const std::vector<std::string>& args) -> CliResult {
+        CliResult r;
+        r.launched = true;
+        r.exitCode = 0;
+        const std::string& sub = args.empty() ? std::string() : args[0];
+        if (sub == "search-skill") {
+            r.out = R"([{"uri":"cja-skill://cajeta.io@1.0.0/file-overview",)"
+                    R"("matchedName":"cajeta/io/File","tier":"exact","distance":0}])";
+        } else if (sub == "list-skills") {
+            r.out = R"([{"uri":"cja-skill://cajeta.io@1.0.0/file-overview",)"
+                    R"("title":"File I/O overview","names":["cajeta/io/File"]}])";
+        } else if (sub == "get-skills") {
+            r.out = R"([{"uri":"cja-skill://cajeta.io@1.0.0/file-overview",)"
+                    R"("ok":true,"payload":"# File\nbody"},)"
+                    R"({"uri":"cja-skill://bogus@9.9.9/nope","ok":false,)"
+                    R"("error":"unknown uri"}])";
         }
-        return out;
+        return r;
     };
-    return b;
 }
 
 // Drive a single tools/call through `handle()` with a configured server.
@@ -153,7 +140,7 @@ Json toolCall(McpServer& server, const std::string& name, Json args) {
 // 2.1.1
 TEST(McpServerTests, searchSkillsToolReturnsUris) {
     McpServer server;
-    server.setSkillBackend(fixtureBackend());
+    server.setCliRunner(skillStub());
     Json args = Json::object();
     args["name"] = "cajeta/io/File";
     Json resp = toolCall(server, "searchSkills", args);
@@ -168,7 +155,7 @@ TEST(McpServerTests, searchSkillsToolReturnsUris) {
 // 2.1.2
 TEST(McpServerTests, getSkillsToolReturnsPayloads) {
     McpServer server;
-    server.setSkillBackend(fixtureBackend());
+    server.setCliRunner(skillStub());
     Json uris = Json::array();
     uris.push_back(std::string("cja-skill://cajeta.io@1.0.0/file-overview"));
     uris.push_back(std::string("cja-skill://bogus@9.9.9/nope"));
@@ -186,7 +173,7 @@ TEST(McpServerTests, getSkillsToolReturnsPayloads) {
 // 2.1.3
 TEST(McpServerTests, listSkillsToolReturnsCatalog) {
     McpServer server;
-    server.setSkillBackend(fixtureBackend());
+    server.setCliRunner(skillStub());
     Json resp = toolCall(server, "listSkills", Json::object());
     const Json& skills = resp.at("result").at("skills");
     ASSERT_EQ(skills.size(), 1u);
@@ -197,7 +184,7 @@ TEST(McpServerTests, listSkillsToolReturnsCatalog) {
 // 2.1.4
 TEST(McpServerTests, skillToolMissingRequiredParamIsInvalidParams) {
     McpServer server;
-    server.setSkillBackend(fixtureBackend());
+    server.setCliRunner(skillStub());
     Json resp = toolCall(server, "searchSkills", Json::object());  // no name
     ASSERT_TRUE(resp.has("error"));
     EXPECT_EQ(resp.at("error").at("code").asInt(), -32602);
