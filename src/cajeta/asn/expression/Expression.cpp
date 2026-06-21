@@ -1535,14 +1535,6 @@ namespace cajeta {
         return CajetaModule::ensureGlobalInModule(module->getLlvmModule(), co);
     }
 
-    // Helper used by ternary/instanceof: load value from an alloca-style l-value.
-    static llvm::Value* loadIfAllocaShared(CajetaModulePtr module, llvm::Value* v) {
-        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
-            return module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
-        }
-        return v;
-    }
-
     void BooleanSwitchExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         // Result type = the `then` branch's resolved type. A full implementation would
@@ -1561,7 +1553,14 @@ namespace cajeta {
         llvm::LLVMContext& ctx = *module->getLlvmContext();
 
         // Evaluate condition; coerce non-i1 (e.g. i32 0/non-0) to i1 via != 0.
-        llvm::Value* cond = loadIfAllocaShared(module, children[0]->generateCode(module));
+        // Use loadIfLValue (not loadIfAllocaShared) so an l-value condition that
+        // isn't a plain alloca — a boolean class FIELD (`this.flag` → a GEP),
+        // an array element, a static field — is loaded to its r-value. Loading
+        // only allocas left a field GEP as a pointer, and the i1 coercion below
+        // then built an ICmp with a pointer operand (malformed IR / verifier
+        // assertion).
+        auto condAst = dynamic_pointer_cast<Expression>(children[0]);
+        llvm::Value* cond = loadIfLValue(module, children[0]->generateCode(module), condAst);
         llvm::Type* i1Ty = llvm::Type::getInt1Ty(ctx);
         if (cond->getType() != i1Ty) {
             llvm::Value* zero = llvm::ConstantInt::get(cond->getType(), 0);
@@ -1576,12 +1575,14 @@ namespace cajeta {
         builder->CreateCondBr(cond, thenBB, elseBB);
 
         builder->SetInsertPoint(thenBB);
-        llvm::Value* thenVal = loadIfAllocaShared(module, children[1]->generateCode(module));
+        auto thenAst = dynamic_pointer_cast<Expression>(children[1]);
+        llvm::Value* thenVal = loadIfLValue(module, children[1]->generateCode(module), thenAst);
         llvm::BasicBlock* thenEnd = builder->GetInsertBlock();
         builder->CreateBr(mergeBB);
 
         builder->SetInsertPoint(elseBB);
-        llvm::Value* elseVal = loadIfAllocaShared(module, children[2]->generateCode(module));
+        auto elseAst = dynamic_pointer_cast<Expression>(children[2]);
+        llvm::Value* elseVal = loadIfLValue(module, children[2]->generateCode(module), elseAst);
         // If types differ, narrow/extend the else side to match the then side. Mirrors
         // BinaryOpExpression's coerceArithPair logic at a single point of variance.
         if (elseVal->getType() != thenVal->getType()) {

@@ -133,10 +133,7 @@ public final class StringBuilder {
     private void grow(int32 need) {
         // First overflow (inline) starts the heap buffer at 128 (double the
         // 64-byte inline cap); a later overflow doubles the current heap cap.
-        int32 newCap = 128;
-        if (this.spilled) {
-            newCap = this.cap * 2;
-        }
+        int32 newCap = this.spilled ? this.cap * 2 : 128;
         while (newCap < need) {
             newCap = newCap * 2;
         }
