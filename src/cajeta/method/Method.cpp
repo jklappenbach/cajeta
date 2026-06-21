@@ -14,6 +14,7 @@
 #include "../error/Exception.h"
 #include "../asn/DefaultBlock.h"
 #include "../asn/Statement.h"
+#include "../asn/expression/Expression.h"
 #include "../asn/expression/MethodCallExpression.h"
 #include "../asn/expression/NewExpression.h"
 #include "../asn/expression/AggregateInitializerExpression.h"
@@ -35,6 +36,76 @@ using namespace std;
 
 namespace cajeta {
     map<string, MethodPtr> Method::archive;
+
+    // SIMD plan Phase 0.6: a method needs the implicit structured-concurrency
+    // scope frame (save_top + scope_enter[HEAP-ALLOC] + exit_to) only when its
+    // body creates/joins a child task — i.e. lexically contains a `spawn`,
+    // `detach`, or `scope { }`. A spawn-free body owns no children and elides the
+    // frame; that frame was the per-stripe overhead (vzeroupper + 3 runtime
+    // calls, scope_enter mallocs) that made the xxhash3 SIMD loop slower than
+    // native.
+    //
+    // We walk the body AST. Statements hold their sub-nodes in typed fields (NOT
+    // `children`), so each container recurses its fields explicitly; expressions
+    // and Block statements (incl. a spawn in a LocalVariableDeclaration / an
+    // assignment ExpressionStatement) are reached via getChildren(). A nested
+    // LambdaExpression is NOT descended — it is its own method with its own frame
+    // decision. The few containers without sub-node accessors (try/switch/
+    // synchronized/throw/yield) are treated CONSERVATIVELY as possibly hosting a
+    // spawn: that only ever over-keeps the frame (always safe), and they are
+    // absent from the value-type / SIMD hot loops this optimizes. Correctness is
+    // pinned by ScopeFrameElisionTests (spawn nested in every common container)
+    // and the structured-concurrency suite (Spawn*/Async*).
+    static bool astHasSpawnSite(const AbstractSyntaxNodePtr& node);
+
+    static bool anyHasSpawnSite(const vector<AbstractSyntaxNodePtr>& v) {
+        for (auto& c : v) if (astHasSpawnSite(c)) return true;
+        return false;
+    }
+
+    static bool astHasSpawnSite(const AbstractSyntaxNodePtr& node) {
+        if (!node) return false;
+        if (dynamic_pointer_cast<LambdaExpression>(node)) return false; // own method
+        if (dynamic_pointer_cast<SpawnExpression>(node)) return true;
+        if (dynamic_pointer_cast<DetachExpression>(node)) return true;
+        if (dynamic_pointer_cast<ScopeStatement>(node)) return true;
+        // Conservative: containers without sub-node accessors may host a spawn.
+        if (dynamic_pointer_cast<TryStatement>(node)) return true;
+        if (dynamic_pointer_cast<SwitchStatement>(node)) return true;
+        if (dynamic_pointer_cast<SynchronizedStatement>(node)) return true;
+        if (dynamic_pointer_cast<ThrowStatement>(node)) return true;
+        if (dynamic_pointer_cast<YieldStatement>(node)) return true;
+        // Expressions / Block statements / LVD initializers live in children.
+        if (anyHasSpawnSite(node->getChildren())) return true;
+        // Control-flow containers: recurse their typed sub-node fields.
+        if (auto s = dynamic_pointer_cast<IfStatement>(node))
+            return astHasSpawnSite(s->getCondition()) || astHasSpawnSite(s->getThenBranch())
+                || astHasSpawnSite(s->getElseBranch());
+        if (auto s = dynamic_pointer_cast<WhileStatement>(node))
+            return astHasSpawnSite(s->getCondition()) || astHasSpawnSite(s->getBody());
+        if (auto s = dynamic_pointer_cast<DoStatement>(node))
+            return astHasSpawnSite(s->getBody()) || astHasSpawnSite(s->getCondition());
+        if (auto s = dynamic_pointer_cast<ForStatement>(node)) {
+            if (astHasSpawnSite(s->getInit()) || astHasSpawnSite(s->getCondition())
+                    || astHasSpawnSite(s->getBody())) return true;
+            for (auto& u : s->getUpdate()) if (astHasSpawnSite(u)) return true;
+            return false;
+        }
+        if (auto s = dynamic_pointer_cast<EnhancedForStatement>(node))
+            return astHasSpawnSite(s->getIterableExpr()) || astHasSpawnSite(s->getBody());
+        if (auto s = dynamic_pointer_cast<ReturnStatement>(node))
+            return astHasSpawnSite(s->getExpression());
+        if (auto s = dynamic_pointer_cast<ExpressionStatement>(node))
+            return astHasSpawnSite(s->getExpression());
+        if (auto s = dynamic_pointer_cast<LabelStatement>(node))
+            return astHasSpawnSite(s->getBlock());
+        return false;
+    }
+
+    // True iff this method must emit the per-method scope frame.
+    bool Method::bodyNeedsScopeFrame() {
+        return astHasSpawnSite(block);
+    }
 
     Method::Method(CajetaModulePtr module,
         string& name,
@@ -1375,21 +1446,29 @@ namespace cajeta {
         // paths share the same value without code duplication.
         auto& ctx = *module->getLlvmContext();
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
-        scopeWatermark = builder->CreateAlloca(ptrTy, nullptr, "scope_watermark");
-        if (llvm::Function* saveFn = module->getRuntimeFunction(
-                "__cajeta_scope_save_top")) {
-            llvm::Value* mark = builder->CreateCall(saveFn, {});
-            builder->CreateStore(mark, scopeWatermark);
-        }
-        // PROTOTYPE (--lazy-scope): skip the per-method implicit scope frame.
-        // It heap-allocs on every call but is only needed for a bare `spawn` in
-        // the body; omitting it is correct for spawn-free code and measures the
-        // alloc win. scope_exit_to(watermark) below is a safe no-op when no
-        // frame was pushed (`while (*top != watermark)`).
-        if (!module->getFlags().lazyScope) {
-            if (llvm::Function* enterFn = module->getRuntimeFunction(
-                    "__cajeta_scope_enter")) {
-                builder->CreateCall(enterFn, {});
+        // Phase 0.6: emit the implicit scope frame ONLY when the body actually
+        // spawns/scopes. Spawn-free methods (incl. every value-type operator and
+        // SIMD hot loop) leave scopeWatermark null and emit no scope runtime
+        // calls; the exit_to paths (here + emitScopeExitToWatermark) are guarded
+        // on a null watermark. This generalizes --lazy-scope into the automatic,
+        // always-correct "lazily push at spawn sites" form (and subsumes it: a
+        // method that DOES spawn still pushes the frame).
+        bool needsScopeFrame = bodyNeedsScopeFrame();
+        if (needsScopeFrame) {
+            scopeWatermark = builder->CreateAlloca(ptrTy, nullptr, "scope_watermark");
+            if (llvm::Function* saveFn = module->getRuntimeFunction(
+                    "__cajeta_scope_save_top")) {
+                llvm::Value* mark = builder->CreateCall(saveFn, {});
+                builder->CreateStore(mark, scopeWatermark);
+            }
+            // --lazy-scope additionally skips the heap-allocating scope_enter even
+            // for spawning methods (the frame is then lazily pushed at the spawn
+            // site); off by default.
+            if (!module->getFlags().lazyScope) {
+                if (llvm::Function* enterFn = module->getRuntimeFunction(
+                        "__cajeta_scope_enter")) {
+                    builder->CreateCall(enterFn, {});
+                }
             }
         }
 
@@ -1838,10 +1917,14 @@ namespace cajeta {
             // here if the body fell through with one still open, which
             // would be a structural malformation we accept as a defensive
             // cleanup.
-            if (llvm::Function* exitToFn = module->getRuntimeFunction(
-                    "__cajeta_scope_exit_to")) {
-                llvm::Value* mark = builder->CreateLoad(ptrTy, scopeWatermark);
-                builder->CreateCall(exitToFn, {mark});
+            // Phase 0.6: null when the method elided its scope frame (spawn-free
+            // body) — nothing to pop.
+            if (scopeWatermark) {
+                if (llvm::Function* exitToFn = module->getRuntimeFunction(
+                        "__cajeta_scope_exit_to")) {
+                    llvm::Value* mark = builder->CreateLoad(ptrTy, scopeWatermark);
+                    builder->CreateCall(exitToFn, {mark});
+                }
             }
             // Debugger CP5: pop this method's debug frame on the fall-through
             // return path (mirrors the explicit-return path in
