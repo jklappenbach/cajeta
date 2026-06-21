@@ -12,6 +12,8 @@ build-cajeta/
 build-release/
 build-asan/
 run-logs/
+run-logs-nd/
+run-logs*/
 gen/
 cajeta.cbp
 Makefile
