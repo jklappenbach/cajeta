@@ -313,9 +313,8 @@ public final class String {
     }
 
     // SWAR substring search starting at byte offset `start`. `indexOf` is
-    // `indexOfFrom(needle, 0)`; `replace` walks matches by re-calling with
-    // `start` past the last hit (the scans cover disjoint regions, so total work
-    // stays ~O(haystack)).
+    // `indexOfFrom(needle, 0)`. (`replace` does NOT use this per-match — it inlines
+    // one continuous SWAR scan so the setup is hoisted out of the match loop.)
     public int64 indexOfFrom(String needle, int64 start) {
         if (needle == null) {
             return (int64) -1;
@@ -564,8 +563,11 @@ public final class String {
         }
         int64 outLen = hlen + count * (tlen - flen64);
         int8[] out = heap int8[(int32) outLen];
-        // Pass 2: SWAR-walk the matches, bulk-copying each segment + replacement
-        // straight into the exact buffer (8 bytes per store, inlined copyRange).
+        // Pass 2: walk matches with the SWAR indexOfFrom, bulk-copying each
+        // segment + replacement into the exact buffer (8-byte stores via the
+        // @Inline copyRange). (A hand-inlined continuous SWAR scan here measured
+        // SLOWER — its jump-and-reload control flow optimizes worse than this
+        // simple walk — so the per-match indexOfFrom call is kept.)
         int64 src = 0;
         int64 dst = 0;
         int64 at = this.indexOfFrom(from, 0);

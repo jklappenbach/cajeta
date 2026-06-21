@@ -54,14 +54,8 @@ public final class StringBuilder {
         if (this.len + add > this.cap) {
             this.grow(this.len + add);
         }
-        int8[] src = s.bytes;
-        int32 i = 0;
-        int32 base = this.len;
-        while (i < add) {
-            this.buf[base + i] = src[i];
-            i = i + 1;
-        }
-        this.len = base + add;
+        StringBuilder.blit(this.buf, (int64) this.len, s.bytes, 0, (int64) add);
+        this.len = this.len + add;
     }
 
     /**
@@ -77,13 +71,23 @@ public final class StringBuilder {
         if (this.len + len > this.cap) {
             this.grow(this.len + len);
         }
-        int32 i = 0;
-        int32 base = this.len;
-        while (i < len) {
-            this.buf[base + i] = src[off + i];
-            i = i + 1;
+        StringBuilder.blit(this.buf, (int64) this.len, src, (int64) off, (int64) len);
+        this.len = this.len + len;
+    }
+
+    // Copy `len` bytes src[s..] -> dst[d..], 8 bytes per store (the 8-byte chunk
+    // window never exceeds `len`, so neither buffer is overrun) + scalar tail.
+    @Inline
+    private static void blit(int8[] dst, int64 d, int8[] src, int64 s, int64 len) {
+        int64 k = 0;
+        while (k + 8 <= len) {
+            Cajeta.storeU64(dst, d + k, Cajeta.loadU64(src, s + k));
+            k = k + 8;
         }
-        this.len = base + len;
+        while (k < len) {
+            dst[d + k] = src[s + k];
+            k = k + 1;
+        }
     }
 
     // Cold, out-of-line: grow the backing buffer to at least `need` bytes

@@ -144,7 +144,7 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| string-build-concat |  | cajeta | stdlib | 4000 | 0.052 | 0.055 | 76.88M/s | 2264 | ok |
+| string-build-concat |  | cajeta | stdlib | 4000 | 0.040 | 0.065 | 100.09M/s | 2264 | ok |
 | string-search |  | cajeta | stdlib | 360448 | 0.028 | 0.038 | 13.10G/s | 176 | ok |
 | string-replace |  | cajeta | stdlib | 360448 | 0.269 | 0.272 | 1.34G/s | 19028 | ok |
 | string-uppercase |  | cajeta | stdlib | 360448 | 0.320 | 0.324 | 1.13G/s | 17604 | ok |

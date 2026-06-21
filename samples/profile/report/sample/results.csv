@@ -35,7 +35,7 @@ schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,d
 1,20260620-235014,,sort-f64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,2976762,2994145,3004428,3149538,,,3579980,-1,-1,-1,11748,ok,true,,
 1,20260620-235014,,sort-stable-int64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,3082534,3102752,3116948,3258456,,,3608924,-1,-1,-1,23456,ok,true,,
 1,20260620-235014,,binary-search,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,3665812,3677635,3685923,3714505,,,3622628,-1,-1,-1,11736,ok,true,,
-1,20260620-235014,,string-build-concat,string,,-1,,4000,cajeta,,,,--release -O3 -march=native,5,30,52028,54824,57416,72817,,,5536,-1,-1,-1,2264,ok,true,,
+1,20260620-235014,,string-build-concat,string,,-1,,4000,cajeta,,,,--release -O3 -march=native,5,30,39965,64712,58084,74220,,,5540,-1,-1,-1,2264,ok,true,,
 1,20260620-235014,,string-search,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,27512,37561,32623,37591,,,6612,-1,-1,-1,176,ok,true,,
 1,20260620-235014,,string-replace,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,269027,272153,287957,427997,,,30592,-1,-1,-1,19028,ok,true,,
 1,20260620-235014,,string-uppercase,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,319763,324291,357430,555957,,,52084,-1,-1,-1,17604,ok,true,,
