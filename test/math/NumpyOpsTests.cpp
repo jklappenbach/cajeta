@@ -1378,3 +1378,114 @@ TEST(NumpyOpsTests, tensordotMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 6d — inner: contract the LAST axis of each operand. For a (...i,k) and b (...j,k)
+// (equal last axis k) → (...i,...j) with out[i,j] = Σ_k a[i,k]*b[j,k]. Two 1-D
+// vectors give a 0-D scalar tensor (read via getAt with any index — ndim 0).
+TEST(NumpyOpsTests, innerMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // 2-D inner: (2,3) inner (2,3) → (2,2)
+        "        int32[] da = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s23);\n"           // [[1,2,3],[4,5,6]]
+        "        int32[] db = { 1, 0, 0, 0, 1, 0 };\n"
+        "        int64[] s23b = heap int64[2]; s23b[0] = 2; s23b[1] = 3;\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s23b);\n"          // [[1,0,0],[0,1,0]]
+        "        Tensor<int32> c = Tensor.inner<int32>(a, b);\n"           // [[1,2],[4,5]]
+        "        if (c.ndim() != 2 || c.shapeAt(0) != 2 || c.shapeAt(1) != 2) { return -1; }\n"
+        "        if (c.get2(0, 0) != 1 || c.get2(0, 1) != 2 || c.get2(1, 0) != 4 || c.get2(1, 1) != 5) { return -2; }\n"
+        // 1-D inner → 0-D scalar: [1,2,3]·[4,5,6] = 32
+        "        int32[] dv = { 1, 2, 3 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> v = Tensor.of<int32>(dv, s3);\n"
+        "        int32[] dw = { 4, 5, 6 };\n"
+        "        int64[] s3b = heap int64[1]; s3b[0] = 3;\n"
+        "        Tensor<int32> w = Tensor.of<int32>(dw, s3b);\n"
+        "        Tensor<int32> sc = Tensor.inner<int32>(v, w);\n"
+        "        if (sc.ndim() != 0 || sc.size() != 1) { return -3; }\n"
+        "        int64[] dummy = heap int64[1]; dummy[0] = 0;\n"
+        "        if (sc.getAt(dummy) != 32) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 6c/6f — einsum: parse the subscript spec → contraction plan → nested sum walk.
+// Representative set: transpose, trace, matmul, batched matmul, diagonal, sum-all,
+// row-sum, and the 1-D inner product (dot). Explicit `->` output required.
+TEST(NumpyOpsTests, einsumMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] dummy = heap int64[2]; dummy[0] = 0; dummy[1] = 0;\n"
+        // transpose "ij->ji" on (2,3) [[1,2,3],[4,5,6]] → (3,2) [[1,4],[2,5],[3,6]]
+        "        int32[] da = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s23);\n"
+        "        Tensor<int32>[] o1 = heap Tensor<int32>[1]; o1[0] = a;\n"
+        "        Tensor<int32> tr = Tensor.einsum<int32>(\"ij->ji\", o1);\n"
+        "        if (tr.ndim() != 2 || tr.shapeAt(0) != 3 || tr.shapeAt(1) != 2) { return -1; }\n"
+        "        if (tr.get2(0, 1) != 4 || tr.get2(2, 0) != 3 || tr.get2(1, 1) != 5) { return -2; }\n"
+        // trace "ii->" on (3,3) [1..9] diag 1,5,9 → 15 (0-D scalar)
+        "        int32[] d9 = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<int32> m = Tensor.of<int32>(d9, s33);\n"
+        "        Tensor<int32>[] o2 = heap Tensor<int32>[1]; o2[0] = m;\n"
+        "        Tensor<int32> trc = Tensor.einsum<int32>(\"ii->\", o2);\n"
+        "        if (trc.ndim() != 0 || trc.getAt(dummy) != 15) { return -3; }\n"
+        // diagonal "ii->i" on (3,3) → [1,5,9]
+        "        Tensor<int32>[] o3 = heap Tensor<int32>[1]; o3[0] = m;\n"
+        "        Tensor<int32> dg = Tensor.einsum<int32>(\"ii->i\", o3);\n"
+        "        if (dg.ndim() != 1 || dg.shapeAt(0) != 3) { return -4; }\n"
+        "        if (dg.get1(0) != 1 || dg.get1(1) != 5 || dg.get1(2) != 9) { return -5; }\n"
+        // sum-all "ij->" on (2,3) [1..6] → 21
+        "        Tensor<int32>[] o4 = heap Tensor<int32>[1]; o4[0] = a;\n"
+        "        Tensor<int32> sm = Tensor.einsum<int32>(\"ij->\", o4);\n"
+        "        if (sm.getAt(dummy) != 21) { return -6; }\n"
+        // row-sum "ij->i" on (2,3) [[1,2,3],[4,5,6]] → [6,15]
+        "        Tensor<int32>[] o5 = heap Tensor<int32>[1]; o5[0] = a;\n"
+        "        Tensor<int32> rs = Tensor.einsum<int32>(\"ij->i\", o5);\n"
+        "        if (rs.ndim() != 1 || rs.shapeAt(0) != 2) { return -7; }\n"
+        "        if (rs.get1(0) != 6 || rs.get1(1) != 15) { return -8; }\n"
+        // matmul "ij,jk->ik" (2,3)·(3,2) → [[58,64],[139,154]]
+        "        int32[] de = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s23e = heap int64[2]; s23e[0] = 2; s23e[1] = 3;\n"
+        "        Tensor<int32> e = Tensor.of<int32>(de, s23e);\n"
+        "        int32[] df = { 7, 8, 9, 10, 11, 12 };\n"
+        "        int64[] s32 = heap int64[2]; s32[0] = 3; s32[1] = 2;\n"
+        "        Tensor<int32> f = Tensor.of<int32>(df, s32);\n"
+        "        Tensor<int32>[] o6 = heap Tensor<int32>[2]; o6[0] = e; o6[1] = f;\n"
+        "        Tensor<int32> mm = Tensor.einsum<int32>(\"ij,jk->ik\", o6);\n"
+        "        if (mm.shapeAt(0) != 2 || mm.shapeAt(1) != 2) { return -9; }\n"
+        "        if (mm.get2(0, 0) != 58 || mm.get2(0, 1) != 64 || mm.get2(1, 0) != 139 || mm.get2(1, 1) != 154) { return -10; }\n"
+        // 1-D inner "i,i->" [1,2,3]·[4,5,6] → 32
+        "        int32[] dv = { 1, 2, 3 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> v = Tensor.of<int32>(dv, s3);\n"
+        "        int32[] dw = { 4, 5, 6 };\n"
+        "        int64[] s3b = heap int64[1]; s3b[0] = 3;\n"
+        "        Tensor<int32> w = Tensor.of<int32>(dw, s3b);\n"
+        "        Tensor<int32>[] o7 = heap Tensor<int32>[2]; o7[0] = v; o7[1] = w;\n"
+        "        Tensor<int32> ip = Tensor.einsum<int32>(\"i,i->\", o7);\n"
+        "        if (ip.getAt(dummy) != 32) { return -11; }\n"
+        // batched matmul "bij,bjk->bik" (2,2,2)·(2,2,2)
+        "        int32[] dba = { 1, 2, 3, 4, 1, 0, 0, 1 };\n"     // batch0 [[1,2],[3,4]], batch1 I
+        "        int64[] s222 = heap int64[3]; s222[0] = 2; s222[1] = 2; s222[2] = 2;\n"
+        "        Tensor<int32> ba = Tensor.of<int32>(dba, s222);\n"
+        "        int32[] dbb = { 5, 6, 7, 8, 2, 3, 4, 5 };\n"     // batch0 [[5,6],[7,8]], batch1 [[2,3],[4,5]]
+        "        int64[] s222b = heap int64[3]; s222b[0] = 2; s222b[1] = 2; s222b[2] = 2;\n"
+        "        Tensor<int32> bb = Tensor.of<int32>(dbb, s222b);\n"
+        "        Tensor<int32>[] o8 = heap Tensor<int32>[2]; o8[0] = ba; o8[1] = bb;\n"
+        "        Tensor<int32> bm = Tensor.einsum<int32>(\"bij,bjk->bik\", o8);\n"
+        "        if (bm.ndim() != 3 || bm.shapeAt(0) != 2 || bm.shapeAt(1) != 2 || bm.shapeAt(2) != 2) { return -12; }\n"
+        "        Tensor<int32> bmc = bm.copy();\n"                 // [19,22,43,50, 2,3,4,5]
+        "        if (bmc.flatGet(0) != 19 || bmc.flatGet(3) != 50) { return -13; }\n"
+        "        if (bmc.flatGet(4) != 2 || bmc.flatGet(7) != 5) { return -14; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

@@ -1,6 +1,7 @@
 package cajeta.math;
 
 import cajeta.gpu.GpuBuffer;
+import cajeta.lang.String;
 
 /**
  * `Tensor<T>` — the keystone n-dimensional array (tensor-spec.md). A **strided
@@ -1754,6 +1755,238 @@ public class Tensor<T> {
                     kIdx[ka] = kIdx[ka] + 1;
                     if (kIdx[ka] >= cShape[ka]) { kIdx[ka] = 0; ka = ka - 1; }
                     else { kcarry = false; }
+                }
+            }
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = outNd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= outShape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /**
+     * Inner product over the **last axis** of each operand (numpy `inner`): for `a`
+     * of shape `(...i, k)` and `b` of shape `(...j, k)` with equal last axis `k`,
+     * returns shape `(...i, ...j)` with `out[i, j] = Σ_k a[i, k] * b[j, k]`. Two
+     * 1-D vectors give a 0-D scalar tensor (read it with `getAt`, any index — its
+     * `ndim` is 0). Unlike `dot`, `inner` contracts the last axis of *both* operands.
+     */
+    public static #Tensor<E> inner<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int32 ndA = a.ndim();
+        int32 ndB = b.ndim();
+        int64 k = a.shapeAt(ndA - 1);
+        int32 freeAn = ndA - 1;
+        int32 freeBn = ndB - 1;
+        int32 outNd = freeAn + freeBn;
+        int64[] outShape = heap int64[outNd];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < freeAn) { outShape[w] = a.shapeAt(i); w = w + 1; i = i + 1; }
+        i = 0;
+        while (i < freeBn) { outShape[w] = b.shapeAt(i); w = w + 1; i = i + 1; }
+        int64 outN = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] oidx = heap int64[outNd];
+        int64[] aIdx = heap int64[ndA];
+        int64[] bIdx = heap int64[ndB];
+        int32 z = 0;
+        while (z < outNd) { oidx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < outN) {
+            int32 d = 0;
+            while (d < freeAn) { aIdx[d] = oidx[d]; d = d + 1; }
+            d = 0;
+            while (d < freeBn) { bIdx[d] = oidx[freeAn + d]; d = d + 1; }
+            E acc = (E) 0;
+            int64 kk = 0;
+            while (kk < k) {
+                aIdx[freeAn] = kk;
+                bIdx[freeBn] = kk;
+                acc = acc + a.getAt(aIdx) * b.getAt(bIdx);
+                kk = kk + 1;
+            }
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = outNd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= outShape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /**
+     * Einstein-summation contraction (numpy `einsum`) over an explicit subscript
+     * `spec` and a list of `operands`. The spec is `in0,in1,...->out`
+     * (explicit `->` required), each label a single ASCII letter naming an axis;
+     * a label repeated within one operand selects its diagonal, a label absent from
+     * the output is summed over, and the output label order fixes the result axes.
+     * This covers transpose (`ij->ji`), trace (`ii->`), diagonal (`ii->i`), sum
+     * (`ij->`), reductions (`ij->i`), matmul (`ij,jk->ik`), batched matmul
+     * (`bij,bjk->bik`) and the inner product (`i,i->`).
+     *
+     * The engine is the general nested walk: for every output multi-index it sums,
+     * over every summed multi-index, the product of one element from each operand
+     * (each operand indexed by mapping its labels through the current per-label
+     * values). A label→size table and a label→value scratch (ASCII-indexed) carry
+     * the plan; per-operand axes read through {@link #getAt} so any stride/view is
+     * honoured. O(∏ all label sizes) — the test-sized floor; the GPU/matmul-routed
+     * fast path is a later unit. Accumulates in the element dtype `E`.
+     */
+    public static #Tensor<E> einsum<E extends Numeric>(String spec, Tensor<E>[] operands) {
+        int32 specLen = (int32) spec.count();
+        // Locate the explicit "->" (45='-', 62='>'); fall back to sum-all if absent.
+        int32 arrow = -1;
+        int32 fp = 0;
+        while (fp < specLen - 1) {
+            if (spec.charAt(fp) == (int8) 45 && spec.charAt(fp + 1) == (int8) 62) {
+                arrow = fp;
+                fp = specLen;
+            } else {
+                fp = fp + 1;
+            }
+        }
+        if (arrow < 0) { arrow = specLen; }
+
+        // Per-operand label offsets into a flat label buffer; widest operand rank.
+        int32 nOps = (int32) operands.count();
+        int32[] opOff = heap int32[nOps + 1];
+        opOff[0] = 0;
+        int32 maxNd = 0;
+        int32 oi = 0;
+        while (oi < nOps) {
+            int32 nd = operands[oi].ndim();
+            opOff[oi + 1] = opOff[oi] + nd;
+            if (nd > maxNd) { maxNd = nd; }
+            oi = oi + 1;
+        }
+        int32 totalLab = opOff[nOps];
+        int32[] labFlat = heap int32[totalLab];
+
+        // label (ASCII code) → axis size, filled as the input subscripts are walked.
+        int64[] dimOf = heap int64[128];
+
+        // Parse the input subscripts: 44=',' advances to the next operand; any other
+        // non-space char is an axis label for the current operand's next axis.
+        int32 curOp = 0;
+        int32 axisPos = 0;
+        int32 lp = 0;
+        while (lp < arrow) {
+            int8 cb = spec.charAt(lp);
+            if (cb == (int8) 44) {
+                curOp = curOp + 1;
+                axisPos = 0;
+            } else {
+                if (cb != (int8) 32) {
+                    int32 code = (int32) cb;
+                    labFlat[opOff[curOp] + axisPos] = code;
+                    dimOf[code] = operands[curOp].shapeAt(axisPos);
+                    axisPos = axisPos + 1;
+                }
+            }
+            lp = lp + 1;
+        }
+
+        // Output labels (in the order written) → result shape.
+        int32 outNd = 0;
+        int32 rp = arrow + 2;
+        while (rp < specLen) {
+            if (spec.charAt(rp) != (int8) 32) { outNd = outNd + 1; }
+            rp = rp + 1;
+        }
+        int32[] outLab = heap int32[outNd];
+        int64[] outShape = heap int64[outNd];
+        int32 op2 = 0;
+        rp = arrow + 2;
+        while (rp < specLen) {
+            int8 rcb = spec.charAt(rp);
+            if (rcb != (int8) 32) {
+                int32 rc = (int32) rcb;
+                outLab[op2] = rc;
+                outShape[op2] = dimOf[rc];
+                op2 = op2 + 1;
+            }
+            rp = rp + 1;
+        }
+
+        // Mark output labels; the rest (distinct input labels) are summed over.
+        boolean[] isOut = heap boolean[128];
+        int32 zz = 0;
+        while (zz < 128) { isOut[zz] = false; zz = zz + 1; }
+        int32 oj = 0;
+        while (oj < outNd) { isOut[outLab[oj]] = true; oj = oj + 1; }
+
+        boolean[] seenSum = heap boolean[128];
+        zz = 0;
+        while (zz < 128) { seenSum[zz] = false; zz = zz + 1; }
+        int32[] sumLab = heap int32[totalLab];
+        int64[] sumShape = heap int64[totalLab];
+        int32 sumNd = 0;
+        int32 li = 0;
+        while (li < totalLab) {
+            int32 code = labFlat[li];
+            if (!isOut[code] && !seenSum[code]) {
+                seenSum[code] = true;
+                sumLab[sumNd] = code;
+                sumShape[sumNd] = dimOf[code];
+                sumNd = sumNd + 1;
+            }
+            li = li + 1;
+        }
+        int64 sumN = 1;
+        int32 si = 0;
+        while (si < sumNd) { sumN = sumN * sumShape[si]; si = si + 1; }
+
+        // Nested walk: each output cell ← Σ over the summed indices of the product
+        // of one element from every operand.
+        int64 outN = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] valOf = heap int64[128];      // label code → current index value
+        int64[] eidx = heap int64[maxNd];     // reused per-operand index (getAt reads ndim)
+        int64[] oidx = heap int64[outNd];
+        int64[] sidx = heap int64[sumNd];
+        int32 zo = 0;
+        while (zo < outNd) { oidx[zo] = 0; zo = zo + 1; }
+        int64 lin = 0;
+        while (lin < outN) {
+            oj = 0;
+            while (oj < outNd) { valOf[outLab[oj]] = oidx[oj]; oj = oj + 1; }
+            int32 sr = 0;
+            while (sr < sumNd) { sidx[sr] = 0; sr = sr + 1; }
+            E acc = (E) 0;
+            int64 sl = 0;
+            while (sl < sumN) {
+                int32 ss = 0;
+                while (ss < sumNd) { valOf[sumLab[ss]] = sidx[ss]; ss = ss + 1; }
+                E term = (E) 1;
+                int32 oi2 = 0;
+                while (oi2 < nOps) {
+                    int32 base = opOff[oi2];
+                    int32 nd2 = opOff[oi2 + 1] - base;
+                    int32 ai = 0;
+                    while (ai < nd2) { eidx[ai] = valOf[labFlat[base + ai]]; ai = ai + 1; }
+                    term = term * operands[oi2].getAt(eidx);
+                    oi2 = oi2 + 1;
+                }
+                acc = acc + term;
+                sl = sl + 1;
+                int32 sa = sumNd - 1;
+                boolean scarry = true;
+                while (sa >= 0 && scarry) {
+                    sidx[sa] = sidx[sa] + 1;
+                    if (sidx[sa] >= sumShape[sa]) { sidx[sa] = 0; sa = sa - 1; }
+                    else { scarry = false; }
                 }
             }
             st.set(lin, acc);
