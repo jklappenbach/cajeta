@@ -1222,3 +1222,51 @@ TEST(NumpyOpsTests, gatherCpuGpuAgree) {
         "}\n";
     EXPECT_EQ(runI32Xpu(src), 1);
 }
+
+// 6a — 2-D matmul + 1-D dot (CPU GEMM floor). out[i,j] = Σ_p a[i,p]*b[p,j].
+TEST(NumpyOpsTests, matmulDotMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // 2x2 · 2x2
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s22);\n"          // [[1,2],[3,4]]
+        "        int32[] db = { 5, 6, 7, 8 };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s22b);\n"        // [[5,6],[7,8]]
+        "        Tensor<int32> c = Tensor.matmul<int32>(a, b);\n"         // [[19,22],[43,50]]
+        "        if (c.shapeAt(0) != 2 || c.shapeAt(1) != 2) { return -1; }\n"
+        "        if (c.get2(0, 0) != 19 || c.get2(0, 1) != 22 || c.get2(1, 0) != 43 || c.get2(1, 1) != 50) { return -2; }\n"
+        // non-square (2,3)·(3,2) → (2,2)
+        "        int32[] de = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<int32> e = Tensor.of<int32>(de, s23);\n"         // [[1,2,3],[4,5,6]]
+        "        int32[] df = { 7, 8, 9, 10, 11, 12 };\n"
+        "        int64[] s32 = heap int64[2]; s32[0] = 3; s32[1] = 2;\n"
+        "        Tensor<int32> f = Tensor.of<int32>(df, s32);\n"         // [[7,8],[9,10],[11,12]]
+        "        Tensor<int32> g = Tensor.matmul<int32>(e, f);\n"         // [[58,64],[139,154]]
+        "        if (g.shapeAt(0) != 2 || g.shapeAt(1) != 2) { return -3; }\n"
+        "        if (g.get2(0, 0) != 58 || g.get2(0, 1) != 64 || g.get2(1, 0) != 139 || g.get2(1, 1) != 154) { return -4; }\n"
+        // 1-D dot
+        "        int32[] dv = { 1, 2, 3 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> v = Tensor.of<int32>(dv, s3);\n"
+        "        int32[] dw = { 4, 5, 6 };\n"
+        "        int64[] s3b = heap int64[1]; s3b[0] = 3;\n"
+        "        Tensor<int32> w = Tensor.of<int32>(dw, s3b);\n"
+        "        if (Tensor.dot<int32>(v, w) != 32) { return -5; }\n"     // 4+10+18
+        // float matmul exactness
+        "        float32[] dp = { 1.0f, 0.0f, 0.0f, 1.0f };\n"
+        "        int64[] s22c = heap int64[2]; s22c[0] = 2; s22c[1] = 2;\n"
+        "        Tensor<float32> id = Tensor.of<float32>(dp, s22c);\n"   // identity
+        "        float32[] dq = { 2.0f, 3.0f, 4.0f, 5.0f };\n"
+        "        int64[] s22d = heap int64[2]; s22d[0] = 2; s22d[1] = 2;\n"
+        "        Tensor<float32> q = Tensor.of<float32>(dq, s22d);\n"
+        "        Tensor<float32> r = Tensor.matmul<float32>(id, q);\n"    // == q
+        "        if (r.get2(0, 0) != 2.0f || r.get2(1, 1) != 5.0f || r.get2(0, 1) != 3.0f) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

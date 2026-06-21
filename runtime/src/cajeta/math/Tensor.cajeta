@@ -1533,6 +1533,52 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, outShape, outStrides);
     }
 
+    // Contraction (Phase 6) — the CPU GEMM floor. `matmul` is the 2-D matrix product
+    // (m,k)·(k,n)→(m,n); `dot` is the 1-D inner product (scalar). Triple-loop GEMM,
+    // accumulating in the element dtype; the GPU CooperativeMatrix/tiled lowering rides
+    // the Ewise seam (later unit). cajeta owns GEMM — no BLAS.
+
+    /** 2-D matrix product `(m,k)·(k,n) → (m,n)` (numpy `matmul`/`@` for matrices):
+     *  `out[i,j] = Σ_p a[i,p] * b[p,j]`. */
+    public static #Tensor<E> matmul<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        Storage<E> st = heap Storage<E>(m * n);
+        int64 i = 0;
+        while (i < m) {
+            int64 j = 0;
+            while (j < n) {
+                E acc = (E) 0;
+                int64 p = 0;
+                while (p < k) {
+                    acc = acc + a.get2(i, p) * b.get2(p, j);
+                    p = p + 1;
+                }
+                st.set(i * n + j, acc);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** 1-D inner product `Σ a[i] * b[i]` as a scalar (numpy `dot` of two vectors). */
+    public static E dot<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 n = a.size();
+        E acc = (E) 0;
+        int64 i = 0;
+        while (i < n) {
+            acc = acc + a.get1(i) * b.get1(i);
+            i = i + 1;
+        }
+        return acc;
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**
