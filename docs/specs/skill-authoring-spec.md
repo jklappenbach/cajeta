@@ -39,13 +39,32 @@ Defines per-level **selection criteria** (when a skill at that level is warrante
 library is not flooded with thin skills) and a **review checklist**.
 
 Non-goals: storage/URI/resolution (see skill-discovery-spec), the search index, and the
-authoring toolchain. File format conventions are summarized in §8 but owned elsewhere.
+authoring toolchain. Storage, URI, and file-format conventions are summarized in §1.5
+but owned by the discovery spec.
 
 ### 1.4 Levels mirror canonical-name kinds
 The levels map onto the canonical-name kinds of the discovery spec (§3.1 there):
 **library → package → class → method**, with **component** inserted between package and
 class as a named group of cooperating classes (§6). A skill's `applies-to` frontmatter
 lists the canonical name(s) it serves, which is what binds content to a level.
+
+### 1.5 Concrete form — storage, id, URI (from the discovery spec)
+Authoring detail an author needs, summarized here from
+`docs/specs/skill-discovery-spec.md` (the owner) so you don't chase two specs:
+
+- **File** — one Markdown file per skill, authored under the package's `skills/`
+  source directory; at build it becomes a `skills/<id>.md` member of the library's
+  `.cja`, indexed by a per-package `skills/index.json` (discovery §2.1, §2.3).
+- **`id`** — the skill's archive member stem (`skills/<id>.md`); unique within the
+  library. Convention (still to be ratified, §11.2): a level-descriptive stem, e.g.
+  `io-file-overview`, `io-file-File`, `io-file-File-writeAllBytes`.
+- **`applies-to`** — the canonical name(s) this skill is bound to, in the four kinds:
+  library (`cajeta.io`), package (`cajeta/io/file`), class (`cajeta/io/file/File`),
+  method (`cajeta/io/file/File.writeAllBytes`). This is what Search resolves.
+- **URI** — a published skill is addressed as
+  `cja-skill://<library>@<version>/<id>`; the version is the resolved (lockfile)
+  version, so a held URI is a stable cache key (discovery §2.2). Authors write the
+  `id`/`applies-to`; the `<library>@<version>` prefix is supplied at resolution.
 
 ## 2. Cross-cutting requirements (every skill, every level)
 

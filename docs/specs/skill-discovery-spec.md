@@ -67,7 +67,8 @@ exactly as the code they describe).
 Every skill has a **URI** that is its stable identity. The URI is *logical*, not a
 network location: it names a **library** coordinate, a version, and a skill id, and is
 **resolved against the locally-resolved archive** (via the lockfile) to the in-archive
-member. Proposed form _(exact grammar settled at plan unit D.4)_:
+member. Form _(**ratified**; grammar settled at plan unit D.4, implemented in
+`src/cajeta/buildtool/skill/SkillUri`)_:
 
 ```
 cja-skill://<library>@<version>/<skill-id>
@@ -81,11 +82,16 @@ e.g.  cja-skill://cajeta.io@1.4.2/file-open
 - The URI is stable across machines for the same resolved version, so a held URI is a
   valid cache key — the agent skips Get when it already holds the payload for a URI.
 
-### 2.3 Open points
-- Exact URI scheme/grammar (host-less `cja-skill://` vs. another form).
-- In-archive member layout (e.g. `skills/<id>.<ext>` + a `skills/index`).
-- How version is pinned in a returned URI — the resolved (lockfile) version vs. the
-  declared range.
+### 2.3 Resolved (formerly open)
+These were settled during planning/implementation (plan units D.1–D.4):
+- **URI scheme/grammar** — host-less `cja-skill://<library>@<version>/<skill-id>`
+  (`src/cajeta/buildtool/skill/SkillUri`).
+- **In-archive member layout** — skill bodies are `skills/<id>.md` members, plus a
+  per-package `skills/index.json` whose schema is canonical-name → `[id]` and
+  `id → {title, member-path}` (plan §D.2, `skill/SkillIndex`). The index carries **no
+  per-skill version** (§3.4).
+- **Version pinning** — a returned URI pins the **resolved (lockfile) version**, not a
+  declared range, so it is a stable cross-machine identity (§2.2, §3.4).
 
 ## 3. Canonical-name model & match semantics
 
