@@ -70,6 +70,33 @@ void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
     mpm.run(m, env.mam);
 }
 
+void optimizeModuleThinLTOPreLink(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
+    if (level == OptLevel::O0) {
+        // Same rationale as optimizeModule's O0 branch: honor `alwaysinline`
+        // (the AlwaysInlinerPass is the only transform), but here it also lets a
+        // ThinLTO build at O0 still fold @Inline hot paths once imported.
+        PassEnv env(tm);
+        llvm::ModulePassManager mpm;
+        mpm.addPass(llvm::AlwaysInlinerPass());
+        mpm.run(m, env.mam);
+        return;
+    }
+    llvm::OptimizationLevel lv;
+    switch (level) {
+        case OptLevel::O1: lv = llvm::OptimizationLevel::O1; break;
+        case OptLevel::O2: lv = llvm::OptimizationLevel::O2; break;
+        case OptLevel::O3: lv = llvm::OptimizationLevel::O3; break;
+        default:           return;
+    }
+    PassEnv env(tm);
+    // Pre-link half: optimize locally but leave cross-module work (import +
+    // inlining) for the linker's ThinLTO backend. This is what makes the module
+    // summary meaningful — full per-module optimization here would prematurely
+    // localize/strip symbols the importer still needs.
+    llvm::ModulePassManager mpm = env.pb.buildThinLTOPreLinkDefaultPipeline(lv);
+    mpm.run(m, env.mam);
+}
+
 void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm) {
     if (f.isDeclaration()) return;
     PassEnv env(tm);

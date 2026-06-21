@@ -6945,9 +6945,20 @@ namespace cajeta {
             }
         }
 
+        // Devirtualize when the static receiver type is provably its own
+        // dynamic type: a `final` class has no subclasses, so the resolved
+        // method is the only possible target — dispatch it directly instead of
+        // through the opaque `__cajeta_vtable_lookup` runtime call. This is what
+        // lets the optimizer inline leaf-class hot paths (e.g. ArrayList.add)
+        // into the caller's loop, the way Rust `Vec::push` / C++ `vector::push_back`
+        // inline. Interface receivers stay virtual (the static type isn't the
+        // concrete impl); `invokeMethod`'s forceDirectCall path handles the rest.
+        bool targetIsFinalClass = targetClass
+            && !targetClass->isInterface()
+            && targetClass->getModifiers().count(FINAL) > 0;
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
-            /*forceDirectCall=*/isSuperCall,
+            /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
             /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
 
         if (nullSafeStringMethod) {

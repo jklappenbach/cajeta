@@ -13,6 +13,8 @@
 #include "cajeta/runtime/EmbeddedTls.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Analysis/ModuleSummaryAnalysis.h"   // buildModuleSummaryIndex (ThinLTO)
+#include "llvm/Analysis/ProfileSummaryInfo.h"       // ProfileSummaryInfo (summary input)
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
@@ -1351,6 +1353,29 @@ namespace cajeta {
                     return;
                 }
 
+                // ThinLTO (--lto=thin, --emit=exe): emit ThinLTO bitcode + module
+                // summary instead of a native object, so the link-time backend can
+                // import + inline ACROSS module boundaries (e.g. an @Inline
+                // `ArrayList<int32>::add` — emitted into the stdlib module — folds
+                // into a user append loop in another module). Without this, each
+                // module is a closed native object and `alwaysinline`/`@Inline`
+                // can't cross the boundary. linkExecutable drives the fork's
+                // version-matched lld over these. (Obj emit stays native — there's
+                // no link step there to run the ThinLTO backend.)
+                if (flags.lto == LtoMode::Thin && emitMode == EmitMode::Exe) {
+                    llvm::Module& M = *module->getLlvmModule();
+                    optimizeModuleThinLTOPreLink(M, targetMachine, flags.opt);
+                    llvm::ProfileSummaryInfo psi(M);
+                    llvm::ModuleSummaryIndex index =
+                        llvm::buildModuleSummaryIndex(M, /*GetBFICallback=*/nullptr, &psi);
+                    llvm::WriteBitcodeToFile(M, dest,
+                        /*ShouldPreserveUseListOrder=*/false, &index,
+                        /*GenerateHash=*/true);
+                    dest.flush();
+                    objectFiles.push_back(objPath);
+                    return;
+                }
+
                 // IR optimization (--opt). No-op at O0 (the historical default);
                 // O2/O3 run the full per-module pipeline (incl. LoopVectorize +
                 // SLP) over this user module before codegen.
@@ -1711,13 +1736,43 @@ namespace cajeta {
             nativeArchives = std::move(*resolved);
         }
 
+        // ThinLTO link: drive the C compiler (for CRT/libc) but force the
+        // FORK's version-matched ld.lld, which can read this compiler's bitcode
+        // summary and run the ThinLTO backend (cross-module import + inlining).
+        // A system lld on PATH may be a different LLVM version and reject the
+        // bitcode. We point the driver at the fork's tools dir with `-B<dir>` and
+        // `-fuse-ld=lld` (gcc rejects an absolute `-fuse-ld=` path, but searches
+        // `-B` prefixes for `ld.lld`; clang honors both). Fall back to PATH `lld`
+        // with a warning so a non-ThinLTO use is unaffected.
+        std::vector<std::string> thinLtoLinkArgs;  // empty unless lto=thin
+        if (flags.lto == LtoMode::Thin) {
+#ifdef CAJETA_LLVM_TOOLS_BIN
+            std::string forkBin = CAJETA_LLVM_TOOLS_BIN;
+            if (std::filesystem::exists(forkBin + "/ld.lld")) {
+                thinLtoLinkArgs.push_back("-B" + forkBin);
+                thinLtoLinkArgs.push_back("-fuse-ld=lld");
+            }
+#endif
+            if (thinLtoLinkArgs.empty()) {
+                cerr << "cajeta: --lto=thin: version-matched fork ld.lld not found; "
+                        "falling back to PATH lld (may reject the bitcode if its "
+                        "LLVM version differs)."
+                     << std::endl;
+                if (haveLld) thinLtoLinkArgs.push_back("-fuse-ld=lld");
+            }
+        }
+
         buildtool::SubprocessResult res;
         bool launched = false;
         std::string usedDriver;
         for (const auto& drv : drivers) {
             buildtool::SubprocessOptions opt;
             opt.argv.push_back(drv);
-            if (haveLld) opt.argv.push_back("-fuse-ld=lld");
+            if (!thinLtoLinkArgs.empty()) {
+                for (const auto& a : thinLtoLinkArgs) opt.argv.push_back(a);
+            } else if (haveLld) {
+                opt.argv.push_back("-fuse-ld=lld");
+            }
             for (const auto& obj : objectFiles) opt.argv.push_back(obj);
             // The standalone TLS native object (resolves `__cajeta_tls_*`,
             // always referenced by the stdlib). Linked on every platform; the

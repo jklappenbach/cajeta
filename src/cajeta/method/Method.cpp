@@ -1188,6 +1188,22 @@ namespace cajeta {
             llvmFunction->addFnAttr(llvm::Attribute::AlwaysInline);
         }
 
+        // @Inline / @NoInline — user-facing inlining control, the two halves of
+        // the container hot/cold idiom. `@Inline` forces a small hot method to
+        // fold into its caller (AlwaysInlinerPass runs even at O0, and crucially
+        // forces the inline ACROSS ThinLTO module boundaries — e.g. stdlib
+        // `ArrayList.add` into a user append loop, matching Rust `Vec::push` /
+        // C++ `vector::push_back`). `@NoInline` keeps a cold slow path
+        // (grow/rehash) out-of-line so it never bloats that hot method past the
+        // inline threshold; also `cold` so block placement favors the hot path.
+        // Mutually exclusive — @Inline wins if both are (mistakenly) present.
+        if (findAnnotation("Inline") != nullptr) {
+            llvmFunction->addFnAttr(llvm::Attribute::AlwaysInline);
+        } else if (findAnnotation("NoInline") != nullptr) {
+            llvmFunction->addFnAttr(llvm::Attribute::NoInline);
+            llvmFunction->addFnAttr(llvm::Attribute::Cold);
+        }
+
         // Tag the hidden sret pointer (arg 0) so the backend + optimizer treat
         // it as the return slot. Idempotent across reprototype calls.
         if (sretReturn && sretStructTy && llvmFunction->arg_size() > 0) {
