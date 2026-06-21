@@ -6,6 +6,7 @@ import cajeta.io.file.FileWriter;
 import cajeta.codec.json.JsonReader;
 import cajeta.codec.json.JsonValue;
 import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonArray;
 import cajeta.codec.json.JsonWriter;
 import cajeta.codec.json.JsonParseException;
 import cajeta.process.Command;
@@ -349,10 +350,68 @@ public class Server {
             a[0] = "list-skills";
             a[1] = "--json";
             Server.runSkill(out, id, a, 2, "skills");
+        } else if (name.equals("getSkills")) {
+            if (toolArgs == null || toolArgs.containsKey("uris") == false) {
+                Server.writeError(out, id, -32602, "getSkills requires 'uris'");
+                return;
+            }
+            JsonValue uv = toolArgs.get("uris");
+            if (uv == null || uv.kind() != JsonValue.ARRAY) {
+                Server.writeError(out, id, -32602, "getSkills 'uris' must be an array");
+                return;
+            }
+            String[] a = heap String[3];
+            a[0] = "get-skills";
+            a[1] = Server.joinUris(uv.asArray());
+            a[2] = "--json";
+            Server.runSkill(out, id, a, 3, "skills");
         } else {
-            // getSkills (C2 follow-up), compile (C3), jit_execute (C4): stub.
+            // compile (C3), jit_execute (C4): stub.
             Server.writeStub(out, id);
         }
+    }
+
+    /** Comma-join the string elements of `arr` into a single String. */
+    public static #String joinUris(JsonArray arr) {
+        int32 n = arr.count();
+        int32 total = 0;
+        int32 emitted = 0;
+        int32 i = 0;
+        while (i < n) {
+            JsonValue e = arr.get(i);
+            if (e.kind() == JsonValue.STRING) {
+                if (emitted > 0) {
+                    total = total + 1;
+                }
+                total = total + e.asBytesLength();
+                emitted = emitted + 1;
+            }
+            i = i + 1;
+        }
+        int8[] buf = heap int8[total];
+        int32 pos = 0;
+        emitted = 0;
+        i = 0;
+        while (i < n) {
+            JsonValue e = arr.get(i);
+            if (e.kind() == JsonValue.STRING) {
+                if (emitted > 0) {
+                    buf[pos] = (int8) 44;
+                    pos = pos + 1;
+                }
+                int8[] eb = e.asBytes();
+                int32 el = e.asBytesLength();
+                int32 k = 0;
+                while (k < el) {
+                    buf[pos] = eb[k];
+                    pos = pos + 1;
+                    k = k + 1;
+                }
+                emitted = emitted + 1;
+            }
+            i = i + 1;
+        }
+        return heap String(#buf, total);
     }
 
     public static void writeStub(FileWriter out, JsonValue id) {
