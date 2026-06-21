@@ -1364,6 +1364,26 @@ namespace cajeta {
                 // no link step there to run the ThinLTO backend.)
                 if (flags.lto == LtoMode::Thin && emitMode == EmitMode::Exe) {
                     llvm::Module& M = *module->getLlvmModule();
+                    // Stamp the host CPU + feature set as per-function attributes.
+                    // The ld.lld ThinLTO backend builds its OWN TargetMachine and
+                    // reads `target-cpu`/`target-features` from each function (the
+                    // way clang emits them) — it does NOT see this compiler's
+                    // TargetMachine. Without the attributes the backend codegens
+                    // the generic x86-64 baseline (SSE2), so the SIMD hot loops
+                    // (e.g. XXHash3.hashLong) lose AVX-512/AVX2/FMA and run ~3x
+                    // slower than the non-LTO build. (The non-LTO path is fine —
+                    // it codegens directly through the native TargetMachine.)
+                    {
+                        llvm::StringRef tcpu = targetMachine->getTargetCPU();
+                        std::string tfeat = targetMachine->getTargetFeatureString().str();
+                        for (llvm::Function& f : M) {
+                            if (f.isDeclaration()) continue;
+                            if (!tcpu.empty() && !f.hasFnAttribute("target-cpu"))
+                                f.addFnAttr("target-cpu", tcpu);
+                            if (!tfeat.empty() && !f.hasFnAttribute("target-features"))
+                                f.addFnAttr("target-features", tfeat);
+                        }
+                    }
                     optimizeModuleThinLTOPreLink(M, targetMachine, flags.opt);
                     llvm::ProfileSummaryInfo psi(M);
                     llvm::ModuleSummaryIndex index =
@@ -1759,6 +1779,16 @@ namespace cajeta {
                         "LLVM version differs)."
                      << std::endl;
                 if (haveLld) thinLtoLinkArgs.push_back("-fuse-ld=lld");
+            }
+            // Drive the ThinLTO backend at O3 to match the non-LTO O3 pipeline
+            // (buildPerModuleDefaultPipeline(O3)). lld's default LTO opt level is
+            // O2, which vectorizes the SIMD hot loops (e.g. XXHash3.hashLong)
+            // far less aggressively — a ~3x throughput regression vs the non-LTO
+            // build. The per-function target-cpu/target-features (cpu=native)
+            // propagate into the backend, so AVX-512/FMA stay available; only
+            // the backend opt level needed lifting.
+            if (!thinLtoLinkArgs.empty()) {
+                thinLtoLinkArgs.push_back("-Wl,--lto-O3");
             }
         }
 
