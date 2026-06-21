@@ -489,6 +489,39 @@ namespace cajeta {
         }
     }
 
+    // Evaluate a compile-time-constant integer index from the AST: an integer
+    // literal, or a unary +/- applied to one. Returns true + the value when
+    // constant-foldable. Used for the static inline-array bounds check, which
+    // must catch `f[-1]` — under overflow checking the negation lowers to a
+    // checked-sub intrinsic, so the post-codegen LLVM value is not a folded
+    // ConstantInt.
+    static bool tryEvalConstIntIndex(const AbstractSyntaxNodePtr& node, int64_t& out) {
+        if (auto lit = dynamic_pointer_cast<IntegerLiteralExpression>(node)) {
+            string raw = lit->getRawValue();
+            __int128_t v;
+            switch (lit->getIntegerLiteralType()) {
+                case INTEGER_LITERAL_TYPE_HEX:    v = LiteralUtils::hexToInt128(raw, 64); break;
+                case INTEGER_LITERAL_TYPE_BINARY: v = LiteralUtils::binaryToInt128(raw, 64); break;
+                case INTEGER_LITERAL_TYPE_OCT:    v = LiteralUtils::octalToInt128(raw, 64); break;
+                default:                          v = LiteralUtils::decimalToInt128(raw, 64); break;
+            }
+            out = (int64_t) v;
+            return true;
+        }
+        if (auto pre = dynamic_pointer_cast<PrefixExpression>(node)) {
+            PrefixOp op = pre->getOp();
+            if ((op == PREFIX_OP_NEGATIVE || op == PREFIX_OP_POSITIVE)
+                    && !pre->getChildren().empty()) {
+                int64_t inner;
+                if (tryEvalConstIntIndex(pre->getChildren()[0], inner)) {
+                    out = (op == PREFIX_OP_NEGATIVE) ? -inner : inner;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     llvm::Value* ArrayIndexExpression::generateCode(CajetaModulePtr module) {
         // Each ArrayIndexExpression handles exactly one index level. children[0] is the
         // array expression (a ptr to a header `{ i64 size, [0 x T] data }`); children[1]
@@ -724,6 +757,32 @@ namespace cajeta {
         // compile-time constant N.
         if (arrayType->isInlineArray()) {
             int64_t n = arrayType->getFixedLength();
+            // Static bounds check: the length N is known at compile time, so a
+            // constant index proven out of [0, N) is a compile error (spec
+            // 2.1.7) rather than a runtime trap. Evaluate the constant from the
+            // AST (catches `f[-1]`, whose checked negation isn't a folded
+            // ConstantInt); fall back to a folded LLVM constant for constant
+            // expressions the AST walk doesn't cover.
+            int64_t civ = 0;
+            bool indexIsConst = tryEvalConstIntIndex(children[1], civ);
+            if (!indexIsConst) {
+                if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(idx)) {
+                    civ = ci->getSExtValue();
+                    indexIsConst = true;
+                }
+            }
+            if (indexIsConst && (civ < 0 || civ >= n)) {
+                std::string fieldName;
+                if (auto dot = dynamic_pointer_cast<DotExpression>(lhsExpr)) {
+                    fieldName = dot->getIdentifier();
+                }
+                throw Exception(
+                    "inline array index " + std::to_string(civ)
+                        + " out of bounds for field '" + fieldName
+                        + "' of length " + std::to_string(n)
+                        + " (valid 0.." + std::to_string(n - 1) + ")",
+                    "CAJETA_ERROR_INLINE_ARRAY_INDEX_OUT_OF_BOUNDS");
+            }
             BoundsCheck boundsMode = module->getFlags().bounds;
             if (boundsMode != BoundsCheck::Off) {
                 llvm::Value* size = llvm::ConstantInt::get(i64Ty, (uint64_t) n);
