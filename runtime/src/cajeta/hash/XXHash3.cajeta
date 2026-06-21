@@ -129,13 +129,13 @@ public final class XXHash3 implements Hasher {
      * ```
      */
     public static int64 hash(int8[] data, int64 len) {
-        // The pure-Cajeta SIMD long path (hashLong, below) is verified
-        // bit-for-bit correct vs the native XXH3_64bits_withSeed, and the chained
-        // Vector<int64,8> codegen bugs that blocked it are fixed. It is not yet
-        // wired in as production: the accumulator currently spills under the 16x
-        // stripe-loop unroll (register pressure), making it slower than the
-        // native one-shot. Route here once that perf gap closes
-        // (agents/cajeta/Simd-plan.md Phase 0.6).
+        // hashLong (below) is a verified-correct pure-Cajeta SIMD XXH3 long path,
+        // but it is gated off production: each stripe carries a per-method scope
+        // frame (save_top/enter/exit_to + vzeroupper, scope_enter heap-allocs)
+        // from the inlined spawn-free value-type operators, which dominates the
+        // loop and makes it slower than the native one-shot. The fix — eliding
+        // the per-method scope frame for spawn-free method bodies — is SIMD plan
+        // Phase 0.6; route here once it lands.
         return XXHash3.oneshot(data, len, Hash.processSeed());
     }
 
@@ -334,34 +334,29 @@ public final class XXHash3 implements Hasher {
         Cajeta.storeU64(accBuf, 56, 0x000000009E3779B1L); // PRIME32_1
         Vector<int64,8> acc = Cajeta.vload8i64(accBuf, 0); // INIT_ACC, then stays in registers
 
-        // The accumulate is inlined (not a per-stripe call) so `acc` stays in a
-        // zmm register across the whole loop — a 512-bit by-value argument would
-        // otherwise spill to the stack on every one of the ~16K stripes.
-        int64 nbBlocks = (len - 1) / 1024;
-        int64 bIdx = 0;
-        while (bIdx < nbBlocks) {
-            int64 base = bIdx * 1024;
-            int64 s = 0;
-            while (s < 16) {
-                Vector<int64,8> d = Cajeta.vload8i64(data, base + s * 64);
-                Vector<int64,8> key = d ^ Cajeta.vload8i64(secret, s * 8);
-                Vector<int64,8> hi = key >>> 32;
-                acc = acc + Cajeta.vswapPairs(d) + (key & 0xFFFFFFFFL) * hi;
-                s = s + 1;
-            }
-            Vector<int64,8> shifted = acc >>> 47;
-            acc = ((acc ^ shifted) ^ Cajeta.vload8i64(secret, 128)) * 0x000000009E3779B1L;
-            bIdx = bIdx + 1;
-        }
-
-        int64 nbStripes = ((len - 1) - 1024 * nbBlocks) / 64;
-        int64 s2 = 0;
-        while (s2 < nbStripes) {
-            Vector<int64,8> d = Cajeta.vload8i64(data, nbBlocks * 1024 + s2 * 64);
-            Vector<int64,8> key = d ^ Cajeta.vload8i64(secret, s2 * 8);
+        // A single flat stripe loop with a VARIABLE trip count so the optimizer
+        // doesn't fully unroll it: under a 16x unroll the serial `acc` dependency
+        // + per-stripe temps overflow the zmm file and `acc` spills to the stack
+        // every stripe. As one rolled loop, `acc` stays a zmm-register PHI.
+        // `inBlock` counts 0..15 within each 1024-byte block (== the stripe's
+        // secret index); a full block of 16 triggers the scramble. The trailing
+        // partial block (< 16 stripes) and the final stripe get no scramble —
+        // exactly the XXH3 long-path structure.
+        int64 totalStripes = (len - 1) / 64; // every stripe but the special last
+        int64 si = 0;
+        int64 inBlock = 0;
+        while (si < totalStripes) {
+            Vector<int64,8> d = Cajeta.vload8i64(data, si * 64);
+            Vector<int64,8> key = d ^ Cajeta.vload8i64(secret, inBlock * 8);
             Vector<int64,8> hi = key >>> 32;
             acc = acc + Cajeta.vswapPairs(d) + (key & 0xFFFFFFFFL) * hi;
-            s2 = s2 + 1;
+            inBlock = inBlock + 1;
+            if (inBlock == 16) {
+                Vector<int64,8> shifted = acc >>> 47;
+                acc = ((acc ^ shifted) ^ Cajeta.vload8i64(secret, 128)) * 0x000000009E3779B1L;
+                inBlock = 0;
+            }
+            si = si + 1;
         }
         // The always-present last stripe (secret + 192 - 64 - 7).
         Vector<int64,8> dl = Cajeta.vload8i64(data, len - 64);
