@@ -867,3 +867,35 @@ TEST(NumpyOpsTests, argAnyAllCountMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 4a — var/std (with ddof) and nan-variants. Textbook set [2,4,4,4,5,5,7,9]:
+// mean 5, Σ(x-μ)²=32, var(ddof=0)=4, std=2 (both exact in float32). nansum/nanmean
+// skip NaN; a plain sum over NaN data is NaN.
+TEST(NumpyOpsTests, varStdNanMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float32[] dx = { 2.0f, 4.0f, 4.0f, 4.0f, 5.0f, 5.0f, 7.0f, 9.0f };\n"
+        "        int64[] sx = heap int64[1]; sx[0] = 8;\n"
+        "        Tensor<float32> x = Tensor.of<float32>(dx, sx);\n"
+        "        if (Tensor.variance<float32, float32>(x, 0) != 4.0f) { return -1; }\n"   // population
+        "        if (Tensor.std<float32, float32>(x, 0) != 2.0f) { return -2; }\n"
+        // sample variance ddof=1 = 32/7 ≈ 4.5714286 (tolerance compare)
+        "        float32 v1 = Tensor.variance<float32, float32>(x, 1);\n"
+        "        float32 dv = v1 - 4.5714285f; if (dv < 0.0f) { dv = 0.0f - dv; }\n"
+        "        if (dv > 0.001f) { return -3; }\n"
+        // nan handling
+        "        float32[] dn = { 1.0f, 2.0f, 3.0f };\n"
+        "        int64[] sn = heap int64[1]; sn[0] = 3;\n"
+        "        Tensor<float32> t = Tensor.of<float32>(dn, sn);\n"
+        "        float32 zz = 0.0f; float32 nan = zz / zz;\n"                       // NaN
+        "        t.set1(1, nan);\n"                                                  // [1, NaN, 3]
+        "        if (Tensor.nansum<float32, float32>(t) != 4.0f) { return -4; }\n"   // 1+3
+        "        if (Tensor.nanmean<float32, float32>(t) != 2.0f) { return -5; }\n"  // 4/2
+        "        float32 rs = Tensor.sum<float32, float32>(t);\n"
+        "        if (rs == rs) { return -6; }\n"                                     // plain sum is NaN
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

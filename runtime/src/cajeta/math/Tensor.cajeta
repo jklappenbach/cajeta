@@ -2483,6 +2483,110 @@ public class Tensor<T> {
         return true;
     }
 
+    // Statistical + nan-aware reductions (Phase 4 unit 4) — full-array, floating
+    // result. `var`/`std` take `ddof` (numpy delta-degrees-of-freedom: divide by
+    // n-ddof; ddof=0 is the population variance, ddof=1 the sample). The nan-variants
+    // skip NaN (detected by `e != e`), so they need a floating element type.
+
+    /** Variance over all elements in floating `R` (numpy `a.var(ddof=, dtype=R)`):
+     *  `Σ(x-μ)² / (n - ddof)`. Two passes (mean, then squared deviations). */
+    public static R variance<E extends Numeric, R extends Floating>(Tensor<E> t, int32 ddof) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R s = (R) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            s = s + (R) e;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        R mean = s / (R) n;
+        k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R ss = (R) 0;
+        lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            R d = (R) e - mean;
+            ss = ss + d * d;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        int64 denom = n - ddof;
+        return ss / (R) denom;
+    }
+
+    /** Standard deviation over all elements in floating `R` (numpy `a.std(ddof=)`):
+     *  `sqrt(var)`. */
+    public static R std<E extends Numeric, R extends Floating>(Tensor<E> t, int32 ddof) {
+        return Math.sqrt(Tensor.variance<E, R>(t, ddof));
+    }
+
+    /** Σ over the non-NaN elements (numpy `nansum`); NaN treated as zero. */
+    public static R nansum<E extends Floating, R extends Floating>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R acc = (R) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (e == e) { acc = acc + (R) e; }   // skip NaN (NaN != NaN)
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Mean of the non-NaN elements (numpy `nanmean`): `Σ_notnan / count_notnan`. */
+    public static R nanmean<E extends Floating, R extends Floating>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R acc = (R) 0;
+        int64 cnt = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (e == e) { acc = acc + (R) e; cnt = cnt + 1; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc / (R) cnt;
+    }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**
