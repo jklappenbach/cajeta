@@ -46,7 +46,11 @@ public class StringBuildBench extends Benchmark {
             i = i + 1;
         }
         String s = sb.toString();
-        this.finalLen = (int64) s.count();
+        // size() is the O(1) byte length (== n*8). Use it, not count(), which
+        // does an O(N) UTF-8 codepoint walk the competitor builders don't do
+        // (Go Len() / Rust len() / Java length() are all O(1)) — measuring count()
+        // here would charge Cajeta for a full UTF-8 decode the others skip.
+        this.finalLen = s.size();
     }
 
     public boolean checkResult() {
