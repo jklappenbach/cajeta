@@ -75,6 +75,62 @@ TEST(NumpyOpsTests, eyeMatchesNumpy) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 3a — arange<E>(start, stop, step): half-open [start, stop) in steps of `step`
+// (numpy 3-arg arange). count = ceil((stop-start)/step), clamped to >= 0; value[i]
+// = start + i*step. Coexists with the 1-arg arange<E>(n) via value-param arity.
+TEST(NumpyOpsTests, arangeRangeMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tensor<int32> r = Tensor.arange<int32>(2, 10, 2);\n"            // [2,4,6,8]
+        "        if (r.ndim() != 1) { return -1; }\n"
+        "        if (r.size() != 4) { return -2; }\n"
+        "        if (r.get1(0) != 2 || r.get1(1) != 4 || r.get1(2) != 6 || r.get1(3) != 8) { return -3; }\n"
+        "        Tensor<float32> f = Tensor.arange<float32>(0.0f, 1.0f, 0.25f);\n" // [0,0.25,0.5,0.75]
+        "        if (f.size() != 4) { return -4; }\n"
+        "        if (f.get1(0) != 0.0f || f.get1(1) != 0.25f || f.get1(2) != 0.5f || f.get1(3) != 0.75f) { return -5; }\n"
+        "        Tensor<int32> neg = Tensor.arange<int32>(10, 0, -3);\n"          // [10,7,4,1]
+        "        if (neg.size() != 4) { return -6; }\n"
+        "        if (neg.get1(0) != 10 || neg.get1(1) != 7 || neg.get1(2) != 4 || neg.get1(3) != 1) { return -7; }\n"
+        "        Tensor<int32> empty = Tensor.arange<int32>(5, 5, 1);\n"          // []
+        "        if (empty.size() != 0) { return -8; }\n"
+        "        Tensor<int32> one = Tensor.arange<int32>(7);\n"                  // 1-arg still resolves
+        "        if (one.size() != 7 || one.get1(6) != 6) { return -9; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 3a — meshgrid<E>(x, y): coordinate grids (numpy default 'xy' indexing). For x of
+// length Nx and y of length Ny returns [X, Y], each shaped (Ny, Nx), with
+// X[i,j] = x[j] and Y[i,j] = y[i].
+TEST(NumpyOpsTests, meshgridMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] dx = { 1, 2, 3 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> x = Tensor.of<int32>(dx, s3);\n"
+        "        int32[] dy = { 10, 20 };\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<int32> y = Tensor.of<int32>(dy, s2);\n"
+        "        Tensor<int32>[] g = Tensor.meshgrid<int32>(x, y);\n"
+        "        Tensor<int32> X = g[0];\n"
+        "        Tensor<int32> Y = g[1];\n"
+        "        if (X.ndim() != 2 || Y.ndim() != 2) { return -1; }\n"
+        "        if (X.shapeAt(0) != 2 || X.shapeAt(1) != 3) { return -2; }\n"    // (Ny,Nx) = (2,3)
+        "        if (Y.shapeAt(0) != 2 || Y.shapeAt(1) != 3) { return -3; }\n"
+        "        if (X.get2(0, 0) != 1 || X.get2(0, 1) != 2 || X.get2(0, 2) != 3) { return -4; }\n"
+        "        if (X.get2(1, 0) != 1 || X.get2(1, 1) != 2 || X.get2(1, 2) != 3) { return -5; }\n"
+        "        if (Y.get2(0, 0) != 10 || Y.get2(0, 1) != 10 || Y.get2(0, 2) != 10) { return -6; }\n"
+        "        if (Y.get2(1, 0) != 20 || Y.get2(1, 1) != 20 || Y.get2(1, 2) != 20) { return -7; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 3b/3e — elementwise binary arithmetic (add/sub/mul) over the Tensor, same-dtype,
 // with right-aligned broadcasting (matches numpy). CPU floor; div/comparison/etc.
 // follow in later units (they carry dtype-promotion / bool-result subtleties).

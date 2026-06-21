@@ -174,6 +174,31 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
+    /**
+     * 1-D tensor over the **half-open** interval `[start, stop)` in steps of `step`
+     * (numpy 3-arg `arange`): `count = ceil((stop-start)/step)` clamped to `>= 0`,
+     * `value[i] = start + i*step`. Works with a negative `step` (descending range);
+     * an empty range yields a length-0 tensor. Coexists with {@link #arange(int64)}
+     * (the `[0,n)` form) by value-parameter arity.
+     */
+    public static #Tensor<E> arange<E>(E start, E stop, E step) {
+        float64 raw = ((float64) stop - (float64) start) / (float64) step;
+        int64 count = (int64) Math.ceil(raw);
+        if (count < 0) { count = 0; }
+        Storage<E> st = heap Storage<E>(count);
+        int64 i = 0;
+        while (i < count) {
+            E v = start + (E) i * step;
+            st.set(i, v);
+            i = i + 1;
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = count;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
     /** Tensor of `shape` (C-order) holding a copy of the first `size` of `data`. */
     public static #Tensor<E> of<E>(E[] data, int64[] shape) {
         int64 n = Tensor.productOf(shape);
@@ -281,6 +306,45 @@ public class Tensor<T> {
         }
         int64[] strides = Tensor.contigStrides(shape, MemoryOrder.C);
         return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /**
+     * Coordinate grids from two 1-D coordinate vectors (numpy `meshgrid`, default
+     * 'xy' indexing). For `x` of length Nx and `y` of length Ny, returns `[X, Y]`,
+     * each of shape `(Ny, Nx)`: `X[i,j] = x[j]` (varies across columns) and
+     * `Y[i,j] = y[i]` (varies down rows). Each output owns its own shape/strides.
+     */
+    public static #Tensor<E>[] meshgrid<E>(Tensor<E> x, Tensor<E> y) {
+        int64 nx = x.size();
+        int64 ny = y.size();
+        int64 total = nx * ny;
+        Storage<E> sx = heap Storage<E>(total);
+        Storage<E> sy = heap Storage<E>(total);
+        int64 i = 0;
+        while (i < ny) {
+            E yv = y.get1(i);
+            int64 j = 0;
+            while (j < nx) {
+                E xv = x.get1(j);
+                int64 flat = i * nx + j;
+                sx.set(flat, xv);
+                sy.set(flat, yv);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] shapeX = heap int64[2];
+        shapeX[0] = ny;
+        shapeX[1] = nx;
+        int64[] shapeY = heap int64[2];
+        shapeY[0] = ny;
+        shapeY[1] = nx;
+        int64[] stridesX = Tensor.contigStrides(shapeX, MemoryOrder.C);
+        int64[] stridesY = Tensor.contigStrides(shapeY, MemoryOrder.C);
+        Tensor<E>[] out = heap Tensor<E>[2];
+        out[0] = heap Tensor<E>(#sx, 0, shapeX, stridesX);
+        out[1] = heap Tensor<E>(#sy, 0, shapeY, stridesY);
+        return #out;
     }
 
     // ────────────────────────────── accessors ────────────────────────────────
