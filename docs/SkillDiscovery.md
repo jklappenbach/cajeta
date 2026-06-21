@@ -3,7 +3,8 @@
 Skills are short, hand-authored guides that travel **inside** a library's `.cja`
 archive and tell an agent (or a human) how to implement against that library's
 symbols. Skill discovery lets you ask, by canonical name, "what guidance ships
-for this?" and fetch it — entirely offline, from the resolved dependency set.
+for this?" and fetch it — entirely offline, from the resolved dependency set
+(plus the always-available stdlib skills baked into the compiler — see below).
 
 See `docs/specs/skill-discovery-spec.md` for the full specification.
 
@@ -51,6 +52,36 @@ At package build, `skills/*.md` are validated, indexed (`skills/index.json`), an
 embedded as `skills/<id>.md` members in the `.cja`. An invalid skill fails the
 build with a diagnostic naming the file and field. A package with no `skills/`
 dir simply ships no index — nothing else changes.
+
+### Compression (spec §2.4)
+
+Skill members are stored **compressed** as part of the `.cja` protocol — the
+archive zstd-compresses every entry on write and transparently decompresses on
+read (each entry is framed `uint64 uncompressed_length || zstd_bytes`; the format
+header flags `FLAG_ENTRIES_COMPRESSED`). Discovery reads decompressed payloads;
+nothing on the read path sees compressed bytes. This is the compiler/build-tool's
+own C++ `libzstd` (`zstd.h`), **not** the `cajeta.wire` decompressor (which is for
+cajeta *programs*, not compiler internals).
+
+## Stdlib skills are always available (spec §2.5)
+
+The standard library's skills are **embedded in the compiler** (a compressed
+corpus baked into the `cajeta` binary), so they are discoverable in **every**
+project with **no `cajeta.lock` and no dependencies** — a missing lockfile is not
+an error. `search-skill` / `list-skills` / `get-skills` always seed the embedded
+stdlib archives in addition to whatever the lockfile resolves; `get-skills`
+resolves an embedded stdlib URI directly from the baked-in corpus before any
+`.cja` lookup.
+
+Stdlib URIs carry the stdlib skill version (currently `1.0`):
+
+```console
+$ cajeta search-skill cajeta.process        # works in an empty dir, no lockfile
+cja-skill://cajeta.process@1.0/process-overview	cajeta.process
+```
+
+The same holds through the MCP server (`searchSkills` / `getSkills`), which shells
+out to these CLI subcommands.
 
 ## The URI scheme
 
@@ -115,6 +146,7 @@ id: file-open
 ```
 
 `get-skills` takes a comma-delimited URI list, resolves each `<library>@<version>`
-through the lockfile to a local `.cja`, and prints each payload labeled by URI. A
+(an embedded stdlib URI from the baked-in corpus, otherwise through the lockfile
+to a local `.cja`), and prints each payload labeled by URI. A
 bad or uncached URI is reported as a per-URI error without failing the others.
 Everything is offline — Get never touches the network.
