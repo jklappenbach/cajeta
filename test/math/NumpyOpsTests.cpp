@@ -980,3 +980,43 @@ TEST(NumpyOpsTests, reductionsCpuGpuAgree) {
         "}\n";
     EXPECT_EQ(runI32Xpu(src), 1);
 }
+
+// 5a — reshape-family view ops: ravel/flatten (1-D), swapaxes/transposeAxes/moveaxis
+// (axis permutation views), flipAll (reverse every axis). Views share storage; values
+// verified through get1/get2, and moveaxis through a contiguous copy.
+TEST(NumpyOpsTests, shapeViewOpsMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] d = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(d, s23);\n"            // [[1,2,3],[4,5,6]]
+        "        Tensor<int32> r = a.ravel();\n"
+        "        if (r.ndim() != 1 || r.size() != 6) { return -1; }\n"
+        "        if (r.get1(0) != 1 || r.get1(5) != 6) { return -2; }\n"
+        "        Tensor<int32> f = a.flatten();\n"
+        "        if (f.ndim() != 1 || f.get1(3) != 4) { return -3; }\n"
+        "        Tensor<int32> sw = a.swapaxes(0, 1);\n"                   // (3,2) [[1,4],[2,5],[3,6]]
+        "        if (sw.shapeAt(0) != 3 || sw.shapeAt(1) != 2) { return -4; }\n"
+        "        if (sw.get2(0, 0) != 1 || sw.get2(0, 1) != 4 || sw.get2(2, 1) != 6 || sw.get2(1, 0) != 2) { return -5; }\n"
+        "        int32[] perm = { 1, 0 };\n"
+        "        Tensor<int32> ta = a.transposeAxes(perm);\n"             // same as swapaxes(0,1)
+        "        if (ta.shapeAt(0) != 3 || ta.get2(0, 1) != 4 || ta.get2(2, 0) != 3) { return -6; }\n"
+        "        Tensor<int32> mv = a.moveaxis(0, 1);\n"                   // 2-D move == swap → (3,2)
+        "        if (mv.shapeAt(0) != 3 || mv.shapeAt(1) != 2 || mv.get2(0, 1) != 4) { return -7; }\n"
+        "        Tensor<int32> fa = a.flipAll();\n"                        // reverse both axes
+        "        if (fa.get2(0, 0) != 6 || fa.get2(1, 2) != 1 || fa.get2(0, 2) != 4) { return -8; }\n"
+        // 3-D moveaxis(0,2): (1,2,3) -> (2,3,1); verify shape + values via a contiguous copy
+        "        int32[] d3 = { 1, 2, 3, 4, 5, 6 };\n"
+        "        int64[] s123 = heap int64[3]; s123[0] = 1; s123[1] = 2; s123[2] = 3;\n"
+        "        Tensor<int32> b = Tensor.of<int32>(d3, s123);\n"         // [[[1,2,3],[4,5,6]]]
+        "        Tensor<int32> bm = b.moveaxis(0, 2);\n"                  // (2,3,1)
+        "        if (bm.ndim() != 3 || bm.shapeAt(0) != 2 || bm.shapeAt(1) != 3 || bm.shapeAt(2) != 1) { return -9; }\n"
+        "        Tensor<int32> bc = bm.copy();\n"                          // contiguous C-order: out[i][j][0]=b[0][i][j]
+        "        if (bc.flatGet(0) != 1 || bc.flatGet(1) != 2 || bc.flatGet(2) != 3) { return -10; }\n"
+        "        if (bc.flatGet(3) != 4 || bc.flatGet(5) != 6) { return -11; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

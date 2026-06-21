@@ -1007,6 +1007,116 @@ public class Tensor<T> {
         return this.makeView(this.offsetVal, ns, nst);
     }
 
+    // Reshape-family axis ops (Phase 5 unit 1). `ravel` is view-if-contiguous (numpy
+    // ravel); `flatten` always copies. `swapaxes`/`moveaxis`/`transposeAxes`/`flipAll`
+    // are pure **views** — they only re-order/negate shape+stride metadata and share
+    // `Storage` (numpy gives views for all of these).
+
+    /** 1-D contiguous flattening (numpy `ravel`): a **view** when already contiguous,
+     *  otherwise a fresh contiguous **copy**. */
+    public #Tensor<T> ravel() {
+        int64[] ns = heap int64[1];
+        ns[0] = this.size();
+        return this.reshape(ns);
+    }
+
+    /** 1-D **copy** (numpy `flatten`): always independent contiguous storage. */
+    public #Tensor<T> flatten() {
+        int64[] ns = heap int64[1];
+        ns[0] = this.size();
+        return this.materialize(ns);
+    }
+
+    /** Swap axes `a` and `b` (numpy `swapaxes`): a **view** with their shape+stride
+     *  exchanged. Negative axes wrap. */
+    public #Tensor<T> swapaxes(int32 a, int32 b) {
+        int32 nd = (int32) this.shapeDims.count();
+        int32 ax = a;
+        if (ax < 0) { ax = ax + nd; }
+        int32 bx = b;
+        if (bx < 0) { bx = bx + nd; }
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            ns[i] = this.shapeDims[i];
+            nst[i] = this.strideDims[i];
+            i = i + 1;
+        }
+        ns[ax] = this.shapeDims[bx];
+        nst[ax] = this.strideDims[bx];
+        ns[bx] = this.shapeDims[ax];
+        nst[bx] = this.strideDims[ax];
+        return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    /** Move axis `src` to position `dst` (numpy `moveaxis`), other axes keeping their
+     *  relative order: a **view**. Negative axes wrap. */
+    public #Tensor<T> moveaxis(int32 src, int32 dst) {
+        int32 nd = (int32) this.shapeDims.count();
+        int32 s = src;
+        if (s < 0) { s = s + nd; }
+        int32 d = dst;
+        if (d < 0) { d = d + nd; }
+        // remaining axes (all but src), in order; then splice src in at position d
+        int32[] rem = heap int32[nd - 1];
+        int32 r = 0;
+        int32 i = 0;
+        while (i < nd) {
+            if (i != s) { rem[r] = i; r = r + 1; }
+            i = i + 1;
+        }
+        int32[] perm = heap int32[nd];
+        int32 w = 0;
+        int32 j = 0;
+        while (j < d) { perm[w] = rem[j]; w = w + 1; j = j + 1; }
+        perm[w] = s;
+        w = w + 1;
+        while (j < nd - 1) { perm[w] = rem[j]; w = w + 1; j = j + 1; }
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            ns[k] = this.shapeDims[perm[k]];
+            nst[k] = this.strideDims[perm[k]];
+            k = k + 1;
+        }
+        return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    /** General axis permutation (numpy `transpose(axes)`): a **view** whose axis `i`
+     *  is the input's axis `perm[i]`. `perm` must be a permutation of `0..ndim-1`. */
+    public #Tensor<T> transposeAxes(int32[] perm) {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            int32 p = perm[i];
+            ns[i] = this.shapeDims[p];
+            nst[i] = this.strideDims[p];
+            i = i + 1;
+        }
+        return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    /** Reverse element order along **every** axis (numpy `flip(m)` with `axis=None`):
+     *  a **view** with all strides negated and the offset at the far corner. */
+    public #Tensor<T> flipAll() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int64 newOff = this.offsetVal;
+        int32 i = 0;
+        while (i < nd) {
+            ns[i] = this.shapeDims[i];
+            nst[i] = -this.strideDims[i];
+            newOff = newOff + (this.shapeDims[i] - 1) * this.strideDims[i];
+            i = i + 1;
+        }
+        return this.makeView(newOff, ns, nst);
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**
