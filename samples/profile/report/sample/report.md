@@ -6,24 +6,24 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| json-tokenize | twitter | cajeta | stdlib | 631514 | 0.617 | 0.630 | 1.02G/s | 620 | ok |
-| json-tokenize | citm_catalog | cajeta | stdlib | 1727204 | 1.477 | 1.584 | 1.17G/s | 1988 | ok |
-| json-tokenize | canada | cajeta | stdlib | 2251051 | 2.477 | 2.505 | 908.76M/s | 3688 | ok |
-| json-bind-skip | twitter | cajeta | stdlib | 631514 | 0.170 | 0.171 | 3.72G/s | 2788 | ok |
-| json-bind-skip | citm_catalog | cajeta | stdlib | 1727204 | 0.435 | 0.438 | 3.97G/s | 4 | ok |
-| json-bind-skip | canada | cajeta | stdlib | 2251051 | 0.816 | 0.822 | 2.76G/s | 4 | ok |
+| json-tokenize | twitter | cajeta | stdlib | 631514 | 0.705 | 0.715 | 896.34M/s | 620 | ok |
+| json-tokenize | citm_catalog | cajeta | stdlib | 1727204 | 1.419 | 1.480 | 1.22G/s | 2128 | ok |
+| json-tokenize | canada | cajeta | stdlib | 2251051 | 2.382 | 2.411 | 944.85M/s | 3716 | ok |
+| json-bind-skip | twitter | cajeta | stdlib | 631514 | 0.164 | 0.165 | 3.84G/s | 2816 | ok |
+| json-bind-skip | citm_catalog | cajeta | stdlib | 1727204 | 0.428 | 0.431 | 4.04G/s | 4 | ok |
+| json-bind-skip | canada | cajeta | stdlib | 2251051 | 0.780 | 0.783 | 2.89G/s | 4 | ok |
 | json-dom | twitter | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| json-dom | citm_catalog | cajeta | stdlib | 1727204 | 6.596 | 6.936 | 261.84M/s | 479400 | ok |
+| json-dom | citm_catalog | cajeta | stdlib | 1727204 | 6.473 | 6.908 | 266.83M/s | 479400 | ok |
 | json-dom | canada | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
 | json-serialize | twitter | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| json-serialize | citm_catalog | cajeta | stdlib | 1727204 | 2.756 | 3.303 | 626.76M/s | 595216 | ok |
+| json-serialize | citm_catalog | cajeta | stdlib | 1727204 | 2.519 | 3.140 | 685.76M/s | 595216 | ok |
 | json-serialize | canada | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
 | json-roundtrip | twitter | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| json-roundtrip | citm_catalog | cajeta | stdlib | 1727204 | 15.221 | 15.849 | 113.47M/s | 1074744 | ok |
+| json-roundtrip | citm_catalog | cajeta | stdlib | 1727204 | 15.020 | 15.734 | 115.00M/s | 1074744 | ok |
 | json-roundtrip | canada | cajeta | stdlib | -1 |  |  |  | -1 | skipped |
-| json-conformance |  | cajeta | stdlib | 14 | 0.013 | 0.015 | 1.04M/s | 848 | ok |
-| base64-encode |  | cajeta | stdlib | 1048576 | 0.946 | 0.968 | 1.11G/s | 136560 | ok |
-| base64-decode |  | cajeta | stdlib | 1048576 | 1.176 | 1.211 | 891.35M/s | 102416 | ok |
+| json-conformance |  | cajeta | stdlib | 14 | 0.015 | 0.016 | 957.79K/s | 848 | ok |
+| base64-encode |  | cajeta | stdlib | 1048576 | 1.186 | 1.200 | 884.36M/s | 136560 | ok |
+| base64-decode |  | cajeta | stdlib | 1048576 | 1.168 | 1.181 | 898.01M/s | 102416 | ok |
 | json-dom |  | rust | serde_json | 631514 | 1.129 | 1.152 | 559.40M/s | -1 | ok |
 | json-dom |  | rust | simd-json | 631514 | 0.725 | 0.738 | 871.30M/s | -1 | ok |
 | json-dom |  | rust | serde_json | 1727204 | 1.621 | 1.665 | 1.07G/s | -1 | ok |
@@ -62,13 +62,13 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| arraylist-append |  | cajeta | stdlib | 100000 | 0.174 | 0.177 | 574.16M/s | 45360 | ok |
-| hashmap-int |  | cajeta | stdlib | 50000 | 1.709 | 1.732 | 29.25M/s | 69132 | ok |
-| hashmap-string |  | cajeta | stdlib | 30000 | 8.891 | 9.126 | 3.37M/s | 338920 | ok |
-| hashset-dedup |  | cajeta | stdlib | 100000 | 1.689 | 1.704 | 59.21M/s | 46104 | ok |
-| linkedlist-insert-traverse |  | cajeta | stdlib | 40000 | 0.680 | 0.704 | 58.86M/s | 56268 | ok |
-| heap-sort |  | cajeta | stdlib | 50000 | 4.008 | 4.046 | 12.48M/s | 13680 | ok |
-| redblacktree-insert-lookup |  | cajeta | stdlib | 20000 | 1.986 | 2.044 | 10.07M/s | 25016 | ok |
+| arraylist-append |  | cajeta | stdlib | 100000 | 0.176 | 0.187 | 568.30M/s | 45360 | ok |
+| hashmap-int |  | cajeta | stdlib | 50000 | 1.706 | 1.735 | 29.31M/s | 69132 | ok |
+| hashmap-string |  | cajeta | stdlib | 30000 | 8.977 | 9.138 | 3.34M/s | 338920 | ok |
+| hashset-dedup |  | cajeta | stdlib | 100000 | 1.619 | 1.638 | 61.77M/s | 46104 | ok |
+| linkedlist-insert-traverse |  | cajeta | stdlib | 40000 | 0.704 | 0.729 | 56.78M/s | 56268 | ok |
+| heap-sort |  | cajeta | stdlib | 50000 | 3.426 | 3.439 | 14.59M/s | 13680 | ok |
+| redblacktree-insert-lookup |  | cajeta | stdlib | 20000 | 1.972 | 2.045 | 10.14M/s | 25016 | ok |
 | hashmap-int |  | rust | std-HashMap | 50000 | 1.024 | 1.032 | 48.84M/s | -1 | ok |
 | hashmap-int |  | rust | ahash | 50000 | 0.310 | 0.333 | 161.18M/s | -1 | ok |
 | hashmap-string |  | rust | std-HashMap | 30000 | 3.728 | 3.760 | 8.05M/s | -1 | ok |
@@ -98,13 +98,13 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| sort-int64 | random | cajeta | stdlib | 50000 | 2.990 | 3.015 | 16.72M/s | 11752 | ok |
-| sort-int64 | ascending | cajeta | stdlib | 50000 | 0.833 | 0.839 | 60.05M/s | 11752 | ok |
-| sort-int64 | descending | cajeta | stdlib | 50000 | 1.001 | 1.007 | 49.95M/s | 11752 | ok |
-| sort-int64 | dups | cajeta | stdlib | 50000 | 17.012 | 17.089 | 2.94M/s | 11752 | ok |
-| sort-f64 |  | cajeta | stdlib | 50000 | 3.426 | 3.446 | 14.59M/s | 11752 | ok |
-| sort-stable-int64 |  | cajeta | stdlib | 50000 | 2.258 | 2.280 | 22.14M/s | 23456 | ok |
-| binary-search |  | cajeta | stdlib | 50000 | 3.608 | 3.628 | 13.86M/s | 11732 | ok |
+| sort-int64 | random | cajeta | stdlib | 50000 | 2.823 | 2.842 | 17.71M/s | 11752 | ok |
+| sort-int64 | ascending | cajeta | stdlib | 50000 | 0.851 | 0.856 | 58.73M/s | 11752 | ok |
+| sort-int64 | descending | cajeta | stdlib | 50000 | 1.037 | 1.045 | 48.23M/s | 11752 | ok |
+| sort-int64 | dups | cajeta | stdlib | 50000 | 16.650 | 16.684 | 3.00M/s | 11752 | ok |
+| sort-f64 |  | cajeta | stdlib | 50000 | 2.980 | 2.990 | 16.78M/s | 11752 | ok |
+| sort-stable-int64 |  | cajeta | stdlib | 50000 | 2.200 | 2.214 | 22.73M/s | 23456 | ok |
+| binary-search |  | cajeta | stdlib | 50000 | 3.585 | 3.602 | 13.95M/s | 11732 | ok |
 | sort-int64 | random | rust | std-unstable | 50000 | 0.414 | 0.427 | 120.79M/s | -1 | ok |
 | sort-int64 | ascending | rust | std-unstable | 50000 | 0.011 | 0.011 | 4.71G/s | -1 | ok |
 | sort-int64 | descending | rust | std-unstable | 50000 | 0.013 | 0.013 | 3.80G/s | -1 | ok |
@@ -144,10 +144,10 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| string-build-concat |  | cajeta | stdlib | 4000 | 0.031 | 0.033 | 129.37M/s | 2880 | ok |
-| string-search |  | cajeta | stdlib | 360448 | 0.023 | 0.024 | 15.34G/s | 0 | ok |
-| string-replace |  | cajeta | stdlib | 360448 | 0.229 | 0.234 | 1.58G/s | 18800 | ok |
-| string-uppercase |  | cajeta | stdlib | 360448 | 0.323 | 0.329 | 1.11G/s | 17600 | ok |
+| string-build-concat |  | cajeta | stdlib | 4000 | 0.031 | 0.032 | 130.56M/s | 2880 | ok |
+| string-search |  | cajeta | stdlib | 360448 | 0.026 | 0.026 | 13.66G/s | 0 | ok |
+| string-replace |  | cajeta | stdlib | 360448 | 0.300 | 0.305 | 1.20G/s | 18800 | ok |
+| string-uppercase |  | cajeta | stdlib | 360448 | 0.223 | 0.228 | 1.61G/s | 17600 | ok |
 | string-search |  | rust | std-find | 360448 | 0.021 | 0.021 | 17.08G/s | -1 | ok |
 | string-search |  | rust | memchr | 360448 | 0.004 | 0.004 | 81.59G/s | -1 | ok |
 | string-replace |  | rust | std-replace | 360448 | 0.095 | 0.097 | 3.80G/s | -1 | ok |
@@ -174,10 +174,10 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| xxhash3 |  | cajeta | stdlib | 1048576 | 0.023 | 0.023 | 45.58G/s | 0 | ok |
-| siphash |  | cajeta | stdlib | 1048576 | 0.246 | 0.246 | 4.27G/s | 0 | ok |
-| sha256 |  | cajeta | stdlib | 1048576 | 2.266 | 2.283 | 462.84M/s | 0 | ok |
-| md5 |  | cajeta | stdlib | 1048576 | 1.718 | 1.723 | 610.26M/s | 0 | ok |
+| xxhash3 |  | cajeta | stdlib | 1048576 | 0.007 | 0.007 | 149.07G/s | 0 | ok |
+| siphash |  | cajeta | stdlib | 1048576 | 0.247 | 0.247 | 4.25G/s | 0 | ok |
+| sha256 |  | cajeta | stdlib | 1048576 | 2.274 | 2.290 | 461.10M/s | 0 | ok |
+| md5 |  | cajeta | stdlib | 1048576 | 1.642 | 1.648 | 638.74M/s | 0 | ok |
 | xxhash3 |  | rust | xxhash-rust | 1048576 | 0.013 | 0.013 | 78.22G/s | -1 | ok |
 | sha256 |  | rust | sha2 | 1048576 | 0.467 | 0.475 | 2.25G/s | -1 | ok |
 | md5 |  | rust | md-5 | 1048576 | 1.202 | 1.219 | 872.09M/s | -1 | ok |
@@ -203,8 +203,8 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| stream-filter-map-reduce |  | cajeta | stdlib | 1000000 | 23.908 | 23.955 | 41.83M/s | 0 | ok |
-| stream-parallel-reduce |  | cajeta | stdlib | 1000000 | 10.159 | 11.707 | 98.43M/s | 0 | ok |
+| stream-filter-map-reduce |  | cajeta | stdlib | 1000000 | 24.011 | 24.185 | 41.65M/s | 0 | ok |
+| stream-parallel-reduce |  | cajeta | stdlib | 1000000 | 10.213 | 11.694 | 97.91M/s | 0 | ok |
 | stream-filter-map-reduce |  | rust | Iterator | 1000000 | 0.658 | 0.661 | 1.52G/s | -1 | ok |
 | stream-parallel-reduce |  | rust | rayon | 1000000 | 0.084 | 0.104 | 11.86G/s | -1 | ok |
 | stream-filter-map-reduce |  | cpp | hand-loop | 1000000 | 0.059 | 0.059 | 17.05G/s | -1 | ok |
@@ -220,9 +220,9 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| saxpy |  | cajeta | stdlib | 1000000 | 0.596 | 0.605 | 1.68G/s | 16 | ok |
-| dot-product |  | cajeta | stdlib | 1000000 | 0.391 | 0.392 | 2.56G/s | 16 | ok |
-| matmul |  | cajeta | stdlib | 40000 | 3.140 | 3.146 | 12.74M/s | 16 | ok |
+| saxpy |  | cajeta | stdlib | 1000000 | 0.587 | 0.597 | 1.70G/s | 16 | ok |
+| dot-product |  | cajeta | stdlib | 1000000 | 0.391 | 0.394 | 2.56G/s | 16 | ok |
+| matmul |  | cajeta | stdlib | 40000 | 2.827 | 2.832 | 14.15M/s | 16 | ok |
 | saxpy |  | rust | scalar | 1000000 | 0.604 | 0.617 | 1.66G/s | -1 | ok |
 | dot-product |  | rust | scalar | 1000000 | 0.399 | 0.403 | 2.51G/s | -1 | ok |
 | matmul |  | rust | scalar | 40000 | 2.261 | 2.270 | 17.69M/s | -1 | ok |
@@ -243,9 +243,9 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| clbg-mandelbrot |  | cajeta | stdlib | 640000 | 28.288 | 28.335 | 22.62M/s | 16 | ok |
-| clbg-fannkuch-redux |  | cajeta | stdlib | 10 | 152.049 | 153.105 | 66/s | 16 | ok |
-| clbg-spectral-norm |  | cajeta | stdlib | 100 | 1.656 | 1.667 | 60.39K/s | 88 | ok |
+| clbg-mandelbrot |  | cajeta | stdlib | 640000 | 28.776 | 28.812 | 22.24M/s | 16 | ok |
+| clbg-fannkuch-redux |  | cajeta | stdlib | 10 | 146.849 | 147.495 | 68/s | 16 | ok |
+| clbg-spectral-norm |  | cajeta | stdlib | 100 | 1.632 | 1.639 | 61.26K/s | 88 | ok |
 | clbg-mandelbrot |  | rust | scalar | 640000 | 25.661 | 25.780 | 24.94M/s | -1 | ok |
 | clbg-fannkuch-redux |  | rust | scalar | 10 | 157.950 | 160.003 | 63/s | -1 | ok |
 | clbg-spectral-norm |  | rust | scalar | 100 | 0.206 | 0.207 | 484.92K/s | -1 | ok |
@@ -266,8 +266,8 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| time-instant-arith |  | cajeta | stdlib | 1000000 | 20.542 | 20.573 | 48.68M/s | 16 | ok |
-| time-localdate-arith |  | cajeta | stdlib | 100000 | 2.033 | 2.035 | 49.20M/s | 16 | ok |
+| time-instant-arith |  | cajeta | stdlib | 1000000 | 20.746 | 20.782 | 48.20M/s | 16 | ok |
+| time-localdate-arith |  | cajeta | stdlib | 100000 | 2.032 | 2.036 | 49.22M/s | 20 | ok |
 | time-instant-arith |  | rust | chrono | 1000000 | 6.638 | 6.709 | 150.65M/s | -1 | ok |
 | time-localdate-arith |  | rust | chrono | 100000 | 0.533 | 0.543 | 187.70M/s | -1 | ok |
 | time-instant-arith |  | cpp | std::chrono | 1000000 | 0.098 | 0.098 | 10.24G/s | -1 | ok |
@@ -283,8 +283,8 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| atomic-fetchadd |  | cajeta | stdlib | 1000000 | 5.275 | 5.286 | 189.56M/s | 20 | ok |
-| task-spawn-await |  | cajeta | stdlib | 20000 | 85.801 | 95.233 | 233.10K/s | 16 | ok |
+| atomic-fetchadd |  | cajeta | stdlib | 1000000 | 5.276 | 5.292 | 189.54M/s | 20 | ok |
+| task-spawn-await |  | cajeta | stdlib | 20000 | 84.399 | 84.540 | 236.97K/s | 16 | ok |
 | atomic-fetchadd |  | rust | AtomicI64 | 1000000 | 3.908 | 3.915 | 255.91M/s | -1 | ok |
 | task-spawn-await |  | rust | std::thread | 20000 | 420.911 | 429.083 | 47.52K/s | -1 | ok |
 | atomic-fetchadd |  | cpp | std::atomic | 1000000 | 3.917 | 3.930 | 255.29M/s | -1 | ok |
