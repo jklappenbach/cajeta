@@ -1511,6 +1511,122 @@ public class Tensor<T> {
         return heap Tensor<boolean>(#st, 0, rshape, rstrides);
     }
 
+    /**
+     * Shared **unary floating** kernel (spec §6 transcendental/rounding). Maps each
+     * element of `a` (read by index over `a`'s own shape) through a `cajeta.lang.Math`
+     * intrinsic, producing a fresh contiguous `Tensor<E>`. `op`: `0`=sqrt `1`=sin `2`=cos
+     * `3`=exp `4`=log `5`=floor `6`=ceil `7`=round. `E` is `Floating`, so an integer type
+     * argument is a compile-time error (6.2.5).
+     */
+    static #Tensor<E> ufloat<E extends Floating>(Tensor<E> a, int32 op) {
+        int32 nd = (int32) a.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = a.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = a.readBroadcast(idx);
+            E r = Math.sqrt(v);
+            if (op == 1) { r = Math.sin(v); }
+            if (op == 2) { r = Math.cos(v); }
+            if (op == 3) { r = Math.exp(v); }
+            if (op == 4) { r = Math.log(v); }
+            if (op == 5) { r = Math.floor(v); }
+            if (op == 6) { r = Math.ceil(v); }
+            if (op == 7) { r = Math.round(v); }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Shared **unary numeric** kernel (neg / abs). `op`: `0`=neg (`-v`), `1`=abs
+     * (`Math.abs`). `E` is `Numeric` — these are valid on integers and floats alike.
+     */
+    static #Tensor<E> unum<E extends Numeric>(Tensor<E> a, int32 op) {
+        int32 nd = (int32) a.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = a.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = a.readBroadcast(idx);
+            E r = -v;
+            if (op == 1) { r = Math.abs(v); }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise square root (floating). */
+    public static #Tensor<E> sqrt<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 0); }
+    /** Elementwise sine (floating). */
+    public static #Tensor<E> sin<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 1); }
+    /** Elementwise cosine (floating). */
+    public static #Tensor<E> cos<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 2); }
+    /** Elementwise exponential (floating). */
+    public static #Tensor<E> exp<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 3); }
+    /** Elementwise natural log (floating). */
+    public static #Tensor<E> log<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 4); }
+    /** Elementwise floor (floating). */
+    public static #Tensor<E> floor<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 5); }
+    /** Elementwise ceil (floating). */
+    public static #Tensor<E> ceil<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 6); }
+    /** Elementwise round (floating; round-half-up per `Math.round`). */
+    public static #Tensor<E> round<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 7); }
+    /** Elementwise negation (any numeric). */
+    public static #Tensor<E> neg<E extends Numeric>(Tensor<E> a) { return Tensor.unum<E>(a, 0); }
+    /** Elementwise absolute value (any numeric). */
+    public static #Tensor<E> abs<E extends Numeric>(Tensor<E> a) { return Tensor.unum<E>(a, 1); }
+
     // ────────────────────────────── indexing (Phase 5) ───────────────────────
 
     /**

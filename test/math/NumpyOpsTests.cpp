@@ -380,3 +380,60 @@ TEST(NumpyOpsTests, bitwiseDomainRejectsFloat) {
         "}\n";
     EXPECT_THROW(runI32(src), cajeta::Exception);
 }
+
+// 5.1.1 — unary transcendental/rounding on a float tensor match numpy; neg/abs work on
+// any numeric (spec §6 transcendental/rounding). Inputs chosen for exact results.
+TEST(NumpyOpsTests, unaryFloatMatchesNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        float32[] fa = { 4.0f, 9.0f, 16.0f, 25.0f };\n"
+        "        Tensor<float32> t = Tensor.of<float32>(fa, s22);\n"
+        "        Tensor<float32> sq = Tensor.sqrt<float32>(t);\n"          // 2,3,4,5
+        "        if (sq.get2(0,0)!=2.0f || sq.get2(0,1)!=3.0f || sq.get2(1,0)!=4.0f || sq.get2(1,1)!=5.0f) { return -1; }\n"
+        "        Tensor<float32> ng = Tensor.neg<float32>(t);\n"           // -4,-9,-16,-25
+        "        if (ng.get2(0,0)!=-4.0f || ng.get2(1,1)!=-25.0f) { return -2; }\n"
+        "        Tensor<float32> ab = Tensor.abs<float32>(ng);\n"          // 4,9,16,25
+        "        if (ab.get2(0,0)!=4.0f || ab.get2(1,1)!=25.0f) { return -3; }\n"
+        "        float32[] zd = { 0.0f, 0.0f, 0.0f, 0.0f };\n"
+        "        Tensor<float32> z = Tensor.of<float32>(zd, s22);\n"
+        "        Tensor<float32> ex = Tensor.exp<float32>(z);\n"           // 1,1,1,1
+        "        if (ex.get2(0,0)!=1.0f || ex.get2(1,1)!=1.0f) { return -4; }\n"
+        "        Tensor<float32> si = Tensor.sin<float32>(z);\n"           // 0,0,0,0
+        "        if (si.get2(0,0)!=0.0f) { return -5; }\n"
+        "        Tensor<float32> co = Tensor.cos<float32>(z);\n"           // 1,1,1,1
+        "        if (co.get2(0,0)!=1.0f) { return -6; }\n"
+        "        float32[] od = { 1.0f, 1.0f, 1.0f, 1.0f };\n"
+        "        Tensor<float32> o = Tensor.of<float32>(od, s22);\n"
+        "        Tensor<float32> lg = Tensor.log<float32>(o);\n"           // 0,0,0,0
+        "        if (lg.get2(0,0)!=0.0f) { return -7; }\n"
+        "        float32[] fr = { 3.7f, 3.2f, -1.2f, -1.8f };\n"
+        "        Tensor<float32> tf = Tensor.of<float32>(fr, s22);\n"
+        "        Tensor<float32> fl = Tensor.floor<float32>(tf);\n"        // 3,3,-2,-2
+        "        if (fl.get2(0,0)!=3.0f || fl.get2(0,1)!=3.0f || fl.get2(1,0)!=-2.0f || fl.get2(1,1)!=-2.0f) { return -8; }\n"
+        "        Tensor<float32> cl = Tensor.ceil<float32>(tf);\n"         // 4,4,-1,-1
+        "        if (cl.get2(0,0)!=4.0f || cl.get2(0,1)!=4.0f || cl.get2(1,0)!=-1.0f || cl.get2(1,1)!=-1.0f) { return -9; }\n"
+        "        Tensor<float32> rd = Tensor.round<float32>(tf);\n"        // 4,3,-1,-2
+        "        if (rd.get2(0,0)!=4.0f || rd.get2(0,1)!=3.0f || rd.get2(1,0)!=-1.0f || rd.get2(1,1)!=-2.0f) { return -10; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 5.1.2 — a transcendental on an integer tensor is a compile error (Floating bound,
+// spec 6.2.5). neg/abs are NOT rejected (Numeric domain).
+TEST(NumpyOpsTests, unaryDomainRejectsInt) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 1, 2 };\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s2);\n"
+        "        Tensor<int32> r = Tensor.sin<int32>(a);\n"                // int32 ∉ Floating
+        "        return r.size() > 0 ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_THROW(runI32(src), cajeta::Exception);
+}
