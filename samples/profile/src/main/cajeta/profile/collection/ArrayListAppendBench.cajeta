@@ -1,0 +1,51 @@
+package profile.collection;
+
+import cajeta.collection.ArrayList;
+
+import profile.Benchmark;
+
+// ArrayList grow-on-demand append: N pushes into a fresh list each trial.
+// Cross-check: final count == N. (Self-generating; no dataset.)
+public class ArrayListAppendBench extends Benchmark {
+
+    public int32 n;
+    public int64 lastCount;
+
+    public String name() {
+        return "arraylist-append";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void setup() {
+        this.n = 100000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        ArrayList<int32> a = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < this.n) {
+            a.add(i);
+            i = i + 1;
+        }
+        this.lastCount = a.count();
+    }
+
+    public boolean checkResult() {
+        return this.lastCount == (int64) this.n;
+    }
+}

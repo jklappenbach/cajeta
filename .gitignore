@@ -78,11 +78,8 @@ test/cajeta_test*_tests.cmake
 tools/cajetadoc/flagged.json
 
 # Internal plans / research / design docs — kept LOCAL (in agents/), out of the
-# public repository. Specs are PUBLIC and live under docs/ off the root (the
-# !docs exception below re-includes them); the *-spec.md rule only catches stray
-# specs elsewhere. Plans stay private.
+# public repository. Specs are PUBLIC (tracked); only plans and the agents/
+# working tree stay local.
 agents/
-*-spec.md
-!docs/specs/*-spec.md
 *-plan.md
-!docs/**/*-spec.md
+build-three/

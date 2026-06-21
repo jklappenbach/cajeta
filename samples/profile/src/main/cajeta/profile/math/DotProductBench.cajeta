@@ -1,0 +1,65 @@
+package profile.math;
+
+import profile.Benchmark;
+
+// Dot product: sum(x[i]*y[i]) over N float64 (scalar reduction). Cross-check:
+// matches a recomputation in the same accumulation order.
+public class DotProductBench extends Benchmark {
+
+    public float64[] x;
+    public float64[] y;
+    public int32 n;
+    public float64 result;
+
+    public String name() {
+        return "dot-product";
+    }
+
+    public String area() {
+        return "math";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void setup() {
+        this.n = 1000000;
+        this.x = heap float64[this.n];
+        this.y = heap float64[this.n];
+        int32 i = 0;
+        while (i < this.n) {
+            this.x[i] = (float64) (i % 100);
+            this.y[i] = (float64) (i % 7);
+            i = i + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        float64 sum = 0.0;
+        int32 i = 0;
+        while (i < this.n) {
+            sum = sum + this.x[i] * this.y[i];
+            i = i + 1;
+        }
+        this.result = sum;
+    }
+
+    public boolean checkResult() {
+        float64 expected = 0.0;
+        int32 i = 0;
+        while (i < this.n) {
+            expected = expected + this.x[i] * this.y[i];
+            i = i + 1;
+        }
+        return this.result == expected;
+    }
+}

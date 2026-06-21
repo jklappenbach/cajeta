@@ -1,0 +1,59 @@
+package profile.collection;
+
+import cajeta.collection.RedBlackTree;
+
+import profile.Benchmark;
+
+// RedBlackTree<int32,int32> ordered map: N ordered inserts, then N point
+// lookups summing values. Cross-check: value sum == N*(N-1). Smaller N + fewer
+// trials than the hash map (O(log N) per op).
+public class RedBlackTreeBench extends Benchmark {
+
+    public int32 n;
+    public int64 checksum;
+
+    public String name() {
+        return "redblacktree-insert-lookup";
+    }
+
+    public String area() {
+        return "collection";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public void setup() {
+        this.n = 20000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        RedBlackTree<int32, int32> t = heap RedBlackTree<int32, int32>();
+        int32 i = 0;
+        while (i < this.n) {
+            t.put(i, i * 2);
+            i = i + 1;
+        }
+        int64 sum = 0;
+        int32 j = 0;
+        while (j < this.n) {
+            sum = sum + (int64) t.get(j);
+            j = j + 1;
+        }
+        this.checksum = sum;
+    }
+
+    public boolean checkResult() {
+        int64 nn = (int64) this.n;
+        return this.checksum == nn * (nn - 1);
+    }
+}

@@ -1,0 +1,37 @@
+package profile;
+
+import profile.Benchmark;
+
+// Scaffold example benchmark — exercises the harness lifecycle end-to-end.
+// It prints a marker in each lifecycle method so the Unit 1 smoke test can
+// assert that Profile invoked setup → run → teardown → checkResult in order,
+// exactly once. Real benchmarks (Units 5+) replace these no-op bodies with a
+// measured workload and a real correctness cross-check; this one stays as the
+// minimal proof that registration + dispatch work.
+public class ExampleBenchmark extends Benchmark {
+
+    public String name() {
+        return "example";
+    }
+
+    public String area() {
+        return "scaffold";
+    }
+
+    public void setup() {
+        System.stdout.println("  example: setup");
+    }
+
+    public void run(int32 iterations) {
+        System.stdout.println("  example: run");
+    }
+
+    public void teardown() {
+        System.stdout.println("  example: teardown");
+    }
+
+    public boolean checkResult() {
+        System.stdout.println("  example: checkResult");
+        return true;
+    }
+}

@@ -1,0 +1,65 @@
+package profile.stream;
+
+import cajeta.collection.ArrayList;
+
+import profile.Benchmark;
+
+// Sequential functional pipeline: filter (evens) -> map (+1) -> reduce (sum) over
+// N elements. Cross-check: the pipeline result equals a manual non-stream
+// computation of the same logic.
+public class StreamPipelineBench extends Benchmark {
+
+    public ArrayList<int32> xs;
+    public int32 n;
+    public int32 result;
+
+    public String name() {
+        return "stream-filter-map-reduce";
+    }
+
+    public String area() {
+        return "stream";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public void setup() {
+        this.n = 1000000;
+        this.xs = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < this.n) {
+            this.xs.add(i % 1000);
+            i = i + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        this.result = this.xs.stream()
+            .filter((x) -> x % 2 == 0)
+            .map<int32>((x) -> x + 1)
+            .reduce(0, (a, b) -> a + b);
+    }
+
+    public boolean checkResult() {
+        int32 expected = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            int32 x = i % 1000;
+            if (x % 2 == 0) {
+                expected = expected + (x + 1);
+            }
+            i = i + 1;
+        }
+        return this.result == expected;
+    }
+}

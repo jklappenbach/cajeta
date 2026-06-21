@@ -1,0 +1,63 @@
+package profile;
+
+import cajeta.collection.ArrayList;
+
+import profile.Benchmark;
+
+// Exercises the variant matrix: two variants ("small"/"large") with different
+// input sizes, each producing its own result row with the variant label. The
+// closed-form checkResult proves prepare(variant) selected the right input.
+// This is the shape sort {type×pattern×prediction} and JSON {access-pattern}
+// benchmarks will use (Units 5/7).
+public class VariantBench extends Benchmark {
+
+    public int64 acc;
+    public int32 n;
+
+    public String name() {
+        return "variant-demo";
+    }
+
+    public String area() {
+        return "selftest";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("small");
+        v.add("large");
+        return v;
+    }
+
+    public void prepare(String variant) {
+        if (variant.equals("small")) {
+            this.n = 100;
+        } else {
+            this.n = 1000;
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 s = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            s = s + (int64) i;
+            i = i + 1;
+        }
+        this.acc = s;
+    }
+
+    public boolean checkResult() {
+        // sum 0..n-1 = n*(n-1)/2
+        int64 expected = (int64) this.n * (int64) (this.n - 1) / (int64) 2;
+        return this.acc == expected;
+    }
+}

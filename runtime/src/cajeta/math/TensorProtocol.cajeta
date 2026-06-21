@@ -1,0 +1,130 @@
+package cajeta.math;
+
+import cajeta.lang.Object;
+
+/**
+ * `TensorProtocol` — the `Tensor` **interop protocol** (tensor-spec.md §7), the
+ * array-protocol / DLPack analogue and the anti-fragmentation seam: one erased,
+ * dtype-agnostic description of a tensor's backing so external libs and the torch
+ * port share a `Tensor` **zero-copy**.
+ *
+ * It carries `{ Storage borrow, element offset, shape, strides, DType, device,
+ * read-only }` — the same fields a DLPack capsule exposes, but the "data" is a
+ * **borrow of the owning {@link Storage}** rather than a raw pointer, so the
+ * cajeta↔cajeta round-trip is zero-copy *and* memory-safe (the owner is kept
+ * reachable; the live-set frees the buffer exactly once, even across the rebuilt
+ * view — the same model `Tensor` views already rely on).
+ *
+ * The backing is held erased as `Object` (not `Storage<?>`): an upcast is the
+ * identity (same pointer), so its teardown virtual-drop hits the *real* `Storage`
+ * and is idempotent via the live-set. A `Storage<?>` wildcard field instead routes
+ * through a materialized wildcard handle whose teardown corrupts the heap when two
+ * distinct `Storage` instantiations are alive (the multi-`fromProtocol` bug).
+ *
+ * Because the dtype is a **runtime** {@link DType} (not a static `T`), the type is
+ * non-generic; {@link Tensor#fromProtocol} switches on `dtype()` to rebuild the
+ * matching `Tensor<X>` and hands it back as a `Tensor<?>` that callers **capture**
+ * to the concrete instantiation (reified-capture — `Tensor<?>` → `Tensor<float32>`).
+ *
+ * Internal construction is via {@link Tensor#protocol}; user code reads the
+ * accessors and passes the value to {@link Tensor#fromProtocol}.
+ */
+public class TensorProtocol {
+    Object baseStore;       // borrow of the source Storage<X> (erased) — the zero-copy backing
+    int64 offsetVal;        // element offset of the tensor into baseStore
+    int64[] shapeDims;      // shape (owned copy)
+    int64[] strideDims;     // strides in elements (owned copy)
+    DType dt;               // runtime element dtype
+    int32 deviceCode;       // 0 = host (CPU), 1 = device (GPU)
+    boolean readOnly;       // true if the producer marked the buffer read-only
+
+    /**
+     * Wrap a `Storage` borrow + metadata. `base` is shared (not owned) — the
+     * producing tensor keeps ownership; this protocol only describes it. `shape`/
+     * `strides` are **copied** into freshly-owned arrays (so the caller's locals
+     * drop cleanly — mirrors `Tensor`'s constructor; storing the borrows directly
+     * would dangle once the exporter's locals free).
+     */
+    public TensorProtocol(Object base, int64 offset, int64[] shape,
+                          int64[] strides, DType dtype, int32 device,
+                          boolean readOnlyFlag) {
+        this.baseStore = base;
+        this.offsetVal = offset;
+        int32 nd = (int32) shape.count();
+        this.shapeDims = heap int64[nd];
+        this.strideDims = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            this.shapeDims[i] = shape[i];
+            this.strideDims[i] = strides[i];
+            i = i + 1;
+        }
+        this.dt = dtype;
+        this.deviceCode = device;
+        this.readOnly = readOnlyFlag;
+    }
+
+    /** The borrowed backing storage, erased as `Object` (downcast to `Storage<E>`). */
+    public Object base() {
+        return this.baseStore;
+    }
+
+    /** Element offset of the described tensor into {@link #base}. */
+    public int64 offset() {
+        return this.offsetVal;
+    }
+
+    /** Number of dimensions. */
+    public int32 ndim() {
+        return (int32) this.shapeDims.count();
+    }
+
+    /** Extent of axis `axis`. */
+    public int64 shapeAt(int32 axis) {
+        return this.shapeDims[axis];
+    }
+
+    /** Stride (in elements) of axis `axis`. */
+    public int64 strideAt(int32 axis) {
+        return this.strideDims[axis];
+    }
+
+    /** A fresh, owned copy of the shape vector (for rebuilding a tensor). */
+    public #int64[] shapeCopy() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] out = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            out[i] = this.shapeDims[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** A fresh, owned copy of the stride vector (for rebuilding a tensor). */
+    public #int64[] strideCopy() {
+        int32 nd = (int32) this.strideDims.count();
+        int64[] out = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            out[i] = this.strideDims[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** The runtime element dtype. */
+    public DType dtype() {
+        return this.dt;
+    }
+
+    /** Placement code: `0` = host (CPU), `1` = device (GPU). */
+    public int32 device() {
+        return this.deviceCode;
+    }
+
+    /** `true` if the producer marked the described buffer read-only. */
+    public boolean isReadOnly() {
+        return this.readOnly;
+    }
+}

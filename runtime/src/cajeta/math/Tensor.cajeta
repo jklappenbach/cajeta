@@ -409,11 +409,211 @@ public class Tensor<T> {
         return this.store.deviceBuffer();
     }
 
+    // ────────────────────────────── interop protocol (Phase 7) ───────────────
+
+    /**
+     * Export this tensor through the {@link TensorProtocol} interop seam
+     * (tensor-spec.md §7): a dtype-erased description carrying a **borrow** of this
+     * tensor's `Storage` plus its offset/shape/strides/dtype/device/read-only.
+     * Zero-copy — the protocol shares this tensor's backing; pair with
+     * {@link #fromProtocol} to round-trip a `Tensor` (or hand the buffer to an
+     * external consumer) without a copy.
+     */
+    public #TensorProtocol protocol() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] shp = heap int64[nd];
+        int64[] strd = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            shp[i] = this.shapeDims[i];
+            strd[i] = this.strideDims[i];
+            i = i + 1;
+        }
+        DType d = DType.of<T>();
+        // Upcast Storage<T> → Object (identity, no wildcard proxy): the protocol
+        // borrows the backing (shared, not owned — this tensor keeps ownership; the
+        // live-set frees it once). fromProtocol downcasts it back to Storage<E>.
+        return heap TensorProtocol(this.store, this.offsetVal, shp, strd, #d,
+                                   this.device(), false);
+    }
+
+    /**
+     * Import a {@link TensorProtocol} as a `Tensor<?>` (tensor-spec.md §7 + §2.1
+     * airlock). Switches on the protocol's **runtime** dtype to rebuild the
+     * matching concrete `Tensor<X>` sharing the protocol's borrowed `Storage`
+     * (zero-copy), then widens it to `Tensor<?>` — callers **capture** it back to
+     * the concrete instantiation (`(Tensor<float32>) w`, reified-capture). Returns
+     * `null` for a dtype outside the rebuilt set (the fp8/fp6/fp4 + 128-bit
+     * variants are deferred). The bounded `Tensor<? extends Floating>` admit/reject
+     * form rides on `numeric-bounds-plan` (the numeric conformance predicate).
+     */
+    public static #Tensor<?> fromProtocol(TensorProtocol p) {
+        DType dt = p.dtype();
+        int32 k = dt.kind();
+        int32 b = dt.bits();
+        int32 v = dt.variant();
+        if (k == DType.KIND_BOOL) { return Tensor.rebuildShared<boolean>(p); }
+        if (k == DType.KIND_INT) {
+            if (b == 8)  { return Tensor.rebuildShared<int8>(p); }
+            if (b == 16) { return Tensor.rebuildShared<int16>(p); }
+            if (b == 32) { return Tensor.rebuildShared<int32>(p); }
+            if (b == 64) { return Tensor.rebuildShared<int64>(p); }
+        }
+        if (k == DType.KIND_UINT) {
+            if (b == 8)  { return Tensor.rebuildShared<uint8>(p); }
+            if (b == 16) { return Tensor.rebuildShared<uint16>(p); }
+            if (b == 32) { return Tensor.rebuildShared<uint32>(p); }
+            if (b == 64) { return Tensor.rebuildShared<uint64>(p); }
+        }
+        if (k == DType.KIND_FLOAT && v == DType.VAR_STD) {
+            if (b == 32) { return Tensor.rebuildShared<float32>(p); }
+            if (b == 64) { return Tensor.rebuildShared<float64>(p); }
+        }
+        return null;   // unsupported dtype — caller treats null as "cannot import"
+    }
+
+    /**
+     * Rebuild a concrete `Tensor<E>` sharing the protocol's borrowed `Storage`
+     * (zero-copy): downcast the erased `Object` backing back to `Storage<E>` (sound
+     * because the dispatch in {@link #fromProtocol} matched the dtype), then wrap it
+     * as a non-owning shared view. Returned as `#Tensor<?>` (the `Tensor<E>` widens).
+     * Internal — driven by `fromProtocol`'s dtype switch.
+     */
+    static #Tensor<?> rebuildShared<E>(TensorProtocol p) {
+        int64[] shp = p.shapeCopy();
+        int64[] strd = p.strideCopy();
+        // Pass the borrowed backing DIRECTLY (no named `Storage<E> s` local): a
+        // class-typed local bound to a borrow gets an owning drop registered, which
+        // would virtual-drop this SHARED Storage at scope exit and free the buffer
+        // out from under the returned view (and the exporting tensor) — a
+        // use-after-free. Mirrors makeView passing `this.store` inline.
+        Tensor<E> t = heap Tensor<E>((Storage<E>) p.base(), p.offset(), shp, strd);
+        t.markSharedView();
+        return #t;
+    }
+
+    public static #Tensor<?> fromProtocolContiguous(TensorProtocol p) {
+        DType dt = p.dtype();
+        int32 k = dt.kind();
+        int32 b = dt.bits();
+        int32 v = dt.variant();
+        if (k == DType.KIND_BOOL) { return Tensor.rebuildContiguous<boolean>(p); }
+        if (k == DType.KIND_INT) {
+            if (b == 8)  { return Tensor.rebuildContiguous<int8>(p); }
+            if (b == 16) { return Tensor.rebuildContiguous<int16>(p); }
+            if (b == 32) { return Tensor.rebuildContiguous<int32>(p); }
+            if (b == 64) { return Tensor.rebuildContiguous<int64>(p); }
+        }
+        if (k == DType.KIND_UINT) {
+            if (b == 8)  { return Tensor.rebuildContiguous<uint8>(p); }
+            if (b == 16) { return Tensor.rebuildContiguous<uint16>(p); }
+            if (b == 32) { return Tensor.rebuildContiguous<uint32>(p); }
+            if (b == 64) { return Tensor.rebuildContiguous<uint64>(p); }
+        }
+        if (k == DType.KIND_FLOAT && v == DType.VAR_STD) {
+            if (b == 32) { return Tensor.rebuildContiguous<float32>(p); }
+            if (b == 64) { return Tensor.rebuildContiguous<float64>(p); }
+        }
+        return null;
+    }
+
+    /**
+     * Contiguity-aware rebuild for the external-producer path
+     * ({@link #fromProtocolContiguous}): a zero-copy shared view when the described
+     * layout is already C-contiguous, an independent materialized **copy** when it is
+     * not. The non-amenable copy reads **directly** from the borrowed backing
+     * ({@link #materializeFrom}) — it never wraps the borrow in an owning-store view
+     * that would free the producer's buffer out from under it on an early drop.
+     */
+    static #Tensor<?> rebuildContiguous<E>(TensorProtocol p) {
+        int64[] shp = p.shapeCopy();
+        int64[] strd = p.strideCopy();
+        if (Tensor.contiguousLayout(shp, strd)) {
+            Tensor<E> t = heap Tensor<E>((Storage<E>) p.base(), p.offset(), shp, strd);
+            t.markSharedView();          // amenable → zero-copy shared view
+            return #t;
+        }
+        // non-amenable → independent contiguous copy, read straight from the borrow
+        return Tensor.materializeFrom<E>((Storage<E>) p.base(), p.offset(), shp, strd);
+    }
+
+    /** C-contiguity test on a raw shape/stride pair (the static form of
+     *  {@link #isContiguous}). */
+    static boolean contiguousLayout(int64[] shape, int64[] strides) {
+        int32 nd = (int32) shape.count();
+        int64 acc = 1;
+        int32 j = nd - 1;
+        while (j >= 0) {
+            if (strides[j] != acc) {
+                return false;
+            }
+            acc = acc * shape[j];
+            j = j - 1;
+        }
+        return true;
+    }
+
+    /**
+     * Materialize a fresh **C-contiguous** `Tensor<E>` by gathering the strided
+     * elements described by (`src`, `offset`, `shape`, `strides`). `src` is a
+     * **borrow** — read only, never stored — so this never frees the producer's
+     * `Storage` (the borrow-safe form of {@link #materialize} for the interop
+     * copy path). The result owns its own freshly-allocated `Storage`.
+     */
+    static #Tensor<E> materializeFrom<E>(Storage<E> src, int64 offset,
+                                         int64[] shape, int64[] strides) {
+        int64 n = Tensor.productOf(shape);
+        Storage<E> st = heap Storage<E>(n);
+        int32 nd = (int32) shape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            int64 off = offset;
+            int32 a = 0;
+            while (a < nd) {
+                off = off + idx[a] * strides[a];
+                a = a + 1;
+            }
+            E val = src.get(off);
+            st.set(lin, val);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= shape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(shape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shape, outStrides);
+    }
+
     // ────────────────────────────── views (Phase 3) ──────────────────────────
 
     void markView(Tensor<T> base) {
         this.viewFlag = true;
         this.baseTensor = base;
+    }
+
+    /**
+     * Mark this tensor as a non-owning view over storage it shares but whose root
+     * is not a `Tensor` (e.g. a `Storage` borrowed through {@link TensorProtocol}).
+     * `base()` stays null (no `Tensor` root); the shared `Storage` is freed once by
+     * the live-set, exactly as for {@link #alias} views.
+     */
+    void markSharedView() {
+        this.viewFlag = true;
+        this.baseTensor = null;
     }
 
     /**

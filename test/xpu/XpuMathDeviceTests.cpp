@@ -16,6 +16,7 @@
 
 #include "cajeta/xpu/cpu/CpuKernelLowering.h"
 #include "cajeta/xpu/cpu/CpuBackend.h"
+#include "XpuCpuJit.h"
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
 #include "cajeta/xpu/amd/HipDriver.h"
@@ -274,7 +275,7 @@ TEST(XpuMathDeviceTests, runsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr))
         << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
@@ -333,7 +334,7 @@ TEST(XpuMathDeviceTests, transcendentalsRunOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(
@@ -562,7 +563,7 @@ TEST(XpuMathDeviceTests, vectorMathRunsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(
@@ -715,7 +716,7 @@ TEST(XpuMathDeviceTests, fastMathRunsOnCpu) {
     auto host = std::make_unique<llvm::Module>("xpu_fast_exec", *ctx);
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(

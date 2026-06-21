@@ -1,0 +1,82 @@
+// C++ stream competitors — the same two workloads the Cajeta side runs over
+// xs[i] = i % 1000 (N=1M): stream-filter-map-reduce (filter evens → map +1 → sum,
+// a sequential loop) and stream-parallel-reduce (sum via an OpenMP reduction).
+// One schema-conformant CSV row per benchmark. Cross-check = the exact reference
+// sums (250000000 / 499500000). Libraries: a hand loop and OpenMP.
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <numeric>
+#include <string>
+#include <vector>
+
+using clk = std::chrono::steady_clock;
+static const int N = 1000000;
+static const long long FMR_REF = 250000000LL;
+static const long long PR_REF = 499500000LL;
+
+static std::string env(const char* k, const char* d) { const char* v = std::getenv(k); return v ? v : d; }
+static long long peak_rss_kb() {
+    std::ifstream s("/proc/self/status"); std::string l;
+    while (std::getline(s, l)) if (l.rfind("VmHWM:", 0) == 0) {
+        long long kb = -1; std::sscanf(l.c_str(), "VmHWM: %lld", &kb); return kb;
+    }
+    return -1;
+}
+
+static void emit(const std::string& run_id, const std::string& ts, const char* bench,
+                 const char* lib, int input, int warmup, int trials, std::vector<long long> s, bool ok) {
+    std::sort(s.begin(), s.end());
+    size_t n = s.size();
+    long long sum = std::accumulate(s.begin(), s.end(), 0LL);
+    long long mn = s.front(), med = s[n / 2], mean = sum / (long long)n, p95 = s[std::min(n - 1, n * 95 / 100)];
+    double mops = med > 0 ? (double)input / (double)med * 1e9 / 1e6 : 0.0;
+    std::printf(
+        "1,%s,%s,%s,stream,,%d,,%d,cpp,%s,%s,std,-O3 -march=native -fopenmp,%d,%d,"
+        "%lld,%lld,%lld,%lld,%.2f,Mop/s,%lld,-1,-1,-1,-1,%s,%s,,\n",
+        run_id.c_str(), ts.c_str(), bench, input, input, env("PROFILE_LANG_VERSION", "").c_str(),
+        lib, warmup, trials, mn, med, mean, p95, mops, peak_rss_kb(), ok ? "ok" : "invalid", ok ? "true" : "false");
+}
+
+template <class F, class C>
+static std::vector<long long> bench(int warmup, int trials, F f, C check, bool& ok) {
+    for (int i = 0; i < warmup; ++i) { auto r = f(); (void)r; }
+    std::vector<long long> s; ok = true;
+    for (int i = 0; i < trials; ++i) {
+        auto t0 = clk::now(); auto r = f(); auto t1 = clk::now();
+        s.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        ok = check(r);
+    }
+    return s;
+}
+
+int main() {
+    std::string run_id = env("PROFILE_RUN_ID", "local");
+    std::string ts = env("PROFILE_RUN_TS", "");
+    int warmup = std::atoi(env("PROFILE_WARMUP", "3").c_str());
+    int trials = std::atoi(env("PROFILE_TRIALS", "10").c_str());
+    std::vector<long long> xs(N);
+    for (int i = 0; i < N; ++i) xs[i] = i % 1000;
+    bool ok;
+
+    // filter-map-reduce (sequential)
+    auto s1 = bench(warmup, trials, [&]{
+        long long sum = 0;
+        for (int i = 0; i < N; ++i) if (xs[i] % 2 == 0) sum += xs[i] + 1;
+        return sum;
+    }, [&](long long r){ return r == FMR_REF; }, ok);
+    emit(run_id, ts, "stream-filter-map-reduce", "hand-loop", N, warmup, trials, s1, ok);
+
+    // parallel-reduce (OpenMP)
+    auto s2 = bench(warmup, trials, [&]{
+        long long sum = 0;
+        #pragma omp parallel for reduction(+:sum)
+        for (int i = 0; i < N; ++i) sum += xs[i];
+        return sum;
+    }, [&](long long r){ return r == PR_REF; }, ok);
+    emit(run_id, ts, "stream-parallel-reduce", "OpenMP", N, warmup, trials, s2, ok);
+    return 0;
+}

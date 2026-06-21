@@ -1,0 +1,42 @@
+package profile;
+
+import profile.Benchmark;
+
+// A real (if trivial) benchmark to exercise the measurement loop: each run sums
+// 0..9999 into a field, and checkResult verifies the field equals the closed-form
+// sum (49,995,000). Storing into a field that checkResult reads keeps the work
+// from being dead-code-eliminated. Used by test/methodology_smoke.sh.
+public class SumBench extends Benchmark {
+
+    public int64 acc;
+
+    public String name() {
+        return "sum";
+    }
+
+    public String area() {
+        return "selftest";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void run(int32 iterations) {
+        int64 s = 0;
+        int32 i = 0;
+        while (i < 10000) {
+            s = s + (int64) i;
+            i = i + 1;
+        }
+        this.acc = s;
+    }
+
+    public boolean checkResult() {
+        return this.acc == (int64) 49995000;
+    }
+}

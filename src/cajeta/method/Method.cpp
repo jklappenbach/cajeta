@@ -1231,6 +1231,30 @@ namespace cajeta {
             }
         }
 
+        // A bounded-wildcard instantiation (`Holder<? extends Floating>`) is an
+        // abstract handle: you operate on it by capturing back to a concrete
+        // instantiation (reified-capture-spec.md §5), never by calling its
+        // methods directly — external mutator calls are PECS-rejected at the call
+        // site (MethodCallExpression), and there is no single concrete primitive
+        // element layout to lower a real body against (and the class's own-T
+        // internal write would trip the PECS guard). Emit a trap stub so the
+        // vtable/method symbol still resolves; it is never validly reached. Does
+        // NOT apply to the unbounded `?` (e.g. Class<?>), whose bodies reflection
+        // force-builds and dispatches — that path keeps its real body below.
+        if (parent && parent->isBoundedWildcardInstantiation() && llvmFunction) {
+            llvm::BasicBlock* bb = llvm::BasicBlock::Create(
+                *module->getLlvmContext(), "entry", llvmFunction);
+            llvm::IRBuilder<> b(bb);
+            if (llvmFunction->getReturnType()->isVoidTy()) {
+                b.CreateRetVoid();
+            } else {
+                b.CreateRet(llvm::Constant::getNullValue(
+                    llvmFunction->getReturnType()));
+            }
+            llvmBasicBlock = bb;   // mark emitted (idempotency guard above)
+            return;
+        }
+
         // @Native("symbol") — the method's body is a forwarding call to
         // a C runtime function with the given symbol name. Used by
         // stdlib classes to bridge into runtime helpers (cajeta.hash.Hash.

@@ -807,6 +807,16 @@ namespace cajeta {
         // `Stream<int32>`. Step 1 — template wildcards.
         bool isWildcardInstantiation() const;
 
+        // True iff any type argument is a BOUNDED wildcard (`? extends B` /
+        // `? super B`) — NOT the unbounded `?`. A bounded-wildcard instantiation
+        // (`Holder<? extends Floating>`) is an abstract handle: its method bodies
+        // are deliberately not codegen'd (no concrete element layout; the own-T
+        // internal write would trip PECS), so code operates on it by capturing
+        // back to a concrete instantiation. Unbounded `?` (e.g. `Class<?>`) is
+        // excluded — reflection force-builds and dispatches it, so its bodies
+        // MUST be emitted.
+        bool isBoundedWildcardInstantiation() const;
+
         // True iff `from` (a concrete instantiation of some template)
         // is assignable to `wildcardInst` (a wildcard instantiation of
         // the same template). Identity check on `templateOrigin` —

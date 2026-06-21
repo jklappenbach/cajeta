@@ -1,0 +1,58 @@
+package profile.time;
+
+import cajeta.time.Instant;
+
+import profile.Benchmark;
+
+// Instant arithmetic throughput: N iterations of plusSeconds + getEpochSecond
+// (value-type time math). Cross-check: the accumulated epoch sum is the closed
+// form 7*(1+2+...+N) == 7*N*(N+1)/2.
+public class InstantArithmeticBench extends Benchmark {
+
+    public int32 n;
+    public int64 result;
+
+    public String name() {
+        return "time-instant-arith";
+    }
+
+    public String area() {
+        return "time";
+    }
+
+    public int32 warmupIters() {
+        return 10;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public void setup() {
+        this.n = 1000000;
+    }
+
+    public int64 inputSize() {
+        return (int64) this.n;
+    }
+
+    public void run(int32 iterations) {
+        // Create a fresh Instant each iteration (in-place reassignment of a
+        // value-type local in a loop does not persist — see reference memory).
+        int64 acc = 0;
+        int32 i = 0;
+        while (i < this.n) {
+            Instant t = Instant.ofEpochSecond((int64) i);
+            Instant t2 = t.plusSeconds(7);
+            acc = acc + t2.getEpochSecond();
+            i = i + 1;
+        }
+        this.result = acc;
+    }
+
+    public boolean checkResult() {
+        // sum_{i=0}^{n-1} (i + 7) = (n-1)*n/2 + 7*n
+        int64 nn = (int64) this.n;
+        return this.result == (nn - 1) * nn / 2 + 7 * nn;
+    }
+}

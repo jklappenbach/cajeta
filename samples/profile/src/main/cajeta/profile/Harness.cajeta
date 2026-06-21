@@ -1,0 +1,165 @@
+package profile;
+
+import cajeta.collection.ArrayList;
+import cajeta.time.Clock;
+
+import profile.Benchmark;
+import profile.report.Result;
+import profile.report.Memory;
+
+// The measurement loop (spec §4). Runs a benchmark through idiomatic warmup
+// then N measured trials, timing each with Clock.nanoTime and subtracting the
+// benchmark's declared per-iteration baseline. Captures peak RSS (VmHWM) and the
+// working-set delta (peak − pre-workload VmRSS, the in-process overhead
+// subtraction), computes the min/median/mean/p95 distribution, runs the
+// correctness cross-check, and returns a filled Result. Pure in-process;
+// competitor rows are produced by their own per-language runners.
+public class Harness {
+
+    // Measure one benchmark across all its variants, appending one Result row
+    // per variant. setup() runs once; prepare(variant) builds each variant's
+    // input; teardown() runs once at the end.
+    public static void measureInto(Benchmark b, String runId, ArrayList<Result> rows) {
+        if (!b.available()) {
+            rows.add(Harness.skippedRow(b, runId, "",
+                "unavailable (dataset not configured? set PROFILE_DATA_DIR + fetch)"));
+            return;
+        }
+        b.setup();
+        ArrayList<String> vs = b.variants();
+        int32 vi = 0;
+        int32 vn = vs.count();
+        while (vi < vn) {
+            String v = vs.get(vi);
+            // Owned temporary straight into the list (add stores a reference).
+            if (b.supportsVariant(v)) {
+                rows.add(Harness.measureOne(b, runId, v));
+            } else {
+                String why = b.skipReason();
+                rows.add(Harness.skippedRow(b, runId, v, why));
+            }
+            vi = vi + 1;
+        }
+        b.teardown();
+    }
+
+    public static #Result measureOne(Benchmark b, String runId, String variant) {
+        b.prepare(variant);
+
+        int32 warm = b.warmupIters();
+        int32 trials = b.measuredIters();
+        int64 baseline = b.baselineNanos();
+
+        // Warmup — reach steady state before measuring.
+        int32 w = 0;
+        while (w < warm) {
+            b.runVariant(variant, 1);
+            w = w + 1;
+        }
+
+        // Pre-workload resident baseline (overhead-subtraction reference).
+        int64 baseRss = Memory.currentRssKb();
+
+        // Measured trials.
+        int64[] samples = heap int64[trials];
+        int32 t = 0;
+        while (t < trials) {
+            int64 t0 = Clock.nanoTime();
+            b.runVariant(variant, 1);
+            int64 t1 = Clock.nanoTime();
+            int64 dur = t1 - t0 - baseline;
+            if (dur < 0) {
+                dur = 0;
+            }
+            samples[t] = dur;
+            t = t + 1;
+        }
+
+        int64 peak = Memory.peakRssKb();
+        boolean ok = b.checkResult();
+
+        // Distribution (sort then index). n ~ a few hundred.
+        Harness.sortInPlace(samples, trials);
+        int64 sum = 0;
+        int32 i = 0;
+        while (i < trials) {
+            sum = sum + samples[i];
+            i = i + 1;
+        }
+
+        // Materialize names into locals first (reading a class-param's method
+        // result inline into a field has bitten us before — bind, then store).
+        String benchName = b.name();
+        String benchArea = b.area();
+
+        Result r = heap Result();
+        // Owned copies of the borrowed params — storing a borrow into a field
+        // that outlives the call dangles after return.
+        r.runId = "" + runId;
+        r.benchmark = "" + benchName;
+        r.area = "" + benchArea;
+        r.variant = "" + variant;
+        r.language = "cajeta";
+        r.inputSize = b.inputSize();
+        r.warmup = warm;
+        r.trials = trials;
+        r.minNs = samples[0];
+        r.medianNs = samples[trials / 2];
+        r.meanNs = sum / (int64) trials;
+        r.p95Ns = samples[Harness.p95Index(trials)];
+        r.peakRssKb = peak;
+        int64 ws = peak - baseRss;
+        if (ws < 0) {
+            ws = 0;
+        }
+        r.workingSetKb = ws;
+        r.checkOk = ok;
+        if (ok) {
+            r.status = "ok";
+        } else {
+            r.status = "invalid";
+        }
+        return r;
+    }
+
+    // A recorded skip row (never a silent omission) for a benchmark that can't
+    // run here — e.g. its dataset isn't configured.
+    public static #Result skippedRow(Benchmark b, String runId, String variant, String reason) {
+        String nm = b.name();
+        String ar = b.area();
+        Result r = heap Result();
+        r.runId = "" + runId;
+        r.benchmark = "" + nm;
+        r.area = "" + ar;
+        r.variant = "" + variant;
+        r.language = "cajeta";
+        r.status = "skipped";
+        r.checkOk = false;
+        r.notes = "" + reason;
+        return r;
+    }
+
+    public static int32 p95Index(int32 n) {
+        int32 idx = (n * 95) / 100;
+        if (idx >= n) {
+            idx = n - 1;
+        }
+        return idx;
+    }
+
+    // Insertion sort over the first n entries — simple and ample for n in the
+    // low hundreds (the measured-trial counts).
+    public static void sortInPlace(int64[] a, int32 n) {
+        int32 i = 1;
+        while (i < n) {
+            int64 key = a[i];
+            int32 j = i - 1;
+            while (j >= 0 && a[j] > key) {
+                a[j + 1] = a[j];
+                j = j - 1;
+            }
+            a[j + 1] = key;
+            i = i + 1;
+        }
+    }
+}

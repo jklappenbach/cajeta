@@ -1,0 +1,85 @@
+package profile.codec;
+
+import cajeta.collection.ArrayList;
+import cajeta.codec.json.Json;
+import cajeta.codec.json.JsonValue;
+import cajeta.io.file.File;
+
+import profile.Benchmark;
+
+// JSON roundtrip integrity (the nativejson roundtrip test): parse → serialize →
+// re-parse, and assert the re-parsed root has the same kind as the original
+// (OBJECT). Measures the full read+parse+serialize+reparse cost (no baseline
+// subtraction — it's an integrity-oriented benchmark).
+public class JsonRoundtripBench extends Benchmark {
+
+    public String path;
+    public int64 fileBytes;
+    public int32 k1;
+    public int32 k2;
+
+    public String name() {
+        return "json-roundtrip";
+    }
+
+    public String area() {
+        return "codec";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public boolean available() {
+        return System.env.get("PROFILE_DATA_DIR") != null;
+    }
+
+    // Only the integer-only file is DOM-parseable in v1 (floats throw); the
+    // others skip with the reason.
+    public boolean supportsVariant(String variant) {
+        return variant.equals("citm_catalog");
+    }
+
+    public String skipReason() {
+        return "v1 JSON DOM doesn't parse floats (integer-only inputs only)";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("twitter");
+        v.add("citm_catalog");
+        v.add("canada");
+        return v;
+    }
+
+    public void prepare(String variant) {
+        String dir = System.env.get("PROFILE_DATA_DIR");
+        if (dir == null) {
+            dir = "datasets/cache";
+        }
+        this.path = dir + "/" + variant + ".json";
+        int8[] probe = File.readAllBytes(this.path);
+        this.fileBytes = (int64) probe.count();
+    }
+
+    public int64 inputSize() {
+        return this.fileBytes;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int8[] bytes = File.readAllBytes(this.path);
+        JsonValue v1 = Json.parse(bytes, (int64) bytes.count());
+        this.k1 = v1.kind();
+        int8[] out = Json.toBytes(v1);
+        JsonValue v2 = Json.parse(out, (int64) out.count());
+        this.k2 = v2.kind();
+    }
+
+    public boolean checkResult() {
+        return this.k1 == this.k2 && this.k1 == JsonValue.OBJECT;
+    }
+}
