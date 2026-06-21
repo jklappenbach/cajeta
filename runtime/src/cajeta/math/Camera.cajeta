@@ -1,0 +1,108 @@
+package cajeta.math;
+
+import cajeta.lang.Math;
+
+/**
+ * Camera — the projection and view matrix builders a renderer's camera produces
+ * (cajeta-gfx plan §1.b). A pure static-utility class (no instance state, like
+ * {@link cajeta.lang.Math}): each method returns a `Matrix<float32,4,4>`.
+ *
+ * Conventions (locked):
+ *   - RIGHT-HANDED view space (camera looks down -z, +x right, +y up).
+ *   - Clip-space depth range [0, 1] (Vulkan / D3D), NOT OpenGL's [-1, 1].
+ *   - COLUMN-vector convention: a point is transformed as `m * v` where `v` is a
+ *     `Vector<float32,4>` (the builtin `Matrix * Vector` form), and the matrix is
+ *     stored row-major (element (r,c) at lane r*C+c — the CajetaMatrix contract).
+ *
+ * ```cajeta
+ * Matrix<float32,4,4> proj = Camera.perspective(1.0472f, 1.7778f, 0.1f, 1000.0f);
+ * Vector<float32,3> eye = stack Vector<float32,3>(0.0f, 2.0f, 5.0f);
+ * Vector<float32,3> at  = stack Vector<float32,3>(0.0f, 0.0f, 0.0f);
+ * Vector<float32,3> up  = stack Vector<float32,3>(0.0f, 1.0f, 0.0f);
+ * Matrix<float32,4,4> view = Camera.lookAt(eye, at, up);
+ * Matrix<float32,4,4> viewProj = proj * view;   // builtin matrix multiply
+ * ```
+ */
+public class Camera {
+
+    /**
+     * A right-handed perspective projection with clip depth [0,1].
+     * `fovyRadians` is the vertical field of view in RADIANS, `aspect` is
+     * width/height, `near`/`far` are positive view-space distances.
+     */
+    public static Matrix<float32,4,4> perspective(float32 fovyRadians, float32 aspect,
+                                                  float32 near, float32 far) {
+        float32 half = fovyRadians * 0.5f;
+        float32 t = Math.tan(half);
+        float32 f = 1.0f / t;
+        float32 m00 = f / aspect;
+        float32 nf = near - far;
+        float32 m22 = far / nf;
+        float32 m23 = (far * near) / nf;
+        return stack Matrix<float32,4,4>(
+            m00,  0.0f, 0.0f,  0.0f,
+            0.0f, f,    0.0f,  0.0f,
+            0.0f, 0.0f, m22,   m23,
+            0.0f, 0.0f, -1.0f, 0.0f);
+    }
+
+    /**
+     * A right-handed orthographic projection with clip depth [0,1]. The box
+     * `[left,right] x [bottom,top] x [near,far]` (view space, looking down -z)
+     * maps to the clip cube `[-1,1] x [-1,1] x [0,1]`.
+     */
+    public static Matrix<float32,4,4> ortho(float32 left, float32 right,
+                                            float32 bottom, float32 top,
+                                            float32 near, float32 far) {
+        float32 rl = right - left;
+        float32 tb = top - bottom;
+        float32 fn = far - near;
+        float32 m00 = 2.0f / rl;
+        float32 m11 = 2.0f / tb;
+        float32 m22 = -1.0f / fn;
+        float32 rPlusL = right + left;
+        float32 m03 = (0.0f - rPlusL) / rl;
+        float32 tPlusB = top + bottom;
+        float32 m13 = (0.0f - tPlusB) / tb;
+        float32 m23 = (0.0f - near) / fn;
+        return stack Matrix<float32,4,4>(
+            m00,  0.0f, 0.0f, m03,
+            0.0f, m11,  0.0f, m13,
+            0.0f, 0.0f, m22,  m23,
+            0.0f, 0.0f, 0.0f, 1.0f);
+    }
+
+    /**
+     * A right-handed view matrix that places the camera at `eye` looking toward
+     * `center` with the given `up` reference. The basis is right (s), true up
+     * (u), and backward (-forward); the matrix maps `eye` to the view-space
+     * origin.
+     */
+    public static Matrix<float32,4,4> lookAt(Vector<float32,3> eye,
+                                             Vector<float32,3> center,
+                                             Vector<float32,3> up) {
+        // Single Vector operator/method per statement (the §1 compound-expression
+        // codegen finding); intermediate locals throughout.
+        Vector<float32,3> fwdRaw = center - eye;
+        Vector<float32,3> f = fwdRaw.normalize();
+        Vector<float32,3> sRaw = f.cross(up);
+        Vector<float32,3> s = sRaw.normalize();
+        Vector<float32,3> u = s.cross(f);
+
+        float32 sDotEye = s.dot(eye);
+        float32 m03 = 0.0f - sDotEye;
+        float32 uDotEye = u.dot(eye);
+        float32 m13 = 0.0f - uDotEye;
+        float32 m23 = f.dot(eye);     // row 2 is -f, so its translate is +f·eye
+
+        float32 nfx = 0.0f - f.x;
+        float32 nfy = 0.0f - f.y;
+        float32 nfz = 0.0f - f.z;
+
+        return stack Matrix<float32,4,4>(
+            s.x,  s.y,  s.z,  m03,
+            u.x,  u.y,  u.z,  m13,
+            nfx,  nfy,  nfz,  m23,
+            0.0f, 0.0f, 0.0f, 1.0f);
+    }
+}

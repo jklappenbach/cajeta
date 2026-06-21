@@ -1534,7 +1534,19 @@ namespace cajeta {
             // See plans/value-type-overloading-plan.md (value types are Copy).
             auto rtype = m->getReturnType();
             bool returnsValueType = rtype && rtype->isValueType();
-            if (!isLambda && !m->isReturnsOwnership() && !returnsValueType) {
+            // Builtin by-value aggregates — Vector<T,N>, Matrix<T,R,C>,
+            // Quaternion<T> — are PRIMITIVE_FLAG: `return stack Matrix(...)`
+            // copies the value into the caller's slot exactly like a scalar or
+            // an @ValueType return, with no heap pointer and so no dangling-
+            // borrow hazard. They lack VALUE_TYPE_FLAG only because they are
+            // compiler builtins rather than @ValueType-annotated classes, so
+            // isValueType() above misses them. Exempt them here too — otherwise
+            // a math builder like cajeta.math.Camera.perspective() returning a
+            // freshly-constructed Matrix trips the fresh-return check spuriously.
+            bool returnsByValuePrimitive =
+                rtype && (rtype->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+            if (!isLambda && !m->isReturnsOwnership() && !returnsValueType
+                    && !returnsByValuePrimitive) {
                 auto newExpr = dynamic_pointer_cast<NewExpression>(expression);
                 auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(expression);
                 if (newExpr || aggExpr) {
