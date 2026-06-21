@@ -1270,3 +1270,32 @@ TEST(NumpyOpsTests, matmulDotMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 6a — vdot (flattened inner product → scalar) + outer (1-D × 1-D → 2-D).
+TEST(NumpyOpsTests, vdotOuterMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // vdot of two 2x2 → 1*5+2*6+3*7+4*8 = 70
+        "        int32[] da = { 1, 2, 3, 4 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s22);\n"
+        "        int32[] db = { 5, 6, 7, 8 };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s22b);\n"
+        "        if (Tensor.vdot<int32>(a, b) != 70) { return -1; }\n"
+        // outer([1,2,3],[4,5]) → (3,2) [[4,5],[8,10],[12,15]]
+        "        int32[] dv = { 1, 2, 3 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> v = Tensor.of<int32>(dv, s3);\n"
+        "        int32[] dw = { 4, 5 };\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<int32> w = Tensor.of<int32>(dw, s2);\n"
+        "        Tensor<int32> o = Tensor.outer<int32>(v, w);\n"
+        "        if (o.shapeAt(0) != 3 || o.shapeAt(1) != 2) { return -2; }\n"
+        "        if (o.get2(0, 0) != 4 || o.get2(0, 1) != 5 || o.get2(1, 0) != 8 || o.get2(2, 1) != 15) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

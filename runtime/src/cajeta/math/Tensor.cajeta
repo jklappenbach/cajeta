@@ -1579,6 +1579,53 @@ public class Tensor<T> {
         return acc;
     }
 
+    /** Inner product over the **flattened** elements of two equal-shaped tensors as a
+     *  scalar (numpy `vdot`, real case): `Σ a·b` over the full C-order walk. */
+    public static E vdot<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 n = a.size();
+        int32 nd = a.ndim();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        E acc = (E) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            acc = acc + a.getAt(idx) * b.getAt(idx);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= a.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Outer product of two 1-D vectors → 2-D `(m,n)` (numpy `outer`):
+     *  `out[i,j] = a[i] * b[j]`. */
+    public static #Tensor<E> outer<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 m = a.size();
+        int64 n = b.size();
+        Storage<E> st = heap Storage<E>(m * n);
+        int64 i = 0;
+        while (i < m) {
+            E av = a.get1(i);
+            int64 j = 0;
+            while (j < n) {
+                st.set(i * n + j, av * b.get1(j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**
