@@ -89,13 +89,6 @@ target_link_libraries(${BINARY} PRIVATE
         GTest::gtest
         GTest::gtest_main)
 
-# cajeta-mcp server objects (tools/mcp) for test/mcp/* — McpServer.o only; its
-# Json/Subprocess/TarZstd deps resolve from cajeta_lib (no duplicate symbols).
-# Brings the tools/mcp include dir via the OBJECT lib's PUBLIC usage reqs.
-if(TARGET cajeta_mcp_core)
-    target_link_libraries(${BINARY} PRIVATE cajeta_mcp_core)
-endif()
-
 # Export dynamic symbols so the runtime's SIGSEGV/SIGABRT backtrace handler
 # (__cajeta_segv_handler -> backtrace_symbols_fd) can resolve NATIVE runtime
 # frames to names at crash time. Without this, a crash on a CI runner we can't

@@ -50,16 +50,16 @@ adapter, plus the compiler surface that makes the server worth running.
 
 ## 2. Transport & lifecycle
 
-> **Substrate (decided during implementation):** the server is a **standalone executable
-> `cajeta-mcp` under `tools/mcp/`** that **wraps the `cajeta` compiler** — every tool is
-> implemented by shelling out to a `cajeta` subcommand (skills → `search-skill`/
-> `list-skills`/`get-skills --json`; compile/execute → `--emit`/`jit-run`). It is NOT a
-> `cajeta` subcommand and does NOT link the compiler (`cajeta_lib`); it reuses only small
-> utility TUs (Json, Subprocess, TarZstd) + LLVMSupport + zstd. The `cajeta` binary is
-> located via `--cajeta=PATH`, `$CAJETA_BIN`, or `cajeta` on `PATH`. Rationale: keeps the
-> server decoupled from compiler internals (depends on the stable CLI), gives per-call
-> process isolation for free, and keeps the build tiny. (A cajeta-written server is a
-> future dogfood, unblocked by `cajeta.process`.)
+> **Substrate (decided): the server is written in CAJETA** — a cajeta program under
+> `tools/mcp/` (`cajeta.json` + `src/main/cajeta/...`) built to an executable with the
+> cajeta build tool (`cajeta build` → `build/exe/cajeta-mcp`). It **dogfoods the language**:
+> JSON-RPC via `cajeta.codec.json`, archive via `cajeta.codec.Base64` + `cajeta.wire`
+> (Zstd), hashing via `cajeta.hash.Sha256`, stdio via `cajeta.io.file`, and it **wraps the
+> `cajeta` compiler** by shelling out through **`cajeta.process`** (the package built to
+> unblock exactly this). It is NOT C++, NOT a `cajeta` subcommand, and NOT stdlib (it's an
+> application). The `cajeta` binary is located via `--cajeta=PATH`, `$CAJETA_BIN`, or
+> `cajeta` on `PATH`. The skill subcommands expose `--json` (already added) so the cajeta
+> server gets structured output.
 
 ### 2.1 Requirements
 - `cajeta-mcp` starts a server that reads JSON-RPC 2.0 requests on stdin and writes

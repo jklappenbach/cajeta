@@ -117,11 +117,6 @@ add_subdirectory(runtime/native/amd)
 
 add_subdirectory(src)
 
-# cajeta-mcp — standalone MCP server that wraps the cajeta compiler (tools/mcp).
-# Added after src/ (own find_package(LLVM)) and before test/ so cajeta_mcp_core
-# exists when the test binary links it.
-add_subdirectory(tools/mcp)
-
 # cajetadoc_core (configured above, before src/) #includes the ANTLR-generated
 # CajetaParser.h but doesn't compile the generated sources, so it has no
 # build-order edge to the generation. Add it here, now that both targets exist,
