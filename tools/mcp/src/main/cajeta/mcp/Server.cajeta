@@ -275,7 +275,7 @@ public class Server {
         w.writeLineTo(out);
     }
 
-    /** Resolve the cajeta exe path from `--cajeta=PATH`, else "cajeta". */
+    /** Resolve the cajeta exe path: `--cajeta=PATH` > `$CAJETA_BIN` > "cajeta". */
     public static #String resolveCajetaBin(String[] args) {
         int32 i = 0;
         while (i < args.count()) {
@@ -284,6 +284,10 @@ public class Server {
                 return a.substring(9, (int32) a.count());
             }
             i = i + 1;
+        }
+        String env = Server.getEnv("CAJETA_BIN");
+        if (env != null) {
+            return env;
         }
         return "cajeta";
     }
