@@ -1,0 +1,43 @@
+{
+    "details": {
+        "name":                "cajeta-mcp",
+        "version":             "0.1.0",
+        "description":         "MCP (Model Context Protocol) server for the cajeta toolchain, written in cajeta",
+        "license":             "Apache-2.0",
+        "authors":             ["cajeta"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": ["filesystem"],
+        "dependencies": {},
+        "build": {
+            "source-root":  "src/main/cajeta",
+            "target":       "host",
+            "entry-method": "mcp.Server::main"
+        }
+    },
+
+    "tasks": {
+        "build": {
+            "description": "Build cajeta-mcp to a native binary (build/cajeta-mcp)",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/cajeta-mcp", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+        "run": {
+            "description": "Build and run the server (stdio JSON-RPC)",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/cajeta-mcp", "id": "art" },
+                { "action": "exec", "command": "${art.path}" }
+            ]
+        },
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

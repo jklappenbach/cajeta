@@ -1,0 +1,18 @@
+package mcp;
+
+import cajeta.lang.String;
+
+/**
+ * cajeta-mcp — an MCP (Model Context Protocol) server written in cajeta.
+ *
+ * Speaks JSON-RPC 2.0 over stdio (one JSON object per line) and implements its
+ * tools by shelling out to the `cajeta` compiler via `cajeta.process`. Built
+ * with the cajeta build tool: `cajeta build` → `build/cajeta-mcp`.
+ *
+ * C1: skeleton — the stdio JSON-RPC loop + lifecycle land next.
+ */
+public class Server {
+    public static int32 main(String[] args) {
+        return 0;
+    }
+}
