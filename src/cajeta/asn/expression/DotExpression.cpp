@@ -480,7 +480,15 @@ namespace cajeta {
             // slots holding a ptr-to-body, loaded correctly by the alloca branch
             // above; only the inline GEP shape must skip the load.)
             bool lhsIsInterface = lhsClass && lhsClass->isInterface();
-            if (lhsClass && !lhsIsView && !lhsIsThisOrSuper && !lhsIsInterface) {
+            // A @ValueType receiver is stored INLINE (e.g. a value-type element
+            // of an inline `Point[N]` field, or of a heap `Point[]` data
+            // region): the GEP already addresses the aggregate, so loading it
+            // would read the struct's first word as a pointer and crash. Mirror
+            // the alloca branch's `slotHoldsAggregate` guard. Reference-class
+            // elements ARE pointer slots and still need the load-through.
+            bool lhsIsValueType = lhsClass && lhsClass->isValueType();
+            if (lhsClass && !lhsIsView && !lhsIsThisOrSuper && !lhsIsInterface
+                    && !lhsIsValueType) {
                 auto ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 base = module->getBuilder()->CreateLoad(ptrTy, base);
             }

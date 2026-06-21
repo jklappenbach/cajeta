@@ -82,6 +82,7 @@ public class Stream<T> {
      * root, then forks per share via `cloneChainOver` (which
      * rebuilds the chain over the share).
      */
+    @Inline
     public Stream<?> unwrap() {
         return null;
     }
@@ -92,6 +93,7 @@ public class Stream<T> {
      * driver throws CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL when
      * it sees a stateful wrapper in the chain.
      */
+    @Inline
     public boolean isStatefulWrapper() {
         return false;
     }
@@ -127,10 +129,12 @@ public class Stream<T> {
      * write returns"), so the driver-facing surface is two
      * primitive-typed virtuals instead.
      */
+    @Inline
     public int64 splittableSize() {
         return -1L;
     }
 
+    @Inline
     public #Stream<?> trySplitRoot() {
         return null;
     }
@@ -141,6 +145,7 @@ public class Stream<T> {
      * source can't split or the size is below threshold, the
      * terminal falls back to sequential transparently.
      */
+    @Inline
     public Stream<T> parallel() {
         this.isParallel = true;
         return this;
@@ -151,6 +156,7 @@ public class Stream<T> {
      * for stateful intermediate ops (`take`/`skip`) which require
      * ordered traversal. Returns this.
      */
+    @Inline
     public Stream<T> sequential() {
         this.isParallel = false;
         return this;

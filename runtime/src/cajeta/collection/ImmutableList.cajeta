@@ -47,7 +47,7 @@ import cajeta.lang.stream.ArrayStream;
  *
  * @See cajeta.collection.ArrayList
  */
-public class ImmutableList<T> {
+public final class ImmutableList<T> {
 
     /** Frozen backing storage, sized exactly to the element count. */
     private T[] data;
@@ -87,10 +87,12 @@ public class ImmutableList<T> {
     /**
      * @returns the number of elements.
      */
+    @Inline
     public int64 count() {
         return (int64) this.sizeCount;
     }
 
+    @Inline
     public boolean isEmpty() {
         return this.sizeCount == 0;
     }

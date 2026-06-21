@@ -134,6 +134,7 @@ public final class SipHash implements Hasher {
      * int64 hash = SipHash.hashKeyed(bytes, bytes.count(), k0, k1);
      * ```
      */
+    @Inline
     public static int64 hashKeyed(int8[] data, int64 len, int64 keyLow, int64 keyHigh) {
         return SipHash.oneshot(data, len, keyLow, keyHigh);
     }
@@ -145,6 +146,7 @@ public final class SipHash implements Hasher {
      * int64 hash = SipHash.hashStringKeyed(user.name, k0, k1);
      * ```
      */
+    @Inline
     public static int64 hashStringKeyed(String s, int64 keyLow, int64 keyHigh) {
         return SipHash.oneshot(s.bytes, (int64) s.byteLength, keyLow, keyHigh);
     }

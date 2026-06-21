@@ -38,7 +38,7 @@ import cajeta.lang.stream.Stream;
  * follows once `stack ArrayStream<T>` aggregate-init on a generic
  * instantiation is verified.
  */
-public class ArrayList<T> {
+public final class ArrayList<T> {
     T[] data;
     // Field name aligned with HashMap/HashSet/LinkedList — `count` as a
     // bare field name conflicts with the public `count()` accessor at
@@ -88,27 +88,41 @@ public class ArrayList<T> {
      * xs.add(2);   // count() == 2
      * ```
      */
+    @Inline
     public void add(T v) {
+        // Hot path: the slot is already there. Kept tiny (a load, a compare, a
+        // store, an increment) and free of the growth machinery so the optimizer
+        // inlines it straight into the caller's append loop — matching the
+        // inlined `push`/`push_back` of Rust `Vec` / C++ `std::vector`. The cold
+        // doubling lives out-of-line in `grow()`, so it never bloats this body.
         if (this.sizeCount >= this.capacity) {
-            int32 newCap = this.capacity * 2;
-            T[] grown = heap T[newCap];
-            int32 i = 0;
-            while (i < this.sizeCount) {
-                grown[i] = this.data[i];
-                i = i + 1;
-            }
-            // `#grown` transfers ownership of the fresh array storage
-            // into `this.data` — without the marker, the local's
-            // scope-exit drop would call __cajeta_free_array on the
-            // array we just installed in the field, leaving `this.data`
-            // pointing at freed storage. Subsequent `add`s would then
-            // write into reclaimed memory. Same pattern HashMap.rehash
-            // uses for `this.keys = #newKeys` et al.
-            this.data = #grown;
-            this.capacity = newCap;
+            this.grow();
         }
         this.data[this.sizeCount] = v;
         this.sizeCount = this.sizeCount + 1;
+    }
+
+    // Cold, out-of-line: double the backing array and copy the live elements
+    // over. Split out of `add` so the full-capacity case stays branch-cold and
+    // `add`'s hot path stays inlinable.
+    @NoInline
+    private void grow() {
+        int32 newCap = this.capacity * 2;
+        T[] grown = heap T[newCap];
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            grown[i] = this.data[i];
+            i = i + 1;
+        }
+        // `#grown` transfers ownership of the fresh array storage
+        // into `this.data` — without the marker, the local's
+        // scope-exit drop would call __cajeta_free_array on the
+        // array we just installed in the field, leaving `this.data`
+        // pointing at freed storage. Subsequent `add`s would then
+        // write into reclaimed memory. Same pattern HashMap.rehash
+        // uses for `this.keys = #newKeys` et al.
+        this.data = #grown;
+        this.capacity = newCap;
     }
 
     /**

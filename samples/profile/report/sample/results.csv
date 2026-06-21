@@ -1,60 +1,60 @@
 schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes,variant
-1,20260620-235014,,example,scaffold,,-1,,-1,cajeta,,,,--release -O3 -march=native,20,200,702,992,960,1082,,,2904,-1,-1,-1,84,ok,true,,
-1,20260620-235014,,sum,selftest,,-1,,-1,cajeta,,,,--release -O3 -march=native,5,50,3917,3927,4699,6974,,,2944,-1,-1,-1,20,ok,true,,
-1,20260620-235014,,variant-demo,selftest,,-1,,-1,cajeta,,,,--release -O3 -march=native,3,20,10,20,21,50,,,2984,-1,-1,-1,20,ok,true,,small
-1,20260620-235014,,variant-demo,selftest,,-1,,-1,cajeta,,,,--release -O3 -march=native,3,20,10,20,19,21,,,3024,-1,-1,-1,20,ok,true,,large
-1,20260620-235014,,json-tokenize,codec,,-1,,631514,cajeta,,,,--release -O3 -march=native,10,50,994850,1011542,1012311,1019506,,,4288,-1,-1,-1,620,ok,true,,twitter
-1,20260620-235014,,json-tokenize,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,10,50,2511430,2554722,2553311,2585810,,,7340,-1,-1,-1,1976,ok,true,,citm_catalog
-1,20260620-235014,,json-tokenize,codec,,-1,,2251051,cajeta,,,,--release -O3 -march=native,10,50,4783368,4966723,4928671,4990888,,,9548,-1,-1,-1,3664,ok,true,,canada
-1,20260620-235014,,json-bind-skip,codec,,-1,,631514,cajeta,,,,--release -O3 -march=native,10,50,167910,168632,169890,173872,,,9548,-1,-1,-1,2764,ok,true,,twitter
-1,20260620-235014,,json-bind-skip,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,10,50,421688,428211,430313,447787,,,12156,-1,-1,-1,4,ok,true,,citm_catalog
-1,20260620-235014,,json-bind-skip,codec,,-1,,2251051,cajeta,,,,--release -O3 -march=native,10,50,762725,779727,780369,806487,,,14720,-1,-1,-1,4,ok,true,,canada
-1,20260620-235014,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
-1,20260620-235014,,json-dom,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,5,30,8182196,8248100,8265857,8440111,,,564756,-1,-1,-1,479400,ok,true,,citm_catalog
-1,20260620-235014,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
-1,20260620-235014,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
-1,20260620-235014,,json-serialize,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,5,30,5668341,6851750,6842301,8275079,,,1312216,-1,-1,-1,595216,ok,true,,citm_catalog
-1,20260620-235014,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
-1,20260620-235014,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
-1,20260620-235014,,json-roundtrip,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,5,30,20715438,21393535,21575791,23180911,,,2567788,-1,-1,-1,1074740,ok,true,,citm_catalog
-1,20260620-235014,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
-1,20260620-235014,,json-conformance,codec,,-1,,14,cajeta,,,,--release -O3 -march=native,3,20,20679,21801,22197,24426,,,2568960,-1,-1,-1,860,ok,true,,
-1,20260620-235014,,base64-encode,codec,,-1,,1048576,cajeta,,,,--release -O3 -march=native,20,100,920343,941333,1024010,1211201,,,2733864,-1,-1,-1,136556,ok,true,,
-1,20260620-235014,,base64-decode,codec,,-1,,1048576,cajeta,,,,--release -O3 -march=native,20,100,975477,991958,1012667,1165144,,,2859172,-1,-1,-1,102420,ok,true,,
-1,20260620-235014,,arraylist-append,collection,,-1,,100000,cajeta,,,,--release -O3 -march=native,5,50,420923,424109,445010,592125,,,2909080,-1,-1,-1,45352,ok,true,,
-1,20260620-235014,,hashmap-int,collection,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,1952908,1982594,2027479,2156701,,,2989740,-1,-1,-1,69132,ok,true,,
-1,20260620-235014,,hashmap-string,collection,,-1,,30000,cajeta,,,,--release -O3 -march=native,5,30,9142295,9351570,9392236,9834879,,,3385160,-1,-1,-1,338920,ok,true,,
-1,20260620-235014,,hashset-dedup,collection,,-1,,100000,cajeta,,,,--release -O3 -march=native,5,30,2144418,2185014,2213443,2350106,,,3438964,-1,-1,-1,46108,ok,true,,
-1,20260620-235014,,linkedlist-insert-traverse,collection,,-1,,40000,cajeta,,,,--release -O3 -march=native,5,30,784126,801069,836682,968684,,,3504624,-1,-1,-1,56268,ok,true,,
-1,20260620-235014,,heap-sort,collection,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,4013949,4031772,4044693,4142901,,,3520608,-1,-1,-1,13688,ok,true,,
-1,20260620-235014,,redblacktree-insert-lookup,collection,,-1,,20000,cajeta,,,,--release -O3 -march=native,3,20,2103391,2205012,2220719,2405479,,,3549392,-1,-1,-1,25020,ok,true,,
-1,20260620-235014,,sort-int64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,2736163,2756851,2765272,2900662,,,3564676,-1,-1,-1,11752,ok,true,,random
-1,20260620-235014,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),ascending
-1,20260620-235014,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),descending
-1,20260620-235014,,sort-int64,sort,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard),dups
-1,20260620-235014,,sort-f64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,2976762,2994145,3004428,3149538,,,3579980,-1,-1,-1,11748,ok,true,,
-1,20260620-235014,,sort-stable-int64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,3082534,3102752,3116948,3258456,,,3608924,-1,-1,-1,23456,ok,true,,
-1,20260620-235014,,binary-search,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,3665812,3677635,3685923,3714505,,,3622628,-1,-1,-1,11736,ok,true,,
-1,20260620-235014,,string-build-concat,string,,-1,,4000,cajeta,,,,--release -O3 -march=native,5,30,9773905,12546796,12625292,14038475,,,5838128,-1,-1,-1,1866304,ok,true,,
-1,20260620-235014,,string-search,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,142378,143170,144010,149702,,,5839448,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,string-replace,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,612444,618445,647615,703063,,,5862712,-1,-1,-1,18800,ok,true,,
-1,20260620-235014,,string-uppercase,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,221056,291930,274371,453473,,,5884184,-1,-1,-1,17600,ok,true,,
-1,20260620-235014,,xxhash3,hash,,-1,,1048576,cajeta,,,,--release -O3 -march=native,20,100,9909,10099,10254,11241,,,4000,-1,-1,-1,152,ok,true,,
-1,20260620-235014,,siphash,hash,,-1,,1048576,cajeta,,,,--release -O3 -march=native,20,100,246033,246214,246863,249439,,,5886232,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,sha256,hash,,-1,,1048576,cajeta,,,,--release -O3 -march=native,10,50,2236612,2249356,2248808,2256510,,,5887256,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,md5,hash,,-1,,1048576,cajeta,,,,--release -O3 -march=native,10,50,1644797,1649867,1650985,1664173,,,5888280,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,stream-filter-map-reduce,stream,,-1,,1000000,cajeta,,,,--release -O3 -march=native,5,30,32609285,32850328,32840293,32942573,,,5896096,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,stream-parallel-reduce,stream,,-1,,1000000,cajeta,,,,--release -O3 -march=native,5,30,14620130,15673374,15697478,17019739,,,5904296,-1,-1,-1,4,ok,true,,
-1,20260620-235014,,saxpy,math,,-1,,1000000,cajeta,,,,--release -O3 -march=native,10,50,596694,605290,614585,706600,,,5927736,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,dot-product,math,,-1,,1000000,cajeta,,,,--release -O3 -march=native,10,50,390786,394513,394847,400524,,,5943360,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,matmul,math,,-1,,40000,cajeta,,,,--release -O3 -march=native,5,20,2824759,2832233,2844353,3061004,,,5944296,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,clbg-mandelbrot,clbg,,-1,,640000,cajeta,,,,--release -O3 -march=native,5,20,28703511,28807105,28802608,28915449,,,5944296,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,clbg-fannkuch-redux,clbg,,-1,,10,cajeta,,,,--release -O3 -march=native,3,10,156160839,161120859,159244275,162732153,,,5944296,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,clbg-spectral-norm,clbg,,-1,,100,cajeta,,,,--release -O3 -march=native,5,30,1644396,1648314,1648886,1654246,,,5944296,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,time-instant-arith,time,,-1,,1000000,cajeta,,,,--release -O3 -march=native,10,50,23929620,24095824,24534192,27470258,,,5944296,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,time-localdate-arith,time,,-1,,100000,cajeta,,,,--release -O3 -march=native,5,30,2367327,2382607,2389777,2422462,,,5944296,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,atomic-fetchadd,concurrent,,-1,,1000000,cajeta,,,,--release -O3 -march=native,10,50,5274132,5299910,5498334,5993916,,,5944296,-1,-1,-1,0,ok,true,,
-1,20260620-235014,,task-spawn-await,concurrent,,-1,,20000,cajeta,,,,--release -O3 -march=native,2,3,89784278,91689506,91886099,94184515,,,5944304,-1,-1,-1,0,ok,true,,
+1,20260621-171347,,example,scaffold,,-1,,-1,cajeta,,,,--release -O3 -march=native,20,200,211,461,487,831,,,2916,-1,-1,-1,88,ok,true,,
+1,20260621-171347,,sum,selftest,,-1,,-1,cajeta,,,,--release -O3 -march=native,5,50,4618,4629,4627,4638,,,2956,-1,-1,-1,20,ok,true,,
+1,20260621-171347,,variant-demo,selftest,,-1,,-1,cajeta,,,,--release -O3 -march=native,3,20,20,20,24,60,,,2996,-1,-1,-1,20,ok,true,,small
+1,20260621-171347,,variant-demo,selftest,,-1,,-1,cajeta,,,,--release -O3 -march=native,3,20,20,20,23,30,,,3036,-1,-1,-1,20,ok,true,,large
+1,20260621-171347,,json-tokenize,codec,,-1,,631514,cajeta,,,,--release -O3 -march=native,10,50,704544,714893,731608,780166,,,4356,-1,-1,-1,620,ok,true,,twitter
+1,20260621-171347,,json-tokenize,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,10,50,1418798,1480494,1508986,1792371,,,7568,-1,-1,-1,2128,ok,true,,citm_catalog
+1,20260621-171347,,json-tokenize,codec,,-1,,2251051,cajeta,,,,--release -O3 -march=native,10,50,2382440,2410934,2413170,2444849,,,9676,-1,-1,-1,3716,ok,true,,canada
+1,20260621-171347,,json-bind-skip,codec,,-1,,631514,cajeta,,,,--release -O3 -march=native,10,50,164302,165233,166454,172517,,,9676,-1,-1,-1,2816,ok,true,,twitter
+1,20260621-171347,,json-bind-skip,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,10,50,427945,431131,433793,460346,,,12236,-1,-1,-1,4,ok,true,,citm_catalog
+1,20260621-171347,,json-bind-skip,codec,,-1,,2251051,cajeta,,,,--release -O3 -march=native,10,50,779619,783156,785179,795139,,,14800,-1,-1,-1,4,ok,true,,canada
+1,20260621-171347,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,20260621-171347,,json-dom,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,5,30,6473167,6908087,7057279,7583849,,,564832,-1,-1,-1,479400,ok,true,,citm_catalog
+1,20260621-171347,,json-dom,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,20260621-171347,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,20260621-171347,,json-serialize,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,5,30,2518658,3139938,3309202,4259297,,,1312292,-1,-1,-1,595216,ok,true,,citm_catalog
+1,20260621-171347,,json-serialize,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,20260621-171347,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),twitter
+1,20260621-171347,,json-roundtrip,codec,,-1,,1727204,cajeta,,,,--release -O3 -march=native,5,30,15019725,15734371,16100117,18457942,,,2567868,-1,-1,-1,1074744,ok,true,,citm_catalog
+1,20260621-171347,,json-roundtrip,codec,,-1,,-1,cajeta,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,v1 JSON DOM doesn't parse floats (integer-only inputs only),canada
+1,20260621-171347,,json-conformance,codec,,-1,,14,cajeta,,,,--release -O3 -march=native,3,20,14617,15970,16607,33733,,,2569008,-1,-1,-1,848,ok,true,,
+1,20260621-171347,,base64-encode,codec,,-1,,1048576,cajeta,,,,--release -O3 -march=native,20,100,1185694,1200001,1228840,1369210,,,2733916,-1,-1,-1,136560,ok,true,,
+1,20260621-171347,,base64-decode,codec,,-1,,1048576,cajeta,,,,--release -O3 -march=native,20,100,1167670,1181245,1202644,1346226,,,2859220,-1,-1,-1,102416,ok,true,,
+1,20260621-171347,,arraylist-append,collection,,-1,,100000,cajeta,,,,--release -O3 -march=native,5,50,175962,186922,205279,349218,,,2909168,-1,-1,-1,45360,ok,true,,
+1,20260621-171347,,hashmap-int,collection,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,1705864,1735098,1779141,1902685,,,2989828,-1,-1,-1,69132,ok,true,,
+1,20260621-171347,,hashmap-string,collection,,-1,,30000,cajeta,,,,--release -O3 -march=native,5,30,8977032,9137985,9140083,9342890,,,3385248,-1,-1,-1,338920,ok,true,,
+1,20260621-171347,,hashset-dedup,collection,,-1,,100000,cajeta,,,,--release -O3 -march=native,5,30,1618970,1638317,1667431,1806273,,,3439052,-1,-1,-1,46104,ok,true,,
+1,20260621-171347,,linkedlist-insert-traverse,collection,,-1,,40000,cajeta,,,,--release -O3 -march=native,5,30,704427,729304,765931,891429,,,3504712,-1,-1,-1,56268,ok,true,,
+1,20260621-171347,,heap-sort,collection,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,3426405,3439239,3453389,3596165,,,3520688,-1,-1,-1,13680,ok,true,,
+1,20260621-171347,,redblacktree-insert-lookup,collection,,-1,,20000,cajeta,,,,--release -O3 -march=native,3,20,1971874,2045073,2055509,2260098,,,3549472,-1,-1,-1,25016,ok,true,,
+1,20260621-171347,,sort-int64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,2822912,2842348,2849054,2870601,,,3564760,-1,-1,-1,11752,ok,true,,random
+1,20260621-171347,,sort-int64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,851341,855529,863238,879565,,,3580044,-1,-1,-1,11752,ok,true,,ascending
+1,20260621-171347,,sort-int64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,1036609,1045035,1058039,1207111,,,3595332,-1,-1,-1,11752,ok,true,,descending
+1,20260621-171347,,sort-int64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,16649996,16684011,16727990,16880601,,,3610616,-1,-1,-1,11752,ok,true,,dups
+1,20260621-171347,,sort-f64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,2979698,2989997,3003847,3151942,,,3625920,-1,-1,-1,11752,ok,true,,
+1,20260621-171347,,sort-stable-int64,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,2199677,2214014,2229060,2379526,,,3654860,-1,-1,-1,23456,ok,true,,
+1,20260621-171347,,binary-search,sort,,-1,,50000,cajeta,,,,--release -O3 -march=native,5,30,3585295,3601605,3606881,3625330,,,3668564,-1,-1,-1,11732,ok,true,,
+1,20260621-171347,,string-build-concat,string,,-1,,4000,cajeta,,,,--release -O3 -march=native,5,30,30638,32151,32161,33443,,,3671940,-1,-1,-1,2880,ok,true,,
+1,20260621-171347,,string-search,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,26379,26390,26472,26450,,,3673368,-1,-1,-1,0,ok,true,,
+1,20260621-171347,,string-replace,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,299734,304724,314983,462401,,,3696984,-1,-1,-1,18800,ok,true,,
+1,20260621-171347,,string-uppercase,string,,-1,,360448,cajeta,,,,--release -O3 -march=native,10,50,223280,227618,235038,251965,,,3718456,-1,-1,-1,17600,ok,true,,
+1,20260621-171347,,xxhash3,hash,,-1,,1048576,cajeta,,,,--release -O3 -march=native,20,100,7034,7144,7347,8607,,,3719480,-1,-1,-1,0,ok,true,,
+1,20260621-171347,,siphash,hash,,-1,,1048576,cajeta,,,,--release -O3 -march=native,20,100,246534,246785,247619,249611,,,3720504,-1,-1,-1,0,ok,true,,
+1,20260621-171347,,sha256,hash,,-1,,1048576,cajeta,,,,--release -O3 -march=native,10,50,2274064,2290495,2292349,2306576,,,3721528,-1,-1,-1,0,ok,true,,
+1,20260621-171347,,md5,hash,,-1,,1048576,cajeta,,,,--release -O3 -march=native,10,50,1641623,1648476,1650452,1669665,,,3722552,-1,-1,-1,0,ok,true,,
+1,20260621-171347,,stream-filter-map-reduce,stream,,-1,,1000000,cajeta,,,,--release -O3 -march=native,5,30,24010743,24185492,24225406,24441996,,,3730352,-1,-1,-1,0,ok,true,,
+1,20260621-171347,,stream-parallel-reduce,stream,,-1,,1000000,cajeta,,,,--release -O3 -march=native,5,30,10213371,11693909,11637322,13223592,,,3738540,-1,-1,-1,0,ok,true,,
+1,20260621-171347,,saxpy,math,,-1,,1000000,cajeta,,,,--release -O3 -march=native,10,50,587316,596614,601428,607915,,,3762012,-1,-1,-1,16,ok,true,,
+1,20260621-171347,,dot-product,math,,-1,,1000000,cajeta,,,,--release -O3 -march=native,10,50,391116,393993,394535,400414,,,3777668,-1,-1,-1,16,ok,true,,
+1,20260621-171347,,matmul,math,,-1,,40000,cajeta,,,,--release -O3 -march=native,5,20,2826555,2831504,2833672,2862403,,,3778636,-1,-1,-1,16,ok,true,,
+1,20260621-171347,,clbg-mandelbrot,clbg,,-1,,640000,cajeta,,,,--release -O3 -march=native,5,20,28775840,28811878,28807836,28834551,,,3778668,-1,-1,-1,16,ok,true,,
+1,20260621-171347,,clbg-fannkuch-redux,clbg,,-1,,10,cajeta,,,,--release -O3 -march=native,3,10,146848764,147494771,148302246,153716702,,,3778700,-1,-1,-1,16,ok,true,,
+1,20260621-171347,,clbg-spectral-norm,clbg,,-1,,100,cajeta,,,,--release -O3 -march=native,5,30,1632375,1638948,1643564,1679093,,,3778820,-1,-1,-1,88,ok,true,,
+1,20260621-171347,,time-instant-arith,time,,-1,,1000000,cajeta,,,,--release -O3 -march=native,10,50,20746354,20782201,20793469,20851441,,,3778852,-1,-1,-1,16,ok,true,,
+1,20260621-171347,,time-localdate-arith,time,,-1,,100000,cajeta,,,,--release -O3 -march=native,5,30,2031877,2035916,2065526,2106438,,,3778888,-1,-1,-1,20,ok,true,,
+1,20260621-171347,,atomic-fetchadd,concurrent,,-1,,1000000,cajeta,,,,--release -O3 -march=native,10,50,5276069,5292039,5311059,5351882,,,3778924,-1,-1,-1,20,ok,true,,
+1,20260621-171347,,task-spawn-await,concurrent,,-1,,20000,cajeta,,,,--release -O3 -march=native,2,3,84398696,84539892,84512497,84598904,,,3778972,-1,-1,-1,16,ok,true,,
 1,20260620-235014,1782013814,json-dom,codec,twitter,631514,,631514,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),serde_json,1,-O3 lto target-cpu=native,3,10,1128916,1151839,1203695,1687047,522.9,MB/s,5508,-1,2075867,-1,-1,ok,true,,
 1,20260620-235014,1782013814,json-dom,codec,twitter,631514,,631514,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),simd-json,0.13,-O3 lto target-cpu=native,3,10,724794,737519,749835,805497,816.6,MB/s,7836,-1,6422251,-1,-1,ok,true,,
 1,20260620-235014,1782013814,json-dom,codec,citm_catalog,1727204,,1727204,rust,rustc 1.91.1 (ed61e7d7e 2025-11-07),serde_json,1,-O3 lto target-cpu=native,3,10,1620882,1664835,1873556,2231953,989.4,MB/s,11832,-1,7977886,-1,-1,ok,true,,

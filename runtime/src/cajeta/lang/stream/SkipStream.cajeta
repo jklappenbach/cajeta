@@ -20,7 +20,7 @@ package cajeta.lang.stream;
  * the skip quota is met. `skip(n)` is a stateful wrapper, so it is
  * rejected on a `.parallel()` stream — call `.sequential()` first.
  */
-public class SkipStream<T> extends Stream<T> {
+public final class SkipStream<T> extends Stream<T> {
     Stream<T> source;
     int32 remaining;
 
@@ -51,6 +51,7 @@ public class SkipStream<T> extends Stream<T> {
     }
 
     /** Wrapper-chain unwind: returns the wrapped source `Stream`. */
+    @Inline
     public Stream<?> unwrap() {
         return this.source;
     }
@@ -59,6 +60,7 @@ public class SkipStream<T> extends Stream<T> {
      * Always `true` — the skip count is encounter-order-dependent, so
      * the parallel driver rejects this wrapper in a split chain.
      */
+    @Inline
     public boolean isStatefulWrapper() {
         return true;
     }

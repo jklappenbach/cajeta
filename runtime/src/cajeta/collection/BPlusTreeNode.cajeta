@@ -32,7 +32,7 @@ package cajeta.collection;
  *
  * @See cajeta.collection.BPlusTree
  */
-public class BPlusTreeNode<K, V> {
+public final class BPlusTreeNode<K, V> {
     public boolean leaf;
     public int32 numKeys;
     public K[] keys;

@@ -26,7 +26,7 @@ package cajeta.lang.stream;
  * #Stream<int32> half = s.trySplit();   // null if < 2 elements remain
  * ```
  */
-public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
+public final class ArrayStream<T> extends Stream<T> implements Splittable<T> {
     T[] data;
     int32 idx;
     int32 limit;
@@ -51,6 +51,7 @@ public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
      * Returns an empty `Optional` once `idx` reaches `limit`; the contained
      * element's ownership is moved out (`#v`).
      */
+    @Inline
     public Optional<T> next() {
         if (this.idx >= this.limit) {
             return stack Optional<T>(false, null);
@@ -121,11 +122,13 @@ public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
     }
 
     /** Exact remaining element count (`limit - idx`), computed in O(1). */
+    @Inline
     public int64 estimateSize() {
         return (int64) (this.limit - this.idx);
     }
 
     /** `Splittable` size hint; for an array-backed stream this is exact (see `estimateSize`). */
+    @Inline
     public int64 splittableSize() {
         return this.estimateSize();
     }

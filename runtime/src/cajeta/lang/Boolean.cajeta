@@ -8,7 +8,7 @@ package cajeta.lang;
  * Boolean.of(true)`, `!= Boolean.of(false)`. Boxed value is field index 0.
  * See `plans/lang/wrapper-types-plan.md`.
  */
-public class Boolean extends Object {
+public final class Boolean extends Object {
     boolean value;
 
     // toString() formatters (plan W6) — Boolean extends Object, not Number, so
@@ -23,6 +23,7 @@ public class Boolean extends Object {
     public static #Boolean of(boolean value) { return heap Boolean(value); }
 
     /** The wrapped primitive. */
+    @Inline
     public boolean value() { return this.value; }
 
     /**

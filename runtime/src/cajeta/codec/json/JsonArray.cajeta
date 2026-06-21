@@ -25,7 +25,7 @@ package cajeta.codec.json;
  * v1 surface; `Stream<JsonValue>` inheritance lands when
  * `JsonValue` settles further.
  */
-public class JsonArray {
+public final class JsonArray {
     JsonValue[] data;
     int32 cap;
     int32 sizeCount;
@@ -45,11 +45,13 @@ public class JsonArray {
         this.sizeCount = 0;
     }
 
+    @Inline
     public int32 count() {
         return this.sizeCount;
     }
 
 
+    @Inline
     public JsonValue get(int32 i) {
         return this.data[i];
     }
@@ -74,6 +76,7 @@ public class JsonArray {
     }
 
     /** Doubles the backing capacity and copies the live elements over. */
+    @NoInline
     void grow() {
         int32 newCap = this.cap * 2;
         JsonValue[] dst = heap JsonValue[newCap];

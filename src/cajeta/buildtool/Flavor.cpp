@@ -100,7 +100,7 @@ namespace cajeta::buildtool {
         static const std::vector<FlavorPropertySpec> v = {
             {"opt",             K::EnumString, {"O0", "O1", "O2", "O3", "Oz"}, "opt"},
             {"cpu",             K::EnumString, {"native", "generic"},          "cpu"},
-            {"lto",             K::EnumString, {"off", "thin", "full"},        ""},
+            {"lto",             K::EnumString, {"off", "thin", "full"},        "lto"},
             {"debug-info",      K::EnumString, {"off", "line", "full"},        ""},
             {"strip-symbols",   K::Boolean,    {},                            ""},
             {"bounds-check",    K::EnumString, {"on", "off", "trap"},          "bounds"},

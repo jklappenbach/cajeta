@@ -32,7 +32,7 @@ package cajeta.io.net;
  * Single-fiber ownership: a buffer is checked out of the pool by
  * exactly one connection at a time, so no internal locking.
  */
-public class ByteBuffer {
+public final class ByteBuffer {
     /**
      * Backing storage. Owned (mode-0); grows via `reserve`. Field
      * index 0 keeps the hot pointer at a stable offset.
@@ -67,26 +67,31 @@ public class ByteBuffer {
     }
 
     /** Allocated capacity in bytes. */
+    @Inline
     public int32 capacity() {
         return this.cap;
     }
 
     /** Bytes available to read: `writePos - readPos`. */
+    @Inline
     public int32 readable() {
         return this.writePos - this.readPos;
     }
 
     /** Free bytes at the tail available to write: `cap - writePos`. */
+    @Inline
     public int32 writable() {
         return this.cap - this.writePos;
     }
 
     /** Index of the next readable byte. */
+    @Inline
     public int32 readPosition() {
         return this.readPos;
     }
 
     /** Index of the next writable byte. */
+    @Inline
     public int32 writePosition() {
         return this.writePos;
     }
@@ -97,6 +102,7 @@ public class ByteBuffer {
      * responsibility (consistent with `ArrayList.get`, which also
      * defers bounds checks to the error-model wiring).
      */
+    @Inline
     public int8 at(int32 i) {
         return this.data[i];
     }
@@ -107,6 +113,7 @@ public class ByteBuffer {
      * full (the byte is **not** written in that case — the caller
      * should `reserve`/`compact` first).
      */
+    @Inline
     public boolean put(int8 b) {
         if (this.writePos >= this.cap) {
             return false;
@@ -164,6 +171,7 @@ public class ByteBuffer {
      * via `at`/raw access. Clamps to the writable room so it can
      * never push `writePos` past `cap`.
      */
+    @Inline
     public void advanceWrite(int32 n) {
         int32 room = this.cap - this.writePos;
         int32 m = n;
@@ -178,6 +186,7 @@ public class ByteBuffer {
      * the readable count so it can never push `readPos` past
      * `writePos`.
      */
+    @Inline
     public void advanceRead(int32 n) {
         int32 avail = this.writePos - this.readPos;
         int32 m = n;
@@ -194,6 +203,7 @@ public class ByteBuffer {
      * Parsers call this when the writable tail runs low but the
      * readable region hasn't fully drained.
      */
+    @NoInline
     public void compact() {
         if (this.readPos == 0) {
             return;
@@ -214,6 +224,7 @@ public class ByteBuffer {
      * new connection. Keeps the backing array (that's the whole
      * point of pooling).
      */
+    @Inline
     public void clear() {
         this.readPos = 0;
         this.writePos = 0;
@@ -226,6 +237,7 @@ public class ByteBuffer {
      * rope-style growth path for oversized frames the pool slab
      * can't hold; the steady state never grows.
      */
+    @NoInline
     public void reserve(int32 minWritable) {
         if (this.cap - this.writePos >= minWritable) {
             return;

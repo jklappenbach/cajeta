@@ -4744,8 +4744,16 @@ namespace cajeta {
         bool floatingParamsLint = true;
         for (auto& p : entries) if (p.label.empty()) { floatingParamsLint = false; break; }
         vector<ParameterEntry> entriesCopy = entries;
+        // Pass the active codegen `module`: this advisory lint resolve runs during
+        // generateCode and can INSTANTIATE a method template whose T is inferable
+        // from the value args (e.g. `Protobuf.toBytes<T>(T value)`), which brings
+        // it to life here. Without the active module, the insert-point save/restore
+        // in bringMethodTemplateInstantiationToLife falls back to the emit module's
+        // (dangling) builder → freed-builder SEGV. See memory
+        // method-template-tparam-in-param-heapcorrupt.
         MethodPtr targetMethod = targetClass->resolveMethod(
-            methodCallName, entriesCopy, /*isConstructor=*/false, floatingParamsLint);
+            methodCallName, entriesCopy, /*isConstructor=*/false,
+            floatingParamsLint, {}, module);
         if (targetMethod) {
             auto& throwsList = targetMethod->getThrowsList();
             if (!throwsList.empty()) {
@@ -6937,9 +6945,20 @@ namespace cajeta {
             }
         }
 
+        // Devirtualize when the static receiver type is provably its own
+        // dynamic type: a `final` class has no subclasses, so the resolved
+        // method is the only possible target — dispatch it directly instead of
+        // through the opaque `__cajeta_vtable_lookup` runtime call. This is what
+        // lets the optimizer inline leaf-class hot paths (e.g. ArrayList.add)
+        // into the caller's loop, the way Rust `Vec::push` / C++ `vector::push_back`
+        // inline. Interface receivers stay virtual (the static type isn't the
+        // concrete impl); `invokeMethod`'s forceDirectCall path handles the rest.
+        bool targetIsFinalClass = targetClass
+            && !targetClass->isInterface()
+            && targetClass->getModifiers().count(FINAL) > 0;
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
-            /*forceDirectCall=*/isSuperCall,
+            /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
             /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
 
         if (nullSafeStringMethod) {

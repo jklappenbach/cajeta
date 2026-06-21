@@ -6,7 +6,7 @@ package cajeta.lang;
  * (zero-extended). Boxed value is field index 0. See
  * `plans/lang/wrapper-types-plan.md` (W2).
  */
-public class UInt8 extends Number {
+public final class UInt8 extends Number {
     uint8 value;
 
     public UInt8(uint8 value) { this.value = value; return; }
@@ -15,12 +15,16 @@ public class UInt8 extends Number {
     public static #UInt8 of(uint8 value) { return heap UInt8(value); }
 
     /** The wrapped primitive. */
+    @Inline
     public uint8 value() { return this.value; }
 
+    @Inline
     public int64   asInt64()   { return (int64) this.value; }
+    @Inline
     public float64 asFloat64() { return (float64) this.value; }
 
     /** Value-based hash → equal values compare equal via Object.operator==. */
+    @Inline
     public int64 hash() { return (int64) this.value; }
 
     public #String toString() { return this.formatUnsigned((uint64) this.value); }

@@ -227,6 +227,21 @@ namespace cajeta {
         return builder;
     }
 
+    llvm::AllocaInst* CajetaModule::createEntryAlloca(llvm::Type* ty, const std::string& name) {
+        llvm::BasicBlock* insertBB = builder->GetInsertBlock();
+        llvm::Function* fn = insertBB ? insertBB->getParent() : nullptr;
+        if (fn) {
+            // Insert at the top of the entry block (before any terminator),
+            // so the alloca executes once on function entry regardless of how
+            // deep in a loop the declaration is. Other entry allocas already
+            // there are fine to precede — alloca order is immaterial.
+            llvm::BasicBlock& entry = fn->getEntryBlock();
+            llvm::IRBuilder<> eb(&entry, entry.begin());
+            return eb.CreateAlloca(ty, nullptr, name);
+        }
+        return builder->CreateAlloca(ty, nullptr, name);
+    }
+
     void CajetaModule::onPackageDeclaration(CajetaParser::PackageDeclarationContext* ctx) {
         std::vector<CajetaParser::IdentifierContext*> identifiers = ctx->qualifiedName()->identifier();
         auto itr = identifiers.begin();

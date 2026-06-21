@@ -68,7 +68,12 @@ namespace cajeta {
             } else {
                 llvmType = llvm::PointerType::get(*module->getLlvmContext(), 0);
             }
-            alloca = module->getBuilder()->CreateAlloca(llvmType);
+            // Entry-block slot alloca: getOrCreateAllocation is lazy (first
+            // reference), which can be inside a loop body — an alloca there
+            // would re-allocate stack each iteration (overflow at -O0). The
+            // store stays at the current point; it just references the
+            // entry-block slot (which dominates every use).
+            alloca = module->createEntryAlloca(llvmType);
             module->getBuilder()->CreateStore(llvmFunction->getArg(paramIndex), alloca);
         }
         return alloca;

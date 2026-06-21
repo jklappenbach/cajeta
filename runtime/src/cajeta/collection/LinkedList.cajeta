@@ -43,7 +43,7 @@ package cajeta.collection;
  * are NOT owned by the nodes — `remove(T)` returns whether a node was
  * unlinked, but doesn't drop the value.
  */
-public class LinkedList<T> {
+public final class LinkedList<T> {
 
     private LinkedListNode<T> headNode;
     private LinkedListNode<T> tailNode;
@@ -145,6 +145,7 @@ public class LinkedList<T> {
      * int64 front = nums.head();
      * ```
      */
+    @Inline
     public T head() {
         if (this.headNode == null) {
             T[] missDefault = heap T[1];
@@ -161,6 +162,7 @@ public class LinkedList<T> {
      * int64 back = nums.tail();
      * ```
      */
+    @Inline
     public T tail() {
         if (this.tailNode == null) {
             T[] missDefault = heap T[1];
@@ -290,6 +292,7 @@ public class LinkedList<T> {
         return false;
     }
 
+    @Inline
     public int64 count() {
         return this.sizeCount;
     }

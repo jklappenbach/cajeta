@@ -45,7 +45,7 @@ package cajeta.lang;
  * specification/lang/stream/Streams.md commits to Optional extending `Stream`<T> with
  * single-shot next(); that lands when `Stream`<T> itself does (P6.4+).
  */
-public class Optional<T> {
+public final class Optional<T> {
     boolean present;
     T value;
 
@@ -70,10 +70,12 @@ public class Optional<T> {
         this.value = value;
     }
 
+    @Inline
     public boolean isPresent() {
         return this.present;
     }
 
+    @Inline
     public boolean isEmpty() {
         return !this.present;
     }
@@ -84,6 +86,7 @@ public class Optional<T> {
      * user code already uses; specific exception class lands when
      * stdlib-side exception types are wired).
      */
+    @Inline
     public T get() {
         if (!this.present) {
             throw 1;
@@ -92,6 +95,7 @@ public class Optional<T> {
     }
 
     /** Returns the held value when present, otherwise `fallback`. Never throws. */
+    @Inline
     public T orElse(T fallback) {
         if (this.present) {
             return this.value;

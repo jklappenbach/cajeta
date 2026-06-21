@@ -54,7 +54,7 @@ import cajeta.lang.String;
  *   4 KEY           5 STRING      6 NUMBER       7 BOOLEAN
  *   8 NULL          9 END
  */
-public class JsonReader {
+public final class JsonReader {
     int8[] input;
     int64 byteCount;
     int64 pos;
@@ -138,22 +138,27 @@ public class JsonReader {
         return t;
     }
 
+    @Inline
     public JsonToken current() {
         return this.current;
     }
 
+    @Inline
     public int64 position() {
         return this.pos;
     }
 
+    @Inline
     public int64 tokenStart() {
         return this.tokenStart;
     }
 
+    @Inline
     public int64 tokenEnd() {
         return this.tokenEnd;
     }
 
+    @Inline
     public boolean currentBoolean() {
         return this.currentBool;
     }

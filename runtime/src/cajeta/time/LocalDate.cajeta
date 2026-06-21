@@ -32,7 +32,7 @@ import cajeta.lang.Comparable;
  * }
  * ```
  */
-public class LocalDate implements Comparable<LocalDate> {
+public final class LocalDate implements Comparable<LocalDate> {
     int64 epochDay;
 
     /**
@@ -49,6 +49,7 @@ public class LocalDate implements Comparable<LocalDate> {
     }
 
     /** True iff `year` is a Gregorian leap year. */
+    @Inline
     public static boolean isLeapYear(int32 year) {
         if (year % 4 != 0) {
             return false;
@@ -60,6 +61,7 @@ public class LocalDate implements Comparable<LocalDate> {
     }
 
     /** Number of days in `month` (1..12) of `year`. */
+    @Inline
     public static int32 lengthOfMonth(int32 year, int32 month) {
         if (month == 2) {
             if (LocalDate.isLeapYear(year)) {
@@ -168,6 +170,7 @@ public class LocalDate implements Comparable<LocalDate> {
      * stack LocalDate bad = LocalDate.of(2026, 2, 30); // throws `DateTimeException`
      * ```
      */
+    @NoInline
     public static LocalDate of(int32 year, int32 month, int32 day) {
         if (month < 1 || month > 12) {
             throw heap DateTimeException("LocalDate: month out of range 1..12");
@@ -187,6 +190,7 @@ public class LocalDate implements Comparable<LocalDate> {
      * stack LocalDate epoch = LocalDate.ofEpochDay(0);    // 1970-01-01
      * ```
      */
+    @Inline
     public static LocalDate ofEpochDay(int64 epochDay) {
         return stack LocalDate(epochDay);
     }
@@ -213,21 +217,25 @@ public class LocalDate implements Comparable<LocalDate> {
     }
 
     /** Days since 1970-01-01. */
+    @Inline
     public int64 toEpochDay() {
         return this.epochDay;
     }
 
     /** True iff this date is in a leap year. */
+    @Inline
     public boolean isLeap() {
         return LocalDate.isLeapYear(this.getYear());
     }
 
     /** This date plus `days` days. */
+    @Inline
     public LocalDate plusDays(int64 days) {
         return stack LocalDate(this.epochDay + days);
     }
 
     /** This date plus `weeks` weeks. */
+    @Inline
     public LocalDate plusWeeks(int64 weeks) {
         return stack LocalDate(this.epochDay + weeks * 7);
     }
@@ -300,6 +308,7 @@ public class LocalDate implements Comparable<LocalDate> {
      * Total order: negative if this is earlier than `other`, zero if equal,
      * positive if later.
      */
+    @Inline
     public int32 compareTo(LocalDate other) {
         if (this.epochDay < other.epochDay) {
             return -1;
@@ -311,11 +320,13 @@ public class LocalDate implements Comparable<LocalDate> {
     }
 
     /** True iff this date is strictly before `other`. */
+    @Inline
     public boolean isBefore(LocalDate other) {
         return this.epochDay < other.epochDay;
     }
 
     /** True iff this date is strictly after `other`. */
+    @Inline
     public boolean isAfter(LocalDate other) {
         return this.epochDay > other.epochDay;
     }

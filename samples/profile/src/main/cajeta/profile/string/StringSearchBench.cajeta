@@ -46,6 +46,22 @@ public class StringSearchBench extends Benchmark {
     }
 
     public boolean checkResult() {
-        return this.lastIdx < 0;
+        if (this.lastIdx >= 0) {
+            return false;
+        }
+        // Parity: the SWAR indexOf must agree with naive byte-search across
+        // start / middle / end / absent / whole-string / past-the-8-byte-window.
+        String h = "hello world, the quick brown fox";
+        boolean ok = true;
+        ok = ok && h.indexOf("hello") == 0L;          // start
+        ok = ok && h.indexOf("world") == 6L;          // middle
+        ok = ok && h.indexOf("fox") == 29L;           // end (past first 8-byte window)
+        ok = ok && h.indexOf("quick") == 17L;         // beyond window 2
+        ok = ok && h.indexOf("xyz") == -1L;           // absent
+        ok = ok && h.indexOf("") == 0L;               // empty needle
+        ok = ok && h.indexOf(h) == 0L;                // needle == haystack
+        ok = ok && "ab".indexOf("b") == 1L;           // short haystack (< 8 bytes)
+        ok = ok && "aaaab".indexOf("aab") == 2L;      // repeated first-byte candidates
+        return ok;
     }
 }

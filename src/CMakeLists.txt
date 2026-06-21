@@ -875,6 +875,14 @@ if(CAJETA_HAS_LLD)
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_LLD=1)
     target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC ${CAJETA_LLD_INCLUDE_DIR})
 endif()
+# The fork LLVM's own bin dir — its `ld.lld` is version-matched to the bitcode
+# this compiler emits, so `--lto=thin` must link through it (a system lld may be
+# a different LLVM version and reject the bitcode summary). Empty if unknown;
+# linkExecutable falls back to `-fuse-ld=lld` (PATH) with a warning.
+if(LLVM_TOOLS_BINARY_DIR)
+    target_compile_definitions(${CMAKE_PROJECT_NAME}_lib
+        PUBLIC CAJETA_LLVM_TOOLS_BIN="${LLVM_TOOLS_BINARY_DIR}")
+endif()
 if(CAJETA_HAS_SPV_RAY_QUERY)
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_SPV_RAY_QUERY=1)
 endif()

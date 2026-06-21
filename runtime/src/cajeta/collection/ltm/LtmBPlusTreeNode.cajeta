@@ -19,7 +19,7 @@ package cajeta.collection.ltm;
  * @See cajeta.collection.ltm.LtmPager
  * @See cajeta.collection.ltm.BPlusTree
  */
-public class LtmBPlusTreeNode<K, V> {
+public final class LtmBPlusTreeNode<K, V> {
     public int64 pageId;
     public boolean leaf;
     public int32 numKeys;

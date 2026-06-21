@@ -47,6 +47,18 @@ public class StringReplaceBench extends Benchmark {
     }
 
     public boolean checkResult() {
-        return this.outLen > this.textLen;
+        if (this.outLen <= this.textLen) {
+            return false;
+        }
+        // Parity: the StringBuilder/indexOf-based replace must match expected
+        // output across tail-match / multiple / empty-repl / no-match / grow / whole.
+        boolean ok = true;
+        ok = ok && "the fox".replace("fox", "feline").equals("the feline");
+        ok = ok && "fox fox".replace("fox", "cat").equals("cat cat");
+        ok = ok && "aXbXc".replace("X", "").equals("abc");
+        ok = ok && "hello".replace("z", "Q").equals("hello");
+        ok = ok && "aaa".replace("a", "bb").equals("bbbbbb");
+        ok = ok && "start".replace("start", "end").equals("end");
+        return ok;
     }
 }

@@ -23,7 +23,7 @@ import cajeta.lang.Comparable;
  * #String id = ist.iso();                                   // "+05:30"
  * ```
  */
-public class ZoneOffset implements Comparable<ZoneOffset> {
+public final class ZoneOffset implements Comparable<ZoneOffset> {
     int32 totalSeconds;
 
     /**
@@ -46,6 +46,7 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
      * stack ZoneOffset z = ZoneOffset.ofTotalSeconds(-28800);  // -08:00
      * ```
      */
+    @NoInline
     public static ZoneOffset ofTotalSeconds(int32 totalSeconds) {
         if (totalSeconds < -64800 || totalSeconds > 64800) {
             throw heap DateTimeException("ZoneOffset: out of range +/-18:00");
@@ -61,6 +62,7 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
      * stack ZoneOffset z = ZoneOffset.ofHours(2);  // +02:00
      * ```
      */
+    @NoInline
     public static ZoneOffset ofHours(int32 hours) {
         if (hours < -18 || hours > 18) {
             throw heap DateTimeException("ZoneOffset: hours out of range +/-18");
@@ -77,6 +79,7 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
      * stack ZoneOffset z = ZoneOffset.ofHoursMinutes(-3, -30);  // -03:30
      * ```
      */
+    @NoInline
     public static ZoneOffset ofHoursMinutes(int32 hours, int32 minutes) {
         if (hours < -18 || hours > 18) {
             throw heap DateTimeException("ZoneOffset: hours out of range +/-18");
@@ -104,17 +107,20 @@ public class ZoneOffset implements Comparable<ZoneOffset> {
      * stack ZoneOffset z = ZoneOffset.utc();  // iso() == "Z"
      * ```
      */
+    @Inline
     public static ZoneOffset utc() {
         return stack ZoneOffset(0);
     }
 
     /** Total offset in seconds from UTC (may be negative). */
+    @Inline
     public int32 getTotalSeconds() {
         return this.totalSeconds;
     }
 
     /** Total order by offset seconds (java.time orders larger offsets first;
         we use natural ascending order on the second count). */
+    @Inline
     public int32 compareTo(ZoneOffset other) {
         if (this.totalSeconds < other.totalSeconds) {
             return -1;

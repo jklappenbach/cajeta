@@ -52,7 +52,7 @@ package cajeta.collection;
  * @See cajeta.collection.RedBlackNode
  * @See cajeta.lang.Math
  */
-public class RedBlackTree<K, V> {
+public final class RedBlackTree<K, V> {
 
     private RedBlackNode<K, V> root;
     private int64 sizeCount;
@@ -73,10 +73,12 @@ public class RedBlackTree<K, V> {
     /**
      * @returns the number of entries.
      */
+    @Inline
     public int64 count() {
         return this.sizeCount;
     }
 
+    @Inline
     public boolean isEmpty() {
         return this.root == null;
     }
@@ -169,6 +171,7 @@ public class RedBlackTree<K, V> {
     /**
      * Smallest key, or the type's zero value if the tree is empty.
      */
+    @Inline
     public K min() {
         RedBlackNode<K, V> n = this.minNode();
         if (n == null) {
@@ -301,6 +304,7 @@ public class RedBlackTree<K, V> {
     }
 
     /** Left-rotate around `x`, fixing parent links and the root. */
+    @Inline
     private void rotateLeft(RedBlackNode<K, V> x) {
         RedBlackNode<K, V> y = x.right;
         x.right = y.left;
@@ -320,6 +324,7 @@ public class RedBlackTree<K, V> {
     }
 
     /** Right-rotate around `x`, fixing parent links and the root. */
+    @Inline
     private void rotateRight(RedBlackNode<K, V> x) {
         RedBlackNode<K, V> y = x.left;
         x.left = y.right;

@@ -20,7 +20,7 @@ import cajeta.lang.String;
  * — that's the cost of the convenience tier. The fast paths
  * (Tier 1 + 2) bypass JsonValue entirely and pay zero overhead.
  */
-public class JsonValue {
+public final class JsonValue {
 
     // Named constants for the kind discriminator. Match the comment
     // table above; exposed so user code can compare against
@@ -65,34 +65,41 @@ public class JsonValue {
         this.objVal = null;
     }
 
+    @Inline
     public int32 kind() {
         return this.kind;
     }
 
     /** True when this value is JSON `null` (kind `NULL`). */
+    @Inline
     public boolean isNull() {
         return this.kind == 0;
     }
 
+    @Inline
     public boolean asBoolean() {
         return this.boolVal;
     }
 
+    @Inline
     public int64 asInt64() {
         return this.numVal;
     }
 
     /** Narrowing view of the NUMBER payload — truncates the int64 to int32. */
+    @Inline
     public int32 asInt32() {
         return (int32) this.numVal;
     }
 
     // String bytes — borrowed view, caller must not free. v1 keeps
     // escapes verbatim because the reader's currentBytes() does too.
+    @Inline
     public int8[] asBytes() {
         return this.strBytes;
     }
 
+    @Inline
     public int32 asBytesLength() {
         return this.strLen;
     }
@@ -119,10 +126,12 @@ public class JsonValue {
         return heap String(this.strBytes, this.strLen);
     }
 
+    @Inline
     public JsonArray asArray() {
         return this.arrVal;
     }
 
+    @Inline
     public JsonObject asObject() {
         return this.objVal;
     }

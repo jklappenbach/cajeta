@@ -48,7 +48,7 @@ package cajeta.collection;
  * @See cajeta.lang.Math
  * @See cajeta.collection.ArrayList
  */
-public class Heap<T> {
+public final class Heap<T> {
 
     private T[] data;
     private int32 sizeCount;
@@ -71,6 +71,7 @@ public class Heap<T> {
     /**
      * @returns the number of elements currently in the heap.
      */
+    @Inline
     public int64 count() {
         return (int64) this.sizeCount;
     }
@@ -78,6 +79,7 @@ public class Heap<T> {
     /**
      * @returns `true` when the heap holds no elements.
      */
+    @Inline
     public boolean isEmpty() {
         return this.sizeCount == 0;
     }
@@ -133,6 +135,7 @@ public class Heap<T> {
      * @returns the smallest element without removing it, or the
      *          type's zero value if the heap is empty.
      */
+    @Inline
     public T peek() {
         if (this.sizeCount == 0) {
             T[] missDefault = heap T[1];

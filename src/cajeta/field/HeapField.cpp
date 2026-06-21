@@ -11,7 +11,9 @@ namespace cajeta {
 
     llvm::AllocaInst* HeapField::getOrCreateAllocation() {
         if (!alloca) {
-            alloca = module->getBuilder()->CreateAlloca(
+            // Entry-block slot alloca (see CajetaModule::createEntryAlloca):
+            // a `heap` local in a loop body must not re-allocate stack per pass.
+            alloca = module->createEntryAlloca(
                 llvm::PointerType::get(type->getLlvmType()->getContext(), 0));
             if (initializer) {
                 // An initializer whose generateCode returns null is a

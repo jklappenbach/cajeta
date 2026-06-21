@@ -919,7 +919,13 @@ namespace cajeta {
                         + "'; not a primitive, native, or user-defined type",
                     "CAJETA_ERROR_UNKNOWN_TYPE");
             }
-            if (dynamic_pointer_cast<CajetaArray>(t)) {
+            if (auto arr = dynamic_pointer_cast<CajetaArray>(t)) {
+                // Fixed-size inline array field `T[N]`: N elements stored
+                // inline in the object body (`[N x T]`), no pointer slot.
+                if (arr->isInlineArray()) {
+                    return arr->getInlineLlvmType(lctx);
+                }
+                // Heap reference `T[]`: a pointer to the heap header.
                 return llvm::PointerType::get(*lctx, 0);
             }
             if (auto cls = dynamic_pointer_cast<CajetaClass>(t)) {
@@ -2753,7 +2759,12 @@ namespace cajeta {
             if (!fieldType) continue;
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
 
-            if (dynamic_pointer_cast<CajetaArray>(fieldType)) {
+            if (auto arrField = dynamic_pointer_cast<CajetaArray>(fieldType)) {
+                // Fixed-size inline array field (`T[N]`): inline storage, not a
+                // heap allocation — there is nothing to free. Loading the slot
+                // as a pointer and calling __cajeta_free_array would free the
+                // inline bytes interpreted as an address (invalid free / UAF).
+                if (arrField->isInlineArray()) continue;
                 if (!freeArrayFn) {
                     freeArrayFn = cajModule->getRuntimeFunction("__cajeta_free_array", bodyModule);
                 }
@@ -4463,7 +4474,8 @@ namespace cajeta {
     // when the instantiation is already registered — addMethod's
     // duplicate-static check otherwise rejects.
     static void bringMethodTemplateInstantiationToLife(
-            CajetaClass* host, MethodPtr inst) {
+            CajetaClass* host, MethodPtr inst,
+            CajetaModulePtr activeModule = nullptr) {
         // Probe with the two-layer key so distinct instantiations of a
         // same-canonical template (T-vars not in value params) each
         // get their own registration. See Method::getMapKey.
@@ -4488,8 +4500,20 @@ namespace cajeta {
         auto hostMod = inst->getEmitModule();
         llvm::IRBuilder<>* savedBuilder = hostMod ? hostMod->getBuilder() : nullptr;
         MethodPtr savedCurrent = hostMod ? hostMod->getCurrentMethod() : nullptr;
-        llvm::BasicBlock* savedInsertBB = savedBuilder
-            ? savedBuilder->GetInsertBlock() : nullptr;
+        // Insert-point save/restore targets the ACTIVE codegen builder — the one
+        // whose insert block the nested generateCode below must not clobber. When
+        // the template lives in a classpath `.cja`, its emit module (hostMod) is
+        // NOT the module being actively generated, so capturing the insert block
+        // from hostMod's builder yields a stale/freed block → UAF at the
+        // SetInsertPoint restore (the protobuf ProtobufSynthesizer crash — first
+        // synthesizer over a classpath lib; CSV/JSON are stdlib so emit==active).
+        // The codegen caller (invokeMethod) threads the active module in; fall
+        // back to hostMod for resolveTypes-phase callers (no active codegen), so
+        // the stdlib path is unchanged (activeModule==hostMod there anyway).
+        CajetaModulePtr ipMod = activeModule ? activeModule : hostMod;
+        llvm::IRBuilder<>* ipBuilder = ipMod ? ipMod->getBuilder() : nullptr;
+        llvm::BasicBlock* ipInsertBB = ipBuilder
+            ? ipBuilder->GetInsertBlock() : nullptr;
         // Scope-stack barrier — the inner method's resolveTypes pass
         // must NOT find the caller's locals via the parent chain.
         // Without this save/clear, e.g. a nested-class JSON synth call
@@ -4510,14 +4534,15 @@ namespace cajeta {
             hostMod->setBuilder(savedBuilder);
             hostMod->setCurrentMethod(savedCurrent);
         }
-        if (savedBuilder && savedInsertBB) {
-            savedBuilder->SetInsertPoint(savedInsertBB);
+        if (ipBuilder && ipInsertBB) {
+            ipBuilder->SetInsertPoint(ipInsertBB);
         }
     }
 
     MethodPtr CajetaClass::resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
             bool isConstructor, bool floatingParams,
-            const vector<CajetaTypePtr>& explicitMethodTypeArgs) {
+            const vector<CajetaTypePtr>& explicitMethodTypeArgs,
+            CajetaModulePtr activeModule) {
         // Explicit-type-args fast path: when the call site spells the
         // method-level type args (`expr.<T>method(args)`), skip exact-
         // signature lookup (which can't match — the explicit form is
@@ -4526,13 +4551,13 @@ namespace cajeta {
         if (!isConstructor && !explicitMethodTypeArgs.empty()) {
             if (MethodPtr inst = tryInstantiateMethodTemplate(
                     this, methodName, parameters, explicitMethodTypeArgs)) {
-                bringMethodTemplateInstantiationToLife(this, inst);
+                bringMethodTemplateInstantiationToLife(this, inst, activeModule);
                 return inst;
             }
             for (auto& parent : superClasses) {
                 if (MethodPtr inst = tryInstantiateMethodTemplate(
                         parent.get(), methodName, parameters, explicitMethodTypeArgs)) {
-                    bringMethodTemplateInstantiationToLife(parent.get(), inst);
+                    bringMethodTemplateInstantiationToLife(parent.get(), inst, activeModule);
                     return inst;
                 }
             }
@@ -4595,7 +4620,8 @@ namespace cajeta {
         // would never be found on AudioBackend.
         if (!isConstructor) {
             for (auto& parent : getSuperClasses()) {
-                MethodPtr m = parent->resolveMethod(methodName, parameters, isConstructor, floatingParams);
+                MethodPtr m = parent->resolveMethod(methodName, parameters,
+                    isConstructor, floatingParams, {}, activeModule);
                 if (m) return m;
             }
         }
@@ -4611,14 +4637,14 @@ namespace cajeta {
         if (!isConstructor) {
             if (MethodPtr inst = tryInstantiateMethodTemplate(
                     this, methodName, parameters)) {
-                bringMethodTemplateInstantiationToLife(this, inst);
+                bringMethodTemplateInstantiationToLife(this, inst, activeModule);
                 return inst;
             }
             // Walk the parent chain looking for templated candidates too.
             for (auto& parent : superClasses) {
                 if (MethodPtr inst = tryInstantiateMethodTemplate(
                         parent.get(), methodName, parameters)) {
-                    bringMethodTemplateInstantiationToLife(parent.get(), inst);
+                    bringMethodTemplateInstantiationToLife(parent.get(), inst, activeModule);
                     return inst;
                 }
             }
@@ -4742,7 +4768,8 @@ namespace cajeta {
             sort(parameters.begin(), parameters.end(), [](const ParameterEntry& a, const ParameterEntry& b) -> bool { return a.label < b.label; });
         }
 
-        MethodPtr method = resolveMethod(methodName, parameters, isConstructor, floatingParams, explicitMethodTypeArgs);
+        MethodPtr method = resolveMethod(methodName, parameters, isConstructor,
+            floatingParams, explicitMethodTypeArgs, callerModule);
         if (!method) {
             // NOTE: a hard "no matching constructor" error here (to catch the
             // silent-uninitialized-object footgun) is too aggressive — the

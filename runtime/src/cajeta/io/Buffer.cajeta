@@ -27,11 +27,13 @@ public final class Buffer<T> {
     }
 
     /** Total valid bytes. */
+    @Inline
     public int64 byteCount() {
         return this.len;
     }
 
     /** The byte at `off`. */
+    @Inline
     public int8 byteAt(int64 off) {
         return this.data[off];
     }
@@ -41,6 +43,7 @@ public final class Buffer<T> {
      * keep `off` in `[0, byteCount - 8]` (no bounds check — this is the hot
      * primitive for SWAR scanners). Lowers to a single `load i64, align 1`.
      */
+    @Inline
     public int64 loadU64(int64 off) {
         return Cajeta.loadU64(this.data, off);
     }

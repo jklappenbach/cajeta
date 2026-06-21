@@ -64,6 +64,15 @@ namespace cajeta {
     // LoopVectorize + SLP). Applies to --emit=obj/exe; see compile/Optimizer.h.
     enum class OptLevel { O0, O1, O2, O3 };
 
+    // Link-time optimization policy (the `--lto` flag). Off: each module is
+    // compiled to a native object and linked — no cross-module inlining (a
+    // stdlib-hot-path method can never inline into user code). Thin: each module
+    // is emitted as ThinLTO bitcode + summary and the cross-module import +
+    // backend runs at link, so e.g. `@Inline` `ArrayList.add` folds into a user
+    // append loop. Full reserved (monolithic LTO) — not yet wired; treated as
+    // Thin. ThinLTO uses the fork's version-matched lld (system lld may differ).
+    enum class LtoMode { Off, Thin, Full };
+
     // Lean linker / DCE policy (the `--link-mode` flag; plans/compiler/
     // lean-linker-dce.md). Full keeps every class's reflection registration
     // ctor (today's behavior — keep-everything, defeats --gc-sections); Lean
@@ -105,6 +114,7 @@ namespace cajeta {
 
         // ----- optimization -----
         OptLevel        opt                 = OptLevel::O0;  // IR opt for --emit=obj/exe
+        LtoMode         lto                 = LtoMode::Off;  // cross-module LTO for --emit=exe
 
         // ----- lean linker / DCE -----
         // Class-registration link policy (the --link-mode flag). Defaults Full

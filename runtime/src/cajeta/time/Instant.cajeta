@@ -20,7 +20,7 @@ import cajeta.lang.Comparable;
  * boolean earlier = t0.isBefore(t1);                  // true
  * ```
  */
-public class Instant implements Comparable<Instant> {
+public final class Instant implements Comparable<Instant> {
     int64 epochSecond;
     int32 nano;
 
@@ -45,6 +45,7 @@ public class Instant implements Comparable<Instant> {
      * stack Instant t = Instant.ofEpochSecond(1717599600);
      * ```
      */
+    @Inline
     public static Instant ofEpochSecond(int64 epochSecond) {
         return stack Instant(epochSecond, 0);
     }
@@ -74,6 +75,7 @@ public class Instant implements Comparable<Instant> {
      * stack Instant t = Instant.ofEpochMilli(1717599600000);
      * ```
      */
+    @Inline
     public static Instant ofEpochMilli(int64 epochMilli) {
         int64 s = epochMilli / 1000;
         int32 n = (int32) ((epochMilli % 1000) * 1000000);
@@ -91,31 +93,37 @@ public class Instant implements Comparable<Instant> {
      * stack Instant base = Instant.epoch();
      * ```
      */
+    @Inline
     public static Instant epoch() {
         return stack Instant(0, 0);
     }
 
     /** Seconds since the epoch (may be negative). */
+    @Inline
     public int64 getEpochSecond() {
         return this.epochSecond;
     }
 
     /** Nanosecond-of-second, 0..999999999. */
+    @Inline
     public int32 getNano() {
         return this.nano;
     }
 
     /** Milliseconds since the epoch (truncated toward negative infinity by construction). */
+    @Inline
     public int64 toEpochMilli() {
         return this.epochSecond * 1000 + (int64) (this.nano / 1000000);
     }
 
     /** This instant plus `seconds` seconds. */
+    @Inline
     public Instant plusSeconds(int64 seconds) {
         return stack Instant(this.epochSecond + seconds, this.nano);
     }
 
     /** This instant plus `millis` milliseconds, normalized. */
+    @Inline
     public Instant plusMillis(int64 millis) {
         int64 addNanos = millis * 1000000;
         int64 total = (int64) this.nano + addNanos;
@@ -129,6 +137,7 @@ public class Instant implements Comparable<Instant> {
     }
 
     /** This instant plus `nanos` nanoseconds, normalized. */
+    @Inline
     public Instant plusNanos(int64 nanos) {
         int64 total = (int64) this.nano + nanos;
         int64 s = this.epochSecond + total / 1000000000;
@@ -141,6 +150,7 @@ public class Instant implements Comparable<Instant> {
     }
 
     /** This instant advanced by a `Duration`. */
+    @Inline
     public Instant plus(Duration d) {
         int64 total = (int64) this.nano + d.toNanos();
         int64 s = this.epochSecond + total / 1000000000;
@@ -153,6 +163,7 @@ public class Instant implements Comparable<Instant> {
     }
 
     /** This instant moved back by a `Duration`. */
+    @Inline
     public Instant minus(Duration d) {
         int64 total = (int64) this.nano - d.toNanos();
         int64 s = this.epochSecond + total / 1000000000;
@@ -183,6 +194,7 @@ public class Instant implements Comparable<Instant> {
      * Total order on the UTC timeline: negative if this precedes `other`, zero
      * if equal, positive if after.
      */
+    @Inline
     public int32 compareTo(Instant other) {
         if (this.epochSecond < other.epochSecond) {
             return -1;
@@ -200,11 +212,13 @@ public class Instant implements Comparable<Instant> {
     }
 
     /** True iff this instant strictly precedes `other`. */
+    @Inline
     public boolean isBefore(Instant other) {
         return this.compareTo(other) < 0;
     }
 
     /** True iff this instant is strictly after `other`. */
+    @Inline
     public boolean isAfter(Instant other) {
         return this.compareTo(other) > 0;
     }

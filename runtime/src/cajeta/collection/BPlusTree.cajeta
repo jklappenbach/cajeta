@@ -40,7 +40,7 @@ package cajeta.collection;
  * @See cajeta.collection.RedBlackTree
  * @See `ArrayList`
  */
-public class BPlusTree<K, V> {
+public final class BPlusTree<K, V> {
 
     private BPlusTreeNode<K, V> root;
     private int64 sizeCount;
@@ -63,11 +63,13 @@ public class BPlusTree<K, V> {
     /**
      * @returns the number of entries.
      */
+    @Inline
     public int64 count() {
         return this.sizeCount;
     }
 
     /** True when no entries have been inserted (no root leaf yet). */
+    @Inline
     public boolean isEmpty() {
         return this.root == null;
     }

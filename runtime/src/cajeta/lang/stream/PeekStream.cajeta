@@ -18,7 +18,7 @@ package cajeta.lang.stream;
  * Lazy: `fn` is called once per pull, not eagerly over the whole source.
  * An empty stream propagates without invoking `fn`.
  */
-public class PeekStream<T> extends Stream<T> {
+public final class PeekStream<T> extends Stream<T> {
     Stream<T> source;
     (T) -> void fn;
 
@@ -49,6 +49,7 @@ public class PeekStream<T> extends Stream<T> {
         return o;
     }
 
+    @Inline
     public Stream<?> unwrap() {
         return this.source;
     }

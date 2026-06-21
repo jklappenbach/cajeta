@@ -751,6 +751,13 @@ namespace cajeta {
         // inferDiamondArgs (TPL-N3) to recognize that `List<int32>` is "a
         // List" when unifying against a `List<T>` parameter declaration.
         inst->setTemplateOrigin(static_pointer_cast<CajetaClass>(shared_from_this()));
+        // Carry the template's class modifiers (final / abstract / access) onto
+        // the instantiation. Without this, `final class ArrayList<T>` produces a
+        // NON-final `ArrayList<int32>`, so every `add()` on it stays vtable-
+        // dispatched and can't be devirtualized/inlined. The modifiers are a
+        // property of the class shape, not the type arguments, so they copy
+        // verbatim.
+        inst->getModifiers() = this->getModifiers();
 
         // Cache BEFORE we walk the body. Lets self-referential templates
         // like `class List<T> { List<T> next; }` resolve their own type

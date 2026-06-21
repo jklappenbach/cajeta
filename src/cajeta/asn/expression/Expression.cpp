@@ -489,6 +489,39 @@ namespace cajeta {
         }
     }
 
+    // Evaluate a compile-time-constant integer index from the AST: an integer
+    // literal, or a unary +/- applied to one. Returns true + the value when
+    // constant-foldable. Used for the static inline-array bounds check, which
+    // must catch `f[-1]` — under overflow checking the negation lowers to a
+    // checked-sub intrinsic, so the post-codegen LLVM value is not a folded
+    // ConstantInt.
+    static bool tryEvalConstIntIndex(const AbstractSyntaxNodePtr& node, int64_t& out) {
+        if (auto lit = dynamic_pointer_cast<IntegerLiteralExpression>(node)) {
+            string raw = lit->getRawValue();
+            __int128_t v;
+            switch (lit->getIntegerLiteralType()) {
+                case INTEGER_LITERAL_TYPE_HEX:    v = LiteralUtils::hexToInt128(raw, 64); break;
+                case INTEGER_LITERAL_TYPE_BINARY: v = LiteralUtils::binaryToInt128(raw, 64); break;
+                case INTEGER_LITERAL_TYPE_OCT:    v = LiteralUtils::octalToInt128(raw, 64); break;
+                default:                          v = LiteralUtils::decimalToInt128(raw, 64); break;
+            }
+            out = (int64_t) v;
+            return true;
+        }
+        if (auto pre = dynamic_pointer_cast<PrefixExpression>(node)) {
+            PrefixOp op = pre->getOp();
+            if ((op == PREFIX_OP_NEGATIVE || op == PREFIX_OP_POSITIVE)
+                    && !pre->getChildren().empty()) {
+                int64_t inner;
+                if (tryEvalConstIntIndex(pre->getChildren()[0], inner)) {
+                    out = (op == PREFIX_OP_NEGATIVE) ? -inner : inner;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     llvm::Value* ArrayIndexExpression::generateCode(CajetaModulePtr module) {
         // Each ArrayIndexExpression handles exactly one index level. children[0] is the
         // array expression (a ptr to a header `{ i64 size, [0 x T] data }`); children[1]
@@ -654,13 +687,28 @@ namespace cajeta {
         //     the header pointer.
         llvm::Value* arrayVal = children[0]->generateCode(module);
         auto lhsExpr = dynamic_pointer_cast<Expression>(children[0]);
-        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(arrayVal)) {
+
+        // Fixed-size inline array field (`obj.f[i]` where f is `T[N]`): the
+        // field slot GEP from DotExpression ALREADY points at the inline
+        // `[N x T]` storage embedded in the object — there is no header
+        // pointer to load through. Loading it (as the heap-`T[]` path does)
+        // would read the first inline element as a pointer and SIGSEGV.
+        bool inlineArrayAccess = false;
+        if (lhsExpr) {
+            if (!lhsExpr->getResolvedType()) lhsExpr->resolveTypes(module);
+            if (auto la = dynamic_pointer_cast<CajetaArray>(lhsExpr->getResolvedType())) {
+                inlineArrayAccess = la->isInlineArray();
+            }
+        }
+
+        if (inlineArrayAccess) {
+            // arrayVal already addresses the inline storage; do not load it.
+        } else if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(arrayVal)) {
             arrayVal = builder->CreateLoad(a->getAllocatedType(), a);
         } else if (lhsExpr && dynamic_pointer_cast<ArrayIndexExpression>(lhsExpr)) {
             arrayVal = builder->CreateLoad(
                 llvm::PointerType::get(ctx, 0), arrayVal);
         } else if (lhsExpr && dynamic_pointer_cast<DotExpression>(lhsExpr)) {
-            if (!lhsExpr->getResolvedType()) lhsExpr->resolveTypes(module);
             if (dynamic_pointer_cast<CajetaArray>(lhsExpr->getResolvedType())) {
                 arrayVal = builder->CreateLoad(
                     llvm::PointerType::get(ctx, 0), arrayVal);
@@ -701,6 +749,69 @@ namespace cajeta {
         idx = loadIfLValue(module, idx, idxAst);
         if (idx->getType() != i64Ty) {
             idx = builder->CreateIntCast(idx, i64Ty, /*isSigned=*/true);
+        }
+
+        // Inline fixed-size array field (`T[N]`): address the element directly
+        // in the embedded `[N x T]` storage — `&inline[idx]` via GEP {0, idx},
+        // no header, no DATA_FIELD indirection. Bounds are against the
+        // compile-time constant N.
+        if (arrayType->isInlineArray()) {
+            int64_t n = arrayType->getFixedLength();
+            // Static bounds check: the length N is known at compile time, so a
+            // constant index proven out of [0, N) is a compile error (spec
+            // 2.1.7) rather than a runtime trap. Evaluate the constant from the
+            // AST (catches `f[-1]`, whose checked negation isn't a folded
+            // ConstantInt); fall back to a folded LLVM constant for constant
+            // expressions the AST walk doesn't cover.
+            int64_t civ = 0;
+            bool indexIsConst = tryEvalConstIntIndex(children[1], civ);
+            if (!indexIsConst) {
+                if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(idx)) {
+                    civ = ci->getSExtValue();
+                    indexIsConst = true;
+                }
+            }
+            if (indexIsConst && (civ < 0 || civ >= n)) {
+                std::string fieldName;
+                if (auto dot = dynamic_pointer_cast<DotExpression>(lhsExpr)) {
+                    fieldName = dot->getIdentifier();
+                }
+                throw Exception(
+                    "inline array index " + std::to_string(civ)
+                        + " out of bounds for field '" + fieldName
+                        + "' of length " + std::to_string(n)
+                        + " (valid 0.." + std::to_string(n - 1) + ")",
+                    "CAJETA_ERROR_INLINE_ARRAY_INDEX_OUT_OF_BOUNDS");
+            }
+            BoundsCheck boundsMode = module->getFlags().bounds;
+            if (boundsMode != BoundsCheck::Off) {
+                llvm::Value* size = llvm::ConstantInt::get(i64Ty, (uint64_t) n);
+                llvm::Value* outOfBounds = builder->CreateICmpUGE(idx, size);
+                llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                llvm::BasicBlock* failBB = llvm::BasicBlock::Create(ctx, "bounds_fail", parentFn);
+                llvm::BasicBlock* okBB = llvm::BasicBlock::Create(ctx, "bounds_ok", parentFn);
+                builder->CreateCondBr(outOfBounds, failBB, okBB);
+                builder->SetInsertPoint(failBB);
+                if (boundsMode == BoundsCheck::Trap) {
+                    llvm::Function* trapFn = llvm::Intrinsic::getOrInsertDeclaration(
+                        module->getLlvmModule(), llvm::Intrinsic::trap);
+                    builder->CreateCall(trapFn);
+                } else {
+                    llvm::Function* boundsFail =
+                        module->getRuntimeFunction("__cajeta_array_bounds_fail");
+                    if (boundsFail) {
+                        builder->CreateCall(boundsFail, {idx, size});
+                    }
+                }
+                builder->CreateUnreachable();
+                builder->SetInsertPoint(okBB);
+            }
+            llvm::Type* inlineTy = arrayType->getInlineLlvmType(&ctx);
+            vector<llvm::Value*> inlineGep = {
+                llvm::ConstantInt::get(i64Ty, 0),
+                idx,
+            };
+            return builder->CreateGEP(inlineTy, arrayVal, inlineGep);
         }
 
         // Bounds check (when enabled by the compiler flag and the runtime helper is
@@ -1424,14 +1535,6 @@ namespace cajeta {
         return CajetaModule::ensureGlobalInModule(module->getLlvmModule(), co);
     }
 
-    // Helper used by ternary/instanceof: load value from an alloca-style l-value.
-    static llvm::Value* loadIfAllocaShared(CajetaModulePtr module, llvm::Value* v) {
-        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
-            return module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
-        }
-        return v;
-    }
-
     void BooleanSwitchExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         // Result type = the `then` branch's resolved type. A full implementation would
@@ -1450,7 +1553,14 @@ namespace cajeta {
         llvm::LLVMContext& ctx = *module->getLlvmContext();
 
         // Evaluate condition; coerce non-i1 (e.g. i32 0/non-0) to i1 via != 0.
-        llvm::Value* cond = loadIfAllocaShared(module, children[0]->generateCode(module));
+        // Use loadIfLValue (not loadIfAllocaShared) so an l-value condition that
+        // isn't a plain alloca — a boolean class FIELD (`this.flag` → a GEP),
+        // an array element, a static field — is loaded to its r-value. Loading
+        // only allocas left a field GEP as a pointer, and the i1 coercion below
+        // then built an ICmp with a pointer operand (malformed IR / verifier
+        // assertion).
+        auto condAst = dynamic_pointer_cast<Expression>(children[0]);
+        llvm::Value* cond = loadIfLValue(module, children[0]->generateCode(module), condAst);
         llvm::Type* i1Ty = llvm::Type::getInt1Ty(ctx);
         if (cond->getType() != i1Ty) {
             llvm::Value* zero = llvm::ConstantInt::get(cond->getType(), 0);
@@ -1465,12 +1575,14 @@ namespace cajeta {
         builder->CreateCondBr(cond, thenBB, elseBB);
 
         builder->SetInsertPoint(thenBB);
-        llvm::Value* thenVal = loadIfAllocaShared(module, children[1]->generateCode(module));
+        auto thenAst = dynamic_pointer_cast<Expression>(children[1]);
+        llvm::Value* thenVal = loadIfLValue(module, children[1]->generateCode(module), thenAst);
         llvm::BasicBlock* thenEnd = builder->GetInsertBlock();
         builder->CreateBr(mergeBB);
 
         builder->SetInsertPoint(elseBB);
-        llvm::Value* elseVal = loadIfAllocaShared(module, children[2]->generateCode(module));
+        auto elseAst = dynamic_pointer_cast<Expression>(children[2]);
+        llvm::Value* elseVal = loadIfLValue(module, children[2]->generateCode(module), elseAst);
         // If types differ, narrow/extend the else side to match the then side. Mirrors
         // BinaryOpExpression's coerceArithPair logic at a single point of variance.
         if (elseVal->getType() != thenVal->getType()) {

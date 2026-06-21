@@ -43,17 +43,12 @@ public class SortInt64Bench extends Benchmark {
         return v;
     }
 
-    // Cajeta's Sort.sort quicksort keeps an explicit 128-deep range stack with
-    // no introsort guard, so the adversarial patterns (already-sorted, reverse,
-    // many-duplicates — the very ones sort-research-rs targets) overflow it and
-    // crash. Only `random` (balanced recursion) is safe today; the others are
-    // recorded as skips with the reason — surfacing the gap as data.
+    // Cajeta's Sort.sort uses a middle-element pivot and an explicit range stack
+    // that recurses the smaller partition and loops the larger, bounding the
+    // stack to O(log n) (~17 deep at n=50000) — so all four patterns sort
+    // correctly without overflow. All variants are measured.
     public boolean supportsVariant(String variant) {
-        return variant.equals("random");
-    }
-
-    public String skipReason() {
-        return "Cajeta Sort quicksort overflows its 128-deep range stack on adversarial patterns (no introsort guard)";
+        return true;
     }
 
     public void prepare(String variant) {

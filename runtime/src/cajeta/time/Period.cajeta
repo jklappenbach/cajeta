@@ -22,7 +22,7 @@ package cajeta.time;
  * Pair with `LocalDate` to shift calendar dates, and contrast with
  * `Duration` for machine-time amounts.
  */
-public class Period {
+public final class Period {
     int32 years;
     int32 months;
     int32 days;
@@ -48,6 +48,7 @@ public class Period {
      * stack Period p = Period.of(1, 2, 3); // 1 year, 2 months, 3 days
      * ```
      */
+    @Inline
     public static Period of(int32 years, int32 months, int32 days) {
         return stack Period(years, months, days);
     }
@@ -59,6 +60,7 @@ public class Period {
      * stack Period decade = Period.ofYears(10);
      * ```
      */
+    @Inline
     public static Period ofYears(int32 years) {
         return stack Period(years, 0, 0);
     }
@@ -70,6 +72,7 @@ public class Period {
      * stack Period quarter = Period.ofMonths(3);
      * ```
      */
+    @Inline
     public static Period ofMonths(int32 months) {
         return stack Period(0, months, 0);
     }
@@ -81,6 +84,7 @@ public class Period {
      * stack Period fortnight = Period.ofWeeks(2); // 14 days
      * ```
      */
+    @Inline
     public static Period ofWeeks(int32 weeks) {
         return stack Period(0, 0, weeks * 7);
     }
@@ -92,6 +96,7 @@ public class Period {
      * stack Period week = Period.ofDays(7);
      * ```
      */
+    @Inline
     public static Period ofDays(int32 days) {
         return stack Period(0, 0, days);
     }
@@ -103,50 +108,60 @@ public class Period {
      * stack Period empty = Period.zero(); // empty.isZero() == true
      * ```
      */
+    @Inline
     public static Period zero() {
         return stack Period(0, 0, 0);
     }
 
+    @Inline
     public int32 getYears() {
         return this.years;
     }
 
+    @Inline
     public int32 getMonths() {
         return this.months;
     }
 
+    @Inline
     public int32 getDays() {
         return this.days;
     }
 
     /** Total months this period represents (years * 12 + months). */
+    @Inline
     public int64 toTotalMonths() {
         return (int64) this.years * 12 + (int64) this.months;
     }
 
     /** True iff every field is zero. */
+    @Inline
     public boolean isZero() {
         return this.years == 0 && this.months == 0 && this.days == 0;
     }
 
     /** True iff any field is negative. */
+    @Inline
     public boolean isNegative() {
         return this.years < 0 || this.months < 0 || this.days < 0;
     }
 
     /** Field-wise sum with `other`. */
+    @Inline
     public Period plus(Period other) {
         return stack Period(this.years + other.years, this.months + other.months,
                             this.days + other.days);
     }
 
     /** Field-wise difference with `other`. */
+    @Inline
     public Period minus(Period other) {
         return stack Period(this.years - other.years, this.months - other.months,
                             this.days - other.days);
     }
 
     /** Each field negated. */
+    @Inline
     public Period negated() {
         return stack Period(-this.years, -this.months, -this.days);
     }

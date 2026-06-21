@@ -1,12 +1,14 @@
 package profile.string;
 
+import cajeta.lang.StringBuilder;
+
 import profile.Benchmark;
 
-// String build by repeated concatenation: append an 8-char piece N times. With
-// no StringBuilder in the stdlib, `s = s + piece` copies the growing string each
-// time — O(N^2). That quadratic cost is itself the finding this benchmark
-// surfaces (vs a builder in the competitor languages). Cross-check: final length
-// == 8*N. N kept modest because of the quadratic behaviour.
+// String build: append an 8-char piece N times via StringBuilder (amortized O(N)),
+// matching the competitors' builder pattern (Rust String::push_str, Java
+// StringBuilder, Go strings.Builder, C++ std::string +=). Materialize once with
+// toString(). Cross-check: final length == 8*N AND the builder output is bit-for-bit
+// identical to naive concatenation on a small input.
 public class StringBuildBench extends Benchmark {
 
     public int32 n;
@@ -37,16 +39,34 @@ public class StringBuildBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        String s = "";
+        StringBuilder sb = heap StringBuilder();
         int32 i = 0;
         while (i < this.n) {
-            s = s + "abcdefgh";
+            sb.append("abcdefgh");
             i = i + 1;
         }
-        this.finalLen = (int64) s.count();
+        String s = sb.toString();
+        // size() is the O(1) byte length (== n*8). Use it, not count(), which
+        // does an O(N) UTF-8 codepoint walk the competitor builders don't do
+        // (Go Len() / Rust len() / Java length() are all O(1)) — measuring count()
+        // here would charge Cajeta for a full UTF-8 decode the others skip.
+        this.finalLen = s.size();
     }
 
     public boolean checkResult() {
-        return this.finalLen == (int64) (this.n * 8);
+        if (this.finalLen != (int64) (this.n * 8)) {
+            return false;
+        }
+        // Bit-for-bit: StringBuilder output must equal naive concatenation.
+        StringBuilder sb = heap StringBuilder();
+        String naive = "";
+        int32 i = 0;
+        while (i < 50) {
+            sb.append("abcdefgh");
+            naive = naive + "abcdefgh";
+            i = i + 1;
+        }
+        String built = sb.toString();
+        return built.equals(naive);
     }
 }

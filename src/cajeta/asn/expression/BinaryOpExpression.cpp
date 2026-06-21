@@ -343,6 +343,15 @@ namespace cajeta {
         if (dynamic_pointer_cast<NewExpression>(ast)) {
             return v;
         }
+        // A ternary (`cond ? a : b`) has ALREADY produced its r-value: the
+        // merge `phi` of the two arms (each loaded to an r-value inside
+        // BooleanSwitchExpression::generateCode). For a class/String-typed
+        // ternary the phi IS the instance pointer — the class-ref catch-all
+        // below would otherwise load through it and hand back the vtable word,
+        // so `"x" + (cond ? "a" : "b")` rendered the operand empty.
+        if (dynamic_pointer_cast<BooleanSwitchExpression>(ast)) {
+            return v;
+        }
         // A `#x` MoveExpression has ALREADY loaded its operand to the
         // r-value (the owned heap pointer) — see MoveExpression::
         // generateCode, which loads through the source alloca before

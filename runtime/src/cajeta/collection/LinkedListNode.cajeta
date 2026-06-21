@@ -20,7 +20,7 @@ package cajeta.collection;
  * exposes internal state). Future visibility refinement is a
  * stdlib-wide pass.
  */
-public class LinkedListNode<T> {
+public final class LinkedListNode<T> {
     public T value;
     public LinkedListNode<T> prev;
     public LinkedListNode<T> next;
